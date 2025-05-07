@@ -12,6 +12,7 @@ enum class TypeKind {
     Bool,
     String,
     Struct,
+    Enum,
 };
 
 struct Type {

@@ -40,9 +40,24 @@ struct SemanticStruct {
     std::vector<Type> fieldTypes;
 };
 
+struct SemanticEnum {
+    std::vector<std::optional<Type>> payloadTypes;
+};
+
 struct StructLiteralTarget {
     FirStructId type{};
     std::vector<FirFieldId> fields;
+};
+
+struct EnumTarget {
+    FirEnumId type{};
+    FirVariantId variant{};
+};
+
+struct MatchTarget {
+    FirEnumId type{};
+    std::vector<FirVariantId> variants;
+    std::vector<std::optional<FirLocalId>> bindings;
 };
 
 struct SemanticModel {
@@ -51,8 +66,11 @@ struct SemanticModel {
     std::vector<std::optional<CallTarget>> callTargets;
     std::vector<std::optional<StructLiteralTarget>> structTargets;
     std::vector<std::optional<FirFieldId>> expressionFields;
+    std::vector<std::optional<EnumTarget>> enumTargets;
+    std::vector<std::optional<MatchTarget>> matchTargets;
     std::vector<std::optional<FirLocalId>> statementLocals;
     std::vector<SemanticStruct> structs;
+    std::vector<SemanticEnum> enums;
     std::vector<SemanticFunction> functions;
     FirFunctionId main{};
 };

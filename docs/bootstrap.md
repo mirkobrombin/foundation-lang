@@ -9,9 +9,9 @@ dependency. Its job is to implement enough of the language to compile the next c
 remains available as a recovery compiler after self-hosting.
 
 The current executable subset includes typed functions, local bindings, calls, primitive
-expressions, nominal value structs, field access, branches, loops, semantic resolution, typed FIR,
-and checked i32 operations. Each added construct must serve the stage-1 compiler or an already
-accepted language invariant.
+expressions, nominal value structs, algebraic value enums, exhaustive match expressions, field
+access, branches, loops, semantic resolution, typed FIR, and checked i32 operations. Each added
+construct must serve the stage-1 compiler or an already accepted language invariant.
 
 Stage 0 bounds parser nesting and expression complexity before semantic analysis. It records at
 most 100 specific errors, followed by FDN0000 when more input errors are suppressed. These limits

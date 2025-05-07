@@ -1,4 +1,23 @@
 {
+    "Enum": {
+        "prefix": "enum",
+        "body": [
+            "enum ${1:Name} {",
+            "    ${2:Empty}",
+            "    ${3:Value}(${4:value}: ${5:i32})",
+            "}"
+        ],
+        "description": "Declare an algebraic enum"
+    },
+    "Match expression": {
+        "prefix": "match",
+        "body": [
+            "match ${1:value} {",
+            "    ${2:Type}::${3:Variant} => ${4:result}",
+            "}"
+        ],
+        "description": "Match an enum value"
+    },
     "Struct": {
         "prefix": "struct",
         "body": [

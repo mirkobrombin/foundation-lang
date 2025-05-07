@@ -23,6 +23,11 @@ void fdn_println(const char *value) {
     fputc('\n', stdout);
 }
 
+_Noreturn void fdn_invalid_enum_tag(void) {
+    fputs("foundation: invalid enum tag\n", stderr);
+    abort();
+}
+
 int32_t fdn_i32_add(int32_t left, int32_t right) {
     return fdn_i32_checked((int64_t)left + (int64_t)right);
 }

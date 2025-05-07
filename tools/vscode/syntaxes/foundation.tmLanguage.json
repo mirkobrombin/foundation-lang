@@ -6,12 +6,14 @@
         { "include": "#comments" },
         { "include": "#strings" },
         { "include": "#structDefinitions" },
+        { "include": "#enumDefinitions" },
         { "include": "#functionDefinitions" },
         { "include": "#bindings" },
         { "include": "#keywords" },
         { "include": "#types" },
         { "include": "#builtins" },
         { "include": "#structLiterals" },
+        { "include": "#enumConstructors" },
         { "include": "#fieldAccess" },
         { "include": "#functionCalls" },
         { "include": "#numbers" },
@@ -74,6 +76,36 @@
                 }
             ]
         },
+        "enumDefinitions": {
+            "patterns": [
+                {
+                    "name": "meta.enum.definition.foundation",
+                    "begin": "\\b(enum)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\{)",
+                    "beginCaptures": {
+                        "1": { "name": "keyword.declaration.enum.foundation" },
+                        "2": { "name": "entity.name.type.enum.foundation" },
+                        "3": { "name": "punctuation.section.block.begin.foundation" }
+                    },
+                    "end": "\\}",
+                    "endCaptures": {
+                        "0": { "name": "punctuation.section.block.end.foundation" }
+                    },
+                    "patterns": [
+                        {
+                            "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(\\()\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(:)\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(\\)))?",
+                            "captures": {
+                                "1": { "name": "variable.other.enummember.foundation" },
+                                "2": { "name": "punctuation.section.parens.begin.foundation" },
+                                "3": { "name": "variable.parameter.foundation" },
+                                "4": { "name": "punctuation.separator.foundation" },
+                                "5": { "name": "entity.name.type.foundation" },
+                                "6": { "name": "punctuation.section.parens.end.foundation" }
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
         "functionDefinitions": {
             "patterns": [
                 {
@@ -120,7 +152,7 @@
             "patterns": [
                 {
                     "name": "keyword.control.foundation",
-                    "match": "\\b(return|if|else|while)\\b"
+                    "match": "\\b(return|if|else|while|match)\\b"
                 },
                 {
                     "name": "constant.language.boolean.foundation",
@@ -163,6 +195,18 @@
                 }
             ]
         },
+        "enumConstructors": {
+            "patterns": [
+                {
+                    "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(::)([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "entity.name.type.enum.foundation" },
+                        "2": { "name": "punctuation.accessor.foundation" },
+                        "3": { "name": "variable.other.enummember.foundation" }
+                    }
+                }
+            ]
+        },
         "fieldAccess": {
             "patterns": [
                 {
@@ -194,7 +238,7 @@
             "patterns": [
                 {
                     "name": "keyword.operator.foundation",
-                    "match": "->|==|!=|<=|>=|&&|\\|\\||[=+\\-*/%!<>]"
+                    "match": "=>|->|::|==|!=|<=|>=|&&|\\|\\||[=+\\-*/%!<>]"
                 }
             ]
         },

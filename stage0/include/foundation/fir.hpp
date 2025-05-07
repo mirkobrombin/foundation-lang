@@ -20,6 +20,8 @@ using FirFunctionId = std::size_t;
 using FirLocalId = std::size_t;
 using FirStructId = std::size_t;
 using FirFieldId = std::size_t;
+using FirEnumId = std::size_t;
+using FirVariantId = std::size_t;
 
 enum class FirUnaryOperator {
     Negate,
@@ -95,10 +97,28 @@ struct FirFieldExpression {
     FirFieldId field{};
 };
 
+struct FirEnumExpression {
+    FirEnumId type{};
+    FirVariantId variant{};
+    std::optional<FirExpressionId> payload;
+};
+
+struct FirMatchArm {
+    FirVariantId variant{};
+    std::optional<FirLocalId> binding;
+    FirExpressionId expression{};
+};
+
+struct FirMatchExpression {
+    FirExpressionId value{};
+    FirEnumId type{};
+    std::vector<FirMatchArm> arms;
+};
+
 using FirExpressionValue =
     std::variant<FirIntegerExpression, FirBooleanExpression, FirStringExpression,
                  FirLocalExpression, FirUnaryExpression, FirBinaryExpression, FirCallExpression,
-                 FirStructExpression, FirFieldExpression>;
+                 FirStructExpression, FirFieldExpression, FirEnumExpression, FirMatchExpression>;
 
 struct FirExpression {
     FirExpressionValue value;
@@ -175,8 +195,19 @@ struct FirStruct {
     std::vector<FirStructField> fields;
 };
 
+struct FirEnumVariant {
+    std::string name;
+    std::optional<Type> payload;
+};
+
+struct FirEnum {
+    std::string name;
+    std::vector<FirEnumVariant> variants;
+};
+
 struct FirProgram {
     std::vector<FirStruct> structs;
+    std::vector<FirEnum> enums;
     std::vector<FirFunction> functions;
     FirFunctionId main{};
 };

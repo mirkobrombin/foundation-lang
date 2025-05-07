@@ -16,6 +16,8 @@ const char *typeName(Type type) {
         return "String";
     case TypeKind::Struct:
         return "<struct>";
+    case TypeKind::Enum:
+        return "<enum>";
     }
     return "<invalid>";
 }

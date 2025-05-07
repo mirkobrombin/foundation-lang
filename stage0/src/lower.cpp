@@ -76,6 +76,18 @@ class Lowerer {
             }
             result.structs.push_back(std::move(type));
         }
+        result.enums.reserve(program_.enums.size());
+        for (std::size_t index = 0; index < program_.enums.size(); ++index) {
+            FirEnum type;
+            type.name = program_.enums[index].name;
+            type.variants.reserve(program_.enums[index].variants.size());
+            for (std::size_t variant = 0; variant < program_.enums[index].variants.size();
+                 ++variant) {
+                type.variants.push_back({program_.enums[index].variants[variant].name,
+                                         model_.enums[index].payloadTypes[variant]});
+            }
+            result.enums.push_back(std::move(type));
+        }
         result.functions.reserve(program_.functions.size());
         for (std::size_t index = 0; index < program_.functions.size(); ++index) {
             result.functions.push_back(lowerFunction(index));
@@ -203,10 +215,26 @@ class Lowerer {
                     {target.fields[index], lowerExpression(literal->fields[index].value)});
             }
             value = FirStructExpression{target.type, std::move(fields)};
-        } else {
-            const auto &field = std::get<FieldExpression>(source.value);
-            value = FirFieldExpression{lowerExpression(field.base),
+        } else if (const auto *field = std::get_if<FieldExpression>(&source.value)) {
+            value = FirFieldExpression{lowerExpression(field->base),
                                        required(model_.expressionFields[id])};
+        } else if (const auto *constructor = std::get_if<EnumExpression>(&source.value)) {
+            const auto &target = required(model_.enumTargets[id]);
+            std::optional<FirExpressionId> payload;
+            if (constructor->payload.has_value()) {
+                payload = lowerExpression(*constructor->payload);
+            }
+            value = FirEnumExpression{target.type, target.variant, payload};
+        } else {
+            const auto &match = std::get<MatchExpression>(source.value);
+            const auto &target = required(model_.matchTargets[id]);
+            std::vector<FirMatchArm> arms;
+            arms.reserve(match.arms.size());
+            for (std::size_t arm = 0; arm < match.arms.size(); ++arm) {
+                arms.push_back({target.variants[arm], target.bindings[arm],
+                                lowerExpression(match.arms[arm].expression)});
+            }
+            value = FirMatchExpression{lowerExpression(match.value), target.type, std::move(arms)};
         }
 
         const auto lowered = current_->expressions.size();

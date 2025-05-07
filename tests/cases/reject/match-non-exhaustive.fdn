@@ -1,0 +1,11 @@
+enum Status {
+    Pending
+    Ready(value: i32)
+}
+
+fn main() -> i32 {
+    let status = Status::Ready(1);
+    return match status {
+        Status::Ready(value) => value
+    };
+}

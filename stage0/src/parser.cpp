@@ -24,11 +24,15 @@ Program Parser::parse() {
             program_.structs.push_back(structDeclaration());
             continue;
         }
+        if (check(TokenKind::Enum)) {
+            program_.enums.push_back(enumDeclaration());
+            continue;
+        }
         if (check(TokenKind::Fn)) {
             program_.functions.push_back(function());
             continue;
         }
-        diagnostics_.error("FDN1001", "expected struct or function declaration",
+        diagnostics_.error("FDN1001", "expected type or function declaration",
                            current().span);
         advance();
     }
@@ -97,6 +101,34 @@ StructDeclaration Parser::structDeclaration() {
     }
     expect(TokenKind::RightBrace, "FDN1037", "expected } after struct declaration");
     return {name.text, std::move(fields), start.span};
+}
+
+EnumDeclaration Parser::enumDeclaration() {
+    const auto start = expect(TokenKind::Enum, "FDN1042", "expected enum");
+    const auto name = expect(TokenKind::Identifier, "FDN1043", "expected enum name");
+    expect(TokenKind::LeftBrace, "FDN1044", "expected { after enum name");
+
+    std::vector<EnumVariant> variants;
+    while (!check(TokenKind::RightBrace) && !atEnd()) {
+        if (!check(TokenKind::Identifier)) {
+            diagnostics_.error("FDN1045", "expected enum variant name", current().span);
+            advance();
+            continue;
+        }
+        const auto variant = advance();
+        std::optional<std::string> payloadName;
+        std::optional<std::string> payloadType;
+        if (match(TokenKind::LeftParen)) {
+            payloadName = expect(TokenKind::Identifier, "FDN1046", "expected payload name").text;
+            expect(TokenKind::Colon, "FDN1047", "expected : after payload name");
+            payloadType = expect(TokenKind::Identifier, "FDN1048", "expected payload type").text;
+            expect(TokenKind::RightParen, "FDN1049", "expected ) after enum payload");
+        }
+        variants.push_back(
+            {variant.text, std::move(payloadName), std::move(payloadType), variant.span});
+    }
+    expect(TokenKind::RightBrace, "FDN1050", "expected } after enum declaration");
+    return {name.text, std::move(variants), start.span};
 }
 
 Function Parser::function() {
@@ -377,9 +409,13 @@ AstExpressionId Parser::primary() {
     } else if (match(TokenKind::String)) {
         const auto token = previous();
         result = addExpression(StringExpression{token.text}, token.span);
+    } else if (match(TokenKind::Match)) {
+        result = matchExpression(previous());
     } else if (match(TokenKind::Identifier)) {
         const auto name = previous();
-        if (match(TokenKind::LeftParen)) {
+        if (match(TokenKind::ColonColon)) {
+            result = finishEnum(name);
+        } else if (match(TokenKind::LeftParen)) {
             result = finishCall(name);
         } else if (check(TokenKind::LeftBrace) && peek(1).kind == TokenKind::Identifier &&
                    peek(2).kind == TokenKind::Colon) {
@@ -432,6 +468,38 @@ AstExpressionId Parser::finishStruct(const Token &type) {
     }
     expect(TokenKind::RightBrace, "FDN1040", "expected } after struct literal");
     return addExpression(StructExpression{type.text, std::move(fields)}, type.span);
+}
+
+AstExpressionId Parser::finishEnum(const Token &type) {
+    const auto variant = expect(TokenKind::Identifier, "FDN1051", "expected enum variant");
+    std::optional<AstExpressionId> payload;
+    if (match(TokenKind::LeftParen)) {
+        if (!check(TokenKind::RightParen)) {
+            payload = expression();
+        }
+        expect(TokenKind::RightParen, "FDN1052", "expected ) after enum constructor");
+    }
+    return addExpression(EnumExpression{type.text, variant.text, payload}, type.span);
+}
+
+AstExpressionId Parser::matchExpression(const Token &start) {
+    const auto value = expression();
+    expect(TokenKind::LeftBrace, "FDN1053", "expected { after match value");
+    std::vector<MatchArm> arms;
+    while (!check(TokenKind::RightBrace) && !atEnd()) {
+        const auto type = expect(TokenKind::Identifier, "FDN1054", "expected pattern enum type");
+        expect(TokenKind::ColonColon, "FDN1055", "expected :: in match pattern");
+        const auto variant = expect(TokenKind::Identifier, "FDN1056", "expected pattern variant");
+        std::optional<std::string> binding;
+        if (match(TokenKind::LeftParen)) {
+            binding = expect(TokenKind::Identifier, "FDN1057", "expected payload binding").text;
+            expect(TokenKind::RightParen, "FDN1058", "expected ) after payload binding");
+        }
+        expect(TokenKind::FatArrow, "FDN1059", "expected => after match pattern");
+        arms.push_back({type.text, variant.text, std::move(binding), expression(), type.span});
+    }
+    expect(TokenKind::RightBrace, "FDN1060", "expected } after match expression");
+    return addExpression(MatchExpression{value, std::move(arms)}, start.span);
 }
 
 AstExpressionId Parser::addExpression(ExpressionValue value, SourceSpan span) {

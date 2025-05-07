@@ -25,6 +25,7 @@ class Parser {
     bool match(TokenKind kind);
     const Token &expect(TokenKind kind, const char *code, const char *message);
     StructDeclaration structDeclaration();
+    EnumDeclaration enumDeclaration();
     Function function();
     Parameter parameter();
     AstBlockId block();
@@ -46,6 +47,8 @@ class Parser {
     AstExpressionId primary();
     AstExpressionId finishCall(const Token &callee);
     AstExpressionId finishStruct(const Token &type);
+    AstExpressionId finishEnum(const Token &type);
+    AstExpressionId matchExpression(const Token &start);
     AstExpressionId addExpression(ExpressionValue value, SourceSpan span);
     AstStatementId addStatement(StatementValue value, SourceSpan span);
     AstBlockId skipNestedBlock(SourceSpan span);

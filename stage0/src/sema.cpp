@@ -27,15 +27,20 @@ class Analyzer {
         model_.callTargets.resize(program.expressions.size());
         model_.structTargets.resize(program.expressions.size());
         model_.expressionFields.resize(program.expressions.size());
+        model_.enumTargets.resize(program.expressions.size());
+        model_.matchTargets.resize(program.expressions.size());
         model_.statementLocals.resize(program.statements.size());
         model_.structs.resize(program.structs.size());
+        model_.enums.resize(program.enums.size());
         model_.functions.resize(program.functions.size());
     }
 
     std::optional<SemanticModel> run() {
         declareStructs();
+        declareEnums();
         resolveStructs();
-        rejectStructCycles();
+        resolveEnums();
+        rejectTypeCycles();
         declareFunctions();
         for (std::size_t index = 0; index < program_.functions.size(); ++index) {
             analyzeFunction(index);
@@ -57,6 +62,21 @@ class Analyzer {
             }
             if (declaration.fields.empty()) {
                 diagnostics_.error("FDN2029", "struct must declare at least one field",
+                                   declaration.span);
+            }
+        }
+    }
+
+    void declareEnums() {
+        for (std::size_t index = 0; index < program_.enums.size(); ++index) {
+            const auto &declaration = program_.enums[index];
+            if (isBuiltinType(declaration.name) || structs_.contains(declaration.name) ||
+                !enums_.emplace(declaration.name, index).second) {
+                diagnostics_.error("FDN2020", "duplicate type " + declaration.name,
+                                   declaration.span);
+            }
+            if (declaration.variants.empty()) {
+                diagnostics_.error("FDN2031", "enum must declare at least one variant",
                                    declaration.span);
             }
         }
@@ -84,16 +104,65 @@ class Analyzer {
         }
     }
 
-    void rejectStructCycles() {
-        std::vector<std::size_t> dependencies(program_.structs.size());
-        std::vector<std::vector<FirStructId>> dependents(program_.structs.size());
-        for (std::size_t type = 0; type < model_.structs.size(); ++type) {
-            for (const auto field : model_.structs[type].fieldTypes) {
-                if (field.kind == TypeKind::Struct &&
-                    field.declaration < program_.structs.size()) {
-                    ++dependencies[type];
-                    dependents[field.declaration].push_back(type);
+    void resolveEnums() {
+        for (std::size_t index = 0; index < program_.enums.size(); ++index) {
+            const auto &declaration = program_.enums[index];
+            auto &semantic = model_.enums[index];
+            std::unordered_map<std::string, std::size_t> variants;
+            semantic.payloadTypes.reserve(declaration.variants.size());
+            for (std::size_t variant = 0; variant < declaration.variants.size(); ++variant) {
+                const auto &source = declaration.variants[variant];
+                if (!variants.emplace(source.name, variant).second) {
+                    diagnostics_.error("FDN2032", "duplicate variant " + source.name,
+                                       source.span);
                 }
+                if (!source.payloadType.has_value()) {
+                    semantic.payloadTypes.push_back(std::nullopt);
+                    continue;
+                }
+                const auto type = resolveType(*source.payloadType, source.span);
+                if (type == voidType) {
+                    diagnostics_.error("FDN2033", "enum payload cannot have type void",
+                                       source.span);
+                }
+                semantic.payloadTypes.push_back(type);
+            }
+        }
+    }
+
+    void rejectTypeCycles() {
+        const auto structCount = program_.structs.size();
+        const auto typeCount = structCount + program_.enums.size();
+        std::vector<std::vector<std::pair<std::size_t, SourceSpan>>> edges(typeCount);
+        for (std::size_t type = 0; type < model_.structs.size(); ++type) {
+            for (std::size_t field = 0; field < model_.structs[type].fieldTypes.size(); ++field) {
+                const auto target = typeNode(model_.structs[type].fieldTypes[field]);
+                if (target.has_value()) {
+                    edges[type].push_back({*target, program_.structs[type].fields[field].span});
+                }
+            }
+        }
+        for (std::size_t type = 0; type < model_.enums.size(); ++type) {
+            for (std::size_t variant = 0; variant < model_.enums[type].payloadTypes.size();
+                 ++variant) {
+                if (!model_.enums[type].payloadTypes[variant].has_value()) {
+                    continue;
+                }
+                const auto target = typeNode(*model_.enums[type].payloadTypes[variant]);
+                if (target.has_value()) {
+                    edges[structCount + type].push_back(
+                        {*target, program_.enums[type].variants[variant].span});
+                }
+            }
+        }
+
+        std::vector<std::size_t> dependencies(typeCount);
+        std::vector<std::vector<std::size_t>> dependents(typeCount);
+        for (std::size_t type = 0; type < edges.size(); ++type) {
+            dependencies[type] = edges[type].size();
+            for (const auto &[target, span] : edges[type]) {
+                static_cast<void>(span);
+                dependents[target].push_back(type);
             }
         }
 
@@ -110,7 +179,7 @@ class Analyzer {
                 }
             }
         }
-        if (ready.size() == program_.structs.size()) {
+        if (ready.size() == typeCount) {
             return;
         }
 
@@ -118,12 +187,9 @@ class Analyzer {
             if (dependencies[type] == 0) {
                 continue;
             }
-            const auto &fields = model_.structs[type].fieldTypes;
-            for (std::size_t field = 0; field < fields.size(); ++field) {
-                if (fields[field].kind == TypeKind::Struct &&
-                    dependencies[fields[field].declaration] != 0) {
-                    diagnostics_.error("FDN2023", "recursive value struct is not allowed",
-                                       program_.structs[type].fields[field].span);
+            for (const auto &[target, span] : edges[type]) {
+                if (dependencies[target] != 0) {
+                    diagnostics_.error("FDN2023", "recursive value type is not allowed", span);
                     return;
                 }
             }
@@ -306,8 +372,12 @@ class Analyzer {
             type = analyzeCall(id, *call, expression.span);
         } else if (const auto *literal = std::get_if<StructExpression>(&expression.value)) {
             type = analyzeStruct(id, *literal, expression.span);
+        } else if (const auto *field = std::get_if<FieldExpression>(&expression.value)) {
+            type = analyzeField(id, *field, expression.span);
+        } else if (const auto *constructor = std::get_if<EnumExpression>(&expression.value)) {
+            type = analyzeEnum(id, *constructor, expression.span);
         } else {
-            type = analyzeField(id, std::get<FieldExpression>(expression.value), expression.span);
+            type = analyzeMatch(id, std::get<MatchExpression>(expression.value), expression.span);
         }
         model_.expressionTypes[id] = type;
         return type;
@@ -345,7 +415,8 @@ class Analyzer {
         case BinaryOperator::Equal:
         case BinaryOperator::NotEqual:
             if (left.kind == TypeKind::String || right.kind == TypeKind::String ||
-                left.kind == TypeKind::Struct || right.kind == TypeKind::Struct) {
+                left.kind == TypeKind::Struct || right.kind == TypeKind::Struct ||
+                left.kind == TypeKind::Enum || right.kind == TypeKind::Enum) {
                 diagnostics_.error("FDN2012", "equality is not available for this type", span);
             } else {
                 requireSame(left, right, span, "equality operand");
@@ -464,6 +535,108 @@ class Analyzer {
         return model_.structs[base.declaration].fieldTypes[*resolved];
     }
 
+    Type analyzeEnum(AstExpressionId id, const EnumExpression &constructor, SourceSpan span) {
+        const auto found = enums_.find(constructor.typeName);
+        if (found == enums_.end()) {
+            if (constructor.payload.has_value()) {
+                static_cast<void>(analyzeExpression(*constructor.payload));
+            }
+            diagnostics_.error("FDN2034", "unknown enum " + constructor.typeName, span);
+            return invalidType;
+        }
+        const auto variant = findVariant(found->second, constructor.variant);
+        if (!variant.has_value()) {
+            if (constructor.payload.has_value()) {
+                static_cast<void>(analyzeExpression(*constructor.payload));
+            }
+            diagnostics_.error("FDN2035", "unknown variant " + constructor.variant, span);
+            return invalidType;
+        }
+
+        const auto expected = model_.enums[found->second].payloadTypes[*variant];
+        if (expected.has_value() && !constructor.payload.has_value()) {
+            diagnostics_.error("FDN2036", "variant requires a payload", span);
+        } else if (!expected.has_value() && constructor.payload.has_value()) {
+            static_cast<void>(analyzeExpression(*constructor.payload));
+            diagnostics_.error("FDN2036", "unit variant does not accept a payload", span);
+        } else if (expected.has_value()) {
+            requireSame(*expected, analyzeExpression(*constructor.payload), span,
+                        "variant payload");
+        }
+        model_.enumTargets[id] = EnumTarget{found->second, *variant};
+        return Type{TypeKind::Enum, found->second};
+    }
+
+    Type analyzeMatch(AstExpressionId id, const MatchExpression &match, SourceSpan span) {
+        const auto value = analyzeExpression(match.value);
+        if (value.kind != TypeKind::Enum || value.declaration >= program_.enums.size()) {
+            for (const auto &arm : match.arms) {
+                scopes_.emplace_back();
+                static_cast<void>(analyzeExpression(arm.expression));
+                scopes_.pop_back();
+            }
+            diagnostics_.error("FDN2037", "match requires an enum value", span);
+            return invalidType;
+        }
+
+        const auto enumType = value.declaration;
+        const auto &declaration = program_.enums[enumType];
+        std::vector<bool> covered(declaration.variants.size());
+        std::vector<FirVariantId> variants;
+        std::vector<std::optional<FirLocalId>> bindings;
+        auto result = invalidType;
+        for (const auto &arm : match.arms) {
+            const auto patternType = enums_.find(arm.typeName);
+            std::optional<FirVariantId> variant;
+            if (patternType == enums_.end() || patternType->second != enumType) {
+                diagnostics_.error("FDN2038", "pattern type does not match " + declaration.name,
+                                   arm.span);
+            } else {
+                variant = findVariant(enumType, arm.variant);
+                if (!variant.has_value()) {
+                    diagnostics_.error("FDN2035", "unknown variant " + arm.variant, arm.span);
+                } else if (covered[*variant]) {
+                    diagnostics_.error("FDN2039", "duplicate match pattern " + arm.variant,
+                                       arm.span);
+                } else {
+                    covered[*variant] = true;
+                }
+            }
+
+            scopes_.emplace_back();
+            std::optional<FirLocalId> binding;
+            if (variant.has_value()) {
+                const auto payload = model_.enums[enumType].payloadTypes[*variant];
+                if (payload.has_value() && !arm.binding.has_value()) {
+                    diagnostics_.error("FDN2041", "payload pattern requires a binding", arm.span);
+                } else if (!payload.has_value() && arm.binding.has_value()) {
+                    diagnostics_.error("FDN2041", "unit pattern does not accept a binding",
+                                       arm.span);
+                } else if (payload.has_value()) {
+                    binding = addLocal(*arm.binding, *payload, false, arm.span);
+                }
+            }
+            const auto armType = analyzeExpression(arm.expression);
+            scopes_.pop_back();
+            if (result.kind == TypeKind::Invalid) {
+                result = armType;
+            } else {
+                requireSame(result, armType, arm.span, "match arm");
+            }
+            variants.push_back(variant.value_or(0));
+            bindings.push_back(binding);
+        }
+        for (std::size_t variant = 0; variant < covered.size(); ++variant) {
+            if (!covered[variant]) {
+                diagnostics_.error("FDN2040",
+                                   "match does not cover " + declaration.variants[variant].name,
+                                   span);
+            }
+        }
+        model_.matchTargets[id] = MatchTarget{enumType, std::move(variants), std::move(bindings)};
+        return result;
+    }
+
     Type resolveType(std::string_view name, SourceSpan span) {
         if (name == "void") {
             return voidType;
@@ -481,6 +654,10 @@ class Analyzer {
         if (found != structs_.end()) {
             return Type{TypeKind::Struct, found->second};
         }
+        const auto enumFound = enums_.find(std::string(name));
+        if (enumFound != enums_.end()) {
+            return Type{TypeKind::Enum, enumFound->second};
+        }
         diagnostics_.error("FDN2002", "unknown type " + std::string(name), span);
         return invalidType;
     }
@@ -495,6 +672,26 @@ class Analyzer {
             if (fields[index].name == name) {
                 return index;
             }
+        }
+        return std::nullopt;
+    }
+
+    std::optional<FirVariantId> findVariant(FirEnumId type, std::string_view name) const {
+        const auto &variants = program_.enums[type].variants;
+        for (std::size_t index = 0; index < variants.size(); ++index) {
+            if (variants[index].name == name) {
+                return index;
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::optional<std::size_t> typeNode(Type type) const {
+        if (type.kind == TypeKind::Struct && type.declaration < program_.structs.size()) {
+            return type.declaration;
+        }
+        if (type.kind == TypeKind::Enum && type.declaration < program_.enums.size()) {
+            return program_.structs.size() + type.declaration;
         }
         return std::nullopt;
     }
@@ -528,6 +725,9 @@ class Analyzer {
         if (type.kind == TypeKind::Struct && type.declaration < program_.structs.size()) {
             return program_.structs[type.declaration].name;
         }
+        if (type.kind == TypeKind::Enum && type.declaration < program_.enums.size()) {
+            return program_.enums[type.declaration].name;
+        }
         return typeName(type);
     }
 
@@ -546,6 +746,7 @@ class Analyzer {
     Diagnostics &diagnostics_;
     SemanticModel model_;
     std::unordered_map<std::string, FirStructId> structs_;
+    std::unordered_map<std::string, FirEnumId> enums_;
     std::unordered_map<std::string, FirFunctionId> functions_;
     std::vector<FunctionSignature> signatures_;
     std::vector<std::unordered_map<std::string, FirLocalId>> scopes_;

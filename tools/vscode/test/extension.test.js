@@ -44,6 +44,7 @@ test("grammar and completions track compiler keywords", () => {
 
     assert.deepEqual(compilerKeywords, [
         "struct",
+        "enum",
         "fn",
         "let",
         "var",
@@ -51,6 +52,7 @@ test("grammar and completions track compiler keywords", () => {
         "if",
         "else",
         "while",
+        "match",
         "true",
         "false"
     ]);
@@ -63,6 +65,21 @@ test("grammar and completions track compiler keywords", () => {
         assert.match(grammar, new RegExp(`\\b${type}\\b`));
         assert.ok(completionLabels.has(type));
     }
+});
+
+test("collects enums and qualified variants", () => {
+    const completions = collectCompletions(`
+        enum Result {
+            Empty
+            Value(value: i32)
+        }
+        fn main() -> i32 { return 0; }
+    `);
+    const byLabel = new Map(completions.map((entry) => [entry.label, entry]));
+
+    assert.equal(byLabel.get("Result").kind, "Enum");
+    assert.equal(byLabel.get("Result::Empty").insertText, "Result::Empty");
+    assert.equal(byLabel.get("Result::Value").insertText, "Result::Value(${1:value})");
 });
 
 test("collects structs and their fields", () => {

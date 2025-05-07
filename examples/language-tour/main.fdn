@@ -5,6 +5,11 @@ struct TourResult {
     code: i32
 }
 
+enum TourState {
+    Running
+    Done(result: TourResult)
+}
+
 fn is_even(value: i32) -> bool {
     return value % 2 == 0;
 }
@@ -37,9 +42,13 @@ fn main() -> i32 {
         code: current - 5
         message: "done"
     };
+    let state = TourState::Done(result);
     if in_range(current, 5, 5) || false {
         print(result.message);
-        return result.code;
+        return match state {
+            TourState::Running => 1
+            TourState::Done(done) => done.code
+        };
     }
 
     return 1;

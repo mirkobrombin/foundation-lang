@@ -153,6 +153,44 @@ void deepStructGraphsStayIterative() {
     }
 }
 
+void enumMatchesLowerToDeterministicC() {
+    constexpr std::string_view source = R"(
+enum Value {
+    Empty
+    Number(value: i32)
+}
+
+fn read(value: Value) -> i32 {
+    return match value {
+        Value::Empty => 0
+        Value::Number(number) => number
+    };
+}
+
+fn main() -> i32 {
+    let value = Value::Number(3);
+    return read(value) - 3;
+}
+)";
+    auto first = check(source);
+    auto second = check(source);
+
+    expect(!first.diagnostics.hasErrors(), "enum program has no diagnostics");
+    expect(first.fir.has_value(), "enum program lowers to FIR");
+    expect(second.fir.has_value(), "repeated enum program lowers to FIR");
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        return;
+    }
+
+    const auto firstC = foundation::emitC(*first.fir);
+    const auto secondC = foundation::emitC(*second.fir);
+    expect(firstC == secondC, "enum C emission is deterministic");
+    expect(firstC.find("FDN_ENUM_0_VARIANT_1") != std::string::npos,
+           "enum variant has a stable C tag");
+    expect(firstC.find("switch (") != std::string::npos,
+           "match expression emits a C switch");
+}
+
 void syntaxFailuresHaveStableDiagnostics() {
     const auto missingSemicolon = check("fn main() -> i32 { print(\"bad\") return 0; }");
     expect(hasCode(missingSemicolon.diagnostics, "FDN1014"),
@@ -309,6 +347,35 @@ fn main() -> i32 { let item = Item { value: 1 value: 2 }; return 0; }
     const auto nonStructAccess = check("fn main() -> i32 { let value = 1; return value.field; }");
     expect(hasCode(nonStructAccess.diagnostics, "FDN2028"),
            "field access on a primitive reports FDN2028");
+
+    const auto missingPayload = check(R"(
+enum Value { Empty Number(value: i32) }
+fn main() -> i32 { let value = Value::Number; return 0; }
+)");
+    expect(hasCode(missingPayload.diagnostics, "FDN2036"),
+           "missing enum payload reports FDN2036");
+
+    const auto duplicatePattern = check(R"(
+enum Value { Empty Number(value: i32) }
+fn main() -> i32 {
+    let value = Value::Empty;
+    return match value {
+        Value::Empty => 0
+        Value::Empty => 1
+        Value::Number(number) => number
+    };
+}
+)");
+    expect(hasCode(duplicatePattern.diagnostics, "FDN2039"),
+           "duplicate match pattern reports FDN2039");
+
+    const auto valueCycle = check(R"(
+struct Node { state: State }
+enum State { End Next(node: Node) }
+fn main() -> i32 { return 0; }
+)");
+    expect(hasCode(valueCycle.diagnostics, "FDN2023"),
+           "struct and enum value cycle reports FDN2023");
 }
 
 void diagnosticsBoundLongSourceExcerpts() {
@@ -337,6 +404,7 @@ int main() {
     typedProgramLowersToDeterministicC();
     structValuesLowerToDeterministicC();
     deepStructGraphsStayIterative();
+    enumMatchesLowerToDeterministicC();
     syntaxFailuresHaveStableDiagnostics();
     semanticFailuresHaveStableDiagnostics();
     diagnosticsBoundLongSourceExcerpts();

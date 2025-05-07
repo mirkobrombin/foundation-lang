@@ -5,6 +5,8 @@ const { collectCompletions } = require("./completions");
 
 const completionKinds = {
     Constant: vscode.CompletionItemKind.Constant,
+    Enum: vscode.CompletionItemKind.Enum,
+    EnumMember: vscode.CompletionItemKind.EnumMember,
     Field: vscode.CompletionItemKind.Field,
     Function: vscode.CompletionItemKind.Function,
     Keyword: vscode.CompletionItemKind.Keyword,

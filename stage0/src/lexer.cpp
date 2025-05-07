@@ -32,6 +32,8 @@ const char *tokenName(TokenKind kind) {
         return "string";
     case TokenKind::Struct:
         return "struct";
+    case TokenKind::Enum:
+        return "enum";
     case TokenKind::Fn:
         return "fn";
     case TokenKind::Let:
@@ -46,6 +48,8 @@ const char *tokenName(TokenKind kind) {
         return "else";
     case TokenKind::While:
         return "while";
+    case TokenKind::Match:
+        return "match";
     case TokenKind::True:
         return "true";
     case TokenKind::False:
@@ -66,6 +70,8 @@ const char *tokenName(TokenKind kind) {
         return ",";
     case TokenKind::Colon:
         return ":";
+    case TokenKind::ColonColon:
+        return "::";
     case TokenKind::Dot:
         return ".";
     case TokenKind::Equal:
@@ -98,6 +104,8 @@ const char *tokenName(TokenKind kind) {
         return "&&";
     case TokenKind::OrOr:
         return "||";
+    case TokenKind::FatArrow:
+        return "=>";
     }
     return "token";
 }
@@ -187,6 +195,10 @@ Token Lexer::next() {
         case ',':
             return simple(TokenKind::Comma, ",");
         case ':':
+            if (peek() == ':') {
+                advance();
+                return simple(TokenKind::ColonColon, "::");
+            }
             return simple(TokenKind::Colon, ":");
         case '.':
             return simple(TokenKind::Dot, ".");
@@ -205,6 +217,10 @@ Token Lexer::next() {
             }
             return simple(TokenKind::Minus, "-");
         case '=':
+            if (peek() == '>') {
+                advance();
+                return simple(TokenKind::FatArrow, "=>");
+            }
             if (peek() == '=') {
                 advance();
                 return simple(TokenKind::EqualEqual, "==");
@@ -261,6 +277,8 @@ Token Lexer::identifier() {
     auto kind = TokenKind::Identifier;
     if (text == "struct") {
         kind = TokenKind::Struct;
+    } else if (text == "enum") {
+        kind = TokenKind::Enum;
     } else if (text == "fn") {
         kind = TokenKind::Fn;
     } else if (text == "let") {
@@ -275,6 +293,8 @@ Token Lexer::identifier() {
         kind = TokenKind::Else;
     } else if (text == "while") {
         kind = TokenKind::While;
+    } else if (text == "match") {
+        kind = TokenKind::Match;
     } else if (text == "true") {
         kind = TokenKind::True;
     } else if (text == "false") {

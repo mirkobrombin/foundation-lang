@@ -60,6 +60,8 @@ std::string cType(Type type) {
         return "const char *";
     case TypeKind::Struct:
         return "fdn_struct_" + std::to_string(type.declaration);
+    case TypeKind::Enum:
+        return "fdn_enum_" + std::to_string(type.declaration);
     case TypeKind::Invalid:
         break;
     }
@@ -88,6 +90,14 @@ std::string localName(const FirFunction &function, FirLocalId id) {
 }
 
 std::string fieldName(FirFieldId id) { return "fdn_field_" + std::to_string(id); }
+
+std::string enumTag(FirEnumId type, FirVariantId variant) {
+    return "FDN_ENUM_" + std::to_string(type) + "_VARIANT_" + std::to_string(variant);
+}
+
+std::string payloadName(FirVariantId variant) {
+    return "fdn_payload_" + std::to_string(variant);
+}
 
 std::string indentation(unsigned int depth) { return std::string(depth * 4, ' '); }
 
@@ -144,8 +154,13 @@ class FunctionEmitter {
         if (const auto *literal = std::get_if<FirStructExpression>(&expression.value)) {
             return emitStruct(*literal, depth);
         }
-        const auto &field = std::get<FirFieldExpression>(expression.value);
-        return emitExpression(field.base, depth) + "." + fieldName(field.field);
+        if (const auto *field = std::get_if<FirFieldExpression>(&expression.value)) {
+            return emitExpression(field->base, depth) + "." + fieldName(field->field);
+        }
+        if (const auto *constructor = std::get_if<FirEnumExpression>(&expression.value)) {
+            return emitEnum(*constructor, depth);
+        }
+        return emitMatch(std::get<FirMatchExpression>(expression.value), expression.type, depth);
     }
 
     std::string emitBinary(const FirBinaryExpression &binary, Type type, unsigned int depth) {
@@ -252,6 +267,51 @@ class FunctionEmitter {
         return temporary;
     }
 
+    std::string emitEnum(const FirEnumExpression &constructor, unsigned int depth) {
+        const auto temporary = nextTemporary();
+        out_ << indentation(depth) << cType(Type{TypeKind::Enum, constructor.type}) << ' '
+             << temporary << ";\n";
+        if (constructor.payload.has_value()) {
+            const auto payload = emitExpression(*constructor.payload, depth);
+            out_ << indentation(depth) << temporary << ".fdn_data."
+                 << payloadName(constructor.variant) << " = " << payload << ";\n";
+        }
+        out_ << indentation(depth) << temporary << ".fdn_tag = "
+             << enumTag(constructor.type, constructor.variant) << ";\n";
+        return temporary;
+    }
+
+    std::string emitMatch(const FirMatchExpression &match, Type type, unsigned int depth) {
+        const auto value = emitExpression(match.value, depth);
+        std::string temporary;
+        if (type != voidType) {
+            temporary = nextTemporary();
+            out_ << indentation(depth) << cType(type) << ' ' << temporary << ";\n";
+        }
+        out_ << indentation(depth) << "switch (" << value << ".fdn_tag) {\n";
+        for (const auto &arm : match.arms) {
+            out_ << indentation(depth) << "case " << enumTag(match.type, arm.variant) << ": {\n";
+            if (arm.binding.has_value()) {
+                const auto local = *arm.binding;
+                out_ << indentation(depth + 1) << cType(function_.locals[local].type) << ' '
+                     << localName(function_, local) << " = " << value << ".fdn_data."
+                     << payloadName(arm.variant) << ";\n";
+                out_ << indentation(depth + 1) << "(void)" << localName(function_, local)
+                     << ";\n";
+            }
+            const auto armValue = emitExpression(arm.expression, depth + 1);
+            if (type != voidType) {
+                out_ << indentation(depth + 1) << temporary << " = " << armValue << ";\n";
+            }
+            out_ << indentation(depth + 1) << "break;\n";
+            out_ << indentation(depth) << "}\n";
+        }
+        out_ << indentation(depth) << "default:\n";
+        out_ << indentation(depth + 1) << "fdn_invalid_enum_tag();\n";
+        out_ << indentation(depth) << "}\n";
+        return temporary;
+    }
+
     void emitStatement(const FirStatement &statement, unsigned int depth) {
         if (const auto *variable = std::get_if<FirVariableStatement>(&statement.value)) {
             const auto initializer = emitExpression(variable->initializer, depth);
@@ -324,6 +384,42 @@ void emitStructDefinition(std::ostringstream &out, const FirProgram &program, Fi
     out << "};\n\n";
 }
 
+void emitEnumDefinition(std::ostringstream &out, const FirProgram &program, FirEnumId id) {
+    out << "enum {\n";
+    for (std::size_t variant = 0; variant < program.enums[id].variants.size(); ++variant) {
+        out << "    " << enumTag(id, variant) << " = " << variant;
+        out << (variant + 1 == program.enums[id].variants.size() ? "\n" : ",\n");
+    }
+    out << "};\n";
+    out << "struct fdn_enum_" << id << " {\n";
+    out << "    int32_t fdn_tag;\n";
+    bool hasPayload = false;
+    for (const auto &variant : program.enums[id].variants) {
+        hasPayload = hasPayload || variant.payload.has_value();
+    }
+    if (hasPayload) {
+        out << "    union {\n";
+        for (std::size_t variant = 0; variant < program.enums[id].variants.size(); ++variant) {
+            if (program.enums[id].variants[variant].payload.has_value()) {
+                out << "        " << cType(*program.enums[id].variants[variant].payload) << ' '
+                    << payloadName(variant) << ";\n";
+            }
+        }
+        out << "    } fdn_data;\n";
+    }
+    out << "};\n\n";
+}
+
+std::optional<std::size_t> typeNode(const FirProgram &program, Type type) {
+    if (type.kind == TypeKind::Struct) {
+        return type.declaration;
+    }
+    if (type.kind == TypeKind::Enum) {
+        return program.structs.size() + type.declaration;
+    }
+    return std::nullopt;
+}
+
 void emitSignature(std::ostringstream &out, const FirProgram &program, FirFunctionId id) {
     const auto &function = program.functions[id];
     if (id == program.main) {
@@ -357,17 +453,34 @@ std::string emitC(const FirProgram &program) {
     for (std::size_t index = 0; index < program.structs.size(); ++index) {
         out << "typedef struct fdn_struct_" << index << " fdn_struct_" << index << ";\n";
     }
-    if (!program.structs.empty()) {
+    for (std::size_t index = 0; index < program.enums.size(); ++index) {
+        out << "typedef struct fdn_enum_" << index << " fdn_enum_" << index << ";\n";
+    }
+    if (!program.structs.empty() || !program.enums.empty()) {
         out << '\n';
     }
 
-    std::vector<std::size_t> dependencies(program.structs.size());
-    std::vector<std::vector<FirStructId>> dependents(program.structs.size());
+    const auto typeCount = program.structs.size() + program.enums.size();
+    std::vector<std::size_t> dependencies(typeCount);
+    std::vector<std::vector<std::size_t>> dependents(typeCount);
     for (std::size_t type = 0; type < program.structs.size(); ++type) {
         for (const auto &field : program.structs[type].fields) {
-            if (field.type.kind == TypeKind::Struct) {
+            const auto target = typeNode(program, field.type);
+            if (target.has_value()) {
                 ++dependencies[type];
-                dependents[field.type.declaration].push_back(type);
+                dependents[*target].push_back(type);
+            }
+        }
+    }
+    for (std::size_t type = 0; type < program.enums.size(); ++type) {
+        for (const auto &variant : program.enums[type].variants) {
+            if (!variant.payload.has_value()) {
+                continue;
+            }
+            const auto target = typeNode(program, *variant.payload);
+            if (target.has_value()) {
+                ++dependencies[program.structs.size() + type];
+                dependents[*target].push_back(program.structs.size() + type);
             }
         }
     }
@@ -378,14 +491,18 @@ std::string emitC(const FirProgram &program) {
         }
     }
     for (std::size_t current = 0; current < ready.size(); ++current) {
-        emitStructDefinition(out, program, ready[current]);
+        if (ready[current] < program.structs.size()) {
+            emitStructDefinition(out, program, ready[current]);
+        } else {
+            emitEnumDefinition(out, program, ready[current] - program.structs.size());
+        }
         for (const auto dependent : dependents[ready[current]]) {
             if (--dependencies[dependent] == 0) {
                 ready.push_back(dependent);
             }
         }
     }
-    if (ready.size() != program.structs.size()) {
+    if (ready.size() != typeCount) {
         std::terminate();
     }
 

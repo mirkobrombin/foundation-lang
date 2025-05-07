@@ -13,6 +13,7 @@ enum class TokenKind {
     Integer,
     String,
     Struct,
+    Enum,
     Fn,
     Let,
     Var,
@@ -20,6 +21,7 @@ enum class TokenKind {
     If,
     Else,
     While,
+    Match,
     True,
     False,
     LeftParen,
@@ -30,6 +32,7 @@ enum class TokenKind {
     Semicolon,
     Comma,
     Colon,
+    ColonColon,
     Dot,
     Equal,
     EqualEqual,
@@ -46,6 +49,7 @@ enum class TokenKind {
     GreaterEqual,
     AndAnd,
     OrOr,
+    FatArrow,
 };
 
 struct Token {

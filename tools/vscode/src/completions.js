@@ -2,6 +2,7 @@
 
 const staticCompletions = [
     { label: "struct", kind: "Keyword" },
+    { label: "enum", kind: "Keyword" },
     { label: "fn", kind: "Keyword" },
     { label: "let", kind: "Keyword" },
     { label: "var", kind: "Keyword" },
@@ -9,6 +10,7 @@ const staticCompletions = [
     { label: "if", kind: "Keyword" },
     { label: "else", kind: "Keyword" },
     { label: "while", kind: "Keyword" },
+    { label: "match", kind: "Keyword" },
     { label: "true", kind: "Constant" },
     { label: "false", kind: "Constant" },
     { label: "i32", kind: "TypeParameter" },
@@ -67,6 +69,7 @@ function collectCompletions(source) {
     const completions = [...staticCompletions];
     const functions = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)/g;
     const structs = /\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{([^}]*)\}/g;
+    const enums = /\benum\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{([^}]*)\}/g;
     const bindings = /\b(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)/g;
     let match;
 
@@ -84,6 +87,22 @@ function collectCompletions(source) {
                 label: field[1],
                 kind: "Field",
                 detail: `Field of ${name}`
+            });
+        }
+    }
+
+    while ((match = enums.exec(masked)) !== null) {
+        const name = match[1];
+        const variants = [...match[2].matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)(?:\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\s*\))?/g)];
+        completions.push({ label: name, kind: "Enum", detail: "Foundation enum" });
+        for (const variant of variants) {
+            completions.push({
+                label: `${name}::${variant[1]}`,
+                kind: "EnumMember",
+                detail: `Variant of ${name}`,
+                insertText: variant[2]
+                    ? `${name}::${variant[1]}(\${1:${variant[2]}})`
+                    : `${name}::${variant[1]}`
             });
         }
     }

@@ -85,10 +85,29 @@ struct FieldExpression {
     std::string field;
 };
 
+struct EnumExpression {
+    std::string typeName;
+    std::string variant;
+    std::optional<AstExpressionId> payload;
+};
+
+struct MatchArm {
+    std::string typeName;
+    std::string variant;
+    std::optional<std::string> binding;
+    AstExpressionId expression{};
+    SourceSpan span;
+};
+
+struct MatchExpression {
+    AstExpressionId value{};
+    std::vector<MatchArm> arms;
+};
+
 using ExpressionValue =
     std::variant<IntegerExpression, BooleanExpression, StringExpression, NameExpression,
                  UnaryExpression, BinaryExpression, CallExpression, StructExpression,
-                 FieldExpression>;
+                 FieldExpression, EnumExpression, MatchExpression>;
 
 struct Expression {
     ExpressionValue value;
@@ -166,11 +185,25 @@ struct StructDeclaration {
     SourceSpan span;
 };
 
+struct EnumVariant {
+    std::string name;
+    std::optional<std::string> payloadName;
+    std::optional<std::string> payloadType;
+    SourceSpan span;
+};
+
+struct EnumDeclaration {
+    std::string name;
+    std::vector<EnumVariant> variants;
+    SourceSpan span;
+};
+
 struct Program {
     std::vector<Expression> expressions;
     std::vector<Statement> statements;
     std::vector<Block> blocks;
     std::vector<StructDeclaration> structs;
+    std::vector<EnumDeclaration> enums;
     std::vector<Function> functions;
 };
 
