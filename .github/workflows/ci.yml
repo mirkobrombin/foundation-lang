@@ -72,7 +72,10 @@ jobs:
         run: cmake --build build/windows --config Debug
 
       - name: Test three times
+        shell: cmd
         run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set VS_PATH=%%i
+          call "%VS_PATH%\Common7\Tools\VsDevCmd.bat" -arch=x64
           ctest --test-dir build/windows -C Debug --output-on-failure
           ctest --test-dir build/windows -C Debug --output-on-failure
           ctest --test-dir build/windows -C Debug --output-on-failure

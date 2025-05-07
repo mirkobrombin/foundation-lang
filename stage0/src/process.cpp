@@ -33,14 +33,21 @@ int runProcess(const std::vector<std::string> &arguments) {
     }
 
 #ifdef _WIN32
+    auto programName = arguments.front();
+    const auto separator = programName.find_last_of("/\\");
+    if (separator != std::string::npos) {
+        programName.erase(0, separator + 1);
+    }
+
     std::vector<const char *> argv;
     argv.reserve(arguments.size() + 1);
-    for (const auto &argument : arguments) {
-        argv.push_back(argument.c_str());
+    argv.push_back(programName.c_str());
+    for (std::size_t index = 1; index < arguments.size(); ++index) {
+        argv.push_back(arguments[index].c_str());
     }
     argv.push_back(nullptr);
 
-    const auto status = _spawnvp(_P_WAIT, argv.front(), argv.data());
+    const auto status = _spawnv(_P_WAIT, arguments.front().c_str(), argv.data());
     if (status == -1) {
         const auto error = errno;
         std::cerr << "foundationc: cannot start " << arguments.front() << ": "
