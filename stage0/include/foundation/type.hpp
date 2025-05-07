@@ -2,6 +2,8 @@
 #define FOUNDATION_TYPE_HPP
 
 #include <cstddef>
+#include <utility>
+#include <vector>
 
 namespace foundation {
 
@@ -11,6 +13,7 @@ enum class TypeKind {
     I32,
     Bool,
     String,
+    Parameter,
     Struct,
     Enum,
 };
@@ -18,15 +21,20 @@ enum class TypeKind {
 struct Type {
     TypeKind kind{TypeKind::Invalid};
     std::size_t declaration{};
+    std::vector<Type> arguments;
+
+    Type() = default;
+    Type(TypeKind kind, std::size_t declaration = 0, std::vector<Type> arguments = {})
+        : kind(kind), declaration(declaration), arguments(std::move(arguments)) {}
 
     bool operator==(const Type &) const = default;
 };
 
-inline constexpr Type invalidType{TypeKind::Invalid};
-inline constexpr Type voidType{TypeKind::Void};
-inline constexpr Type i32Type{TypeKind::I32};
-inline constexpr Type boolType{TypeKind::Bool};
-inline constexpr Type stringType{TypeKind::String};
+inline const Type invalidType{TypeKind::Invalid, 0, {}};
+inline const Type voidType{TypeKind::Void, 0, {}};
+inline const Type i32Type{TypeKind::I32, 0, {}};
+inline const Type boolType{TypeKind::Bool, 0, {}};
+inline const Type stringType{TypeKind::String, 0, {}};
 
 [[nodiscard]] const char *typeName(Type type);
 

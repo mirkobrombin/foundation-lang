@@ -1,4 +1,4 @@
-fn main() -> i32 {
-    print("hello from foundation");
-    return 0;
+fn main() i32 {
+    print("hello from foundation")
+    0
 }

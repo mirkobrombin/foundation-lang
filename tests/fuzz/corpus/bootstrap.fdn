@@ -1,4 +1,17 @@
-fn main() -> i32 {
-    print("fuzz seed");
-    return 0;
+enum Maybe<T> {
+    None
+    Some(T)
+}
+
+fn identity<T>(value T) T {
+    value
+}
+
+fn main() i32 {
+    print("fuzz seed")
+    let value = Maybe.Some(identity(0))
+    match value {
+        None: 1
+        Some(number): number
+    }
 }

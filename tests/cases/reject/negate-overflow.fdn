@@ -1,4 +1,4 @@
-fn main() -> i32 {
-    let minimum = -2147483648;
-    return -minimum;
+fn main() i32 {
+    let minimum = -2147483648
+    -minimum
 }

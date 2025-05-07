@@ -1,0 +1,9 @@
+enum Maybe<T> {
+    None
+    Some(T)
+}
+
+fn main() i32 {
+    let value = Maybe.None
+    0
+}

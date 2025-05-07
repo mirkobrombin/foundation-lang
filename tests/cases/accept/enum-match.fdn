@@ -1,45 +1,45 @@
 struct Failure {
-    message: String
+    message String
 }
 
 enum Lookup {
     Missing
-    Found(value: i32)
-    Failed(error: Failure)
+    Found(i32)
+    Failed(Failure)
 }
 
-fn make_value() -> i32 {
-    print("payload");
-    return 7;
+fn makeValue() i32 {
+    print("payload")
+    7
 }
 
-fn lookup(found: bool) -> Lookup {
+fn lookup(found bool) Lookup {
     if found {
-        return Lookup::Found(make_value());
+        return .Found(makeValue())
     }
-    return Lookup::Missing;
+    .Missing
 }
 
-fn report(error: Failure) -> i32 {
-    print(error.message);
-    return -1;
+fn report(error Failure) i32 {
+    print(error.message)
+    -1
 }
 
-fn value_or(result: Lookup, fallback: i32) -> i32 {
-    return match result {
-        Lookup::Missing => fallback
-        Lookup::Found(value) => value
-        Lookup::Failed(error) => report(error)
-    };
+fn valueOr(result Lookup, fallback i32) i32 {
+    match result {
+        Missing: fallback
+        Found(value): value
+        Failed(error): report(error)
+    }
 }
 
-fn main() -> i32 {
-    var result: Lookup = lookup(true);
-    let found = value_or(result, 0);
-    result = Lookup::Failed(Failure { message: "failed" });
-    let failed = value_or(result, 0);
+fn main() i32 {
+    var result Lookup = lookup(true)
+    let found = valueOr(result, 0)
+    result = Lookup.Failed(Failure { message = "failed" })
+    let failed = valueOr(result, 0)
     if found == 7 && failed == -1 {
-        return 0;
+        return 0
     }
-    return 1;
+    1
 }

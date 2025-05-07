@@ -4,16 +4,26 @@
         "body": [
             "enum ${1:Name} {",
             "    ${2:Empty}",
-            "    ${3:Value}(${4:value}: ${5:i32})",
+            "    ${3:Value}(${4:i32})",
             "}"
         ],
         "description": "Declare an algebraic enum"
+    },
+    "Generic enum": {
+        "prefix": "enumg",
+        "body": [
+            "enum ${1:Choice}<${2:T}> {",
+            "    ${3:None}",
+            "    ${4:Some}(${2:T})",
+            "}"
+        ],
+        "description": "Declare a generic algebraic enum"
     },
     "Match expression": {
         "prefix": "match",
         "body": [
             "match ${1:value} {",
-            "    ${2:Type}::${3:Variant} => ${4:result}",
+            "    ${2:Variant}: ${3:result}",
             "}"
         ],
         "description": "Match an enum value"
@@ -22,16 +32,25 @@
         "prefix": "struct",
         "body": [
             "struct ${1:Name} {",
-            "    ${2:field}: ${3:i32}",
+            "    ${2:field} ${3:i32}",
             "}"
         ],
         "description": "Declare a value struct"
     },
+    "Generic struct": {
+        "prefix": "structg",
+        "body": [
+            "struct ${1:Box}<${2:T}> {",
+            "    ${3:value} ${2:T}",
+            "}"
+        ],
+        "description": "Declare a generic value struct"
+    },
     "Main function": {
         "prefix": "main",
         "body": [
-            "fn main() -> i32 {",
-            "    ${1:return 0;}",
+            "fn main() i32 {",
+            "    ${1:0}",
             "}"
         ],
         "description": "Create the program entry point"
@@ -39,11 +58,20 @@
     "Function": {
         "prefix": "fn",
         "body": [
-            "fn ${1:name}(${2}) -> ${3:void} {",
+            "fn ${1:name}(${2}) ${3:void} {",
             "    ${4}",
             "}"
         ],
         "description": "Declare a function"
+    },
+    "Generic function": {
+        "prefix": "fng",
+        "body": [
+            "fn ${1:identity}<${2:T}>(${3:value} ${2:T}) ${2:T} {",
+            "    ${3:value}",
+            "}"
+        ],
+        "description": "Declare a generic function"
     },
     "If statement": {
         "prefix": "if",
@@ -76,17 +104,36 @@
     },
     "Immutable binding": {
         "prefix": "let",
-        "body": "let ${1:name} = ${2:value};",
+        "body": "let ${1:name} = ${2:value}",
         "description": "Declare an immutable local binding"
     },
     "Mutable binding": {
         "prefix": "var",
-        "body": "var ${1:name} = ${2:value};",
+        "body": "var ${1:name} = ${2:value}",
         "description": "Declare a mutable local binding"
+    },
+    "Result binding": {
+        "prefix": "letelse",
+        "body": [
+            "let ${1:value} = ${2:result} else ${3:error} {",
+            "    ${4:return .Err(${3:error})}",
+            "}"
+        ],
+        "description": "Unwrap a Result with an explicit error path"
+    },
+    "Discard value": {
+        "prefix": "discard",
+        "body": "discard ${1:value}",
+        "description": "Explicitly consume an unused value"
     },
     "Print": {
         "prefix": "print",
-        "body": "print(${1:\"message\"});",
+        "body": "print(${1:\"message\"})",
         "description": "Print a string"
+    },
+    "Panic": {
+        "prefix": "panic",
+        "body": "panic(${1:\"message\"})",
+        "description": "Terminate with a Foundation source trace"
     }
 }

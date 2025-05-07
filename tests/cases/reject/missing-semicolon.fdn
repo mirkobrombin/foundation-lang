@@ -1,4 +1,0 @@
-fn main() -> i32 {
-    print("this source must fail")
-    return 0;
-}

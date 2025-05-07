@@ -1,55 +1,90 @@
 // This program tracks the complete executable language subset.
 
-struct TourResult {
-    message: String
-    code: i32
+struct TourResult<T> {
+    message String
+    code T
 }
 
-enum TourState {
+enum TourState<T> {
     Running
-    Done(result: TourResult)
+    Done(TourResult<T>)
 }
 
-fn is_even(value: i32) -> bool {
-    return value % 2 == 0;
+fn identity<T>(value T) T {
+    value
 }
 
-fn in_range(value: i32, minimum: i32, maximum: i32) -> bool {
-    return value >= minimum && value <= maximum;
+fn typeMarker<T>() void {
+    return
 }
 
-fn show_kind(value: i32) -> void {
-    if is_even(value) {
-        print("even");
-    } else {
-        print("odd");
+fn maybeOr(value Option<i32>, fallback i32) i32 {
+    match value {
+        None: fallback
+        Some(number): number
     }
 }
 
-fn main() -> i32 {
-    print("Foundation language tour");
+fn resultOr(value Result<i32, bool>, fallback i32) i32 {
+    match value {
+        Ok(number): number
+        Err(failed): fallback
+    }
+}
 
-    let first: i32 = 1;
-    let count = 4;
-    var current = first;
+fn isEven(value i32) bool {
+    value % 2 == 0
+}
+
+fn inRange(value i32, minimum i32, maximum i32) bool {
+    value >= minimum && value <= maximum
+}
+
+fn showKind(value i32) void {
+    if isEven(value) {
+        print("even")
+    } else {
+        print("odd")
+    }
+}
+
+fn main() i32 {
+    print("Foundation language tour")
+    typeMarker<Result<i32, bool>>()
+
+    let first i32 = 1
+    let count = 4
+    var current = first
 
     while current <= count {
-        show_kind(current);
-        current = current + 1;
+        showKind(current)
+        current = current + 1
     }
 
     let result = TourResult {
-        code: current - 5
-        message: "done"
-    };
-    let state = TourState::Done(result);
-    if in_range(current, 5, 5) || false {
-        print(result.message);
+        code = identity(current - 5)
+        message = "done"
+    }
+    let state = TourState.Done(result)
+    let optional = Option.Some(result.code)
+    let delivered = Result<i32, bool>.Ok(maybeOr(optional, 1))
+    let deliveredValue = delivered else failed {
+        if failed {
+            panic("delivery failed")
+        }
+        return 1
+    }
+    let verified = Result<i32, bool>.Ok(deliveredValue)
+    discard Result<i32, bool>.Err(false)
+    if inRange(current, 5, 5) || false {
+        print(result.message)
         return match state {
-            TourState::Running => 1
-            TourState::Done(done) => done.code
-        };
+            Running: resultOr(verified, 0) + 1
+            Done(done): resultOr(verified, done.code)
+        }
+    } else {
+        discard verified
     }
 
-    return 1;
+    1
 }

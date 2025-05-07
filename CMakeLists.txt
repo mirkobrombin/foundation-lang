@@ -92,6 +92,20 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(foundation_runtime_panic_test runtime/tests/panic_trace_test.c)
+    target_link_libraries(foundation_runtime_panic_test PRIVATE foundation_runtime)
+    if(MSVC)
+        target_compile_options(foundation_runtime_panic_test PRIVATE /W4)
+        if(FOUNDATION_WARNINGS_AS_ERRORS)
+            target_compile_options(foundation_runtime_panic_test PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(foundation_runtime_panic_test PRIVATE -Wall -Wextra -Wpedantic)
+        if(FOUNDATION_WARNINGS_AS_ERRORS)
+            target_compile_options(foundation_runtime_panic_test PRIVATE -Werror)
+        endif()
+    endif()
+
     add_executable(foundation_stage0_tests stage0/tests/compiler_test.cpp)
     target_link_libraries(foundation_stage0_tests PRIVATE foundation_compiler)
     if(FOUNDATION_BUILD_FUZZERS)
@@ -110,6 +124,12 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME stage0.unit COMMAND foundation_stage0_tests)
+    add_test(
+        NAME runtime.panic-native-boundary
+        COMMAND ${CMAKE_COMMAND}
+            -DPROGRAM=$<TARGET_FILE:foundation_runtime_panic_test>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-native-panic.cmake
+    )
     add_test(
         NAME stage0.check.accept
         COMMAND foundationc check ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fdn
@@ -131,8 +151,8 @@ if(BUILD_TESTING)
         NAME stage0.check.reject
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/missing-semicolon.fdn
-            -DCODE=FDN1014
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/legacy-semicolon.fdn
+            -DCODE=FDN0001
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(
@@ -197,6 +217,56 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-non-exhaustive.fdn
             -DCODE=FDN2040
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.run.generic-values
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-values.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-values.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.primitive-values
+        COMMAND foundationc run
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/primitive-values.fdn
+    )
+    add_test(
+        NAME stage0.check.unhandled-result
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/unhandled-result.fdn
+            -DCODE=FDN2052
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.discarded-result-expression
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/discarded-result-expression.fdn
+            -DCODE=FDN2051
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.run.panic-trace
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/panic-trace.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/panic-trace.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/panic-trace
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-panic.cmake
+    )
+    add_test(
+        NAME stage0.check.generic-inference
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/generic-inference.fdn
+            -DCODE=FDN2045
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(

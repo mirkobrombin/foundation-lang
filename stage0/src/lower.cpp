@@ -69,10 +69,13 @@ class Lowerer {
         for (std::size_t index = 0; index < program_.structs.size(); ++index) {
             FirStruct type;
             type.name = program_.structs[index].name;
+            type.typeParameterCount = program_.structs[index].typeParameters.size();
+            type.exported = program_.structs[index].exported;
             type.fields.reserve(program_.structs[index].fields.size());
             for (std::size_t field = 0; field < program_.structs[index].fields.size(); ++field) {
                 type.fields.push_back({program_.structs[index].fields[field].name,
-                                       model_.structs[index].fieldTypes[field]});
+                                       model_.structs[index].fieldTypes[field],
+                                       program_.structs[index].fields[field].exported});
             }
             result.structs.push_back(std::move(type));
         }
@@ -80,11 +83,15 @@ class Lowerer {
         for (std::size_t index = 0; index < program_.enums.size(); ++index) {
             FirEnum type;
             type.name = program_.enums[index].name;
+            type.typeParameterCount = program_.enums[index].typeParameters.size();
+            type.exported = program_.enums[index].exported;
+            type.builtin = program_.enums[index].builtin != BuiltinEnumKind::None;
             type.variants.reserve(program_.enums[index].variants.size());
             for (std::size_t variant = 0; variant < program_.enums[index].variants.size();
                  ++variant) {
                 type.variants.push_back({program_.enums[index].variants[variant].name,
-                                         model_.enums[index].payloadTypes[variant]});
+                                         model_.enums[index].payloadTypes[variant],
+                                         program_.enums[index].variants[variant].exported});
             }
             result.enums.push_back(std::move(type));
         }
@@ -105,6 +112,11 @@ class Lowerer {
         const auto &semantic = model_.functions[id];
         FirFunction function;
         function.name = source.name;
+        function.source = id;
+        function.sourceSpan = source.span;
+        function.generic = !source.typeParameters.empty();
+        function.typeParameterCount = source.typeParameters.size();
+        function.exported = source.exported;
         function.returnType = semantic.returnType;
         function.parameters = semantic.parameters;
         function.locals.reserve(semantic.locals.size());
@@ -142,8 +154,15 @@ class Lowerer {
         const auto &source = program_.statements[id];
         FirStatementValue value;
         if (const auto *variable = std::get_if<VariableStatement>(&source.value)) {
-            value = FirVariableStatement{required(model_.statementLocals[id]),
-                                         lowerExpression(variable->initializer)};
+            if (variable->elseBlock.has_value()) {
+                value = FirLetElseStatement{required(model_.statementLocals[id]),
+                                            lowerExpression(variable->initializer),
+                                            required(model_.statementElseLocals[id]),
+                                            lowerBlock(*variable->elseBlock)};
+            } else {
+                value = FirVariableStatement{required(model_.statementLocals[id]),
+                                             lowerExpression(variable->initializer)};
+            }
         } else if (const auto *assignment = std::get_if<AssignmentStatement>(&source.value)) {
             value = FirAssignmentStatement{required(model_.statementLocals[id]),
                                            lowerExpression(assignment->value)};
@@ -155,6 +174,8 @@ class Lowerer {
                 result = lowerExpression(*returned->value);
             }
             value = FirReturnStatement{result};
+        } else if (const auto *discarded = std::get_if<DiscardStatement>(&source.value)) {
+            value = FirExpressionStatement{lowerExpression(discarded->value)};
         } else if (const auto *branch = std::get_if<IfStatement>(&source.value)) {
             const auto condition = lowerExpression(branch->condition);
             const auto thenBlock = lowerBlock(branch->thenBlock);
@@ -203,9 +224,19 @@ class Lowerer {
             for (const auto argument : call->arguments) {
                 arguments.push_back(lowerExpression(argument));
             }
-            const auto kind = target.kind == CallTargetKind::Print ? FirCallKind::Print
-                                                                   : FirCallKind::Function;
-            value = FirCallExpression{kind, target.function, std::move(arguments)};
+            auto kind = FirCallKind::Function;
+            switch (target.kind) {
+            case CallTargetKind::Function:
+                break;
+            case CallTargetKind::Print:
+                kind = FirCallKind::Print;
+                break;
+            case CallTargetKind::Panic:
+                kind = FirCallKind::Panic;
+                break;
+            }
+            value = FirCallExpression{kind, target.function, target.typeArguments,
+                                      std::move(arguments)};
         } else if (const auto *literal = std::get_if<StructExpression>(&source.value)) {
             const auto &target = required(model_.structTargets[id]);
             std::vector<FirStructFieldValue> fields;
@@ -215,16 +246,18 @@ class Lowerer {
                     {target.fields[index], lowerExpression(literal->fields[index].value)});
             }
             value = FirStructExpression{target.type, std::move(fields)};
-        } else if (const auto *field = std::get_if<FieldExpression>(&source.value)) {
-            value = FirFieldExpression{lowerExpression(field->base),
-                                       required(model_.expressionFields[id])};
-        } else if (const auto *constructor = std::get_if<EnumExpression>(&source.value)) {
-            const auto &target = required(model_.enumTargets[id]);
-            std::optional<FirExpressionId> payload;
-            if (constructor->payload.has_value()) {
-                payload = lowerExpression(*constructor->payload);
+        } else if (const auto *member = std::get_if<MemberExpression>(&source.value)) {
+            if (model_.enumTargets[id].has_value()) {
+                const auto &target = *model_.enumTargets[id];
+                std::optional<FirExpressionId> payload;
+                if (member->payload.has_value()) {
+                    payload = lowerExpression(*member->payload);
+                }
+                value = FirEnumExpression{target.type, target.variant, payload};
+            } else {
+                value = FirFieldExpression{lowerExpression(required(member->base)),
+                                           required(model_.expressionFields[id])};
             }
-            value = FirEnumExpression{target.type, target.variant, payload};
         } else {
             const auto &match = std::get<MatchExpression>(source.value);
             const auto &target = required(model_.matchTargets[id]);

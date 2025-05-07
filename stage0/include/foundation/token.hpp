@@ -18,6 +18,7 @@ enum class TokenKind {
     Let,
     Var,
     Return,
+    Discard,
     If,
     Else,
     While,
@@ -28,11 +29,8 @@ enum class TokenKind {
     RightParen,
     LeftBrace,
     RightBrace,
-    Arrow,
-    Semicolon,
     Comma,
     Colon,
-    ColonColon,
     Dot,
     Equal,
     EqualEqual,
@@ -49,7 +47,6 @@ enum class TokenKind {
     GreaterEqual,
     AndAnd,
     OrOr,
-    FatArrow,
 };
 
 struct Token {

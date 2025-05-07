@@ -16,6 +16,12 @@ using AstExpressionId = std::size_t;
 using AstStatementId = std::size_t;
 using AstBlockId = std::size_t;
 
+struct TypeSyntax {
+    std::string name;
+    std::vector<TypeSyntax> arguments;
+    SourceSpan span;
+};
+
 enum class UnaryOperator {
     Negate,
     Not,
@@ -51,6 +57,7 @@ struct StringExpression {
 
 struct NameExpression {
     std::string name;
+    std::vector<TypeSyntax> typeArguments;
 };
 
 struct UnaryExpression {
@@ -66,6 +73,7 @@ struct BinaryExpression {
 
 struct CallExpression {
     std::string callee;
+    std::vector<TypeSyntax> typeArguments;
     std::vector<AstExpressionId> arguments;
 };
 
@@ -76,23 +84,18 @@ struct StructFieldInitializer {
 };
 
 struct StructExpression {
-    std::string typeName;
+    TypeSyntax type;
     std::vector<StructFieldInitializer> fields;
 };
 
-struct FieldExpression {
-    AstExpressionId base{};
-    std::string field;
-};
-
-struct EnumExpression {
-    std::string typeName;
-    std::string variant;
+struct MemberExpression {
+    std::optional<AstExpressionId> base;
+    std::string member;
+    bool invoked{};
     std::optional<AstExpressionId> payload;
 };
 
 struct MatchArm {
-    std::string typeName;
     std::string variant;
     std::optional<std::string> binding;
     AstExpressionId expression{};
@@ -107,7 +110,7 @@ struct MatchExpression {
 using ExpressionValue =
     std::variant<IntegerExpression, BooleanExpression, StringExpression, NameExpression,
                  UnaryExpression, BinaryExpression, CallExpression, StructExpression,
-                 FieldExpression, EnumExpression, MatchExpression>;
+                 MemberExpression, MatchExpression>;
 
 struct Expression {
     ExpressionValue value;
@@ -117,8 +120,10 @@ struct Expression {
 struct VariableStatement {
     bool mutableBinding{};
     std::string name;
-    std::optional<std::string> typeName;
+    std::optional<TypeSyntax> type;
     AstExpressionId initializer{};
+    std::optional<std::string> elseBinding;
+    std::optional<AstBlockId> elseBlock;
 };
 
 struct AssignmentStatement {
@@ -134,6 +139,10 @@ struct ReturnStatement {
     std::optional<AstExpressionId> value;
 };
 
+struct DiscardStatement {
+    AstExpressionId value{};
+};
+
 struct IfStatement {
     AstExpressionId condition{};
     AstBlockId thenBlock{};
@@ -147,7 +156,7 @@ struct WhileStatement {
 
 using StatementValue =
     std::variant<VariableStatement, AssignmentStatement, ExpressionStatement, ReturnStatement,
-                 IfStatement, WhileStatement>;
+                 DiscardStatement, IfStatement, WhileStatement>;
 
 struct Statement {
     StatementValue value;
@@ -161,40 +170,54 @@ struct Block {
 
 struct Parameter {
     std::string name;
-    std::string typeName;
+    TypeSyntax type;
     SourceSpan span;
 };
 
 struct Function {
     std::string name;
+    std::vector<std::string> typeParameters;
     std::vector<Parameter> parameters;
-    std::string returnType;
+    TypeSyntax returnType;
     AstBlockId body{};
+    bool exported{};
     SourceSpan span;
 };
 
 struct StructField {
     std::string name;
-    std::string typeName;
+    TypeSyntax type;
+    bool exported{};
     SourceSpan span;
 };
 
 struct StructDeclaration {
     std::string name;
+    std::vector<std::string> typeParameters;
     std::vector<StructField> fields;
+    bool exported{};
     SourceSpan span;
 };
 
 struct EnumVariant {
     std::string name;
-    std::optional<std::string> payloadName;
-    std::optional<std::string> payloadType;
+    std::optional<TypeSyntax> payloadType;
+    bool exported{};
     SourceSpan span;
+};
+
+enum class BuiltinEnumKind {
+    None,
+    Option,
+    Result,
 };
 
 struct EnumDeclaration {
     std::string name;
+    std::vector<std::string> typeParameters;
     std::vector<EnumVariant> variants;
+    bool exported{};
+    BuiltinEnumKind builtin{BuiltinEnumKind::None};
     SourceSpan span;
 };
 

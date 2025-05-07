@@ -1,0 +1,51 @@
+struct Pair<T, U> {
+    first T
+    second U
+}
+
+enum Maybe<T> {
+    None
+    Some(T)
+}
+
+enum Outcome<T, E> {
+    Ok(T)
+    Err(E)
+}
+
+fn identity<T>(value T) T {
+    value
+}
+
+fn typeMarker<T>() void {
+    return
+}
+
+fn maybeOr(value Maybe<i32>, fallback i32) i32 {
+    match value {
+        None: fallback
+        Some(number): number
+    }
+}
+
+fn outcomeOr(value Outcome<i32, bool>, fallback i32) i32 {
+    match value {
+        Ok(number): number
+        Err(failed): fallback
+    }
+}
+
+fn main() i32 {
+    typeMarker<Outcome<i32, bool>>()
+    let pair = Pair { first = identity(40) second = identity(true) }
+    let some = Maybe.Some(pair.first + 2)
+    let none Maybe<i32> = .None
+    let ok = Outcome<i32, bool>.Ok(maybeOr(some, 0))
+    let failed = Outcome<i32, bool>.Err(false)
+    print("generic values")
+    if pair.second && outcomeOr(ok, 0) == 42 && maybeOr(none, 7) == 7 {
+        return outcomeOr(failed, 0)
+    } else {
+        return 1
+    }
+}

@@ -14,6 +14,8 @@ const char *typeName(Type type) {
         return "bool";
     case TypeKind::String:
         return "String";
+    case TypeKind::Parameter:
+        return "<type parameter>";
     case TypeKind::Struct:
         return "<struct>";
     case TypeKind::Enum:

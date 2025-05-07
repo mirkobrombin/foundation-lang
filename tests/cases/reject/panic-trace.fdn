@@ -1,0 +1,11 @@
+fn crash(message String) i32 {
+    panic(message)
+}
+
+fn forward(message String) i32 {
+    crash(message)
+}
+
+fn main() i32 {
+    1 + forward("trace failure")
+}

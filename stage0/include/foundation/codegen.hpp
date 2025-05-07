@@ -4,10 +4,12 @@
 #include "foundation/fir.hpp"
 
 #include <string>
+#include <string_view>
 
 namespace foundation {
 
-[[nodiscard]] std::string emitC(const FirProgram &program);
+[[nodiscard]] std::string emitC(const FirProgram &program,
+                                std::string_view sourcePath = "<memory>");
 
 } // namespace foundation
 

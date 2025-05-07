@@ -200,7 +200,7 @@ Compilation compile(const std::filesystem::path &path) {
         return compilation;
     }
 
-    compilation.generatedC = emitC(lower(program, *semantic));
+    compilation.generatedC = emitC(lower(program, *semantic), path.generic_string());
     return compilation;
 }
 

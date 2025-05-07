@@ -8,8 +8,9 @@ Stage 0 is written in C++20 and builds with GCC, Clang, or MSVC. It has no third
 dependency. Its job is to implement enough of the language to compile the next compiler. Stage 0
 remains available as a recovery compiler after self-hosting.
 
-The current executable subset includes typed functions, local bindings, calls, primitive
-expressions, nominal value structs, algebraic value enums, exhaustive match expressions, field
+The current executable subset includes typed and generic functions, local bindings, calls,
+primitive expressions, generic nominal value structs and enums, exhaustive match expressions,
+Option and Result primitives, Result must-use analysis, `let ... else`, fatal panic traces, field
 access, branches, loops, semantic resolution, typed FIR, and checked i32 operations. Each added
 construct must serve the stage-1 compiler or an already accepted language invariant.
 

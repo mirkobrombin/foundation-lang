@@ -42,6 +42,8 @@ const char *tokenName(TokenKind kind) {
         return "var";
     case TokenKind::Return:
         return "return";
+    case TokenKind::Discard:
+        return "discard";
     case TokenKind::If:
         return "if";
     case TokenKind::Else:
@@ -62,16 +64,10 @@ const char *tokenName(TokenKind kind) {
         return "{";
     case TokenKind::RightBrace:
         return "}";
-    case TokenKind::Arrow:
-        return "->";
-    case TokenKind::Semicolon:
-        return ";";
     case TokenKind::Comma:
         return ",";
     case TokenKind::Colon:
         return ":";
-    case TokenKind::ColonColon:
-        return "::";
     case TokenKind::Dot:
         return ".";
     case TokenKind::Equal:
@@ -104,8 +100,6 @@ const char *tokenName(TokenKind kind) {
         return "&&";
     case TokenKind::OrOr:
         return "||";
-    case TokenKind::FatArrow:
-        return "=>";
     }
     return "token";
 }
@@ -190,15 +184,9 @@ Token Lexer::next() {
             return simple(TokenKind::LeftBrace, "{");
         case '}':
             return simple(TokenKind::RightBrace, "}");
-        case ';':
-            return simple(TokenKind::Semicolon, ";");
         case ',':
             return simple(TokenKind::Comma, ",");
         case ':':
-            if (peek() == ':') {
-                advance();
-                return simple(TokenKind::ColonColon, "::");
-            }
             return simple(TokenKind::Colon, ":");
         case '.':
             return simple(TokenKind::Dot, ".");
@@ -211,16 +199,8 @@ Token Lexer::next() {
         case '%':
             return simple(TokenKind::Percent, "%");
         case '-':
-            if (peek() == '>') {
-                advance();
-                return simple(TokenKind::Arrow, "->");
-            }
             return simple(TokenKind::Minus, "-");
         case '=':
-            if (peek() == '>') {
-                advance();
-                return simple(TokenKind::FatArrow, "=>");
-            }
             if (peek() == '=') {
                 advance();
                 return simple(TokenKind::EqualEqual, "==");
@@ -287,6 +267,8 @@ Token Lexer::identifier() {
         kind = TokenKind::Var;
     } else if (text == "return") {
         kind = TokenKind::Return;
+    } else if (text == "discard") {
+        kind = TokenKind::Discard;
     } else if (text == "if") {
         kind = TokenKind::If;
     } else if (text == "else") {

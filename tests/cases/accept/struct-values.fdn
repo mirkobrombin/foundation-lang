@@ -1,39 +1,39 @@
 struct LabeledPair {
-    pair: Pair
-    label: String
+    pair Pair
+    label String
 }
 
 struct Pair {
-    left: i32
-    right: i32
+    left i32
+    right i32
 }
 
-fn first() -> i32 {
-    print("first");
-    return 1;
+fn first() i32 {
+    print("first")
+    1
 }
 
-fn second() -> i32 {
-    print("second");
-    return 2;
+fn second() i32 {
+    print("second")
+    2
 }
 
-fn make_pair() -> Pair {
-    return Pair {
-        right: second()
-        left: first()
-    };
+fn makePair() Pair {
+    Pair {
+        right = second()
+        left = first()
+    }
 }
 
-fn sum(pair: Pair) -> i32 {
-    return pair.left + pair.right;
+fn sum(pair Pair) i32 {
+    pair.left + pair.right
 }
 
-fn main() -> i32 {
-    let pair = make_pair();
-    var copy: Pair = pair;
-    copy = Pair { left: copy.left right: copy.right };
-    let labeled = LabeledPair { label: "pair" pair: copy };
-    print(labeled.label);
-    return sum(labeled.pair) - 3;
+fn main() i32 {
+    let pair = makePair()
+    var copy Pair = pair
+    copy = Pair { left = copy.left right = copy.right }
+    let labeled = LabeledPair { label = "pair" pair = copy }
+    print(labeled.label)
+    sum(labeled.pair) - 3
 }

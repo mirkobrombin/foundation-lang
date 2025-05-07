@@ -1,0 +1,8 @@
+fn failure() Result<i32, String> {
+    .Err("failed")
+}
+
+fn main() i32 {
+    let result = failure()
+    0
+}

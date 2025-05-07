@@ -47,6 +47,7 @@ enum class FirBinaryOperator {
 enum class FirCallKind {
     Function,
     Print,
+    Panic,
 };
 
 struct FirIntegerExpression {
@@ -79,6 +80,7 @@ struct FirBinaryExpression {
 struct FirCallExpression {
     FirCallKind kind{FirCallKind::Function};
     FirFunctionId function{};
+    std::vector<Type> typeArguments;
     std::vector<FirExpressionId> arguments;
 };
 
@@ -88,7 +90,7 @@ struct FirStructFieldValue {
 };
 
 struct FirStructExpression {
-    FirStructId type{};
+    Type type{invalidType};
     std::vector<FirStructFieldValue> fields;
 };
 
@@ -98,7 +100,7 @@ struct FirFieldExpression {
 };
 
 struct FirEnumExpression {
-    FirEnumId type{};
+    Type type{invalidType};
     FirVariantId variant{};
     std::optional<FirExpressionId> payload;
 };
@@ -111,7 +113,7 @@ struct FirMatchArm {
 
 struct FirMatchExpression {
     FirExpressionId value{};
-    FirEnumId type{};
+    Type type{invalidType};
     std::vector<FirMatchArm> arms;
 };
 
@@ -129,6 +131,13 @@ struct FirExpression {
 struct FirVariableStatement {
     FirLocalId local{};
     FirExpressionId initializer{};
+};
+
+struct FirLetElseStatement {
+    FirLocalId local{};
+    FirExpressionId initializer{};
+    FirLocalId errorLocal{};
+    FirBlockId elseBlock{};
 };
 
 struct FirAssignmentStatement {
@@ -156,8 +165,8 @@ struct FirWhileStatement {
 };
 
 using FirStatementValue =
-    std::variant<FirVariableStatement, FirAssignmentStatement, FirExpressionStatement,
-                 FirReturnStatement, FirIfStatement, FirWhileStatement>;
+    std::variant<FirVariableStatement, FirLetElseStatement, FirAssignmentStatement,
+                 FirExpressionStatement, FirReturnStatement, FirIfStatement, FirWhileStatement>;
 
 struct FirStatement {
     FirStatementValue value;
@@ -176,6 +185,10 @@ struct FirLocal {
 
 struct FirFunction {
     std::string name;
+    FirFunctionId source{};
+    SourceSpan sourceSpan;
+    bool generic{};
+    std::size_t typeParameterCount{};
     Type returnType{invalidType};
     std::vector<FirLocalId> parameters;
     std::vector<FirLocal> locals;
@@ -183,26 +196,35 @@ struct FirFunction {
     std::vector<FirStatement> statements;
     std::vector<FirBlock> blocks;
     FirBlockId body{};
+    bool exported{};
+    bool diverges{};
 };
 
 struct FirStructField {
     std::string name;
     Type type{invalidType};
+    bool exported{};
 };
 
 struct FirStruct {
     std::string name;
+    std::size_t typeParameterCount{};
     std::vector<FirStructField> fields;
+    bool exported{};
 };
 
 struct FirEnumVariant {
     std::string name;
     std::optional<Type> payload;
+    bool exported{};
 };
 
 struct FirEnum {
     std::string name;
+    std::size_t typeParameterCount{};
     std::vector<FirEnumVariant> variants;
+    bool exported{};
+    bool builtin{};
 };
 
 struct FirProgram {

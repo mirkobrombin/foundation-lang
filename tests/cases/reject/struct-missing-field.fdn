@@ -1,9 +1,9 @@
 struct Item {
-    id: i32
-    name: String
+    id i32
+    name String
 }
 
-fn main() -> i32 {
-    let item = Item { id: 1 };
-    return item.id;
+fn main() i32 {
+    let item = Item { id = 1 }
+    item.id
 }

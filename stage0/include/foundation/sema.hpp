@@ -16,11 +16,13 @@ namespace foundation {
 enum class CallTargetKind {
     Function,
     Print,
+    Panic,
 };
 
 struct CallTarget {
     CallTargetKind kind{CallTargetKind::Function};
     FirFunctionId function{};
+    std::vector<Type> typeArguments;
 };
 
 struct SemanticLocal {
@@ -30,6 +32,7 @@ struct SemanticLocal {
 };
 
 struct SemanticFunction {
+    std::size_t typeParameterCount{};
     Type returnType{invalidType};
     std::vector<Type> parameterTypes;
     std::vector<FirLocalId> parameters;
@@ -37,25 +40,27 @@ struct SemanticFunction {
 };
 
 struct SemanticStruct {
+    std::size_t typeParameterCount{};
     std::vector<Type> fieldTypes;
 };
 
 struct SemanticEnum {
+    std::size_t typeParameterCount{};
     std::vector<std::optional<Type>> payloadTypes;
 };
 
 struct StructLiteralTarget {
-    FirStructId type{};
+    Type type{invalidType};
     std::vector<FirFieldId> fields;
 };
 
 struct EnumTarget {
-    FirEnumId type{};
+    Type type{invalidType};
     FirVariantId variant{};
 };
 
 struct MatchTarget {
-    FirEnumId type{};
+    Type type{invalidType};
     std::vector<FirVariantId> variants;
     std::vector<std::optional<FirLocalId>> bindings;
 };
@@ -69,6 +74,7 @@ struct SemanticModel {
     std::vector<std::optional<EnumTarget>> enumTargets;
     std::vector<std::optional<MatchTarget>> matchTargets;
     std::vector<std::optional<FirLocalId>> statementLocals;
+    std::vector<std::optional<FirLocalId>> statementElseLocals;
     std::vector<SemanticStruct> structs;
     std::vector<SemanticEnum> enums;
     std::vector<SemanticFunction> functions;

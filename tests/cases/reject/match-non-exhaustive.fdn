@@ -1,11 +1,11 @@
 enum Status {
     Pending
-    Ready(value: i32)
+    Ready(i32)
 }
 
-fn main() -> i32 {
-    let status = Status::Ready(1);
-    return match status {
-        Status::Ready(value) => value
-    };
+fn main() i32 {
+    let status = Status.Ready(1)
+    match status {
+        Ready(value): value
+    }
 }
