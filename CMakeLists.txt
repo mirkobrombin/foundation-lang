@@ -160,6 +160,14 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.language-tour
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/language-tour/main.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/language-tour/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
         NAME stage0.run.divide-zero
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -207,4 +215,13 @@ if(BUILD_TESTING)
             -DPATTERN=i32.overflow
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
+
+    find_program(FOUNDATION_NODE_EXECUTABLE NAMES node node.exe)
+    if(FOUNDATION_NODE_EXECUTABLE)
+        add_test(
+            NAME tools.vscode
+            COMMAND ${FOUNDATION_NODE_EXECUTABLE} --test test/extension.test.js
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tools/vscode
+        )
+    endif()
 endif()

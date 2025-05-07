@@ -1,0 +1,49 @@
+{
+    "name": "foundation-lang",
+    "displayName": "Foundation Lang",
+    "description": "Language support for Foundation Lang",
+    "version": "0.1.0",
+    "publisher": "mirkobrombin",
+    "license": "MIT",
+    "engines": {
+        "vscode": "^1.90.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "activationEvents": [
+        "onLanguage:foundation"
+    ],
+    "main": "./src/extension.js",
+    "scripts": {
+        "test": "node --test test/extension.test.js"
+    },
+    "contributes": {
+        "languages": [
+            {
+                "id": "foundation",
+                "aliases": [
+                    "Foundation",
+                    "foundation"
+                ],
+                "extensions": [
+                    ".fdn"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "foundation",
+                "scopeName": "source.foundation",
+                "path": "./syntaxes/foundation.tmLanguage.json"
+            }
+        ],
+        "snippets": [
+            {
+                "language": "foundation",
+                "path": "./snippets/foundation.json"
+            }
+        ]
+    }
+}

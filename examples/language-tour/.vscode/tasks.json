@@ -1,0 +1,19 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run Foundation language tour",
+            "type": "shell",
+            "command": "../../build/dev/foundationc",
+            "args": [
+                "run",
+                "main.fdn"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        }
+    ]
+}

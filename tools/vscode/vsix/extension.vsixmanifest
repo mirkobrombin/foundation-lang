@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
+  <Metadata>
+    <Identity Language="en-US" Id="foundation-lang" Version="0.1.0" Publisher="mirkobrombin" />
+    <DisplayName>Foundation Lang</DisplayName>
+    <Description xml:space="preserve">Language support for Foundation Lang</Description>
+    <Tags>foundation,language</Tags>
+    <Categories>Programming Languages</Categories>
+    <Properties>
+      <Property Id="Microsoft.VisualStudio.Code.Engine" Value="^1.90.0" />
+    </Properties>
+  </Metadata>
+  <Installation>
+    <InstallationTarget Id="Microsoft.VisualStudio.Code" />
+  </Installation>
+  <Dependencies />
+  <Assets>
+    <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true" />
+    <Asset Type="Microsoft.VisualStudio.Services.Content.Details" Path="extension/README.md" Addressable="true" />
+  </Assets>
+</PackageManifest>

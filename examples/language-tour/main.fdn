@@ -1,0 +1,37 @@
+// This program tracks the complete executable language subset.
+
+fn is_even(value: i32) -> bool {
+    return value % 2 == 0;
+}
+
+fn in_range(value: i32, minimum: i32, maximum: i32) -> bool {
+    return value >= minimum && value <= maximum;
+}
+
+fn show_kind(value: i32) -> void {
+    if is_even(value) {
+        print("even");
+    } else {
+        print("odd");
+    }
+}
+
+fn main() -> i32 {
+    print("Foundation language tour");
+
+    let first: i32 = 1;
+    let count = 4;
+    var current = first;
+
+    while current <= count {
+        show_kind(current);
+        current = current + 1;
+    }
+
+    if in_range(current, 5, 5) || false {
+        print("done");
+        return 0;
+    }
+
+    return 1;
+}

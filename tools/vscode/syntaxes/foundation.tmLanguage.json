@@ -1,0 +1,148 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Foundation",
+    "scopeName": "source.foundation",
+    "patterns": [
+        { "include": "#comments" },
+        { "include": "#strings" },
+        { "include": "#functionDefinitions" },
+        { "include": "#bindings" },
+        { "include": "#keywords" },
+        { "include": "#types" },
+        { "include": "#builtins" },
+        { "include": "#functionCalls" },
+        { "include": "#numbers" },
+        { "include": "#operators" },
+        { "include": "#punctuation" }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.double-slash.foundation",
+                    "begin": "//",
+                    "end": "$"
+                }
+            ]
+        },
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.foundation",
+                    "begin": "\"",
+                    "end": "\"",
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.foundation",
+                            "match": "\\\\[nrt\"\\\\]"
+                        },
+                        {
+                            "name": "invalid.illegal.escape.foundation",
+                            "match": "\\\\."
+                        }
+                    ]
+                }
+            ]
+        },
+        "functionDefinitions": {
+            "patterns": [
+                {
+                    "name": "meta.function.definition.foundation",
+                    "begin": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()",
+                    "beginCaptures": {
+                        "1": { "name": "keyword.declaration.function.foundation" },
+                        "2": { "name": "entity.name.function.foundation" },
+                        "3": { "name": "punctuation.section.parens.begin.foundation" }
+                    },
+                    "end": "\\)",
+                    "endCaptures": {
+                        "0": { "name": "punctuation.section.parens.end.foundation" }
+                    },
+                    "patterns": [
+                        {
+                            "name": "variable.parameter.foundation",
+                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*:)"
+                        },
+                        { "include": "#types" },
+                        { "include": "#punctuation" }
+                    ]
+                }
+            ]
+        },
+        "bindings": {
+            "patterns": [
+                {
+                    "match": "\\b(let|var)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "storage.type.foundation" },
+                        "2": { "name": "variable.other.readwrite.foundation" }
+                    }
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.foundation",
+                    "match": "\\b(return|if|else|while)\\b"
+                },
+                {
+                    "name": "constant.language.boolean.foundation",
+                    "match": "\\b(true|false)\\b"
+                }
+            ]
+        },
+        "types": {
+            "patterns": [
+                {
+                    "name": "support.type.foundation",
+                    "match": "\\b(i32|bool|String|void)\\b"
+                }
+            ]
+        },
+        "builtins": {
+            "patterns": [
+                {
+                    "name": "support.function.builtin.foundation",
+                    "match": "\\b(print)\\b"
+                }
+            ]
+        },
+        "functionCalls": {
+            "patterns": [
+                {
+                    "name": "entity.name.function.call.foundation",
+                    "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*\\()"
+                }
+            ]
+        },
+        "numbers": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.integer.foundation",
+                    "match": "\\b[0-9]+\\b"
+                }
+            ]
+        },
+        "operators": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.foundation",
+                    "match": "->|==|!=|<=|>=|&&|\\|\\||[=+\\-*/%!<>]"
+                }
+            ]
+        },
+        "punctuation": {
+            "patterns": [
+                {
+                    "name": "punctuation.separator.foundation",
+                    "match": "[,;:]"
+                },
+                {
+                    "name": "punctuation.section.foundation",
+                    "match": "[(){}]"
+                }
+            ]
+        }
+    }
+}
