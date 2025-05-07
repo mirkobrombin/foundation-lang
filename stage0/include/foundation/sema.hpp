@@ -25,22 +25,34 @@ struct CallTarget {
 
 struct SemanticLocal {
     std::string name;
-    TypeKind type{TypeKind::Invalid};
+    Type type{invalidType};
     bool mutableBinding{};
 };
 
 struct SemanticFunction {
-    TypeKind returnType{TypeKind::Invalid};
-    std::vector<TypeKind> parameterTypes;
+    Type returnType{invalidType};
+    std::vector<Type> parameterTypes;
     std::vector<FirLocalId> parameters;
     std::vector<SemanticLocal> locals;
 };
 
+struct SemanticStruct {
+    std::vector<Type> fieldTypes;
+};
+
+struct StructLiteralTarget {
+    FirStructId type{};
+    std::vector<FirFieldId> fields;
+};
+
 struct SemanticModel {
-    std::vector<TypeKind> expressionTypes;
+    std::vector<Type> expressionTypes;
     std::vector<std::optional<FirLocalId>> expressionLocals;
     std::vector<std::optional<CallTarget>> callTargets;
+    std::vector<std::optional<StructLiteralTarget>> structTargets;
+    std::vector<std::optional<FirFieldId>> expressionFields;
     std::vector<std::optional<FirLocalId>> statementLocals;
+    std::vector<SemanticStruct> structs;
     std::vector<SemanticFunction> functions;
     FirFunctionId main{};
 };

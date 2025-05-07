@@ -24,6 +24,7 @@ class Parser {
     [[nodiscard]] bool check(TokenKind kind) const;
     bool match(TokenKind kind);
     const Token &expect(TokenKind kind, const char *code, const char *message);
+    StructDeclaration structDeclaration();
     Function function();
     Parameter parameter();
     AstBlockId block();
@@ -44,6 +45,7 @@ class Parser {
     AstExpressionId unary();
     AstExpressionId primary();
     AstExpressionId finishCall(const Token &callee);
+    AstExpressionId finishStruct(const Token &type);
     AstExpressionId addExpression(ExpressionValue value, SourceSpan span);
     AstStatementId addStatement(StatementValue value, SourceSpan span);
     AstBlockId skipNestedBlock(SourceSpan span);

@@ -2,8 +2,8 @@
 
 namespace foundation {
 
-const char *typeName(TypeKind type) {
-    switch (type) {
+const char *typeName(Type type) {
+    switch (type.kind) {
     case TypeKind::Invalid:
         return "<invalid>";
     case TypeKind::Void:
@@ -14,6 +14,8 @@ const char *typeName(TypeKind type) {
         return "bool";
     case TypeKind::String:
         return "String";
+    case TypeKind::Struct:
+        return "<struct>";
     }
     return "<invalid>";
 }

@@ -1,0 +1,39 @@
+struct LabeledPair {
+    pair: Pair
+    label: String
+}
+
+struct Pair {
+    left: i32
+    right: i32
+}
+
+fn first() -> i32 {
+    print("first");
+    return 1;
+}
+
+fn second() -> i32 {
+    print("second");
+    return 2;
+}
+
+fn make_pair() -> Pair {
+    return Pair {
+        right: second()
+        left: first()
+    };
+}
+
+fn sum(pair: Pair) -> i32 {
+    return pair.left + pair.right;
+}
+
+fn main() -> i32 {
+    let pair = make_pair();
+    var copy: Pair = pair;
+    copy = Pair { left: copy.left right: copy.right };
+    let labeled = LabeledPair { label: "pair" pair: copy };
+    print(labeled.label);
+    return sum(labeled.pair) - 3;
+}

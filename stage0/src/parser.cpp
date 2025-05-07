@@ -20,12 +20,17 @@ Parser::Parser(std::vector<Token> tokens, Diagnostics &diagnostics)
 
 Program Parser::parse() {
     while (!atEnd()) {
-        if (!check(TokenKind::Fn)) {
-            diagnostics_.error("FDN1001", "expected function declaration", current().span);
-            advance();
+        if (check(TokenKind::Struct)) {
+            program_.structs.push_back(structDeclaration());
             continue;
         }
-        program_.functions.push_back(function());
+        if (check(TokenKind::Fn)) {
+            program_.functions.push_back(function());
+            continue;
+        }
+        diagnostics_.error("FDN1001", "expected struct or function declaration",
+                           current().span);
+        advance();
     }
     return std::move(program_);
 }
@@ -64,6 +69,34 @@ const Token &Parser::expect(TokenKind kind, const char *code, const char *messag
     }
     diagnostics_.error(code, message, current().span);
     return current();
+}
+
+StructDeclaration Parser::structDeclaration() {
+    const auto start = expect(TokenKind::Struct, "FDN1031", "expected struct");
+    const auto name = expect(TokenKind::Identifier, "FDN1032", "expected struct name");
+    expect(TokenKind::LeftBrace, "FDN1033", "expected { after struct name");
+
+    std::vector<StructField> fields;
+    while (!check(TokenKind::RightBrace) && !atEnd()) {
+        if (!check(TokenKind::Identifier)) {
+            diagnostics_.error("FDN1034", "expected struct field name", current().span);
+            advance();
+            continue;
+        }
+        const auto field = advance();
+        expect(TokenKind::Colon, "FDN1035", "expected : after struct field name");
+        if (!check(TokenKind::Identifier)) {
+            diagnostics_.error("FDN1036", "expected struct field type", current().span);
+            if (!atEnd() && !check(TokenKind::RightBrace)) {
+                advance();
+            }
+            continue;
+        }
+        const auto type = advance();
+        fields.push_back({field.text, type.text, field.span});
+    }
+    expect(TokenKind::RightBrace, "FDN1037", "expected } after struct declaration");
+    return {name.text, std::move(fields), start.span};
 }
 
 Function Parser::function() {
@@ -326,6 +359,7 @@ AstExpressionId Parser::unary() {
 }
 
 AstExpressionId Parser::primary() {
+    AstExpressionId result;
     if (match(TokenKind::Integer)) {
         const auto token = previous();
         std::int64_t value{};
@@ -335,37 +369,42 @@ AstExpressionId Parser::primary() {
             conversion.ptr != token.text.data() + token.text.size()) {
             diagnostics_.error("FDN1016", "integer is outside the supported range", token.span);
         }
-        return addExpression(IntegerExpression{value}, token.span);
-    }
-    if (match(TokenKind::True)) {
-        return addExpression(BooleanExpression{true}, previous().span);
-    }
-    if (match(TokenKind::False)) {
-        return addExpression(BooleanExpression{false}, previous().span);
-    }
-    if (match(TokenKind::String)) {
+        result = addExpression(IntegerExpression{value}, token.span);
+    } else if (match(TokenKind::True)) {
+        result = addExpression(BooleanExpression{true}, previous().span);
+    } else if (match(TokenKind::False)) {
+        result = addExpression(BooleanExpression{false}, previous().span);
+    } else if (match(TokenKind::String)) {
         const auto token = previous();
-        return addExpression(StringExpression{token.text}, token.span);
-    }
-    if (match(TokenKind::Identifier)) {
+        result = addExpression(StringExpression{token.text}, token.span);
+    } else if (match(TokenKind::Identifier)) {
         const auto name = previous();
         if (match(TokenKind::LeftParen)) {
-            return finishCall(name);
+            result = finishCall(name);
+        } else if (check(TokenKind::LeftBrace) && peek(1).kind == TokenKind::Identifier &&
+                   peek(2).kind == TokenKind::Colon) {
+            advance();
+            result = finishStruct(name);
+        } else {
+            result = addExpression(NameExpression{name.text}, name.span);
         }
-        return addExpression(NameExpression{name.text}, name.span);
-    }
-    if (match(TokenKind::LeftParen)) {
-        const auto value = expression();
+    } else if (match(TokenKind::LeftParen)) {
+        result = expression();
         expect(TokenKind::RightParen, "FDN1022", "expected ) after expression");
-        return value;
+    } else {
+        const auto bad = current();
+        diagnostics_.error("FDN1023", "expected expression", bad.span);
+        if (!atEnd()) {
+            advance();
+        }
+        result = addExpression(IntegerExpression{0}, bad.span);
     }
 
-    const auto bad = current();
-    diagnostics_.error("FDN1023", "expected expression", bad.span);
-    if (!atEnd()) {
-        advance();
+    while (match(TokenKind::Dot)) {
+        const auto field = expect(TokenKind::Identifier, "FDN1041", "expected field name after .");
+        result = addExpression(FieldExpression{result, field.text}, field.span);
     }
-    return addExpression(IntegerExpression{0}, bad.span);
+    return result;
 }
 
 AstExpressionId Parser::finishCall(const Token &callee) {
@@ -377,6 +416,22 @@ AstExpressionId Parser::finishCall(const Token &callee) {
     }
     expect(TokenKind::RightParen, "FDN1024", "expected ) after call arguments");
     return addExpression(CallExpression{callee.text, std::move(arguments)}, callee.span);
+}
+
+AstExpressionId Parser::finishStruct(const Token &type) {
+    std::vector<StructFieldInitializer> fields;
+    while (!check(TokenKind::RightBrace) && !atEnd()) {
+        if (!check(TokenKind::Identifier)) {
+            diagnostics_.error("FDN1038", "expected struct literal field name", current().span);
+            advance();
+            continue;
+        }
+        const auto field = advance();
+        expect(TokenKind::Colon, "FDN1039", "expected : after struct literal field name");
+        fields.push_back({field.text, expression(), field.span});
+    }
+    expect(TokenKind::RightBrace, "FDN1040", "expected } after struct literal");
+    return addExpression(StructExpression{type.text, std::move(fields)}, type.span);
 }
 
 AstExpressionId Parser::addExpression(ExpressionValue value, SourceSpan span) {

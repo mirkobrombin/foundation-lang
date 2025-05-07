@@ -30,6 +30,8 @@ const char *tokenName(TokenKind kind) {
         return "integer";
     case TokenKind::String:
         return "string";
+    case TokenKind::Struct:
+        return "struct";
     case TokenKind::Fn:
         return "fn";
     case TokenKind::Let:
@@ -64,6 +66,8 @@ const char *tokenName(TokenKind kind) {
         return ",";
     case TokenKind::Colon:
         return ":";
+    case TokenKind::Dot:
+        return ".";
     case TokenKind::Equal:
         return "=";
     case TokenKind::EqualEqual:
@@ -184,6 +188,8 @@ Token Lexer::next() {
             return simple(TokenKind::Comma, ",");
         case ':':
             return simple(TokenKind::Colon, ":");
+        case '.':
+            return simple(TokenKind::Dot, ".");
         case '+':
             return simple(TokenKind::Plus, "+");
         case '*':
@@ -253,7 +259,9 @@ Token Lexer::identifier() {
 
     const auto text = std::string(source_.substr(start, offset_ - start));
     auto kind = TokenKind::Identifier;
-    if (text == "fn") {
+    if (text == "struct") {
+        kind = TokenKind::Struct;
+    } else if (text == "fn") {
         kind = TokenKind::Fn;
     } else if (text == "let") {
         kind = TokenKind::Let;

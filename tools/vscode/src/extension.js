@@ -5,8 +5,10 @@ const { collectCompletions } = require("./completions");
 
 const completionKinds = {
     Constant: vscode.CompletionItemKind.Constant,
+    Field: vscode.CompletionItemKind.Field,
     Function: vscode.CompletionItemKind.Function,
     Keyword: vscode.CompletionItemKind.Keyword,
+    Struct: vscode.CompletionItemKind.Struct,
     TypeParameter: vscode.CompletionItemKind.TypeParameter,
     Variable: vscode.CompletionItemKind.Variable
 };

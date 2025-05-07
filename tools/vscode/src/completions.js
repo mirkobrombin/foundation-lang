@@ -1,6 +1,7 @@
 "use strict";
 
 const staticCompletions = [
+    { label: "struct", kind: "Keyword" },
     { label: "fn", kind: "Keyword" },
     { label: "let", kind: "Keyword" },
     { label: "var", kind: "Keyword" },
@@ -65,8 +66,27 @@ function collectCompletions(source) {
     const masked = maskTrivia(source);
     const completions = [...staticCompletions];
     const functions = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)/g;
+    const structs = /\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{([^}]*)\}/g;
     const bindings = /\b(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)/g;
     let match;
+
+    while ((match = structs.exec(masked)) !== null) {
+        const name = match[1];
+        const fields = [...match[2].matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)/g)];
+        completions.push({
+            label: name,
+            kind: "Struct",
+            detail: "Foundation struct",
+            insertText: `${name} { ${fields.map((field, index) => `${field[1]}: \${${index + 1}:${field[1]}}`).join(" ")} }`
+        });
+        for (const field of fields) {
+            completions.push({
+                label: field[1],
+                kind: "Field",
+                detail: `Field of ${name}`
+            });
+        }
+    }
 
     while ((match = functions.exec(masked)) !== null) {
         const parameters = match[2]

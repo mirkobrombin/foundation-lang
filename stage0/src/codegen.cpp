@@ -1,6 +1,7 @@
 #include "foundation/codegen.hpp"
 
 #include <cctype>
+#include <exception>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -47,8 +48,8 @@ std::string cString(std::string_view value) {
     return out.str();
 }
 
-std::string cType(TypeKind type) {
-    switch (type) {
+std::string cType(Type type) {
+    switch (type.kind) {
     case TypeKind::Void:
         return "void";
     case TypeKind::I32:
@@ -57,6 +58,8 @@ std::string cType(TypeKind type) {
         return "bool";
     case TypeKind::String:
         return "const char *";
+    case TypeKind::Struct:
+        return "fdn_struct_" + std::to_string(type.declaration);
     case TypeKind::Invalid:
         break;
     }
@@ -83,6 +86,8 @@ std::string functionName(const FirProgram &program, FirFunctionId id) {
 std::string localName(const FirFunction &function, FirLocalId id) {
     return "fdn_local_" + safeName(function.locals[id].name) + "_" + std::to_string(id);
 }
+
+std::string fieldName(FirFieldId id) { return "fdn_field_" + std::to_string(id); }
 
 std::string indentation(unsigned int depth) { return std::string(depth * 4, ' '); }
 
@@ -133,10 +138,17 @@ class FunctionEmitter {
         if (const auto *binary = std::get_if<FirBinaryExpression>(&expression.value)) {
             return emitBinary(*binary, expression.type, depth);
         }
-        return emitCall(std::get<FirCallExpression>(expression.value), expression.type, depth);
+        if (const auto *call = std::get_if<FirCallExpression>(&expression.value)) {
+            return emitCall(*call, expression.type, depth);
+        }
+        if (const auto *literal = std::get_if<FirStructExpression>(&expression.value)) {
+            return emitStruct(*literal, depth);
+        }
+        const auto &field = std::get<FirFieldExpression>(expression.value);
+        return emitExpression(field.base, depth) + "." + fieldName(field.field);
     }
 
-    std::string emitBinary(const FirBinaryExpression &binary, TypeKind type, unsigned int depth) {
+    std::string emitBinary(const FirBinaryExpression &binary, Type type, unsigned int depth) {
         const auto left = emitExpression(binary.left, depth);
         if (binary.operation == FirBinaryOperator::And ||
             binary.operation == FirBinaryOperator::Or) {
@@ -196,7 +208,7 @@ class FunctionEmitter {
         return temporary;
     }
 
-    std::string emitCall(const FirCallExpression &call, TypeKind type, unsigned int depth) {
+    std::string emitCall(const FirCallExpression &call, Type type, unsigned int depth) {
         std::vector<std::string> arguments;
         arguments.reserve(call.arguments.size());
         for (const auto argument : call.arguments) {
@@ -218,13 +230,25 @@ class FunctionEmitter {
         }
         invocation << ')';
 
-        if (type == TypeKind::Void) {
+        if (type == voidType) {
             out_ << indentation(depth) << invocation.str() << ";\n";
             return {};
         }
         const auto temporary = nextTemporary();
         out_ << indentation(depth) << cType(type) << ' ' << temporary << " = "
              << invocation.str() << ";\n";
+        return temporary;
+    }
+
+    std::string emitStruct(const FirStructExpression &literal, unsigned int depth) {
+        const auto temporary = nextTemporary();
+        out_ << indentation(depth) << cType(Type{TypeKind::Struct, literal.type}) << ' '
+             << temporary << ";\n";
+        for (const auto &field : literal.fields) {
+            const auto value = emitExpression(field.value, depth);
+            out_ << indentation(depth) << temporary << '.' << fieldName(field.field) << " = "
+                 << value << ";\n";
+        }
         return temporary;
     }
 
@@ -291,6 +315,15 @@ class FunctionEmitter {
     std::size_t temporary_{};
 };
 
+void emitStructDefinition(std::ostringstream &out, const FirProgram &program, FirStructId id) {
+    out << "struct fdn_struct_" << id << " {\n";
+    for (std::size_t field = 0; field < program.structs[id].fields.size(); ++field) {
+        out << "    " << cType(program.structs[id].fields[field].type) << ' ' << fieldName(field)
+            << ";\n";
+    }
+    out << "};\n\n";
+}
+
 void emitSignature(std::ostringstream &out, const FirProgram &program, FirFunctionId id) {
     const auto &function = program.functions[id];
     if (id == program.main) {
@@ -320,6 +353,41 @@ std::string emitC(const FirProgram &program) {
     out << "#include <stdbool.h>\n";
     out << "#include <stdint.h>\n";
     out << "#include \"foundation/runtime.h\"\n\n";
+
+    for (std::size_t index = 0; index < program.structs.size(); ++index) {
+        out << "typedef struct fdn_struct_" << index << " fdn_struct_" << index << ";\n";
+    }
+    if (!program.structs.empty()) {
+        out << '\n';
+    }
+
+    std::vector<std::size_t> dependencies(program.structs.size());
+    std::vector<std::vector<FirStructId>> dependents(program.structs.size());
+    for (std::size_t type = 0; type < program.structs.size(); ++type) {
+        for (const auto &field : program.structs[type].fields) {
+            if (field.type.kind == TypeKind::Struct) {
+                ++dependencies[type];
+                dependents[field.type.declaration].push_back(type);
+            }
+        }
+    }
+    std::vector<FirStructId> ready;
+    for (std::size_t type = 0; type < dependencies.size(); ++type) {
+        if (dependencies[type] == 0) {
+            ready.push_back(type);
+        }
+    }
+    for (std::size_t current = 0; current < ready.size(); ++current) {
+        emitStructDefinition(out, program, ready[current]);
+        for (const auto dependent : dependents[ready[current]]) {
+            if (--dependencies[dependent] == 0) {
+                ready.push_back(dependent);
+            }
+        }
+    }
+    if (ready.size() != program.structs.size()) {
+        std::terminate();
+    }
 
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
         emitSignature(out, program, index);

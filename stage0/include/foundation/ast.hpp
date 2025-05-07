@@ -69,9 +69,26 @@ struct CallExpression {
     std::vector<AstExpressionId> arguments;
 };
 
+struct StructFieldInitializer {
+    std::string name;
+    AstExpressionId value{};
+    SourceSpan span;
+};
+
+struct StructExpression {
+    std::string typeName;
+    std::vector<StructFieldInitializer> fields;
+};
+
+struct FieldExpression {
+    AstExpressionId base{};
+    std::string field;
+};
+
 using ExpressionValue =
     std::variant<IntegerExpression, BooleanExpression, StringExpression, NameExpression,
-                 UnaryExpression, BinaryExpression, CallExpression>;
+                 UnaryExpression, BinaryExpression, CallExpression, StructExpression,
+                 FieldExpression>;
 
 struct Expression {
     ExpressionValue value;
@@ -137,10 +154,23 @@ struct Function {
     SourceSpan span;
 };
 
+struct StructField {
+    std::string name;
+    std::string typeName;
+    SourceSpan span;
+};
+
+struct StructDeclaration {
+    std::string name;
+    std::vector<StructField> fields;
+    SourceSpan span;
+};
+
 struct Program {
     std::vector<Expression> expressions;
     std::vector<Statement> statements;
     std::vector<Block> blocks;
+    std::vector<StructDeclaration> structs;
     std::vector<Function> functions;
 };
 

@@ -1,5 +1,10 @@
 // This program tracks the complete executable language subset.
 
+struct TourResult {
+    message: String
+    code: i32
+}
+
 fn is_even(value: i32) -> bool {
     return value % 2 == 0;
 }
@@ -28,9 +33,13 @@ fn main() -> i32 {
         current = current + 1;
     }
 
+    let result = TourResult {
+        code: current - 5
+        message: "done"
+    };
     if in_range(current, 5, 5) || false {
-        print("done");
-        return 0;
+        print(result.message);
+        return result.code;
     }
 
     return 1;

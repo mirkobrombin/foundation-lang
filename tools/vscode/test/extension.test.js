@@ -24,6 +24,12 @@ test("registers Foundation source files", () => {
     assert.equal(grammar.scopeName, "source.foundation");
     assert.ok(fs.existsSync(path.join(extensionRoot, grammar.path)));
     assert.ok(fs.existsSync(path.join(extensionRoot, language.configuration)));
+
+    const vsixManifest = fs.readFileSync(
+        path.join(extensionRoot, "vsix/extension.vsixmanifest"),
+        "utf8"
+    );
+    assert.match(vsixManifest, new RegExp(`Version="${manifest.version}"`));
 });
 
 test("grammar and completions track compiler keywords", () => {
@@ -37,6 +43,7 @@ test("grammar and completions track compiler keywords", () => {
     const completionLabels = new Set(staticCompletions.map((entry) => entry.label));
 
     assert.deepEqual(compilerKeywords, [
+        "struct",
         "fn",
         "let",
         "var",
@@ -56,6 +63,22 @@ test("grammar and completions track compiler keywords", () => {
         assert.match(grammar, new RegExp(`\\b${type}\\b`));
         assert.ok(completionLabels.has(type));
     }
+});
+
+test("collects structs and their fields", () => {
+    const completions = collectCompletions(`
+        struct User {
+            id: i32
+            name: String
+        }
+        fn main() -> i32 { return 0; }
+    `);
+    const byLabel = new Map(completions.map((entry) => [entry.label, entry]));
+
+    assert.equal(byLabel.get("User").kind, "Struct");
+    assert.equal(byLabel.get("User").insertText, "User { id: ${1:id} name: ${2:name} }");
+    assert.equal(byLabel.get("id").detail, "Field of User");
+    assert.equal(byLabel.get("name").detail, "Field of User");
 });
 
 test("collects functions, parameters, and local bindings", () => {

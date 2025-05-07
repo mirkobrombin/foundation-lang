@@ -5,11 +5,14 @@
     "patterns": [
         { "include": "#comments" },
         { "include": "#strings" },
+        { "include": "#structDefinitions" },
         { "include": "#functionDefinitions" },
         { "include": "#bindings" },
         { "include": "#keywords" },
         { "include": "#types" },
         { "include": "#builtins" },
+        { "include": "#structLiterals" },
+        { "include": "#fieldAccess" },
         { "include": "#functionCalls" },
         { "include": "#numbers" },
         { "include": "#operators" },
@@ -44,6 +47,33 @@
                 }
             ]
         },
+        "structDefinitions": {
+            "patterns": [
+                {
+                    "name": "meta.struct.definition.foundation",
+                    "begin": "\\b(struct)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\{)",
+                    "beginCaptures": {
+                        "1": { "name": "keyword.declaration.struct.foundation" },
+                        "2": { "name": "entity.name.type.struct.foundation" },
+                        "3": { "name": "punctuation.section.block.begin.foundation" }
+                    },
+                    "end": "\\}",
+                    "endCaptures": {
+                        "0": { "name": "punctuation.section.block.end.foundation" }
+                    },
+                    "patterns": [
+                        {
+                            "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(:)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+                            "captures": {
+                                "1": { "name": "variable.other.member.foundation" },
+                                "2": { "name": "punctuation.separator.foundation" },
+                                "3": { "name": "entity.name.type.foundation" }
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
         "functionDefinitions": {
             "patterns": [
                 {
@@ -63,6 +93,10 @@
                             "name": "variable.parameter.foundation",
                             "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*:)"
                         },
+                        {
+                            "name": "entity.name.type.foundation",
+                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+                        },
                         { "include": "#types" },
                         { "include": "#punctuation" }
                     ]
@@ -72,10 +106,12 @@
         "bindings": {
             "patterns": [
                 {
-                    "match": "\\b(let|var)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "match": "\\b(let|var)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(:)\\s*([A-Za-z_][A-Za-z0-9_]*))?",
                     "captures": {
                         "1": { "name": "storage.type.foundation" },
-                        "2": { "name": "variable.other.readwrite.foundation" }
+                        "2": { "name": "variable.other.readwrite.foundation" },
+                        "3": { "name": "punctuation.separator.foundation" },
+                        "4": { "name": "entity.name.type.foundation" }
                     }
                 }
             ]
@@ -105,6 +141,36 @@
                 {
                     "name": "support.function.builtin.foundation",
                     "match": "\\b(print)\\b"
+                }
+            ]
+        },
+        "structLiterals": {
+            "patterns": [
+                {
+                    "name": "entity.name.type.struct.foundation",
+                    "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*\\{\\s*[A-Za-z_][A-Za-z0-9_]*\\s*:)"
+                },
+                {
+                    "name": "variable.other.member.foundation",
+                    "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*:)"
+                },
+                {
+                    "match": "(->)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "keyword.operator.foundation" },
+                        "2": { "name": "entity.name.type.foundation" }
+                    }
+                }
+            ]
+        },
+        "fieldAccess": {
+            "patterns": [
+                {
+                    "match": "(\\.)([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "punctuation.accessor.foundation" },
+                        "2": { "name": "variable.other.member.foundation" }
+                    }
                 }
             ]
         },

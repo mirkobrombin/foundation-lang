@@ -65,6 +65,17 @@ class Lowerer {
     FirProgram run() {
         FirProgram result;
         result.main = model_.main;
+        result.structs.reserve(program_.structs.size());
+        for (std::size_t index = 0; index < program_.structs.size(); ++index) {
+            FirStruct type;
+            type.name = program_.structs[index].name;
+            type.fields.reserve(program_.structs[index].fields.size());
+            for (std::size_t field = 0; field < program_.structs[index].fields.size(); ++field) {
+                type.fields.push_back({program_.structs[index].fields[field].name,
+                                       model_.structs[index].fieldTypes[field]});
+            }
+            result.structs.push_back(std::move(type));
+        }
         result.functions.reserve(program_.functions.size());
         for (std::size_t index = 0; index < program_.functions.size(); ++index) {
             result.functions.push_back(lowerFunction(index));
@@ -173,17 +184,29 @@ class Lowerer {
             value = FirBinaryExpression{lowerExpression(binary->left),
                                         lowerBinary(binary->operation),
                                         lowerExpression(binary->right)};
-        } else {
-            const auto &call = std::get<CallExpression>(source.value);
+        } else if (const auto *call = std::get_if<CallExpression>(&source.value)) {
             const auto &target = required(model_.callTargets[id]);
             std::vector<FirExpressionId> arguments;
-            arguments.reserve(call.arguments.size());
-            for (const auto argument : call.arguments) {
+            arguments.reserve(call->arguments.size());
+            for (const auto argument : call->arguments) {
                 arguments.push_back(lowerExpression(argument));
             }
             const auto kind = target.kind == CallTargetKind::Print ? FirCallKind::Print
                                                                    : FirCallKind::Function;
             value = FirCallExpression{kind, target.function, std::move(arguments)};
+        } else if (const auto *literal = std::get_if<StructExpression>(&source.value)) {
+            const auto &target = required(model_.structTargets[id]);
+            std::vector<FirStructFieldValue> fields;
+            fields.reserve(literal->fields.size());
+            for (std::size_t index = 0; index < literal->fields.size(); ++index) {
+                fields.push_back(
+                    {target.fields[index], lowerExpression(literal->fields[index].value)});
+            }
+            value = FirStructExpression{target.type, std::move(fields)};
+        } else {
+            const auto &field = std::get<FieldExpression>(source.value);
+            value = FirFieldExpression{lowerExpression(field.base),
+                                       required(model_.expressionFields[id])};
         }
 
         const auto lowered = current_->expressions.size();

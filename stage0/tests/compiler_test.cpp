@@ -96,6 +96,63 @@ fn main() -> i32 {
            "user function call uses a stable C name");
 }
 
+void structValuesLowerToDeterministicC() {
+    constexpr std::string_view source = R"(
+struct Point {
+    x: i32
+    y: i32
+}
+
+fn move(point: Point, x: i32) -> Point {
+    return Point { y: point.y x: x };
+}
+
+fn main() -> i32 {
+    let start = Point { x: 1 y: 2 };
+    var current: Point = start;
+    current = move(current, 3);
+    return current.x;
+}
+)";
+    auto first = check(source);
+    auto second = check(source);
+
+    expect(!first.diagnostics.hasErrors(), "struct program has no diagnostics");
+    expect(first.fir.has_value(), "struct program lowers to FIR");
+    expect(second.fir.has_value(), "repeated struct program lowers to FIR");
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        return;
+    }
+
+    const auto firstC = foundation::emitC(*first.fir);
+    const auto secondC = foundation::emitC(*second.fir);
+    expect(firstC == secondC, "struct C emission is deterministic");
+    expect(firstC.find("typedef struct fdn_struct_0") != std::string::npos,
+           "struct type has a stable C declaration");
+    expect(firstC.find(".fdn_field_0") != std::string::npos,
+           "field access uses a stable C field name");
+}
+
+void deepStructGraphsStayIterative() {
+    constexpr int typeCount = 2048;
+    std::string source;
+    for (int index = 0; index + 1 < typeCount; ++index) {
+        source += "struct Type" + std::to_string(index) + " { next: Type" +
+                  std::to_string(index + 1) + " }\n";
+    }
+    source += "struct Type" + std::to_string(typeCount - 1) + " { value: i32 }\n";
+    source += "fn main() -> i32 { return 0; }\n";
+
+    auto result = check(source);
+    expect(!result.diagnostics.hasErrors(), "deep acyclic struct graph has no diagnostics");
+    expect(result.fir.has_value(), "deep acyclic struct graph lowers to FIR");
+    if (result.fir.has_value()) {
+        const auto generated = foundation::emitC(*result.fir);
+        expect(generated.find("struct fdn_struct_2047") != std::string::npos,
+               "deep acyclic struct graph emits every declaration");
+    }
+}
+
 void syntaxFailuresHaveStableDiagnostics() {
     const auto missingSemicolon = check("fn main() -> i32 { print(\"bad\") return 0; }");
     expect(hasCode(missingSemicolon.diagnostics, "FDN1014"),
@@ -212,6 +269,46 @@ fn main() -> i32 { consume(); return 0; }
     const auto fallthrough = check("fn main() -> i32 { let value = 1; }");
     expect(hasCode(fallthrough.diagnostics, "FDN2008"),
            "fallthrough in non-void function reports FDN2008");
+
+    const auto duplicateType = check(R"(
+struct Item { value: i32 }
+struct Item { other: i32 }
+fn main() -> i32 { return 0; }
+)");
+    expect(hasCode(duplicateType.diagnostics, "FDN2020"),
+           "duplicate struct type reports FDN2020");
+
+    const auto duplicateField = check(R"(
+struct Item { value: i32 value: bool }
+fn main() -> i32 { return 0; }
+)");
+    expect(hasCode(duplicateField.diagnostics, "FDN2021"),
+           "duplicate struct field reports FDN2021");
+
+    const auto recursiveStruct = check(R"(
+struct Node { next: Node }
+fn main() -> i32 { return 0; }
+)");
+    expect(hasCode(recursiveStruct.diagnostics, "FDN2023"),
+           "recursive value struct reports FDN2023");
+
+    const auto unknownField = check(R"(
+struct Item { value: i32 }
+fn main() -> i32 { let item = Item { value: 1 }; return item.missing; }
+)");
+    expect(hasCode(unknownField.diagnostics, "FDN2025"),
+           "unknown struct field reports FDN2025");
+
+    const auto duplicateInitializer = check(R"(
+struct Item { value: i32 }
+fn main() -> i32 { let item = Item { value: 1 value: 2 }; return 0; }
+)");
+    expect(hasCode(duplicateInitializer.diagnostics, "FDN2026"),
+           "duplicate field initializer reports FDN2026");
+
+    const auto nonStructAccess = check("fn main() -> i32 { let value = 1; return value.field; }");
+    expect(hasCode(nonStructAccess.diagnostics, "FDN2028"),
+           "field access on a primitive reports FDN2028");
 }
 
 void diagnosticsBoundLongSourceExcerpts() {
@@ -238,6 +335,8 @@ void diagnosticsBoundLongSourceExcerpts() {
 
 int main() {
     typedProgramLowersToDeterministicC();
+    structValuesLowerToDeterministicC();
+    deepStructGraphsStayIterative();
     syntaxFailuresHaveStableDiagnostics();
     semanticFailuresHaveStableDiagnostics();
     diagnosticsBoundLongSourceExcerpts();

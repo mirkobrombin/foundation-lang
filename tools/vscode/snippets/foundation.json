@@ -1,4 +1,13 @@
 {
+    "Struct": {
+        "prefix": "struct",
+        "body": [
+            "struct ${1:Name} {",
+            "    ${2:field}: ${3:i32}",
+            "}"
+        ],
+        "description": "Declare a value struct"
+    },
     "Main function": {
         "prefix": "main",
         "body": [

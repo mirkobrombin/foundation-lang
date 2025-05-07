@@ -18,6 +18,8 @@ using FirStatementId = std::size_t;
 using FirBlockId = std::size_t;
 using FirFunctionId = std::size_t;
 using FirLocalId = std::size_t;
+using FirStructId = std::size_t;
+using FirFieldId = std::size_t;
 
 enum class FirUnaryOperator {
     Negate,
@@ -78,13 +80,29 @@ struct FirCallExpression {
     std::vector<FirExpressionId> arguments;
 };
 
+struct FirStructFieldValue {
+    FirFieldId field{};
+    FirExpressionId value{};
+};
+
+struct FirStructExpression {
+    FirStructId type{};
+    std::vector<FirStructFieldValue> fields;
+};
+
+struct FirFieldExpression {
+    FirExpressionId base{};
+    FirFieldId field{};
+};
+
 using FirExpressionValue =
     std::variant<FirIntegerExpression, FirBooleanExpression, FirStringExpression,
-                 FirLocalExpression, FirUnaryExpression, FirBinaryExpression, FirCallExpression>;
+                 FirLocalExpression, FirUnaryExpression, FirBinaryExpression, FirCallExpression,
+                 FirStructExpression, FirFieldExpression>;
 
 struct FirExpression {
     FirExpressionValue value;
-    TypeKind type{TypeKind::Invalid};
+    Type type{invalidType};
     SourceSpan span;
 };
 
@@ -132,13 +150,13 @@ struct FirBlock {
 
 struct FirLocal {
     std::string name;
-    TypeKind type{TypeKind::Invalid};
+    Type type{invalidType};
     bool mutableBinding{};
 };
 
 struct FirFunction {
     std::string name;
-    TypeKind returnType{TypeKind::Invalid};
+    Type returnType{invalidType};
     std::vector<FirLocalId> parameters;
     std::vector<FirLocal> locals;
     std::vector<FirExpression> expressions;
@@ -147,7 +165,18 @@ struct FirFunction {
     FirBlockId body{};
 };
 
+struct FirStructField {
+    std::string name;
+    Type type{invalidType};
+};
+
+struct FirStruct {
+    std::string name;
+    std::vector<FirStructField> fields;
+};
+
 struct FirProgram {
+    std::vector<FirStruct> structs;
     std::vector<FirFunction> functions;
     FirFunctionId main{};
 };
