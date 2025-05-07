@@ -1,19 +1,30 @@
 #include "foundation/process.hpp"
 
 #include <cerrno>
-#include <cstring>
 #include <iostream>
+#include <limits>
+#include <system_error>
 #include <vector>
 
 #ifdef _WIN32
 #include <process.h>
 #else
+#include <spawn.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <unistd.h>
+
+extern char **environ;
 #endif
 
 namespace foundation {
+
+namespace {
+
+std::string errorMessage(int code) {
+    return std::error_code(code, std::generic_category()).message();
+}
+
+} // namespace
 
 int runProcess(const std::vector<std::string> &arguments) {
     if (arguments.empty()) {
@@ -21,6 +32,7 @@ int runProcess(const std::vector<std::string> &arguments) {
         return 1;
     }
 
+#ifdef _WIN32
     std::vector<const char *> argv;
     argv.reserve(arguments.size() + 1);
     for (const auto &argument : arguments) {
@@ -28,30 +40,40 @@ int runProcess(const std::vector<std::string> &arguments) {
     }
     argv.push_back(nullptr);
 
-#ifdef _WIN32
     const auto status = _spawnvp(_P_WAIT, argv.front(), argv.data());
     if (status == -1) {
+        const auto error = errno;
         std::cerr << "foundationc: cannot start " << arguments.front() << ": "
-                  << std::strerror(errno) << '\n';
+                  << errorMessage(error) << '\n';
         return 1;
     }
-    return status;
+    if (status > std::numeric_limits<int>::max()) {
+        std::cerr << "foundationc: process returned an unsupported exit status\n";
+        return 1;
+    }
+    return static_cast<int>(status);
 #else
-    const auto child = fork();
-    if (child == -1) {
-        std::cerr << "foundationc: cannot create process: " << std::strerror(errno) << '\n';
-        return 1;
+    auto ownedArguments = arguments;
+    std::vector<char *> argv;
+    argv.reserve(ownedArguments.size() + 1);
+    for (auto &argument : ownedArguments) {
+        argv.push_back(argument.data());
     }
-    if (child == 0) {
-        execvp(argv.front(), const_cast<char *const *>(argv.data()));
+    argv.push_back(nullptr);
+
+    pid_t child{};
+    const auto spawnError =
+        posix_spawnp(&child, argv.front(), nullptr, nullptr, argv.data(), environ);
+    if (spawnError != 0) {
         std::cerr << "foundationc: cannot start " << arguments.front() << ": "
-                  << std::strerror(errno) << '\n';
-        _exit(127);
+                  << errorMessage(spawnError) << '\n';
+        return 1;
     }
 
     int status{};
     if (waitpid(child, &status, 0) == -1) {
-        std::cerr << "foundationc: cannot wait for process: " << std::strerror(errno) << '\n';
+        const auto error = errno;
+        std::cerr << "foundationc: cannot wait for process: " << errorMessage(error) << '\n';
         return 1;
     }
     if (WIFEXITED(status)) {
