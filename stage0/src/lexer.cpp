@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <string>
+#include <utility>
 
 namespace foundation {
 
@@ -31,10 +32,22 @@ const char *tokenName(TokenKind kind) {
         return "string";
     case TokenKind::Fn:
         return "fn";
-    case TokenKind::Print:
-        return "print";
+    case TokenKind::Let:
+        return "let";
+    case TokenKind::Var:
+        return "var";
     case TokenKind::Return:
         return "return";
+    case TokenKind::If:
+        return "if";
+    case TokenKind::Else:
+        return "else";
+    case TokenKind::While:
+        return "while";
+    case TokenKind::True:
+        return "true";
+    case TokenKind::False:
+        return "false";
     case TokenKind::LeftParen:
         return "(";
     case TokenKind::RightParen:
@@ -47,6 +60,40 @@ const char *tokenName(TokenKind kind) {
         return "->";
     case TokenKind::Semicolon:
         return ";";
+    case TokenKind::Comma:
+        return ",";
+    case TokenKind::Colon:
+        return ":";
+    case TokenKind::Equal:
+        return "=";
+    case TokenKind::EqualEqual:
+        return "==";
+    case TokenKind::Bang:
+        return "!";
+    case TokenKind::BangEqual:
+        return "!=";
+    case TokenKind::Plus:
+        return "+";
+    case TokenKind::Minus:
+        return "-";
+    case TokenKind::Star:
+        return "*";
+    case TokenKind::Slash:
+        return "/";
+    case TokenKind::Percent:
+        return "%";
+    case TokenKind::Less:
+        return "<";
+    case TokenKind::LessEqual:
+        return "<=";
+    case TokenKind::Greater:
+        return ">";
+    case TokenKind::GreaterEqual:
+        return ">=";
+    case TokenKind::AndAnd:
+        return "&&";
+    case TokenKind::OrOr:
+        return "||";
     }
     return "token";
 }
@@ -119,21 +166,72 @@ Token Lexer::next() {
             return integer();
         }
 
+        const auto simple = [this, start, line, column](TokenKind kind, std::string text) {
+            return Token{kind, std::move(text), spanFrom(start, line, column)};
+        };
         switch (value) {
         case '(':
-            return {TokenKind::LeftParen, "(", spanFrom(start, line, column)};
+            return simple(TokenKind::LeftParen, "(");
         case ')':
-            return {TokenKind::RightParen, ")", spanFrom(start, line, column)};
+            return simple(TokenKind::RightParen, ")");
         case '{':
-            return {TokenKind::LeftBrace, "{", spanFrom(start, line, column)};
+            return simple(TokenKind::LeftBrace, "{");
         case '}':
-            return {TokenKind::RightBrace, "}", spanFrom(start, line, column)};
+            return simple(TokenKind::RightBrace, "}");
         case ';':
-            return {TokenKind::Semicolon, ";", spanFrom(start, line, column)};
+            return simple(TokenKind::Semicolon, ";");
+        case ',':
+            return simple(TokenKind::Comma, ",");
+        case ':':
+            return simple(TokenKind::Colon, ":");
+        case '+':
+            return simple(TokenKind::Plus, "+");
+        case '*':
+            return simple(TokenKind::Star, "*");
+        case '/':
+            return simple(TokenKind::Slash, "/");
+        case '%':
+            return simple(TokenKind::Percent, "%");
         case '-':
             if (peek() == '>') {
                 advance();
-                return {TokenKind::Arrow, "->", spanFrom(start, line, column)};
+                return simple(TokenKind::Arrow, "->");
+            }
+            return simple(TokenKind::Minus, "-");
+        case '=':
+            if (peek() == '=') {
+                advance();
+                return simple(TokenKind::EqualEqual, "==");
+            }
+            return simple(TokenKind::Equal, "=");
+        case '!':
+            if (peek() == '=') {
+                advance();
+                return simple(TokenKind::BangEqual, "!=");
+            }
+            return simple(TokenKind::Bang, "!");
+        case '<':
+            if (peek() == '=') {
+                advance();
+                return simple(TokenKind::LessEqual, "<=");
+            }
+            return simple(TokenKind::Less, "<");
+        case '>':
+            if (peek() == '=') {
+                advance();
+                return simple(TokenKind::GreaterEqual, ">=");
+            }
+            return simple(TokenKind::Greater, ">");
+        case '&':
+            if (peek() == '&') {
+                advance();
+                return simple(TokenKind::AndAnd, "&&");
+            }
+            break;
+        case '|':
+            if (peek() == '|') {
+                advance();
+                return simple(TokenKind::OrOr, "||");
             }
             break;
         case '"':
@@ -157,10 +255,22 @@ Token Lexer::identifier() {
     auto kind = TokenKind::Identifier;
     if (text == "fn") {
         kind = TokenKind::Fn;
-    } else if (text == "print") {
-        kind = TokenKind::Print;
+    } else if (text == "let") {
+        kind = TokenKind::Let;
+    } else if (text == "var") {
+        kind = TokenKind::Var;
     } else if (text == "return") {
         kind = TokenKind::Return;
+    } else if (text == "if") {
+        kind = TokenKind::If;
+    } else if (text == "else") {
+        kind = TokenKind::Else;
+    } else if (text == "while") {
+        kind = TokenKind::While;
+    } else if (text == "true") {
+        kind = TokenKind::True;
+    } else if (text == "false") {
+        kind = TokenKind::False;
     }
     return {kind, text, spanFrom(start, line_, column)};
 }
@@ -183,6 +293,11 @@ Token Lexer::string() {
 
     while (!atEnd() && peek() != '"') {
         auto current = advance();
+        if (current == '\0') {
+            diagnostics_.error("FDN0004", "NUL is not allowed in a string literal",
+                               {offset_ - 1, 1, line_, column_ - 1});
+            continue;
+        }
         if (current != '\\') {
             value.push_back(current);
             continue;
@@ -191,6 +306,9 @@ Token Lexer::string() {
         if (atEnd()) {
             break;
         }
+        const auto escapeStart = offset_ - 1;
+        const auto escapeLine = line_;
+        const auto escapeColumn = column_ - 1;
         const auto escaped = advance();
         switch (escaped) {
         case 'n':
@@ -210,7 +328,7 @@ Token Lexer::string() {
             break;
         default:
             diagnostics_.error("FDN0003", "invalid string escape",
-                               {offset_ - 2, 2, line_, column_ - 2});
+                               {escapeStart, 2, escapeLine, escapeColumn});
             value.push_back(escaped);
             break;
         }

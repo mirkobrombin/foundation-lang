@@ -6,7 +6,13 @@
 
 namespace foundation {
 
-[[nodiscard]] int runProcess(const std::vector<std::string> &arguments);
+enum class ProcessOutput {
+    Inherit,
+    StdoutToStderr,
+};
+
+[[nodiscard]] int runProcess(const std::vector<std::string> &arguments,
+                             ProcessOutput output = ProcessOutput::Inherit);
 
 } // namespace foundation
 

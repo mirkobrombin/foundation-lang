@@ -2,25 +2,32 @@
 
 #include <charconv>
 #include <cstdint>
-#include <string>
+#include <system_error>
 #include <utility>
 
 namespace foundation {
+
+namespace {
+
+constexpr std::size_t maxBlockDepth = 128;
+constexpr std::size_t maxExpressionDepth = 256;
+constexpr std::size_t maxExpressionNodes = 1024;
+
+} // namespace
 
 Parser::Parser(std::vector<Token> tokens, Diagnostics &diagnostics)
     : tokens_(std::move(tokens)), diagnostics_(diagnostics) {}
 
 Program Parser::parse() {
-    Program program;
     while (!atEnd()) {
         if (!check(TokenKind::Fn)) {
             diagnostics_.error("FDN1001", "expected function declaration", current().span);
             advance();
             continue;
         }
-        program.functions.push_back(function());
+        program_.functions.push_back(function());
     }
-    return program;
+    return std::move(program_);
 }
 
 bool Parser::atEnd() const { return current().kind == TokenKind::Eof; }
@@ -28,6 +35,11 @@ bool Parser::atEnd() const { return current().kind == TokenKind::Eof; }
 const Token &Parser::current() const { return tokens_[current_]; }
 
 const Token &Parser::previous() const { return tokens_[current_ - 1]; }
+
+const Token &Parser::peek(std::size_t distance) const {
+    const auto index = current_ + distance;
+    return index < tokens_.size() ? tokens_[index] : tokens_.back();
+}
 
 const Token &Parser::advance() {
     if (!atEnd()) {
@@ -58,61 +70,343 @@ Function Parser::function() {
     const auto start = expect(TokenKind::Fn, "FDN1002", "expected fn");
     const auto name = expect(TokenKind::Identifier, "FDN1003", "expected function name");
     expect(TokenKind::LeftParen, "FDN1004", "expected ( after function name");
+
+    std::vector<Parameter> parameters;
+    if (!check(TokenKind::RightParen)) {
+        do {
+            parameters.push_back(parameter());
+        } while (match(TokenKind::Comma));
+    }
     expect(TokenKind::RightParen, "FDN1005", "expected ) after function parameters");
     expect(TokenKind::Arrow, "FDN1006", "expected -> before return type");
     const auto returnType =
         expect(TokenKind::Identifier, "FDN1007", "expected function return type");
-    expect(TokenKind::LeftBrace, "FDN1008", "expected { before function body");
+    const auto body = block();
+    return {name.text, std::move(parameters), returnType.text, body, start.span};
+}
 
-    Function result{name.text, returnType.text, {}, start.span};
+Parameter Parser::parameter() {
+    const auto name = expect(TokenKind::Identifier, "FDN1026", "expected parameter name");
+    expect(TokenKind::Colon, "FDN1027", "expected : after parameter name");
+    const auto type = expect(TokenKind::Identifier, "FDN1028", "expected parameter type");
+    return {name.text, type.text, name.span};
+}
+
+AstBlockId Parser::block() {
+    const auto start = expect(TokenKind::LeftBrace, "FDN1008", "expected { before block");
+    if (blockDepth_ >= maxBlockDepth) {
+        diagnostics_.error("FDN1030", "block nesting exceeds 128 levels", start.span);
+        return skipNestedBlock(start.span);
+    }
+
+    ++blockDepth_;
+    Block result{{}, start.span};
     while (!check(TokenKind::RightBrace) && !atEnd()) {
         result.statements.push_back(statement());
     }
-    expect(TokenKind::RightBrace, "FDN1009", "expected } after function body");
-    return result;
+    expect(TokenKind::RightBrace, "FDN1009", "expected } after block");
+    --blockDepth_;
+    program_.blocks.push_back(std::move(result));
+    return program_.blocks.size() - 1;
 }
 
-Statement Parser::statement() {
-    if (match(TokenKind::Print)) {
-        return printStatement(previous());
+AstStatementId Parser::statement() {
+    if (match(TokenKind::Let)) {
+        return variableStatement(previous(), false);
+    }
+    if (match(TokenKind::Var)) {
+        return variableStatement(previous(), true);
     }
     if (match(TokenKind::Return)) {
         return returnStatement(previous());
     }
-
-    const auto bad = current();
-    diagnostics_.error("FDN1010", "expected statement", bad.span);
-    synchronizeStatement();
-    return ReturnStatement{0, bad.span};
+    if (match(TokenKind::If)) {
+        return ifStatement(previous());
+    }
+    if (match(TokenKind::While)) {
+        return whileStatement(previous());
+    }
+    if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Equal) {
+        return assignmentStatement();
+    }
+    return expressionStatement();
 }
 
-PrintStatement Parser::printStatement(const Token &start) {
-    expect(TokenKind::LeftParen, "FDN1011", "expected ( after print");
-    const auto value = expect(TokenKind::String, "FDN1012", "expected string argument");
-    expect(TokenKind::RightParen, "FDN1013", "expected ) after print argument");
-    expect(TokenKind::Semicolon, "FDN1014", "expected ; after print statement");
-    return {value.text, start.span};
+AstStatementId Parser::variableStatement(const Token &start, bool mutableBinding) {
+    const auto name = expect(TokenKind::Identifier, "FDN1018", "expected binding name");
+    std::optional<std::string> type;
+    if (match(TokenKind::Colon)) {
+        type = expect(TokenKind::Identifier, "FDN1019", "expected binding type").text;
+    }
+    expect(TokenKind::Equal, "FDN1020", "expected = before binding initializer");
+    const auto initializer = expression();
+    expect(TokenKind::Semicolon, "FDN1014", "expected ; after binding");
+    return addStatement(VariableStatement{mutableBinding, name.text, std::move(type), initializer},
+                        start.span);
 }
 
-ReturnStatement Parser::returnStatement(const Token &start) {
-    const auto value = expect(TokenKind::Integer, "FDN1015", "expected integer return value");
-    std::int64_t parsed{};
-    const auto conversion = std::from_chars(value.text.data(), value.text.data() + value.text.size(),
-                                            parsed);
-    if (conversion.ec != std::errc{} || conversion.ptr != value.text.data() + value.text.size()) {
-        diagnostics_.error("FDN1016", "integer is outside the supported range", value.span);
+AstStatementId Parser::returnStatement(const Token &start) {
+    std::optional<AstExpressionId> value;
+    if (!check(TokenKind::Semicolon)) {
+        value = expression();
     }
     expect(TokenKind::Semicolon, "FDN1017", "expected ; after return statement");
-    return {parsed, start.span};
+    return addStatement(ReturnStatement{value}, start.span);
 }
 
-void Parser::synchronizeStatement() {
-    while (!atEnd() && !check(TokenKind::RightBrace)) {
-        if (match(TokenKind::Semicolon)) {
-            return;
+AstStatementId Parser::ifStatement(const Token &start) {
+    const auto condition = expression();
+    const auto thenBlock = block();
+    std::optional<AstBlockId> elseBlock;
+    if (match(TokenKind::Else)) {
+        elseBlock = block();
+    }
+    return addStatement(IfStatement{condition, thenBlock, elseBlock}, start.span);
+}
+
+AstStatementId Parser::whileStatement(const Token &start) {
+    const auto condition = expression();
+    const auto body = block();
+    return addStatement(WhileStatement{condition, body}, start.span);
+}
+
+AstStatementId Parser::assignmentStatement() {
+    const auto name = advance();
+    expect(TokenKind::Equal, "FDN1021", "expected = in assignment");
+    const auto value = expression();
+    expect(TokenKind::Semicolon, "FDN1014", "expected ; after assignment");
+    return addStatement(AssignmentStatement{name.text, value}, name.span);
+}
+
+AstStatementId Parser::expressionStatement() {
+    const auto start = current().span;
+    const auto value = expression();
+    expect(TokenKind::Semicolon, "FDN1014", "expected ; after expression");
+    return addStatement(ExpressionStatement{value}, start);
+}
+
+AstExpressionId Parser::expression() {
+    const auto root = expressionCalls_ == 0;
+    if (root) {
+        expressionNodes_ = 0;
+        expressionLimitReported_ = false;
+    }
+    ++expressionCalls_;
+    const auto result = logicalOr();
+    --expressionCalls_;
+    return result;
+}
+
+AstExpressionId Parser::logicalOr() {
+    auto value = logicalAnd();
+    while (match(TokenKind::OrOr)) {
+        const auto right = logicalAnd();
+        value = addExpression(BinaryExpression{value, BinaryOperator::Or, right},
+                              program_.expressions[value].span);
+    }
+    return value;
+}
+
+AstExpressionId Parser::logicalAnd() {
+    auto value = equality();
+    while (match(TokenKind::AndAnd)) {
+        const auto right = equality();
+        value = addExpression(BinaryExpression{value, BinaryOperator::And, right},
+                              program_.expressions[value].span);
+    }
+    return value;
+}
+
+AstExpressionId Parser::equality() {
+    auto value = comparison();
+    while (check(TokenKind::EqualEqual) || check(TokenKind::BangEqual)) {
+        const auto operation =
+            advance().kind == TokenKind::EqualEqual ? BinaryOperator::Equal
+                                                    : BinaryOperator::NotEqual;
+        const auto right = comparison();
+        value = addExpression(BinaryExpression{value, operation, right},
+                              program_.expressions[value].span);
+    }
+    return value;
+}
+
+AstExpressionId Parser::comparison() {
+    auto value = term();
+    while (check(TokenKind::Less) || check(TokenKind::LessEqual) ||
+           check(TokenKind::Greater) || check(TokenKind::GreaterEqual)) {
+        BinaryOperator operation{};
+        switch (advance().kind) {
+        case TokenKind::Less:
+            operation = BinaryOperator::Less;
+            break;
+        case TokenKind::LessEqual:
+            operation = BinaryOperator::LessEqual;
+            break;
+        case TokenKind::Greater:
+            operation = BinaryOperator::Greater;
+            break;
+        case TokenKind::GreaterEqual:
+            operation = BinaryOperator::GreaterEqual;
+            break;
+        default:
+            break;
         }
+        const auto right = term();
+        value = addExpression(BinaryExpression{value, operation, right},
+                              program_.expressions[value].span);
+    }
+    return value;
+}
+
+AstExpressionId Parser::term() {
+    auto value = factor();
+    while (check(TokenKind::Plus) || check(TokenKind::Minus)) {
+        const auto operation = advance().kind == TokenKind::Plus ? BinaryOperator::Add
+                                                                 : BinaryOperator::Subtract;
+        const auto right = factor();
+        value = addExpression(BinaryExpression{value, operation, right},
+                              program_.expressions[value].span);
+    }
+    return value;
+}
+
+AstExpressionId Parser::factor() {
+    auto value = unary();
+    while (check(TokenKind::Star) || check(TokenKind::Slash) || check(TokenKind::Percent)) {
+        BinaryOperator operation{};
+        switch (advance().kind) {
+        case TokenKind::Star:
+            operation = BinaryOperator::Multiply;
+            break;
+        case TokenKind::Slash:
+            operation = BinaryOperator::Divide;
+            break;
+        case TokenKind::Percent:
+            operation = BinaryOperator::Remainder;
+            break;
+        default:
+            break;
+        }
+        const auto right = unary();
+        value = addExpression(BinaryExpression{value, operation, right},
+                              program_.expressions[value].span);
+    }
+    return value;
+}
+
+AstExpressionId Parser::unary() {
+    if (expressionDepth_ >= maxExpressionDepth) {
+        const auto bad = current();
+        diagnostics_.error("FDN1029", "expression nesting exceeds 256 levels", bad.span);
+        if (!atEnd()) {
+            advance();
+        }
+        return addExpression(IntegerExpression{0}, bad.span);
+    }
+
+    ++expressionDepth_;
+    AstExpressionId result;
+    if (match(TokenKind::Minus)) {
+        const auto start = previous().span;
+        const auto operand = unary();
+        if (const auto *integer =
+                std::get_if<IntegerExpression>(&program_.expressions[operand].value)) {
+            result = addExpression(IntegerExpression{-integer->value}, start);
+        } else {
+            result = addExpression(UnaryExpression{UnaryOperator::Negate, operand}, start);
+        }
+    } else if (match(TokenKind::Bang)) {
+        const auto start = previous().span;
+        result = addExpression(UnaryExpression{UnaryOperator::Not, unary()}, start);
+    } else {
+        result = primary();
+    }
+    --expressionDepth_;
+    return result;
+}
+
+AstExpressionId Parser::primary() {
+    if (match(TokenKind::Integer)) {
+        const auto token = previous();
+        std::int64_t value{};
+        const auto conversion = std::from_chars(token.text.data(),
+                                                token.text.data() + token.text.size(), value);
+        if (conversion.ec != std::errc{} ||
+            conversion.ptr != token.text.data() + token.text.size()) {
+            diagnostics_.error("FDN1016", "integer is outside the supported range", token.span);
+        }
+        return addExpression(IntegerExpression{value}, token.span);
+    }
+    if (match(TokenKind::True)) {
+        return addExpression(BooleanExpression{true}, previous().span);
+    }
+    if (match(TokenKind::False)) {
+        return addExpression(BooleanExpression{false}, previous().span);
+    }
+    if (match(TokenKind::String)) {
+        const auto token = previous();
+        return addExpression(StringExpression{token.text}, token.span);
+    }
+    if (match(TokenKind::Identifier)) {
+        const auto name = previous();
+        if (match(TokenKind::LeftParen)) {
+            return finishCall(name);
+        }
+        return addExpression(NameExpression{name.text}, name.span);
+    }
+    if (match(TokenKind::LeftParen)) {
+        const auto value = expression();
+        expect(TokenKind::RightParen, "FDN1022", "expected ) after expression");
+        return value;
+    }
+
+    const auto bad = current();
+    diagnostics_.error("FDN1023", "expected expression", bad.span);
+    if (!atEnd()) {
         advance();
     }
+    return addExpression(IntegerExpression{0}, bad.span);
+}
+
+AstExpressionId Parser::finishCall(const Token &callee) {
+    std::vector<AstExpressionId> arguments;
+    if (!check(TokenKind::RightParen)) {
+        do {
+            arguments.push_back(expression());
+        } while (match(TokenKind::Comma));
+    }
+    expect(TokenKind::RightParen, "FDN1024", "expected ) after call arguments");
+    return addExpression(CallExpression{callee.text, std::move(arguments)}, callee.span);
+}
+
+AstExpressionId Parser::addExpression(ExpressionValue value, SourceSpan span) {
+    ++expressionNodes_;
+    if (expressionNodes_ > maxExpressionNodes && !expressionLimitReported_) {
+        diagnostics_.error("FDN1029", "expression exceeds 1024 nodes", span);
+        expressionLimitReported_ = true;
+    }
+    program_.expressions.push_back({std::move(value), span});
+    return program_.expressions.size() - 1;
+}
+
+AstStatementId Parser::addStatement(StatementValue value, SourceSpan span) {
+    program_.statements.push_back({std::move(value), span});
+    return program_.statements.size() - 1;
+}
+
+AstBlockId Parser::skipNestedBlock(SourceSpan span) {
+    std::size_t depth = 1;
+    while (!atEnd() && depth != 0) {
+        if (match(TokenKind::LeftBrace)) {
+            ++depth;
+        } else if (match(TokenKind::RightBrace)) {
+            --depth;
+        } else {
+            advance();
+        }
+    }
+    program_.blocks.push_back({{}, span});
+    return program_.blocks.size() - 1;
 }
 
 } // namespace foundation

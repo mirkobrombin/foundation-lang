@@ -19,19 +19,44 @@ class Parser {
     [[nodiscard]] bool atEnd() const;
     [[nodiscard]] const Token &current() const;
     [[nodiscard]] const Token &previous() const;
+    [[nodiscard]] const Token &peek(std::size_t distance) const;
     const Token &advance();
     [[nodiscard]] bool check(TokenKind kind) const;
     bool match(TokenKind kind);
     const Token &expect(TokenKind kind, const char *code, const char *message);
     Function function();
-    Statement statement();
-    PrintStatement printStatement(const Token &start);
-    ReturnStatement returnStatement(const Token &start);
-    void synchronizeStatement();
+    Parameter parameter();
+    AstBlockId block();
+    AstStatementId statement();
+    AstStatementId variableStatement(const Token &start, bool mutableBinding);
+    AstStatementId returnStatement(const Token &start);
+    AstStatementId ifStatement(const Token &start);
+    AstStatementId whileStatement(const Token &start);
+    AstStatementId assignmentStatement();
+    AstStatementId expressionStatement();
+    AstExpressionId expression();
+    AstExpressionId logicalOr();
+    AstExpressionId logicalAnd();
+    AstExpressionId equality();
+    AstExpressionId comparison();
+    AstExpressionId term();
+    AstExpressionId factor();
+    AstExpressionId unary();
+    AstExpressionId primary();
+    AstExpressionId finishCall(const Token &callee);
+    AstExpressionId addExpression(ExpressionValue value, SourceSpan span);
+    AstStatementId addStatement(StatementValue value, SourceSpan span);
+    AstBlockId skipNestedBlock(SourceSpan span);
 
     std::vector<Token> tokens_;
     Diagnostics &diagnostics_;
+    Program program_;
     std::size_t current_{};
+    std::size_t blockDepth_{};
+    std::size_t expressionDepth_{};
+    std::size_t expressionCalls_{};
+    std::size_t expressionNodes_{};
+    bool expressionLimitReported_{};
 };
 
 } // namespace foundation

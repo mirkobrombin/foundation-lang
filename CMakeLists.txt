@@ -22,9 +22,11 @@ add_library(foundation_compiler STATIC
     stage0/src/diagnostic.cpp
     stage0/src/driver.cpp
     stage0/src/lexer.cpp
+    stage0/src/lower.cpp
     stage0/src/parser.cpp
     stage0/src/process.cpp
     stage0/src/sema.cpp
+    stage0/src/type.cpp
 )
 target_include_directories(foundation_compiler PUBLIC stage0/include)
 target_compile_definitions(foundation_compiler PRIVATE
@@ -140,5 +142,69 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/does-not-exist.fdn
             -DCODE=FDN3001
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.type-mismatch
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/type-mismatch.fdn
+            -DCODE=FDN2011
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.run.typed-control
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-control.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-control.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.divide-zero
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/divide-zero.fdn
+            -DPATTERN=division.by.zero
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+    )
+    add_test(
+        NAME stage0.run.overflow
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/overflow.fdn
+            -DPATTERN=i32.overflow
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+    )
+    add_test(
+        NAME stage0.run.remainder-zero
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/remainder-zero.fdn
+            -DPATTERN=remainder.by.zero
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+    )
+    add_test(
+        NAME stage0.run.subtract-overflow
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/subtract-overflow.fdn
+            -DPATTERN=i32.overflow
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+    )
+    add_test(
+        NAME stage0.run.multiply-overflow
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/multiply-overflow.fdn
+            -DPATTERN=i32.overflow
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+    )
+    add_test(
+        NAME stage0.run.negate-overflow
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/negate-overflow.fdn
+            -DPATTERN=i32.overflow
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
 endif()

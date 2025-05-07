@@ -2,6 +2,7 @@
 
 #include "foundation/codegen.hpp"
 #include "foundation/lexer.hpp"
+#include "foundation/lower.hpp"
 #include "foundation/parser.hpp"
 #include "foundation/process.hpp"
 #include "foundation/sema.hpp"
@@ -173,7 +174,7 @@ int buildCompilation(const std::filesystem::path &source, const std::filesystem:
     if (!prepareParent(output) || !writeFile(temporarySource, compilation.generatedC)) {
         return 1;
     }
-    return runProcess(compilerArguments(temporarySource, output));
+    return runProcess(compilerArguments(temporarySource, output), ProcessOutput::StdoutToStderr);
 }
 
 } // namespace
@@ -194,11 +195,12 @@ Compilation compile(const std::filesystem::path &path) {
     if (compilation.diagnostics.hasErrors()) {
         return compilation;
     }
-    if (!analyze(program, compilation.diagnostics)) {
+    const auto semantic = analyze(program, compilation.diagnostics);
+    if (!semantic.has_value()) {
         return compilation;
     }
 
-    compilation.generatedC = emitC(program);
+    compilation.generatedC = emitC(lower(program, *semantic));
     return compilation;
 }
 

@@ -6,7 +6,23 @@
 
 namespace foundation {
 
+namespace {
+
+constexpr std::size_t maxExcerptWidth = 120;
+constexpr std::size_t markerContext = 40;
+constexpr std::size_t maxMarkerWidth = 80;
+constexpr std::size_t maxDiagnostics = 100;
+
+} // namespace
+
 void Diagnostics::error(std::string code, std::string message, SourceSpan span) {
+    if (diagnostics_.size() > maxDiagnostics) {
+        return;
+    }
+    if (diagnostics_.size() == maxDiagnostics) {
+        diagnostics_.push_back({"FDN0000", "too many errors", span});
+        return;
+    }
     diagnostics_.push_back({std::move(code), std::move(message), span});
 }
 
@@ -22,17 +38,37 @@ std::string renderDiagnostics(std::string_view path, std::string_view source,
         out << path << ':' << diagnostic.span.line << ':' << diagnostic.span.column << ": error["
             << diagnostic.code << "]: " << diagnostic.message << '\n';
 
-        const auto start = source.rfind('\n', diagnostic.span.offset);
+        const auto boundedOffset = std::min(diagnostic.span.offset, source.size());
+        const auto previousOffset = boundedOffset == 0 ? std::string_view::npos : boundedOffset - 1;
+        const auto start = source.rfind('\n', previousOffset);
         const auto lineStart = start == std::string_view::npos ? 0 : start + 1;
-        const auto end = source.find('\n', diagnostic.span.offset);
+        const auto end = source.find('\n', boundedOffset);
         const auto lineEnd = end == std::string_view::npos ? source.size() : end;
         const auto line = source.substr(lineStart, lineEnd - lineStart);
-        const auto width = std::max<std::size_t>(1, diagnostic.span.length);
+        const auto offset = std::min(boundedOffset, lineEnd) - lineStart;
+        const auto maxStart = line.size() > maxExcerptWidth ? line.size() - maxExcerptWidth : 0;
+        const auto desiredStart = offset > markerContext ? offset - markerContext : 0;
+        const auto excerptStart = std::min(desiredStart, maxStart);
+        const auto excerptLength = std::min(maxExcerptWidth, line.size() - excerptStart);
+        const auto excerpt = line.substr(excerptStart, excerptLength);
+        const auto hasPrefix = excerptStart != 0;
+        const auto hasSuffix = excerptStart + excerptLength != line.size();
+        const auto markerColumn = offset - excerptStart + (hasPrefix ? 3 : 0);
+        const auto markerWidth =
+            std::max<std::size_t>(1, std::min(diagnostic.span.length, maxMarkerWidth));
 
-        out << "  " << diagnostic.span.line << " | " << line << '\n';
-        out << "    | " << std::string(diagnostic.span.column - 1, ' ') << '^';
-        if (width > 1) {
-            out << std::string(width - 1, '~');
+        out << "  " << diagnostic.span.line << " | ";
+        if (hasPrefix) {
+            out << "...";
+        }
+        out << excerpt;
+        if (hasSuffix) {
+            out << "...";
+        }
+        out << '\n';
+        out << "    | " << std::string(markerColumn, ' ') << '^';
+        if (markerWidth > 1) {
+            out << std::string(markerWidth - 1, '~');
         }
         out << '\n';
     }
