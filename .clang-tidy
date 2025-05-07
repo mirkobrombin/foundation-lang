@@ -1,0 +1,11 @@
+Checks: >
+  -*,
+  bugprone-*,
+  clang-analyzer-*,
+  performance-*,
+  portability-*,
+  readability-avoid-const-params-in-decls,
+  readability-container-size-empty,
+  readability-redundant-*
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'stage0/.*'

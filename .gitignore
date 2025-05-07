@@ -1,0 +1,8 @@
+/build/
+/out/
+/.cache/
+*.o
+*.obj
+*.exe
+*.pdb
+*.dSYM/

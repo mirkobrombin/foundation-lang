@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  unix:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux GCC
+            os: ubuntu-latest
+            cc: gcc
+            cxx: g++
+          - name: Linux Clang
+            os: ubuntu-latest
+            cc: clang
+            cxx: clang++
+          - name: macOS AppleClang
+            os: macos-latest
+            cc: clang
+            cxx: clang++
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: cmake --preset dev
+
+      - name: Build
+        run: cmake --build --preset dev
+
+      - name: Test three times
+        run: |
+          ctest --preset dev
+          ctest --preset dev
+          ctest --preset dev
+
+  windows:
+    name: Windows MSVC
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build/windows -A x64
+          -DBUILD_TESTING=ON
+          -DFOUNDATION_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build/windows --config Debug
+
+      - name: Test three times
+        run: |
+          ctest --test-dir build/windows -C Debug --output-on-failure
+          ctest --test-dir build/windows -C Debug --output-on-failure
+          ctest --test-dir build/windows -C Debug --output-on-failure
+
+  fuzz:
+    name: Parser fuzz and sanitizers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: >-
+          cmake -S . -B build/fuzz -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DBUILD_TESTING=ON
+          -DFOUNDATION_WARNINGS_AS_ERRORS=ON
+          -DFOUNDATION_BUILD_FUZZERS=ON
+
+      - name: Build
+        run: cmake --build build/fuzz
+
+      - name: Run compiler tests with sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:symbolize=0
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=0
+        run: ctest --test-dir build/fuzz --output-on-failure
+
+      - name: Fuzz parser
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:symbolize=0
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=0
+        run: >-
+          ./build/fuzz/foundation_parser_fuzz
+          -max_total_time=10
+          -verbosity=0
+          build/fuzz/fuzz-corpus
