@@ -1,0 +1,9 @@
+fn main() i32 {
+    let value = "owned"
+    let read = fn() void capture view value {
+        print(value)
+    }
+    discard value
+    read()
+    0
+}

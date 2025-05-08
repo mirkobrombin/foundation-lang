@@ -22,6 +22,7 @@ enum class TypeKind {
     Struct,
     Enum,
     Contract,
+    Function,
 };
 
 struct Type {

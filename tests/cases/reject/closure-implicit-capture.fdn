@@ -1,0 +1,7 @@
+fn main() i32 {
+    let value = 1
+    let read = fn() i32 {
+        value
+    }
+    read()
+}

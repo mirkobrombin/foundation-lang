@@ -271,6 +271,7 @@ if(BUILD_TESTING)
             "duplicate-alias;FDN3004"
             "cycle;FDN3006"
             "private;FDN3008"
+            "private-function-value;FDN3008"
             "private-members;FDN3008"
             "private-method;FDN3008"
             "private-contract-method;FDN3008"
@@ -359,6 +360,44 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/methods-contracts.fdn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/methods-contracts.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.function-values
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/function-values.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/function-values.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.closures
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.emit.closures-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.fdn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/closures-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/closures-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.run.closure-panic-trace
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/panic/closure-trace.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/closure-panic.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/closure-panic
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-closure-panic.cmake
     )
     add_test(
         NAME stage0.run.contract-project
@@ -464,10 +503,53 @@ if(BUILD_TESTING)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
     endforeach()
+    foreach(closure_case IN ITEMS
+            "closure-implicit-capture;FDN2120"
+            "closure-duplicate-capture;FDN2121"
+            "closure-capture-parameter;FDN2122"
+            "closure-copy-owner;FDN2123"
+            "closure-edit-immutable;FDN2124"
+            "closure-conflicting-capture;FDN2125"
+            "closure-capture-consume;FDN2126"
+            "closure-borrow-return;FDN2127"
+            "closure-borrow-struct;FDN2127"
+            "closure-borrow-enum;FDN2127"
+            "closure-borrow-array;FDN2127"
+            "closure-not-callable;FDN2128"
+            "closure-signature-mismatch;FDN2011"
+            "closure-use-after-own-capture;FDN2065"
+            "closure-edit-alias;FDN2073"
+            "closure-view-move;FDN2067")
+        list(GET closure_case 0 closure_name)
+        list(GET closure_case 1 closure_code)
+        add_test(
+            NAME stage0.check.${closure_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${closure_name}.fdn
+                -DCODE=${closure_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
+    foreach(function_value_case IN ITEMS
+            "function-value-equality;FDN2012"
+            "function-value-unresolved-generic;FDN2045")
+        list(GET function_value_case 0 function_value_name)
+        list(GET function_value_case 1 function_value_code)
+        add_test(
+            NAME stage0.check.${function_value_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${function_value_name}.fdn
+                -DCODE=${function_value_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
     foreach(c_abi_case IN ITEMS
             "c-abi-generic;FDN2112"
             "c-abi-return;FDN2113"
             "c-abi-owner;FDN2114"
+            "c-abi-function;FDN2114"
             "c-abi-edit-string;FDN2114"
             "c-abi-duplicate-symbol;FDN2111"
             "c-abi-reserved-export;FDN2115"
@@ -525,6 +607,19 @@ if(BUILD_TESTING)
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/methods-contracts-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/methods-contracts-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/methods-contracts.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.closures-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/closures-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/closures-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake

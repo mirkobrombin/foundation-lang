@@ -32,6 +32,8 @@ const char *typeName(Type type) {
         return "<enum>";
     case TypeKind::Contract:
         return "<contract>";
+    case TypeKind::Function:
+        return "fn";
     }
     return "<invalid>";
 }

@@ -1,0 +1,8 @@
+package privatevalue.app
+
+import privatevalue.lib
+
+fn main() i32 {
+    let hidden = lib.hidden
+    hidden()
+}

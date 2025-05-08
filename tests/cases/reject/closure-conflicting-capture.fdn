@@ -1,0 +1,10 @@
+fn main() i32 {
+    var value = 1
+    let first = fn() i32 capture edit value {
+        value
+    }
+    let second = fn() i32 capture edit value {
+        value
+    }
+    first() + second()
+}

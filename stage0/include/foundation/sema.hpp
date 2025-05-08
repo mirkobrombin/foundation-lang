@@ -15,6 +15,7 @@ namespace foundation {
 
 enum class CallTargetKind {
     Function,
+    FunctionValue,
     Method,
     ContractMethod,
     Print,
@@ -30,6 +31,7 @@ struct CallTarget {
     Type receiverType{invalidType};
     std::size_t contract{};
     std::size_t method{};
+    FirLocalId local{};
     struct ContractConversion {
         Type concreteType{invalidType};
         Type contractType{invalidType};
@@ -39,10 +41,25 @@ struct CallTarget {
     std::vector<std::optional<ContractConversion>> argumentConversions;
 };
 
+struct FunctionValueTarget {
+    FirFunctionId function{};
+    std::vector<Type> typeArguments;
+};
+
+struct ClosureTarget {
+    FirFunctionId function{};
+    std::vector<FirLocalId> captures;
+    std::vector<CaptureMode> modes;
+    bool borrowed{};
+};
+
 struct SemanticLocal {
     std::string name;
     Type type{invalidType};
     bool mutableBinding{};
+    bool capture{};
+    CaptureMode captureMode{CaptureMode::Copy};
+    bool borrowedClosure{};
 };
 
 struct SemanticFunction {
@@ -106,6 +123,9 @@ struct SemanticModel {
     std::vector<std::optional<EnumTarget>> enumTargets;
     std::vector<std::optional<MatchTarget>> matchTargets;
     std::vector<std::optional<OwnershipTarget>> ownershipTargets;
+    std::vector<std::optional<FunctionValueTarget>> functionValueTargets;
+    std::vector<std::optional<ClosureTarget>> closureTargets;
+    std::vector<bool> expressionBorrowedClosures;
     std::vector<bool> expressionMoves;
     std::vector<std::optional<FirLocalId>> statementLocals;
     std::vector<std::optional<FirLocalId>> statementElseLocals;

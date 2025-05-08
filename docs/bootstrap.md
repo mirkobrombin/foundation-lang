@@ -14,9 +14,11 @@ Option and Result primitives, Result must-use analysis, `let ... else`, fatal pa
 access and mutation, `own`, `view`, `edit`, deterministic destruction, immutable UTF-8 String
 values, fixed arrays, borrowed slices, checked indexing, branches, loops, compile-time contracts,
 receiver methods, borrowed dynamic dispatch, semantic resolution, typed FIR, and checked i32
-operations. It also supports checked C ABI imports and exports, deterministic public headers, and
-native C or object inputs. Each added construct must serve the stage-1 compiler or an accepted
-language invariant.
+operations. Named functions are first-class values, generic function values infer from an expected
+signature, and closures use explicit copy, own, view, or edit captures with deterministic
+environment destruction. It also supports checked C ABI imports and exports, deterministic public
+headers, and native C or object inputs. Each added construct must serve the stage-1 compiler or an
+accepted language invariant.
 
 Stage 0 bounds parser nesting and expression complexity before semantic analysis. It records at
 most 100 specific errors, followed by FDN0000 when more input errors are suppressed. These limits

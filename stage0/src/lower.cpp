@@ -49,6 +49,20 @@ FirReceiverKind lowerReceiver(ReceiverKind receiver) {
     std::terminate();
 }
 
+FirCaptureMode lowerCapture(CaptureMode mode) {
+    switch (mode) {
+    case CaptureMode::Copy:
+        return FirCaptureMode::Copy;
+    case CaptureMode::Own:
+        return FirCaptureMode::Own;
+    case CaptureMode::View:
+        return FirCaptureMode::View;
+    case CaptureMode::Edit:
+        return FirCaptureMode::Edit;
+    }
+    std::terminate();
+}
+
 FirBinaryOperator lowerBinary(BinaryOperator operation) {
     switch (operation) {
     case BinaryOperator::Add:
@@ -161,11 +175,14 @@ class Lowerer {
         function.exported = source.exported;
         function.cSymbol = source.cSymbol;
         function.hasBody = source.hasBody;
+        function.closure = source.closure;
         function.returnType = semantic.returnType;
         function.parameters = semantic.parameters;
         function.locals.reserve(semantic.locals.size());
         for (const auto &local : semantic.locals) {
-            function.locals.push_back({local.name, local.type, local.mutableBinding});
+            function.locals.push_back({local.name, local.type, local.mutableBinding,
+                                       local.capture, lowerCapture(local.captureMode),
+                                       local.borrowedClosure});
         }
         current_ = &function;
         function.body = lowerBlock(source.body);
@@ -261,11 +278,16 @@ class Lowerer {
             }
             value = FirArrayExpression{std::move(elements)};
         } else if (std::holds_alternative<NameExpression>(source.value)) {
-            const auto local = required(model_.expressionLocals[id]);
-            if (model_.expressionMoves[id]) {
-                value = FirMoveExpression{local};
+            if (model_.functionValueTargets[id].has_value()) {
+                const auto &target = *model_.functionValueTargets[id];
+                value = FirFunctionValueExpression{target.function, target.typeArguments};
             } else {
-                value = FirLocalExpression{local};
+                const auto local = required(model_.expressionLocals[id]);
+                if (model_.expressionMoves[id]) {
+                    value = FirMoveExpression{local};
+                } else {
+                    value = FirLocalExpression{local};
+                }
             }
         } else if (const auto *unary = std::get_if<UnaryExpression>(&source.value)) {
             value = FirUnaryExpression{lowerUnary(unary->operation),
@@ -300,6 +322,9 @@ class Lowerer {
             case CallTargetKind::Function:
             case CallTargetKind::Method:
                 break;
+            case CallTargetKind::FunctionValue:
+                kind = FirCallKind::FunctionValue;
+                break;
             case CallTargetKind::ContractMethod:
                 std::terminate();
             case CallTargetKind::Print:
@@ -310,7 +335,8 @@ class Lowerer {
                 break;
             }
             value = FirCallExpression{kind, target.function, target.typeArguments,
-                                      std::move(arguments), target.argumentDrops, 0, 0};
+                                      std::move(arguments), target.argumentDrops, 0, 0,
+                                      target.local};
         } else if (const auto *literal = std::get_if<StructExpression>(&source.value)) {
             const auto &target = required(model_.structTargets[id]);
             std::vector<FirStructFieldValue> fields;
@@ -373,6 +399,17 @@ class Lowerer {
         } else if (const auto *index = std::get_if<IndexExpression>(&source.value)) {
             value = FirIndexExpression{lowerExpression(index->base),
                                        lowerExpression(index->index)};
+        } else if (const auto *function = std::get_if<FunctionExpression>(&source.value)) {
+            static_cast<void>(function);
+            const auto &target = required(model_.closureTargets[id]);
+            std::vector<FirClosureCapture> captures;
+            captures.reserve(target.captures.size());
+            for (std::size_t captureIndex = 0; captureIndex < target.captures.size();
+                 ++captureIndex) {
+                captures.push_back({target.captures[captureIndex],
+                                    lowerCapture(target.modes[captureIndex])});
+            }
+            value = FirClosureExpression{target.function, std::move(captures)};
         } else {
             const auto &match = std::get<MatchExpression>(source.value);
             const auto &target = required(model_.matchTargets[id]);

@@ -1,0 +1,44 @@
+struct OperationBox {
+    operation fn(i32) i32
+}
+
+struct Value {
+    count i32
+}
+
+enum Operation {
+    Missing
+    Apply(fn(i32) i32)
+}
+
+fn double(value i32) i32 {
+    value * 2
+}
+
+fn identity<T>(value T) T {
+    value
+}
+
+fn apply<T>(value T, operation view fn(T) T) T {
+    operation(value)
+}
+
+fn increment(value Value) Value {
+    Value { count = value.count + 1 }
+}
+
+fn main() i32 {
+    let operation fn(i32) i32 = double
+    let generic fn(i32) i32 = identity
+    let box = OperationBox { operation = identity }
+    let movedBox = box
+    discard movedBox
+    let selected = Operation.Apply(double)
+    let transform fn(Value) Value = increment
+    let transformed = transform(Value { count = 41 })
+    let result = match selected {
+        Missing: 1
+        Apply(call): call(generic(21))
+    }
+    apply(result, view operation) - 84 + transformed.count - 42
+}

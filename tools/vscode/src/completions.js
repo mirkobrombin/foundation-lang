@@ -19,6 +19,7 @@ const staticCompletions = [
     { label: "else", kind: "Keyword" },
     { label: "while", kind: "Keyword" },
     { label: "match", kind: "Keyword" },
+    { label: "capture", kind: "Keyword", detail: "Declare explicit closure captures" },
     { label: "own", kind: "Keyword", detail: "Create or declare an exclusive owner" },
     { label: "view", kind: "Keyword", detail: "Create or declare a shared borrow" },
     { label: "edit", kind: "Keyword", detail: "Create or declare an exclusive mutable borrow" },
@@ -30,6 +31,12 @@ const staticCompletions = [
     { label: "void", kind: "TypeParameter" },
     { label: "Option", kind: "TypeParameter", detail: "primitive Option<T>" },
     { label: "Result", kind: "TypeParameter", detail: "primitive Result<T, E>" },
+    {
+        label: "fn(...) R",
+        kind: "TypeParameter",
+        detail: "function value type",
+        insertText: "fn(${1:parameters}) ${2:R}"
+    },
     {
         label: "[N]T",
         kind: "TypeParameter",
@@ -220,34 +227,66 @@ function topLevelSurface(source) {
     return result;
 }
 
+function skipType(tokens, offset) {
+    if (["own", "view", "edit"].includes(tokens[offset])) {
+        offset += 1;
+    }
+    if (tokens[offset] === "fn") {
+        offset += 1;
+        if (tokens[offset] === "(") {
+            let depth = 0;
+            do {
+                if (tokens[offset] === "(") {
+                    depth += 1;
+                } else if (tokens[offset] === ")") {
+                    depth -= 1;
+                }
+                offset += 1;
+            } while (offset < tokens.length && depth !== 0);
+        }
+        return skipType(tokens, offset);
+    }
+    if (tokens[offset] === "[") {
+        offset += 1;
+        if (/^[0-9]+$/.test(tokens[offset] || "")) {
+            offset += 1;
+            if (tokens[offset] === "]") {
+                offset += 1;
+            }
+            return skipType(tokens, offset);
+        }
+        offset = skipType(tokens, offset);
+        return tokens[offset] === "]" ? offset + 1 : offset;
+    }
+    offset += 1;
+    if (tokens[offset] !== "<") {
+        return offset;
+    }
+    let depth = 0;
+    do {
+        if (tokens[offset] === "<") {
+            depth += 1;
+        } else if (tokens[offset] === ">") {
+            depth -= 1;
+        }
+        offset += 1;
+    } while (offset < tokens.length && depth !== 0);
+    return offset;
+}
+
 function collectStructFields(source) {
     const surface = topLevelSurface(source).replace(
         /\bfn\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)\s+[^\n{]+/g,
         ""
     );
-    const tokens = [...surface.matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*|[<>,]/g)]
+    const tokens = [...surface.matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*|[0-9]+|[<>,()[\]]/g)]
         .map((match) => match[0]);
     const fields = [];
     let offset = 0;
     while (offset + 1 < tokens.length) {
         fields.push(tokens[offset]);
         offset += 1;
-        if (["own", "view", "edit"].includes(tokens[offset])) {
-            offset += 1;
-        }
-        offset += 1;
-        if (tokens[offset] !== "<") {
-            continue;
-        }
-        let depth = 0;
-        do {
-            if (tokens[offset] === "<") {
-                depth += 1;
-            } else if (tokens[offset] === ">") {
-                depth -= 1;
-            }
-            offset += 1;
-        } while (offset < tokens.length && depth !== 0);
+        offset = skipType(tokens, offset);
     }
     return fields;
 }

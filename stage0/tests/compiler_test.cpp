@@ -998,6 +998,45 @@ fn main() i32 {
            "C import does not leak into the public header");
 }
 
+void closuresLowerToDeterministicFunctionValues() {
+    constexpr std::string_view source = R"(
+fn double(value i32) i32 { value * 2 }
+
+fn apply<T>(value T, operation view fn(T) T) T {
+    operation(value)
+}
+
+fn main() i32 {
+    let direct fn(i32) i32 = double
+    let factor = 2
+    let closure = fn(value i32) i32 capture factor {
+        value * factor
+    }
+    apply(21, view direct) + apply(21, view closure) - 84
+}
+)";
+    auto first = check(source);
+    auto second = check(source);
+    expect(!first.diagnostics.hasErrors(), "closure program has no diagnostics");
+    expect(!second.diagnostics.hasErrors(), "repeated closure program has no diagnostics");
+    expect(first.program.functions.size() == 4 && first.program.functions[2].closure,
+           "anonymous function remains a closure in the AST");
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        expect(false, "closure program lowers to FIR");
+        return;
+    }
+
+    const auto firstC = foundation::emitC(*first.fir, "closures.fdn");
+    const auto secondC = foundation::emitC(*second.fir, "closures.fdn");
+    expect(firstC == secondC, "closure C emission is deterministic");
+    expect(firstC.find("fdn_call") != std::string::npos,
+           "function values use a typed invocation pointer");
+    expect(firstC.find("_environment_drop") != std::string::npos,
+           "captured closure receives deterministic environment cleanup");
+    expect(firstC.find("_value_adapter") != std::string::npos,
+           "named function value receives an invocation adapter");
+}
+
 void projectDiagnosticsRetainTheirSource() {
     foundation::Diagnostics diagnostics;
     const auto project = foundation::loadProject(
@@ -1041,6 +1080,7 @@ int main() {
     diagnosticsBoundLongSourceExcerpts();
     packageHeadersAndSourceDiagnosticsStayStable();
     cAbiFunctionsLowerToDeterministicBoundaries();
+    closuresLowerToDeterministicFunctionValues();
     projectDiagnosticsRetainTheirSource();
 
     if (failures != 0) {

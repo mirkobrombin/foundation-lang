@@ -67,10 +67,11 @@ std::string internalName(std::string_view packageName, std::string_view name) {
 bool intrinsicType(std::string_view name) {
     return name == "void" || name == "i32" || name == "bool" || name == "String" ||
            name == "Option" || name == "Result" || name == "[array]" || name == "[slice]" ||
-           name == "own" || name == "view" || name == "edit";
+           name == "[function]" || name == "own" || name == "view" || name == "edit";
 }
 
-void remapExpression(Expression &expression, std::size_t expressionOffset) {
+void remapExpression(Expression &expression, std::size_t expressionOffset,
+                     std::size_t functionOffset) {
     if (auto *array = std::get_if<ArrayExpression>(&expression.value)) {
         for (auto &element : array->elements) {
             element += expressionOffset;
@@ -105,6 +106,8 @@ void remapExpression(Expression &expression, std::size_t expressionOffset) {
         for (auto &arm : match->arms) {
             arm.expression += expressionOffset;
         }
+    } else if (auto *function = std::get_if<FunctionExpression>(&expression.value)) {
+        function->function += functionOffset;
     }
 }
 
@@ -142,8 +145,9 @@ void appendProgram(Program &target, Program source) {
     const auto expressionOffset = target.expressions.size();
     const auto statementOffset = target.statements.size();
     const auto blockOffset = target.blocks.size();
+    const auto functionOffset = target.functions.size();
     for (auto &expression : source.expressions) {
-        remapExpression(expression, expressionOffset);
+        remapExpression(expression, expressionOffset, functionOffset);
         target.expressions.push_back(std::move(expression));
     }
     for (auto &statement : source.statements) {
@@ -256,12 +260,6 @@ void linkExpression(Program &program, AstExpressionId id, const std::string &cur
             linkExpression(program, argument, currentPackage, imports, symbols, typeParameters,
                            diagnostics);
         }
-        if (call->callee != "print" && call->callee != "panic") {
-            if (const auto *declaration =
-                    findDeclaration(symbols, currentPackage, call->callee, true)) {
-                call->callee = declaration->internalName;
-            }
-        }
     } else if (auto *literal = std::get_if<StructExpression>(&expression.value)) {
         linkType(literal->type, currentPackage, imports, symbols, typeParameters, diagnostics);
         for (auto &field : literal->fields) {
@@ -284,14 +282,19 @@ void linkExpression(Program &program, AstExpressionId id, const std::string &cur
                 if (const auto imported = imports.find(baseName->name); imported != imports.end()) {
                     if (const auto *function =
                             findDeclaration(symbols, imported->second, member->member, true);
-                        function != nullptr && member->invoked) {
+                        function != nullptr) {
                         if (!function->exported) {
                             reportPrivate(diagnostics, imported->second, member->member,
                                           expression.span);
                         }
-                        expression.value = CallExpression{function->internalName,
-                                                          std::move(member->typeArguments),
-                                                          std::move(member->arguments)};
+                        if (member->invoked) {
+                            expression.value = CallExpression{function->internalName,
+                                                              std::move(member->typeArguments),
+                                                              std::move(member->arguments)};
+                        } else {
+                            expression.value = NameExpression{function->internalName,
+                                                              std::move(member->typeArguments)};
+                        }
                         return;
                     }
                     if (const auto *type =
@@ -465,7 +468,7 @@ void collectSymbols(const std::vector<ParsedFile> &files, SymbolTable &symbols) 
                                 declaration.exported});
         }
         for (const auto &declaration : file.program.functions) {
-            if (declaration.receiver.has_value()) {
+            if (declaration.receiver.has_value() || declaration.closure) {
                 continue;
             }
             package.functions.emplace(
@@ -604,7 +607,9 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
         linkType(function.returnType, packageName, aliases, symbols, parameters, diagnostics);
         linkBlock(file.program, function.body, packageName, aliases, symbols, parameters,
                   diagnostics);
-        if (function.receiver.has_value()) {
+        if (function.closure) {
+            function.name = internalName(packageName, function.name);
+        } else if (function.receiver.has_value()) {
             function.ownerType = internalName(packageName, function.ownerType);
             function.name = function.ownerType + '.' + function.name;
         } else if (function.name == "main") {

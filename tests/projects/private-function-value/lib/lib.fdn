@@ -1,0 +1,5 @@
+package privatevalue.lib
+
+fn hidden() i32 {
+    0
+}

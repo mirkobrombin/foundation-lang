@@ -118,6 +118,8 @@ const char *tokenName(TokenKind kind) {
         return "while";
     case TokenKind::Match:
         return "match";
+    case TokenKind::Capture:
+        return "capture";
     case TokenKind::Own:
         return "own";
     case TokenKind::View:
@@ -369,6 +371,8 @@ Token Lexer::identifier() {
         kind = TokenKind::While;
     } else if (text == "match") {
         kind = TokenKind::Match;
+    } else if (text == "capture") {
+        kind = TokenKind::Capture;
     } else if (text == "own") {
         kind = TokenKind::Own;
     } else if (text == "view") {
