@@ -958,7 +958,8 @@ class FunctionEmitter {
             auto arrayType = operandType;
             auto pointer = false;
             if (arrayType.kind == TypeKind::Own && arrayType.arguments.size() == 1) {
-                arrayType = arrayType.arguments.front();
+                const auto ownedArray = arrayType.arguments.front();
+                arrayType = ownedArray;
                 pointer = true;
             }
             const auto temporary = nextTemporary();
@@ -1010,11 +1011,13 @@ class FunctionEmitter {
         auto sequence = sourceType;
         auto access = base.value;
         if (sequence.kind == TypeKind::Own && sequence.arguments.size() == 1) {
-            sequence = sequence.arguments.front();
+            const auto ownedSequence = sequence.arguments.front();
+            sequence = ownedSequence;
             access += "->fdn_data";
         } else if ((sequence.kind == TypeKind::View || sequence.kind == TypeKind::Edit) &&
                    sequence.arguments.size() == 1) {
-            sequence = sequence.arguments.front();
+            const auto borrowedSequence = sequence.arguments.front();
+            sequence = borrowedSequence;
             access += ".fdn_data";
         } else {
             access += ".fdn_data";

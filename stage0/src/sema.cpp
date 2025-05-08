@@ -522,7 +522,8 @@ class Analyzer {
             for (std::size_t index = 0; index < fields.size(); ++index) {
                 auto child = substitute(fields[index], type.arguments);
                 while (child.kind == TypeKind::Array && child.arguments.size() == 1) {
-                    child = child.arguments.front();
+                    const auto element = child.arguments.front();
+                    child = element;
                 }
                 children.push_back(
                     {child, program_.structs[type.declaration].fields[index].span});
@@ -533,7 +534,8 @@ class Analyzer {
                 if (variants[index].has_value()) {
                     auto child = substitute(*variants[index], type.arguments);
                     while (child.kind == TypeKind::Array && child.arguments.size() == 1) {
-                        child = child.arguments.front();
+                        const auto element = child.arguments.front();
+                        child = element;
                     }
                     children.push_back(
                         {child, program_.enums[type.declaration].variants[index].span});
@@ -1267,7 +1269,8 @@ class Analyzer {
             auto target = *expected;
             if ((target.kind == TypeKind::View || target.kind == TypeKind::Edit) &&
                 target.arguments.size() == 1) {
-                target = target.arguments.front();
+                const auto borrowed = target.arguments.front();
+                target = borrowed;
             }
             requireSame(target, closureType, span, "closure signature");
         }
@@ -1478,7 +1481,8 @@ class Analyzer {
         if ((base.kind == TypeKind::Own || base.kind == TypeKind::View ||
              base.kind == TypeKind::Edit) &&
             base.arguments.size() == 1) {
-            base = base.arguments.front();
+            const auto sequence = base.arguments.front();
+            base = sequence;
         }
         if ((base.kind != TypeKind::Array && base.kind != TypeKind::Slice) ||
             base.arguments.size() != 1) {
@@ -1576,7 +1580,8 @@ class Analyzer {
             auto functionType = model_.functions[currentFunction_].locals[*local].type;
             if ((functionType.kind == TypeKind::View || functionType.kind == TypeKind::Edit) &&
                 functionType.arguments.size() == 1) {
-                functionType = functionType.arguments.front();
+                const auto callable = functionType.arguments.front();
+                functionType = callable;
             }
             if (functionType.kind != TypeKind::Function || functionType.arguments.empty()) {
                 diagnostics_.error("FDN2128", call.callee + " is not callable", span);
@@ -1988,7 +1993,8 @@ class Analyzer {
         if ((base.kind == TypeKind::Own || base.kind == TypeKind::View ||
              base.kind == TypeKind::Edit) &&
             base.arguments.size() == 1) {
-            base = base.arguments.front();
+            const auto value = base.arguments.front();
+            base = value;
         }
         if (member.invoked) {
             return analyzeMethod(id, member, sourceType, base, span);
