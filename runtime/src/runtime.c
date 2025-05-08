@@ -17,6 +17,7 @@ _Static_assert(sizeof(uintptr_t) <= sizeof(uint64_t), "runtime handles require a
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
+#include <share.h>
 #include <windows.h>
 #include <wchar.h>
 #else
@@ -855,10 +856,7 @@ int32_t foundation_runtime_fs_open_lines(const fdn_string *path, uint64_t *handl
         if (native_path == NULL) {
             return 3;
         }
-        file = NULL;
-        if (_wfopen_s(&file, native_path, L"rb") != 0) {
-            file = NULL;
-        }
+        file = _wfsopen(native_path, L"rb", _SH_DENYNO);
         fdn_dealloc(native_path);
     }
 #else

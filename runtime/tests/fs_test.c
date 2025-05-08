@@ -4,10 +4,22 @@
 #include <stdio.h>
 #include <string.h>
 
+#if defined(_WIN32)
+#include <share.h>
+#endif
+
 static int line_is(fdn_string line, const char *expected) {
     const size_t length = strlen(expected);
     return line.length == length &&
            (length == 0 || memcmp(line.data, expected, length) == 0);
+}
+
+static FILE *open_file(const char *path, const char *mode) {
+#if defined(_WIN32)
+    return _fsopen(path, mode, _SH_DENYNO);
+#else
+    return fopen(path, mode);
+#endif
 }
 
 int main(int argc, char **argv) {
@@ -94,7 +106,7 @@ int main(int argc, char **argv) {
     }
 
     (void)remove(argv[3]);
-    writer = fopen(argv[3], "wb");
+    writer = open_file(argv[3], "wb");
     if (writer == NULL || fputs("first\n", writer) < 0 || fclose(writer) != 0) {
         return 15;
     }
@@ -104,7 +116,7 @@ int main(int argc, char **argv) {
         !line_is(line, "first")) {
         return 16;
     }
-    writer = fopen(argv[3], "ab");
+    writer = open_file(argv[3], "ab");
     if (writer == NULL || fputs("growing", writer) < 0 || fclose(writer) != 0) {
         return 17;
     }
