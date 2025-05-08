@@ -1311,6 +1311,22 @@ class Analyzer {
                                              ExpressionUse::Inspect);
         const auto local = model_.expressionLocals[ownership.operand];
         if (!local.has_value()) {
+            if (ownership.operation == OwnershipOperator::View &&
+                model_.functionValueTargets[ownership.operand].has_value()) {
+                if (!transientBorrowsAllowed_) {
+                    diagnostics_.error("FDN2070",
+                                       "borrow must be passed directly to a function", span);
+                }
+                model_.ownershipTargets[id] =
+                    OwnershipTarget{ownership.operation, std::nullopt};
+                return Type{TypeKind::View, 0, {value}};
+            }
+            if (ownership.operation == OwnershipOperator::Edit &&
+                model_.functionValueTargets[ownership.operand].has_value()) {
+                diagnostics_.error("FDN2072", "edit requires a mutable binding", span);
+            } else {
+                diagnostics_.error("FDN2069", "borrow requires a binding", span);
+            }
             return invalidType;
         }
         if (!transientBorrowsAllowed_) {

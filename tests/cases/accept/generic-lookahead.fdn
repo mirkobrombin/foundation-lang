@@ -1,0 +1,36 @@
+fn identity<T>(value T) T {
+    value
+}
+
+fn apply(value i32, operation view fn(i32) i32) i32 {
+    operation(value)
+}
+
+fn applyPair(value i32, first view fn(i32) i32, second view fn(i32) i32) i32 {
+    first(second(value))
+}
+
+fn specialize() fn(i32) i32 { identity<i32> }
+
+fn main() i32 {
+    let x = 1
+    let y = 2
+    let p = 5
+    let c = 4
+    let before = x < y
+    let after = p > (c)
+
+    let direct fn(i32) i32 = identity<i32>
+    let returned = specialize()
+    let functions = [identity<i32>, identity<i32>]
+    let single = apply(20, view identity<i32>)
+    let paired = applyPair(5, view identity<i32>, view identity<i32>)
+    discard functions
+
+    if before && after {
+        print("generic lookahead ok")
+        return direct(single) + returned(paired) - 25
+    } else {
+        return 1
+    }
+}

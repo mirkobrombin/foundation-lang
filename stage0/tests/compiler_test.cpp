@@ -243,6 +243,65 @@ fn main() i32 {
            "distinct generic enum applications have distinct C types");
 }
 
+void genericLookaheadStaysTypeAware() {
+    constexpr std::string_view source = R"(
+struct Box<T> { value T }
+fn identity<T>(value T) T { value }
+fn typeMarker<T>() void { return }
+fn apply(value i32, operation view fn(i32) i32) i32 { operation(value) }
+fn main() i32 {
+    let x = 1
+    let y = 2
+    let p = 5
+    let c = 4
+    let before = x < y
+    let after = p > (c)
+    let direct fn(i32) i32 = identity<i32>
+    let result = apply(42, view identity<i32>)
+    typeMarker<own Box<i32>>()
+    typeMarker<view [i32]>()
+    typeMarker<edit [i32]>()
+    typeMarker<[2]i32>()
+    typeMarker<fn(i32, String) bool>()
+    typeMarker<Result<Option<i32>, bool>>()
+    if before && after { return direct(result) - 42 } else { return 1 }
+}
+)";
+    auto result = check(source);
+    expect(!result.diagnostics.hasErrors(),
+           "generic lookahead does not cross comparison statements");
+    expect(result.fir.has_value(),
+           "explicit generic function values lower to FIR");
+    if (!result.fir.has_value()) {
+        return;
+    }
+    const auto generated = foundation::emitC(*result.fir);
+    expect(generated.find("fdn_fn_identity_0_g") != std::string::npos,
+           "explicit generic function value selects a specialization");
+
+    constexpr std::string_view malformed = R"(
+fn identity<T>(value T) T { value }
+fn main() i32 {
+    identity<i32,>(1)
+}
+)";
+    auto rejected = check(malformed);
+    expect(rejected.diagnostics.hasErrors(),
+           "malformed generic type list is rejected by bounded lookahead");
+
+    constexpr std::string_view invalidBorrow = R"(
+fn identity<T>(value T) T { value }
+fn main() i32 {
+    let borrowed = view identity<i32>
+    discard borrowed
+    0
+}
+)";
+    auto borrowRejected = check(invalidBorrow);
+    expect(hasCode(borrowRejected.diagnostics, "FDN2070"),
+           "specialized function borrow remains call-site transient");
+}
+
 void ownershipLowersToDeterministicC() {
     constexpr std::string_view source = R"(
 struct User { id i32 }
@@ -1172,6 +1231,7 @@ int main() {
     deepStructGraphsStayIterative();
     enumMatchesLowerToDeterministicC();
     genericValuesMonomorphizeDeterministically();
+    genericLookaheadStaysTypeAware();
     ownershipLowersToDeterministicC();
     ownedPlacesLowerToDeterministicC();
     sequenceValuesLowerToDeterministicC();

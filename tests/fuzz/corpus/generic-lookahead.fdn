@@ -1,0 +1,13 @@
+fn identity<T>(value T) T { value }
+fn typeMarker<T>() void { return }
+fn main() i32 {
+    let x = 1
+    let y = 2
+    let p = 5
+    let c = 4
+    let before = x < y
+    let after = p > (c)
+    let direct fn(i32) i32 = identity<i32>
+    typeMarker<Result<Option<i32>, fn(i32) i32>>()
+    if before && after { return direct(42) - 42 } else { return 1 }
+}
