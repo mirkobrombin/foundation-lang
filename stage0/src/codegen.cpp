@@ -2206,16 +2206,24 @@ void emitMainWrapper(std::ostringstream &out, const FirProgram &program) {
         out << "    const int32_t fdn_result = " << functionName(program, program.main)
             << "(fdn_arguments);\n";
         out << "    fdn_dealloc(fdn_argument_values);\n";
+        out << "#if defined(FOUNDATION_VERIFY_ALLOCATIONS)\n";
+        out << "    if (fdn_live_allocations() != 0) {\n";
+        out << "        fdn_panic_cstr(\"live allocations after main\");\n";
+        out << "    }\n";
+        out << "#endif\n";
+        out << "    return (int)fdn_result;\n";
     } else {
+        out << "#if defined(FOUNDATION_VERIFY_ALLOCATIONS)\n";
         out << "    const int32_t fdn_result = " << functionName(program, program.main)
             << "();\n";
+        out << "    if (fdn_live_allocations() != 0) {\n";
+        out << "        fdn_panic_cstr(\"live allocations after main\");\n";
+        out << "    }\n";
+        out << "    return (int)fdn_result;\n";
+        out << "#else\n";
+        out << "    return (int)" << functionName(program, program.main) << "();\n";
+        out << "#endif\n";
     }
-    out << "#if defined(FOUNDATION_VERIFY_ALLOCATIONS)\n";
-    out << "    if (fdn_live_allocations() != 0) {\n";
-    out << "        fdn_panic_cstr(\"live allocations after main\");\n";
-    out << "    }\n";
-    out << "#endif\n";
-    out << "    return (int)fdn_result;\n";
     out << "}\n";
 }
 

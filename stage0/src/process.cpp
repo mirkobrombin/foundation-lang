@@ -27,6 +27,35 @@ std::string errorMessage(int code) {
     return std::error_code(code, std::generic_category()).message();
 }
 
+#ifdef _WIN32
+std::string quoteWindowsArgument(const std::string &argument) {
+    if (!argument.empty() && argument.find_first_of(" \t\"") == std::string::npos) {
+        return argument;
+    }
+
+    std::string quoted{'"'};
+    std::size_t backslashes{};
+    for (const auto character : argument) {
+        if (character == '\\') {
+            ++backslashes;
+            continue;
+        }
+        if (character == '"') {
+            quoted.append(backslashes * 2 + 1, '\\');
+            quoted.push_back(character);
+            backslashes = 0;
+            continue;
+        }
+        quoted.append(backslashes, '\\');
+        backslashes = 0;
+        quoted.push_back(character);
+    }
+    quoted.append(backslashes * 2, '\\');
+    quoted.push_back('"');
+    return quoted;
+}
+#endif
+
 } // namespace
 
 int runProcess(const std::vector<std::string> &arguments, ProcessOutput output) {
@@ -42,11 +71,17 @@ int runProcess(const std::vector<std::string> &arguments, ProcessOutput output) 
         programName.erase(0, separator + 1);
     }
 
-    std::vector<const char *> argv;
-    argv.reserve(arguments.size() + 1);
-    argv.push_back(programName.c_str());
+    std::vector<std::string> quotedArguments;
+    quotedArguments.reserve(arguments.size());
+    quotedArguments.push_back(quoteWindowsArgument(programName));
     for (std::size_t index = 1; index < arguments.size(); ++index) {
-        argv.push_back(arguments[index].c_str());
+        quotedArguments.push_back(quoteWindowsArgument(arguments[index]));
+    }
+
+    std::vector<const char *> argv;
+    argv.reserve(quotedArguments.size() + 1);
+    for (const auto &argument : quotedArguments) {
+        argv.push_back(argument.c_str());
     }
     argv.push_back(nullptr);
 

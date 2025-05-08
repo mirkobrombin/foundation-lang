@@ -17,6 +17,25 @@ fn Separator() String {
     "\\"
 }
 
+@target(linux)
+fn SeparatorFor(left view String) String {
+    Separator()
+}
+
+@target(macos)
+fn SeparatorFor(left view String) String {
+    Separator()
+}
+
+@target(windows)
+fn SeparatorFor(left view String) String {
+    let forward = "/"
+    if text.Contains(left, view forward) {
+        return forward
+    }
+    Separator()
+}
+
 fn Join(left view String, right view String) String {
     if text.IsEmpty(left) {
         return text.Copy(right)
@@ -25,7 +44,7 @@ fn Join(left view String, right view String) String {
         return text.Copy(left)
     }
 
-    let separator = Separator()
+    let separator = SeparatorFor(left)
     let leftEnds = text.EndsWith(left, view separator)
     let rightStarts = text.StartsWith(right, view separator)
     let leftCopy = text.Copy(left)

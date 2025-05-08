@@ -61,12 +61,16 @@ fn main() i32 {
     let base = pathBase()
     let child = "foundation"
     let joined = path.Join(view base, view child)
+    let forwardBase = "tests/fixtures"
+    let forwardPath = path.Join(view forwardBase, view child)
+    let expectedForwardPath = "tests/fixtures/foundation"
     if text.ByteLen(view source) == 14 &&
         byteOr(text.ByteAt(view source, 1), 0) == 195 &&
         accent == "é" &&
         text.Contains(view source, view session) &&
         indexOr(text.Find(view source, view session), 99) == 7 &&
-        joined == expectedPath() {
+        joined == expectedPath() &&
+        forwardPath == expectedForwardPath {
         print("text path ok")
         return 0
     }
