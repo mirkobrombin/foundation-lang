@@ -236,7 +236,8 @@ int buildFile(const std::filesystem::path &source, const std::filesystem::path &
 }
 
 int runFile(const std::filesystem::path &source,
-            const std::vector<std::filesystem::path> &nativeInputs) {
+            const std::vector<std::filesystem::path> &nativeInputs,
+            const std::vector<std::string> &arguments) {
     auto temporary = createTempDirectory();
     if (!temporary.has_value()) {
         return 1;
@@ -251,7 +252,9 @@ int runFile(const std::filesystem::path &source,
     if (status != 0) {
         return status;
     }
-    return runProcess({executable.string()});
+    std::vector<std::string> processArguments{executable.string()};
+    processArguments.insert(processArguments.end(), arguments.begin(), arguments.end());
+    return runProcess(processArguments);
 }
 
 } // namespace foundation

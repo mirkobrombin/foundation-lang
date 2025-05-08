@@ -1,0 +1,74 @@
+package test.text_path
+
+import std.path
+import std.text
+
+@target(linux)
+fn expectedPath() String {
+    "/tmp/foundation"
+}
+
+@target(macos)
+fn expectedPath() String {
+    "/tmp/foundation"
+}
+
+@target(windows)
+fn expectedPath() String {
+    "C:\\tmp\\foundation"
+}
+
+@target(linux)
+fn pathBase() String {
+    "/tmp"
+}
+
+@target(macos)
+fn pathBase() String {
+    "/tmp"
+}
+
+@target(windows)
+fn pathBase() String {
+    "C:\\tmp"
+}
+
+fn indexOr(value Option<u64>, fallback u64) u64 {
+    match value {
+        None: fallback
+        Some(index): index
+    }
+}
+
+fn byteOr(value Result<u64, text.RangeError>, fallback u64) u64 {
+    match value {
+        Ok(byte): byte
+        Err(error): fallback
+    }
+}
+
+fn sliceOr(value Result<String, text.RangeError>) String {
+    match value {
+        Ok(segment): segment
+        Err(error): ""
+    }
+}
+
+fn main() i32 {
+    let source = "héllo session"
+    let session = "session"
+    let accent = sliceOr(text.Slice(view source, 1, 3))
+    let base = pathBase()
+    let child = "foundation"
+    let joined = path.Join(view base, view child)
+    if text.ByteLen(view source) == 14 &&
+        byteOr(text.ByteAt(view source, 1), 0) == 195 &&
+        accent == "é" &&
+        text.Contains(view source, view session) &&
+        indexOr(text.Find(view source, view session), 99) == 7 &&
+        joined == expectedPath() {
+        print("text path ok")
+        return 0
+    }
+    return 1
+}

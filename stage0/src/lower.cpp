@@ -295,7 +295,7 @@ class Lowerer {
         const auto &source = program_.expressions[id];
         FirExpressionValue value;
         if (const auto *integer = std::get_if<IntegerExpression>(&source.value)) {
-            value = FirIntegerExpression{static_cast<std::int32_t>(integer->value)};
+            value = FirIntegerExpression{integer->magnitude, integer->negative};
         } else if (const auto *boolean = std::get_if<BooleanExpression>(&source.value)) {
             value = FirBooleanExpression{boolean->value};
         } else if (const auto *string = std::get_if<StringExpression>(&source.value)) {
@@ -362,6 +362,9 @@ class Lowerer {
                 break;
             case CallTargetKind::Panic:
                 kind = FirCallKind::Panic;
+                break;
+            case CallTargetKind::Len:
+                kind = FirCallKind::Len;
                 break;
             }
             value = FirCallExpression{kind, target.function, target.typeArguments,

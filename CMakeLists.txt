@@ -27,6 +27,7 @@ add_library(foundation_compiler STATIC
     stage0/src/process.cpp
     stage0/src/project.cpp
     stage0/src/sema.cpp
+    stage0/src/target.cpp
     stage0/src/type.cpp
 )
 target_include_directories(foundation_compiler PUBLIC stage0/include)
@@ -102,16 +103,32 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_counter_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_string_test runtime/tests/string_test.c)
     target_link_libraries(foundation_runtime_string_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_u64_test runtime/tests/u64_test.c)
+    target_link_libraries(foundation_runtime_u64_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_env_test runtime/tests/env_test.c)
+    target_link_libraries(foundation_runtime_env_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_fs_test runtime/tests/fs_test.c)
+    target_link_libraries(foundation_runtime_fs_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_time_test runtime/tests/time_test.c)
+    target_link_libraries(foundation_runtime_time_test PRIVATE foundation_runtime)
     if(MSVC)
         target_compile_options(foundation_runtime_panic_test PRIVATE /W4)
         target_compile_options(foundation_runtime_allocation_test PRIVATE /W4)
         target_compile_options(foundation_runtime_counter_test PRIVATE /W4)
         target_compile_options(foundation_runtime_string_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_u64_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_env_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_fs_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_time_test PRIVATE /W4)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE /WX)
             target_compile_options(foundation_runtime_allocation_test PRIVATE /WX)
             target_compile_options(foundation_runtime_counter_test PRIVATE /WX)
             target_compile_options(foundation_runtime_string_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_u64_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_env_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_fs_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_time_test PRIVATE /WX)
         endif()
     else()
         target_compile_options(foundation_runtime_panic_test PRIVATE -Wall -Wextra -Wpedantic)
@@ -120,11 +137,19 @@ if(BUILD_TESTING)
         )
         target_compile_options(foundation_runtime_counter_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_string_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_u64_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_env_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_fs_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_time_test PRIVATE -Wall -Wextra -Wpedantic)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_allocation_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_counter_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_string_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_u64_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_env_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_fs_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_time_test PRIVATE -Werror)
         endif()
     endif()
 
@@ -150,6 +175,19 @@ if(BUILD_TESTING)
 
     add_test(NAME stage0.unit COMMAND foundation_stage0_tests)
     add_test(NAME runtime.string COMMAND foundation_runtime_string_test)
+    add_test(NAME runtime.u64 COMMAND foundation_runtime_u64_test)
+    add_test(NAME runtime.env COMMAND foundation_runtime_env_test)
+    add_test(NAME runtime.time COMMAND foundation_runtime_time_test)
+    set_tests_properties(runtime.env PROPERTIES
+        ENVIRONMENT "FOUNDATION_ENV_TEST=foundation env value"
+    )
+    add_test(
+        NAME runtime.fs
+        COMMAND foundation_runtime_fs_test
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs/lines.jsonl
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs
+            ${CMAKE_CURRENT_BINARY_DIR}/fs-growing.jsonl
+    )
     add_test(
         NAME runtime.panic-native-boundary
         COMMAND ${CMAKE_COMMAND}
@@ -214,6 +252,302 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-control.fdn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-control.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.main-arguments
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/main-arguments.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/main-arguments.out
+            "-DPROGRAM_ARGS=alpha;two words"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.main-arguments-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/main-arguments.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/main-arguments.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/main-arguments
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/main-arguments.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            "-DPROGRAM_ARGS=alpha;two words"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.platform-current
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/platform-current.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/platform-current.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.platform-current-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/platform-current.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/platform-current.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/platform-current
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/platform-current.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.target-unknown
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/target-unknown.fdn
+            -DCODE=FDN1142
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.target-duplicate
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/target-duplicate.fdn
+            -DCODE=FDN1144
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.run.environment
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/environment.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/environment.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    set_tests_properties(stage0.run.environment PROPERTIES
+        ENVIRONMENT "FOUNDATION_ENV_TEST=foundation env value"
+    )
+    add_test(
+        NAME stage0.run.environment-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/environment.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/environment.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/environment
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/environment.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    set_tests_properties(stage0.run.environment-allocations PROPERTIES
+        ENVIRONMENT "FOUNDATION_ENV_TEST=foundation env value"
+    )
+    add_test(
+        NAME stage0.run.text-path
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-path.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-path.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.text-path-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-path.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/text-path.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/text-path
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-path.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.text-builder-format
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-builder-format.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-builder-format.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.text-builder-format-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-builder-format.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/text-builder-format.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/text-builder-format
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-builder-format.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.json-values
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-values.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-values.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.json-values-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-values.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/json-values.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/json-values
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-values.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.parse-values
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.parse-values-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/parse-values.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/parse-values
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.field-borrows
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-borrows.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-borrows.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.field-borrows-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-borrows.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/field-borrows.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/field-borrows
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-borrows.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.conflicting-field-borrow
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/conflicting-field-borrow.fdn
+            -DCODE=FDN2073
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.run.filesystem-lines
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-lines.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-lines.out
+            "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs/lines.jsonl"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.filesystem-lines-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-lines.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/filesystem-lines.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/filesystem-lines
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-lines.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs/lines.jsonl"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.filesystem-directory
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-directory.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-directory.out
+            "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.filesystem-directory-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-directory.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/filesystem-directory.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/filesystem-directory
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-directory.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.time-filesystem
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/time-filesystem.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/time-filesystem.out
+            "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs/lines.jsonl"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.time-filesystem-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/time-filesystem.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/time-filesystem.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/time-filesystem
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/time-filesystem.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs/lines.jsonl"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.main-arguments
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/main-arguments.fdn
+            -DCODE=FDN2007
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.len-invalid
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/len-invalid.fdn
+            -DCODE=FDN2011
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(
         NAME stage0.run.language-tour
@@ -345,6 +679,19 @@ if(BUILD_TESTING)
         NAME stage0.run.primitive-values
         COMMAND foundationc run
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/primitive-values.fdn
+    )
+    add_test(
+        NAME stage0.run.u64-values
+        COMMAND foundationc run
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/u64-values.fdn
+    )
+    add_test(
+        NAME stage0.check.u64-negative
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/u64-negative.fdn
+            -DCODE=FDN2005
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(
         NAME stage0.run.ownership
@@ -605,7 +952,7 @@ if(BUILD_TESTING)
             "c-abi-return;FDN2113"
             "c-abi-owner;FDN2114"
             "c-abi-function;FDN2114"
-            "c-abi-edit-string;FDN2114"
+            "c-abi-edit-slice;FDN2114"
             "c-abi-duplicate-symbol;FDN2111"
             "c-abi-reserved-export;FDN2115"
             "c-abi-reserved-import;FDN2115"
@@ -1006,6 +1353,22 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/overflow.fdn
             -DPATTERN=i32.overflow
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+    )
+    add_test(
+        NAME stage0.run.u64-overflow
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/u64-overflow.fdn
+            -DPATTERN=u64.overflow
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+    )
+    add_test(
+        NAME stage0.run.u64-underflow
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/u64-underflow.fdn
+            -DPATTERN=u64.overflow
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
     add_test(

@@ -1,0 +1,184 @@
+import std.json
+import std.text
+
+fn textIs(value Option<json.Value>, expected view String) bool {
+    match value {
+        None: false
+        Some(actual): match actual {
+            Text(content): text.Equal(view content, expected)
+            Null: false
+            Bool(flag): false
+            Number(number): false
+            Array(items): false
+            Object(fields): false
+        }
+    }
+}
+
+fn numberIs(value Option<json.Value>, expected view String) bool {
+    match value {
+        None: false
+        Some(actual): match actual {
+            Number(number): text.Equal(view number, expected)
+            Null: false
+            Bool(flag): false
+            Text(content): false
+            Array(items): false
+            Object(fields): false
+        }
+    }
+}
+
+fn boolIs(value Option<json.Value>, expected bool) bool {
+    match value {
+        None: false
+        Some(actual): match actual {
+            Bool(flag): flag == expected
+            Null: false
+            Number(number): false
+            Text(content): false
+            Array(items): false
+            Object(fields): false
+        }
+    }
+}
+
+fn isNull(value Option<json.Value>) bool {
+    match value {
+        None: false
+        Some(actual): match actual {
+            Null: true
+            Bool(flag): false
+            Number(number): false
+            Text(content): false
+            Array(items): false
+            Object(fields): false
+        }
+    }
+}
+
+fn arrayIs(value Option<json.Value>) bool {
+    match value {
+        None: false
+        Some(actual): match actual {
+            Array(items): inspectArray(items)
+            Null: false
+            Bool(flag): false
+            Number(number): false
+            Text(content): false
+            Object(fields): false
+        }
+    }
+}
+
+fn inspectArray(items own json.Array) bool {
+    var values = items
+    let expected = "x"
+    values.Len() == 3 && boolIs(values.PopFront(), true) &&
+        isNull(values.PopFront()) && textIs(values.PopFront(), view expected) &&
+        values.Len() == 0
+}
+
+fn inspectObject(object own json.Object) bool {
+    var fields = object
+    let name = "name"
+    let count = "count"
+    let entries = "items"
+    let escaped = "escaped"
+    let expectedName = "Foundation 🙂"
+    let expectedNumber = "12.5e2"
+    let expectedEscaped = "a\nb"
+    fields.Len() == 4 &&
+        textIs(fields.Take(view name), view expectedName) &&
+        numberIs(fields.Take(view count), view expectedNumber) &&
+        arrayIs(fields.Take(view entries)) &&
+        textIs(fields.Take(view escaped), view expectedEscaped) &&
+        fields.Len() == 0
+}
+
+fn inspect(value json.Value) bool {
+    match value {
+        Object(object): inspectObject(object)
+        Null: false
+        Bool(flag): false
+        Number(number): false
+        Text(content): false
+        Array(items): false
+    }
+}
+
+fn errorCode(kind json.ErrorKind) i32 {
+    match kind {
+        UnexpectedEnd: 1
+        UnexpectedToken: 2
+        InvalidString: 3
+        InvalidEscape: 4
+        InvalidNumber: 5
+        DuplicateKey: 6
+        DepthLimit: 7
+        TrailingData: 8
+    }
+}
+
+fn failedAs(value Result<json.Value, json.Error>, code i32) bool {
+    match value {
+        Ok(parsed): false
+        Err(error): errorCode(error.Kind) == code
+    }
+}
+
+fn deeplyNested() String {
+    var builder = text.NewBuilder()
+    let open = "["
+    let close = "]"
+    let zero = "0"
+    var count u64 = 0
+    while count < 130 {
+        discard builder.Write(view open)
+        count = count + 1
+    }
+    discard builder.Write(view zero)
+    count = 0
+    while count < 130 {
+        discard builder.Write(view close)
+        count = count + 1
+    }
+    let value = builder.Finish() else error {
+        discard error
+        panic("builder closed before JSON depth test")
+    }
+    value
+}
+
+fn main() i32 {
+    let source = "{\"name\":\"Foundation \\uD83D\\uDE42\",\"count\":12.5e2,\"items\":[true,null,\"x\"],\"escaped\":\"a\\nb\"}"
+    let parsed = json.Parse(view source) else error {
+        discard error
+        return 1
+    }
+    if !inspect(parsed) {
+        return 2
+    }
+    let duplicate = "{\"x\":1,\"x\":2}"
+    if !failedAs(json.Parse(view duplicate), 6) {
+        return 3
+    }
+    let invalidEscape = "\"\\uD800\""
+    if !failedAs(json.Parse(view invalidEscape), 4) {
+        return 4
+    }
+    let trailing = "true false"
+    if !failedAs(json.Parse(view trailing), 8) {
+        return 5
+    }
+    let invalidNumber = "01"
+    if !failedAs(json.Parse(view invalidNumber), 5) {
+        return 6
+    }
+    let deep = deeplyNested()
+    if !failedAs(json.Parse(view deep), 7) {
+        return 7
+    }
+    print("json ok")
+    0
+}

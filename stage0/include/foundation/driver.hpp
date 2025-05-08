@@ -26,7 +26,8 @@ struct Compilation {
                             const std::filesystem::path &output,
                             const std::vector<std::filesystem::path> &nativeInputs = {});
 [[nodiscard]] int runFile(const std::filesystem::path &source,
-                          const std::vector<std::filesystem::path> &nativeInputs = {});
+                          const std::vector<std::filesystem::path> &nativeInputs = {},
+                          const std::vector<std::string> &arguments = {});
 
 } // namespace foundation
 

@@ -65,7 +65,8 @@ enum class BinaryOperator {
 };
 
 struct IntegerExpression {
-    std::int64_t value{};
+    std::uint64_t magnitude{};
+    bool negative{};
 };
 
 struct BooleanExpression {

@@ -39,14 +39,24 @@ if(NOT build_result EQUAL 0)
     message(FATAL_ERROR "verified C build failed:\n${build_output}${build_error}")
 endif()
 
+set(command "${executable}")
+if(DEFINED PROGRAM_ARGS)
+    list(APPEND command ${PROGRAM_ARGS})
+endif()
+
 execute_process(
-    COMMAND "${executable}"
+    COMMAND ${command}
     RESULT_VARIABLE run_result
     OUTPUT_VARIABLE run_output
     ERROR_VARIABLE run_error
 )
-if(NOT run_result EQUAL 0)
-    message(FATAL_ERROR "verified program failed with ${run_result}:\n${run_error}")
+set(expected_exit 0)
+if(DEFINED EXPECTED_EXIT)
+    set(expected_exit "${EXPECTED_EXIT}")
+endif()
+if(NOT run_result EQUAL expected_exit)
+    message(FATAL_ERROR
+        "verified program exited with ${run_result}, expected ${expected_exit}:\n${run_error}")
 endif()
 if(NOT run_error STREQUAL "")
     message(FATAL_ERROR "verified program wrote to stderr:\n${run_error}")
@@ -57,4 +67,4 @@ if(NOT run_output STREQUAL expected)
     message(FATAL_ERROR "program output mismatch:\nexpected:\n${expected}actual:\n${run_output}")
 endif()
 
-message(STATUS "program completed with zero live allocations")
+message(STATUS "program exited as expected with zero live allocations")

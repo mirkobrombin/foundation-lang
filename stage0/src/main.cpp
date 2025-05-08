@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -13,7 +14,7 @@ void printUsage(std::ostream &output) {
            << "  foundationc emit-c <source-or-project> -o <output.c>\n"
            << "  foundationc emit-c-header <source-or-project> -o <output.h>\n"
            << "  foundationc build <source-or-project> -o <executable> [--native <input>]...\n"
-           << "  foundationc run <source-or-project> [--native <input>]...\n"
+           << "  foundationc run <source-or-project> [--native <input>]... [-- <argument>...]\n"
            << "  foundationc version\n";
 }
 
@@ -28,6 +29,29 @@ bool parseNativeArguments(int argc, char **argv, int start,
             return false;
         }
         inputs.emplace_back(argv[index + 1]);
+    }
+    return true;
+}
+
+bool parseRunArguments(int argc, char **argv, int start,
+                       std::vector<std::filesystem::path> &nativeInputs,
+                       std::vector<std::string> &arguments) {
+    auto index = start;
+    while (index < argc) {
+        const std::string_view value = argv[index];
+        if (value == "--") {
+            ++index;
+            while (index < argc) {
+                arguments.emplace_back(argv[index]);
+                ++index;
+            }
+            return true;
+        }
+        if (value != "--native" || index + 1 >= argc) {
+            return false;
+        }
+        nativeInputs.emplace_back(argv[index + 1]);
+        index += 2;
     }
     return true;
 }
@@ -71,11 +95,12 @@ int main(int argc, char **argv) {
         }
         if (command == "run" && argc >= 3) {
             std::vector<std::filesystem::path> nativeInputs;
-            if (!parseNativeArguments(argc, argv, 3, nativeInputs)) {
+            std::vector<std::string> arguments;
+            if (!parseRunArguments(argc, argv, 3, nativeInputs, arguments)) {
                 printUsage(std::cerr);
                 return 2;
             }
-            return foundation::runFile(std::filesystem::path(argv[2]), nativeInputs);
+            return foundation::runFile(std::filesystem::path(argv[2]), nativeInputs, arguments);
         }
     }
 

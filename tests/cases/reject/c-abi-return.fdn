@@ -1,4 +1,4 @@
-extern c fn nativeText() String as foundation_native_text
+extern c fn nativeValue() Option<i32> as foundation_native_value
 
 fn main() i32 {
     0

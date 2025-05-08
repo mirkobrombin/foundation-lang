@@ -61,6 +61,7 @@ enum class TokenKind {
     GreaterEqual,
     AndAnd,
     OrOr,
+    At,
 };
 
 struct Token {

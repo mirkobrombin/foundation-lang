@@ -6,6 +6,12 @@ const staticCompletions = [
     { label: "as", kind: "Keyword" },
     { label: "extern", kind: "Keyword", detail: "Declare a C ABI import or export" },
     { label: "c", kind: "Value", detail: "C application binary interface" },
+    {
+        label: "@target(...)",
+        kind: "Keyword",
+        detail: "Select a declaration for one compilation target",
+        insertText: "@target(${1|linux,macos,windows|})"
+    },
     { label: "struct", kind: "Keyword" },
     { label: "enum", kind: "Keyword" },
     { label: "contract", kind: "Keyword" },
@@ -28,11 +34,147 @@ const staticCompletions = [
     { label: "true", kind: "Constant" },
     { label: "false", kind: "Constant" },
     { label: "i32", kind: "TypeParameter" },
+    { label: "u64", kind: "TypeParameter" },
     { label: "bool", kind: "TypeParameter" },
     { label: "String", kind: "TypeParameter" },
     { label: "void", kind: "TypeParameter" },
     { label: "Option", kind: "TypeParameter", detail: "primitive Option<T>" },
     { label: "Result", kind: "TypeParameter", detail: "primitive Result<T, E>" },
+    { label: "std.platform", kind: "Module", detail: "Compilation target information" },
+    { label: "std.env", kind: "Module", detail: "Read-only process environment" },
+    { label: "std.text", kind: "Module", detail: "UTF-8 String inspection" },
+    { label: "std.path", kind: "Module", detail: "Portable path operations" },
+    { label: "std.parse", kind: "Module", detail: "Primitive value parsing" },
+    { label: "std.fs", kind: "Module", detail: "Read-only filesystem operations" },
+    { label: "std.format", kind: "Module", detail: "Primitive value formatting" },
+    { label: "std.json", kind: "Module", detail: "Owned JSON values and parsing" },
+    { label: "std.time", kind: "Module", detail: "Unix time values" },
+    {
+        label: "platform.Current",
+        kind: "Function",
+        detail: "fn Current() platform.Kind",
+        insertText: "platform.Current()"
+    },
+    {
+        label: "platform.Name",
+        kind: "Function",
+        detail: "fn Name(platform platform.Kind) String",
+        insertText: "platform.Name(${1:platform})"
+    },
+    {
+        label: "env.Get",
+        kind: "Function",
+        detail: "fn Get(name view String) Result<Option<String>, env.Error>",
+        insertText: "env.Get(view ${1:name})"
+    },
+    {
+        label: "env.Home",
+        kind: "Function",
+        detail: "fn Home() Result<Option<String>, env.Error>",
+        insertText: "env.Home()"
+    },
+    {
+        label: "text.ByteLen",
+        kind: "Function",
+        detail: "fn ByteLen(value view String) u64",
+        insertText: "text.ByteLen(view ${1:value})"
+    },
+    {
+        label: "text.Contains",
+        kind: "Function",
+        detail: "fn Contains(value view String, part view String) bool",
+        insertText: "text.Contains(view ${1:value}, view ${2:part})"
+    },
+    {
+        label: "text.NewBuilder",
+        kind: "Function",
+        detail: "fn NewBuilder() own text.Builder",
+        insertText: "text.NewBuilder()"
+    },
+    {
+        label: "path.Join",
+        kind: "Function",
+        detail: "fn Join(left view String, right view String) String",
+        insertText: "path.Join(view ${1:left}, view ${2:right})"
+    },
+    {
+        label: "parse.U64",
+        kind: "Function",
+        detail: "fn U64(value view String) Result<u64, parse.IntegerError>",
+        insertText: "parse.U64(view ${1:value})"
+    },
+    {
+        label: "fs.OpenLines",
+        kind: "Function",
+        detail: "fn OpenLines(path view String) Result<own fs.LineReader, fs.Error>",
+        insertText: "fs.OpenLines(view ${1:path})"
+    },
+    {
+        label: "fs.OpenDir",
+        kind: "Function",
+        detail: "fn OpenDir(path view String) Result<own fs.DirReader, fs.Error>",
+        insertText: "fs.OpenDir(view ${1:path})"
+    },
+    {
+        label: "fs.Size",
+        kind: "Function",
+        detail: "fn Size(path view String) Result<u64, fs.Error>",
+        insertText: "fs.Size(view ${1:path})"
+    },
+    {
+        label: "fs.Modified",
+        kind: "Function",
+        detail: "fn Modified(path view String) Result<u64, fs.Error>",
+        insertText: "fs.Modified(view ${1:path})"
+    },
+    {
+        label: "fs.LineReader.Next",
+        kind: "Method",
+        detail: "fn Next(edit) Result<Option<String>, fs.Error>",
+        insertText: "Next()"
+    },
+    {
+        label: "fs.LineReader.NextLimited",
+        kind: "Method",
+        detail: "fn NextLimited(edit, limit u64) Result<Option<String>, fs.Error>",
+        insertText: "NextLimited(${1:limit})"
+    },
+    {
+        label: "format.I32",
+        kind: "Function",
+        detail: "fn I32(value i32) String",
+        insertText: "format.I32(${1:value})"
+    },
+    {
+        label: "format.U64",
+        kind: "Function",
+        detail: "fn U64(value u64) String",
+        insertText: "format.U64(${1:value})"
+    },
+    {
+        label: "json.Parse",
+        kind: "Function",
+        detail: "fn Parse(source view String) Result<json.Value, json.Error>",
+        insertText: "json.Parse(view ${1:source})"
+    },
+    {
+        label: "time.Now",
+        kind: "Function",
+        detail: "fn Now() time.Instant",
+        insertText: "time.Now()"
+    },
+    {
+        label: "time.FromUnix",
+        kind: "Function",
+        detail: "fn FromUnix(seconds u64) time.Instant",
+        insertText: "time.FromUnix(${1:seconds})"
+    },
+    {
+        label: "time.Instant.FormatUtc",
+        kind: "Method",
+        detail: "fn FormatUtc(view) Result<String, time.Error>",
+        insertText: "FormatUtc()"
+    },
     {
         label: "fn(...) R",
         kind: "TypeParameter",
@@ -65,6 +207,12 @@ const staticCompletions = [
     { label: "Option.Some", kind: "EnumMember", insertText: "Option<${1:T}>.Some(${2:value})" },
     { label: "Result.Ok", kind: "EnumMember", insertText: "Result<${1:T}, ${2:E}>.Ok(${3:value})" },
     { label: "Result.Err", kind: "EnumMember", insertText: "Result<${1:T}, ${2:E}>.Err(${3:error})" },
+    {
+        label: "len",
+        kind: "Function",
+        detail: "builtin fn len(value String | array | slice) u64",
+        insertText: "len(${1:value})"
+    },
     {
         label: "print",
         kind: "Function",
@@ -600,9 +748,20 @@ function collectCompletions(source, projectSources = []) {
     });
 }
 
+function findHover(source, word, projectSources = []) {
+    const completions = collectCompletions(source, projectSources);
+    const exact = completions.find((entry) => entry.label === word);
+    if (exact) {
+        return exact;
+    }
+    const qualified = completions.filter((entry) => entry.label.endsWith(`.${word}`));
+    return qualified.length === 1 ? qualified[0] : undefined;
+}
+
 module.exports = {
     collectCompletions,
     collectPackageDeclarations,
+    findHover,
     maskTrivia,
     splitTopLevel,
     staticCompletions

@@ -1,9 +1,14 @@
 package example.collections
 
 import std.collections
+import std.text
 
 struct Item {
     value i32
+}
+
+fn compareText(left view String, right view String) i32 {
+    text.Compare(left, right)
 }
 
 fn main() i32 {
@@ -39,8 +44,29 @@ fn main() i32 {
     cleared.PushFront("discarded")
     cleared.Clear()
 
+    var unsorted = collections.NewList<String>()
+    unsorted.PushFront("b")
+    unsorted.PushFront("a")
+    unsorted.PushFront("c")
+    let compare fn(view String, view String) i32 = compareText
+    var sorted = collections.Sort(unsorted, view compare)
+    let firstSorted = match sorted.PopFront() {
+        None: ""
+        Some(value): value
+    }
+    let secondSorted = match sorted.PopFront() {
+        None: ""
+        Some(value): value
+    }
+    let thirdSorted = match sorted.PopFront() {
+        None: ""
+        Some(value): value
+    }
+
     print(firstValue + secondValue + missingValue)
-    if values.IsEmpty() && values.Len() == 0 && ownedValue == 42 && cleared.IsEmpty() {
+    print(firstSorted + secondSorted + thirdSorted)
+    if values.IsEmpty() && values.Len() == 0 && ownedValue == 42 && cleared.IsEmpty() &&
+        sorted.IsEmpty() {
         return 0
     }
     1

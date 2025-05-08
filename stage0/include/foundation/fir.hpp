@@ -70,10 +70,12 @@ enum class FirCallKind {
     Contract,
     Print,
     Panic,
+    Len,
 };
 
 struct FirIntegerExpression {
-    std::int32_t value{};
+    std::uint64_t magnitude{};
+    bool negative{};
 };
 
 struct FirBooleanExpression {

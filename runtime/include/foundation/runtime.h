@@ -2,6 +2,7 @@
 #define FOUNDATION_RUNTIME_H
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -65,6 +66,47 @@ int32_t fdn_i32_multiply(int32_t left, int32_t right);
 int32_t fdn_i32_divide(int32_t left, int32_t right);
 int32_t fdn_i32_remainder(int32_t left, int32_t right);
 int32_t fdn_i32_negate(int32_t value);
+uint64_t fdn_u64_add(uint64_t left, uint64_t right);
+uint64_t fdn_u64_subtract(uint64_t left, uint64_t right);
+uint64_t fdn_u64_multiply(uint64_t left, uint64_t right);
+uint64_t fdn_u64_divide(uint64_t left, uint64_t right);
+uint64_t fdn_u64_remainder(uint64_t left, uint64_t right);
+int32_t foundation_runtime_env_read(const fdn_string *name, fdn_string *value);
+fdn_string foundation_runtime_string_copy(const fdn_string *value);
+uint64_t foundation_runtime_string_byte_length(const fdn_string *value);
+bool foundation_runtime_string_contains(const fdn_string *value, const fdn_string *part);
+bool foundation_runtime_string_starts_with(const fdn_string *value, const fdn_string *prefix);
+bool foundation_runtime_string_ends_with(const fdn_string *value, const fdn_string *suffix);
+int32_t foundation_runtime_string_slice(const fdn_string *value, uint64_t start, uint64_t end,
+                                        fdn_string *result);
+int32_t foundation_runtime_string_byte_at(const fdn_string *value, uint64_t index,
+                                          uint64_t *result);
+bool foundation_runtime_string_find(const fdn_string *value, const fdn_string *part,
+                                    uint64_t *result);
+int32_t foundation_runtime_string_compare(const fdn_string *left, const fdn_string *right);
+uint64_t foundation_runtime_string_builder_open(void);
+void foundation_runtime_string_builder_append(uint64_t handle, const fdn_string *value);
+bool foundation_runtime_string_builder_append_code_point(uint64_t handle, uint64_t value);
+fdn_string foundation_runtime_string_builder_finish(uint64_t handle);
+void foundation_runtime_string_builder_close(uint64_t handle);
+uint64_t foundation_runtime_string_builder_live_handles(void);
+fdn_string foundation_runtime_format_i32(int32_t value);
+fdn_string foundation_runtime_format_u64(uint64_t value);
+uint64_t foundation_runtime_time_unix_seconds(void);
+int32_t foundation_runtime_time_format_utc(uint64_t unix_seconds, fdn_string *result);
+int32_t foundation_runtime_fs_open_lines(const fdn_string *path, uint64_t *handle);
+int32_t foundation_runtime_fs_next_line(uint64_t handle, fdn_string *line);
+int32_t foundation_runtime_fs_next_line_limited(uint64_t handle, uint64_t max_length,
+                                                fdn_string *line);
+int32_t foundation_runtime_fs_close(uint64_t handle);
+int32_t foundation_runtime_fs_size(const fdn_string *path, uint64_t *size);
+uint64_t foundation_runtime_fs_live_handles(void);
+int32_t foundation_runtime_fs_open_directory(const fdn_string *path, uint64_t *handle);
+int32_t foundation_runtime_fs_next_directory(uint64_t handle, fdn_string *name);
+int32_t foundation_runtime_fs_close_directory(uint64_t handle);
+int32_t foundation_runtime_fs_is_directory(const fdn_string *path, bool *result);
+int32_t foundation_runtime_fs_modified(const fdn_string *path, uint64_t *unix_seconds);
+uint64_t foundation_runtime_fs_live_directories(void);
 
 #ifdef __cplusplus
 }

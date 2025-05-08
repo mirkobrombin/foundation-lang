@@ -1,0 +1,45 @@
+package std.path
+
+import std.text
+
+@target(linux)
+fn Separator() String {
+    "/"
+}
+
+@target(macos)
+fn Separator() String {
+    "/"
+}
+
+@target(windows)
+fn Separator() String {
+    "\\"
+}
+
+fn Join(left view String, right view String) String {
+    if text.IsEmpty(left) {
+        return text.Copy(right)
+    }
+    if text.IsEmpty(right) {
+        return text.Copy(left)
+    }
+
+    let separator = Separator()
+    let leftEnds = text.EndsWith(left, view separator)
+    let rightStarts = text.StartsWith(right, view separator)
+    let leftCopy = text.Copy(left)
+    let rightCopy = text.Copy(right)
+    if leftEnds && rightStarts {
+        let rightLength = text.ByteLen(right)
+        let trimmed = text.Slice(right, 1, rightLength) else error {
+            discard error
+            panic("invalid path boundary")
+        }
+        return leftCopy + trimmed
+    }
+    if leftEnds || rightStarts {
+        return leftCopy + rightCopy
+    }
+    leftCopy + separator + rightCopy
+}

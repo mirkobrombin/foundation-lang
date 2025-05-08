@@ -1,0 +1,38 @@
+package std.platform
+
+enum Kind {
+    Linux
+    MacOS
+    Windows
+}
+
+@target(linux)
+fn Current() Kind {
+    .Linux
+}
+
+@target(macos)
+fn Current() Kind {
+    .MacOS
+}
+
+@target(windows)
+fn Current() Kind {
+    .Windows
+}
+
+fn Name(platform Kind) String {
+    match platform {
+        Linux: "linux"
+        MacOS: "macos"
+        Windows: "windows"
+    }
+}
+
+fn IsUnix(platform Kind) bool {
+    match platform {
+        Linux: true
+        MacOS: true
+        Windows: false
+    }
+}

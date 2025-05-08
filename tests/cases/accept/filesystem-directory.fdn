@@ -1,0 +1,35 @@
+package test.filesystem_directory
+
+import std.fs
+import std.path
+
+fn nameOr(value Result<Option<String>, fs.Error>) String {
+    match value {
+        Ok(name): match name {
+            None: ""
+            Some(item): item
+        }
+        Err(error): ""
+    }
+}
+
+fn main(args view [String]) i32 {
+    let opened = fs.OpenDir(view args[0]) else error {
+        discard error
+        return 1
+    }
+    var directory = opened
+    let name = nameOr(directory.Next())
+    let end = nameOr(directory.Next())
+    let filePath = path.Join(view args[0], view name)
+    let isDirectory = fs.IsDirectory(view filePath) else error {
+        discard error
+        return 2
+    }
+    discard directory.Close()
+    if name == "lines.jsonl" && end == "" && !isDirectory {
+        print("fs directory ok")
+        return 0
+    }
+    return 3
+}

@@ -1,9 +1,27 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "foundation/runtime.h"
 
+#include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+
+_Static_assert(sizeof(uintptr_t) <= sizeof(uint64_t), "runtime handles require a 64-bit carrier");
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <wchar.h>
+#else
+#include <dirent.h>
+#endif
 
 #if defined(_MSC_VER)
 #define FDN_THREAD_LOCAL __declspec(thread)
@@ -15,10 +33,99 @@ static FDN_THREAD_LOCAL fdn_frame *fdn_current_frame;
 static size_t fdn_allocation_count;
 static size_t fdn_deallocation_count;
 static size_t fdn_live_allocation_count;
+static uint64_t fdn_live_file_count;
+static uint64_t fdn_live_directory_count;
+static uint64_t fdn_live_string_builder_count;
 
 static const char *fdn_trace_value(const char *value) {
     return value != NULL ? value : "<unknown>";
 }
+
+static int fdn_valid_utf8(const char *value, size_t length) {
+    size_t offset = 0;
+    while (offset < length) {
+        const unsigned char first = (unsigned char)value[offset];
+        if (first <= 0x7f) {
+            ++offset;
+            continue;
+        }
+        if (first >= 0xc2 && first <= 0xdf) {
+            if (offset + 1 >= length || (unsigned char)value[offset + 1] < 0x80 ||
+                (unsigned char)value[offset + 1] > 0xbf) {
+                return 0;
+            }
+            offset += 2;
+            continue;
+        }
+        if (first >= 0xe0 && first <= 0xef) {
+            unsigned char second;
+            unsigned char third;
+            if (offset + 2 >= length) {
+                return 0;
+            }
+            second = (unsigned char)value[offset + 1];
+            third = (unsigned char)value[offset + 2];
+            if ((first == 0xe0 && (second < 0xa0 || second > 0xbf)) ||
+                (first == 0xed && (second < 0x80 || second > 0x9f)) ||
+                (first != 0xe0 && first != 0xed && (second < 0x80 || second > 0xbf)) ||
+                third < 0x80 || third > 0xbf) {
+                return 0;
+            }
+            offset += 3;
+            continue;
+        }
+        if (first >= 0xf0 && first <= 0xf4) {
+            unsigned char second;
+            unsigned char third;
+            unsigned char fourth;
+            if (offset + 3 >= length) {
+                return 0;
+            }
+            second = (unsigned char)value[offset + 1];
+            third = (unsigned char)value[offset + 2];
+            fourth = (unsigned char)value[offset + 3];
+            if ((first == 0xf0 && (second < 0x90 || second > 0xbf)) ||
+                (first == 0xf4 && (second < 0x80 || second > 0x8f)) ||
+                (first != 0xf0 && first != 0xf4 && (second < 0x80 || second > 0xbf)) ||
+                third < 0x80 || third > 0xbf || fourth < 0x80 || fourth > 0xbf) {
+                return 0;
+            }
+            offset += 4;
+            continue;
+        }
+        return 0;
+    }
+    return 1;
+}
+
+static int fdn_valid_env_name(const fdn_string *name) {
+    size_t offset;
+    if (name == NULL || name->data == NULL || name->length == 0) {
+        return 0;
+    }
+    for (offset = 0; offset < name->length; ++offset) {
+        if (name->data[offset] == '\0' || name->data[offset] == '=') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+#if !defined(_WIN32)
+static fdn_string fdn_string_copy(const char *value, size_t length) {
+    fdn_string result;
+    char *copy;
+    if (length == 0) {
+        return fdn_string_static("", 0);
+    }
+    copy = fdn_alloc(length);
+    (void)memcpy(copy, value, length);
+    result.data = copy;
+    result.length = length;
+    result.owned = 1;
+    return result;
+}
+#endif
 
 void fdn_frame_enter(fdn_frame *frame, const char *package_name, const char *function_name,
                      const char *source_file, uint32_t line, uint32_t column) {
@@ -202,3 +309,961 @@ int32_t fdn_i32_remainder(int32_t left, int32_t right) {
 }
 
 int32_t fdn_i32_negate(int32_t value) { return fdn_i32_checked(-(int64_t)value); }
+
+uint64_t fdn_u64_add(uint64_t left, uint64_t right) {
+    if (UINT64_MAX - left < right) {
+        fdn_arithmetic_panic("u64 overflow");
+    }
+    return left + right;
+}
+
+uint64_t fdn_u64_subtract(uint64_t left, uint64_t right) {
+    if (left < right) {
+        fdn_arithmetic_panic("u64 overflow");
+    }
+    return left - right;
+}
+
+uint64_t fdn_u64_multiply(uint64_t left, uint64_t right) {
+    if (left != 0 && right > UINT64_MAX / left) {
+        fdn_arithmetic_panic("u64 overflow");
+    }
+    return left * right;
+}
+
+uint64_t fdn_u64_divide(uint64_t left, uint64_t right) {
+    if (right == 0) {
+        fdn_arithmetic_panic("division by zero");
+    }
+    return left / right;
+}
+
+uint64_t fdn_u64_remainder(uint64_t left, uint64_t right) {
+    if (right == 0) {
+        fdn_arithmetic_panic("remainder by zero");
+    }
+    return left % right;
+}
+
+int32_t foundation_runtime_env_read(const fdn_string *name, fdn_string *value) {
+    if (value == NULL) {
+        fdn_panic_cstr("environment output is null");
+    }
+    fdn_string_drop(value);
+    *value = fdn_string_static("", 0);
+    if (!fdn_valid_env_name(name) || !fdn_valid_utf8(name->data, name->length)) {
+        return 2;
+    }
+
+#if defined(_WIN32)
+    {
+        wchar_t *wide_name;
+        wchar_t *wide_value;
+        char *utf8_value;
+        int wide_name_length;
+        DWORD required;
+        DWORD copied;
+        int utf8_length;
+
+        if (name->length > (size_t)INT_MAX) {
+            return 2;
+        }
+        wide_name_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name->data,
+                                                (int)name->length, NULL, 0);
+        if (wide_name_length == 0) {
+            return 2;
+        }
+        wide_name = fdn_alloc(((size_t)wide_name_length + 1) * sizeof(*wide_name));
+        if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name->data, (int)name->length,
+                                wide_name, wide_name_length) != wide_name_length) {
+            fdn_dealloc(wide_name);
+            return 2;
+        }
+        wide_name[wide_name_length] = L'\0';
+
+        SetLastError(ERROR_SUCCESS);
+        required = GetEnvironmentVariableW(wide_name, NULL, 0);
+        if (required == 0) {
+            const DWORD error = GetLastError();
+            fdn_dealloc(wide_name);
+            return error == ERROR_ENVVAR_NOT_FOUND ? 0 : error == ERROR_SUCCESS ? 1 : 4;
+        }
+        wide_value = fdn_alloc((size_t)required * sizeof(*wide_value));
+        copied = GetEnvironmentVariableW(wide_name, wide_value, required);
+        fdn_dealloc(wide_name);
+        if (copied == 0 || copied >= required || copied > (DWORD)INT_MAX) {
+            fdn_dealloc(wide_value);
+            return 4;
+        }
+        utf8_length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_value, (int)copied,
+                                          NULL, 0, NULL, NULL);
+        if (utf8_length == 0) {
+            fdn_dealloc(wide_value);
+            return 3;
+        }
+        utf8_value = fdn_alloc((size_t)utf8_length);
+        if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_value, (int)copied,
+                                utf8_value, utf8_length, NULL, NULL) != utf8_length) {
+            fdn_dealloc(utf8_value);
+            fdn_dealloc(wide_value);
+            return 3;
+        }
+        fdn_dealloc(wide_value);
+        value->data = utf8_value;
+        value->length = (size_t)utf8_length;
+        value->owned = 1;
+        return 1;
+    }
+#else
+    {
+        char *native_name;
+        const char *native_value;
+        size_t length;
+        if (name->length == SIZE_MAX) {
+            return 2;
+        }
+        native_name = fdn_alloc(name->length + 1);
+        (void)memcpy(native_name, name->data, name->length);
+        native_name[name->length] = '\0';
+        native_value = getenv(native_name);
+        fdn_dealloc(native_name);
+        if (native_value == NULL) {
+            return 0;
+        }
+        length = strlen(native_value);
+        if (!fdn_valid_utf8(native_value, length)) {
+            return 3;
+        }
+        *value = fdn_string_copy(native_value, length);
+        return 1;
+    }
+#endif
+}
+
+fdn_string foundation_runtime_string_copy(const fdn_string *value) {
+    fdn_string result;
+    char *data;
+    if (value == NULL || (value->data == NULL && value->length != 0)) {
+        fdn_panic_cstr("invalid String value");
+    }
+    if (value->length == 0) {
+        return fdn_string_static("", 0);
+    }
+    data = fdn_alloc(value->length);
+    (void)memcpy(data, value->data, value->length);
+    result.data = data;
+    result.length = value->length;
+    result.owned = 1;
+    return result;
+}
+
+uint64_t foundation_runtime_string_byte_length(const fdn_string *value) {
+    if (value == NULL) {
+        fdn_panic_cstr("invalid String value");
+    }
+    return (uint64_t)value->length;
+}
+
+bool foundation_runtime_string_contains(const fdn_string *value, const fdn_string *part) {
+    size_t offset;
+    if (value == NULL || part == NULL) {
+        fdn_panic_cstr("invalid String value");
+    }
+    if (part->length == 0) {
+        return true;
+    }
+    if (part->length > value->length) {
+        return false;
+    }
+    for (offset = 0; offset <= value->length - part->length; ++offset) {
+        if (memcmp(value->data + offset, part->data, part->length) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool foundation_runtime_string_starts_with(const fdn_string *value, const fdn_string *prefix) {
+    if (value == NULL || prefix == NULL) {
+        fdn_panic_cstr("invalid String value");
+    }
+    return prefix->length <= value->length &&
+           (prefix->length == 0 || memcmp(value->data, prefix->data, prefix->length) == 0);
+}
+
+bool foundation_runtime_string_ends_with(const fdn_string *value, const fdn_string *suffix) {
+    if (value == NULL || suffix == NULL) {
+        fdn_panic_cstr("invalid String value");
+    }
+    return suffix->length <= value->length &&
+           (suffix->length == 0 ||
+            memcmp(value->data + value->length - suffix->length, suffix->data,
+                   suffix->length) == 0);
+}
+
+static bool fdn_string_boundary(const fdn_string *value, size_t index) {
+    return index == value->length || ((unsigned char)value->data[index] & 0xc0) != 0x80;
+}
+
+int32_t foundation_runtime_string_slice(const fdn_string *value, uint64_t start, uint64_t end,
+                                        fdn_string *result) {
+    size_t native_start;
+    size_t native_end;
+    if (value == NULL || result == NULL) {
+        fdn_panic_cstr("invalid String slice argument");
+    }
+    fdn_string_drop(result);
+    *result = fdn_string_static("", 0);
+    if (start > end || start > (uint64_t)value->length || end > (uint64_t)value->length) {
+        return 1;
+    }
+    native_start = (size_t)start;
+    native_end = (size_t)end;
+    if (!fdn_string_boundary(value, native_start) || !fdn_string_boundary(value, native_end)) {
+        return 2;
+    }
+    if (native_start == native_end) {
+        return 0;
+    }
+    *result = foundation_runtime_string_copy(
+        &(fdn_string){value->data + native_start, native_end - native_start, 0});
+    return 0;
+}
+
+int32_t foundation_runtime_string_byte_at(const fdn_string *value, uint64_t index,
+                                          uint64_t *result) {
+    if (value == NULL || result == NULL) {
+        fdn_panic_cstr("invalid String byte argument");
+    }
+    *result = 0;
+    if (index >= (uint64_t)value->length) {
+        return 1;
+    }
+    *result = (uint64_t)(unsigned char)value->data[(size_t)index];
+    return 0;
+}
+
+bool foundation_runtime_string_find(const fdn_string *value, const fdn_string *part,
+                                    uint64_t *result) {
+    size_t offset;
+    if (value == NULL || part == NULL || result == NULL) {
+        fdn_panic_cstr("invalid String find argument");
+    }
+    *result = 0;
+    if (part->length == 0) {
+        return true;
+    }
+    if (part->length > value->length) {
+        return false;
+    }
+    for (offset = 0; offset <= value->length - part->length; ++offset) {
+        if (memcmp(value->data + offset, part->data, part->length) == 0) {
+            *result = (uint64_t)offset;
+            return true;
+        }
+    }
+    return false;
+}
+
+int32_t foundation_runtime_string_compare(const fdn_string *left, const fdn_string *right) {
+    size_t length;
+    int compared;
+    if (left == NULL || right == NULL) {
+        fdn_panic_cstr("invalid String value");
+    }
+    length = left->length < right->length ? left->length : right->length;
+    compared = length == 0 ? 0 : memcmp(left->data, right->data, length);
+    if (compared < 0) {
+        return -1;
+    }
+    if (compared > 0) {
+        return 1;
+    }
+    if (left->length < right->length) {
+        return -1;
+    }
+    if (left->length > right->length) {
+        return 1;
+    }
+    return 0;
+}
+
+typedef struct fdn_string_builder {
+    char *data;
+    size_t length;
+    size_t capacity;
+} fdn_string_builder;
+
+static fdn_string_builder *fdn_builder(uint64_t handle) {
+    fdn_string_builder *builder = (fdn_string_builder *)(uintptr_t)handle;
+    if (builder == NULL) {
+        fdn_panic_cstr("string builder is closed");
+    }
+    return builder;
+}
+
+static void fdn_builder_reserve(fdn_string_builder *builder, size_t required) {
+    size_t capacity;
+    char *data;
+    if (required <= builder->capacity) {
+        return;
+    }
+    capacity = builder->capacity == 0 ? 64 : builder->capacity;
+    while (capacity < required) {
+        if (capacity > SIZE_MAX / 2) {
+            capacity = required;
+            break;
+        }
+        capacity *= 2;
+    }
+    data = fdn_alloc(capacity);
+    if (builder->length != 0) {
+        (void)memcpy(data, builder->data, builder->length);
+    }
+    fdn_dealloc(builder->data);
+    builder->data = data;
+    builder->capacity = capacity;
+}
+
+uint64_t foundation_runtime_string_builder_open(void) {
+    fdn_string_builder *builder = fdn_alloc(sizeof(*builder));
+    builder->data = NULL;
+    builder->length = 0;
+    builder->capacity = 0;
+    ++fdn_live_string_builder_count;
+    return (uint64_t)(uintptr_t)builder;
+}
+
+void foundation_runtime_string_builder_append(uint64_t handle, const fdn_string *value) {
+    fdn_string_builder *builder = fdn_builder(handle);
+    size_t required;
+    if (value == NULL || (value->data == NULL && value->length != 0)) {
+        fdn_panic_cstr("invalid String value");
+    }
+    if (SIZE_MAX - builder->length < value->length) {
+        fdn_panic_cstr("string length overflow");
+    }
+    required = builder->length + value->length;
+    fdn_builder_reserve(builder, required);
+    if (value->length != 0) {
+        (void)memcpy(builder->data + builder->length, value->data, value->length);
+    }
+    builder->length = required;
+}
+
+bool foundation_runtime_string_builder_append_code_point(uint64_t handle, uint64_t value) {
+    char bytes[4];
+    size_t length;
+    if (value <= 0x7f) {
+        bytes[0] = (char)value;
+        length = 1;
+    } else if (value <= 0x7ff) {
+        bytes[0] = (char)(0xc0 | (value >> 6));
+        bytes[1] = (char)(0x80 | (value & 0x3f));
+        length = 2;
+    } else if (value >= 0xd800 && value <= 0xdfff) {
+        return false;
+    } else if (value <= 0xffff) {
+        bytes[0] = (char)(0xe0 | (value >> 12));
+        bytes[1] = (char)(0x80 | ((value >> 6) & 0x3f));
+        bytes[2] = (char)(0x80 | (value & 0x3f));
+        length = 3;
+    } else if (value <= 0x10ffff) {
+        bytes[0] = (char)(0xf0 | (value >> 18));
+        bytes[1] = (char)(0x80 | ((value >> 12) & 0x3f));
+        bytes[2] = (char)(0x80 | ((value >> 6) & 0x3f));
+        bytes[3] = (char)(0x80 | (value & 0x3f));
+        length = 4;
+    } else {
+        return false;
+    }
+    foundation_runtime_string_builder_append(handle, &(fdn_string){bytes, length, 0});
+    return true;
+}
+
+fdn_string foundation_runtime_string_builder_finish(uint64_t handle) {
+    fdn_string_builder *builder = fdn_builder(handle);
+    fdn_string result;
+    if (!fdn_valid_utf8(builder->data, builder->length)) {
+        fdn_panic_cstr("string builder produced invalid UTF-8");
+    }
+    if (builder->length == 0) {
+        result = fdn_string_static("", 0);
+        fdn_dealloc(builder->data);
+    } else {
+        result.data = builder->data;
+        result.length = builder->length;
+        result.owned = 1;
+    }
+    fdn_dealloc(builder);
+    --fdn_live_string_builder_count;
+    return result;
+}
+
+void foundation_runtime_string_builder_close(uint64_t handle) {
+    fdn_string_builder *builder = (fdn_string_builder *)(uintptr_t)handle;
+    if (builder == NULL) {
+        return;
+    }
+    fdn_dealloc(builder->data);
+    fdn_dealloc(builder);
+    --fdn_live_string_builder_count;
+}
+
+uint64_t foundation_runtime_string_builder_live_handles(void) {
+    return fdn_live_string_builder_count;
+}
+
+fdn_string foundation_runtime_format_i32(int32_t value) {
+    char buffer[32];
+    const int length = snprintf(buffer, sizeof(buffer), "%" PRId32, value);
+    if (length < 0 || (size_t)length >= sizeof(buffer)) {
+        fdn_panic_cstr("i32 formatting failed");
+    }
+    return foundation_runtime_string_copy(
+        &(fdn_string){buffer, (size_t)length, 0});
+}
+
+fdn_string foundation_runtime_format_u64(uint64_t value) {
+    char buffer[32];
+    const int length = snprintf(buffer, sizeof(buffer), "%" PRIu64, value);
+    if (length < 0 || (size_t)length >= sizeof(buffer)) {
+        fdn_panic_cstr("u64 formatting failed");
+    }
+    return foundation_runtime_string_copy(
+        &(fdn_string){buffer, (size_t)length, 0});
+}
+
+uint64_t foundation_runtime_time_unix_seconds(void) {
+    const time_t value = time(NULL);
+    if (value == (time_t)-1) {
+        fdn_panic_cstr("system time is unavailable");
+    }
+    return (uint64_t)value;
+}
+
+int32_t foundation_runtime_time_format_utc(uint64_t unix_seconds, fdn_string *result) {
+    struct tm calendar;
+    char buffer[21];
+    int length;
+    if (result == NULL) {
+        return 1;
+    }
+#if defined(_WIN32)
+    {
+        __time64_t native;
+        if (unix_seconds > (uint64_t)INT64_MAX) {
+            return 1;
+        }
+        native = (__time64_t)unix_seconds;
+        if (_gmtime64_s(&calendar, &native) != 0) {
+            return 1;
+        }
+    }
+#else
+    {
+        time_t native = (time_t)unix_seconds;
+        if (native < (time_t)0 || (uint64_t)native != unix_seconds ||
+            gmtime_r(&native, &calendar) == NULL) {
+            return 1;
+        }
+    }
+#endif
+    if (calendar.tm_year < -1900 || calendar.tm_year > 8099) {
+        return 1;
+    }
+    length = snprintf(buffer, sizeof(buffer), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                      calendar.tm_year + 1900, calendar.tm_mon + 1, calendar.tm_mday,
+                      calendar.tm_hour, calendar.tm_min, calendar.tm_sec);
+    if (length != 20) {
+        return 1;
+    }
+    *result = foundation_runtime_string_copy(&(fdn_string){buffer, 20, 0});
+    return 0;
+}
+
+static int32_t fdn_fs_status(int error) {
+    if (error == ENOENT) {
+        return 1;
+    }
+    if (error == EACCES) {
+        return 2;
+    }
+    if (error == EINVAL || error == ENAMETOOLONG) {
+        return 3;
+    }
+    return 4;
+}
+
+static int fdn_valid_path(const fdn_string *path) {
+    size_t offset;
+    if (path == NULL || path->data == NULL || path->length == 0 ||
+        !fdn_valid_utf8(path->data, path->length)) {
+        return 0;
+    }
+    for (offset = 0; offset < path->length; ++offset) {
+        if (path->data[offset] == '\0') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+#if defined(_WIN32)
+static wchar_t *fdn_windows_path(const fdn_string *path) {
+    wchar_t *result;
+    int length;
+    if (!fdn_valid_path(path) || path->length > (size_t)INT_MAX) {
+        return NULL;
+    }
+    length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path->data,
+                                 (int)path->length, NULL, 0);
+    if (length == 0) {
+        return NULL;
+    }
+    result = fdn_alloc(((size_t)length + 1) * sizeof(*result));
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path->data, (int)path->length,
+                            result, length) != length) {
+        fdn_dealloc(result);
+        return NULL;
+    }
+    result[length] = L'\0';
+    return result;
+}
+#else
+static char *fdn_native_path(const fdn_string *path) {
+    char *result;
+    if (!fdn_valid_path(path) || path->length == SIZE_MAX) {
+        return NULL;
+    }
+    result = fdn_alloc(path->length + 1);
+    (void)memcpy(result, path->data, path->length);
+    result[path->length] = '\0';
+    return result;
+}
+#endif
+
+int32_t foundation_runtime_fs_open_lines(const fdn_string *path, uint64_t *handle) {
+    FILE *file;
+    if (handle == NULL) {
+        fdn_panic_cstr("file handle output is null");
+    }
+    *handle = 0;
+#if defined(_WIN32)
+    {
+        wchar_t *native_path = fdn_windows_path(path);
+        if (native_path == NULL) {
+            return 3;
+        }
+        file = _wfopen(native_path, L"rb");
+        fdn_dealloc(native_path);
+    }
+#else
+    {
+        char *native_path = fdn_native_path(path);
+        if (native_path == NULL) {
+            return 3;
+        }
+        file = fopen(native_path, "rb");
+        fdn_dealloc(native_path);
+    }
+#endif
+    if (file == NULL) {
+        return fdn_fs_status(errno);
+    }
+    *handle = (uint64_t)(uintptr_t)file;
+    ++fdn_live_file_count;
+    return 0;
+}
+
+int32_t foundation_runtime_fs_next_line_limited(uint64_t handle, uint64_t max_length,
+                                                fdn_string *line) {
+    FILE *file = (FILE *)(uintptr_t)handle;
+    char *data = NULL;
+    size_t length = 0;
+    size_t capacity = 0;
+    const size_t limit = max_length > (uint64_t)SIZE_MAX ? SIZE_MAX : (size_t)max_length;
+    int byte;
+    if (file == NULL || line == NULL) {
+        return 4;
+    }
+    fdn_string_drop(line);
+    *line = fdn_string_static("", 0);
+    while ((byte = fgetc(file)) != EOF) {
+        char *grown;
+        size_t next_capacity;
+        if (byte == '\n') {
+            break;
+        }
+        if (length >= limit) {
+            while ((byte = fgetc(file)) != EOF && byte != '\n') {
+            }
+            fdn_dealloc(data);
+            return byte == EOF && ferror(file) != 0 ? 4 : 5;
+        }
+        if (length == capacity) {
+            next_capacity = capacity == 0 ? 256 : capacity * 2;
+            if (next_capacity < capacity) {
+                fdn_dealloc(data);
+                fdn_panic_cstr("line length overflow");
+            }
+            if (next_capacity > limit) {
+                next_capacity = limit;
+            }
+            grown = fdn_alloc(next_capacity);
+            if (length != 0) {
+                (void)memcpy(grown, data, length);
+            }
+            fdn_dealloc(data);
+            data = grown;
+            capacity = next_capacity;
+        }
+        data[length++] = (char)byte;
+    }
+    if (byte == EOF && ferror(file) != 0) {
+        fdn_dealloc(data);
+        return 4;
+    }
+    if (byte == EOF && length == 0) {
+        return 0;
+    }
+    if (length != 0 && data[length - 1] == '\r') {
+        --length;
+    }
+    if (!fdn_valid_utf8(data, length)) {
+        fdn_dealloc(data);
+        return 3;
+    }
+    if (length == 0) {
+        fdn_dealloc(data);
+        return 1;
+    }
+    line->data = data;
+    line->length = length;
+    line->owned = 1;
+    return 1;
+}
+
+int32_t foundation_runtime_fs_next_line(uint64_t handle, fdn_string *line) {
+    return foundation_runtime_fs_next_line_limited(handle, UINT64_MAX, line);
+}
+
+int32_t foundation_runtime_fs_close(uint64_t handle) {
+    FILE *file = (FILE *)(uintptr_t)handle;
+    int status;
+    if (file == NULL) {
+        return 0;
+    }
+    status = fclose(file);
+    --fdn_live_file_count;
+    return status == 0 ? 0 : 4;
+}
+
+int32_t foundation_runtime_fs_size(const fdn_string *path, uint64_t *size) {
+    if (size == NULL) {
+        fdn_panic_cstr("file size output is null");
+    }
+    *size = 0;
+#if defined(_WIN32)
+    {
+        struct _stat64 info;
+        wchar_t *native_path = fdn_windows_path(path);
+        int status;
+        if (native_path == NULL) {
+            return 3;
+        }
+        status = _wstat64(native_path, &info);
+        fdn_dealloc(native_path);
+        if (status != 0) {
+            return fdn_fs_status(errno);
+        }
+        if (info.st_size < 0) {
+            return 4;
+        }
+        *size = (uint64_t)info.st_size;
+    }
+#else
+    {
+        struct stat info;
+        char *native_path = fdn_native_path(path);
+        int status;
+        if (native_path == NULL) {
+            return 3;
+        }
+        status = stat(native_path, &info);
+        fdn_dealloc(native_path);
+        if (status != 0) {
+            return fdn_fs_status(errno);
+        }
+        if (info.st_size < 0) {
+            return 4;
+        }
+        *size = (uint64_t)info.st_size;
+    }
+#endif
+    return 0;
+}
+
+uint64_t foundation_runtime_fs_live_handles(void) { return fdn_live_file_count; }
+
+#if defined(_WIN32)
+typedef struct fdn_directory_handle {
+    HANDLE search;
+    WIN32_FIND_DATAW entry;
+    int first;
+} fdn_directory_handle;
+
+static int32_t fdn_windows_fs_status(DWORD error) {
+    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+        return 1;
+    }
+    if (error == ERROR_ACCESS_DENIED) {
+        return 2;
+    }
+    if (error == ERROR_INVALID_NAME || error == ERROR_BAD_PATHNAME) {
+        return 3;
+    }
+    return 4;
+}
+
+static int fdn_windows_name(fdn_string *name, const wchar_t *value) {
+    char *bytes;
+    const size_t wide_length = wcslen(value);
+    int length;
+    if (wide_length > (size_t)INT_MAX) {
+        return 0;
+    }
+    length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, (int)wide_length,
+                                 NULL, 0, NULL, NULL);
+    if (length == 0 && wide_length != 0) {
+        return 0;
+    }
+    if (length == 0) {
+        *name = fdn_string_static("", 0);
+        return 1;
+    }
+    bytes = fdn_alloc((size_t)length);
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, (int)wide_length,
+                            bytes, length, NULL, NULL) != length) {
+        fdn_dealloc(bytes);
+        return 0;
+    }
+    name->data = bytes;
+    name->length = (size_t)length;
+    name->owned = 1;
+    return 1;
+}
+#else
+typedef struct fdn_directory_handle {
+    DIR *directory;
+} fdn_directory_handle;
+#endif
+
+int32_t foundation_runtime_fs_open_directory(const fdn_string *path, uint64_t *handle) {
+    fdn_directory_handle *state;
+    if (handle == NULL) {
+        fdn_panic_cstr("directory handle output is null");
+    }
+    *handle = 0;
+#if defined(_WIN32)
+    {
+        wchar_t *native_path = fdn_windows_path(path);
+        wchar_t *pattern;
+        size_t length;
+        DWORD attributes;
+        if (native_path == NULL) {
+            return 3;
+        }
+        attributes = GetFileAttributesW(native_path);
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+            const int32_t status = fdn_windows_fs_status(GetLastError());
+            fdn_dealloc(native_path);
+            return status;
+        }
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+            fdn_dealloc(native_path);
+            return 3;
+        }
+        length = wcslen(native_path);
+        pattern = fdn_alloc((length + 3) * sizeof(*pattern));
+        (void)memcpy(pattern, native_path, length * sizeof(*pattern));
+        fdn_dealloc(native_path);
+        if (length != 0 && pattern[length - 1] != L'\\' && pattern[length - 1] != L'/') {
+            pattern[length++] = L'\\';
+        }
+        pattern[length++] = L'*';
+        pattern[length] = L'\0';
+        state = fdn_alloc(sizeof(*state));
+        state->search = FindFirstFileW(pattern, &state->entry);
+        state->first = 1;
+        fdn_dealloc(pattern);
+        if (state->search == INVALID_HANDLE_VALUE) {
+            const int32_t status = fdn_windows_fs_status(GetLastError());
+            fdn_dealloc(state);
+            return status;
+        }
+    }
+#else
+    {
+        char *native_path = fdn_native_path(path);
+        if (native_path == NULL) {
+            return 3;
+        }
+        state = fdn_alloc(sizeof(*state));
+        state->directory = opendir(native_path);
+        fdn_dealloc(native_path);
+        if (state->directory == NULL) {
+            const int32_t status = fdn_fs_status(errno);
+            fdn_dealloc(state);
+            return status;
+        }
+    }
+#endif
+    *handle = (uint64_t)(uintptr_t)state;
+    ++fdn_live_directory_count;
+    return 0;
+}
+
+int32_t foundation_runtime_fs_next_directory(uint64_t handle, fdn_string *name) {
+    fdn_directory_handle *state = (fdn_directory_handle *)(uintptr_t)handle;
+    if (state == NULL || name == NULL) {
+        return 3;
+    }
+    fdn_string_drop(name);
+    *name = fdn_string_static("", 0);
+#if defined(_WIN32)
+    while (1) {
+        const wchar_t *value;
+        if (state->first != 0) {
+            state->first = 0;
+        } else if (FindNextFileW(state->search, &state->entry) == 0) {
+            return GetLastError() == ERROR_NO_MORE_FILES ? 0 : 3;
+        }
+        value = state->entry.cFileName;
+        if (wcscmp(value, L".") == 0 || wcscmp(value, L"..") == 0) {
+            continue;
+        }
+        return fdn_windows_name(name, value) ? 1 : 2;
+    }
+#else
+    while (1) {
+        struct dirent *entry;
+        size_t length;
+        errno = 0;
+        entry = readdir(state->directory);
+        if (entry == NULL) {
+            return errno == 0 ? 0 : 3;
+        }
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        length = strlen(entry->d_name);
+        if (!fdn_valid_utf8(entry->d_name, length)) {
+            return 2;
+        }
+        *name = fdn_string_copy(entry->d_name, length);
+        return 1;
+    }
+#endif
+}
+
+int32_t foundation_runtime_fs_close_directory(uint64_t handle) {
+    fdn_directory_handle *state = (fdn_directory_handle *)(uintptr_t)handle;
+    int status;
+    if (state == NULL) {
+        return 0;
+    }
+#if defined(_WIN32)
+    status = FindClose(state->search) != 0 ? 0 : 4;
+#else
+    status = closedir(state->directory) == 0 ? 0 : 4;
+#endif
+    fdn_dealloc(state);
+    --fdn_live_directory_count;
+    return status;
+}
+
+int32_t foundation_runtime_fs_is_directory(const fdn_string *path, bool *result) {
+    if (result == NULL) {
+        fdn_panic_cstr("directory result is null");
+    }
+    *result = false;
+#if defined(_WIN32)
+    {
+        wchar_t *native_path = fdn_windows_path(path);
+        DWORD attributes;
+        if (native_path == NULL) {
+            return 3;
+        }
+        attributes = GetFileAttributesW(native_path);
+        fdn_dealloc(native_path);
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+            return fdn_windows_fs_status(GetLastError());
+        }
+        *result = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    }
+#else
+    {
+        struct stat info;
+        char *native_path = fdn_native_path(path);
+        int status;
+        if (native_path == NULL) {
+            return 3;
+        }
+        status = stat(native_path, &info);
+        fdn_dealloc(native_path);
+        if (status != 0) {
+            return fdn_fs_status(errno);
+        }
+        *result = S_ISDIR(info.st_mode);
+    }
+#endif
+    return 0;
+}
+
+int32_t foundation_runtime_fs_modified(const fdn_string *path, uint64_t *unix_seconds) {
+    if (unix_seconds == NULL) {
+        fdn_panic_cstr("file modification output is null");
+    }
+    *unix_seconds = 0;
+#if defined(_WIN32)
+    {
+        struct _stat64 info;
+        wchar_t *native_path = fdn_windows_path(path);
+        int status;
+        if (native_path == NULL) {
+            return 3;
+        }
+        status = _wstat64(native_path, &info);
+        fdn_dealloc(native_path);
+        if (status != 0) {
+            return fdn_fs_status(errno);
+        }
+        if (info.st_mtime < 0) {
+            return 4;
+        }
+        *unix_seconds = (uint64_t)info.st_mtime;
+    }
+#else
+    {
+        struct stat info;
+        char *native_path = fdn_native_path(path);
+        int status;
+        if (native_path == NULL) {
+            return 3;
+        }
+        status = stat(native_path, &info);
+        fdn_dealloc(native_path);
+        if (status != 0) {
+            return fdn_fs_status(errno);
+        }
+        if (info.st_mtime < 0) {
+            return 4;
+        }
+        *unix_seconds = (uint64_t)info.st_mtime;
+    }
+#endif
+    return 0;
+}
+
+uint64_t foundation_runtime_fs_live_directories(void) { return fdn_live_directory_count; }

@@ -2,6 +2,21 @@ package fuzz.bootstrap
 
 import fuzz.support as support
 
+@target(linux)
+fn selectedTarget() String {
+    "linux"
+}
+
+@target(macos)
+fn selectedTarget() String {
+    "macos"
+}
+
+@target(windows)
+fn selectedTarget() String {
+    "windows"
+}
+
 extern c fn unusedNative() i32 as foundation_fuzz_native
 
 extern c fn FoundationFuzzProbe(value i32) i32 as foundation_fuzz_probe {
@@ -46,8 +61,11 @@ fn first(values view [String]) void {
     print(values[0])
 }
 
-fn main() i32 {
+fn main(args view [String]) i32 {
     print("fuzz seed")
+    print(selectedTarget())
+    let bytes u64 = 11925602363
+    discard bytes
     let values = ["array", "slice"]
     first(view values)
     let counter = Counter { value = 42 }

@@ -1,7 +1,7 @@
 "use strict";
 
 const vscode = require("vscode");
-const { collectCompletions } = require("./completions");
+const { collectCompletions, findHover } = require("./completions");
 
 const completionKinds = {
     Constant: vscode.CompletionItemKind.Constant,
@@ -19,16 +19,20 @@ const completionKinds = {
 };
 
 function activate(context) {
+    async function projectSources(document) {
+        const files = await vscode.workspace.findFiles("**/*.fdn", "**/{.git,build}/**", 500);
+        return Promise.all(files.map(async (file) => {
+            if (file.toString() === document.uri.toString()) {
+                return document.getText();
+            }
+            const contents = await vscode.workspace.fs.readFile(file);
+            return Buffer.from(contents).toString("utf8");
+        }));
+    }
+
     const provider = vscode.languages.registerCompletionItemProvider("foundation", {
         async provideCompletionItems(document) {
-            const files = await vscode.workspace.findFiles("**/*.fdn", "**/{.git,build}/**", 500);
-            const sources = await Promise.all(files.map(async (file) => {
-                if (file.toString() === document.uri.toString()) {
-                    return document.getText();
-                }
-                const contents = await vscode.workspace.fs.readFile(file);
-                return Buffer.from(contents).toString("utf8");
-            }));
+            const sources = await projectSources(document);
             return collectCompletions(document.getText(), sources).map((entry) => {
                 const item = new vscode.CompletionItem(entry.label, completionKinds[entry.kind]);
                 item.detail = entry.detail;
@@ -40,7 +44,24 @@ function activate(context) {
         }
     }, ".");
 
-    context.subscriptions.push(provider);
+    const hoverProvider = vscode.languages.registerHoverProvider("foundation", {
+        async provideHover(document, position) {
+            const range = document.getWordRangeAtPosition(position);
+            if (!range) {
+                return undefined;
+            }
+            const word = document.getText(range);
+            const entry = findHover(document.getText(), word, await projectSources(document));
+            if (!entry) {
+                return undefined;
+            }
+            const contents = new vscode.MarkdownString();
+            contents.appendCodeblock(entry.detail || entry.label, "foundation");
+            return new vscode.Hover(contents, range);
+        }
+    });
+
+    context.subscriptions.push(provider, hoverProvider);
 }
 
 function deactivate() {}

@@ -117,8 +117,10 @@ bool isExported(const std::string &name) {
 
 } // namespace
 
-Parser::Parser(std::vector<Token> tokens, Diagnostics &diagnostics, bool installBuiltins)
-    : tokens_(std::move(tokens)), diagnostics_(diagnostics), installBuiltins_(installBuiltins) {}
+Parser::Parser(std::vector<Token> tokens, Diagnostics &diagnostics, bool installBuiltins,
+               TargetPlatform target)
+    : tokens_(std::move(tokens)), diagnostics_(diagnostics), installBuiltins_(installBuiltins),
+      target_(target) {}
 
 Program Parser::parse() {
     if (installBuiltins_) {
@@ -143,24 +145,54 @@ Program Parser::parse() {
         program_.imports.push_back({name, std::move(alias), span});
     }
     while (!atEnd()) {
+        const auto selected = targetAttributes();
+        const auto expressions = program_.expressions.size();
+        const auto statements = program_.statements.size();
+        const auto blocks = program_.blocks.size();
+        const auto functions = program_.functions.size();
         if (check(TokenKind::Struct)) {
-            program_.structs.push_back(structDeclaration());
+            auto declaration = structDeclaration();
+            if (selected) {
+                program_.structs.push_back(std::move(declaration));
+            } else {
+                restoreProgram(expressions, statements, blocks, functions);
+            }
             continue;
         }
         if (check(TokenKind::Enum)) {
-            program_.enums.push_back(enumDeclaration());
+            auto declaration = enumDeclaration();
+            if (selected) {
+                program_.enums.push_back(std::move(declaration));
+            } else {
+                restoreProgram(expressions, statements, blocks, functions);
+            }
             continue;
         }
         if (check(TokenKind::Contract)) {
-            program_.contracts.push_back(contractDeclaration());
+            auto declaration = contractDeclaration();
+            if (selected) {
+                program_.contracts.push_back(std::move(declaration));
+            } else {
+                restoreProgram(expressions, statements, blocks, functions);
+            }
             continue;
         }
         if (check(TokenKind::Fn)) {
-            program_.functions.push_back(function());
+            auto declaration = function();
+            if (selected) {
+                program_.functions.push_back(std::move(declaration));
+            } else {
+                restoreProgram(expressions, statements, blocks, functions);
+            }
             continue;
         }
         if (check(TokenKind::Extern)) {
-            program_.functions.push_back(function(true));
+            auto declaration = function(true);
+            if (selected) {
+                program_.functions.push_back(std::move(declaration));
+            } else {
+                restoreProgram(expressions, statements, blocks, functions);
+            }
             continue;
         }
         diagnostics_.error("FDN1001", "expected type or function declaration",
@@ -168,6 +200,55 @@ Program Parser::parse() {
         advance();
     }
     return std::move(program_);
+}
+
+bool Parser::targetAttributes() {
+    auto selected = true;
+    auto foundTarget = false;
+    while (match(TokenKind::At)) {
+        const auto name = expect(TokenKind::Identifier, "FDN1140",
+                                 "expected compiler attribute name after @");
+        expect(TokenKind::LeftParen, "FDN1141", "expected ( after compiler attribute");
+        const auto argument = expect(TokenKind::Identifier, "FDN1142",
+                                     "expected target name in compiler attribute");
+        expect(TokenKind::RightParen, "FDN1143", "expected ) after compiler attribute");
+        if (name.text != "target") {
+            diagnostics_.error("FDN1140", "unknown compiler attribute @" + name.text,
+                               name.span);
+            continue;
+        }
+        if (foundTarget) {
+            diagnostics_.error("FDN1144", "declaration has more than one @target attribute",
+                               name.span);
+            continue;
+        }
+        foundTarget = true;
+        const auto requested = targetArgument(argument);
+        selected = requested != TargetPlatform::Unknown && requested == target_;
+    }
+    return selected;
+}
+
+TargetPlatform Parser::targetArgument(const Token &argument) {
+    if (argument.text == "linux") {
+        return TargetPlatform::Linux;
+    }
+    if (argument.text == "macos") {
+        return TargetPlatform::MacOS;
+    }
+    if (argument.text == "windows") {
+        return TargetPlatform::Windows;
+    }
+    diagnostics_.error("FDN1142", "unknown target " + argument.text, argument.span);
+    return TargetPlatform::Unknown;
+}
+
+void Parser::restoreProgram(std::size_t expressions, std::size_t statements,
+                            std::size_t blocks, std::size_t functions) {
+    program_.expressions.resize(expressions);
+    program_.statements.resize(statements);
+    program_.blocks.resize(blocks);
+    program_.functions.resize(functions);
 }
 
 std::pair<std::string, SourceSpan> Parser::qualifiedName(const char *code,
@@ -850,7 +931,7 @@ AstExpressionId Parser::unary() {
         if (!atEnd()) {
             advance();
         }
-        return addExpression(IntegerExpression{0}, bad.span);
+        return addExpression(IntegerExpression{0, false}, bad.span);
     }
 
     ++expressionDepth_;
@@ -860,7 +941,8 @@ AstExpressionId Parser::unary() {
         const auto operand = unary();
         if (const auto *integer =
                 std::get_if<IntegerExpression>(&program_.expressions[operand].value)) {
-            result = addExpression(IntegerExpression{-integer->value}, start);
+            result = addExpression(
+                IntegerExpression{integer->magnitude, !integer->negative}, start);
         } else {
             result = addExpression(UnaryExpression{UnaryOperator::Negate, operand}, start);
         }
@@ -887,14 +969,14 @@ AstExpressionId Parser::primary() {
     AstExpressionId result;
     if (match(TokenKind::Integer)) {
         const auto token = previous();
-        std::int64_t value{};
+        std::uint64_t magnitude{};
         const auto conversion = std::from_chars(token.text.data(),
-                                                token.text.data() + token.text.size(), value);
+                                                token.text.data() + token.text.size(), magnitude);
         if (conversion.ec != std::errc{} ||
             conversion.ptr != token.text.data() + token.text.size()) {
             diagnostics_.error("FDN1016", "integer is outside the supported range", token.span);
         }
-        result = addExpression(IntegerExpression{value}, token.span);
+        result = addExpression(IntegerExpression{magnitude, false}, token.span);
     } else if (match(TokenKind::True)) {
         result = addExpression(BooleanExpression{true}, previous().span);
     } else if (match(TokenKind::False)) {
@@ -939,7 +1021,7 @@ AstExpressionId Parser::primary() {
         if (!atEnd()) {
             advance();
         }
-        result = addExpression(IntegerExpression{0}, bad.span);
+        result = addExpression(IntegerExpression{0, false}, bad.span);
     }
 
     while (continuesLine()) {

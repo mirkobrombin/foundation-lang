@@ -1,0 +1,12 @@
+package std.format
+
+extern c fn i32Native(value i32) String as foundation_runtime_format_i32
+extern c fn u64Native(value u64) String as foundation_runtime_format_u64
+
+fn I32(value i32) String {
+    i32Native(value)
+}
+
+fn U64(value u64) String {
+    u64Native(value)
+}

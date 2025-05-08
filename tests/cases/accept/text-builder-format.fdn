@@ -1,0 +1,30 @@
+import std.format
+import std.text
+
+fn main() i32 {
+    var builder = text.NewBuilder()
+    let prefix = "Foundation "
+    let smile u64 = 128578
+    let first = builder.Write(view prefix) else error {
+        discard error
+        return 1
+    }
+    if !first {
+        return 2
+    }
+    let second = builder.WriteCodePoint(smile) else error {
+        discard error
+        return 3
+    }
+    if !second {
+        return 4
+    }
+    let value = builder.Finish() else error {
+        discard error
+        return 5
+    }
+    print(value)
+    print(format.I32(-2147483647 - 1))
+    print(format.U64(18446744073709551615))
+    0
+}

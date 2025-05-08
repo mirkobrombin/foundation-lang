@@ -182,6 +182,8 @@ const char *tokenName(TokenKind kind) {
         return "&&";
     case TokenKind::OrOr:
         return "||";
+    case TokenKind::At:
+        return "@";
     }
     return "token";
 }
@@ -284,6 +286,8 @@ Token Lexer::next() {
             return simple(TokenKind::Slash, "/");
         case '%':
             return simple(TokenKind::Percent, "%");
+        case '@':
+            return simple(TokenKind::At, "@");
         case '-':
             return simple(TokenKind::Minus, "-");
         case '=':

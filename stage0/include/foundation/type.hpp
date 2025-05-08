@@ -11,6 +11,7 @@ enum class TypeKind {
     Invalid,
     Void,
     I32,
+    U64,
     Bool,
     String,
     Array,
@@ -40,6 +41,7 @@ struct Type {
 inline const Type invalidType{TypeKind::Invalid, 0, {}};
 inline const Type voidType{TypeKind::Void, 0, {}};
 inline const Type i32Type{TypeKind::I32, 0, {}};
+inline const Type u64Type{TypeKind::U64, 0, {}};
 inline const Type boolType{TypeKind::Bool, 0, {}};
 inline const Type stringType{TypeKind::String, 0, {}};
 

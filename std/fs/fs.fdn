@@ -1,0 +1,167 @@
+package std.fs
+
+enum Error {
+    NotFound
+    Permission
+    InvalidPath
+    InvalidUtf8
+    LineTooLong
+    Closed
+    Io
+}
+
+extern c fn openLinesNative(path view String, handle edit u64) i32 as foundation_runtime_fs_open_lines
+extern c fn nextLineLimitedNative(handle u64, limit u64, line edit String) i32 as foundation_runtime_fs_next_line_limited
+extern c fn closeNative(handle u64) i32 as foundation_runtime_fs_close
+extern c fn sizeNative(path view String, size edit u64) i32 as foundation_runtime_fs_size
+extern c fn openDirectoryNative(path view String, handle edit u64) i32 as foundation_runtime_fs_open_directory
+extern c fn nextDirectoryNative(handle u64, name edit String) i32 as foundation_runtime_fs_next_directory
+extern c fn closeDirectoryNative(handle u64) i32 as foundation_runtime_fs_close_directory
+extern c fn isDirectoryNative(path view String, result edit bool) i32 as foundation_runtime_fs_is_directory
+extern c fn modifiedNative(path view String, result edit u64) i32 as foundation_runtime_fs_modified
+
+fn errorFor(status i32) Error {
+    if status == 1 {
+        return .NotFound
+    }
+    if status == 2 {
+        return .Permission
+    }
+    if status == 3 {
+        return .InvalidPath
+    }
+    .Io
+}
+
+struct LineReader {
+    handle u64
+
+    fn Next(edit) Result<Option<String>, Error> {
+        let defaultLimit u64 = 16777216
+        self.NextLimited(defaultLimit)
+    }
+
+    fn NextLimited(edit, limit u64) Result<Option<String>, Error> {
+        if self.handle == 0 {
+            return .Err(.Closed)
+        }
+        var line = ""
+        let status = nextLineLimitedNative(self.handle, limit, edit line)
+        if status == 0 {
+            return .Ok(.None)
+        }
+        if status == 1 {
+            return .Ok(.Some(line))
+        }
+        if status == 3 {
+            return .Err(.InvalidUtf8)
+        }
+        if status == 5 {
+            return .Err(.LineTooLong)
+        }
+        .Err(.Io)
+    }
+
+    fn Close(edit) Result<bool, Error> {
+        let handle = replace self.handle with 0
+        if handle == 0 {
+            return .Ok(false)
+        }
+        if closeNative(handle) == 0 {
+            return .Ok(true)
+        }
+        .Err(.Io)
+    }
+
+    fn drop(edit) void {
+        let handle = replace self.handle with 0
+        if handle != 0 {
+            discard closeNative(handle)
+        }
+    }
+}
+
+struct DirReader {
+    handle u64
+
+    fn Next(edit) Result<Option<String>, Error> {
+        if self.handle == 0 {
+            return .Err(.Closed)
+        }
+        var name = ""
+        let status = nextDirectoryNative(self.handle, edit name)
+        if status == 0 {
+            return .Ok(.None)
+        }
+        if status == 1 {
+            return .Ok(.Some(name))
+        }
+        if status == 2 {
+            return .Err(.InvalidUtf8)
+        }
+        .Err(.Io)
+    }
+
+    fn Close(edit) Result<bool, Error> {
+        let handle = replace self.handle with 0
+        if handle == 0 {
+            return .Ok(false)
+        }
+        if closeDirectoryNative(handle) == 0 {
+            return .Ok(true)
+        }
+        .Err(.Io)
+    }
+
+    fn drop(edit) void {
+        let handle = replace self.handle with 0
+        if handle != 0 {
+            discard closeDirectoryNative(handle)
+        }
+    }
+}
+
+fn OpenLines(path view String) Result<own LineReader, Error> {
+    var handle u64 = 0
+    let status = openLinesNative(path, edit handle)
+    if status == 0 {
+        return .Ok(own LineReader { handle = handle })
+    }
+    .Err(errorFor(status))
+}
+
+fn Size(path view String) Result<u64, Error> {
+    var size u64 = 0
+    let status = sizeNative(path, edit size)
+    if status == 0 {
+        return .Ok(size)
+    }
+    .Err(errorFor(status))
+}
+
+fn OpenDir(path view String) Result<own DirReader, Error> {
+    var handle u64 = 0
+    let status = openDirectoryNative(path, edit handle)
+    if status == 0 {
+        return .Ok(own DirReader { handle = handle })
+    }
+    .Err(errorFor(status))
+}
+
+fn IsDirectory(path view String) Result<bool, Error> {
+    var result = false
+    let status = isDirectoryNative(path, edit result)
+    if status == 0 {
+        return .Ok(result)
+    }
+    .Err(errorFor(status))
+}
+
+fn Modified(path view String) Result<u64, Error> {
+    var result u64 = 0
+    let status = modifiedNative(path, edit result)
+    if status == 0 {
+        return .Ok(result)
+    }
+    .Err(errorFor(status))
+}

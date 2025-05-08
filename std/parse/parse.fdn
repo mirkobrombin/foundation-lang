@@ -1,0 +1,35 @@
+package std.parse
+
+import std.text
+
+enum IntegerError {
+    Empty
+    Invalid
+    Overflow
+}
+
+fn U64(value view String) Result<u64, IntegerError> {
+    let length = text.ByteLen(value)
+    if length == 0 {
+        return .Err(.Empty)
+    }
+    let maximum u64 = 18446744073709551615
+    var result u64 = 0
+    var offset u64 = 0
+    while offset < length {
+        let byte = text.ByteAt(value, offset) else error {
+            discard error
+            panic("integer parser byte invariant failed")
+        }
+        if byte < 48 || byte > 57 {
+            return .Err(.Invalid)
+        }
+        let digit = byte - 48
+        if result > (maximum - digit) / 10 {
+            return .Err(.Overflow)
+        }
+        result = result * 10 + digit
+        offset = offset + 1
+    }
+    .Ok(result)
+}

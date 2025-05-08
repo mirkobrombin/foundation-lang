@@ -1,0 +1,51 @@
+import std.text
+
+struct Counter {
+    value i32
+}
+
+struct Record {
+    name String
+    counter Counter
+    values [3]i32
+}
+
+fn copyName(value view String) String {
+    text.Copy(value)
+}
+
+fn increment(value edit Counter) void {
+    value.value = value.value + 1
+}
+
+fn first(values view [i32]) i32 {
+    values[0]
+}
+
+fn preserveOnSuccess(result Result<i32, bool>, message String) String {
+    let value = result else error {
+        discard error
+        discard message
+        return "failed"
+    }
+    discard value
+    message
+}
+
+fn main() i32 {
+    var record = Record {
+        name = "foundation"
+        counter = Counter { value = 41 }
+        values = [7, 8, 9]
+    }
+    let name = copyName(view record.name)
+    increment(edit record.counter)
+    let selected = first(view record.values)
+    let preserved = preserveOnSuccess(.Ok(1), "preserved")
+    print(name)
+    print(preserved)
+    if record.counter.value != 42 || selected != 7 {
+        panic("field borrow changed value")
+    }
+    0
+}
