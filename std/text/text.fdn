@@ -1,0 +1,137 @@
+package std.text
+
+enum RangeError {
+    OutOfBounds
+    InvalidBoundary
+}
+
+enum BuilderError {
+    Closed
+    InvalidCodePoint
+}
+
+extern c fn copyNative(value view String) String as foundation_runtime_string_copy
+extern c fn byteLengthNative(value view String) u64 as foundation_runtime_string_byte_length
+extern c fn containsNative(value view String, part view String) bool as foundation_runtime_string_contains
+extern c fn startsWithNative(value view String, prefix view String) bool as foundation_runtime_string_starts_with
+extern c fn endsWithNative(value view String, suffix view String) bool as foundation_runtime_string_ends_with
+extern c fn sliceNative(value view String, start u64, end u64, result edit String) i32 as foundation_runtime_string_slice
+extern c fn byteAtNative(value view String, index u64, result edit u64) i32 as foundation_runtime_string_byte_at
+extern c fn findNative(value view String, part view String, result edit u64) bool as foundation_runtime_string_find
+extern c fn compareNative(left view String, right view String) i32 as foundation_runtime_string_compare
+extern c fn openBuilderNative() u64 as foundation_runtime_string_builder_open
+extern c fn appendBuilderNative(handle u64, value view String) void as foundation_runtime_string_builder_append
+extern c fn appendCodePointNative(handle u64, value u64) bool as foundation_runtime_string_builder_append_code_point
+extern c fn finishBuilderNative(handle u64) String as foundation_runtime_string_builder_finish
+extern c fn closeBuilderNative(handle u64) void as foundation_runtime_string_builder_close
+
+struct Builder {
+    handle u64
+
+    fn Write(edit, value view String) Result<bool, BuilderError> {
+        if self.handle == 0 {
+            return .Err(.Closed)
+        }
+        appendBuilderNative(self.handle, value)
+        .Ok(true)
+    }
+
+    fn WriteCodePoint(edit, value u64) Result<bool, BuilderError> {
+        if self.handle == 0 {
+            return .Err(.Closed)
+        }
+        if appendCodePointNative(self.handle, value) {
+            return .Ok(true)
+        }
+        .Err(.InvalidCodePoint)
+    }
+
+    fn Finish(edit) Result<String, BuilderError> {
+        let handle = replace self.handle with 0
+        if handle == 0 {
+            return .Err(.Closed)
+        }
+        .Ok(finishBuilderNative(handle))
+    }
+
+    fn Close(edit) bool {
+        let handle = replace self.handle with 0
+        if handle == 0 {
+            return false
+        }
+        closeBuilderNative(handle)
+        true
+    }
+
+    fn drop(edit) void {
+        let handle = replace self.handle with 0
+        if handle != 0 {
+            closeBuilderNative(handle)
+        }
+    }
+}
+
+fn NewBuilder() own Builder {
+    own Builder { handle = openBuilderNative() }
+}
+
+fn Copy(value view String) String {
+    copyNative(value)
+}
+
+fn ByteLen(value view String) u64 {
+    byteLengthNative(value)
+}
+
+fn IsEmpty(value view String) bool {
+    ByteLen(value) == 0
+}
+
+fn Contains(value view String, part view String) bool {
+    containsNative(value, part)
+}
+
+fn StartsWith(value view String, prefix view String) bool {
+    startsWithNative(value, prefix)
+}
+
+fn EndsWith(value view String, suffix view String) bool {
+    endsWithNative(value, suffix)
+}
+
+fn Slice(value view String, start u64, end u64) Result<String, RangeError> {
+    var result = ""
+    let status = sliceNative(value, start, end, edit result)
+    if status == 0 {
+        return .Ok(result)
+    }
+    if status == 1 {
+        return .Err(.OutOfBounds)
+    }
+    .Err(.InvalidBoundary)
+}
+
+fn ByteAt(value view String, index u64) Result<u64, RangeError> {
+    var result u64 = 0
+    let status = byteAtNative(value, index, edit result)
+    if status == 0 {
+        return .Ok(result)
+    }
+    .Err(.OutOfBounds)
+}
+
+fn Find(value view String, part view String) Option<u64> {
+    var result u64 = 0
+    if findNative(value, part, edit result) {
+        return .Some(result)
+    }
+    .None
+}
+
+fn Compare(left view String, right view String) i32 {
+    compareNative(left, right)
+}
+
+fn Equal(left view String, right view String) bool {
+    Compare(left, right) == 0
+}

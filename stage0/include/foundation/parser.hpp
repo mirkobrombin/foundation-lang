@@ -3,6 +3,7 @@
 
 #include "foundation/ast.hpp"
 #include "foundation/diagnostic.hpp"
+#include "foundation/target.hpp"
 #include "foundation/token.hpp"
 
 #include <cstddef>
@@ -14,7 +15,8 @@ namespace foundation {
 
 class Parser {
   public:
-    Parser(std::vector<Token> tokens, Diagnostics &diagnostics, bool installBuiltins = true);
+    Parser(std::vector<Token> tokens, Diagnostics &diagnostics, bool installBuiltins = true,
+           TargetPlatform target = hostTargetPlatform());
     [[nodiscard]] Program parse();
 
   private:
@@ -26,6 +28,10 @@ class Parser {
     [[nodiscard]] bool check(TokenKind kind) const;
     [[nodiscard]] bool continuesLine() const;
     [[nodiscard]] bool startsGenericPrimary() const;
+    [[nodiscard]] bool targetAttributes();
+    [[nodiscard]] TargetPlatform targetArgument(const Token &argument);
+    void restoreProgram(std::size_t expressions, std::size_t statements,
+                        std::size_t blocks, std::size_t functions);
     bool match(TokenKind kind);
     const Token &expect(TokenKind kind, const char *code, const char *message);
     std::pair<std::string, SourceSpan> qualifiedName(const char *code, const char *message);
@@ -82,6 +88,7 @@ class Parser {
     bool expressionLimitReported_{};
     bool structLiteralsAllowed_{true};
     bool installBuiltins_{};
+    TargetPlatform target_{TargetPlatform::Unknown};
 };
 
 } // namespace foundation

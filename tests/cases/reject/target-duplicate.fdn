@@ -1,0 +1,9 @@
+@target(linux)
+@target(macos)
+fn selected() i32 {
+    1
+}
+
+fn main() i32 {
+    0
+}

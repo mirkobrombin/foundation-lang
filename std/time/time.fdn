@@ -1,0 +1,56 @@
+package std.time
+
+extern c fn nowNative() u64 as foundation_runtime_time_unix_seconds
+extern c fn formatUtcNative(seconds u64, result edit String) i32 as foundation_runtime_time_format_utc
+
+enum Error {
+    BeforeReference
+    OutOfRange
+}
+
+struct Duration {
+    seconds u64
+
+    fn Seconds(view) u64 {
+        self.seconds
+    }
+}
+
+struct Instant {
+    unixSeconds u64
+
+    fn Unix(view) u64 {
+        self.unixSeconds
+    }
+
+    fn Before(view, other view Instant) bool {
+        self.unixSeconds < other.unixSeconds
+    }
+
+    fn After(view, other view Instant) bool {
+        self.unixSeconds > other.unixSeconds
+    }
+
+    fn Since(view, earlier view Instant) Result<Duration, Error> {
+        if self.unixSeconds < earlier.unixSeconds {
+            return .Err(.BeforeReference)
+        }
+        .Ok(Duration { seconds = self.unixSeconds - earlier.unixSeconds })
+    }
+
+    fn FormatUtc(view) Result<String, Error> {
+        var result = ""
+        if formatUtcNative(self.unixSeconds, edit result) != 0 {
+            return .Err(.OutOfRange)
+        }
+        .Ok(result)
+    }
+}
+
+fn FromUnix(seconds u64) Instant {
+    Instant { unixSeconds = seconds }
+}
+
+fn Now() Instant {
+    FromUnix(nowNative())
+}

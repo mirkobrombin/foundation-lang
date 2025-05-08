@@ -119,14 +119,20 @@ bool isReservedCSymbol(std::string_view value) {
 }
 
 bool isCParameterType(const Type &type) {
-    return type == i32Type || type == boolType ||
+    return type == i32Type || type == u64Type || type == boolType ||
            (type.kind == TypeKind::View && type.arguments.size() == 1 &&
-            type.arguments.front() == stringType);
+            type.arguments.front() == stringType) ||
+           (type.kind == TypeKind::Edit && type.arguments.size() == 1 &&
+            (type.arguments.front() == i32Type || type.arguments.front() == u64Type ||
+             type.arguments.front() == boolType || type.arguments.front() == stringType));
 }
 
 bool isCReturnType(const Type &type) {
-    return type == voidType || type == i32Type || type == boolType;
+    return type == voidType || type == i32Type || type == u64Type || type == boolType ||
+           type == stringType;
 }
+
+bool isIntegerType(const Type &type) { return type == i32Type || type == u64Type; }
 
 class Analyzer {
   public:
@@ -659,6 +665,9 @@ class Analyzer {
             if (!function.receiver.has_value() && function.name == "panic") {
                 diagnostics_.error("FDN2018", "panic is a reserved builtin", function.span);
             }
+            if (!function.receiver.has_value() && function.name == "len") {
+                diagnostics_.error("FDN2018", "len is a reserved builtin", function.span);
+            }
             signatures_.push_back({semantic.returnType, semantic.parameterTypes});
 
             if (function.receiver.has_value() || function.name != "main" ||
@@ -669,10 +678,18 @@ class Analyzer {
                 model_.main = index;
             }
             foundMain = true;
-            if (!function.typeParameters.empty() || !function.parameters.empty() ||
+            const Type argumentsType{
+                TypeKind::View, 0, {Type{TypeKind::Slice, 0, {stringType}}}};
+            const auto acceptsArguments =
+                semantic.parameterTypes.size() == 1 &&
+                semantic.parameterTypes.front() == argumentsType;
+            if (!function.typeParameters.empty() ||
+                (!semantic.parameterTypes.empty() && !acceptsArguments) ||
                 semantic.returnType != i32Type) {
-                diagnostics_.error("FDN2007", "main must have signature fn main() i32",
-                                   function.span);
+                diagnostics_.error(
+                    "FDN2007",
+                    "main must have signature fn main() i32 or fn main(args view [String]) i32",
+                    function.span);
             }
         }
         if (!foundMain) {
@@ -823,6 +840,8 @@ class Analyzer {
                         declared = payload;
                     }
                     const auto successState = resultOutstanding_;
+                    const auto successMoves = moveStates_;
+                    const auto successLoans = loanStates_;
                     scopes_.emplace_back();
                     const auto errorLocal = addLocal(*variable->elseBinding,
                                                      initializer.arguments[1], false,
@@ -832,6 +851,8 @@ class Analyzer {
                     reportScope(scopes_.back());
                     scopes_.pop_back();
                     restoreOutstanding(successState);
+                    restoreMoves(successMoves);
+                    restoreLoans(successLoans);
                     if (!exits) {
                         diagnostics_.error("FDN2054", "let else block must exit",
                                            statement.span);
@@ -1160,10 +1181,24 @@ class Analyzer {
         const auto &expression = program_.expressions[id];
         auto type = invalidType;
         if (const auto *integer = std::get_if<IntegerExpression>(&expression.value)) {
-            if (integer->value < INT32_MIN || integer->value > INT32_MAX) {
-                diagnostics_.error("FDN2005", "integer literal does not fit i32", expression.span);
+            if (expected == u64Type) {
+                if (integer->negative) {
+                    diagnostics_.error("FDN2005", "negative integer literal does not fit u64",
+                                       expression.span);
+                }
+                type = u64Type;
+            } else {
+                constexpr auto minimumMagnitude = std::uint64_t{2147483648};
+                const auto fits = integer->negative
+                                      ? integer->magnitude <= minimumMagnitude
+                                      : integer->magnitude <=
+                                            static_cast<std::uint64_t>(INT32_MAX);
+                if (!fits) {
+                    diagnostics_.error("FDN2005", "integer literal does not fit i32",
+                                       expression.span);
+                }
+                type = i32Type;
             }
-            type = i32Type;
         } else if (std::holds_alternative<BooleanExpression>(expression.value)) {
             type = boolType;
         } else if (std::holds_alternative<StringExpression>(expression.value)) {
@@ -1264,7 +1299,7 @@ class Analyzer {
         } else if (const auto *ownership = std::get_if<OwnershipExpression>(&expression.value)) {
             type = analyzeOwnership(id, *ownership, expression.span);
         } else if (const auto *binary = std::get_if<BinaryExpression>(&expression.value)) {
-            type = analyzeBinary(*binary, expression.span);
+            type = analyzeBinary(*binary, expected, expression.span);
         } else if (const auto *call = std::get_if<CallExpression>(&expression.value)) {
             type = analyzeCall(id, *call, expression.span);
         } else if (const auto *literal = std::get_if<StructExpression>(&expression.value)) {
@@ -1300,16 +1335,15 @@ class Analyzer {
             return result;
         }
 
-        const auto &operand = program_.expressions[ownership.operand];
-        if (!std::holds_alternative<NameExpression>(operand.value)) {
+        if (!isPlaceExpression(ownership.operand)) {
             static_cast<void>(analyzeExpression(ownership.operand, std::nullopt,
                                                 ExpressionUse::Inspect));
-            diagnostics_.error("FDN2069", "borrow requires a binding", span);
+            diagnostics_.error("FDN2069", "borrow requires a place", span);
             return invalidType;
         }
         const auto value = analyzeExpression(ownership.operand, std::nullopt,
                                              ExpressionUse::Inspect);
-        const auto local = model_.expressionLocals[ownership.operand];
+        const auto local = placeRootLocal(ownership.operand);
         if (!local.has_value()) {
             if (ownership.operation == OwnershipOperator::View &&
                 model_.functionValueTargets[ownership.operand].has_value()) {
@@ -1325,7 +1359,7 @@ class Analyzer {
                 model_.functionValueTargets[ownership.operand].has_value()) {
                 diagnostics_.error("FDN2072", "edit requires a mutable binding", span);
             } else {
-                diagnostics_.error("FDN2069", "borrow requires a binding", span);
+                diagnostics_.error("FDN2069", "borrow requires a place", span);
             }
             return invalidType;
         }
@@ -1346,9 +1380,8 @@ class Analyzer {
             diagnostics_.error("FDN2071", "shared view cannot become an edit", span);
         }
         if (ownership.operation == OwnershipOperator::Edit &&
-            !model_.functions[currentFunction_].locals[*local].mutableBinding &&
-            value.kind != TypeKind::Edit) {
-            diagnostics_.error("FDN2072", "edit requires a mutable binding", span);
+            !editablePlace(ownership.operand)) {
+            diagnostics_.error("FDN2072", "edit requires a mutable place", span);
         }
 
         const auto requested = ownership.operation == OwnershipOperator::View ? LoanState::View
@@ -1674,10 +1707,18 @@ class Analyzer {
         return element;
     }
 
-    Type analyzeBinary(const BinaryExpression &binary, SourceSpan span) {
-        const auto left = analyzeExpression(binary.left, std::nullopt, ExpressionUse::Inspect);
+    Type analyzeBinary(const BinaryExpression &binary, std::optional<Type> expected,
+                       SourceSpan span) {
+        const auto numericExpected = expected.has_value() && isIntegerType(*expected)
+                                         ? expected
+                                         : std::nullopt;
+        const auto left = analyzeExpression(binary.left, numericExpected,
+                                            ExpressionUse::Inspect);
         const auto movesBeforeRight = moveStates_;
-        const auto right = analyzeExpression(binary.right, std::nullopt, ExpressionUse::Inspect);
+        const auto rightExpected = isIntegerType(left) ? std::optional<Type>{left}
+                                                       : std::nullopt;
+        const auto right = analyzeExpression(binary.right, rightExpected,
+                                             ExpressionUse::Inspect);
         if (binary.operation == BinaryOperator::And || binary.operation == BinaryOperator::Or) {
             std::vector<MoveState> merged(movesBeforeRight.size());
             for (std::size_t local = 0; local < merged.size(); ++local) {
@@ -1694,22 +1735,31 @@ class Analyzer {
                 requireSame(stringType, right, span, "string concatenation operand");
                 return stringType;
             }
-            requireSame(i32Type, left, span, "arithmetic operand");
-            requireSame(i32Type, right, span, "arithmetic operand");
-            return i32Type;
+            if (!isIntegerType(left)) {
+                diagnostics_.error("FDN2011", "arithmetic operand requires i32 or u64", span);
+                return invalidType;
+            }
+            requireSame(left, right, span, "arithmetic operand");
+            return left;
         case BinaryOperator::Subtract:
         case BinaryOperator::Multiply:
         case BinaryOperator::Divide:
         case BinaryOperator::Remainder:
-            requireSame(i32Type, left, span, "arithmetic operand");
-            requireSame(i32Type, right, span, "arithmetic operand");
-            return i32Type;
+            if (!isIntegerType(left)) {
+                diagnostics_.error("FDN2011", "arithmetic operand requires i32 or u64", span);
+                return invalidType;
+            }
+            requireSame(left, right, span, "arithmetic operand");
+            return left;
         case BinaryOperator::Less:
         case BinaryOperator::LessEqual:
         case BinaryOperator::Greater:
         case BinaryOperator::GreaterEqual:
-            requireSame(i32Type, left, span, "comparison operand");
-            requireSame(i32Type, right, span, "comparison operand");
+            if (!isIntegerType(left)) {
+                diagnostics_.error("FDN2011", "comparison operand requires i32 or u64", span);
+                return boolType;
+            }
+            requireSame(left, right, span, "comparison operand");
             return boolType;
         case BinaryOperator::Equal:
         case BinaryOperator::NotEqual:
@@ -1738,21 +1788,63 @@ class Analyzer {
         const auto loansBefore = loanStates_;
         const auto borrowsAllowedBefore = transientBorrowsAllowed_;
         transientBorrowsAllowed_ = true;
-        std::vector<Type> arguments;
-        arguments.reserve(call.arguments.size());
-        const auto inspectsArguments = call.callee == "print" || call.callee == "panic";
-        for (const auto argument : call.arguments) {
-            arguments.push_back(analyzeExpression(
-                argument, std::nullopt,
-                inspectsArguments ? ExpressionUse::Inspect : ExpressionUse::Consume));
-        }
-        restoreLoans(loansBefore);
-        transientBorrowsAllowed_ = borrowsAllowedBefore;
         std::vector<Type> explicitTypes;
         explicitTypes.reserve(call.typeArguments.size());
         for (const auto &argument : call.typeArguments) {
             explicitTypes.push_back(resolveType(argument));
         }
+        std::vector<std::optional<Type>> argumentExpectations(call.arguments.size());
+        if (const auto local = lookupLocal(call.callee); local.has_value()) {
+            auto functionType = model_.functions[currentFunction_].locals[*local].type;
+            if ((functionType.kind == TypeKind::View || functionType.kind == TypeKind::Edit) &&
+                functionType.arguments.size() == 1) {
+                functionType = functionType.arguments.front();
+            }
+            if (functionType.kind == TypeKind::Function && !functionType.arguments.empty()) {
+                for (std::size_t index = 0;
+                     index < call.arguments.size() && index + 1 < functionType.arguments.size();
+                     ++index) {
+                    argumentExpectations[index] = functionType.arguments[index + 1];
+                }
+            }
+        } else if (call.callee == "print" || call.callee == "panic") {
+            if (!argumentExpectations.empty()) {
+                argumentExpectations.front() = stringType;
+            }
+        } else {
+            auto found = functions_.find(call.callee);
+            if (found == functions_.end() && call.callee.find('.') == std::string::npos &&
+                !currentPackage().empty()) {
+                found = functions_.find(std::string(currentPackage()) + '.' + call.callee);
+            }
+            if (found != functions_.end()) {
+                const auto &declaration = program_.functions[found->second];
+                const auto &signature = signatures_[found->second];
+                const auto hasCompleteExplicitTypes =
+                    declaration.typeParameters.empty() ||
+                    explicitTypes.size() == declaration.typeParameters.size();
+                if (hasCompleteExplicitTypes) {
+                    for (std::size_t index = 0;
+                         index < call.arguments.size() && index < signature.parameters.size();
+                         ++index) {
+                        argumentExpectations[index] =
+                            substitute(signature.parameters[index], explicitTypes);
+                    }
+                }
+            }
+        }
+        std::vector<Type> arguments;
+        arguments.reserve(call.arguments.size());
+        const auto inspectsArguments = call.callee == "print" || call.callee == "panic" ||
+                                       call.callee == "len";
+        for (std::size_t index = 0; index < call.arguments.size(); ++index) {
+            const auto argument = call.arguments[index];
+            arguments.push_back(analyzeExpression(
+                argument, argumentExpectations[index],
+                inspectsArguments ? ExpressionUse::Inspect : ExpressionUse::Consume));
+        }
+        restoreLoans(loansBefore);
+        transientBorrowsAllowed_ = borrowsAllowedBefore;
 
         if (const auto local = lookupLocal(call.callee); local.has_value()) {
             auto functionType = model_.functions[currentFunction_].locals[*local].type;
@@ -1824,6 +1916,28 @@ class Analyzer {
             target.kind = CallTargetKind::Panic;
             model_.callTargets[id] = std::move(target);
             return voidType;
+        }
+        if (call.callee == "len") {
+            if (!explicitTypes.empty()) {
+                diagnostics_.error("FDN2043", "len does not accept type arguments", span);
+            }
+            if (arguments.size() != 1) {
+                diagnostics_.error("FDN2010", "len expects one argument", span);
+            } else {
+                auto sequence = arguments.front();
+                if ((sequence.kind == TypeKind::View || sequence.kind == TypeKind::Edit) &&
+                    sequence.arguments.size() == 1) {
+                    sequence = sequence.arguments.front();
+                }
+                if (sequence.kind != TypeKind::String && sequence.kind != TypeKind::Array &&
+                    sequence.kind != TypeKind::Slice) {
+                    diagnostics_.error("FDN2011", "len requires a String, array, or slice", span);
+                }
+            }
+            CallTarget target;
+            target.kind = CallTargetKind::Len;
+            model_.callTargets[id] = std::move(target);
+            return u64Type;
         }
 
         auto found = functions_.find(call.callee);
@@ -2718,6 +2832,8 @@ class Analyzer {
             base = voidType;
         } else if (syntax.name == "i32") {
             base = i32Type;
+        } else if (syntax.name == "u64") {
+            base = u64Type;
         } else if (syntax.name == "bool") {
             base = boolType;
         } else if (syntax.name == "String") {
@@ -2888,7 +3004,8 @@ class Analyzer {
     }
 
     bool isBuiltinType(std::string_view name) const {
-        return name == "void" || name == "i32" || name == "bool" || name == "String" ||
+        return name == "void" || name == "i32" || name == "u64" || name == "bool" ||
+               name == "String" ||
                name == "Option" || name == "Result" || name == "own" || name == "view" ||
                name == "edit";
     }

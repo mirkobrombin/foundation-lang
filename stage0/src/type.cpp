@@ -10,6 +10,8 @@ const char *typeName(Type type) {
         return "void";
     case TypeKind::I32:
         return "i32";
+    case TypeKind::U64:
+        return "u64";
     case TypeKind::Bool:
         return "bool";
     case TypeKind::String:

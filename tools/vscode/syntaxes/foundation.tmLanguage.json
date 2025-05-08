@@ -5,6 +5,7 @@
     "patterns": [
         { "include": "#comments" },
         { "include": "#strings" },
+        { "include": "#compilerAttributes" },
         { "include": "#packageDeclarations" },
         { "include": "#cAbiDeclarations" },
         { "include": "#contractDefinitions" },
@@ -38,6 +39,21 @@
         { "include": "#punctuation" }
     ],
     "repository": {
+        "compilerAttributes": {
+            "patterns": [
+                {
+                    "name": "meta.attribute.compiler.foundation",
+                    "match": "(@)(target)(\\()\\s*(linux|macos|windows)\\s*(\\))",
+                    "captures": {
+                        "1": { "name": "punctuation.definition.annotation.foundation" },
+                        "2": { "name": "support.type.attribute.foundation" },
+                        "3": { "name": "punctuation.section.arguments.begin.foundation" },
+                        "4": { "name": "constant.language.target.foundation" },
+                        "5": { "name": "punctuation.section.arguments.end.foundation" }
+                    }
+                }
+            ]
+        },
         "comments": {
             "patterns": [
                 {
@@ -400,7 +416,7 @@
             "patterns": [
                 {
                     "name": "support.type.foundation",
-                    "match": "\\b(i32|bool|String|void|Option|Result)\\b"
+                    "match": "\\b(i32|u64|bool|String|void|Option|Result)\\b"
                 }
             ]
         },
@@ -424,7 +440,7 @@
             "patterns": [
                 {
                     "name": "support.function.builtin.foundation",
-                    "match": "\\b(print|panic)\\b"
+                    "match": "\\b(len|print|panic)\\b"
                 }
             ]
         },
@@ -487,7 +503,7 @@
             "patterns": [
                 {
                     "name": "meta.type.application.foundation",
-                    "begin": "\\b([A-Z][A-Za-z0-9_]*|i32|bool|String|void)\\s*(<)",
+                    "begin": "\\b([A-Z][A-Za-z0-9_]*|i32|u64|bool|String|void)\\s*(<)",
                     "beginCaptures": {
                         "1": { "name": "entity.name.type.foundation" },
                         "2": { "name": "punctuation.definition.type-arguments.begin.foundation" }

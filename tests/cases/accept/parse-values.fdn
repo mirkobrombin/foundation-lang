@@ -1,0 +1,29 @@
+import std.parse
+
+fn valueOr(value Result<u64, parse.IntegerError>) u64 {
+    match value {
+        Ok(number): number
+        Err(error): 0
+    }
+}
+
+fn failed(value Result<u64, parse.IntegerError>) bool {
+    match value {
+        Ok(number): false
+        Err(error): true
+    }
+}
+
+fn main() i32 {
+    let maximum = "18446744073709551615"
+    let overflow = "18446744073709551616"
+    let invalid = "12x"
+    let empty = ""
+    if valueOr(parse.U64(view maximum)) != 18446744073709551615 ||
+        !failed(parse.U64(view overflow)) || !failed(parse.U64(view invalid)) ||
+        !failed(parse.U64(view empty)) {
+        return 1
+    }
+    print("parse ok")
+    0
+}

@@ -5,6 +5,7 @@
 #include "foundation/parser.hpp"
 #include "foundation/project.hpp"
 #include "foundation/sema.hpp"
+#include "foundation/target.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -24,10 +25,11 @@ struct CheckedProgram {
     foundation::Diagnostics diagnostics;
 };
 
-CheckedProgram check(std::string_view source) {
+CheckedProgram check(std::string_view source,
+                     foundation::TargetPlatform target = foundation::hostTargetPlatform()) {
     CheckedProgram result;
     foundation::Lexer lexer(source, result.diagnostics);
-    foundation::Parser parser(lexer.scan(), result.diagnostics);
+    foundation::Parser parser(lexer.scan(), result.diagnostics, true, target);
     result.program = parser.parse();
     if (result.diagnostics.hasErrors()) {
         return result;
@@ -37,6 +39,73 @@ CheckedProgram check(std::string_view source) {
         result.fir = foundation::lower(result.program, *result.semantic);
     }
     return result;
+}
+
+bool hasCode(const foundation::Diagnostics &diagnostics, std::string_view code);
+void expect(bool condition, std::string_view message);
+
+void targetAttributesSelectOneDeclaration() {
+    constexpr std::string_view source = R"(
+@target(linux)
+fn selected() i32 {
+    11
+}
+
+@target(macos)
+fn selected() i32 {
+    22
+}
+
+@target(windows)
+fn selected() i32 {
+    33
+}
+
+fn main() i32 {
+    selected()
+}
+)";
+    const auto linux = check(source, foundation::TargetPlatform::Linux);
+    const auto macos = check(source, foundation::TargetPlatform::MacOS);
+    const auto windows = check(source, foundation::TargetPlatform::Windows);
+    expect(!linux.diagnostics.hasErrors(), "linux target declaration is selected");
+    expect(!macos.diagnostics.hasErrors(), "macos target declaration is selected");
+    expect(!windows.diagnostics.hasErrors(), "windows target declaration is selected");
+    expect(linux.program.functions.size() == 2 && macos.program.functions.size() == 2 &&
+               windows.program.functions.size() == 2,
+           "inactive target declarations and their bodies leave no AST entries");
+    if (linux.program.functions.size() == 2 && macos.program.functions.size() == 2 &&
+        windows.program.functions.size() == 2) {
+        const auto selectedValue = [](const CheckedProgram &program) {
+            const auto block = program.program.functions.front().body;
+            const auto statement = program.program.blocks[block].statements.front();
+            const auto returned = std::get<foundation::ReturnStatement>(
+                program.program.statements[statement].value);
+            return std::get<foundation::IntegerExpression>(
+                       program.program.expressions[*returned.value].value)
+                .magnitude;
+        };
+        expect(selectedValue(linux) == 11, "linux target keeps the linux body");
+        expect(selectedValue(macos) == 22, "macos target keeps the macos body");
+        expect(selectedValue(windows) == 33, "windows target keeps the windows body");
+    }
+
+    constexpr std::string_view unknown = R"(
+@target(freebsd)
+fn selected() i32 { 1 }
+fn main() i32 { 0 }
+)";
+    expect(hasCode(check(unknown).diagnostics, "FDN1142"),
+           "unknown target has a stable diagnostic");
+
+    constexpr std::string_view duplicate = R"(
+@target(linux)
+@target(macos)
+fn selected() i32 { 1 }
+fn main() i32 { 0 }
+)";
+    expect(hasCode(check(duplicate).diagnostics, "FDN1144"),
+           "duplicate target attributes have a stable diagnostic");
 }
 
 bool hasCode(const foundation::Diagnostics &diagnostics, std::string_view code) {
@@ -466,6 +535,99 @@ fn main() i32 {
            "String arrays receive element drop glue");
 }
 
+void mainArgumentsLowerToPortableWrapper() {
+    constexpr std::string_view source = R"(
+fn main(args view [String]) i32 {
+    print(args[0])
+    0
+}
+)";
+    auto result = check(source);
+    expect(!result.diagnostics.hasErrors(), "String slice main arguments are accepted");
+    expect(result.fir.has_value(), "argument-aware main lowers to FIR");
+    if (!result.fir.has_value()) {
+        return;
+    }
+
+    const auto generated = foundation::emitC(*result.fir, "args.fdn");
+    expect(generated.find("static int32_t fdn_program_main(fdn_view_slice_string") !=
+               std::string::npos,
+           "Foundation main remains a typed internal function");
+    expect(generated.find("int main(int fdn_argc, char **fdn_argv)") != std::string::npos,
+           "generated C exposes the portable argc and argv entry point");
+    expect(generated.find("fdn_argv[fdn_index + 1]") != std::string::npos,
+           "program name is excluded from Foundation arguments");
+    expect(generated.find("fdn_dealloc(fdn_argument_values)") != std::string::npos,
+           "the argument adapter is released before process exit");
+
+    const auto invalid = check("fn main(args view [i32]) i32 { args[0] }");
+    expect(hasCode(invalid.diagnostics, "FDN2007"),
+           "non-String main arguments report FDN2007");
+}
+
+void sequenceLengthsLowerToU64() {
+    constexpr std::string_view source = R"(
+fn main(args view [String]) i32 {
+    let values = [1, 2]
+    let label = "ok"
+    if len(args) == 0 && len(values) == 2 && len(label) == 2 {
+        return 0
+    }
+    1
+}
+)";
+    const auto result = check(source);
+    expect(!result.diagnostics.hasErrors(), "len accepts slices, arrays, and Strings");
+    if (!result.fir.has_value()) {
+        expect(false, "len program lowers to FIR");
+        return;
+    }
+    const auto generated = foundation::emitC(*result.fir, "len.fdn");
+    expect(generated.find(".fdn_length") != std::string::npos,
+           "slice length reads the portable slice representation");
+    expect(generated.find("UINT64_C(2)") != std::string::npos,
+           "array length lowers to a u64 constant");
+    expect(generated.find(".length") != std::string::npos,
+           "String length reads its byte length");
+
+    const auto invalid = check("fn main() i32 { len(42) 0 }");
+    expect(hasCode(invalid.diagnostics, "FDN2011"),
+           "len rejects values without a length");
+}
+
+void u64ValuesLowerToCheckedC() {
+    constexpr std::string_view source = R"(
+extern c fn nativeSize(value u64) u64 as foundation_native_size
+
+fn add(left u64, right u64) u64 {
+    left + right
+}
+
+fn main() i32 {
+    let bytes u64 = 18446744073709551615
+    if add(nativeSize(bytes), 0) == bytes { return 0 } else { return 1 }
+}
+)";
+    auto result = check(source);
+    expect(!result.diagnostics.hasErrors(), "u64 values and C ABI signatures are accepted");
+    expect(result.fir.has_value(), "u64 values lower to FIR");
+    if (!result.fir.has_value()) {
+        return;
+    }
+
+    const auto generated = foundation::emitC(*result.fir, "u64.fdn");
+    expect(generated.find("UINT64_C(18446744073709551615)") != std::string::npos,
+           "maximum u64 literal is emitted without truncation");
+    expect(generated.find("fdn_u64_add") != std::string::npos,
+           "u64 addition uses the checked runtime operation");
+    expect(generated.find("foundation_native_size(uint64_t);") != std::string::npos,
+           "u64 maps to uint64_t at the C ABI boundary");
+
+    const auto negative = check("fn main() i32 { let value u64 = -1 discard value 0 }");
+    expect(hasCode(negative.diagnostics, "FDN2005"),
+           "negative u64 literal reports FDN2005");
+}
+
 void methodsAndContractsLowerToDeterministicC() {
     constexpr std::string_view source = R"(
 contract Readable {
@@ -632,7 +794,7 @@ void syntaxFailuresHaveStableDiagnostics() {
     expect(hasCode(legacySemicolon.diagnostics, "FDN0001"),
            "legacy semicolon reports FDN0001");
 
-    std::string invalid(100000, '@');
+    std::string invalid(100000, '#');
     invalid += "fn main() i32 { 0 }";
     const auto invalidCharacters = check(invalid);
     expect(invalidCharacters.diagnostics.all().size() == 101,
@@ -1089,12 +1251,17 @@ fn main() i32 { 0 }
 void cAbiFunctionsLowerToDeterministicBoundaries() {
     constexpr std::string_view source = R"(
 extern c fn nativeAdd(left i32, right i32) i32 as foundation_native_add
+extern c fn nativeText() String as foundation_native_text
+extern c fn nativeEdit(value edit String) i32 as foundation_native_edit
 
 extern c fn FoundationDouble(value i32) i32 as foundation_double {
     value * 2
 }
 
 fn main() i32 {
+    var text = nativeText()
+    discard nativeEdit(edit text)
+    discard text
     nativeAdd(FoundationDouble(20), 2)
 }
 )";
@@ -1102,13 +1269,13 @@ fn main() i32 {
     auto second = check(source);
     expect(!first.diagnostics.hasErrors(), "C ABI program has no diagnostics");
     expect(!second.diagnostics.hasErrors(), "repeated C ABI program has no diagnostics");
-    expect(first.program.functions.size() == 3, "C ABI declarations remain functions in AST");
-    if (first.program.functions.size() == 3) {
+    expect(first.program.functions.size() == 5, "C ABI declarations remain functions in AST");
+    if (first.program.functions.size() == 5) {
         expect(first.program.functions[0].cSymbol == "foundation_native_add" &&
                    !first.program.functions[0].hasBody,
                "bodyless C ABI declaration is an import");
-        expect(first.program.functions[1].cSymbol == "foundation_double" &&
-                   first.program.functions[1].hasBody,
+        expect(first.program.functions[3].cSymbol == "foundation_double" &&
+                   first.program.functions[3].hasBody,
                "C ABI declaration with a body is an export");
     }
     if (!first.fir.has_value() || !second.fir.has_value()) {
@@ -1126,6 +1293,10 @@ fn main() i32 {
            "C ABI wrappers add native trace frames");
     expect(firstC.find("foundation_native_add(int32_t, int32_t);") != std::string::npos,
            "C import receives a public C prototype");
+    expect(firstC.find("fdn_string foundation_native_text(void);") != std::string::npos,
+           "C import can transfer an owned String result");
+    expect(firstC.find("foundation_native_edit(fdn_string *);") != std::string::npos,
+           "C import can mutate a String through an exclusive borrow");
     expect(firstHeader.find("foundation_double(int32_t fdn_arg_0);") != std::string::npos,
            "C export appears in the public header");
     expect(firstHeader.find("foundation_native_add") == std::string::npos,
@@ -1226,6 +1397,7 @@ void standardLibrarySourceIsLoadedOnce() {
 } // namespace
 
 int main() {
+    targetAttributesSelectOneDeclaration();
     typedProgramLowersToDeterministicC();
     structValuesLowerToDeterministicC();
     deepStructGraphsStayIterative();
@@ -1235,6 +1407,9 @@ int main() {
     ownershipLowersToDeterministicC();
     ownedPlacesLowerToDeterministicC();
     sequenceValuesLowerToDeterministicC();
+    mainArgumentsLowerToPortableWrapper();
+    sequenceLengthsLowerToU64();
+    u64ValuesLowerToCheckedC();
     methodsAndContractsLowerToDeterministicC();
     lightweightSyntaxCarriesVisibilityAndContext();
     panicLowersWithSourceFrames();

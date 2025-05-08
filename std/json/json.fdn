@@ -1,0 +1,649 @@
+package std.json
+
+import std.text
+
+enum ErrorKind {
+    UnexpectedEnd
+    UnexpectedToken
+    InvalidString
+    InvalidEscape
+    InvalidNumber
+    DuplicateKey
+    DepthLimit
+    TrailingData
+}
+
+struct Error {
+    Kind ErrorKind
+    Offset u64
+}
+
+struct item {
+    value Value
+    next Option<own item>
+}
+
+struct field {
+    key String
+    value Value
+    next Option<own field>
+}
+
+struct itemReverse {
+    current Option<own item>
+    result Option<own item>
+
+    fn step(edit, selected Option<own item>) bool {
+        match selected {
+            None: false
+            Some(node): self.accept(node)
+        }
+    }
+
+    fn accept(edit, node own item) bool {
+        let item { value next } = node
+        let previous = replace self.result with .None
+        self.result = .Some(own item { value = value next = previous })
+        self.current = next
+        true
+    }
+}
+
+struct fieldReverse {
+    current Option<own field>
+    result Option<own field>
+
+    fn step(edit, selected Option<own field>) bool {
+        match selected {
+            None: false
+            Some(node): self.accept(node)
+        }
+    }
+
+    fn accept(edit, node own field) bool {
+        let field { key value next } = node
+        let previous = replace self.result with .None
+        self.result = .Some(own field { key = key value = value next = previous })
+        self.current = next
+        true
+    }
+}
+
+struct fieldSearch {
+    current Option<own field>
+    result Option<own field>
+    found bool
+
+    fn step(edit, expected view String, selected Option<own field>) bool {
+        match selected {
+            None: false
+            Some(node): self.accept(expected, node)
+        }
+    }
+
+    fn accept(edit, expected view String, node own field) bool {
+        let field { key value next } = node
+        if text.Equal(view key, expected) {
+            self.found = true
+        }
+        let previous = replace self.result with .None
+        self.result = .Some(own field { key = key value = value next = previous })
+        self.current = next
+        true
+    }
+}
+
+struct fieldTake {
+    current Option<own field>
+    remaining Option<own field>
+    value Option<Value>
+    found bool
+
+    fn step(edit, expected view String, selected Option<own field>) bool {
+        match selected {
+            None: false
+            Some(node): self.accept(expected, node)
+        }
+    }
+
+    fn accept(edit, expected view String, node own field) bool {
+        let field { key value next } = node
+        if !self.found && text.Equal(view key, expected) {
+            self.value = .Some(value)
+            self.found = true
+        } else {
+            let previous = replace self.remaining with .None
+            self.remaining = .Some(own field {
+                key = key
+                value = value
+                next = previous
+            })
+        }
+        self.current = next
+        true
+    }
+}
+
+struct Array {
+    head Option<own item>
+    length u64
+
+    fn Len(view) u64 {
+        self.length
+    }
+
+    fn pushFront(edit, value Value) void {
+        let previous = replace self.head with .None
+        self.head = .Some(own item { value = value next = previous })
+        self.length = self.length + 1
+    }
+
+    fn reverse(edit) void {
+        var state = itemReverse {
+            current = replace self.head with .None
+            result = .None
+        }
+        var running = true
+        while running {
+            let selected = replace state.current with .None
+            running = state.step(selected)
+        }
+        let itemReverse { current result } = state
+        discard current
+        self.head = result
+    }
+
+    fn PopFront(edit) Option<Value> {
+        let current = replace self.head with .None
+        match current {
+            None: .None
+            Some(node): popItem(edit self, node)
+        }
+    }
+}
+
+struct Object {
+    fields Option<own field>
+    length u64
+
+    fn Len(view) u64 {
+        self.length
+    }
+
+    fn pushFront(edit, key String, value Value) void {
+        let previous = replace self.fields with .None
+        self.fields = .Some(own field { key = key value = value next = previous })
+        self.length = self.length + 1
+    }
+
+    fn reverse(edit) void {
+        var state = fieldReverse {
+            current = replace self.fields with .None
+            result = .None
+        }
+        var running = true
+        while running {
+            let selected = replace state.current with .None
+            running = state.step(selected)
+        }
+        let fieldReverse { current result } = state
+        discard current
+        self.fields = result
+    }
+
+    fn hasKey(edit, expected view String) bool {
+        var state = fieldSearch {
+            current = replace self.fields with .None
+            result = .None
+            found = false
+        }
+        var running = true
+        while running {
+            let selected = replace state.current with .None
+            running = state.step(expected, selected)
+        }
+        let fieldSearch { current result found } = state
+        discard current
+        self.fields = result
+        found
+    }
+
+    fn Take(edit, expected view String) Option<Value> {
+        var state = fieldTake {
+            current = replace self.fields with .None
+            remaining = .None
+            value = .None
+            found = false
+        }
+        var running = true
+        while running {
+            let selected = replace state.current with .None
+            running = state.step(expected, selected)
+        }
+        let fieldTake { current remaining value found } = state
+        discard current
+        self.fields = remaining
+        if found {
+            self.length = self.length - 1
+        }
+        value
+    }
+}
+
+enum Value {
+    Null
+    Bool(bool)
+    Number(String)
+    Text(String)
+    Array(own Array)
+    Object(own Object)
+}
+
+struct parser {
+    offset u64
+    length u64
+
+    fn skipWhitespace(edit, source view String) void {
+        var running = true
+        while running && self.offset < self.length {
+            let byte = readByte(source, self.offset)
+            if byte == 32 || byte == 9 || byte == 10 || byte == 13 {
+                self.offset = self.offset + 1
+            } else {
+                running = false
+            }
+        }
+    }
+
+    fn consume(edit, source view String, expected view String) bool {
+        let end = self.offset + text.ByteLen(expected)
+        if end > self.length {
+            return false
+        }
+        let selected = readSlice(source, self.offset, end)
+        if !text.Equal(view selected, expected) {
+            return false
+        }
+        self.offset = end
+        true
+    }
+
+    fn parseHex(edit, source view String) Result<u64, Error> {
+        var result u64 = 0
+        var count u64 = 0
+        while count < 4 {
+            if self.offset >= self.length {
+                return .Err(parseError(.UnexpectedEnd, self.offset))
+            }
+            let digit = hexDigit(readByte(source, self.offset))
+            if digit >= 16 {
+                return .Err(parseError(.InvalidEscape, self.offset))
+            }
+            result = result * 16 + digit
+            self.offset = self.offset + 1
+            count = count + 1
+        }
+        .Ok(result)
+    }
+
+    fn parseString(edit, source view String) Result<String, Error> {
+        self.offset = self.offset + 1
+        var builder = text.NewBuilder()
+        var segment = self.offset
+        while self.offset < self.length {
+            let byte = readByte(source, self.offset)
+            if byte == 34 {
+                let appended = appendRange(edit builder, source, segment, self.offset) else error {
+                    discard error
+                    return .Err(parseError(.InvalidString, self.offset))
+                }
+                discard appended
+                self.offset = self.offset + 1
+                let value = builder.Finish() else error {
+                    discard error
+                    return .Err(parseError(.InvalidString, self.offset))
+                }
+                return .Ok(value)
+            }
+            if byte < 32 {
+                return .Err(parseError(.InvalidString, self.offset))
+            }
+            if byte != 92 {
+                self.offset = self.offset + 1
+            } else {
+                let appended = appendRange(edit builder, source, segment, self.offset) else error {
+                    discard error
+                    return .Err(parseError(.InvalidString, self.offset))
+                }
+                discard appended
+                self.offset = self.offset + 1
+                if self.offset >= self.length {
+                    return .Err(parseError(.UnexpectedEnd, self.offset))
+                }
+                let escaped = readByte(source, self.offset)
+                self.offset = self.offset + 1
+                var codePoint u64 = 0
+                let simple = simpleEscape(escaped)
+                if simple != 0 {
+                    codePoint = simple
+                } else {
+                    if escaped != 117 {
+                        return .Err(parseError(.InvalidEscape, self.offset - 1))
+                    }
+                    let first = self.parseHex(source) else error {
+                        return .Err(error)
+                    }
+                    if first >= 55296 && first <= 56319 {
+                        if self.offset + 2 > self.length ||
+                            readByte(source, self.offset) != 92 ||
+                            readByte(source, self.offset + 1) != 117 {
+                            return .Err(parseError(.InvalidEscape, self.offset))
+                        }
+                        self.offset = self.offset + 2
+                        let second = self.parseHex(source) else error {
+                            return .Err(error)
+                        }
+                        if second < 56320 || second > 57343 {
+                            return .Err(parseError(.InvalidEscape, self.offset - 4))
+                        }
+                        codePoint = 65536 + (first - 55296) * 1024 + (second - 56320)
+                    } else {
+                        if first >= 56320 && first <= 57343 {
+                            return .Err(parseError(.InvalidEscape, self.offset - 4))
+                        } else {
+                            codePoint = first
+                        }
+                    }
+                }
+                let wrote = builder.WriteCodePoint(codePoint) else error {
+                    discard error
+                    return .Err(parseError(.InvalidEscape, self.offset))
+                }
+                discard wrote
+                segment = self.offset
+            }
+        }
+        .Err(parseError(.UnexpectedEnd, self.offset))
+    }
+
+    fn parseNumber(edit, source view String) Result<Value, Error> {
+        let start = self.offset
+        if readByte(source, self.offset) == 45 {
+            self.offset = self.offset + 1
+            if self.offset >= self.length {
+                return .Err(parseError(.InvalidNumber, self.offset))
+            }
+        }
+        let first = readByte(source, self.offset)
+        if first == 48 {
+            self.offset = self.offset + 1
+            if self.offset < self.length && isDigit(readByte(source, self.offset)) {
+                return .Err(parseError(.InvalidNumber, self.offset))
+            }
+        } else {
+            if first >= 49 && first <= 57 {
+                self.offset = self.offset + 1
+                while self.offset < self.length && isDigit(readByte(source, self.offset)) {
+                    self.offset = self.offset + 1
+                }
+            } else {
+                return .Err(parseError(.InvalidNumber, self.offset))
+            }
+        }
+        if self.offset < self.length && readByte(source, self.offset) == 46 {
+            self.offset = self.offset + 1
+            if self.offset >= self.length || !isDigit(readByte(source, self.offset)) {
+                return .Err(parseError(.InvalidNumber, self.offset))
+            }
+            while self.offset < self.length && isDigit(readByte(source, self.offset)) {
+                self.offset = self.offset + 1
+            }
+        }
+        if self.offset < self.length &&
+            (readByte(source, self.offset) == 101 || readByte(source, self.offset) == 69) {
+            self.offset = self.offset + 1
+            if self.offset < self.length &&
+                (readByte(source, self.offset) == 43 || readByte(source, self.offset) == 45) {
+                self.offset = self.offset + 1
+            }
+            if self.offset >= self.length || !isDigit(readByte(source, self.offset)) {
+                return .Err(parseError(.InvalidNumber, self.offset))
+            }
+            while self.offset < self.length && isDigit(readByte(source, self.offset)) {
+                self.offset = self.offset + 1
+            }
+        }
+        .Ok(.Number(readSlice(source, start, self.offset)))
+    }
+
+    fn parseArray(edit, source view String, depth u64) Result<own Array, Error> {
+        self.offset = self.offset + 1
+        self.skipWhitespace(source)
+        var result = newArray()
+        if self.offset < self.length && readByte(source, self.offset) == 93 {
+            self.offset = self.offset + 1
+            return .Ok(result)
+        }
+        var running = true
+        while running {
+            let value = self.parseValue(source, depth + 1) else error {
+                return .Err(error)
+            }
+            result.pushFront(value)
+            self.skipWhitespace(source)
+            if self.offset >= self.length {
+                return .Err(parseError(.UnexpectedEnd, self.offset))
+            }
+            let delimiter = readByte(source, self.offset)
+            self.offset = self.offset + 1
+            if delimiter == 93 {
+                running = false
+            } else {
+                if delimiter != 44 {
+                    return .Err(parseError(.UnexpectedToken, self.offset - 1))
+                } else {
+                    self.skipWhitespace(source)
+                }
+            }
+        }
+        result.reverse()
+        .Ok(result)
+    }
+
+    fn parseObject(edit, source view String, depth u64) Result<own Object, Error> {
+        self.offset = self.offset + 1
+        self.skipWhitespace(source)
+        var result = newObject()
+        if self.offset < self.length && readByte(source, self.offset) == 125 {
+            self.offset = self.offset + 1
+            return .Ok(result)
+        }
+        var running = true
+        while running {
+            if self.offset >= self.length {
+                return .Err(parseError(.UnexpectedEnd, self.offset))
+            }
+            if readByte(source, self.offset) != 34 {
+                return .Err(parseError(.UnexpectedToken, self.offset))
+            }
+            let key = self.parseString(source) else error {
+                return .Err(error)
+            }
+            if result.hasKey(view key) {
+                return .Err(parseError(.DuplicateKey, self.offset))
+            }
+            self.skipWhitespace(source)
+            if self.offset >= self.length || readByte(source, self.offset) != 58 {
+                return .Err(parseError(.UnexpectedToken, self.offset))
+            }
+            self.offset = self.offset + 1
+            self.skipWhitespace(source)
+            let value = self.parseValue(source, depth + 1) else error {
+                return .Err(error)
+            }
+            result.pushFront(key, value)
+            self.skipWhitespace(source)
+            if self.offset >= self.length {
+                return .Err(parseError(.UnexpectedEnd, self.offset))
+            }
+            let delimiter = readByte(source, self.offset)
+            self.offset = self.offset + 1
+            if delimiter == 125 {
+                running = false
+            } else {
+                if delimiter != 44 {
+                    return .Err(parseError(.UnexpectedToken, self.offset - 1))
+                } else {
+                    self.skipWhitespace(source)
+                }
+            }
+        }
+        result.reverse()
+        .Ok(result)
+    }
+
+    fn parseValue(edit, source view String, depth u64) Result<Value, Error> {
+        if depth > 128 {
+            return .Err(parseError(.DepthLimit, self.offset))
+        }
+        self.skipWhitespace(source)
+        if self.offset >= self.length {
+            return .Err(parseError(.UnexpectedEnd, self.offset))
+        }
+        let byte = readByte(source, self.offset)
+        if byte == 34 {
+            let value = self.parseString(source) else error {
+                return .Err(error)
+            }
+            return .Ok(.Text(value))
+        }
+        if byte == 91 {
+            let value = self.parseArray(source, depth) else error {
+                return .Err(error)
+            }
+            return .Ok(.Array(value))
+        }
+        if byte == 123 {
+            let value = self.parseObject(source, depth) else error {
+                return .Err(error)
+            }
+            return .Ok(.Object(value))
+        }
+        let nullValue = "null"
+        if byte == 110 && self.consume(source, view nullValue) {
+            return .Ok(.Null)
+        }
+        let trueValue = "true"
+        if byte == 116 && self.consume(source, view trueValue) {
+            return .Ok(.Bool(true))
+        }
+        let falseValue = "false"
+        if byte == 102 && self.consume(source, view falseValue) {
+            return .Ok(.Bool(false))
+        }
+        if byte == 45 || isDigit(byte) {
+            return self.parseNumber(source)
+        }
+        .Err(parseError(.UnexpectedToken, self.offset))
+    }
+}
+
+fn popItem(array edit Array, node own item) Option<Value> {
+    let item { value next } = node
+    array.head = next
+    array.length = array.length - 1
+    .Some(value)
+}
+
+fn newArray() own Array {
+    own Array { head = .None length = 0 }
+}
+
+fn newObject() own Object {
+    own Object { fields = .None length = 0 }
+}
+
+fn parseError(kind ErrorKind, offset u64) Error {
+    Error { Kind = kind Offset = offset }
+}
+
+fn readByte(source view String, offset u64) u64 {
+    let value = text.ByteAt(source, offset) else error {
+        discard error
+        panic("JSON parser byte invariant failed")
+    }
+    value
+}
+
+fn readSlice(source view String, start u64, end u64) String {
+    let value = text.Slice(source, start, end) else error {
+        discard error
+        panic("JSON parser slice invariant failed")
+    }
+    value
+}
+
+fn appendRange(
+    builder edit text.Builder,
+    source view String,
+    start u64,
+    end u64
+) Result<bool, text.BuilderError> {
+    if start == end {
+        return .Ok(true)
+    }
+    let value = readSlice(source, start, end)
+    builder.Write(view value)
+}
+
+fn isDigit(value u64) bool {
+    value >= 48 && value <= 57
+}
+
+fn simpleEscape(value u64) u64 {
+    if value == 34 || value == 47 || value == 92 {
+        return value
+    }
+    if value == 98 {
+        return 8
+    }
+    if value == 102 {
+        return 12
+    }
+    if value == 110 {
+        return 10
+    }
+    if value == 114 {
+        return 13
+    }
+    if value == 116 {
+        return 9
+    }
+    0
+}
+
+fn hexDigit(value u64) u64 {
+    if value >= 48 && value <= 57 {
+        return value - 48
+    }
+    if value >= 65 && value <= 70 {
+        return value - 55
+    }
+    if value >= 97 && value <= 102 {
+        return value - 87
+    }
+    16
+}
+
+fn Parse(source view String) Result<Value, Error> {
+    var state = parser { offset = 0 length = text.ByteLen(source) }
+    let rootDepth u64 = 0
+    let value = state.parseValue(source, rootDepth) else error {
+        return .Err(error)
+    }
+    state.skipWhitespace(source)
+    if state.offset != state.length {
+        return .Err(parseError(.TrailingData, state.offset))
+    }
+    .Ok(value)
+}

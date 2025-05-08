@@ -65,6 +65,8 @@ std::string cTypeTag(const Type &type) {
         return "void";
     case TypeKind::I32:
         return "i32";
+    case TypeKind::U64:
+        return "u64";
     case TypeKind::Bool:
         return "bool";
     case TypeKind::String:
@@ -122,6 +124,8 @@ std::string cType(const Type &type) {
         return "void";
     case TypeKind::I32:
         return "int32_t";
+    case TypeKind::U64:
+        return "uint64_t";
     case TypeKind::Bool:
         return "bool";
     case TypeKind::String:
@@ -192,7 +196,7 @@ std::string_view traceFunctionName(const FirFunction &function) {
 
 std::string functionName(const FirProgram &program, FirFunctionId id) {
     if (id == program.main) {
-        return "main";
+        return "fdn_program_main";
     }
     const auto &function = program.functions[id];
     auto name = "fdn_fn_" + safeName(function.name) + "_" + std::to_string(function.source);
@@ -235,11 +239,16 @@ std::string vtableName(const Type &contract, const Type &concrete) {
 
 std::string indentation(unsigned int depth) { return std::string(depth * 4, ' '); }
 
-std::string i32Constant(std::int32_t value) {
-    if (value == INT32_MIN) {
+std::string i32Constant(const FirIntegerExpression &value) {
+    if (value.negative && value.magnitude == UINT64_C(2147483648)) {
         return "(-INT32_C(2147483647) - INT32_C(1))";
     }
-    return "INT32_C(" + std::to_string(value) + ")";
+    const auto magnitude = "INT32_C(" + std::to_string(value.magnitude) + ")";
+    return value.negative ? "(-" + magnitude + ')' : magnitude;
+}
+
+std::string u64Constant(const FirIntegerExpression &value) {
+    return "UINT64_C(" + std::to_string(value.magnitude) + ")";
 }
 
 Type substitute(const Type &type, const std::vector<Type> &arguments) {
@@ -806,7 +815,9 @@ class FunctionEmitter {
     EmittedExpression emitExpression(FirExpressionId id, unsigned int depth) {
         const auto &expression = function_.expressions[id];
         if (const auto *integer = std::get_if<FirIntegerExpression>(&expression.value)) {
-            return {i32Constant(integer->value), false};
+            return {expression.type == u64Type ? u64Constant(*integer)
+                                               : i32Constant(*integer),
+                    false};
         }
         if (const auto *boolean = std::get_if<FirBooleanExpression>(&expression.value)) {
             return {boolean->value ? "true" : "false", false};
@@ -1118,21 +1129,27 @@ class FunctionEmitter {
         case FirBinaryOperator::Add:
             if (type == stringType) {
                 out_ << "fdn_string_concat(" << left.value << ", " << right.value << ')';
+            } else if (type == u64Type) {
+                out_ << "fdn_u64_add(" << left.value << ", " << right.value << ')';
             } else {
                 out_ << "fdn_i32_add(" << left.value << ", " << right.value << ')';
             }
             break;
         case FirBinaryOperator::Subtract:
-            out_ << "fdn_i32_subtract(" << left.value << ", " << right.value << ')';
+            out_ << (type == u64Type ? "fdn_u64_subtract(" : "fdn_i32_subtract(")
+                 << left.value << ", " << right.value << ')';
             break;
         case FirBinaryOperator::Multiply:
-            out_ << "fdn_i32_multiply(" << left.value << ", " << right.value << ')';
+            out_ << (type == u64Type ? "fdn_u64_multiply(" : "fdn_i32_multiply(")
+                 << left.value << ", " << right.value << ')';
             break;
         case FirBinaryOperator::Divide:
-            out_ << "fdn_i32_divide(" << left.value << ", " << right.value << ')';
+            out_ << (type == u64Type ? "fdn_u64_divide(" : "fdn_i32_divide(")
+                 << left.value << ", " << right.value << ')';
             break;
         case FirBinaryOperator::Remainder:
-            out_ << "fdn_i32_remainder(" << left.value << ", " << right.value << ')';
+            out_ << (type == u64Type ? "fdn_u64_remainder(" : "fdn_i32_remainder(")
+                 << left.value << ", " << right.value << ')';
             break;
         case FirBinaryOperator::Equal:
             if (function_.expressions[binary.left].type == stringType) {
@@ -1216,11 +1233,33 @@ class FunctionEmitter {
             invocation << "fdn_println";
         } else if (call.kind == FirCallKind::Panic) {
             invocation << "fdn_panic";
+        } else if (call.kind == FirCallKind::Len) {
+            if (arguments.size() != 1) {
+                internalError("len call does not have one argument");
+            }
+            auto sequence = function_.expressions[call.arguments.front()].type;
+            auto member = std::string{"."};
+            if ((sequence.kind == TypeKind::View || sequence.kind == TypeKind::Edit) &&
+                sequence.arguments.size() == 1) {
+                if (sequence.arguments.front().kind != TypeKind::Slice) {
+                    member = "->";
+                }
+                sequence = sequence.arguments.front();
+            }
+            if (sequence.kind == TypeKind::Array) {
+                invocation << "UINT64_C(" << sequence.declaration << ')';
+            } else if (sequence.kind == TypeKind::Slice) {
+                invocation << "(uint64_t)" << arguments.front() << member << "fdn_length";
+            } else if (sequence.kind == TypeKind::String) {
+                invocation << "(uint64_t)" << arguments.front() << member << "length";
+            } else {
+                internalError("len call has an unsupported argument");
+            }
         } else {
             invocation << functionName(program_, call.function);
         }
         if (call.kind != FirCallKind::Contract &&
-            call.kind != FirCallKind::FunctionValue) {
+            call.kind != FirCallKind::FunctionValue && call.kind != FirCallKind::Len) {
             invocation << '(';
             for (std::size_t index = 0; index < arguments.size(); ++index) {
                 if (index != 0) {
@@ -1287,8 +1326,7 @@ class FunctionEmitter {
         }
 
         const auto temporary = nextTemporary();
-        out_ << indentation(depth) << cType(literal.type) << ' ' << temporary;
-        out_ << (literal.fields.empty() ? " = {0};\n" : ";\n");
+        out_ << indentation(depth) << cType(literal.type) << ' ' << temporary << " = {0};\n";
         if (literal.type.kind == TypeKind::Struct &&
             literal.type.declaration < program_.structs.size() &&
             program_.structs[literal.type.declaration].dropFunction.has_value()) {
@@ -1312,7 +1350,8 @@ class FunctionEmitter {
         }
 
         const auto temporary = nextTemporary();
-        out_ << indentation(depth) << cType(constructor.type) << ' ' << temporary << ";\n";
+        out_ << indentation(depth) << cType(constructor.type) << ' ' << temporary
+             << " = {0};\n";
         if (payloadValue.has_value()) {
             out_ << indentation(depth) << temporary << ".fdn_data."
                  << payloadName(constructor.variant) << " = " << *payloadValue << ";\n";
@@ -1476,12 +1515,10 @@ class FunctionEmitter {
                          << " = " << value.value << ";\n";
                 }
                 emitDrops(returned->drops, depth);
-                emitAllocationCheck(depth);
                 out_ << indentation(depth) << "fdn_frame_leave(&fdn_frame_current);\n";
                 out_ << indentation(depth) << "return " << result << ";\n";
             } else {
                 emitDrops(returned->drops, depth);
-                emitAllocationCheck(depth);
                 out_ << indentation(depth) << "fdn_frame_leave(&fdn_frame_current);\n";
                 out_ << indentation(depth) << "return;\n";
             }
@@ -1543,18 +1580,6 @@ class FunctionEmitter {
             return "(*" + field + ')';
         }
         return field;
-    }
-
-    void emitAllocationCheck(unsigned int depth) {
-        if (function_.name != "main") {
-            return;
-        }
-        out_ << "#if defined(FOUNDATION_VERIFY_ALLOCATIONS)\n";
-        out_ << indentation(depth) << "if (fdn_live_allocations() != 0) {\n";
-        out_ << indentation(depth + 1)
-             << "fdn_panic_cstr(\"live allocations after main\");\n";
-        out_ << indentation(depth) << "}\n";
-        out_ << "#endif\n";
     }
 
     void discardValue(const EmittedExpression &expression, unsigned int depth) {
@@ -1970,7 +1995,7 @@ void emitArrayOwnership(std::ostringstream &out, const FirProgram &program, cons
 
     out << "static inline FDN_MAYBE_UNUSED " << cType(type) << ' ' << moveName(type) << '('
         << cType(type) << " *value) {\n";
-    out << "    " << cType(type) << " result;\n";
+    out << "    " << cType(type) << " result = {0};\n";
     if (type.declaration != 0) {
         out << "    for (size_t fdn_index = 0; fdn_index < " << type.declaration
             << "; ++fdn_index) {\n";
@@ -2008,8 +2033,7 @@ void emitStructOwnership(std::ostringstream &out, const FirProgram &program, Fir
     out << "static inline FDN_MAYBE_UNUSED " << cType(type) << ' ' << moveName(type) << '('
         << cType(type)
         << " *value) {\n";
-    out << "    " << cType(type) << " result";
-    out << (program.structs[id].fields.empty() ? " = {0};\n" : ";\n");
+    out << "    " << cType(type) << " result = {0};\n";
     if (program.structs[id].dropFunction.has_value()) {
         out << "    result.fdn_drop_active = value->fdn_drop_active;\n";
         out << "    value->fdn_drop_active = false;\n";
@@ -2048,7 +2072,7 @@ void emitEnumOwnership(std::ostringstream &out, const FirProgram &program, FirEn
     out << "static inline FDN_MAYBE_UNUSED " << cType(type) << ' ' << moveName(type) << '('
         << cType(type)
         << " *value) {\n";
-    out << "    " << cType(type) << " result;\n";
+    out << "    " << cType(type) << " result = {0};\n";
     out << "    result.fdn_tag = value->fdn_tag;\n";
     out << "    switch (value->fdn_tag) {\n";
     for (std::size_t variant = 0; variant < program.enums[id].variants.size(); ++variant) {
@@ -2100,7 +2124,20 @@ typeNode(const FirProgram &program, const Type &type,
 void emitSignature(std::ostringstream &out, const FirProgram &program, FirFunctionId id) {
     const auto &function = program.functions[id];
     if (id == program.main) {
-        out << "int main(void)";
+        out << "static int32_t " << functionName(program, id) << '(';
+        if (function.parameters.empty()) {
+            out << "void";
+        } else {
+            for (std::size_t index = 0; index < function.parameters.size(); ++index) {
+                if (index != 0) {
+                    out << ", ";
+                }
+                const auto local = function.parameters[index];
+                out << cType(function.locals[local].type) << ' '
+                    << localName(function, local);
+            }
+        }
+        out << ')';
         return;
     }
 
@@ -2133,6 +2170,61 @@ void emitSignature(std::ostringstream &out, const FirProgram &program, FirFuncti
         }
     }
     out << ')';
+}
+
+void emitMainWrapper(std::ostringstream &out, const FirProgram &program) {
+    const auto &function = program.functions[program.main];
+    const auto acceptsArguments = function.parameters.size() == 1;
+    out << "\nint main(";
+    if (acceptsArguments) {
+        out << "int fdn_argc, char **fdn_argv";
+    } else {
+        out << "void";
+    }
+    out << ") {\n";
+
+    if (acceptsArguments) {
+        const auto parameter = function.parameters.front();
+        out << "    const size_t fdn_argument_count = "
+               "fdn_argc > 1 ? (size_t)(fdn_argc - 1) : 0;\n";
+        out << "    fdn_string *fdn_argument_values = NULL;\n";
+        out << "    if (fdn_argument_count != 0) {\n";
+        out << "        if (fdn_argument_count > SIZE_MAX / sizeof(*fdn_argument_values)) {\n";
+        out << "            fdn_panic_cstr(\"command-line argument count overflow\");\n";
+        out << "        }\n";
+        out << "        fdn_argument_values = fdn_alloc(fdn_argument_count * "
+               "sizeof(*fdn_argument_values));\n";
+        out << "        for (size_t fdn_index = 0; fdn_index < fdn_argument_count; "
+               "++fdn_index) {\n";
+        out << "            const char *fdn_argument = fdn_argv[fdn_index + 1];\n";
+        out << "            fdn_argument_values[fdn_index] = "
+               "fdn_string_static(fdn_argument, strlen(fdn_argument));\n";
+        out << "        }\n";
+        out << "    }\n";
+        out << "    const " << cType(function.locals[parameter].type)
+            << " fdn_arguments = {fdn_argument_values, fdn_argument_count};\n";
+        out << "    const int32_t fdn_result = " << functionName(program, program.main)
+            << "(fdn_arguments);\n";
+        out << "    fdn_dealloc(fdn_argument_values);\n";
+        out << "#if defined(FOUNDATION_VERIFY_ALLOCATIONS)\n";
+        out << "    if (fdn_live_allocations() != 0) {\n";
+        out << "        fdn_panic_cstr(\"live allocations after main\");\n";
+        out << "    }\n";
+        out << "#endif\n";
+        out << "    return (int)fdn_result;\n";
+    } else {
+        out << "#if defined(FOUNDATION_VERIFY_ALLOCATIONS)\n";
+        out << "    const int32_t fdn_result = " << functionName(program, program.main)
+            << "();\n";
+        out << "    if (fdn_live_allocations() != 0) {\n";
+        out << "        fdn_panic_cstr(\"live allocations after main\");\n";
+        out << "    }\n";
+        out << "    return (int)fdn_result;\n";
+        out << "#else\n";
+        out << "    return (int)" << functionName(program, program.main) << "();\n";
+        out << "#endif\n";
+    }
+    out << "}\n";
 }
 
 std::vector<FirFunctionId> collectFunctionValueUses(const FirProgram &program) {
@@ -2289,6 +2381,9 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     std::ostringstream out;
     out << "#include <stdbool.h>\n";
     out << "#include <stdint.h>\n";
+    if (!program.functions[program.main].parameters.empty()) {
+        out << "#include <string.h>\n";
+    }
     out << "#include \"foundation/runtime.h\"\n\n";
     out << "#if defined(__GNUC__) || defined(__clang__)\n";
     out << "#define FDN_MAYBE_UNUSED __attribute__((unused))\n";
@@ -2492,6 +2587,7 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
         out << '\n';
         emitExportedWrapper(out, program, index, sourcePath);
     }
+    emitMainWrapper(out, program);
     return out.str();
 }
 

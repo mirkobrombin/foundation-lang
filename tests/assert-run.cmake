@@ -2,15 +2,24 @@ if(NOT DEFINED COMPILER OR NOT DEFINED SOURCE OR NOT DEFINED EXPECTED)
     message(FATAL_ERROR "run assertion requires COMPILER, SOURCE, and EXPECTED")
 endif()
 
+set(command "${COMPILER}" run "${SOURCE}")
+if(DEFINED PROGRAM_ARGS)
+    list(APPEND command -- ${PROGRAM_ARGS})
+endif()
+
 execute_process(
-    COMMAND "${COMPILER}" run "${SOURCE}"
+    COMMAND ${command}
     RESULT_VARIABLE result
     OUTPUT_VARIABLE output
     ERROR_VARIABLE error
 )
 
-if(NOT result EQUAL 0)
-    message(FATAL_ERROR "program failed with ${result}:\n${error}")
+set(expected_exit 0)
+if(DEFINED EXPECTED_EXIT)
+    set(expected_exit "${EXPECTED_EXIT}")
+endif()
+if(NOT result EQUAL expected_exit)
+    message(FATAL_ERROR "program exited with ${result}, expected ${expected_exit}:\n${error}")
 endif()
 
 file(READ "${EXPECTED}" expected)

@@ -1,0 +1,16 @@
+fn combine(left u64, right u64) u64 {
+    left + right
+}
+
+fn main() i32 {
+    let bytes u64 = 11925602363
+    let total = combine(bytes, 7)
+    let product u64 = 6 * 7
+    let quotient u64 = product / 2
+    let remainder u64 = product % 5
+    if total == 11925602370 && quotient == 21 && remainder == 2 && total > bytes {
+        return 0
+    } else {
+        return 1
+    }
+}

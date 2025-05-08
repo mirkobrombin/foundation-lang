@@ -1,0 +1,27 @@
+package test.platform
+
+import std.platform
+
+@target(linux)
+fn expectedName() String {
+    "linux"
+}
+
+@target(macos)
+fn expectedName() String {
+    "macos"
+}
+
+@target(windows)
+fn expectedName() String {
+    "windows"
+}
+
+fn main() i32 {
+    let current = platform.Current()
+    if platform.Name(current) == expectedName() {
+        print("platform ok")
+        return 0
+    }
+    return 1
+}

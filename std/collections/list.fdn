@@ -56,3 +56,44 @@ fn popNode<T>(list edit List<T>, node own listNode<T>) Option<T> {
 fn NewList<T>() own List<T> {
     own List<T> { head = .None length = 0 }
 }
+
+fn optionValue<T>(value Option<T>) T {
+    match value {
+        None: missingValue<T>()
+        Some(item): item
+    }
+}
+
+fn missingValue<T>() T {
+    panic("collection option invariant failed")
+}
+
+fn Sort<T>(
+    values own List<T>,
+    compare view fn(view T, view T) i32
+) own List<T> {
+    var pending = values
+    var selected = NewList<T>()
+    while !pending.IsEmpty() {
+        var best = optionValue(pending.PopFront())
+        var remaining = NewList<T>()
+        while !pending.IsEmpty() {
+            let candidate = optionValue(pending.PopFront())
+            if compare(view candidate, view best) < 0 {
+                remaining.PushFront(best)
+                best = candidate
+            } else {
+                remaining.PushFront(candidate)
+            }
+        }
+        selected.PushFront(best)
+        let empty = replace pending with remaining
+        discard empty
+    }
+
+    var result = NewList<T>()
+    while !selected.IsEmpty() {
+        result.PushFront(optionValue(selected.PopFront()))
+    }
+    result
+}

@@ -1,0 +1,8 @@
+@target(freebsd)
+fn selected() i32 {
+    1
+}
+
+fn main() i32 {
+    0
+}

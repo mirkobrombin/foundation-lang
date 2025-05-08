@@ -13,7 +13,7 @@ primitive expressions, generic nominal value structs and enums, exhaustive match
 Option and Result primitives, Result must-use analysis, `let ... else`, fatal panic traces, field
 access and mutation, `own`, `view`, `edit`, deterministic destruction, immutable UTF-8 String
 values, fixed arrays, borrowed slices, checked indexing, branches, loops, compile-time contracts,
-receiver methods, borrowed dynamic dispatch, semantic resolution, typed FIR, and checked i32
+receiver methods, borrowed dynamic dispatch, semantic resolution, typed FIR, checked i32 and u64
 operations. Named functions are first-class values, generic function values infer from an expected
 signature, and closures use explicit copy, own, view, or edit captures with deterministic
 environment destruction. Mutable places support ownership-preserving replacement, complete struct
@@ -22,6 +22,23 @@ automatic field cleanup. The first dynamic collection, `std.collections.List<T>`
 source and drains long owner chains iteratively. Stage 0 also supports checked C ABI imports and
 exports, deterministic public headers, and native C or object inputs. Each added construct must
 serve the stage-1 compiler or an accepted language invariant.
+Executables may receive a borrowed command-line String slice through
+`fn main(args view [String]) i32`; the generated C adapter owns and releases the temporary slice
+storage.
+Package-scope `@target(linux)`, `@target(macos)`, and `@target(windows)` declarations are selected
+before linking. The Foundation-source `std.platform` package exposes that choice through a typed
+API without C preprocessor conditions in application code.
+The Foundation-source `std.env` package returns explicit absence and error values while the C
+runtime copies and validates process text. Its result never borrows native environment storage.
+`std.text` exposes checked byte inspection and UTF-8-boundary slicing. `std.path` builds owned
+platform paths in Foundation source using those operations.
+`std.fs` adds read-only file size, directory iteration, and line streaming. Foundation reader
+structs own opaque runtime handles and close them through custom drop. Line reads accept explicit
+limits, consume oversized lines without retaining them, and distinguish invalid UTF-8 from an
+oversized input.
+`std.format`, `std.parse`, `std.json`, and `std.time` supply integer conversion, owned JSON values,
+UTC instants, and fixed calendar formatting in Foundation source. Native code remains limited to
+clock access, calendar conversion, byte-level String operations, and platform filesystem handles.
 
 Stage 0 bounds parser nesting and expression complexity before semantic analysis. It records at
 most 100 specific errors, followed by FDN0000 when more input errors are suppressed. These limits

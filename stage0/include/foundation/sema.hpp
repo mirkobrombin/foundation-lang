@@ -20,6 +20,7 @@ enum class CallTargetKind {
     ContractMethod,
     Print,
     Panic,
+    Len,
 };
 
 struct CallTarget {

@@ -4,7 +4,12 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
-const { collectCompletions, maskTrivia, staticCompletions } = require("../src/completions");
+const {
+    collectCompletions,
+    findHover,
+    maskTrivia,
+    staticCompletions
+} = require("../src/completions");
 
 const extensionRoot = path.resolve(__dirname, "..");
 const repositoryRoot = path.resolve(extensionRoot, "../..");
@@ -81,12 +86,30 @@ test("grammar and completions track compiler keywords", () => {
         assert.ok(completionLabels.has(keyword));
     }
 
-    for (const type of ["i32", "bool", "String", "void", "Option", "Result", "print", "panic"]) {
+    for (const type of ["i32", "u64", "bool", "String", "void", "Option", "Result", "len", "print", "panic"]) {
         assert.match(grammar, new RegExp(`\\b${type}\\b`));
         assert.ok(completionLabels.has(type));
     }
     assert.ok(completionLabels.has("c"));
+    assert.ok(completionLabels.has("@target(...)"));
+    for (const standard of [
+        "std.platform", "platform.Current", "platform.Name",
+        "std.env", "env.Get", "env.Home",
+        "std.text", "text.ByteLen", "text.Contains", "text.NewBuilder",
+        "std.path", "path.Join",
+        "std.parse", "parse.U64",
+        "std.fs", "fs.OpenLines", "fs.OpenDir", "fs.Size", "fs.Modified",
+        "fs.LineReader.Next", "fs.LineReader.NextLimited",
+        "std.format", "format.I32", "format.U64",
+        "std.json", "json.Parse",
+        "std.time", "time.Now", "time.FromUnix", "time.Instant.FormatUtc"
+    ]) {
+        assert.ok(completionLabels.has(standard));
+    }
     const parsedGrammar = JSON.parse(grammar);
+    const targetAttribute = parsedGrammar.repository.compilerAttributes.patterns[0];
+    assert.match(targetAttribute.match, /target/);
+    assert.match(targetAttribute.captures[4].name, /target/);
     const cAbiDeclaration = parsedGrammar.repository.cAbiDeclarations.patterns[0];
     assert.equal(cAbiDeclaration.name, "meta.function.external.foundation");
     assert.match(cAbiDeclaration.begin, /extern/);
@@ -97,11 +120,35 @@ test("grammar and completions track compiler keywords", () => {
         assert.ok(completionLabels.has(sequence));
     }
     assert.ok(completionLabels.has("fn(...) R"));
+    const snippets = readJson("snippets/foundation.json");
+    assert.match(snippets["Target declaration"].body.join("\n"), /@target/);
+    assert.match(snippets["Read environment value"].body.join("\n"), /env\.Get\(view/);
+    assert.match(snippets["Join path"].body, /path\.Join\(view/);
+    assert.match(snippets["Open line reader"].body.join("\n"), /fs\.OpenLines\(view/);
+    assert.match(snippets["Parse JSON value"].body.join("\n"), /json\.Parse\(view/);
+    assert.match(snippets["String builder"].body.join("\n"), /text\.NewBuilder/);
+    assert.match(snippets["Format UTC time"].body.join("\n"), /FormatUtc/);
+    assert.match(snippets["Main function with arguments"].body.join("\n"),
+        /main\(args view \[String\]\) i32/);
     assert.match(grammar, /\\\\\[0nrt/);
     assert.equal(
         parsedGrammar.repository.punctuation.patterns[1].match,
         "[(){}\\[\\]]"
     );
+});
+
+test("provides hover inventory for standard and project symbols", () => {
+    const source = `
+        fn localValue(input i32) i32 { input }
+        fn main() i32 { localValue(1) }
+    `;
+    assert.equal(findHover(source, "Now").detail, "fn Now() time.Instant");
+    assert.equal(
+        findHover(source, "NextLimited").detail,
+        "fn NextLimited(edit, limit u64) Result<Option<String>, fs.Error>"
+    );
+    assert.equal(findHover(source, "localValue").detail, "Foundation function");
+    assert.equal(findHover(source, "unknown"), undefined);
 });
 
 test("tracks function values and explicit closure captures", () => {

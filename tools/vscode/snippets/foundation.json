@@ -9,6 +9,61 @@
         "body": "import ${1:example.library}${2: as ${3:library}}",
         "description": "Import a Foundation package"
     },
+    "Read environment value": {
+        "prefix": "envget",
+        "body": [
+            "let ${1:key} = \"${2:NAME}\"",
+            "let ${3:value} = env.Get(view ${1:key}) else ${4:error} {",
+            "    ${5:return 1}",
+            "}"
+        ],
+        "description": "Read an environment value with explicit failure handling"
+    },
+    "Join path": {
+        "prefix": "pathjoin",
+        "body": "path.Join(view ${1:base}, view ${2:child})",
+        "description": "Join two portable path components"
+    },
+    "Open line reader": {
+        "prefix": "openlines",
+        "body": [
+            "let ${1:opened} = fs.OpenLines(view ${2:path}) else ${3:error} {",
+            "    ${4:return 1}",
+            "}",
+            "var ${5:reader} = ${1:opened}"
+        ],
+        "description": "Open a read-only streaming line reader"
+    },
+    "Parse JSON value": {
+        "prefix": "jsonparse",
+        "body": [
+            "let ${1:value} = json.Parse(view ${2:source}) else ${3:error} {",
+            "    ${4:return 1}",
+            "}"
+        ],
+        "description": "Parse JSON with an explicit error path"
+    },
+    "String builder": {
+        "prefix": "stringbuilder",
+        "body": [
+            "var ${1:builder} = text.NewBuilder()",
+            "discard ${1:builder}.Write(view ${2:value})",
+            "let ${3:result} = ${1:builder}.Finish() else ${4:error} {",
+            "    ${5:return 1}",
+            "}"
+        ],
+        "description": "Build one owned String incrementally"
+    },
+    "Format UTC time": {
+        "prefix": "timeutc",
+        "body": [
+            "let ${1:instant} = time.FromUnix(${2:seconds})",
+            "let ${3:formatted} = ${1:instant}.FormatUtc() else ${4:error} {",
+            "    ${5:return 1}",
+            "}"
+        ],
+        "description": "Format a Unix timestamp as UTC with explicit failure handling"
+    },
     "C ABI import": {
         "prefix": "externimport",
         "body": "extern c fn ${1:nativeCall}(${2}) ${3:i32} as ${4:foundation_native_call}",
@@ -22,6 +77,16 @@
             "}"
         ],
         "description": "Export a Foundation function through the stable C ABI"
+    },
+    "Target declaration": {
+        "prefix": "target",
+        "body": [
+            "@target(${1|linux,macos,windows|})",
+            "fn ${2:name}() ${3:void} {",
+            "    ${4:return}",
+            "}"
+        ],
+        "description": "Select a declaration for one compilation target"
     },
     "Enum": {
         "prefix": "enum",
@@ -128,6 +193,15 @@
             "}"
         ],
         "description": "Create the program entry point"
+    },
+    "Main function with arguments": {
+        "prefix": "mainargs",
+        "body": [
+            "fn main(args view [String]) i32 {",
+            "    ${1:0}",
+            "}"
+        ],
+        "description": "Create an entry point with command-line arguments"
     },
     "Function": {
         "prefix": "fn",

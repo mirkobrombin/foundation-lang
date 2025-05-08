@@ -1,0 +1,60 @@
+package test.filesystem_lines
+
+import std.fs
+
+fn lineOr(value Result<Option<String>, fs.Error>) String {
+    match value {
+        Ok(line): match line {
+            None: ""
+            Some(text): text
+        }
+        Err(error): ""
+    }
+}
+
+fn isLineTooLong(value Result<Option<String>, fs.Error>) bool {
+    match value {
+        Ok(line): false
+        Err(error): match error {
+            NotFound: false
+            Permission: false
+            InvalidPath: false
+            InvalidUtf8: false
+            LineTooLong: true
+            Closed: false
+            Io: false
+        }
+    }
+}
+
+fn main(args view [String]) i32 {
+    let size = fs.Size(view args[0]) else error {
+        discard error
+        return 1
+    }
+    let opened = fs.OpenLines(view args[0]) else error {
+        discard error
+        return 2
+    }
+    var reader = opened
+    let first = lineOr(reader.Next())
+    let second = lineOr(reader.Next())
+    let third = lineOr(reader.Next())
+    let end = lineOr(reader.Next())
+    discard reader.Close()
+    let limited = fs.OpenLines(view args[0]) else error {
+        discard error
+        return 3
+    }
+    var limitedReader = limited
+    let shortLimit u64 = 8
+    let bounded = isLineTooLong(limitedReader.NextLimited(shortLimit))
+    discard limitedReader.Close()
+    if size > 0 && first == "{\"id\":1,\"text\":\"first\"}" &&
+        second == "{\"id\":2,\"text\":\"héllo\"}" &&
+        third == "{\"id\":3,\"text\":\"last\"}" && end == "" && bounded {
+        print("fs lines ok")
+        return 0
+    }
+    return 4
+}
