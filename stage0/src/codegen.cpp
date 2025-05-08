@@ -362,6 +362,10 @@ class Monomorphizer {
                                                substitute(field.type, source.arguments)),
                                            field.exported});
             }
+            if (declaration.dropFunction.has_value()) {
+                instance.dropFunction =
+                    instantiateFunction(*declaration.dropFunction, source.arguments);
+            }
             result_.structs[id] = std::move(instance);
             return Type{TypeKind::Struct, id, {}};
         }
@@ -461,6 +465,13 @@ class Monomorphizer {
                 match->type = instantiateType(substitute(match->type, arguments));
             }
         }
+        for (auto &statement : function.statements) {
+            if (auto *destructure =
+                    std::get_if<FirStructDestructureStatement>(&statement.value)) {
+                destructure->type =
+                    instantiateType(substitute(destructure->type, arguments));
+            }
+        }
         result_.functions[id] = std::move(function);
         return id;
     }
@@ -503,6 +514,10 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
     if (const auto *index = std::get_if<FirIndexExpression>(&expression.value)) {
         return expressionDiverges(program, function, index->base) ||
                expressionDiverges(program, function, index->index);
+    }
+    if (const auto *replace = std::get_if<FirReplaceExpression>(&expression.value)) {
+        return expressionDiverges(program, function, replace->value) ||
+               expressionDiverges(program, function, replace->target);
     }
     if (const auto *binary = std::get_if<FirBinaryExpression>(&expression.value)) {
         if (expressionDiverges(program, function, binary->left)) {
@@ -562,6 +577,12 @@ ControlFlow statementFlow(const FirProgram &program, const FirFunction &function
     }
     if (const auto *binding = std::get_if<FirLetElseStatement>(&statement.value)) {
         return expressionDiverges(program, function, binding->initializer)
+                   ? ControlFlow::Diverges
+                   : ControlFlow::Continues;
+    }
+    if (const auto *destructure =
+            std::get_if<FirStructDestructureStatement>(&statement.value)) {
+        return expressionDiverges(program, function, destructure->initializer)
                    ? ControlFlow::Diverges
                    : ControlFlow::Continues;
     }
@@ -645,6 +666,9 @@ bool typeRequiresDrop(const FirProgram &program, const Type &type) {
         return typeRequiresDrop(program, type.arguments.front());
     }
     if (type.kind == TypeKind::Struct && type.declaration < program.structs.size()) {
+        if (program.structs[type.declaration].dropFunction.has_value()) {
+            return true;
+        }
         return std::any_of(program.structs[type.declaration].fields.begin(),
                            program.structs[type.declaration].fields.end(),
                            [&](const FirStructField &field) {
@@ -855,6 +879,9 @@ class FunctionEmitter {
         if (const auto *index = std::get_if<FirIndexExpression>(&expression.value)) {
             return emitIndex(*index, expression.span, depth);
         }
+        if (const auto *replace = std::get_if<FirReplaceExpression>(&expression.value)) {
+            return emitReplace(*replace, expression.type, depth);
+        }
         if (const auto *constructor = std::get_if<FirEnumExpression>(&expression.value)) {
             return emitEnum(*constructor, depth);
         }
@@ -1030,6 +1057,23 @@ class FunctionEmitter {
         out_ << indentation(depth) << "size_t " << checked << " = fdn_bounds_check("
              << value.value << ", " << length << ");\n";
         return {access + '[' + checked + ']', false};
+    }
+
+    EmittedExpression emitReplace(const FirReplaceExpression &replace, const Type &type,
+                                  unsigned int depth) {
+        const auto value = emitExpression(replace.value, depth);
+        if (value.diverges) {
+            return value;
+        }
+        const auto target = emitExpression(replace.target, depth);
+        if (target.diverges) {
+            return target;
+        }
+        const auto previous = nextTemporary();
+        out_ << indentation(depth) << cType(type) << ' ' << previous << ";\n";
+        emitMoveAssignment(out_, program_, type, previous, target.value, depth);
+        emitMoveAssignment(out_, program_, type, target.value, value.value, depth);
+        return {previous, false};
     }
 
     EmittedExpression emitBinary(const FirBinaryExpression &binary, const Type &type,
@@ -1245,6 +1289,11 @@ class FunctionEmitter {
         const auto temporary = nextTemporary();
         out_ << indentation(depth) << cType(literal.type) << ' ' << temporary;
         out_ << (literal.fields.empty() ? " = {0};\n" : ";\n");
+        if (literal.type.kind == TypeKind::Struct &&
+            literal.type.declaration < program_.structs.size() &&
+            program_.structs[literal.type.declaration].dropFunction.has_value()) {
+            out_ << indentation(depth) << temporary << ".fdn_drop_active = true;\n";
+        }
         for (std::size_t index = 0; index < literal.fields.size(); ++index) {
             out_ << indentation(depth) << temporary << '.'
                  << fieldName(literal.fields[index].field) << " = " << values[index] << ";\n";
@@ -1356,6 +1405,24 @@ class FunctionEmitter {
             out_ << indentation(depth) << cType(function_.locals[binding->local].type) << ' '
                  << localValue(binding->local) << " = " << initializer.value
                  << ".fdn_data." << payloadName(0) << ";\n";
+            return false;
+        }
+        if (const auto *destructure =
+                std::get_if<FirStructDestructureStatement>(&statement.value)) {
+            const auto initializer = emitExpression(destructure->initializer, depth);
+            if (initializer.diverges) {
+                return true;
+            }
+            const auto access = initializer.value + (destructure->owned ? "->" : ".");
+            for (const auto &binding : destructure->bindings) {
+                const auto &type = function_.locals[binding.local].type;
+                const auto moved = emitMoveValue(type, access + fieldName(binding.field), depth);
+                out_ << indentation(depth) << cType(type) << ' ' << localValue(binding.local)
+                     << " = " << moved.value << ";\n";
+                out_ << indentation(depth) << "(void)" << localValue(binding.local) << ";\n";
+            }
+            emitDropValue(out_, program_, function_.expressions[destructure->initializer].type,
+                          initializer.value, depth);
             return false;
         }
         if (const auto *assignment = std::get_if<FirAssignmentStatement>(&statement.value)) {
@@ -1528,6 +1595,9 @@ class FunctionEmitter {
 
 void emitStructDefinition(std::ostringstream &out, const FirProgram &program, FirStructId id) {
     out << "struct fdn_struct_" << id << " {\n";
+    if (program.structs[id].dropFunction.has_value()) {
+        out << "    bool fdn_drop_active;\n";
+    }
     if (program.structs[id].fields.empty()) {
         out << "    uint8_t fdn_unit;\n";
     }
@@ -1920,6 +1990,15 @@ void emitStructOwnership(std::ostringstream &out, const FirProgram &program, Fir
 
     out << "static inline FDN_MAYBE_UNUSED void " << dropName(type) << '(' << cType(type)
         << " *value) {\n";
+    if (program.structs[id].dropFunction.has_value()) {
+        out << "    if (!value->fdn_drop_active) {\n";
+        out << "        return;\n";
+        out << "    }\n";
+        out << "    value->fdn_drop_active = false;\n";
+        out << "    " << functionName(program, *program.structs[id].dropFunction)
+            << "(value);\n";
+        out << "    value->fdn_drop_active = false;\n";
+    }
     for (std::size_t field = program.structs[id].fields.size(); field-- > 0;) {
         emitDropValue(out, program, program.structs[id].fields[field].type,
                       "value->" + fieldName(field), 1);
@@ -1929,7 +2008,12 @@ void emitStructOwnership(std::ostringstream &out, const FirProgram &program, Fir
     out << "static inline FDN_MAYBE_UNUSED " << cType(type) << ' ' << moveName(type) << '('
         << cType(type)
         << " *value) {\n";
-    out << "    " << cType(type) << " result;\n";
+    out << "    " << cType(type) << " result";
+    out << (program.structs[id].fields.empty() ? " = {0};\n" : ";\n");
+    if (program.structs[id].dropFunction.has_value()) {
+        out << "    result.fdn_drop_active = value->fdn_drop_active;\n";
+        out << "    value->fdn_drop_active = false;\n";
+    }
     for (std::size_t field = 0; field < program.structs[id].fields.size(); ++field) {
         emitMoveAssignment(out, program, program.structs[id].fields[field].type,
                            "result." + fieldName(field), "value->" + fieldName(field), 1);
@@ -2305,6 +2389,17 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
 
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
         emitClosureEnvironmentDefinition(out, program, index);
+    }
+
+    for (const auto &type : program.structs) {
+        if (type.dropFunction.has_value()) {
+            emitSignature(out, program, *type.dropFunction);
+            out << ";\n";
+        }
+    }
+    if (std::any_of(program.structs.begin(), program.structs.end(),
+                    [](const FirStruct &type) { return type.dropFunction.has_value(); })) {
+        out << '\n';
     }
 
     emitOwnershipPrototypes(out, program, arrays);

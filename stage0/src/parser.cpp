@@ -491,9 +491,37 @@ AstBlockId Parser::block(bool tailResult) {
 
 AstStatementId Parser::statement() {
     if (match(TokenKind::Let)) {
+        auto distance = std::size_t{};
+        auto pattern = peek(distance).kind == TokenKind::Identifier;
+        if (pattern) {
+            ++distance;
+            while (peek(distance).kind == TokenKind::Dot &&
+                   peek(distance + 1).kind == TokenKind::Identifier) {
+                distance += 2;
+            }
+            pattern = peek(distance).kind == TokenKind::LeftBrace;
+        }
+        if (pattern) {
+            return structDestructureStatement(previous());
+        }
         return variableStatement(previous(), false);
     }
     if (match(TokenKind::Var)) {
+        auto distance = std::size_t{};
+        auto pattern = peek(distance).kind == TokenKind::Identifier;
+        if (pattern) {
+            ++distance;
+            while (peek(distance).kind == TokenKind::Dot &&
+                   peek(distance + 1).kind == TokenKind::Identifier) {
+                distance += 2;
+            }
+            pattern = peek(distance).kind == TokenKind::LeftBrace;
+        }
+        if (pattern) {
+            diagnostics_.error("FDN1130", "struct destructuring requires let",
+                               previous().span);
+            return structDestructureStatement(previous());
+        }
         return variableStatement(previous(), true);
     }
     if (match(TokenKind::Return)) {
@@ -509,6 +537,34 @@ AstStatementId Parser::statement() {
         return whileStatement(previous());
     }
     return expressionStatement();
+}
+
+AstStatementId Parser::structDestructureStatement(const Token &start) {
+    auto [name, span] = qualifiedName("FDN1131", "expected struct pattern type");
+    TypeSyntax type{std::move(name), {}, span};
+    expect(TokenKind::LeftBrace, "FDN1132", "expected { after struct pattern type");
+    std::vector<StructPatternField> fields;
+    while (!check(TokenKind::RightBrace) && !atEnd()) {
+        if (!check(TokenKind::Identifier)) {
+            diagnostics_.error("FDN1133", "expected field in struct pattern", peek(0).span);
+            advance();
+            continue;
+        }
+        const auto field = expect(TokenKind::Identifier, "FDN1133",
+                                  "expected field in struct pattern");
+        auto binding = field.text;
+        if (match(TokenKind::As)) {
+            binding = expect(TokenKind::Identifier, "FDN1134",
+                             "expected binding after as").text;
+        }
+        fields.push_back({field.text, std::move(binding), field.span});
+        match(TokenKind::Comma);
+    }
+    expect(TokenKind::RightBrace, "FDN1135", "expected } after struct pattern");
+    expect(TokenKind::Equal, "FDN1136", "expected = before destructuring initializer");
+    return addStatement(
+        StructDestructureStatement{std::move(type), std::move(fields), expression()},
+        start.span);
 }
 
 AstStatementId Parser::variableStatement(const Token &start, bool mutableBinding) {
@@ -754,6 +810,8 @@ AstExpressionId Parser::primary() {
         result = matchExpression(previous());
     } else if (match(TokenKind::Fn)) {
         result = functionExpression(previous());
+    } else if (match(TokenKind::Replace)) {
+        result = replaceExpression(previous());
     } else if (match(TokenKind::Dot)) {
         result = finishMember(std::nullopt);
     } else if (match(TokenKind::Identifier)) {
@@ -816,6 +874,12 @@ AstExpressionId Parser::primary() {
         }
     }
     return result;
+}
+
+AstExpressionId Parser::replaceExpression(const Token &start) {
+    const auto target = primary();
+    expect(TokenKind::With, "FDN1137", "expected with after replacement place");
+    return addExpression(ReplaceExpression{target, expression()}, start.span);
 }
 
 AstExpressionId Parser::finishCall(const Token &callee, std::vector<TypeSyntax> typeArguments) {

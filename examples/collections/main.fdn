@@ -1,0 +1,47 @@
+package example.collections
+
+import std.collections
+
+struct Item {
+    value i32
+}
+
+fn main() i32 {
+    var values = collections.NewList<String>()
+    values.PushFront("one")
+    values.PushFront("two")
+
+    let first = values.PopFront()
+    let second = values.PopFront()
+    let missing = values.PopFront()
+
+    let firstValue = match first {
+        None: "missing"
+        Some(value): value
+    }
+    let secondValue = match second {
+        None: "missing"
+        Some(value): value
+    }
+    let missingValue = match missing {
+        None: "empty"
+        Some(value): value
+    }
+
+    var owned = collections.NewList<own Item>()
+    owned.PushFront(own Item { value = 42 })
+    let ownedValue = match owned.PopFront() {
+        None: 0
+        Some(item): item.value
+    }
+
+    var cleared = collections.NewList<String>()
+    cleared.PushFront("discarded")
+    cleared.Clear()
+
+    print(firstValue + secondValue + missingValue)
+    if values.IsEmpty() && values.Len() == 0 && ownedValue == 42 && cleared.IsEmpty() {
+        return 0
+    }
+    1
+}

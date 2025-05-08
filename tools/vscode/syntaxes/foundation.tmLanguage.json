@@ -13,6 +13,7 @@
         { "include": "#functionDefinitions" },
         { "include": "#functionTypes" },
         { "include": "#captureClauses" },
+        { "include": "#structPatterns" },
         { "include": "#bindings" },
         { "include": "#ownership" },
         { "include": "#keywords" },
@@ -339,6 +340,33 @@
                 }
             ]
         },
+        "structPatterns": {
+            "patterns": [
+                {
+                    "name": "meta.struct.pattern.foundation",
+                    "begin": "\\b(let)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s*(\\{)",
+                    "beginCaptures": {
+                        "1": { "name": "storage.type.foundation" },
+                        "2": { "name": "entity.name.type.struct.foundation" },
+                        "3": { "name": "punctuation.section.block.begin.foundation" }
+                    },
+                    "end": "\\}",
+                    "endCaptures": {
+                        "0": { "name": "punctuation.section.block.end.foundation" }
+                    },
+                    "patterns": [
+                        {
+                            "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(?:\\s+(as)\\s+([A-Za-z_][A-Za-z0-9_]*))?",
+                            "captures": {
+                                "1": { "name": "variable.other.member.foundation" },
+                                "2": { "name": "keyword.control.pattern.as.foundation" },
+                                "3": { "name": "variable.other.readwrite.foundation" }
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
         "keywords": {
             "patterns": [
                 {
@@ -351,7 +379,7 @@
                 },
                 {
                     "name": "keyword.control.foundation",
-                    "match": "\\b(return|discard|if|else|while|match|capture)\\b"
+                    "match": "\\b(return|discard|if|else|while|match|capture|replace|with)\\b"
                 },
                 {
                     "name": "constant.language.boolean.foundation",

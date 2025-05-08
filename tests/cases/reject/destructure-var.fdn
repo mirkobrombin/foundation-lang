@@ -1,0 +1,9 @@
+struct Pair {
+    left i32
+    right i32
+}
+
+fn main() i32 {
+    var Pair { left right } = Pair { left = 1 right = 2 }
+    left + right
+}

@@ -165,6 +165,11 @@ struct FirIndexExpression {
     FirExpressionId index{};
 };
 
+struct FirReplaceExpression {
+    FirExpressionId target{};
+    FirExpressionId value{};
+};
+
 struct FirEnumExpression {
     Type type{invalidType};
     FirVariantId variant{};
@@ -190,7 +195,8 @@ using FirExpressionValue =
                  FirFunctionValueExpression, FirClosureExpression, FirOwnershipExpression,
                  FirBinaryExpression, FirCallExpression,
                  FirContractExpression, FirStructExpression, FirFieldExpression,
-                 FirIndexExpression, FirEnumExpression, FirMatchExpression>;
+                 FirIndexExpression, FirReplaceExpression, FirEnumExpression,
+                 FirMatchExpression>;
 
 struct FirExpression {
     FirExpressionValue value;
@@ -201,6 +207,18 @@ struct FirExpression {
 struct FirVariableStatement {
     FirLocalId local{};
     FirExpressionId initializer{};
+};
+
+struct FirStructBinding {
+    FirFieldId field{};
+    FirLocalId local{};
+};
+
+struct FirStructDestructureStatement {
+    FirExpressionId initializer{};
+    Type type{invalidType};
+    bool owned{};
+    std::vector<FirStructBinding> bindings;
 };
 
 struct FirLetElseStatement {
@@ -240,9 +258,9 @@ struct FirWhileStatement {
 };
 
 using FirStatementValue =
-    std::variant<FirVariableStatement, FirLetElseStatement, FirAssignmentStatement,
-                 FirExpressionStatement, FirDiscardStatement, FirReturnStatement, FirIfStatement,
-                 FirWhileStatement>;
+    std::variant<FirVariableStatement, FirLetElseStatement, FirStructDestructureStatement,
+                 FirAssignmentStatement, FirExpressionStatement, FirDiscardStatement,
+                 FirReturnStatement, FirIfStatement, FirWhileStatement>;
 
 struct FirStatement {
     FirStatementValue value;
@@ -296,6 +314,7 @@ struct FirStruct {
     std::size_t typeParameterCount{};
     std::vector<FirStructField> fields;
     bool exported{};
+    std::optional<FirFunctionId> dropFunction;
 };
 
 struct FirEnumVariant {

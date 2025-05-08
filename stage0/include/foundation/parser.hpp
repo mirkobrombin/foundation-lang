@@ -42,6 +42,7 @@ class Parser {
     AstBlockId block(bool tailResult = false);
     AstStatementId statement();
     AstStatementId variableStatement(const Token &start, bool mutableBinding);
+    AstStatementId structDestructureStatement(const Token &start);
     AstStatementId returnStatement(const Token &start);
     AstStatementId discardStatement(const Token &start);
     AstStatementId ifStatement(const Token &start);
@@ -56,6 +57,7 @@ class Parser {
     AstExpressionId factor();
     AstExpressionId unary();
     AstExpressionId primary();
+    AstExpressionId replaceExpression(const Token &start);
     AstExpressionId finishCall(const Token &callee, std::vector<TypeSyntax> typeArguments = {});
     AstExpressionId finishStruct(TypeSyntax type);
     AstExpressionId finishMember(std::optional<AstExpressionId> base);

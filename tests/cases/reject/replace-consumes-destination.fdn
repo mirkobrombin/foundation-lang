@@ -1,0 +1,10 @@
+struct Item {
+    value i32
+}
+
+fn main() i32 {
+    var current = own Item { value = 1 }
+    let previous = replace current with current
+    discard previous
+    0
+}

@@ -1,0 +1,13 @@
+struct Item {
+    value i32
+}
+
+fn main() i32 {
+    var current = own Item { value = 1 }
+    let read = fn() i32 capture view current {
+        current.value
+    }
+    let previous = replace current with own Item { value = 2 }
+    discard previous
+    read()
+}

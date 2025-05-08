@@ -1,0 +1,14 @@
+fn identity(value i32) i32 {
+    value
+}
+
+fn main() i32 {
+    var operation fn(i32) i32 = identity
+    var total = 0
+    let previous = replace operation with fn(value i32) i32 capture edit total {
+        total = total + value
+        total
+    }
+    discard previous
+    0
+}

@@ -1,0 +1,8 @@
+package example.private_destructure
+
+import example.private_destructure.lib
+
+fn main() i32 {
+    let lib.Value { Public hidden } = lib.NewValue()
+    Public + hidden
+}
