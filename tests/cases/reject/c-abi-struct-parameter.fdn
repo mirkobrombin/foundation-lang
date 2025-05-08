@@ -1,0 +1,9 @@
+struct Pair {
+    value i32
+}
+
+extern c fn nativePair(value Pair) i32 as foundation_native_pair
+
+fn main() i32 {
+    0
+}

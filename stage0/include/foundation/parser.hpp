@@ -34,7 +34,7 @@ class Parser {
     StructDeclaration structDeclaration();
     EnumDeclaration enumDeclaration();
     ContractDeclaration contractDeclaration();
-    Function function();
+    Function function(bool external = false);
     Function method(const std::string &owner, const std::vector<std::string> &typeParameters);
     ContractMethod contractMethod();
     ReceiverKind receiver(const char *code, const char *message);

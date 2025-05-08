@@ -159,6 +159,8 @@ class Lowerer {
         function.generic = !source.typeParameters.empty();
         function.typeParameterCount = source.typeParameters.size();
         function.exported = source.exported;
+        function.cSymbol = source.cSymbol;
+        function.hasBody = source.hasBody;
         function.returnType = semantic.returnType;
         function.parameters = semantic.parameters;
         function.locals.reserve(semantic.locals.size());

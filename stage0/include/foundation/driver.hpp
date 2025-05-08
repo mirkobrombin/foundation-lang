@@ -12,6 +12,7 @@ namespace foundation {
 struct Compilation {
     std::vector<DiagnosticSource> sources;
     std::string generatedC;
+    std::string generatedCHeader;
     Diagnostics diagnostics;
 };
 
@@ -19,9 +20,13 @@ struct Compilation {
 [[nodiscard]] int checkFile(const std::filesystem::path &path);
 [[nodiscard]] int emitCFile(const std::filesystem::path &source,
                             const std::filesystem::path &output);
+[[nodiscard]] int emitCHeaderFile(const std::filesystem::path &source,
+                                  const std::filesystem::path &output);
 [[nodiscard]] int buildFile(const std::filesystem::path &source,
-                            const std::filesystem::path &output);
-[[nodiscard]] int runFile(const std::filesystem::path &source);
+                            const std::filesystem::path &output,
+                            const std::vector<std::filesystem::path> &nativeInputs = {});
+[[nodiscard]] int runFile(const std::filesystem::path &source,
+                          const std::vector<std::filesystem::path> &nativeInputs = {});
 
 } // namespace foundation
 

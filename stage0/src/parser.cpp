@@ -62,6 +62,10 @@ Program Parser::parse() {
             program_.functions.push_back(function());
             continue;
         }
+        if (check(TokenKind::Extern)) {
+            program_.functions.push_back(function(true));
+            continue;
+        }
         diagnostics_.error("FDN1001", "expected type or function declaration",
                            current().span);
         advance();
@@ -245,6 +249,11 @@ StructDeclaration Parser::structDeclaration() {
 
     std::vector<StructField> fields;
     while (!check(TokenKind::RightBrace) && !atEnd()) {
+        if (check(TokenKind::Extern)) {
+            diagnostics_.error("FDN2117", "C ABI function cannot be a method", current().span);
+            advance();
+            continue;
+        }
         if (check(TokenKind::Fn)) {
             program_.functions.push_back(method(name.text, parameters));
             continue;
@@ -298,6 +307,11 @@ ContractDeclaration Parser::contractDeclaration() {
 
     std::vector<ContractMethod> methods;
     while (!check(TokenKind::RightBrace) && !atEnd()) {
+        if (check(TokenKind::Extern)) {
+            diagnostics_.error("FDN2117", "C ABI function cannot be a method", current().span);
+            advance();
+            continue;
+        }
         if (!check(TokenKind::Fn)) {
             diagnostics_.error("FDN1098", "expected contract method", current().span);
             advance();
@@ -310,8 +324,16 @@ ContractDeclaration Parser::contractDeclaration() {
             start.span, {}};
 }
 
-Function Parser::function() {
-    const auto start = expect(TokenKind::Fn, "FDN1002", "expected fn");
+Function Parser::function(bool external) {
+    auto start = current();
+    if (external) {
+        start = expect(TokenKind::Extern, "FDN1112", "expected extern");
+        const auto abi = expect(TokenKind::Identifier, "FDN1113", "expected c after extern");
+        if (abi.text != "c") {
+            diagnostics_.error("FDN1113", "only the c external ABI is supported", abi.span);
+        }
+    }
+    expect(TokenKind::Fn, "FDN1002", "expected fn");
     const auto name = expect(TokenKind::Identifier, "FDN1003", "expected function name");
     auto typeParameters = this->typeParameters();
     expect(TokenKind::LeftParen, "FDN1004", "expected ( after function name");
@@ -325,9 +347,26 @@ Function Parser::function() {
     expect(TokenKind::RightParen, "FDN1005", "expected ) after function parameters");
     auto returnType = typeSyntax("FDN1007", "expected function return type");
     const auto tailResult = returnType.name != "void" || !returnType.arguments.empty();
-    const auto body = block(tailResult);
-    return {name.text, std::move(typeParameters), std::move(parameters), std::move(returnType), body,
-            isExported(name.text), start.span, {}, {}, std::nullopt, {}};
+    std::optional<std::string> cSymbol;
+    bool hasBody = true;
+    AstBlockId body{};
+    if (external) {
+        expect(TokenKind::As, "FDN1114", "expected as before C symbol");
+        cSymbol = expect(TokenKind::Identifier, "FDN1115", "expected C symbol after as").text;
+        hasBody = check(TokenKind::LeftBrace);
+    }
+    if (hasBody) {
+        body = block(tailResult);
+    } else {
+        program_.blocks.push_back({{}, start.span});
+        body = program_.blocks.size() - 1;
+    }
+    Function result{name.text, std::move(typeParameters), std::move(parameters),
+                    std::move(returnType), body, isExported(name.text), start.span, {}, {},
+                    std::nullopt, {}, std::nullopt, true};
+    result.cSymbol = std::move(cSymbol);
+    result.hasBody = hasBody;
+    return result;
 }
 
 Function Parser::method(const std::string &owner,
@@ -361,7 +400,7 @@ Function Parser::method(const std::string &owner,
     const auto tailResult = returnType.name != "void" || !returnType.arguments.empty();
     const auto body = block(tailResult);
     return {name.text, typeParameters, std::move(parameters), std::move(returnType), body,
-            isExported(name.text), start.span, {}, {}, access, owner};
+            isExported(name.text), start.span, {}, {}, access, owner, std::nullopt, true};
 }
 
 ContractMethod Parser::contractMethod() {

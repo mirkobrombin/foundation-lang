@@ -136,33 +136,48 @@ int report(const std::filesystem::path &path, const Compilation &compilation) {
 }
 
 std::vector<std::string> compilerArguments(const std::filesystem::path &generated,
-                                           const std::filesystem::path &output) {
+                                           const std::filesystem::path &output,
+                                           const std::filesystem::path &nativeInclude,
+                                           const std::vector<std::filesystem::path> &nativeInputs) {
     std::vector<std::string> arguments{FOUNDATION_C_COMPILER};
     const std::string compilerId = FOUNDATION_C_COMPILER_ID;
     if (compilerId == "MSVC") {
         arguments.insert(arguments.end(), {"/nologo", "/std:c11", "/W4", "/WX",
                                            generated.string(), FOUNDATION_RUNTIME_SOURCE,
                                            "/I" FOUNDATION_RUNTIME_INCLUDE,
-                                           "/Fe:" + output.string()});
+                                           "/I" + nativeInclude.string()});
+        for (const auto &input : nativeInputs) {
+            arguments.push_back(input.string());
+        }
+        arguments.push_back("/Fe:" + output.string());
         return arguments;
     }
 
     arguments.insert(arguments.end(), {"-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
                                        generated.string(), FOUNDATION_RUNTIME_SOURCE, "-I",
-                                       FOUNDATION_RUNTIME_INCLUDE, "-o", output.string()});
+                                       FOUNDATION_RUNTIME_INCLUDE, "-I", nativeInclude.string()});
+    for (const auto &input : nativeInputs) {
+        arguments.push_back(input.string());
+    }
+    arguments.insert(arguments.end(), {"-o", output.string()});
     return arguments;
 }
 
 int buildCompilation(const std::filesystem::path &source, const std::filesystem::path &output,
-                     const std::filesystem::path &temporarySource) {
+                     const std::filesystem::path &temporarySource,
+                     const std::filesystem::path &temporaryHeader,
+                     const std::vector<std::filesystem::path> &nativeInputs) {
     const auto compilation = compile(source);
     if (const auto status = report(source, compilation); status != 0) {
         return status;
     }
-    if (!prepareParent(output) || !writeFile(temporarySource, compilation.generatedC)) {
+    if (!prepareParent(output) || !writeFile(temporarySource, compilation.generatedC) ||
+        !writeFile(temporaryHeader, compilation.generatedCHeader)) {
         return 1;
     }
-    return runProcess(compilerArguments(temporarySource, output), ProcessOutput::StdoutToStderr);
+    return runProcess(compilerArguments(temporarySource, output, temporaryHeader.parent_path(),
+                                        nativeInputs),
+                      ProcessOutput::StdoutToStderr);
 }
 
 } // namespace
@@ -183,7 +198,9 @@ Compilation compile(const std::filesystem::path &path) {
         return compilation;
     }
 
-    compilation.generatedC = emitC(lower(program, *semantic), path.generic_string());
+    const auto fir = lower(program, *semantic);
+    compilation.generatedC = emitC(fir, path.generic_string());
+    compilation.generatedCHeader = emitCHeader(fir);
     return compilation;
 }
 
@@ -200,15 +217,26 @@ int emitCFile(const std::filesystem::path &source, const std::filesystem::path &
     return writeFile(output, compilation.generatedC) ? 0 : 1;
 }
 
-int buildFile(const std::filesystem::path &source, const std::filesystem::path &output) {
+int emitCHeaderFile(const std::filesystem::path &source, const std::filesystem::path &output) {
+    const auto compilation = compile(source);
+    if (const auto status = report(source, compilation); status != 0) {
+        return status;
+    }
+    return writeFile(output, compilation.generatedCHeader) ? 0 : 1;
+}
+
+int buildFile(const std::filesystem::path &source, const std::filesystem::path &output,
+              const std::vector<std::filesystem::path> &nativeInputs) {
     auto temporary = createTempDirectory();
     if (!temporary.has_value()) {
         return 1;
     }
-    return buildCompilation(source, output, temporary->path() / "program.c");
+    return buildCompilation(source, output, temporary->path() / "program.c",
+                            temporary->path() / "foundation_abi.h", nativeInputs);
 }
 
-int runFile(const std::filesystem::path &source) {
+int runFile(const std::filesystem::path &source,
+            const std::vector<std::filesystem::path> &nativeInputs) {
     auto temporary = createTempDirectory();
     if (!temporary.has_value()) {
         return 1;
@@ -218,7 +246,8 @@ int runFile(const std::filesystem::path &source) {
 #else
     const auto executable = temporary->path() / "program";
 #endif
-    const auto status = buildCompilation(source, executable, temporary->path() / "program.c");
+    const auto status = buildCompilation(source, executable, temporary->path() / "program.c",
+                                         temporary->path() / "foundation_abi.h", nativeInputs);
     if (status != 0) {
         return status;
     }

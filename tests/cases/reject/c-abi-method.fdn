@@ -1,0 +1,11 @@
+struct Counter {
+    value i32
+
+    extern c fn Value(view self) i32 as foundation_counter_value {
+        self.value
+    }
+}
+
+fn main() i32 {
+    0
+}

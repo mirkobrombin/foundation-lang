@@ -14,12 +14,18 @@ Option and Result primitives, Result must-use analysis, `let ... else`, fatal pa
 access and mutation, `own`, `view`, `edit`, deterministic destruction, immutable UTF-8 String
 values, fixed arrays, borrowed slices, checked indexing, branches, loops, compile-time contracts,
 receiver methods, borrowed dynamic dispatch, semantic resolution, typed FIR, and checked i32
-operations. Each added construct must serve the stage-1 compiler or an already accepted language
-invariant.
+operations. It also supports checked C ABI imports and exports, deterministic public headers, and
+native C or object inputs. Each added construct must serve the stage-1 compiler or an accepted
+language invariant.
 
 Stage 0 bounds parser nesting and expression complexity before semantic analysis. It records at
 most 100 specific errors, followed by FDN0000 when more input errors are suppressed. These limits
 keep malformed input deterministic under the sanitizer and fuzzing configurations.
+
+`print` is a stage-0 bootstrap intrinsic, not a permanent language primitive. Once streams and
+console output can be implemented through the runtime ABI, ordinary programs will use the
+standard-library `io.println` operation. Interactive tools may provide a short `print` convenience.
+Fatal `panic` remains a language operation because it defines control flow and trace semantics.
 
 ## Stage 1
 

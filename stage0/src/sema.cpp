@@ -65,6 +65,69 @@ bool containsProperType(const Type &outer, const Type &candidate) {
     return false;
 }
 
+bool isCIdentifier(std::string_view value) {
+    if (value.empty()) {
+        return false;
+    }
+    const auto first = value.front();
+    if (!((first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z') ||
+          first == '_')) {
+        return false;
+    }
+    if (!std::all_of(value.begin() + 1, value.end(), [](const char character) {
+        return (character >= 'A' && character <= 'Z') ||
+               (character >= 'a' && character <= 'z') ||
+               (character >= '0' && character <= '9') || character == '_';
+    })) {
+        return false;
+    }
+
+    static const std::unordered_set<std::string_view> invalid{
+        "alignas",          "alignof",          "and",              "and_eq",
+        "asm",              "auto",             "bitand",           "bitor",
+        "bool",             "break",            "case",             "catch",
+        "char",             "char8_t",          "char16_t",         "char32_t",
+        "class",            "compl",            "concept",          "const",
+        "consteval",        "constexpr",        "constinit",        "const_cast",
+        "continue",         "co_await",         "co_return",        "co_yield",
+        "decltype",         "default",          "delete",           "do",
+        "double",           "dynamic_cast",     "else",             "enum",
+        "explicit",         "export",           "extern",           "false",
+        "float",            "for",              "friend",           "goto",
+        "if",               "import",           "inline",           "int",
+        "long",             "module",           "mutable",          "namespace",
+        "new",              "noexcept",         "not",              "not_eq",
+        "nullptr",          "operator",         "or",               "or_eq",
+        "private",          "protected",        "public",           "register",
+        "reinterpret_cast", "requires",         "restrict",         "return",
+        "short",            "signed",           "sizeof",           "static",
+        "static_assert",    "static_cast",      "struct",           "switch",
+        "template",         "this",             "thread_local",     "throw",
+        "true",             "try",              "typedef",          "typeid",
+        "typename",         "union",            "unsigned",         "using",
+        "virtual",          "void",             "volatile",         "wchar_t",
+        "while",            "xor",              "xor_eq",           "_Alignas",
+        "_Alignof",         "_Atomic",          "_Bool",            "_Complex",
+        "_Generic",         "_Imaginary",       "_Noreturn",        "_Static_assert",
+        "_Thread_local",
+    };
+    return !invalid.contains(value);
+}
+
+bool isReservedCSymbol(std::string_view value) {
+    return value == "main" || value.starts_with("fdn_") || value.starts_with('_');
+}
+
+bool isCParameterType(const Type &type) {
+    return type == i32Type || type == boolType ||
+           (type.kind == TypeKind::View && type.arguments.size() == 1 &&
+            type.arguments.front() == stringType);
+}
+
+bool isCReturnType(const Type &type) {
+    return type == voidType || type == i32Type || type == boolType;
+}
+
 class Analyzer {
   public:
     Analyzer(const Program &program, Diagnostics &diagnostics)
@@ -471,6 +534,7 @@ class Analyzer {
 
     void declareFunctions() {
         bool foundMain = false;
+        std::unordered_set<std::string> cSymbols;
         methods_.resize(program_.structs.size());
         for (std::size_t index = 0; index < program_.functions.size(); ++index) {
             const auto &function = program_.functions[index];
@@ -505,6 +569,41 @@ class Analyzer {
                 semantic.parameterTypes.push_back(type);
             }
 
+            if (function.cSymbol.has_value()) {
+                if (!isCIdentifier(*function.cSymbol)) {
+                    diagnostics_.error("FDN2110", "invalid C or C++ symbol " +
+                                                       *function.cSymbol,
+                                       function.span);
+                } else if (!cSymbols.emplace(*function.cSymbol).second) {
+                    diagnostics_.error("FDN2111", "duplicate C symbol " + *function.cSymbol,
+                                       function.span);
+                }
+                if (!function.typeParameters.empty()) {
+                    diagnostics_.error("FDN2112", "C ABI function cannot be generic",
+                                       function.span);
+                }
+                if (!isCReturnType(semantic.returnType)) {
+                    diagnostics_.error("FDN2113", "return type is not C ABI safe",
+                                       function.returnType.span);
+                }
+                for (std::size_t parameter = 0;
+                     parameter < semantic.parameterTypes.size(); ++parameter) {
+                    if (!isCParameterType(semantic.parameterTypes[parameter])) {
+                        diagnostics_.error("FDN2114", "parameter type is not C ABI safe",
+                                           function.parameters[parameter].span);
+                    }
+                }
+                if (isReservedCSymbol(*function.cSymbol)) {
+                    diagnostics_.error("FDN2115", "C ABI symbol is reserved " +
+                                                       *function.cSymbol,
+                                       function.span);
+                }
+                if (function.name == "main") {
+                    diagnostics_.error("FDN2116", "main cannot use the C ABI declaration form",
+                                       function.span);
+                }
+            }
+
             if (function.receiver.has_value()) {
                 const auto owner = structs_.find(function.ownerType);
                 if (owner == structs_.end()) {
@@ -531,7 +630,8 @@ class Analyzer {
             }
             signatures_.push_back({semantic.returnType, semantic.parameterTypes});
 
-            if (function.receiver.has_value() || function.name != "main") {
+            if (function.receiver.has_value() || function.name != "main" ||
+                function.cSymbol.has_value()) {
                 continue;
             }
             if (!foundMain) {
@@ -633,6 +733,10 @@ class Analyzer {
             const auto local = addLocal(parameter.name, semantic.parameterTypes[parameterIndex],
                                         false, parameter.span);
             semantic.parameters.push_back(local);
+        }
+
+        if (!function.hasBody) {
+            return;
         }
 
         const auto returns = analyzeBlock(function.body, false);

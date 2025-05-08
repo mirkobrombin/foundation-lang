@@ -252,6 +252,8 @@ struct FirFunction {
     FirBlockId body{};
     bool exported{};
     bool diverges{};
+    std::optional<std::string> cSymbol;
+    bool hasBody{true};
 };
 
 struct FirStructField {

@@ -15,6 +15,7 @@ enum class TokenKind {
     Package,
     Import,
     As,
+    Extern,
     Struct,
     Enum,
     Contract,

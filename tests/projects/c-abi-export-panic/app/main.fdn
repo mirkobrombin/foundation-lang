@@ -1,0 +1,12 @@
+package trace.export
+
+extern c fn nativeRoundTrip() void as foundation_native_round_trip
+
+extern c fn FoundationFail() void as foundation_fail {
+    panic("C ABI export failure")
+}
+
+fn main() i32 {
+    nativeRoundTrip()
+    return 0
+}
