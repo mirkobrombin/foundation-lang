@@ -1,0 +1,13 @@
+package trace.app
+
+import trace.failure
+
+fn run(value view failure.Failure) void {
+    value.Fail()
+}
+
+fn main() i32 {
+    let value = failure.Crashing {}
+    run(view value)
+    0
+}

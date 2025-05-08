@@ -1,0 +1,16 @@
+contract Reader {
+    fn read(view) i32
+}
+
+struct Other {
+    value i32
+}
+
+fn read(value view Reader) i32 {
+    value.read()
+}
+
+fn main() i32 {
+    let value = Other { value = 1 }
+    read(view value)
+}

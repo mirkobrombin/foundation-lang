@@ -84,16 +84,20 @@ class Analyzer {
         model_.blockDrops.resize(program.blocks.size());
         model_.structs.resize(program.structs.size());
         model_.enums.resize(program.enums.size());
+        model_.contracts.resize(program.contracts.size());
         model_.functions.resize(program.functions.size());
     }
 
     std::optional<SemanticModel> run() {
         declareStructs();
         declareEnums();
+        declareContracts();
+        resolveContracts();
         resolveStructs();
         resolveEnums();
         rejectTypeCycles();
         declareFunctions();
+        verifyImplementations();
         for (std::size_t index = 0; index < program_.functions.size(); ++index) {
             analyzeFunction(index);
         }
@@ -116,10 +120,6 @@ class Analyzer {
                 diagnostics_.error("FDN2020", "duplicate type " + declaration.name,
                                    declaration.span);
             }
-            if (declaration.fields.empty()) {
-                diagnostics_.error("FDN2029", "struct must declare at least one field",
-                                   declaration.span);
-            }
         }
     }
 
@@ -136,6 +136,67 @@ class Analyzer {
             if (declaration.variants.empty()) {
                 diagnostics_.error("FDN2031", "enum must declare at least one variant",
                                    declaration.span);
+            }
+        }
+    }
+
+    void declareContracts() {
+        for (std::size_t index = 0; index < program_.contracts.size(); ++index) {
+            const auto &declaration = program_.contracts[index];
+            if (isBuiltinType(declaration.name) || structs_.contains(declaration.name) ||
+                enums_.contains(declaration.name) ||
+                !contracts_.emplace(declaration.name, index).second) {
+                diagnostics_.error("FDN2020", "duplicate type " + declaration.name,
+                                   declaration.span);
+            }
+            if (declaration.methods.empty()) {
+                diagnostics_.error("FDN2090", "contract must declare at least one method",
+                                   declaration.span);
+            }
+        }
+    }
+
+    void resolveContracts() {
+        for (std::size_t index = 0; index < program_.contracts.size(); ++index) {
+            const auto &declaration = program_.contracts[index];
+            auto &semantic = model_.contracts[index];
+            setTypeParameters(declaration.typeParameters, declaration.span);
+            semantic.typeParameterCount = declaration.typeParameters.size();
+            std::unordered_set<std::string> methods;
+            for (const auto &method : declaration.methods) {
+                if (!methods.emplace(method.name).second) {
+                    diagnostics_.error("FDN2091", "duplicate contract method " + method.name,
+                                       method.span);
+                }
+                SemanticContractMethod target;
+                target.receiver = method.receiver;
+                target.returnType = resolveType(method.returnType);
+                if (containsBorrow(target.returnType) || containsBareSlice(target.returnType) ||
+                    containsBareContract(target.returnType)) {
+                    diagnostics_.error("FDN2063", "borrow cannot be returned from a method",
+                                       method.returnType.span);
+                }
+                for (const auto &parameter : method.parameters) {
+                    const auto type = resolveType(parameter.type);
+                    if (type == voidType) {
+                        diagnostics_.error("FDN2016", "parameter cannot have type void",
+                                           parameter.span);
+                    }
+                    if (containsBareSlice(type)) {
+                        diagnostics_.error("FDN2080", "slice parameter requires view or edit",
+                                           parameter.span);
+                    }
+                    if (containsNestedBorrow(type, true)) {
+                        diagnostics_.error("FDN2064", "parameter contains a nested borrow",
+                                           parameter.span);
+                    }
+                    if (containsBareContract(type)) {
+                        diagnostics_.error("FDN2099", "contract value requires view or edit",
+                                           parameter.span);
+                    }
+                    target.parameterTypes.push_back(type);
+                }
+                semantic.methods.push_back(std::move(target));
             }
         }
     }
@@ -194,6 +255,23 @@ class Analyzer {
         return false;
     }
 
+    bool containsBareContract(const Type &type, bool allowBorrowTarget = true) const {
+        if ((type.kind == TypeKind::View || type.kind == TypeKind::Edit) &&
+            type.arguments.size() == 1 && type.arguments.front().kind == TypeKind::Contract &&
+            allowBorrowTarget) {
+            return false;
+        }
+        if (type.kind == TypeKind::Contract) {
+            return true;
+        }
+        for (const auto &argument : type.arguments) {
+            if (containsBareContract(argument, false)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     void resolveStructs() {
         for (std::size_t index = 0; index < program_.structs.size(); ++index) {
             const auto &declaration = program_.structs[index];
@@ -220,7 +298,26 @@ class Analyzer {
                 if (containsBareSlice(type)) {
                     diagnostics_.error("FDN2080", "slice type requires view or edit", source.span);
                 }
+                if (containsBareContract(type)) {
+                    diagnostics_.error("FDN2099", "contract value requires view or edit",
+                                       source.span);
+                }
                 semantic.fieldTypes.push_back(type);
+            }
+            std::unordered_set<std::string> implementations;
+            for (const auto &implementation : declaration.implementations) {
+                const auto type = resolveType(implementation);
+                semantic.implementations.push_back(type);
+                if (type.kind != TypeKind::Contract) {
+                    diagnostics_.error("FDN2092", "implements requires a contract",
+                                       implementation.span);
+                    continue;
+                }
+                const auto key = std::to_string(type.declaration);
+                if (!implementations.emplace(key).second) {
+                    diagnostics_.error("FDN2093", "duplicate contract implementation",
+                                       implementation.span);
+                }
             }
         }
     }
@@ -254,6 +351,10 @@ class Analyzer {
                 }
                 if (containsBareSlice(type)) {
                     diagnostics_.error("FDN2080", "slice type requires view or edit", source.span);
+                }
+                if (containsBareContract(type)) {
+                    diagnostics_.error("FDN2099", "contract value requires view or edit",
+                                       source.span);
                 }
                 semantic.payloadTypes.push_back(type);
             }
@@ -370,6 +471,7 @@ class Analyzer {
 
     void declareFunctions() {
         bool foundMain = false;
+        methods_.resize(program_.structs.size());
         for (std::size_t index = 0; index < program_.functions.size(); ++index) {
             const auto &function = program_.functions[index];
             auto &semantic = model_.functions[index];
@@ -377,7 +479,8 @@ class Analyzer {
             semantic.typeParameterCount = function.typeParameters.size();
             semantic.returnType = resolveType(function.returnType);
             if (containsBorrow(semantic.returnType) ||
-                containsBareSlice(semantic.returnType)) {
+                containsBareSlice(semantic.returnType) ||
+                containsBareContract(semantic.returnType)) {
                 diagnostics_.error("FDN2063", "borrow cannot be returned from a function",
                                    function.returnType.span);
             }
@@ -395,22 +498,40 @@ class Analyzer {
                     diagnostics_.error("FDN2064", "parameter contains a nested borrow",
                                        parameter.span);
                 }
+                if (containsBareContract(type)) {
+                    diagnostics_.error("FDN2099", "contract value requires view or edit",
+                                       parameter.span);
+                }
                 semantic.parameterTypes.push_back(type);
             }
 
-            if (!functions_.emplace(function.name, index).second) {
+            if (function.receiver.has_value()) {
+                const auto owner = structs_.find(function.ownerType);
+                if (owner == structs_.end()) {
+                    diagnostics_.error("FDN2094", "method owner is not a struct", function.span);
+                } else {
+                    const auto prefix = function.ownerType + '.';
+                    const auto methodName = function.name.starts_with(prefix)
+                                                ? function.name.substr(prefix.size())
+                                                : function.name;
+                    if (!methods_[owner->second].emplace(methodName, index).second) {
+                        diagnostics_.error("FDN2095", "duplicate method " + methodName,
+                                           function.span);
+                    }
+                }
+            } else if (!functions_.emplace(function.name, index).second) {
                 diagnostics_.error("FDN2001", "duplicate function " + function.name,
                                    function.span);
             }
-            if (function.name == "print") {
+            if (!function.receiver.has_value() && function.name == "print") {
                 diagnostics_.error("FDN2018", "print is a reserved builtin", function.span);
             }
-            if (function.name == "panic") {
+            if (!function.receiver.has_value() && function.name == "panic") {
                 diagnostics_.error("FDN2018", "panic is a reserved builtin", function.span);
             }
             signatures_.push_back({semantic.returnType, semantic.parameterTypes});
 
-            if (function.name != "main") {
+            if (function.receiver.has_value() || function.name != "main") {
                 continue;
             }
             if (!foundMain) {
@@ -425,6 +546,71 @@ class Analyzer {
         }
         if (!foundMain) {
             diagnostics_.error("FDN2006", "program must declare main", {0, 0, 1, 1});
+        }
+    }
+
+    void verifyImplementations() {
+        for (std::size_t structId = 0; structId < program_.structs.size(); ++structId) {
+            const auto &declaration = program_.structs[structId];
+            const auto &semantic = model_.structs[structId];
+            for (std::size_t implementationIndex = 0;
+                 implementationIndex < semantic.implementations.size(); ++implementationIndex) {
+                const auto &implementation = semantic.implementations[implementationIndex];
+                if (implementation.kind != TypeKind::Contract ||
+                    implementation.declaration >= program_.contracts.size()) {
+                    continue;
+                }
+                const auto &contract = program_.contracts[implementation.declaration];
+                const auto &contractSemantic = model_.contracts[implementation.declaration];
+                for (std::size_t methodIndex = 0; methodIndex < contract.methods.size();
+                     ++methodIndex) {
+                    const auto &requiredMethod = contract.methods[methodIndex];
+                    const auto found = methods_[structId].find(requiredMethod.name);
+                    if (found == methods_[structId].end()) {
+                        diagnostics_.error(
+                            "FDN2096",
+                            declaration.name + " does not implement " + contract.name + '.' +
+                                requiredMethod.name,
+                            declaration.implementations[implementationIndex].span);
+                        continue;
+                    }
+                    const auto function = found->second;
+                    const auto &provided = program_.functions[function];
+                    const auto &signature = signatures_[function];
+                    const auto &required = contractSemantic.methods[methodIndex];
+                    if (provided.receiver != requiredMethod.receiver) {
+                        diagnostics_.error("FDN2097",
+                                           "receiver mismatch for method " +
+                                               requiredMethod.name,
+                                           provided.span);
+                    }
+                    if (signature.parameters.size() != required.parameterTypes.size() + 1) {
+                        diagnostics_.error("FDN2098",
+                                           "parameter count mismatch for method " +
+                                               requiredMethod.name,
+                                           provided.span);
+                        continue;
+                    }
+                    for (std::size_t parameter = 0;
+                         parameter < required.parameterTypes.size(); ++parameter) {
+                        requireSame(
+                            substitute(required.parameterTypes[parameter],
+                                       implementation.arguments),
+                            signature.parameters[parameter + 1], provided.span,
+                            "contract method parameter");
+                    }
+                    requireSame(substitute(required.returnType, implementation.arguments),
+                                signature.returnType, provided.span,
+                                "contract method return");
+                    if (declaration.packageName != contract.packageName &&
+                        !provided.exported) {
+                        diagnostics_.error("FDN3008",
+                                           "method " + requiredMethod.name +
+                                               " is not exported",
+                                           provided.span);
+                    }
+                }
+            }
         }
     }
 
@@ -531,6 +717,10 @@ class Analyzer {
             }
             if (containsBareSlice(declared)) {
                 diagnostics_.error("FDN2080", "slice binding requires view or edit",
+                                   statement.span);
+            }
+            if (containsBareContract(declared)) {
+                diagnostics_.error("FDN2099", "contract value requires view or edit",
                                    statement.span);
             }
             model_.statementLocals[id] =
@@ -1000,8 +1190,10 @@ class Analyzer {
                 drops.push_back(index < arguments.size() && requiresDrop(arguments[index]) &&
                                 !isPlaceExpression(call.arguments[index]));
             }
-            model_.callTargets[id] =
-                CallTarget{CallTargetKind::Print, 0, {}, std::move(drops)};
+            CallTarget target;
+            target.kind = CallTargetKind::Print;
+            target.argumentDrops = std::move(drops);
+            model_.callTargets[id] = std::move(target);
             return voidType;
         }
         if (call.callee == "panic") {
@@ -1013,7 +1205,9 @@ class Analyzer {
             } else {
                 requireSame(stringType, arguments.front(), span, "panic argument");
             }
-            model_.callTargets[id] = CallTarget{CallTargetKind::Panic, 0, {}, {}};
+            CallTarget target;
+            target.kind = CallTargetKind::Panic;
+            model_.callTargets[id] = std::move(target);
             return voidType;
         }
 
@@ -1049,12 +1243,22 @@ class Analyzer {
         }
         const auto typeArguments = completeInference(
             inferred, program_.functions[function].typeParameters, span, call.callee);
+        std::vector<std::optional<CallTarget::ContractConversion>> conversions(arguments.size());
         for (std::size_t index = 0; index < count; ++index) {
-            requireSame(substitute(signature.parameters[index], typeArguments), arguments[index],
-                        span, "function argument");
+            const auto expected = substitute(signature.parameters[index], typeArguments);
+            if (const auto conversion = contractConversion(expected, arguments[index]);
+                conversion.has_value()) {
+                conversions[index] = *conversion;
+            } else {
+                requireSame(expected, arguments[index], span, "function argument");
+            }
         }
-        model_.callTargets[id] =
-            CallTarget{CallTargetKind::Function, function, typeArguments, {}};
+        CallTarget target;
+        target.kind = CallTargetKind::Function;
+        target.function = function;
+        target.typeArguments = typeArguments;
+        target.argumentConversions = std::move(conversions);
+        model_.callTargets[id] = std::move(target);
         if (!program_.functions[currentFunction_].typeParameters.empty() &&
             !program_.functions[function].typeParameters.empty()) {
             genericCalls_.push_back({currentFunction_, function, typeArguments, span});
@@ -1330,25 +1534,19 @@ class Analyzer {
             }
         }
 
-        if (member.invoked) {
-            if (!member.typeArguments.empty()) {
-                diagnostics_.error("FDN2043", "member does not accept type arguments", span);
-            }
-            for (const auto argument : member.arguments) {
-                static_cast<void>(analyzeExpression(argument));
-            }
-            diagnostics_.error("FDN2050", "member functions are not available", span);
+        const auto sourceType =
+            analyzeExpression(*member.base, std::nullopt, ExpressionUse::Inspect);
+        if (sourceType.kind == TypeKind::Invalid) {
             return invalidType;
         }
-
-        auto base = analyzeExpression(*member.base, std::nullopt, ExpressionUse::Inspect);
-        if (base.kind == TypeKind::Invalid) {
-            return invalidType;
-        }
+        auto base = sourceType;
         if ((base.kind == TypeKind::Own || base.kind == TypeKind::View ||
              base.kind == TypeKind::Edit) &&
             base.arguments.size() == 1) {
             base = base.arguments.front();
+        }
+        if (member.invoked) {
+            return analyzeMethod(id, member, sourceType, base, span);
         }
         if (base.kind != TypeKind::Struct || base.declaration >= program_.structs.size()) {
             diagnostics_.error("FDN2028", "field access requires a struct value", span);
@@ -1371,6 +1569,172 @@ class Analyzer {
             diagnostics_.error("FDN2078", "owned field cannot move independently", span);
         }
         return result;
+    }
+
+    Type analyzeMethod(AstExpressionId id, const MemberExpression &member,
+                       const Type &sourceType, const Type &base, SourceSpan span) {
+        if (!member.typeArguments.empty()) {
+            diagnostics_.error("FDN2043", "method does not accept type arguments", span);
+        }
+        if (base.kind == TypeKind::Contract) {
+            return analyzeContractMethod(id, member, sourceType, base, span);
+        }
+        if (base.kind != TypeKind::Struct || base.declaration >= methods_.size()) {
+            for (const auto argument : member.arguments) {
+                static_cast<void>(analyzeExpression(argument));
+            }
+            diagnostics_.error("FDN2050", "method call requires a struct or contract", span);
+            return invalidType;
+        }
+        const auto found = methods_[base.declaration].find(member.member);
+        if (found == methods_[base.declaration].end()) {
+            for (const auto argument : member.arguments) {
+                static_cast<void>(analyzeExpression(argument));
+            }
+            diagnostics_.error("FDN2100", "unknown method " + member.member, span);
+            return invalidType;
+        }
+
+        const auto function = found->second;
+        const auto &declaration = program_.functions[function];
+        if (declaration.packageName != currentPackage() && !declaration.exported) {
+            diagnostics_.error("FDN3008", "method " + member.member + " is not exported", span);
+        }
+        const auto access = *declaration.receiver;
+        if (access == ReceiverKind::Edit &&
+            (sourceType.kind == TypeKind::View || !editablePlace(*member.base))) {
+            diagnostics_.error("FDN2101", "edit method requires an editable receiver", span);
+        }
+        if (access == ReceiverKind::Own) {
+            if (sourceType.kind != TypeKind::Own ||
+                !std::holds_alternative<NameExpression>(
+                    program_.expressions[*member.base].value)) {
+                diagnostics_.error("FDN2102", "own method requires an owned binding", span);
+            } else if (const auto local = model_.expressionLocals[*member.base];
+                       local.has_value()) {
+                if (loanStates_[*local] != LoanState::None) {
+                    diagnostics_.error("FDN2067", "cannot move borrowed binding " +
+                                                        model_.functions[currentFunction_]
+                                                            .locals[*local]
+                                                            .name,
+                                       span);
+                }
+                moveStates_[*local] = MoveState::Moved;
+                model_.expressionMoves[*member.base] = true;
+            }
+        }
+
+        const auto loansBefore = loanStates_;
+        const auto borrowsAllowedBefore = transientBorrowsAllowed_;
+        transientBorrowsAllowed_ = true;
+        std::vector<Type> arguments;
+        arguments.reserve(member.arguments.size());
+        for (const auto argument : member.arguments) {
+            arguments.push_back(analyzeExpression(argument));
+        }
+        restoreLoans(loansBefore);
+        transientBorrowsAllowed_ = borrowsAllowedBefore;
+
+        const auto &signature = signatures_[function];
+        const auto parameterCount = signature.parameters.empty()
+                                        ? std::size_t{}
+                                        : signature.parameters.size() - 1;
+        if (arguments.size() != parameterCount) {
+            diagnostics_.error("FDN2010", "wrong argument count for method " + member.member,
+                               span);
+        }
+        const auto count = std::min(arguments.size(), parameterCount);
+        std::vector<std::optional<CallTarget::ContractConversion>> conversions(arguments.size());
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto expected = substitute(signature.parameters[index + 1], base.arguments);
+            if (const auto conversion = contractConversion(expected, arguments[index]);
+                conversion.has_value()) {
+                conversions[index] = *conversion;
+            } else {
+                requireSame(expected, arguments[index], span, "method argument");
+            }
+        }
+
+        CallTarget target;
+        target.kind = CallTargetKind::Method;
+        target.function = function;
+        target.typeArguments = base.arguments;
+        target.receiver = *member.base;
+        target.receiverType = substitute(signature.parameters.front(), base.arguments);
+        target.argumentConversions = std::move(conversions);
+        model_.callTargets[id] = std::move(target);
+        return substitute(signature.returnType, base.arguments);
+    }
+
+    Type analyzeContractMethod(AstExpressionId id, const MemberExpression &member,
+                               const Type &sourceType, const Type &base, SourceSpan span) {
+        if (base.declaration >= program_.contracts.size()) {
+            return invalidType;
+        }
+        const auto &declaration = program_.contracts[base.declaration];
+        std::optional<std::size_t> methodIndex;
+        for (std::size_t index = 0; index < declaration.methods.size(); ++index) {
+            if (declaration.methods[index].name == member.member) {
+                methodIndex = index;
+                break;
+            }
+        }
+        if (!methodIndex.has_value()) {
+            for (const auto argument : member.arguments) {
+                static_cast<void>(analyzeExpression(argument));
+            }
+            diagnostics_.error("FDN2100", "unknown method " + member.member, span);
+            return invalidType;
+        }
+        const auto &method = declaration.methods[*methodIndex];
+        const auto &semantic = model_.contracts[base.declaration].methods[*methodIndex];
+        if (declaration.packageName != currentPackage() && !method.exported) {
+            diagnostics_.error("FDN3008", "method " + member.member + " is not exported", span);
+        }
+        if (method.receiver == ReceiverKind::Edit && sourceType.kind != TypeKind::Edit) {
+            diagnostics_.error("FDN2101", "edit method requires an editable receiver", span);
+        }
+        if (method.receiver == ReceiverKind::Own) {
+            diagnostics_.error("FDN2103", "own method cannot use a borrowed contract value",
+                               span);
+        }
+
+        const auto loansBefore = loanStates_;
+        const auto borrowsAllowedBefore = transientBorrowsAllowed_;
+        transientBorrowsAllowed_ = true;
+        std::vector<Type> arguments;
+        arguments.reserve(member.arguments.size());
+        for (const auto argument : member.arguments) {
+            arguments.push_back(analyzeExpression(argument));
+        }
+        restoreLoans(loansBefore);
+        transientBorrowsAllowed_ = borrowsAllowedBefore;
+        if (arguments.size() != semantic.parameterTypes.size()) {
+            diagnostics_.error("FDN2010", "wrong argument count for method " + member.member,
+                               span);
+        }
+        const auto count = std::min(arguments.size(), semantic.parameterTypes.size());
+        std::vector<std::optional<CallTarget::ContractConversion>> conversions(arguments.size());
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto expected = substitute(semantic.parameterTypes[index], base.arguments);
+            if (const auto conversion = contractConversion(expected, arguments[index]);
+                conversion.has_value()) {
+                conversions[index] = *conversion;
+            } else {
+                requireSame(expected, arguments[index], span, "method argument");
+            }
+        }
+
+        CallTarget target;
+        target.kind = CallTargetKind::ContractMethod;
+        target.receiver = *member.base;
+        target.receiverType = sourceType;
+        target.contract = base.declaration;
+        target.method = *methodIndex;
+        target.typeArguments = base.arguments;
+        target.argumentConversions = std::move(conversions);
+        model_.callTargets[id] = std::move(target);
+        return substitute(semantic.returnType, base.arguments);
     }
 
     bool editablePlace(AstExpressionId id) const {
@@ -1625,6 +1989,7 @@ class Analyzer {
         for (std::size_t index = 0; index < parameters.size(); ++index) {
             const auto &name = parameters[index];
             if (isBuiltinType(name) || structs_.contains(name) || enums_.contains(name) ||
+                contracts_.contains(name) ||
                 !typeParameters_.emplace(name, index).second) {
                 diagnostics_.error("FDN2042", "duplicate or shadowing type parameter " + name,
                                    span);
@@ -1665,6 +2030,9 @@ class Analyzer {
         } else if (const auto enumFound = enums_.find(syntax.name);
                    enumFound != enums_.end()) {
             base = Type{TypeKind::Enum, enumFound->second};
+        } else if (const auto contractFound = contracts_.find(syntax.name);
+                   contractFound != contracts_.end()) {
+            base = Type{TypeKind::Contract, contractFound->second};
         }
 
         std::vector<Type> arguments;
@@ -1682,6 +2050,8 @@ class Analyzer {
             expected = program_.structs[base->declaration].typeParameters.size();
         } else if (base->kind == TypeKind::Enum) {
             expected = program_.enums[base->declaration].typeParameters.size();
+        } else if (base->kind == TypeKind::Contract) {
+            expected = program_.contracts[base->declaration].typeParameters.size();
         } else if (base->kind == TypeKind::Own || base->kind == TypeKind::View ||
                    base->kind == TypeKind::Edit || base->kind == TypeKind::Array ||
                    base->kind == TypeKind::Slice) {
@@ -1739,7 +2109,21 @@ class Analyzer {
             }
             return;
         }
+        if ((pattern.kind == TypeKind::View || pattern.kind == TypeKind::Edit) &&
+            pattern.arguments.size() == 1 &&
+            pattern.arguments.front().kind == TypeKind::Contract &&
+            (actual.kind == TypeKind::View || actual.kind == TypeKind::Edit) &&
+            actual.arguments.size() == 1 && actual.arguments.front().kind == TypeKind::Struct &&
+            (pattern.kind == TypeKind::View || actual.kind == TypeKind::Edit)) {
+            const auto implemented = implementedContract(
+                actual.arguments.front(), pattern.arguments.front().declaration);
+            if (implemented.has_value()) {
+                inferType(pattern.arguments.front(), *implemented, inferred, span, context);
+                return;
+            }
+        }
         if ((pattern.kind == TypeKind::Struct || pattern.kind == TypeKind::Enum ||
+             pattern.kind == TypeKind::Contract ||
              pattern.kind == TypeKind::Array || pattern.kind == TypeKind::Slice ||
              pattern.kind == TypeKind::Own || pattern.kind == TypeKind::View ||
              pattern.kind == TypeKind::Edit) &&
@@ -1803,6 +2187,54 @@ class Analyzer {
             }
         }
         return std::nullopt;
+    }
+
+    std::optional<Type> implementedContract(const Type &concrete,
+                                            std::size_t contract) const {
+        if (concrete.kind != TypeKind::Struct || concrete.declaration >= model_.structs.size()) {
+            return std::nullopt;
+        }
+        for (const auto &implementation :
+             model_.structs[concrete.declaration].implementations) {
+            if (implementation.kind == TypeKind::Contract &&
+                implementation.declaration == contract) {
+                return substitute(implementation, concrete.arguments);
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::optional<CallTarget::ContractConversion>
+    contractConversion(const Type &expected, const Type &actual) const {
+        if ((expected.kind != TypeKind::View && expected.kind != TypeKind::Edit) ||
+            expected.arguments.size() != 1 ||
+            expected.arguments.front().kind != TypeKind::Contract ||
+            (actual.kind != TypeKind::View && actual.kind != TypeKind::Edit) ||
+            actual.arguments.size() != 1 || actual.arguments.front().kind != TypeKind::Struct ||
+            (expected.kind == TypeKind::Edit && actual.kind != TypeKind::Edit)) {
+            return std::nullopt;
+        }
+        const auto concrete = actual.arguments.front();
+        const auto contract = expected.arguments.front();
+        const auto implemented = implementedContract(concrete, contract.declaration);
+        if (!implemented.has_value() || *implemented != contract) {
+            return std::nullopt;
+        }
+
+        CallTarget::ContractConversion conversion;
+        conversion.concreteType = concrete;
+        conversion.contractType = contract;
+        conversion.targetType = expected;
+        const auto &methods = program_.contracts[contract.declaration].methods;
+        conversion.methods.reserve(methods.size());
+        for (const auto &method : methods) {
+            const auto found = methods_[concrete.declaration].find(method.name);
+            if (found == methods_[concrete.declaration].end()) {
+                return std::nullopt;
+            }
+            conversion.methods.push_back(found->second);
+        }
+        return conversion;
     }
 
     FirLocalId addLocal(const std::string &name, Type type, bool mutableBinding, SourceSpan span) {
@@ -2034,6 +2466,9 @@ class Analyzer {
             name = program_.structs[type.declaration].name;
         } else if (type.kind == TypeKind::Enum && type.declaration < program_.enums.size()) {
             name = program_.enums[type.declaration].name;
+        } else if (type.kind == TypeKind::Contract &&
+                   type.declaration < program_.contracts.size()) {
+            name = program_.contracts[type.declaration].name;
         } else {
             return typeName(type);
         }
@@ -2067,7 +2502,9 @@ class Analyzer {
     SemanticModel model_;
     std::unordered_map<std::string, FirStructId> structs_;
     std::unordered_map<std::string, FirEnumId> enums_;
+    std::unordered_map<std::string, std::size_t> contracts_;
     std::unordered_map<std::string, FirFunctionId> functions_;
+    std::vector<std::unordered_map<std::string, FirFunctionId>> methods_;
     std::unordered_map<std::string, std::size_t> typeParameters_;
     std::vector<std::string> currentTypeParameterNames_;
     std::vector<FunctionSignature> signatures_;

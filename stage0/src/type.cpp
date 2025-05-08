@@ -30,6 +30,8 @@ const char *typeName(Type type) {
         return "<struct>";
     case TypeKind::Enum:
         return "<enum>";
+    case TypeKind::Contract:
+        return "<contract>";
     }
     return "<invalid>";
 }

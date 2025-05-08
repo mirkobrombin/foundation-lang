@@ -1,0 +1,11 @@
+package trace.failure
+
+contract Failure {
+    fn Fail(view) void
+}
+
+struct Crashing implements Failure {
+    fn Fail(view) void {
+        panic("contract failure")
+    }
+}

@@ -71,15 +71,25 @@ std::string cTypeTag(const Type &type) {
         return "own_" +
                (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
     case TypeKind::View:
+        if (type.arguments.size() == 1 &&
+            type.arguments.front().kind == TypeKind::Contract) {
+            return "contract_" + std::to_string(type.arguments.front().declaration);
+        }
         return "view_" +
                (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
     case TypeKind::Edit:
+        if (type.arguments.size() == 1 &&
+            type.arguments.front().kind == TypeKind::Contract) {
+            return "contract_" + std::to_string(type.arguments.front().declaration);
+        }
         return "edit_" +
                (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
     case TypeKind::Struct:
         return "struct_" + std::to_string(type.declaration);
     case TypeKind::Enum:
         return "enum_" + std::to_string(type.declaration);
+    case TypeKind::Contract:
+        return "contract_" + std::to_string(type.declaration);
     case TypeKind::Parameter:
     case TypeKind::Invalid:
         break;
@@ -108,11 +118,19 @@ std::string cType(const Type &type) {
     case TypeKind::Own:
         return type.arguments.size() == 1 ? cType(type.arguments.front()) + " *" : "void *";
     case TypeKind::Edit:
+        if (type.arguments.size() == 1 &&
+            type.arguments.front().kind == TypeKind::Contract) {
+            return "fdn_contract_" + std::to_string(type.arguments.front().declaration);
+        }
         if (type.arguments.size() == 1 && type.arguments.front().kind == TypeKind::Slice) {
             return sliceName(type);
         }
         return type.arguments.size() == 1 ? cType(type.arguments.front()) + " *" : "void *";
     case TypeKind::View:
+        if (type.arguments.size() == 1 &&
+            type.arguments.front().kind == TypeKind::Contract) {
+            return "fdn_contract_" + std::to_string(type.arguments.front().declaration);
+        }
         if (type.arguments.size() == 1 && type.arguments.front().kind == TypeKind::Slice) {
             return sliceName(type);
         }
@@ -124,6 +142,8 @@ std::string cType(const Type &type) {
         return "fdn_struct_" + std::to_string(type.declaration);
     case TypeKind::Enum:
         return "fdn_enum_" + std::to_string(type.declaration);
+    case TypeKind::Contract:
+        return "fdn_contract_" + std::to_string(type.declaration);
     case TypeKind::Invalid:
         break;
     }
@@ -143,6 +163,14 @@ std::string safeName(std::string_view name) {
 std::string_view unqualifiedName(std::string_view name) {
     const auto separator = name.rfind('.');
     return name.substr(separator == std::string_view::npos ? 0 : separator + 1);
+}
+
+std::string_view traceFunctionName(const FirFunction &function) {
+    if (!function.packageName.empty() &&
+        function.name.starts_with(function.packageName + '.')) {
+        return std::string_view(function.name).substr(function.packageName.size() + 1);
+    }
+    return unqualifiedName(function.name);
 }
 
 std::string functionName(const FirProgram &program, FirFunctionId id) {
@@ -169,6 +197,11 @@ std::string enumTag(FirEnumId type, FirVariantId variant) {
 
 std::string payloadName(FirVariantId variant) {
     return "fdn_payload_" + std::to_string(variant);
+}
+
+std::string vtableName(const Type &contract, const Type &concrete) {
+    return "fdn_vtable_c" + std::to_string(contract.declaration) + "_s" +
+           std::to_string(concrete.declaration);
 }
 
 std::string indentation(unsigned int depth) { return std::string(depth * 4, ' '); }
@@ -235,6 +268,34 @@ class Monomorphizer {
             }
             return Type{source.kind, source.declaration,
                         {instantiateType(source.arguments.front())}};
+        }
+        if (source.kind == TypeKind::Contract) {
+            const auto key = typeKey(source);
+            if (const auto found = contracts_.find(key); found != contracts_.end()) {
+                return Type{TypeKind::Contract, found->second, {}};
+            }
+            const auto id = result_.contracts.size();
+            contracts_.emplace(key, id);
+            result_.contracts.emplace_back();
+            const auto &declaration = source_.contracts[source.declaration];
+            FirContract instance;
+            instance.name = declaration.name;
+            instance.exported = declaration.exported;
+            for (const auto &method : declaration.methods) {
+                FirContractMethod target;
+                target.receiver = method.receiver;
+                target.name = method.name;
+                target.returnType =
+                    instantiateType(substitute(method.returnType, source.arguments));
+                target.exported = method.exported;
+                for (const auto &parameter : method.parameters) {
+                    target.parameters.push_back(
+                        instantiateType(substitute(parameter, source.arguments)));
+                }
+                instance.methods.push_back(std::move(target));
+            }
+            result_.contracts[id] = std::move(instance);
+            return Type{TypeKind::Contract, id, {}};
         }
         if (source.kind != TypeKind::Struct && source.kind != TypeKind::Enum) {
             return source;
@@ -305,15 +366,38 @@ class Monomorphizer {
         }
         for (auto &expression : function.expressions) {
             expression.type = instantiateType(substitute(expression.type, arguments));
-            if (auto *call = std::get_if<FirCallExpression>(&expression.value);
-                call != nullptr && call->kind == FirCallKind::Function) {
+            if (auto *functionCall = std::get_if<FirCallExpression>(&expression.value);
+                functionCall != nullptr && functionCall->kind == FirCallKind::Function) {
                 std::vector<Type> callArguments;
-                callArguments.reserve(call->typeArguments.size());
-                for (const auto &argument : call->typeArguments) {
+                callArguments.reserve(functionCall->typeArguments.size());
+                for (const auto &argument : functionCall->typeArguments) {
                     callArguments.push_back(substitute(argument, arguments));
                 }
-                call->function = instantiateFunction(call->function, callArguments);
-                call->typeArguments.clear();
+                functionCall->function =
+                    instantiateFunction(functionCall->function, callArguments);
+                functionCall->typeArguments.clear();
+            } else if (auto *contractCall =
+                           std::get_if<FirCallExpression>(&expression.value);
+                       contractCall != nullptr &&
+                       contractCall->kind == FirCallKind::Contract) {
+                std::vector<Type> contractArguments;
+                contractArguments.reserve(contractCall->typeArguments.size());
+                for (const auto &argument : contractCall->typeArguments) {
+                    contractArguments.push_back(substitute(argument, arguments));
+                }
+                const auto contractType = instantiateType(Type{
+                    TypeKind::Contract, contractCall->contract, std::move(contractArguments)});
+                contractCall->contract = contractType.declaration;
+                contractCall->typeArguments.clear();
+            } else if (auto *contractValue =
+                           std::get_if<FirContractExpression>(&expression.value)) {
+                const auto concrete = substitute(contractValue->concreteType, arguments);
+                const auto contractType = substitute(contractValue->contractType, arguments);
+                contractValue->concreteType = instantiateType(concrete);
+                contractValue->contractType = instantiateType(contractType);
+                for (auto &method : contractValue->methods) {
+                    method = instantiateFunction(method, concrete.arguments);
+                }
             } else if (auto *literal = std::get_if<FirStructExpression>(&expression.value)) {
                 literal->type = instantiateType(substitute(literal->type, arguments));
             } else if (auto *constructor = std::get_if<FirEnumExpression>(&expression.value)) {
@@ -330,6 +414,7 @@ class Monomorphizer {
     FirProgram result_;
     std::unordered_map<std::string, FirStructId> structs_;
     std::unordered_map<std::string, FirEnumId> enums_;
+    std::unordered_map<std::string, FirContractId> contracts_;
     std::unordered_map<std::string, FirFunctionId> functions_;
 };
 
@@ -377,6 +462,9 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
         return call->kind == FirCallKind::Panic ||
                (call->kind == FirCallKind::Function &&
                 program.functions[call->function].diverges);
+    }
+    if (const auto *contract = std::get_if<FirContractExpression>(&expression.value)) {
+        return expressionDiverges(program, function, contract->value);
     }
     if (const auto *literal = std::get_if<FirStructExpression>(&expression.value)) {
         return std::any_of(literal->fields.begin(), literal->fields.end(),
@@ -657,6 +745,9 @@ class FunctionEmitter {
         if (const auto *call = std::get_if<FirCallExpression>(&expression.value)) {
             return emitCall(*call, expression.type, expression.span, depth);
         }
+        if (const auto *contract = std::get_if<FirContractExpression>(&expression.value)) {
+            return emitContract(*contract, expression.type, depth);
+        }
         if (const auto *literal = std::get_if<FirStructExpression>(&expression.value)) {
             return emitStruct(*literal, depth);
         }
@@ -905,21 +996,33 @@ class FunctionEmitter {
 
         emitLocation(span, depth);
         std::ostringstream invocation;
-        if (call.kind == FirCallKind::Print) {
+        if (call.kind == FirCallKind::Contract) {
+            if (arguments.empty()) {
+                std::terminate();
+            }
+            invocation << arguments.front() << ".fdn_vtable->fdn_method_" << call.method << '(';
+            invocation << arguments.front() << ".fdn_data";
+            for (std::size_t index = 1; index < arguments.size(); ++index) {
+                invocation << ", " << arguments[index];
+            }
+            invocation << ')';
+        } else if (call.kind == FirCallKind::Print) {
             invocation << "fdn_println";
         } else if (call.kind == FirCallKind::Panic) {
             invocation << "fdn_panic";
         } else {
             invocation << functionName(program_, call.function);
         }
-        invocation << '(';
-        for (std::size_t index = 0; index < arguments.size(); ++index) {
-            if (index != 0) {
-                invocation << ", ";
+        if (call.kind != FirCallKind::Contract) {
+            invocation << '(';
+            for (std::size_t index = 0; index < arguments.size(); ++index) {
+                if (index != 0) {
+                    invocation << ", ";
+                }
+                invocation << arguments[index];
             }
-            invocation << arguments[index];
+            invocation << ')';
         }
-        invocation << ')';
 
         if (call.kind == FirCallKind::Panic ||
             (call.kind == FirCallKind::Function &&
@@ -944,6 +1047,21 @@ class FunctionEmitter {
         return {temporary, false};
     }
 
+    EmittedExpression emitContract(const FirContractExpression &contract, const Type &type,
+                                   unsigned int depth) {
+        const auto value = emitExpression(contract.value, depth);
+        if (value.diverges) {
+            return value;
+        }
+        const auto temporary = nextTemporary();
+        out_ << indentation(depth) << cType(type) << ' ' << temporary << ";\n";
+        out_ << indentation(depth) << temporary << ".fdn_data = (void *)" << value.value
+             << ";\n";
+        out_ << indentation(depth) << temporary << ".fdn_vtable = &"
+             << vtableName(contract.contractType, contract.concreteType) << ";\n";
+        return {temporary, false};
+    }
+
     EmittedExpression emitStruct(const FirStructExpression &literal, unsigned int depth) {
         std::vector<std::string> values;
         values.reserve(literal.fields.size());
@@ -962,7 +1080,8 @@ class FunctionEmitter {
         }
 
         const auto temporary = nextTemporary();
-        out_ << indentation(depth) << cType(literal.type) << ' ' << temporary << ";\n";
+        out_ << indentation(depth) << cType(literal.type) << ' ' << temporary;
+        out_ << (literal.fields.empty() ? " = {0};\n" : ";\n");
         for (std::size_t index = 0; index < literal.fields.size(); ++index) {
             out_ << indentation(depth) << temporary << '.'
                  << fieldName(literal.fields[index].field) << " = " << values[index] << ";\n";
@@ -1233,6 +1352,9 @@ class FunctionEmitter {
 
 void emitStructDefinition(std::ostringstream &out, const FirProgram &program, FirStructId id) {
     out << "struct fdn_struct_" << id << " {\n";
+    if (program.structs[id].fields.empty()) {
+        out << "    uint8_t fdn_unit;\n";
+    }
     for (std::size_t field = 0; field < program.structs[id].fields.size(); ++field) {
         out << "    " << cType(program.structs[id].fields[field].type) << ' ' << fieldName(field)
             << ";\n";
@@ -1266,6 +1388,94 @@ void emitEnumDefinition(std::ostringstream &out, const FirProgram &program, FirE
     out << "};\n\n";
 }
 
+void emitContractDefinition(std::ostringstream &out, const FirProgram &program,
+                            FirContractId id) {
+    out << "struct fdn_contract_" << id << "_vtable {\n";
+    for (std::size_t method = 0; method < program.contracts[id].methods.size(); ++method) {
+        const auto &declaration = program.contracts[id].methods[method];
+        out << "    " << cType(declaration.returnType) << " (*fdn_method_" << method
+            << ")(void *";
+        for (const auto &parameter : declaration.parameters) {
+            out << ", " << cType(parameter);
+        }
+        out << ");\n";
+    }
+    out << "};\n";
+    out << "struct fdn_contract_" << id << " {\n";
+    out << "    void *fdn_data;\n";
+    out << "    const struct fdn_contract_" << id << "_vtable *fdn_vtable;\n";
+    out << "};\n\n";
+}
+
+struct ContractUse {
+    Type contract{invalidType};
+    Type concrete{invalidType};
+    std::vector<FirFunctionId> methods;
+};
+
+std::vector<ContractUse> collectContractUses(const FirProgram &program) {
+    std::vector<ContractUse> uses;
+    std::unordered_map<std::string, std::size_t> found;
+    for (const auto &function : program.functions) {
+        for (const auto &expression : function.expressions) {
+            const auto *contract = std::get_if<FirContractExpression>(&expression.value);
+            if (contract == nullptr) {
+                continue;
+            }
+            const auto key = typeKey(contract->contractType) + ':' +
+                             typeKey(contract->concreteType);
+            if (found.emplace(key, uses.size()).second) {
+                uses.push_back(
+                    {contract->contractType, contract->concreteType, contract->methods});
+            }
+        }
+    }
+    return uses;
+}
+
+void emitContractAdapters(std::ostringstream &out, const FirProgram &program,
+                          const ContractUse &use) {
+    const auto &contract = program.contracts[use.contract.declaration];
+    if (use.methods.size() != contract.methods.size()) {
+        std::terminate();
+    }
+    const auto table = vtableName(use.contract, use.concrete);
+    for (std::size_t method = 0; method < contract.methods.size(); ++method) {
+        const auto &declaration = contract.methods[method];
+        const auto implementation = use.methods[method];
+        if (implementation >= program.functions.size() ||
+            program.functions[implementation].parameters.empty()) {
+            std::terminate();
+        }
+        const auto &function = program.functions[implementation];
+        const auto adapter = table + "_m" + std::to_string(method);
+        out << "static " << cType(declaration.returnType) << ' ' << adapter
+            << "(void *fdn_data";
+        for (std::size_t parameter = 0; parameter < declaration.parameters.size(); ++parameter) {
+            out << ", " << cType(declaration.parameters[parameter]) << " fdn_arg_" << parameter;
+        }
+        out << ") {\n";
+        out << "    ";
+        if (declaration.returnType != voidType && !function.diverges) {
+            out << "return ";
+        }
+        out << functionName(program, implementation) << "(("
+            << cType(function.locals[function.parameters.front()].type) << ")fdn_data";
+        for (std::size_t parameter = 0; parameter < declaration.parameters.size(); ++parameter) {
+            out << ", fdn_arg_" << parameter;
+        }
+        out << ");\n";
+        out << "}\n";
+    }
+    out << "static const struct fdn_contract_" << use.contract.declaration << "_vtable "
+        << table << " = {\n";
+    for (std::size_t method = 0; method < contract.methods.size(); ++method) {
+        out << "    " << table << "_m" << method;
+        out << (method + 1 == contract.methods.size() ? "\n" : ",\n");
+    }
+    out << "};\n\n";
+}
+
 void collectSequenceType(const Type &type, std::unordered_map<std::string, Type> &arrays,
                          std::unordered_map<std::string, Type> &slices) {
     if (type.kind == TypeKind::Array) {
@@ -1293,6 +1503,14 @@ void collectSequenceTypes(const FirProgram &program, std::vector<Type> &arrays,
         for (const auto &variant : type.variants) {
             if (variant.payload.has_value()) {
                 collectSequenceType(*variant.payload, arrayTypes, sliceTypes);
+            }
+        }
+    }
+    for (const auto &type : program.contracts) {
+        for (const auto &method : type.methods) {
+            collectSequenceType(method.returnType, arrayTypes, sliceTypes);
+            for (const auto &parameter : method.parameters) {
+                collectSequenceType(parameter, arrayTypes, sliceTypes);
             }
         }
     }
@@ -1539,6 +1757,7 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     Monomorphizer monomorphizer(source);
     auto program = monomorphizer.run();
     markDivergingFunctions(program);
+    const auto contractUses = collectContractUses(program);
     std::vector<Type> arrays;
     std::vector<Type> slices;
     collectSequenceTypes(program, arrays, slices);
@@ -1557,10 +1776,14 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     for (std::size_t index = 0; index < program.enums.size(); ++index) {
         out << "typedef struct fdn_enum_" << index << " fdn_enum_" << index << ";\n";
     }
+    for (std::size_t index = 0; index < program.contracts.size(); ++index) {
+        out << "typedef struct fdn_contract_" << index << " fdn_contract_" << index << ";\n";
+    }
     for (const auto &type : arrays) {
         out << "typedef struct " << arrayName(type) << ' ' << arrayName(type) << ";\n";
     }
-    if (!program.structs.empty() || !program.enums.empty() || !arrays.empty()) {
+    if (!program.structs.empty() || !program.enums.empty() || !program.contracts.empty() ||
+        !arrays.empty()) {
         out << '\n';
     }
     for (const auto &type : slices) {
@@ -1629,6 +1852,10 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
         std::terminate();
     }
 
+    for (std::size_t index = 0; index < program.contracts.size(); ++index) {
+        emitContractDefinition(out, program, index);
+    }
+
     emitOwnershipPrototypes(out, program, arrays);
     emitOwnershipDefinitions(out, program, arrays);
 
@@ -1637,6 +1864,10 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
         out << ";\n";
     }
     out << '\n';
+
+    for (const auto &use : contractUses) {
+        emitContractAdapters(out, program, use);
+    }
 
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
         const auto &function = program.functions[index];
@@ -1648,7 +1879,7 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
                                       ? std::string_view("main")
                                       : std::string_view(function.packageName);
         out << "    fdn_frame_enter(&fdn_frame_current, " << cString(framePackage) << ", "
-            << cString(unqualifiedName(function.name)) << ", " << cString(frameSource) << ", "
+            << cString(traceFunctionName(function)) << ", " << cString(frameSource) << ", "
             << function.sourceSpan.line << ", " << function.sourceSpan.column << ");\n";
         FunctionEmitter emitter(out, program, function);
         for (const auto parameter : function.parameters) {

@@ -22,6 +22,7 @@ using FirStructId = std::size_t;
 using FirFieldId = std::size_t;
 using FirEnumId = std::size_t;
 using FirVariantId = std::size_t;
+using FirContractId = std::size_t;
 
 enum class FirUnaryOperator {
     Negate,
@@ -32,6 +33,12 @@ enum class FirOwnershipOperator {
     Own,
     View,
     Edit,
+};
+
+enum class FirReceiverKind {
+    View,
+    Edit,
+    Own,
 };
 
 enum class FirBinaryOperator {
@@ -52,6 +59,7 @@ enum class FirBinaryOperator {
 
 enum class FirCallKind {
     Function,
+    Contract,
     Print,
     Panic,
 };
@@ -102,6 +110,15 @@ struct FirCallExpression {
     std::vector<Type> typeArguments;
     std::vector<FirExpressionId> arguments;
     std::vector<bool> argumentDrops;
+    FirContractId contract{};
+    std::size_t method{};
+};
+
+struct FirContractExpression {
+    FirExpressionId value{};
+    Type concreteType{invalidType};
+    Type contractType{invalidType};
+    std::vector<FirFunctionId> methods;
 };
 
 struct FirStructFieldValue {
@@ -147,8 +164,8 @@ using FirExpressionValue =
     std::variant<FirIntegerExpression, FirBooleanExpression, FirStringExpression,
                  FirArrayExpression, FirLocalExpression, FirMoveExpression, FirUnaryExpression,
                  FirOwnershipExpression, FirBinaryExpression, FirCallExpression,
-                 FirStructExpression, FirFieldExpression, FirIndexExpression, FirEnumExpression,
-                 FirMatchExpression>;
+                 FirContractExpression, FirStructExpression, FirFieldExpression,
+                 FirIndexExpression, FirEnumExpression, FirMatchExpression>;
 
 struct FirExpression {
     FirExpressionValue value;
@@ -264,9 +281,25 @@ struct FirEnum {
     bool builtin{};
 };
 
+struct FirContractMethod {
+    FirReceiverKind receiver{FirReceiverKind::View};
+    std::string name;
+    Type returnType{invalidType};
+    std::vector<Type> parameters;
+    bool exported{};
+};
+
+struct FirContract {
+    std::string name;
+    std::size_t typeParameterCount{};
+    std::vector<FirContractMethod> methods;
+    bool exported{};
+};
+
 struct FirProgram {
     std::vector<FirStruct> structs;
     std::vector<FirEnum> enums;
+    std::vector<FirContract> contracts;
     std::vector<FirFunction> functions;
     FirFunctionId main{};
 };

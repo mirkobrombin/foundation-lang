@@ -1,0 +1,12 @@
+struct Value {
+    value i32
+
+    fn take(own) i32 {
+        self.value
+    }
+}
+
+fn main() i32 {
+    let value = Value { value = 1 }
+    value.take()
+}

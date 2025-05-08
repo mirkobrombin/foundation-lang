@@ -254,6 +254,13 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/panic
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-project-panic.cmake
     )
+    add_test(
+        NAME stage0.run.contract-panic-trace
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/contract-panic
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-contract-panic.cmake
+    )
     foreach(project_case IN ITEMS
             "empty;FDN3002"
             "missing-package;FDN3003"
@@ -265,6 +272,8 @@ if(BUILD_TESTING)
             "cycle;FDN3006"
             "private;FDN3008"
             "private-members;FDN3008"
+            "private-method;FDN3008"
+            "private-contract-method;FDN3008"
             "unknown-declaration;FDN3009"
             "alias-shadow;FDN3004"
             "alias-match-shadow;FDN3004"
@@ -343,6 +352,57 @@ if(BUILD_TESTING)
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/sequences.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
+    add_test(
+        NAME stage0.run.methods-contracts
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/methods-contracts.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/methods-contracts.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.contract-project
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/contracts
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/contracts/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.emit.contract-project-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/contracts
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/contracts-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/contracts-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    foreach(method_case IN ITEMS
+            "missing-contract-method;FDN2096"
+            "contract-receiver-mismatch;FDN2097"
+            "contract-signature-mismatch;FDN2011"
+            "duplicate-contract-method;FDN2091"
+            "duplicate-struct-method;FDN2095"
+            "implements-non-contract;FDN2092"
+            "edit-method-immutable;FDN2101"
+            "own-method-non-owner;FDN2102"
+            "own-contract-borrow;FDN2103"
+            "contract-by-value;FDN2099"
+            "non-conforming-contract-borrow;FDN2011"
+            "duplicate-contract-implementation;FDN2093"
+            "empty-contract;FDN2090"
+            "use-after-own-method;FDN2065")
+        list(GET method_case 0 method_name)
+        list(GET method_case 1 method_code)
+        add_test(
+            NAME stage0.check.${method_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${method_name}.fdn
+                -DCODE=${method_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
     if(FOUNDATION_BUILD_FUZZERS)
         add_test(
             NAME stage0.run.ownership-sanitized
@@ -366,6 +426,32 @@ if(BUILD_TESTING)
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/sequences-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/sequences-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/sequences.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.methods-contracts-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/methods-contracts.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/methods-contracts-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/methods-contracts-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/methods-contracts.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.contract-project-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/contracts
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/contract-project-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/contract-project-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/contracts/expected.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake

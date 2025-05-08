@@ -1,0 +1,20 @@
+contract Consumer {
+    fn take(own) i32
+}
+
+struct Value implements Consumer {
+    value i32
+
+    fn take(own) i32 {
+        self.value
+    }
+}
+
+fn consume(value view Consumer) i32 {
+    value.take()
+}
+
+fn main() i32 {
+    let value = Value { value = 1 }
+    consume(view value)
+}

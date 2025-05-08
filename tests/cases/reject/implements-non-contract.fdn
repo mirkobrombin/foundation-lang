@@ -1,0 +1,11 @@
+struct Marker {
+    value i32
+}
+
+struct Value implements Marker {
+    value i32
+}
+
+fn main() i32 {
+    0
+}

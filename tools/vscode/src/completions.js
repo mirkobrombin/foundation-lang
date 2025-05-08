@@ -6,6 +6,8 @@ const staticCompletions = [
     { label: "as", kind: "Keyword" },
     { label: "struct", kind: "Keyword" },
     { label: "enum", kind: "Keyword" },
+    { label: "contract", kind: "Keyword" },
+    { label: "implements", kind: "Keyword" },
     { label: "fn", kind: "Keyword" },
     { label: "let", kind: "Keyword" },
     { label: "var", kind: "Keyword" },
@@ -132,8 +134,96 @@ function collectTypeParameters(source) {
         .filter((parameter) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(parameter));
 }
 
+function collectParameters(source) {
+    return splitTopLevel(source, ",")
+        .map((parameter) => parameter.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s+[A-Za-z_\[]/))
+        .filter(Boolean)
+        .map((parameter) => parameter[1]);
+}
+
+function collectBracedDeclarations(source, keyword) {
+    const declarations = [];
+    const header = new RegExp(
+        `\\b${keyword}\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*<([^>{}]*)>)?` +
+        "(?:\\s+implements\\s+([^{}]+?))?\\s*\\{",
+        "g"
+    );
+    let match;
+    while ((match = header.exec(source)) !== null) {
+        const open = header.lastIndex - 1;
+        let depth = 1;
+        let offset = open + 1;
+        while (offset < source.length && depth !== 0) {
+            if (source[offset] === "{") {
+                depth += 1;
+            } else if (source[offset] === "}") {
+                depth -= 1;
+            }
+            offset += 1;
+        }
+        declarations.push({
+            name: match[1],
+            typeParameters: collectTypeParameters(match[2]),
+            implementations: match[3] || "",
+            body: source.slice(open + 1, depth === 0 ? offset - 1 : source.length),
+            start: match.index,
+            end: offset
+        });
+        header.lastIndex = offset;
+    }
+    return declarations;
+}
+
+function topLevelDepths(source) {
+    const depths = new Uint16Array(source.length + 1);
+    let depth = 0;
+    for (let offset = 0; offset < source.length; offset += 1) {
+        depths[offset] = depth;
+        if (source[offset] === "{") {
+            depth += 1;
+        } else if (source[offset] === "}") {
+            depth = Math.max(0, depth - 1);
+        }
+    }
+    depths[source.length] = depth;
+    return depths;
+}
+
+function collectMethods(source, owner, contract = false) {
+    return [...source.matchAll(
+        /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)/g
+    )].map((match) => ({
+        name: match[1],
+        kind: "Method",
+        owner,
+        contract,
+        parameters: collectParameters(match[2])
+    }));
+}
+
+function topLevelSurface(source) {
+    let result = "";
+    let depth = 0;
+    for (const character of source) {
+        if (character === "{") {
+            depth += 1;
+            result += " ";
+        } else if (character === "}") {
+            depth = Math.max(0, depth - 1);
+            result += " ";
+        } else {
+            result += depth === 0 || character === "\n" ? character : " ";
+        }
+    }
+    return result;
+}
+
 function collectStructFields(source) {
-    const tokens = [...source.matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*|[<>,]/g)]
+    const surface = topLevelSurface(source).replace(
+        /\bfn\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)\s+[^\n{]+/g,
+        ""
+    );
+    const tokens = [...surface.matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*|[<>,]/g)]
         .map((match) => match[0]);
     const fields = [];
     let offset = 0;
@@ -162,6 +252,7 @@ function collectStructFields(source) {
 
 function collectPackageDeclarations(source) {
     const masked = maskTrivia(source);
+    const depths = topLevelDepths(masked);
     const packageMatch = masked.match(/\bpackage\s+([A-Za-z_][A-Za-z0-9_.]*)/);
     const imported = [...masked.matchAll(
         /\bimport\s+([A-Za-z_][A-Za-z0-9_.]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?/g
@@ -171,37 +262,45 @@ function collectPackageDeclarations(source) {
     }));
     const functions = [...masked.matchAll(
         /\bfn\s+([A-Z][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\(([^)]*)\)/g
-    )].map((match) => ({
+    )].filter((match) => depths[match.index] === 0).map((match) => ({
         name: match[1],
         kind: "Function",
         typeParameters: collectTypeParameters(match[2]),
-        parameters: splitTopLevel(match[3], ",")
-            .map((parameter) => parameter.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s+[A-Za-z_\[]/))
-            .filter(Boolean)
-            .map((parameter) => parameter[1])
+        parameters: collectParameters(match[3])
     }));
-    const structs = [...masked.matchAll(
-        /\bstruct\s+([A-Z][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\{/g
-    )].map((match) => ({
-        name: match[1],
+    const structs = collectBracedDeclarations(masked, "struct")
+        .filter((declaration) => /^[A-Z]/.test(declaration.name))
+        .map((declaration) => ({
+        name: declaration.name,
         kind: "Struct",
-        typeParameters: collectTypeParameters(match[2])
+        typeParameters: declaration.typeParameters,
+        methods: collectMethods(declaration.body, declaration.name)
+            .filter((method) => /^[A-Z]/.test(method.name))
     }));
-    const enums = [...masked.matchAll(
-        /\benum\s+([A-Z][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\{([^}]*)\}/g
-    )].map((match) => ({
-        name: match[1],
+    const enums = collectBracedDeclarations(masked, "enum")
+        .filter((declaration) => /^[A-Z]/.test(declaration.name))
+        .map((declaration) => ({
+        name: declaration.name,
         kind: "Enum",
-        typeParameters: collectTypeParameters(match[2]),
-        variants: [...match[3].matchAll(
+        typeParameters: declaration.typeParameters,
+        variants: [...declaration.body.matchAll(
             /(?:^|\s)([A-Z][A-Za-z0-9_]*)(?:\s*\(\s*([^)]*)\))?/g
         )].map((variant) => ({ name: variant[1], payload: Boolean(variant[2]) }))
     }));
+    const contracts = collectBracedDeclarations(masked, "contract")
+        .filter((declaration) => /^[A-Z]/.test(declaration.name))
+        .map((declaration) => ({
+            name: declaration.name,
+            kind: "Contract",
+            typeParameters: declaration.typeParameters,
+            methods: collectMethods(declaration.body, declaration.name, true)
+                .filter((method) => /^[A-Z]/.test(method.name))
+        }));
 
     return {
         packageName: packageMatch ? packageMatch[1] : null,
         imports: imported,
-        declarations: [...functions, ...structs, ...enums]
+        declarations: [...functions, ...structs, ...enums, ...contracts]
     };
 }
 
@@ -254,6 +353,15 @@ function importedCompletions(source, projectSources) {
                 detail: `Exported ${declaration.kind.toLowerCase()} from ${imported.packageName}`,
                 insertText: qualified
             });
+            for (const method of declaration.methods || []) {
+                completions.push({
+                    label: method.name,
+                    kind: "Method",
+                    detail: `Exported method of ${declaration.name} from ${imported.packageName}`,
+                    insertText: `${method.name}(${method.parameters.map((name, index) =>
+                        `\${${index + 1}:${name}}`).join(", ")})`
+                });
+            }
             if (declaration.kind === "Enum") {
                 for (const variant of declaration.variants) {
                     completions.push({
@@ -273,17 +381,19 @@ function importedCompletions(source, projectSources) {
 
 function collectCompletions(source, projectSources = []) {
     const masked = maskTrivia(source);
+    const depths = topLevelDepths(masked);
     const completions = [...staticCompletions, ...importedCompletions(source, projectSources)];
     const functions = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\(([^)]*)\)/g;
-    const structs = /\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\{([^}]*)\}/g;
-    const enums = /\benum\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\{([^}]*)\}/g;
+    const structs = collectBracedDeclarations(masked, "struct");
+    const enums = collectBracedDeclarations(masked, "enum");
+    const contracts = collectBracedDeclarations(masked, "contract");
     const bindings = /\b(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)/g;
     let match;
 
-    while ((match = structs.exec(masked)) !== null) {
-        const name = match[1];
-        const typeParameters = collectTypeParameters(match[2]);
-        const fields = collectStructFields(match[3]);
+    for (const declaration of structs) {
+        const name = declaration.name;
+        const typeParameters = declaration.typeParameters;
+        const fields = collectStructFields(declaration.body);
         completions.push({
             label: name,
             kind: "Struct",
@@ -302,12 +412,21 @@ function collectCompletions(source, projectSources = []) {
                 detail: `Field of ${name}`
             });
         }
+        for (const method of collectMethods(declaration.body, name)) {
+            completions.push({
+                label: method.name,
+                kind: "Method",
+                detail: `Method of ${name}`,
+                insertText: `${method.name}(${method.parameters.map((parameter, index) =>
+                    `\${${index + 1}:${parameter}}`).join(", ")})`
+            });
+        }
     }
 
-    while ((match = enums.exec(masked)) !== null) {
-        const name = match[1];
-        const typeParameters = collectTypeParameters(match[2]);
-        const variants = [...match[3].matchAll(/(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)(?:\s*\(\s*([^)]*)\))?/g)];
+    for (const declaration of enums) {
+        const name = declaration.name;
+        const typeParameters = declaration.typeParameters;
+        const variants = [...declaration.body.matchAll(/(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)(?:\s*\(\s*([^)]*)\))?/g)];
         const typeArguments = typeParameters
             .map((parameter, index) => `\${${index + 1}:${parameter}}`)
             .join(", ");
@@ -334,12 +453,40 @@ function collectCompletions(source, projectSources = []) {
         }
     }
 
+    for (const declaration of contracts) {
+        const name = declaration.name;
+        const typeParameters = declaration.typeParameters;
+        completions.push({
+            label: name,
+            kind: "Contract",
+            detail: typeParameters.length === 0
+                ? "Foundation contract"
+                : `Foundation contract<${typeParameters.join(", ")}>`
+        });
+        for (const parameter of typeParameters) {
+            completions.push({
+                label: parameter,
+                kind: "TypeParameter",
+                detail: `Type parameter of ${name}`
+            });
+        }
+        for (const method of collectMethods(declaration.body, name, true)) {
+            completions.push({
+                label: method.name,
+                kind: "Method",
+                detail: `Contract method of ${name}`,
+                insertText: `${method.name}(${method.parameters.map((parameter, index) =>
+                    `\${${index + 1}:${parameter}}`).join(", ")})`
+            });
+        }
+    }
+
     while ((match = functions.exec(masked)) !== null) {
+        if (depths[match.index] !== 0) {
+            continue;
+        }
         const typeParameters = collectTypeParameters(match[2]);
-        const parameters = splitTopLevel(match[3], ",")
-            .map((parameter) => parameter.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s+[A-Za-z_\[]/))
-            .filter(Boolean)
-            .map((parameter) => parameter[1]);
+        const parameters = collectParameters(match[3]);
 
         completions.push({
             label: match[1],

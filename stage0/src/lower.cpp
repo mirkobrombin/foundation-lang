@@ -37,6 +37,18 @@ FirOwnershipOperator lowerOwnership(OwnershipOperator operation) {
     std::terminate();
 }
 
+FirReceiverKind lowerReceiver(ReceiverKind receiver) {
+    switch (receiver) {
+    case ReceiverKind::View:
+        return FirReceiverKind::View;
+    case ReceiverKind::Edit:
+        return FirReceiverKind::Edit;
+    case ReceiverKind::Own:
+        return FirReceiverKind::Own;
+    }
+    std::terminate();
+}
+
 FirBinaryOperator lowerBinary(BinaryOperator operation) {
     switch (operation) {
     case BinaryOperator::Add:
@@ -106,6 +118,22 @@ class Lowerer {
                                          program_.enums[index].variants[variant].exported});
             }
             result.enums.push_back(std::move(type));
+        }
+        result.contracts.reserve(program_.contracts.size());
+        for (std::size_t index = 0; index < program_.contracts.size(); ++index) {
+            FirContract type;
+            type.name = program_.contracts[index].name;
+            type.typeParameterCount = program_.contracts[index].typeParameters.size();
+            type.exported = program_.contracts[index].exported;
+            for (std::size_t method = 0; method < program_.contracts[index].methods.size();
+                 ++method) {
+                const auto &source = program_.contracts[index].methods[method];
+                const auto &semantic = model_.contracts[index].methods[method];
+                type.methods.push_back({lowerReceiver(source.receiver), source.name,
+                                        semantic.returnType, semantic.parameterTypes,
+                                        source.exported});
+            }
+            result.contracts.push_back(std::move(type));
         }
         result.functions.reserve(program_.functions.size());
         for (std::size_t index = 0; index < program_.functions.size(); ++index) {
@@ -251,13 +279,27 @@ class Lowerer {
             const auto &target = required(model_.callTargets[id]);
             std::vector<FirExpressionId> arguments;
             arguments.reserve(call->arguments.size());
-            for (const auto argument : call->arguments) {
-                arguments.push_back(lowerExpression(argument));
+            for (std::size_t index = 0; index < call->arguments.size(); ++index) {
+                auto argument = lowerExpression(call->arguments[index]);
+                if (index < target.argumentConversions.size() &&
+                    target.argumentConversions[index].has_value()) {
+                    const auto &conversion = *target.argumentConversions[index];
+                    const auto converted = current_->expressions.size();
+                    current_->expressions.push_back(
+                        {FirContractExpression{argument, conversion.concreteType,
+                                               conversion.contractType, conversion.methods},
+                         conversion.targetType, source.span});
+                    argument = converted;
+                }
+                arguments.push_back(argument);
             }
             auto kind = FirCallKind::Function;
             switch (target.kind) {
             case CallTargetKind::Function:
+            case CallTargetKind::Method:
                 break;
+            case CallTargetKind::ContractMethod:
+                std::terminate();
             case CallTargetKind::Print:
                 kind = FirCallKind::Print;
                 break;
@@ -266,7 +308,7 @@ class Lowerer {
                 break;
             }
             value = FirCallExpression{kind, target.function, target.typeArguments,
-                                      std::move(arguments), target.argumentDrops};
+                                      std::move(arguments), target.argumentDrops, 0, 0};
         } else if (const auto *literal = std::get_if<StructExpression>(&source.value)) {
             const auto &target = required(model_.structTargets[id]);
             std::vector<FirStructFieldValue> fields;
@@ -284,6 +326,44 @@ class Lowerer {
                     payload = lowerExpression(member->arguments.front());
                 }
                 value = FirEnumExpression{target.type, target.variant, payload};
+            } else if (model_.callTargets[id].has_value()) {
+                const auto &target = *model_.callTargets[id];
+                auto receiver = lowerExpression(required(target.receiver));
+                if (target.kind == CallTargetKind::Method &&
+                    (target.receiverType.kind == TypeKind::View ||
+                     target.receiverType.kind == TypeKind::Edit)) {
+                    const auto lowered = current_->expressions.size();
+                    const auto operation = target.receiverType.kind == TypeKind::View
+                                               ? FirOwnershipOperator::View
+                                               : FirOwnershipOperator::Edit;
+                    current_->expressions.push_back(
+                        {FirOwnershipExpression{operation, receiver}, target.receiverType,
+                         source.span});
+                    receiver = lowered;
+                }
+                std::vector<FirExpressionId> arguments;
+                arguments.reserve(member->arguments.size() + 1);
+                arguments.push_back(receiver);
+                for (std::size_t index = 0; index < member->arguments.size(); ++index) {
+                    auto argument = lowerExpression(member->arguments[index]);
+                    if (index < target.argumentConversions.size() &&
+                        target.argumentConversions[index].has_value()) {
+                        const auto &conversion = *target.argumentConversions[index];
+                        const auto converted = current_->expressions.size();
+                        current_->expressions.push_back(
+                            {FirContractExpression{argument, conversion.concreteType,
+                                                   conversion.contractType, conversion.methods},
+                             conversion.targetType, source.span});
+                        argument = converted;
+                    }
+                    arguments.push_back(argument);
+                }
+                const auto kind = target.kind == CallTargetKind::ContractMethod
+                                      ? FirCallKind::Contract
+                                      : FirCallKind::Function;
+                value = FirCallExpression{kind, target.function, target.typeArguments,
+                                          std::move(arguments), {}, target.contract,
+                                          target.method};
             } else {
                 value = FirFieldExpression{lowerExpression(required(member->base)),
                                            required(model_.expressionFields[id])};

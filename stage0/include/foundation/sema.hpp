@@ -15,6 +15,8 @@ namespace foundation {
 
 enum class CallTargetKind {
     Function,
+    Method,
+    ContractMethod,
     Print,
     Panic,
 };
@@ -24,6 +26,17 @@ struct CallTarget {
     FirFunctionId function{};
     std::vector<Type> typeArguments;
     std::vector<bool> argumentDrops;
+    std::optional<AstExpressionId> receiver;
+    Type receiverType{invalidType};
+    std::size_t contract{};
+    std::size_t method{};
+    struct ContractConversion {
+        Type concreteType{invalidType};
+        Type contractType{invalidType};
+        Type targetType{invalidType};
+        std::vector<FirFunctionId> methods;
+    };
+    std::vector<std::optional<ContractConversion>> argumentConversions;
 };
 
 struct SemanticLocal {
@@ -43,11 +56,23 @@ struct SemanticFunction {
 struct SemanticStruct {
     std::size_t typeParameterCount{};
     std::vector<Type> fieldTypes;
+    std::vector<Type> implementations;
 };
 
 struct SemanticEnum {
     std::size_t typeParameterCount{};
     std::vector<std::optional<Type>> payloadTypes;
+};
+
+struct SemanticContractMethod {
+    ReceiverKind receiver{ReceiverKind::View};
+    Type returnType{invalidType};
+    std::vector<Type> parameterTypes;
+};
+
+struct SemanticContract {
+    std::size_t typeParameterCount{};
+    std::vector<SemanticContractMethod> methods;
 };
 
 struct StructLiteralTarget {
@@ -88,6 +113,7 @@ struct SemanticModel {
     std::vector<std::vector<FirLocalId>> blockDrops;
     std::vector<SemanticStruct> structs;
     std::vector<SemanticEnum> enums;
+    std::vector<SemanticContract> contracts;
     std::vector<SemanticFunction> functions;
     FirFunctionId main{};
 };

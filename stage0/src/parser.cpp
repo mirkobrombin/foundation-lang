@@ -54,6 +54,10 @@ Program Parser::parse() {
             program_.enums.push_back(enumDeclaration());
             continue;
         }
+        if (check(TokenKind::Contract)) {
+            program_.contracts.push_back(contractDeclaration());
+            continue;
+        }
         if (check(TokenKind::Fn)) {
             program_.functions.push_back(function());
             continue;
@@ -230,12 +234,23 @@ StructDeclaration Parser::structDeclaration() {
     const auto start = expect(TokenKind::Struct, "FDN1031", "expected struct");
     const auto name = expect(TokenKind::Identifier, "FDN1032", "expected struct name");
     auto parameters = typeParameters();
+    std::vector<TypeSyntax> implementations;
+    if (match(TokenKind::Implements)) {
+        do {
+            implementations.push_back(
+                typeSyntax("FDN1094", "expected contract after implements"));
+        } while (match(TokenKind::Comma));
+    }
     expect(TokenKind::LeftBrace, "FDN1033", "expected { after struct name");
 
     std::vector<StructField> fields;
     while (!check(TokenKind::RightBrace) && !atEnd()) {
+        if (check(TokenKind::Fn)) {
+            program_.functions.push_back(method(name.text, parameters));
+            continue;
+        }
         if (!check(TokenKind::Identifier)) {
-            diagnostics_.error("FDN1034", "expected struct field name", current().span);
+            diagnostics_.error("FDN1034", "expected struct field or method", current().span);
             advance();
             continue;
         }
@@ -244,8 +259,8 @@ StructDeclaration Parser::structDeclaration() {
         fields.push_back({field.text, std::move(type), isExported(field.text), field.span});
     }
     expect(TokenKind::RightBrace, "FDN1037", "expected } after struct declaration");
-    return {name.text, std::move(parameters), std::move(fields), isExported(name.text),
-            start.span, {}};
+    return {name.text, std::move(parameters), std::move(implementations), std::move(fields),
+            isExported(name.text), start.span, {}};
 }
 
 EnumDeclaration Parser::enumDeclaration() {
@@ -275,6 +290,26 @@ EnumDeclaration Parser::enumDeclaration() {
             BuiltinEnumKind::None, start.span, {}};
 }
 
+ContractDeclaration Parser::contractDeclaration() {
+    const auto start = expect(TokenKind::Contract, "FDN1095", "expected contract");
+    const auto name = expect(TokenKind::Identifier, "FDN1096", "expected contract name");
+    auto parameters = typeParameters();
+    expect(TokenKind::LeftBrace, "FDN1097", "expected { after contract name");
+
+    std::vector<ContractMethod> methods;
+    while (!check(TokenKind::RightBrace) && !atEnd()) {
+        if (!check(TokenKind::Fn)) {
+            diagnostics_.error("FDN1098", "expected contract method", current().span);
+            advance();
+            continue;
+        }
+        methods.push_back(contractMethod());
+    }
+    expect(TokenKind::RightBrace, "FDN1099", "expected } after contract declaration");
+    return {name.text, std::move(parameters), std::move(methods), isExported(name.text),
+            start.span, {}};
+}
+
 Function Parser::function() {
     const auto start = expect(TokenKind::Fn, "FDN1002", "expected fn");
     const auto name = expect(TokenKind::Identifier, "FDN1003", "expected function name");
@@ -292,7 +327,75 @@ Function Parser::function() {
     const auto tailResult = returnType.name != "void" || !returnType.arguments.empty();
     const auto body = block(tailResult);
     return {name.text, std::move(typeParameters), std::move(parameters), std::move(returnType), body,
-            isExported(name.text), start.span, {}, {}};
+            isExported(name.text), start.span, {}, {}, std::nullopt, {}};
+}
+
+Function Parser::method(const std::string &owner,
+                        const std::vector<std::string> &typeParameters) {
+    const auto start = expect(TokenKind::Fn, "FDN1100", "expected fn");
+    const auto name = expect(TokenKind::Identifier, "FDN1101", "expected method name");
+    expect(TokenKind::LeftParen, "FDN1102", "expected ( after method name");
+    const auto receiverStart = current();
+    const auto access = receiver("FDN1103", "expected view, edit, or own receiver");
+
+    std::vector<TypeSyntax> ownerArguments;
+    ownerArguments.reserve(typeParameters.size());
+    for (const auto &parameterName : typeParameters) {
+        ownerArguments.push_back({parameterName, {}, receiverStart.span});
+    }
+    TypeSyntax ownerType{owner, std::move(ownerArguments), receiverStart.span};
+    const auto qualifier = access == ReceiverKind::View ? "view"
+                           : access == ReceiverKind::Edit ? "edit"
+                                                         : "own";
+    std::vector<Parameter> parameters;
+    parameters.push_back(
+        {"self", TypeSyntax{qualifier, {std::move(ownerType)}, receiverStart.span},
+         receiverStart.span});
+    if (match(TokenKind::Comma)) {
+        do {
+            parameters.push_back(parameter());
+        } while (match(TokenKind::Comma));
+    }
+    expect(TokenKind::RightParen, "FDN1104", "expected ) after method parameters");
+    auto returnType = typeSyntax("FDN1105", "expected method return type");
+    const auto tailResult = returnType.name != "void" || !returnType.arguments.empty();
+    const auto body = block(tailResult);
+    return {name.text, typeParameters, std::move(parameters), std::move(returnType), body,
+            isExported(name.text), start.span, {}, {}, access, owner};
+}
+
+ContractMethod Parser::contractMethod() {
+    const auto start = expect(TokenKind::Fn, "FDN1106", "expected fn");
+    const auto name = expect(TokenKind::Identifier, "FDN1107", "expected contract method name");
+    expect(TokenKind::LeftParen, "FDN1108", "expected ( after contract method name");
+    const auto access = receiver("FDN1109", "expected view, edit, or own receiver");
+    std::vector<Parameter> parameters;
+    if (match(TokenKind::Comma)) {
+        do {
+            parameters.push_back(parameter());
+        } while (match(TokenKind::Comma));
+    }
+    expect(TokenKind::RightParen, "FDN1110", "expected ) after contract method parameters");
+    auto returnType = typeSyntax("FDN1111", "expected contract method return type");
+    return {name.text, access, std::move(parameters), std::move(returnType),
+            isExported(name.text), start.span};
+}
+
+ReceiverKind Parser::receiver(const char *code, const char *message) {
+    if (match(TokenKind::View)) {
+        return ReceiverKind::View;
+    }
+    if (match(TokenKind::Edit)) {
+        return ReceiverKind::Edit;
+    }
+    if (match(TokenKind::Own)) {
+        return ReceiverKind::Own;
+    }
+    diagnostics_.error(code, message, current().span);
+    if (!atEnd()) {
+        advance();
+    }
+    return ReceiverKind::View;
 }
 
 Parameter Parser::parameter() {
@@ -600,7 +703,9 @@ AstExpressionId Parser::primary() {
         if (match(TokenKind::LeftParen)) {
             result = finishCall(name, std::move(type.arguments));
         } else if (structLiteralsAllowed_ && check(TokenKind::LeftBrace) &&
-                   peek(1).kind == TokenKind::Identifier && peek(2).kind == TokenKind::Equal) {
+                   (peek(1).kind == TokenKind::RightBrace ||
+                    (peek(1).kind == TokenKind::Identifier &&
+                     peek(2).kind == TokenKind::Equal))) {
             advance();
             result = finishStruct(std::move(type));
         } else {
@@ -633,7 +738,8 @@ AstExpressionId Parser::primary() {
         break;
     }
     if (structLiteralsAllowed_ && check(TokenKind::LeftBrace) &&
-        peek(1).kind == TokenKind::Identifier && peek(2).kind == TokenKind::Equal) {
+        (peek(1).kind == TokenKind::RightBrace ||
+         (peek(1).kind == TokenKind::Identifier && peek(2).kind == TokenKind::Equal))) {
         const auto *member = std::get_if<MemberExpression>(&program_.expressions[result].value);
         if (member != nullptr && member->base.has_value() && !member->invoked) {
             const auto *base =

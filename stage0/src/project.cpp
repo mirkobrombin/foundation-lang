@@ -162,6 +162,9 @@ void appendProgram(Program &target, Program source) {
     for (auto &declaration : source.enums) {
         target.enums.push_back(std::move(declaration));
     }
+    for (auto &declaration : source.contracts) {
+        target.contracts.push_back(std::move(declaration));
+    }
     for (auto &function : source.functions) {
         function.body += blockOffset;
         target.functions.push_back(std::move(function));
@@ -455,7 +458,16 @@ void collectSymbols(const std::vector<ParsedFile> &files, SymbolTable &symbols) 
                 DeclarationInfo{internalName(file.program.packageName, declaration.name),
                                 declaration.exported});
         }
+        for (const auto &declaration : file.program.contracts) {
+            package.types.emplace(
+                declaration.name,
+                DeclarationInfo{internalName(file.program.packageName, declaration.name),
+                                declaration.exported});
+        }
         for (const auto &declaration : file.program.functions) {
+            if (declaration.receiver.has_value()) {
+                continue;
+            }
             package.functions.emplace(
                 declaration.name,
                 DeclarationInfo{declaration.name == "main"
@@ -549,6 +561,9 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
         for (auto &field : declaration.fields) {
             linkType(field.type, packageName, aliases, symbols, parameters, diagnostics);
         }
+        for (auto &implementation : declaration.implementations) {
+            linkType(implementation, packageName, aliases, symbols, parameters, diagnostics);
+        }
         declaration.name = internalName(packageName, declaration.name);
     }
     for (auto &declaration : file.program.enums) {
@@ -566,6 +581,18 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
         }
         declaration.name = internalName(packageName, declaration.name);
     }
+    for (auto &declaration : file.program.contracts) {
+        declaration.packageName = packageName;
+        const std::unordered_set<std::string> parameters(declaration.typeParameters.begin(),
+                                                         declaration.typeParameters.end());
+        for (auto &method : declaration.methods) {
+            for (auto &parameter : method.parameters) {
+                linkType(parameter.type, packageName, aliases, symbols, parameters, diagnostics);
+            }
+            linkType(method.returnType, packageName, aliases, symbols, parameters, diagnostics);
+        }
+        declaration.name = internalName(packageName, declaration.name);
+    }
     for (auto &function : file.program.functions) {
         function.packageName = packageName;
         function.sourcePath = sourcePath;
@@ -577,7 +604,10 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
         linkType(function.returnType, packageName, aliases, symbols, parameters, diagnostics);
         linkBlock(file.program, function.body, packageName, aliases, symbols, parameters,
                   diagnostics);
-        if (function.name == "main") {
+        if (function.receiver.has_value()) {
+            function.ownerType = internalName(packageName, function.ownerType);
+            function.name = function.ownerType + '.' + function.name;
+        } else if (function.name == "main") {
             if (foundMain) {
                 diagnostics.error("FDN3010", "project declares more than one main function",
                                   function.span);

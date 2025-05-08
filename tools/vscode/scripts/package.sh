@@ -5,7 +5,9 @@ set -eu
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_dir/../../.." && pwd)
 extension_root="$repository_root/tools/vscode"
-output="$repository_root/build/foundation-lang-0.8.0.vsix"
+version=$(sed -n 's/^[[:space:]]*"version": "\([^"]*\)",$/\1/p' "$extension_root/package.json")
+test -n "$version"
+output="$repository_root/build/foundation-lang-$version.vsix"
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/foundation-vsix.XXXXXX")
 trap 'rm -rf -- "$work_dir"' EXIT HUP INT TERM
 

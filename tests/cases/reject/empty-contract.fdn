@@ -1,0 +1,5 @@
+contract Empty {}
+
+fn main() i32 {
+    0
+}

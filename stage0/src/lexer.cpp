@@ -94,6 +94,10 @@ const char *tokenName(TokenKind kind) {
         return "struct";
     case TokenKind::Enum:
         return "enum";
+    case TokenKind::Contract:
+        return "contract";
+    case TokenKind::Implements:
+        return "implements";
     case TokenKind::Fn:
         return "fn";
     case TokenKind::Let:
@@ -339,6 +343,10 @@ Token Lexer::identifier() {
         kind = TokenKind::Struct;
     } else if (text == "enum") {
         kind = TokenKind::Enum;
+    } else if (text == "contract") {
+        kind = TokenKind::Contract;
+    } else if (text == "implements") {
+        kind = TokenKind::Implements;
     } else if (text == "fn") {
         kind = TokenKind::Fn;
     } else if (text == "let") {

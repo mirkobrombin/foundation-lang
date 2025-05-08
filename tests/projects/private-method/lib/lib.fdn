@@ -1,0 +1,9 @@
+package example.lib
+
+struct Value {
+    Number i32
+
+    fn read(view) i32 {
+        self.Number
+    }
+}

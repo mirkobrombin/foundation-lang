@@ -56,6 +56,56 @@
         ],
         "description": "Declare a generic value struct"
     },
+    "Contract": {
+        "prefix": "contract",
+        "body": [
+            "contract ${1:Name} {",
+            "    fn ${2:method}(view${3}) ${4:void}",
+            "}"
+        ],
+        "description": "Declare a compile-time contract"
+    },
+    "Generic contract": {
+        "prefix": "contractg",
+        "body": [
+            "contract ${1:Name}<${2:T}> {",
+            "    fn ${3:method}(view, ${4:value} ${2:T}) ${5:void}",
+            "}"
+        ],
+        "description": "Declare a generic compile-time contract"
+    },
+    "Contract implementation": {
+        "prefix": "implements",
+        "body": "struct ${1:Name} implements ${2:Contract} {\n    ${3}\n}",
+        "description": "Declare a struct that implements a contract"
+    },
+    "View method": {
+        "prefix": "methodview",
+        "body": [
+            "fn ${1:name}(view${2}) ${3:void} {",
+            "    ${4}",
+            "}"
+        ],
+        "description": "Declare a read-only method"
+    },
+    "Edit method": {
+        "prefix": "methodedit",
+        "body": [
+            "fn ${1:name}(edit${2}) ${3:void} {",
+            "    ${4}",
+            "}"
+        ],
+        "description": "Declare a mutable method"
+    },
+    "Own method": {
+        "prefix": "methodown",
+        "body": [
+            "fn ${1:name}(own${2}) ${3:void} {",
+            "    ${4}",
+            "}"
+        ],
+        "description": "Declare a consuming method"
+    },
     "Main function": {
         "prefix": "main",
         "body": [

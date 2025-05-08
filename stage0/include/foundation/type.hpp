@@ -21,6 +21,7 @@ enum class TypeKind {
     Parameter,
     Struct,
     Enum,
+    Contract,
 };
 
 struct Type {

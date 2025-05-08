@@ -34,6 +34,12 @@ enum class OwnershipOperator {
     Edit,
 };
 
+enum class ReceiverKind {
+    View,
+    Edit,
+    Own,
+};
+
 enum class BinaryOperator {
     Add,
     Subtract,
@@ -207,6 +213,8 @@ struct Function {
     SourceSpan span;
     std::string packageName;
     std::string sourcePath;
+    std::optional<ReceiverKind> receiver;
+    std::string ownerType;
 };
 
 struct StructField {
@@ -219,7 +227,26 @@ struct StructField {
 struct StructDeclaration {
     std::string name;
     std::vector<std::string> typeParameters;
+    std::vector<TypeSyntax> implementations;
     std::vector<StructField> fields;
+    bool exported{};
+    SourceSpan span;
+    std::string packageName;
+};
+
+struct ContractMethod {
+    std::string name;
+    ReceiverKind receiver{ReceiverKind::View};
+    std::vector<Parameter> parameters;
+    TypeSyntax returnType;
+    bool exported{};
+    SourceSpan span;
+};
+
+struct ContractDeclaration {
+    std::string name;
+    std::vector<std::string> typeParameters;
+    std::vector<ContractMethod> methods;
     bool exported{};
     SourceSpan span;
     std::string packageName;
@@ -263,6 +290,7 @@ struct Program {
     std::vector<Block> blocks;
     std::vector<StructDeclaration> structs;
     std::vector<EnumDeclaration> enums;
+    std::vector<ContractDeclaration> contracts;
     std::vector<Function> functions;
 };
 

@@ -89,7 +89,6 @@ fn main() i32 {
 )";
     auto first = check(source);
     auto second = check(source);
-
     expect(!first.diagnostics.hasErrors(), "typed program has no diagnostics");
     expect(!second.diagnostics.hasErrors(), "repeated typed program has no diagnostics");
     expect(first.fir.has_value(), "typed program lowers to FIR");
@@ -306,6 +305,7 @@ fn main() i32 {
     discard empty
     0
 }
+
 )";
     auto first = check(source);
     auto second = check(source);
@@ -330,6 +330,56 @@ fn main() i32 {
            "array and slice indexing use runtime bounds checks");
     expect(firstC.find("fdn_drop_array_2_string") != std::string::npos,
            "String arrays receive element drop glue");
+}
+
+void methodsAndContractsLowerToDeterministicC() {
+    constexpr std::string_view source = R"(
+contract Readable {
+    fn read(view) i32
+}
+
+struct Value implements Readable {
+    value i32
+
+    fn read(view) i32 {
+        self.value
+    }
+}
+
+fn readAny(value view Readable) i32 {
+    value.read()
+}
+
+fn main() i32 {
+    let value = Value { value = 42 }
+    readAny(view value) - value.read()
+}
+)";
+    auto first = check(source);
+    auto second = check(source);
+    expect(!first.diagnostics.hasErrors(), "method and contract program has no diagnostics");
+    expect(first.fir.has_value(), "method and contract program lowers to FIR");
+    expect(second.fir.has_value(), "repeated method and contract program lowers to FIR");
+    expect(first.program.contracts.size() == 1,
+           "contract declaration is retained in the AST");
+    expect(first.program.functions.size() == 3 &&
+               first.program.functions.front().receiver.has_value(),
+           "struct method is retained as a receiver function");
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        return;
+    }
+
+    const auto firstC = foundation::emitC(*first.fir);
+    const auto secondC = foundation::emitC(*second.fir);
+    expect(firstC == secondC, "method and contract C emission is deterministic");
+    expect(firstC.find("struct fdn_contract_0_vtable") != std::string::npos,
+           "borrowed contract receives a typed C vtable");
+    expect(firstC.find(".fdn_vtable->fdn_method_0") != std::string::npos,
+           "contract method call dispatches through its vtable");
+    expect(firstC.find("fdn_vtable_c0_s0_m0") != std::string::npos,
+           "contract implementation receives a deterministic adapter");
+    expect(firstC.find("fdn_alloc") == std::string::npos,
+           "contract conversion does not allocate");
 }
 
 void lightweightSyntaxCarriesVisibilityAndContext() {
@@ -936,6 +986,7 @@ int main() {
     genericValuesMonomorphizeDeterministically();
     ownershipLowersToDeterministicC();
     sequenceValuesLowerToDeterministicC();
+    methodsAndContractsLowerToDeterministicC();
     lightweightSyntaxCarriesVisibilityAndContext();
     panicLowersWithSourceFrames();
     divergingCallsCloseGeneratedControlFlow();

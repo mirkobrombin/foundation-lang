@@ -10,16 +10,29 @@ enum TourState<T> {
     Done(TourResult<T>)
 }
 
-struct TourCounter {
+contract Counter {
+    fn read(view) i32
+    fn increment(edit) void
+}
+
+struct TourCounter implements Counter {
     value i32
+
+    fn read(view) i32 {
+        self.value
+    }
+
+    fn increment(edit) void {
+        self.value = self.value + 1
+    }
 }
 
-fn readCounter(counter view TourCounter) i32 {
-    counter.value
+fn readCounter(counter view Counter) i32 {
+    counter.read()
 }
 
-fn incrementCounter(counter edit TourCounter) void {
-    counter.value = counter.value + 1
+fn incrementCounter(counter edit Counter) void {
+    counter.increment()
 }
 
 fn sum(values view [i32]) i32 {
@@ -82,6 +95,7 @@ fn main() i32 {
     var counter = own TourCounter { value = 0 }
     incrementCounter(edit counter)
     let counterValue = readCounter(view counter)
+    let directCounterValue = counter.read()
 
     var numbers = [1, 2, 3]
     clearFirst(edit numbers)
@@ -119,8 +133,8 @@ fn main() i32 {
     discard movedCounter
     if inRange(current, 5, 5) || false {
         return match state {
-            Running: resultOr(verified, 0) + counterValue + sequenceValue - 5
-            Done(done): resultOr(verified, done.code) + counterValue + sequenceValue - 6
+            Running: resultOr(verified, 0) + counterValue + directCounterValue + sequenceValue - 6
+            Done(done): resultOr(verified, done.code) + counterValue + directCounterValue + sequenceValue - 7
         }
     } else {
         discard verified

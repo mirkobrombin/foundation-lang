@@ -6,6 +6,7 @@
         { "include": "#comments" },
         { "include": "#strings" },
         { "include": "#packageDeclarations" },
+        { "include": "#contractDefinitions" },
         { "include": "#structDefinitions" },
         { "include": "#enumDefinitions" },
         { "include": "#functionDefinitions" },
@@ -20,6 +21,8 @@
         { "include": "#matchPatterns" },
         { "include": "#typePositions" },
         { "include": "#genericTypeApplications" },
+        { "include": "#languageVariables" },
+        { "include": "#methodCalls" },
         { "include": "#fieldAccess" },
         { "include": "#functionCalls" },
         { "include": "#types" },
@@ -58,6 +61,24 @@
                 }
             ]
         },
+        "blocks": {
+            "patterns": [
+                {
+                    "name": "meta.block.foundation",
+                    "begin": "\\{",
+                    "beginCaptures": {
+                        "0": { "name": "punctuation.section.block.begin.foundation" }
+                    },
+                    "end": "\\}",
+                    "endCaptures": {
+                        "0": { "name": "punctuation.section.block.end.foundation" }
+                    },
+                    "patterns": [
+                        { "include": "$self" }
+                    ]
+                }
+            ]
+        },
         "packageDeclarations": {
             "patterns": [
                 {
@@ -82,20 +103,24 @@
             "patterns": [
                 {
                     "name": "meta.struct.definition.foundation",
-                    "begin": "\\b(struct)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(<)\\s*([A-Za-z_][A-Za-z0-9_]*(?:\\s*,\\s*[A-Za-z_][A-Za-z0-9_]*)*)\\s*(>))?\\s*(\\{)",
+                    "begin": "\\b(struct)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(<)\\s*([A-Za-z_][A-Za-z0-9_]*(?:\\s*,\\s*[A-Za-z_][A-Za-z0-9_]*)*)\\s*(>))?(?:\\s+(implements)\\s+([^\\{]+?))?\\s*(\\{)",
                     "beginCaptures": {
                         "1": { "name": "keyword.declaration.struct.foundation" },
                         "2": { "name": "entity.name.type.struct.foundation" },
                         "3": { "name": "punctuation.definition.type-parameters.begin.foundation" },
                         "4": { "name": "entity.name.type.parameter.foundation" },
                         "5": { "name": "punctuation.definition.type-parameters.end.foundation" },
-                        "6": { "name": "punctuation.section.block.begin.foundation" }
+                        "6": { "name": "keyword.declaration.implementation.foundation" },
+                        "7": { "name": "entity.other.inherited-class.foundation" },
+                        "8": { "name": "punctuation.section.block.begin.foundation" }
                     },
                     "end": "\\}",
                     "endCaptures": {
                         "0": { "name": "punctuation.section.block.end.foundation" }
                     },
                     "patterns": [
+                        { "include": "#functionDefinitions" },
+                        { "include": "#blocks" },
                         {
                             "match": "^\\s*([A-Za-z_][A-Za-z0-9_]*)\\b(?=\\s+[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^>{}\\n]+>)?\\s*$)",
                             "captures": {
@@ -108,6 +133,35 @@
                         { "include": "#typeParameters" },
                         { "include": "#nominalTypes" },
                         { "include": "#operators" },
+                        { "include": "#punctuation" }
+                    ]
+                }
+            ]
+        },
+        "contractDefinitions": {
+            "patterns": [
+                {
+                    "name": "meta.contract.definition.foundation",
+                    "begin": "\\b(contract)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(<)\\s*([A-Za-z_][A-Za-z0-9_]*(?:\\s*,\\s*[A-Za-z_][A-Za-z0-9_]*)*)\\s*(>))?\\s*(\\{)",
+                    "beginCaptures": {
+                        "1": { "name": "keyword.declaration.contract.foundation" },
+                        "2": { "name": "entity.name.type.interface.foundation" },
+                        "3": { "name": "punctuation.definition.type-parameters.begin.foundation" },
+                        "4": { "name": "entity.name.type.parameter.foundation" },
+                        "5": { "name": "punctuation.definition.type-parameters.end.foundation" },
+                        "6": { "name": "punctuation.section.block.begin.foundation" }
+                    },
+                    "end": "\\}",
+                    "endCaptures": {
+                        "0": { "name": "punctuation.section.block.end.foundation" }
+                    },
+                    "patterns": [
+                        { "include": "#functionDefinitions" },
+                        { "include": "#genericTypeApplications" },
+                        { "include": "#ownership" },
+                        { "include": "#types" },
+                        { "include": "#typeParameters" },
+                        { "include": "#nominalTypes" },
                         { "include": "#punctuation" }
                     ]
                 }
@@ -206,6 +260,10 @@
         "keywords": {
             "patterns": [
                 {
+                    "name": "keyword.declaration.foundation",
+                    "match": "\\b(struct|enum|contract|implements|fn)\\b"
+                },
+                {
                     "name": "keyword.declaration.module.foundation",
                     "match": "\\b(package|import|as)\\b"
                 },
@@ -263,7 +321,7 @@
             "patterns": [
                 {
                     "name": "entity.name.type.struct.foundation",
-                    "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*\\{\\s*[A-Za-z_][A-Za-z0-9_]*\\s*=)"
+                    "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*\\{\\s*(?:\\}|[A-Za-z_][A-Za-z0-9_]*\\s*=))"
                 },
                 {
                     "name": "variable.other.member.foundation",
@@ -348,6 +406,25 @@
                         "3": { "name": "variable.parameter.foundation" },
                         "4": { "name": "punctuation.section.parens.end.foundation" },
                         "5": { "name": "punctuation.separator.foundation" }
+                    }
+                }
+            ]
+        },
+        "languageVariables": {
+            "patterns": [
+                {
+                    "name": "variable.language.self.foundation",
+                    "match": "\\bself\\b"
+                }
+            ]
+        },
+        "methodCalls": {
+            "patterns": [
+                {
+                    "match": "(\\.)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+                    "captures": {
+                        "1": { "name": "punctuation.accessor.foundation" },
+                        "2": { "name": "entity.name.function.call.method.foundation" }
                     }
                 }
             ]

@@ -33,7 +33,11 @@ class Parser {
     TypeSyntax typeSyntax(const char *code, const char *message);
     StructDeclaration structDeclaration();
     EnumDeclaration enumDeclaration();
+    ContractDeclaration contractDeclaration();
     Function function();
+    Function method(const std::string &owner, const std::vector<std::string> &typeParameters);
+    ContractMethod contractMethod();
+    ReceiverKind receiver(const char *code, const char *message);
     Parameter parameter();
     AstBlockId block(bool tailResult = false);
     AstStatementId statement();

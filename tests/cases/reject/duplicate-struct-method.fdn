@@ -1,0 +1,15 @@
+struct Value {
+    value i32
+
+    fn read(view) i32 {
+        self.value
+    }
+
+    fn read(view) i32 {
+        self.value
+    }
+}
+
+fn main() i32 {
+    0
+}

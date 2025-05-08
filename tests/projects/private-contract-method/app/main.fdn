@@ -1,0 +1,12 @@
+package example.app
+
+import example.lib
+
+fn read(value view lib.Reader) i32 {
+    value.read()
+}
+
+fn main() i32 {
+    let value = lib.Value { Number = 1 }
+    read(view value)
+}

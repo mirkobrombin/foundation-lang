@@ -30,6 +30,13 @@ test("registers Foundation source files", () => {
         "utf8"
     );
     assert.match(vsixManifest, new RegExp(`Version="${manifest.version}"`));
+
+    const packagingScript = fs.readFileSync(
+        path.join(extensionRoot, "scripts/package.sh"),
+        "utf8"
+    );
+    assert.match(packagingScript, /package\.json/);
+    assert.match(packagingScript, /foundation-lang-\$version\.vsix/);
 });
 
 test("grammar and completions track compiler keywords", () => {
@@ -48,6 +55,8 @@ test("grammar and completions track compiler keywords", () => {
         "as",
         "struct",
         "enum",
+        "contract",
+        "implements",
         "fn",
         "let",
         "var",
@@ -211,6 +220,65 @@ test("tracks ownership declarations and borrowed parameters", () => {
     assert.ok(parameters.includes("id"));
 });
 
+test("collects contracts, implementations, and receiver methods", () => {
+    const completions = collectCompletions(`
+        contract Reader<T> {
+            fn Read(view, fallback T) T
+        }
+        struct Box<T> implements Reader<T> {
+            value T
+            fn Read(view, fallback T) T { fallback }
+            fn Replace(edit, value T) void { self.value = value }
+        }
+        fn main() i32 { 0 }
+    `);
+    const byLabel = new Map(completions.map((entry) => [entry.label, entry]));
+
+    assert.equal(byLabel.get("Reader").kind, "Contract");
+    assert.equal(byLabel.get("Reader").detail, "Foundation contract<T>");
+    assert.equal(byLabel.get("Box").insertText, "Box { value = ${1:value} }");
+    assert.equal(byLabel.get("Read").kind, "Method");
+    assert.equal(byLabel.get("Read").insertText, "Read(${1:fallback})");
+    assert.equal(byLabel.get("Replace").insertText, "Replace(${1:value})");
+    assert.equal(byLabel.has("fn"), true);
+
+    const grammar = readJson("syntaxes/foundation.tmLanguage.json");
+    assert.match(grammar.repository.contractDefinitions.patterns[0].beginCaptures[2].name,
+        /interface/);
+    assert.match(grammar.repository.structDefinitions.patterns[0].beginCaptures[6].name,
+        /implementation/);
+    assert.match(grammar.repository.methodCalls.patterns[0].captures[2].name,
+        /method/);
+    assert.match(grammar.repository.languageVariables.patterns[0].name, /self/);
+    assert.equal(
+        grammar.repository.structDefinitions.patterns[0].patterns[1].include,
+        "#blocks"
+    );
+    assert.equal(grammar.repository.blocks.patterns[0].patterns[0].include, "$self");
+});
+
+test("collects exported contracts and methods across packages", () => {
+    const application = `
+        package example.app
+        import example.reader
+        fn main() i32 { 0 }
+    `;
+    const library = `
+        package example.reader
+        contract Reader { fn Read(view) i32 fn hidden(view) i32 }
+        struct Value implements Reader {
+            fn Read(view) i32 { 1 }
+            fn hidden(view) i32 { 2 }
+        }
+    `;
+    const completions = collectCompletions(application, [application, library]);
+    const byLabel = new Map(completions.map((entry) => [entry.label, entry]));
+
+    assert.equal(byLabel.get("reader.Reader").kind, "Contract");
+    assert.equal(byLabel.get("Read").kind, "Method");
+    assert.equal(byLabel.has("hidden"), false);
+});
+
 test("ships Result handling and panic snippets", () => {
     const snippets = readJson("snippets/foundation.json");
 
@@ -226,6 +294,12 @@ test("ships Result handling and panic snippets", () => {
     assert.equal(snippets["Indexed assignment"].prefix, "indexset");
     assert.equal(snippets["Package declaration"].prefix, "package");
     assert.equal(snippets["Package import"].prefix, "import");
+    assert.equal(snippets.Contract.prefix, "contract");
+    assert.equal(snippets["Generic contract"].prefix, "contractg");
+    assert.equal(snippets["Contract implementation"].prefix, "implements");
+    assert.equal(snippets["View method"].prefix, "methodview");
+    assert.equal(snippets["Edit method"].prefix, "methodedit");
+    assert.equal(snippets["Own method"].prefix, "methodown");
 });
 
 test("collects declarations that use arrays and slices", () => {
