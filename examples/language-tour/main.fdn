@@ -2,7 +2,7 @@
 
 package tour
 
-import std.std.collections
+import std.collections
 
 // A bodyless C ABI declaration imports its explicit C symbol. It is unused here so the tour
 // remains runnable without a native input.
