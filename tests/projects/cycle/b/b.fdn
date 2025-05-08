@@ -1,0 +1,7 @@
+package cycle.b
+
+import cycle.a
+
+fn B() i32 {
+    a.A()
+}

@@ -1,0 +1,5 @@
+package shadow.lib
+
+fn Value() i32 {
+    0
+}

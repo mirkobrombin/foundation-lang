@@ -6,13 +6,15 @@
 #include "foundation/token.hpp"
 
 #include <cstddef>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace foundation {
 
 class Parser {
   public:
-    Parser(std::vector<Token> tokens, Diagnostics &diagnostics);
+    Parser(std::vector<Token> tokens, Diagnostics &diagnostics, bool installBuiltins = true);
     [[nodiscard]] Program parse();
 
   private:
@@ -26,6 +28,7 @@ class Parser {
     [[nodiscard]] bool startsGenericPrimary() const;
     bool match(TokenKind kind);
     const Token &expect(TokenKind kind, const char *code, const char *message);
+    std::pair<std::string, SourceSpan> qualifiedName(const char *code, const char *message);
     std::vector<std::string> typeParameters();
     TypeSyntax typeSyntax(const char *code, const char *message);
     StructDeclaration structDeclaration();
@@ -70,6 +73,7 @@ class Parser {
     std::size_t typeDepth_{};
     bool expressionLimitReported_{};
     bool structLiteralsAllowed_{true};
+    bool installBuiltins_{};
 };
 
 } // namespace foundation

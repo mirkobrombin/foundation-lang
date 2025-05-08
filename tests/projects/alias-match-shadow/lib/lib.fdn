@@ -1,0 +1,9 @@
+package matchshadow.lib
+
+enum Box {
+    Value(i32)
+}
+
+fn Make() Box {
+    Box.Value(1)
+}

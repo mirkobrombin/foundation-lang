@@ -124,6 +124,8 @@ class Lowerer {
         const auto &semantic = model_.functions[id];
         FirFunction function;
         function.name = source.name;
+        function.packageName = source.packageName;
+        function.sourcePath = source.sourcePath;
         function.source = id;
         function.sourceSpan = source.span;
         function.generic = !source.typeParameters.empty();
@@ -278,8 +280,8 @@ class Lowerer {
             if (model_.enumTargets[id].has_value()) {
                 const auto &target = *model_.enumTargets[id];
                 std::optional<FirExpressionId> payload;
-                if (member->payload.has_value()) {
-                    payload = lowerExpression(*member->payload);
+                if (!member->arguments.empty()) {
+                    payload = lowerExpression(member->arguments.front());
                 }
                 value = FirEnumExpression{target.type, target.variant, payload};
             } else {

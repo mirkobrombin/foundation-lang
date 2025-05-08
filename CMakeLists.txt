@@ -25,6 +25,7 @@ add_library(foundation_compiler STATIC
     stage0/src/lower.cpp
     stage0/src/parser.cpp
     stage0/src/process.cpp
+    stage0/src/project.cpp
     stage0/src/sema.cpp
     stage0/src/type.cpp
 )
@@ -128,6 +129,9 @@ if(BUILD_TESTING)
 
     add_executable(foundation_stage0_tests stage0/tests/compiler_test.cpp)
     target_link_libraries(foundation_stage0_tests PRIVATE foundation_compiler)
+    target_compile_definitions(foundation_stage0_tests PRIVATE
+        FOUNDATION_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
     if(FOUNDATION_BUILD_FUZZERS)
         target_link_options(foundation_stage0_tests PRIVATE -fsanitize=address,undefined)
     endif()
@@ -218,6 +222,66 @@ if(BUILD_TESTING)
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/language-tour/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
+    add_test(
+        NAME stage0.run.packages
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/packages
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/packages/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.emit.packages-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/packages
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/packages-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/packages-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.emit.package-source-order
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/order
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/package-order.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-project-order.cmake
+    )
+    add_test(
+        NAME stage0.run.package-panic-trace
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/panic
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-project-panic.cmake
+    )
+    foreach(project_case IN ITEMS
+            "empty;FDN3002"
+            "missing-package;FDN3003"
+            "malformed-package;FDN1090"
+            "malformed-import;FDN1091"
+            "missing-import;FDN3005"
+            "duplicate-import;FDN3004"
+            "duplicate-alias;FDN3004"
+            "cycle;FDN3006"
+            "private;FDN3008"
+            "private-members;FDN3008"
+            "unknown-declaration;FDN3009"
+            "alias-shadow;FDN3004"
+            "alias-match-shadow;FDN3004"
+            "multiple-main;FDN3010"
+            "duplicate-symbol;FDN2001"
+            "duplicate-type;FDN2020")
+        list(GET project_case 0 project_name)
+        list(GET project_case 1 project_code)
+        add_test(
+            NAME stage0.check.project-${project_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/${project_name}
+                -DCODE=${project_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
     add_test(
         NAME stage0.run.struct-values
         COMMAND ${CMAKE_COMMAND}

@@ -1,0 +1,7 @@
+package unknown.app
+
+import unknown.lib
+
+fn main() i32 {
+    lib.Missing()
+}

@@ -1,0 +1,8 @@
+package alias.app
+
+import alias.first as shared
+import alias.second as shared
+
+fn main() i32 {
+    0
+}

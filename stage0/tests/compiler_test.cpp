@@ -3,13 +3,16 @@
 #include "foundation/lexer.hpp"
 #include "foundation/lower.hpp"
 #include "foundation/parser.hpp"
+#include "foundation/project.hpp"
 #include "foundation/sema.hpp"
 
+#include <filesystem>
 #include <iostream>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -859,6 +862,70 @@ void diagnosticsBoundLongSourceExcerpts() {
            "diagnostic at a newline renders the preceding source line");
 }
 
+void packageHeadersAndSourceDiagnosticsStayStable() {
+    constexpr std::string_view source = R"(
+package example.app
+import example.math
+import example.text as text
+fn main() i32 { 0 }
+)";
+    foundation::Diagnostics diagnostics;
+    foundation::Lexer lexer(source, diagnostics, 3);
+    foundation::Parser parser(lexer.scan(), diagnostics);
+    const auto program = parser.parse();
+
+    expect(!diagnostics.hasErrors(), "package header parses without diagnostics");
+    expect(program.hasPackageDeclaration, "package declaration is retained in the AST");
+    expect(program.packageName == "example.app", "dotted package name is retained");
+    expect(program.imports.size() == 2, "all file imports are retained");
+    if (program.imports.size() == 2) {
+        expect(program.imports[0].packageName == "example.math" &&
+                   program.imports[0].alias.empty(),
+               "default import retains its package name");
+        expect(program.imports[1].packageName == "example.text" &&
+                   program.imports[1].alias == "text",
+               "explicit import alias is retained");
+    }
+    expect(!program.functions.empty() && program.functions.back().span.source == 3,
+           "declaration spans retain their source ID");
+
+    foundation::Diagnostics projectDiagnostics;
+    projectDiagnostics.error("FDN9997", "second source", {0, 1, 1, 1, 1});
+    const std::vector<foundation::DiagnosticSource> sources{
+        {"first.fdn", "first\n"},
+        {"second.fdn", "second\n"},
+    };
+    const auto rendered = foundation::renderDiagnostics(sources, projectDiagnostics);
+    expect(rendered.find("second.fdn:1:1") != std::string::npos,
+           "project diagnostic selects the originating file");
+    expect(rendered.find("1 | second") != std::string::npos,
+           "project diagnostic selects the originating source text");
+}
+
+void projectDiagnosticsRetainTheirSource() {
+    foundation::Diagnostics diagnostics;
+    const auto project = foundation::loadProject(
+        std::filesystem::path(FOUNDATION_TEST_SOURCE_DIR) / "tests/projects/multiple-main",
+        diagnostics);
+    expect(project.has_value(), "multiple-main project is loaded for diagnostics");
+    if (!project.has_value()) {
+        return;
+    }
+    for (const auto &diagnostic : diagnostics.all()) {
+        if (diagnostic.code != "FDN3010") {
+            continue;
+        }
+        expect(diagnostic.span.source < project->sources.size(),
+               "multiple-main diagnostic has a valid source ID");
+        if (diagnostic.span.source < project->sources.size()) {
+            expect(project->sources[diagnostic.span.source].path == "second/main.fdn",
+                   "multiple-main diagnostic points to the second entry point");
+        }
+        return;
+    }
+    expect(false, "multiple-main project reports FDN3010");
+}
+
 } // namespace
 
 int main() {
@@ -875,6 +942,8 @@ int main() {
     syntaxFailuresHaveStableDiagnostics();
     semanticFailuresHaveStableDiagnostics();
     diagnosticsBoundLongSourceExcerpts();
+    packageHeadersAndSourceDiagnosticsStayStable();
+    projectDiagnosticsRetainTheirSource();
 
     if (failures != 0) {
         std::cerr << failures << " test assertions failed\n";

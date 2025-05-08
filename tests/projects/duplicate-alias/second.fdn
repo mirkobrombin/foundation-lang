@@ -1,0 +1,5 @@
+package alias.second
+
+fn Second() i32 {
+    2
+}

@@ -1,0 +1,5 @@
+package roots.second
+
+fn main() i32 {
+    0
+}

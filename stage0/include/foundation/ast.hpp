@@ -107,8 +107,9 @@ struct StructExpression {
 struct MemberExpression {
     std::optional<AstExpressionId> base;
     std::string member;
+    std::vector<TypeSyntax> typeArguments;
     bool invoked{};
-    std::optional<AstExpressionId> payload;
+    std::vector<AstExpressionId> arguments;
 };
 
 struct IndexExpression {
@@ -204,6 +205,8 @@ struct Function {
     AstBlockId body{};
     bool exported{};
     SourceSpan span;
+    std::string packageName;
+    std::string sourcePath;
 };
 
 struct StructField {
@@ -219,6 +222,7 @@ struct StructDeclaration {
     std::vector<StructField> fields;
     bool exported{};
     SourceSpan span;
+    std::string packageName;
 };
 
 struct EnumVariant {
@@ -241,9 +245,19 @@ struct EnumDeclaration {
     bool exported{};
     BuiltinEnumKind builtin{BuiltinEnumKind::None};
     SourceSpan span;
+    std::string packageName;
+};
+
+struct ImportDeclaration {
+    std::string packageName;
+    std::string alias;
+    SourceSpan span;
 };
 
 struct Program {
+    std::string packageName;
+    bool hasPackageDeclaration{};
+    std::vector<ImportDeclaration> imports;
     std::vector<Expression> expressions;
     std::vector<Statement> statements;
     std::vector<Block> blocks;

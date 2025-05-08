@@ -1,0 +1,13 @@
+package order.app
+
+struct Collision {
+    Value i32
+}
+
+enum CollisionState {
+    Ready
+}
+
+fn First() i32 {
+    1
+}

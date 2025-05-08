@@ -1,10 +1,9 @@
 #include "foundation/driver.hpp"
 
 #include "foundation/codegen.hpp"
-#include "foundation/lexer.hpp"
 #include "foundation/lower.hpp"
-#include "foundation/parser.hpp"
 #include "foundation/process.hpp"
+#include "foundation/project.hpp"
 #include "foundation/sema.hpp"
 
 #include <atomic>
@@ -12,7 +11,6 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -54,20 +52,6 @@ class TempDirectory {
   private:
     std::filesystem::path path_;
 };
-
-std::optional<std::string> readFile(const std::filesystem::path &path) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-        return std::nullopt;
-    }
-
-    std::ostringstream contents;
-    contents << input.rdbuf();
-    if (input.bad()) {
-        return std::nullopt;
-    }
-    return contents.str();
-}
 
 bool prepareParent(const std::filesystem::path &path) {
     const auto parent = path.parent_path();
@@ -143,7 +127,11 @@ int report(const std::filesystem::path &path, const Compilation &compilation) {
     if (!compilation.diagnostics.hasErrors()) {
         return 0;
     }
-    std::cerr << renderDiagnostics(path.string(), compilation.source, compilation.diagnostics);
+    if (compilation.sources.empty()) {
+        std::cerr << renderDiagnostics(path.string(), {}, compilation.diagnostics);
+    } else {
+        std::cerr << renderDiagnostics(compilation.sources, compilation.diagnostics);
+    }
     return 1;
 }
 
@@ -181,17 +169,12 @@ int buildCompilation(const std::filesystem::path &source, const std::filesystem:
 
 Compilation compile(const std::filesystem::path &path) {
     Compilation compilation;
-    const auto source = readFile(path);
-    if (!source.has_value()) {
-        compilation.diagnostics.error("FDN3001", "cannot read source file", {0, 0, 1, 1});
+    auto loaded = loadProject(path, compilation.diagnostics);
+    if (!loaded.has_value()) {
         return compilation;
     }
-    compilation.source = *source;
-
-    Lexer lexer(compilation.source, compilation.diagnostics);
-    auto tokens = lexer.scan();
-    Parser parser(std::move(tokens), compilation.diagnostics);
-    auto program = parser.parse();
+    compilation.sources = std::move(loaded->sources);
+    auto program = std::move(loaded->program);
     if (compilation.diagnostics.hasErrors()) {
         return compilation;
     }

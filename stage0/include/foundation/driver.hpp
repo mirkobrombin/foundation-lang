@@ -5,11 +5,12 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace foundation {
 
 struct Compilation {
-    std::string source;
+    std::vector<DiagnosticSource> sources;
     std::string generatedC;
     Diagnostics diagnostics;
 };

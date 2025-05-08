@@ -1,0 +1,5 @@
+package alias.first
+
+fn First() i32 {
+    1
+}

@@ -1,0 +1,13 @@
+package members.app
+
+import members.lib
+
+fn main() i32 {
+    let value = lib.Make()
+    let state = lib.State()
+    let code = match state {
+        hidden: 0
+        Visible: 1
+    }
+    value.hidden + code
+}

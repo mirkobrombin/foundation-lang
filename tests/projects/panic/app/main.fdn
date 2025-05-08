@@ -1,0 +1,8 @@
+package trace.app
+
+import trace.lib
+
+fn main() i32 {
+    lib.Crash()
+    0
+}

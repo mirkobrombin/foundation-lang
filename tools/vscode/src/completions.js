@@ -1,6 +1,9 @@
 "use strict";
 
 const staticCompletions = [
+    { label: "package", kind: "Keyword" },
+    { label: "import", kind: "Keyword" },
+    { label: "as", kind: "Keyword" },
     { label: "struct", kind: "Keyword" },
     { label: "enum", kind: "Keyword" },
     { label: "fn", kind: "Keyword" },
@@ -130,7 +133,7 @@ function collectTypeParameters(source) {
 }
 
 function collectStructFields(source) {
-    const tokens = [...source.matchAll(/[A-Za-z_][A-Za-z0-9_]*|[<>,]/g)]
+    const tokens = [...source.matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*|[<>,]/g)]
         .map((match) => match[0]);
     const fields = [];
     let offset = 0;
@@ -157,9 +160,120 @@ function collectStructFields(source) {
     return fields;
 }
 
-function collectCompletions(source) {
+function collectPackageDeclarations(source) {
     const masked = maskTrivia(source);
-    const completions = [...staticCompletions];
+    const packageMatch = masked.match(/\bpackage\s+([A-Za-z_][A-Za-z0-9_.]*)/);
+    const imported = [...masked.matchAll(
+        /\bimport\s+([A-Za-z_][A-Za-z0-9_.]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?/g
+    )].map((match) => ({
+        packageName: match[1],
+        alias: match[2] || match[1].split(".").at(-1)
+    }));
+    const functions = [...masked.matchAll(
+        /\bfn\s+([A-Z][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\(([^)]*)\)/g
+    )].map((match) => ({
+        name: match[1],
+        kind: "Function",
+        typeParameters: collectTypeParameters(match[2]),
+        parameters: splitTopLevel(match[3], ",")
+            .map((parameter) => parameter.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s+[A-Za-z_\[]/))
+            .filter(Boolean)
+            .map((parameter) => parameter[1])
+    }));
+    const structs = [...masked.matchAll(
+        /\bstruct\s+([A-Z][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\{/g
+    )].map((match) => ({
+        name: match[1],
+        kind: "Struct",
+        typeParameters: collectTypeParameters(match[2])
+    }));
+    const enums = [...masked.matchAll(
+        /\benum\s+([A-Z][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\{([^}]*)\}/g
+    )].map((match) => ({
+        name: match[1],
+        kind: "Enum",
+        typeParameters: collectTypeParameters(match[2]),
+        variants: [...match[3].matchAll(
+            /(?:^|\s)([A-Z][A-Za-z0-9_]*)(?:\s*\(\s*([^)]*)\))?/g
+        )].map((variant) => ({ name: variant[1], payload: Boolean(variant[2]) }))
+    }));
+
+    return {
+        packageName: packageMatch ? packageMatch[1] : null,
+        imports: imported,
+        declarations: [...functions, ...structs, ...enums]
+    };
+}
+
+function importedCompletions(source, projectSources) {
+    const current = collectPackageDeclarations(source);
+    const packages = new Map();
+    for (const projectSource of projectSources) {
+        const parsed = collectPackageDeclarations(projectSource);
+        if (!parsed.packageName) {
+            continue;
+        }
+        const declarations = packages.get(parsed.packageName) || [];
+        declarations.push(...parsed.declarations);
+        packages.set(parsed.packageName, declarations);
+    }
+
+    const completions = [...packages.keys()].map((packageName) => ({
+        label: packageName,
+        kind: "Module",
+        detail: "Foundation package"
+    }));
+    for (const imported of current.imports) {
+        completions.push({
+            label: imported.alias,
+            kind: "Module",
+            detail: `Alias for ${imported.packageName}`
+        });
+        for (const declaration of packages.get(imported.packageName) || []) {
+            const label = `${imported.alias}.${declaration.name}`;
+            const typeArguments = declaration.typeParameters
+                .map((parameter, index) => `\${${index + 1}:${parameter}}`)
+                .join(", ");
+            const qualified = `${label}${typeArguments ? `<${typeArguments}>` : ""}`;
+            if (declaration.kind === "Function") {
+                const offset = declaration.typeParameters.length;
+                const argumentsText = declaration.parameters
+                    .map((name, index) => `\${${offset + index + 1}:${name}}`)
+                    .join(", ");
+                completions.push({
+                    label,
+                    kind: "Function",
+                    detail: `Exported function from ${imported.packageName}`,
+                    insertText: `${qualified}(${argumentsText})`
+                });
+                continue;
+            }
+            completions.push({
+                label,
+                kind: declaration.kind,
+                detail: `Exported ${declaration.kind.toLowerCase()} from ${imported.packageName}`,
+                insertText: qualified
+            });
+            if (declaration.kind === "Enum") {
+                for (const variant of declaration.variants) {
+                    completions.push({
+                        label: `${label}.${variant.name}`,
+                        kind: "EnumMember",
+                        detail: `Exported variant from ${imported.packageName}`,
+                        insertText: variant.payload
+                            ? `${qualified}.${variant.name}(\${${declaration.typeParameters.length + 1}:value})`
+                            : `${qualified}.${variant.name}`
+                    });
+                }
+            }
+        }
+    }
+    return completions;
+}
+
+function collectCompletions(source, projectSources = []) {
+    const masked = maskTrivia(source);
+    const completions = [...staticCompletions, ...importedCompletions(source, projectSources)];
     const functions = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\(([^)]*)\)/g;
     const structs = /\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\{([^}]*)\}/g;
     const enums = /\benum\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\{([^}]*)\}/g;
@@ -278,4 +392,10 @@ function collectCompletions(source) {
     });
 }
 
-module.exports = { collectCompletions, maskTrivia, splitTopLevel, staticCompletions };
+module.exports = {
+    collectCompletions,
+    collectPackageDeclarations,
+    maskTrivia,
+    splitTopLevel,
+    staticCompletions
+};

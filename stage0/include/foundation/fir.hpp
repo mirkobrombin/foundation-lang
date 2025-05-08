@@ -220,6 +220,8 @@ struct FirLocal {
 
 struct FirFunction {
     std::string name;
+    std::string packageName;
+    std::string sourcePath;
     FirFunctionId source{};
     SourceSpan sourceSpan;
     bool generic{};

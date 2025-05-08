@@ -1,0 +1,43 @@
+package tour.math
+
+struct Pair {
+    Left i32
+    Right i32
+}
+
+struct Box<T> {
+    Value T
+}
+
+enum Status {
+    Ready
+    Failed(i32)
+}
+
+enum Maybe<T> {
+    Empty
+    Value(T)
+}
+
+fn Add(left i32, right i32) i32 {
+    double(left) / 2 + right
+}
+
+fn Identity<T>(value T) T {
+    value
+}
+
+fn BoxOf<T>(value T) Box<T> {
+    Box { Value = value }
+}
+
+fn MakePair(left i32, right i32) Pair {
+    Pair { Left = left Right = right }
+}
+
+fn StatusFor(code i32) Status {
+    if code == 0 {
+        return Status.Ready
+    }
+    Status.Failed(code)
+}

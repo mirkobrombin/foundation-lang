@@ -13,6 +13,12 @@ struct SourceSpan {
     std::size_t length{};
     std::size_t line{1};
     std::size_t column{1};
+    std::size_t source{};
+};
+
+struct DiagnosticSource {
+    std::string path;
+    std::string contents;
 };
 
 struct Diagnostic {
@@ -32,6 +38,8 @@ class Diagnostics {
 };
 
 [[nodiscard]] std::string renderDiagnostics(std::string_view path, std::string_view source,
+                                            const Diagnostics &diagnostics);
+[[nodiscard]] std::string renderDiagnostics(const std::vector<DiagnosticSource> &sources,
                                             const Diagnostics &diagnostics);
 
 } // namespace foundation

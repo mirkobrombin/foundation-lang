@@ -12,7 +12,7 @@ namespace foundation {
 
 class Lexer {
   public:
-    Lexer(std::string_view source, Diagnostics &diagnostics);
+    Lexer(std::string_view source, Diagnostics &diagnostics, std::size_t sourceId = 0);
     [[nodiscard]] std::vector<Token> scan();
 
   private:
@@ -32,6 +32,7 @@ class Lexer {
     std::size_t offset_{};
     std::size_t line_{1};
     std::size_t column_{1};
+    std::size_t sourceId_{};
 };
 
 } // namespace foundation

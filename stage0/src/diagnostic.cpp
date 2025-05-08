@@ -39,8 +39,8 @@ std::string renderDiagnostics(std::string_view path, std::string_view source,
             << diagnostic.code << "]: " << diagnostic.message << '\n';
 
         const auto boundedOffset = std::min(diagnostic.span.offset, source.size());
-        const auto previousOffset = boundedOffset == 0 ? std::string_view::npos : boundedOffset - 1;
-        const auto start = source.rfind('\n', previousOffset);
+        const auto start = boundedOffset == 0 ? std::string_view::npos
+                                              : source.rfind('\n', boundedOffset - 1);
         const auto lineStart = start == std::string_view::npos ? 0 : start + 1;
         const auto end = source.find('\n', boundedOffset);
         const auto lineEnd = end == std::string_view::npos ? source.size() : end;
@@ -73,6 +73,23 @@ std::string renderDiagnostics(std::string_view path, std::string_view source,
         out << '\n';
     }
 
+    return out.str();
+}
+
+std::string renderDiagnostics(const std::vector<DiagnosticSource> &sources,
+                              const Diagnostics &diagnostics) {
+    std::ostringstream out;
+    for (const auto &diagnostic : diagnostics.all()) {
+        if (diagnostic.span.source < sources.size()) {
+            Diagnostics current;
+            current.error(diagnostic.code, diagnostic.message, diagnostic.span);
+            const auto &source = sources[diagnostic.span.source];
+            out << renderDiagnostics(source.path, source.contents, current);
+            continue;
+        }
+        out << "<project>:" << diagnostic.span.line << ':' << diagnostic.span.column
+            << ": error[" << diagnostic.code << "]: " << diagnostic.message << '\n';
+    }
     return out.str();
 }
 

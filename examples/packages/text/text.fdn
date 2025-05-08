@@ -1,0 +1,5 @@
+package tour.text
+
+fn Message() String {
+    "packages work"
+}

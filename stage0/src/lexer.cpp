@@ -84,6 +84,12 @@ const char *tokenName(TokenKind kind) {
         return "integer";
     case TokenKind::String:
         return "string";
+    case TokenKind::Package:
+        return "package";
+    case TokenKind::Import:
+        return "import";
+    case TokenKind::As:
+        return "as";
     case TokenKind::Struct:
         return "struct";
     case TokenKind::Enum:
@@ -168,8 +174,8 @@ const char *tokenName(TokenKind kind) {
     return "token";
 }
 
-Lexer::Lexer(std::string_view source, Diagnostics &diagnostics)
-    : source_(source), diagnostics_(diagnostics) {}
+Lexer::Lexer(std::string_view source, Diagnostics &diagnostics, std::size_t sourceId)
+    : source_(source), diagnostics_(diagnostics), sourceId_(sourceId) {}
 
 std::vector<Token> Lexer::scan() {
     std::vector<Token> tokens;
@@ -225,7 +231,7 @@ Token Lexer::next() {
         const auto line = line_;
         const auto column = column_;
         if (atEnd()) {
-            return {TokenKind::Eof, {}, {offset_, 0, line_, column_}};
+            return {TokenKind::Eof, {}, {offset_, 0, line_, column_, sourceId_}};
         }
 
         const auto value = advance();
@@ -323,7 +329,13 @@ Token Lexer::identifier() {
 
     const auto text = std::string(source_.substr(start, offset_ - start));
     auto kind = TokenKind::Identifier;
-    if (text == "struct") {
+    if (text == "package") {
+        kind = TokenKind::Package;
+    } else if (text == "import") {
+        kind = TokenKind::Import;
+    } else if (text == "as") {
+        kind = TokenKind::As;
+    } else if (text == "struct") {
         kind = TokenKind::Struct;
     } else if (text == "enum") {
         kind = TokenKind::Enum;
@@ -379,7 +391,7 @@ Token Lexer::string() {
         auto current = advance();
         if (current == '\0') {
             diagnostics_.error("FDN0004", "NUL is not allowed in a string literal",
-                               {offset_ - 1, 1, line_, column_ - 1});
+                               {offset_ - 1, 1, line_, column_ - 1, sourceId_});
             continue;
         }
         if (current != '\\') {
@@ -415,7 +427,7 @@ Token Lexer::string() {
             break;
         default:
             diagnostics_.error("FDN0003", "invalid string escape",
-                               {escapeStart, 2, escapeLine, escapeColumn});
+                               {escapeStart, 2, escapeLine, escapeColumn, sourceId_});
             value.push_back(escaped);
             break;
         }
@@ -434,7 +446,7 @@ Token Lexer::string() {
 }
 
 SourceSpan Lexer::spanFrom(std::size_t offset, std::size_t line, std::size_t column) const {
-    return {offset, offset_ - offset, line, column};
+    return {offset, offset_ - offset, line, column, sourceId_};
 }
 
 } // namespace foundation

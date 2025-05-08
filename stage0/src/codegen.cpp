@@ -140,6 +140,11 @@ std::string safeName(std::string_view name) {
     return result;
 }
 
+std::string_view unqualifiedName(std::string_view name) {
+    const auto separator = name.rfind('.');
+    return name.substr(separator == std::string_view::npos ? 0 : separator + 1);
+}
+
 std::string functionName(const FirProgram &program, FirFunctionId id) {
     if (id == program.main) {
         return "main";
@@ -1638,8 +1643,12 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
         emitSignature(out, program, index);
         out << " {\n";
         out << "    fdn_frame fdn_frame_current;\n";
-        out << "    fdn_frame_enter(&fdn_frame_current, \"main\", "
-            << cString(function.name) << ", " << cString(sourcePath) << ", "
+        const auto frameSource = function.sourcePath.empty() ? sourcePath : function.sourcePath;
+        const auto framePackage = function.packageName.empty()
+                                      ? std::string_view("main")
+                                      : std::string_view(function.packageName);
+        out << "    fdn_frame_enter(&fdn_frame_current, " << cString(framePackage) << ", "
+            << cString(unqualifiedName(function.name)) << ", " << cString(frameSource) << ", "
             << function.sourceSpan.line << ", " << function.sourceSpan.column << ");\n";
         FunctionEmitter emitter(out, program, function);
         for (const auto parameter : function.parameters) {

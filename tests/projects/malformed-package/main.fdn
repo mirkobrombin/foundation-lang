@@ -1,0 +1,5 @@
+package malformed.
+
+fn main() i32 {
+    0
+}

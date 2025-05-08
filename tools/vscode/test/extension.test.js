@@ -43,6 +43,9 @@ test("grammar and completions track compiler keywords", () => {
     const completionLabels = new Set(staticCompletions.map((entry) => entry.label));
 
     assert.deepEqual(compilerKeywords, [
+        "package",
+        "import",
+        "as",
         "struct",
         "enum",
         "fn",
@@ -92,6 +95,61 @@ test("collects enums and dot-qualified variants", () => {
     assert.equal(byLabel.get("Outcome").kind, "Enum");
     assert.equal(byLabel.get("Outcome.Empty").insertText, "Outcome.Empty");
     assert.equal(byLabel.get("Outcome.Value").insertText, "Outcome.Value(${1:value})");
+});
+
+test("collects packages and exported project declarations", () => {
+    const application = `
+        package example.app
+        import example.math as math
+        fn main() i32 { math.Add(1, 2) }
+    `;
+    const library = `
+        package example.math
+        struct Box<T> { Value T hidden i32 }
+        enum Status<T> { Ready Value(T) hidden }
+        fn Add(left i32, right i32) i32 { left + right }
+        fn hidden() i32 { 0 }
+    `;
+    const completions = collectCompletions(application, [application, library]);
+    const byLabel = new Map(completions.map((entry) => [entry.label, entry]));
+
+    assert.equal(byLabel.get("example.math").kind, "Module");
+    assert.equal(byLabel.get("math").detail, "Alias for example.math");
+    assert.equal(byLabel.get("math.Add").insertText, "math.Add(${1:left}, ${2:right})");
+    assert.equal(byLabel.get("math.Box").insertText, "math.Box<${1:T}>");
+    assert.equal(byLabel.get("math.Status.Ready").kind, "EnumMember");
+    assert.equal(
+        byLabel.get("math.Status.Value").insertText,
+        "math.Status<${1:T}>.Value(${2:value})"
+    );
+    assert.equal(byLabel.has("math.hidden"), false);
+
+    const grammar = readJson("syntaxes/foundation.tmLanguage.json");
+    assert.match(
+        grammar.repository.packageDeclarations.patterns[0].captures[2].name,
+        /namespace/
+    );
+    const packageDeclaration = new RegExp(
+        grammar.repository.packageDeclarations.patterns[0].match
+    );
+    assert.equal(
+        "package example.app as alias".match(packageDeclaration)[0],
+        "package example.app"
+    );
+    const importDeclaration = new RegExp(
+        grammar.repository.packageDeclarations.patterns[1].match
+    );
+    assert.match("import example.math as math", importDeclaration);
+    assert.match(
+        grammar.repository.qualifiedFunctionCalls.patterns[0].captures[3].name,
+        /function\.call/
+    );
+    const qualifiedType = new RegExp(grammar.repository.qualifiedTypes.patterns[0].match);
+    assert.match("math.Box<i32> {", qualifiedType);
+    assert.doesNotMatch("value.Visible + 1", qualifiedType);
+    const typedVariant = new RegExp(grammar.repository.enumConstructors.patterns[0].match);
+    assert.match("Status.Ready", typedVariant);
+    assert.doesNotMatch("value.Visible", typedVariant);
 });
 
 test("collects generic declarations and type parameters", () => {
@@ -166,6 +224,8 @@ test("ships Result handling and panic snippets", () => {
     assert.equal(snippets["View slice parameter"].prefix, "viewslice");
     assert.equal(snippets["Edit slice parameter"].prefix, "editslice");
     assert.equal(snippets["Indexed assignment"].prefix, "indexset");
+    assert.equal(snippets["Package declaration"].prefix, "package");
+    assert.equal(snippets["Package import"].prefix, "import");
 });
 
 test("collects declarations that use arrays and slices", () => {
@@ -190,15 +250,21 @@ test("collects structs and their fields", () => {
         struct User {
             id i32
             name String
+            group example.Group
         }
         fn main() i32 { 0 }
     `);
     const byLabel = new Map(completions.map((entry) => [entry.label, entry]));
 
     assert.equal(byLabel.get("User").kind, "Struct");
-    assert.equal(byLabel.get("User").insertText, "User { id = ${1:id} name = ${2:name} }");
+    assert.equal(
+        byLabel.get("User").insertText,
+        "User { id = ${1:id} name = ${2:name} group = ${3:group} }"
+    );
     assert.equal(byLabel.get("id").detail, "Field of User");
     assert.equal(byLabel.get("name").detail, "Field of User");
+    assert.equal(byLabel.get("group").detail, "Field of User");
+    assert.equal(byLabel.has("Group"), false);
 });
 
 test("collects functions, parameters, and local bindings", () => {

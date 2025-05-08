@@ -1,0 +1,7 @@
+package malformed.app
+
+import malformed.
+
+fn main() i32 {
+    0
+}

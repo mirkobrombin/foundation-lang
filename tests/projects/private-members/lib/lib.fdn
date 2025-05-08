@@ -1,0 +1,19 @@
+package members.lib
+
+struct PublicValue {
+    hidden i32
+    Visible i32
+}
+
+enum PublicState {
+    hidden
+    Visible
+}
+
+fn Make() PublicValue {
+    PublicValue { hidden = 1 Visible = 2 }
+}
+
+fn State() PublicState {
+    PublicState.hidden
+}

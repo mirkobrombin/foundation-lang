@@ -1262,6 +1262,11 @@ class Analyzer {
                                    initializer.span);
                 continue;
             }
+            if (declaration.packageName != currentPackage() &&
+                !declaration.fields[*field].exported) {
+                diagnostics_.error("FDN3008", "field " + initializer.name + " is not exported",
+                                   initializer.span);
+            }
             if (initialized[*field]) {
                 static_cast<void>(analyzeExpression(initializer.value));
                 diagnostics_.error("FDN2026", "duplicate field initializer " + initializer.name,
@@ -1311,16 +1316,26 @@ class Analyzer {
 
         const auto &baseExpression = program_.expressions[*member.base];
         if (const auto *name = std::get_if<NameExpression>(&baseExpression.value);
-            name != nullptr && !lookupLocal(name->name).has_value() &&
-            enums_.contains(name->name)) {
-            return analyzeEnum(id, member,
-                               TypeSyntax{name->name, name->typeArguments, baseExpression.span},
-                               expected, span);
+            name != nullptr && !lookupLocal(name->name).has_value()) {
+            auto enumName = name->name;
+            if (!enums_.contains(enumName) && enumName.find('.') == std::string::npos &&
+                !currentPackage().empty()) {
+                enumName = std::string(currentPackage()) + '.' + enumName;
+            }
+            if (enums_.contains(enumName)) {
+                return analyzeEnum(
+                    id, member,
+                    TypeSyntax{std::move(enumName), name->typeArguments, baseExpression.span},
+                    expected, span);
+            }
         }
 
         if (member.invoked) {
-            if (member.payload.has_value()) {
-                static_cast<void>(analyzeExpression(*member.payload));
+            if (!member.typeArguments.empty()) {
+                diagnostics_.error("FDN2043", "member does not accept type arguments", span);
+            }
+            for (const auto argument : member.arguments) {
+                static_cast<void>(analyzeExpression(argument));
             }
             diagnostics_.error("FDN2050", "member functions are not available", span);
             return invalidType;
@@ -1343,6 +1358,11 @@ class Analyzer {
         if (!resolved.has_value()) {
             diagnostics_.error("FDN2025", "unknown field " + member.member, span);
             return invalidType;
+        }
+        const auto &declaration = program_.structs[base.declaration];
+        if (declaration.packageName != currentPackage() &&
+            !declaration.fields[*resolved].exported) {
+            diagnostics_.error("FDN3008", "field " + member.member + " is not exported", span);
         }
         model_.expressionFields[id] = *resolved;
         const auto result =
@@ -1393,6 +1413,9 @@ class Analyzer {
     Type analyzeEnum(AstExpressionId id, const MemberExpression &constructor,
                      std::optional<TypeSyntax> explicitType, std::optional<Type> contextualType,
                      SourceSpan span) {
+        if (!constructor.typeArguments.empty()) {
+            diagnostics_.error("FDN2043", "enum variant does not accept type arguments", span);
+        }
         std::optional<FirEnumId> enumType;
         if (explicitType.has_value()) {
             const auto found = enums_.find(explicitType->name);
@@ -1404,8 +1427,8 @@ class Analyzer {
             enumType = contextualType->declaration;
         }
         if (!enumType.has_value()) {
-            if (constructor.payload.has_value()) {
-                static_cast<void>(analyzeExpression(*constructor.payload));
+            for (const auto argument : constructor.arguments) {
+                static_cast<void>(analyzeExpression(argument));
             }
             diagnostics_.error("FDN2034", "cannot resolve enum for ." + constructor.member,
                                span);
@@ -1413,14 +1436,19 @@ class Analyzer {
         }
         const auto variant = findVariant(*enumType, constructor.member);
         if (!variant.has_value()) {
-            if (constructor.payload.has_value()) {
-                static_cast<void>(analyzeExpression(*constructor.payload));
+            for (const auto argument : constructor.arguments) {
+                static_cast<void>(analyzeExpression(argument));
             }
             diagnostics_.error("FDN2035", "unknown variant " + constructor.member, span);
             return invalidType;
         }
 
         const auto &declaration = program_.enums[*enumType];
+        if (declaration.packageName != currentPackage() &&
+            !declaration.variants[*variant].exported) {
+            diagnostics_.error("FDN3008", "variant " + constructor.member + " is not exported",
+                               span);
+        }
         std::vector<std::optional<Type>> inferred(declaration.typeParameters.size());
         if (explicitType.has_value() &&
             (!explicitType->arguments.empty() || declaration.typeParameters.empty())) {
@@ -1438,12 +1466,14 @@ class Analyzer {
         }
         const auto payloadPattern = model_.enums[*enumType].payloadTypes[*variant];
         std::optional<Type> payloadType;
-        if (payloadPattern.has_value() && !constructor.payload.has_value()) {
+        if (payloadPattern.has_value() && constructor.arguments.empty()) {
             diagnostics_.error("FDN2036", "variant requires a payload", span);
-        } else if (!payloadPattern.has_value() && constructor.payload.has_value()) {
-            static_cast<void>(analyzeExpression(*constructor.payload));
+        } else if (!payloadPattern.has_value() && !constructor.arguments.empty()) {
+            for (const auto argument : constructor.arguments) {
+                static_cast<void>(analyzeExpression(argument));
+            }
             diagnostics_.error("FDN2036", "unit variant does not accept a payload", span);
-        } else if (payloadPattern.has_value()) {
+        } else if (payloadPattern.has_value() && constructor.arguments.size() == 1) {
             std::vector<Type> knownArguments;
             knownArguments.reserve(inferred.size());
             auto complete = true;
@@ -1455,8 +1485,13 @@ class Analyzer {
                                              ? std::optional<Type>{substitute(*payloadPattern,
                                                                               knownArguments)}
                                              : std::nullopt;
-            payloadType = analyzeExpression(*constructor.payload, expectedPayload);
+            payloadType = analyzeExpression(constructor.arguments.front(), expectedPayload);
             inferType(*payloadPattern, *payloadType, inferred, span, "variant payload");
+        } else if (payloadPattern.has_value()) {
+            for (const auto argument : constructor.arguments) {
+                static_cast<void>(analyzeExpression(argument));
+            }
+            diagnostics_.error("FDN2036", "variant accepts one payload", span);
         }
         const auto arguments = completeInference(inferred, declaration.typeParameters, span,
                                                  declaration.name);
@@ -1504,6 +1539,11 @@ class Analyzer {
                                    arm.span);
             } else {
                 covered[*variant] = true;
+                if (declaration.packageName != currentPackage() &&
+                    !declaration.variants[*variant].exported) {
+                    diagnostics_.error("FDN3008", "variant " + arm.variant + " is not exported",
+                                       arm.span);
+                }
             }
 
             scopes_.emplace_back();
@@ -1737,6 +1777,12 @@ class Analyzer {
         return name == "void" || name == "i32" || name == "bool" || name == "String" ||
                name == "Option" || name == "Result" || name == "own" || name == "view" ||
                name == "edit";
+    }
+
+    std::string_view currentPackage() const {
+        return currentFunction_ < program_.functions.size()
+                   ? std::string_view(program_.functions[currentFunction_].packageName)
+                   : std::string_view{};
     }
 
     std::optional<FirFieldId> findField(FirStructId type, std::string_view name) const {

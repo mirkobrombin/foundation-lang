@@ -1,0 +1,5 @@
+package trace.lib
+
+fn Crash() void {
+    panic("package trace")
+}

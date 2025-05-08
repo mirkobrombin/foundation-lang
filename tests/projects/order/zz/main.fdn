@@ -1,0 +1,6 @@
+package order.app
+
+fn main() i32 {
+    let CollisionState = Collision { Value = 6 }
+    First() + Middle() + Last() - CollisionState.Value
+}

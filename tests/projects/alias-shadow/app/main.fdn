@@ -1,0 +1,11 @@
+package shadow.app
+
+import shadow.lib
+
+fn use(lib i32) i32 {
+    lib
+}
+
+fn main() i32 {
+    use(0)
+}

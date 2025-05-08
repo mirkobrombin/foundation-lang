@@ -1,0 +1,8 @@
+package repeated.app
+
+import repeated.lib as first
+import repeated.lib as second
+
+fn main() i32 {
+    first.Value() + second.Value() - 2
+}

@@ -1,4 +1,14 @@
 {
+    "Package declaration": {
+        "prefix": "package",
+        "body": "package ${1:example.app}",
+        "description": "Declare the source package"
+    },
+    "Package import": {
+        "prefix": "import",
+        "body": "import ${1:example.library}${2: as ${3:library}}",
+        "description": "Import a Foundation package"
+    },
     "Enum": {
         "prefix": "enum",
         "body": [

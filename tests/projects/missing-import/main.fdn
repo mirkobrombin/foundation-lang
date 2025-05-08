@@ -1,0 +1,7 @@
+package missing.app
+
+import missing.library
+
+fn main() i32 {
+    0
+}

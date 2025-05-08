@@ -1,0 +1,10 @@
+package matchshadow.app
+
+import matchshadow.lib
+
+fn main() i32 {
+    let value = lib.Make()
+    match value {
+        Value(lib): lib
+    }
+}

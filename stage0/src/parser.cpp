@@ -20,11 +20,31 @@ bool isExported(const std::string &name) {
 
 } // namespace
 
-Parser::Parser(std::vector<Token> tokens, Diagnostics &diagnostics)
-    : tokens_(std::move(tokens)), diagnostics_(diagnostics) {}
+Parser::Parser(std::vector<Token> tokens, Diagnostics &diagnostics, bool installBuiltins)
+    : tokens_(std::move(tokens)), diagnostics_(diagnostics), installBuiltins_(installBuiltins) {}
 
 Program Parser::parse() {
-    installBuiltins();
+    if (installBuiltins_) {
+        installBuiltins();
+    }
+    if (match(TokenKind::Package)) {
+        const auto [name, span] =
+            qualifiedName("FDN1090", "expected package name after package");
+        program_.packageName = name;
+        program_.hasPackageDeclaration = true;
+        if (name.empty()) {
+            diagnostics_.error("FDN1090", "package name cannot be empty", span);
+        }
+    }
+    while (match(TokenKind::Import)) {
+        const auto [name, span] =
+            qualifiedName("FDN1091", "expected package name after import");
+        std::string alias;
+        if (match(TokenKind::As)) {
+            alias = expect(TokenKind::Identifier, "FDN1092", "expected import alias after as").text;
+        }
+        program_.imports.push_back({name, std::move(alias), span});
+    }
     while (!atEnd()) {
         if (check(TokenKind::Struct)) {
             program_.structs.push_back(structDeclaration());
@@ -43,6 +63,18 @@ Program Parser::parse() {
         advance();
     }
     return std::move(program_);
+}
+
+std::pair<std::string, SourceSpan> Parser::qualifiedName(const char *code,
+                                                        const char *message) {
+    const auto first = expect(TokenKind::Identifier, code, message);
+    std::string name = first.text;
+    while (match(TokenKind::Dot)) {
+        const auto segment = expect(TokenKind::Identifier, code, message);
+        name += '.';
+        name += segment.text;
+    }
+    return {std::move(name), first.span};
 }
 
 bool Parser::atEnd() const { return current().kind == TokenKind::Eof; }
@@ -166,13 +198,13 @@ TypeSyntax Parser::typeSyntax(const char *code, const char *message) {
         expect(TokenKind::RightBracket, "FDN1083", "expected ] after slice element type");
         return type;
     }
-    const auto name = expect(TokenKind::Identifier, code, message);
-    TypeSyntax type{name.text, {}, name.span};
+    const auto [qualified, span] = qualifiedName(code, message);
+    TypeSyntax type{qualified, {}, span};
     if (!match(TokenKind::Less)) {
         return type;
     }
     if (typeDepth_ >= maxTypeDepth) {
-        diagnostics_.error("FDN1065", "type nesting exceeds 128 levels", name.span);
+        diagnostics_.error("FDN1065", "type nesting exceeds 128 levels", span);
         std::size_t depth = 1;
         while (!atEnd() && depth != 0) {
             if (match(TokenKind::Less)) {
@@ -213,7 +245,7 @@ StructDeclaration Parser::structDeclaration() {
     }
     expect(TokenKind::RightBrace, "FDN1037", "expected } after struct declaration");
     return {name.text, std::move(parameters), std::move(fields), isExported(name.text),
-            start.span};
+            start.span, {}};
 }
 
 EnumDeclaration Parser::enumDeclaration() {
@@ -240,7 +272,7 @@ EnumDeclaration Parser::enumDeclaration() {
     }
     expect(TokenKind::RightBrace, "FDN1050", "expected } after enum declaration");
     return {name.text, std::move(parameters), std::move(variants), isExported(name.text),
-            BuiltinEnumKind::None, start.span};
+            BuiltinEnumKind::None, start.span, {}};
 }
 
 Function Parser::function() {
@@ -260,7 +292,7 @@ Function Parser::function() {
     const auto tailResult = returnType.name != "void" || !returnType.arguments.empty();
     const auto body = block(tailResult);
     return {name.text, std::move(typeParameters), std::move(parameters), std::move(returnType), body,
-            isExported(name.text), start.span};
+            isExported(name.text), start.span, {}, {}};
 }
 
 Parameter Parser::parameter() {
@@ -600,6 +632,20 @@ AstExpressionId Parser::primary() {
         }
         break;
     }
+    if (structLiteralsAllowed_ && check(TokenKind::LeftBrace) &&
+        peek(1).kind == TokenKind::Identifier && peek(2).kind == TokenKind::Equal) {
+        const auto *member = std::get_if<MemberExpression>(&program_.expressions[result].value);
+        if (member != nullptr && member->base.has_value() && !member->invoked) {
+            const auto *base =
+                std::get_if<NameExpression>(&program_.expressions[*member->base].value);
+            if (base != nullptr && base->typeArguments.empty()) {
+                TypeSyntax type{base->name + '.' + member->member, member->typeArguments,
+                                program_.expressions[*member->base].span};
+                advance();
+                result = finishStruct(std::move(type));
+            }
+        }
+    }
     return result;
 }
 
@@ -634,16 +680,28 @@ AstExpressionId Parser::finishStruct(TypeSyntax type) {
 
 AstExpressionId Parser::finishMember(std::optional<AstExpressionId> base) {
     const auto member = expect(TokenKind::Identifier, "FDN1051", "expected member name");
+    std::vector<TypeSyntax> typeArguments;
+    if (startsGenericPrimary()) {
+        expect(TokenKind::Less, "FDN1063", "expected < before type arguments");
+        do {
+            typeArguments.push_back(typeSyntax("FDN1063", "expected type argument"));
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::Greater, "FDN1064", "expected > after type arguments");
+    }
     auto invoked = false;
-    std::optional<AstExpressionId> payload;
+    std::vector<AstExpressionId> arguments;
     if (match(TokenKind::LeftParen)) {
         invoked = true;
         if (!check(TokenKind::RightParen)) {
-            payload = expression();
+            do {
+                arguments.push_back(expression());
+            } while (match(TokenKind::Comma));
         }
         expect(TokenKind::RightParen, "FDN1052", "expected ) after member invocation");
     }
-    return addExpression(MemberExpression{base, member.text, invoked, payload}, member.span);
+    return addExpression(MemberExpression{base, member.text, std::move(typeArguments), invoked,
+                                          std::move(arguments)},
+                         member.span);
 }
 
 AstExpressionId Parser::finishArray(const Token &start) {
@@ -716,6 +774,7 @@ void Parser::installBuiltins() {
         true,
         BuiltinEnumKind::Option,
         span,
+        {},
     });
 
     const TypeSyntax resultValue{"T", {}, span};
@@ -728,6 +787,7 @@ void Parser::installBuiltins() {
         true,
         BuiltinEnumKind::Result,
         span,
+        {},
     });
 }
 

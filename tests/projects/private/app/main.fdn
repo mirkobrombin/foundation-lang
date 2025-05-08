@@ -1,0 +1,7 @@
+package private.app
+
+import private.lib
+
+fn main() i32 {
+    lib.hidden()
+}

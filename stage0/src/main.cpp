@@ -8,10 +8,10 @@ namespace {
 
 void printUsage(std::ostream &output) {
     output << "usage:\n"
-           << "  foundationc check <source>\n"
-           << "  foundationc emit-c <source> -o <output.c>\n"
-           << "  foundationc build <source> -o <executable>\n"
-           << "  foundationc run <source>\n"
+           << "  foundationc check <source-or-project>\n"
+           << "  foundationc emit-c <source-or-project> -o <output.c>\n"
+           << "  foundationc build <source-or-project> -o <executable>\n"
+           << "  foundationc run <source-or-project>\n"
            << "  foundationc version\n";
 }
 
