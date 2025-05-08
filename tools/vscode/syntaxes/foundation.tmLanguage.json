@@ -132,7 +132,21 @@
                         "4": { "name": "entity.name.type.parameter.foundation" },
                         "5": { "name": "punctuation.definition.type-parameters.end.foundation" },
                         "6": { "name": "keyword.declaration.implementation.foundation" },
-                        "7": { "name": "entity.other.inherited-class.foundation" },
+                        "7": {
+                            "name": "meta.contract.implementation.foundation",
+                            "patterns": [
+                                {
+                                    "match": "\\b(by)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                                    "captures": {
+                                        "1": { "name": "keyword.declaration.delegation.foundation" },
+                                        "2": { "name": "variable.other.member.delegate.foundation" }
+                                    }
+                                },
+                                { "include": "#genericTypeApplications" },
+                                { "include": "#nominalTypes" },
+                                { "include": "#punctuation" }
+                            ]
+                        },
                         "8": { "name": "punctuation.section.block.begin.foundation" }
                     },
                     "end": "\\}",
@@ -193,14 +207,23 @@
             "patterns": [
                 {
                     "name": "meta.contract.definition.foundation",
-                    "begin": "\\b(contract)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(<)\\s*([A-Za-z_][A-Za-z0-9_]*(?:\\s*,\\s*[A-Za-z_][A-Za-z0-9_]*)*)\\s*(>))?\\s*(\\{)",
+                    "begin": "\\b(contract)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(<)\\s*([A-Za-z_][A-Za-z0-9_]*(?:\\s*,\\s*[A-Za-z_][A-Za-z0-9_]*)*)\\s*(>))?(?:\\s+(extends)\\s+([^\\{]+?))?\\s*(\\{)",
                     "beginCaptures": {
                         "1": { "name": "keyword.declaration.contract.foundation" },
                         "2": { "name": "entity.name.type.interface.foundation" },
                         "3": { "name": "punctuation.definition.type-parameters.begin.foundation" },
                         "4": { "name": "entity.name.type.parameter.foundation" },
                         "5": { "name": "punctuation.definition.type-parameters.end.foundation" },
-                        "6": { "name": "punctuation.section.block.begin.foundation" }
+                        "6": { "name": "keyword.declaration.inheritance.foundation" },
+                        "7": {
+                            "name": "meta.contract.parents.foundation",
+                            "patterns": [
+                                { "include": "#genericTypeApplications" },
+                                { "include": "#nominalTypes" },
+                                { "include": "#punctuation" }
+                            ]
+                        },
+                        "8": { "name": "punctuation.section.block.begin.foundation" }
                     },
                     "end": "\\}",
                     "endCaptures": {
@@ -388,7 +411,7 @@
             "patterns": [
                 {
                     "name": "keyword.declaration.foundation",
-                    "match": "\\b(extern|struct|enum|contract|implements|fn)\\b"
+                    "match": "\\b(extern|struct|enum|contract|implements|extends|by|fn)\\b"
                 },
                 {
                     "name": "keyword.declaration.module.foundation",

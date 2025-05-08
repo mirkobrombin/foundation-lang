@@ -1,0 +1,11 @@
+contract First {
+    fn value(view) i32 { 1 }
+}
+
+contract Second {
+    fn value(view) i32 { 2 }
+}
+
+contract Invalid extends First, Second {}
+
+fn main() i32 { 0 }

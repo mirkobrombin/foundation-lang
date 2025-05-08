@@ -33,12 +33,21 @@ struct CallTarget {
     std::size_t contract{};
     std::size_t method{};
     FirLocalId local{};
+    struct ContractMethodTarget {
+        FirFunctionId function{};
+        std::vector<Type> typeArguments;
+        bool contractDefault{};
+        Type defaultContract{invalidType};
+        std::vector<FirFieldId> delegatePath;
+    };
     struct ContractConversion {
+        Type sourceType{invalidType};
         Type concreteType{invalidType};
         Type contractType{invalidType};
         Type targetType{invalidType};
-        std::vector<FirFunctionId> methods;
+        std::vector<ContractMethodTarget> methods;
     };
+    std::optional<ContractConversion> receiverConversion;
     std::vector<std::optional<ContractConversion>> argumentConversions;
 };
 
@@ -75,6 +84,7 @@ struct SemanticStruct {
     std::size_t typeParameterCount{};
     std::vector<Type> fieldTypes;
     std::vector<Type> implementations;
+    std::vector<std::optional<FirFieldId>> implementationDelegates;
 };
 
 struct SemanticEnum {
@@ -83,13 +93,20 @@ struct SemanticEnum {
 };
 
 struct SemanticContractMethod {
+    std::string name;
     ReceiverKind receiver{ReceiverKind::View};
     Type returnType{invalidType};
     std::vector<Type> parameterTypes;
+    bool exported{};
+    SourceSpan span;
+    std::size_t originContract{};
+    std::vector<Type> originArguments;
+    std::optional<AstFunctionId> defaultFunction;
 };
 
 struct SemanticContract {
     std::size_t typeParameterCount{};
+    std::vector<Type> parents;
     std::vector<SemanticContractMethod> methods;
 };
 
@@ -124,6 +141,7 @@ struct OwnershipTarget {
 
 struct SemanticModel {
     std::vector<Type> expressionTypes;
+    std::vector<std::optional<CallTarget::ContractConversion>> expressionContractConversions;
     std::vector<std::optional<FirLocalId>> expressionLocals;
     std::vector<std::optional<CallTarget>> callTargets;
     std::vector<std::optional<StructLiteralTarget>> structTargets;

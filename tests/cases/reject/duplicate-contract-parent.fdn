@@ -1,0 +1,7 @@
+contract Parent {
+    fn read(view) i32
+}
+
+contract Invalid extends Parent, Parent {}
+
+fn main() i32 { 0 }

@@ -16,6 +16,8 @@ const staticCompletions = [
     { label: "enum", kind: "Keyword" },
     { label: "contract", kind: "Keyword" },
     { label: "implements", kind: "Keyword" },
+    { label: "extends", kind: "Keyword", detail: "Inherit contract requirements" },
+    { label: "by", kind: "Keyword", detail: "Delegate a contract to a field" },
     { label: "fn", kind: "Keyword" },
     { label: "let", kind: "Keyword" },
     { label: "var", kind: "Keyword" },
@@ -304,7 +306,7 @@ function collectBracedDeclarations(source, keyword) {
     const declarations = [];
     const header = new RegExp(
         `\\b${keyword}\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*<([^>{}]*)>)?` +
-        "(?:\\s+implements\\s+([^{}]+?))?\\s*\\{",
+        "(?:\\s+(?:implements|extends)\\s+([^{}]+?))?\\s*\\{",
         "g"
     );
     let match;
@@ -356,6 +358,9 @@ function collectMethods(source, owner, contract = false) {
         kind: "Method",
         owner,
         contract,
+        defaultMethod: contract && /^[^\n{]*\{/.test(
+            source.slice(match.index + match[0].length)
+        ),
         parameters: collectParameters(match[2])
     }));
 }
@@ -589,7 +594,9 @@ function collectCompletions(source, projectSources = []) {
         completions.push({
             label: name,
             kind: "Struct",
-            detail: typeParameters.length === 0
+            detail: declaration.implementations
+                ? `Foundation struct implements ${declaration.implementations.trim()}`
+                : typeParameters.length === 0
                 ? "Foundation struct"
                 : `Foundation struct<${typeParameters.join(", ")}>`,
             insertText: `${name} { ${fields.map((field, index) => `${field} = \${${index + 1}:${field}}`).join(" ")} }`
@@ -651,7 +658,9 @@ function collectCompletions(source, projectSources = []) {
         completions.push({
             label: name,
             kind: "Contract",
-            detail: typeParameters.length === 0
+            detail: declaration.implementations
+                ? `Foundation contract extends ${declaration.implementations.trim()}`
+                : typeParameters.length === 0
                 ? "Foundation contract"
                 : `Foundation contract<${typeParameters.join(", ")}>`
         });
@@ -666,7 +675,9 @@ function collectCompletions(source, projectSources = []) {
             completions.push({
                 label: method.name,
                 kind: "Method",
-                detail: `Contract method of ${name}`,
+                detail: method.defaultMethod
+                    ? `Default contract method of ${name}`
+                    : `Contract method of ${name}`,
                 insertText: `${method.name}(${method.parameters.map((parameter, index) =>
                     `\${${index + 1}:${parameter}}`).join(", ")})`
             });

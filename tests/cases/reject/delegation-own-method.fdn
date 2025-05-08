@@ -1,0 +1,15 @@
+contract Consumer {
+    fn take(own) i32
+}
+
+struct Inner implements Consumer {
+    value i32
+
+    fn take(own) i32 { self.value }
+}
+
+struct Invalid implements Consumer by inner {
+    inner Inner
+}
+
+fn main() i32 { 0 }

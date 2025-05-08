@@ -100,6 +100,10 @@ const char *tokenName(TokenKind kind) {
         return "contract";
     case TokenKind::Implements:
         return "implements";
+    case TokenKind::Extends:
+        return "extends";
+    case TokenKind::By:
+        return "by";
     case TokenKind::Fn:
         return "fn";
     case TokenKind::Let:
@@ -361,6 +365,10 @@ Token Lexer::identifier() {
         kind = TokenKind::Contract;
     } else if (text == "implements") {
         kind = TokenKind::Implements;
+    } else if (text == "extends") {
+        kind = TokenKind::Extends;
+    } else if (text == "by") {
+        kind = TokenKind::By;
     } else if (text == "fn") {
         kind = TokenKind::Fn;
     } else if (text == "let") {

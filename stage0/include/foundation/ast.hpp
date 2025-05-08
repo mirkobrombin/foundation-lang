@@ -265,10 +265,16 @@ struct StructField {
     SourceSpan span;
 };
 
+struct StructImplementation {
+    TypeSyntax contract;
+    std::optional<std::string> delegate;
+    SourceSpan span;
+};
+
 struct StructDeclaration {
     std::string name;
     std::vector<std::string> typeParameters;
-    std::vector<TypeSyntax> implementations;
+    std::vector<StructImplementation> implementations;
     std::vector<StructField> fields;
     bool exported{};
     SourceSpan span;
@@ -282,11 +288,13 @@ struct ContractMethod {
     TypeSyntax returnType;
     bool exported{};
     SourceSpan span;
+    std::optional<AstFunctionId> defaultFunction;
 };
 
 struct ContractDeclaration {
     std::string name;
     std::vector<std::string> typeParameters;
+    std::vector<TypeSyntax> parents;
     std::vector<ContractMethod> methods;
     bool exported{};
     SourceSpan span;

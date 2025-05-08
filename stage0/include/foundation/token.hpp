@@ -20,6 +20,8 @@ enum class TokenKind {
     Enum,
     Contract,
     Implements,
+    Extends,
+    By,
     Fn,
     Let,
     Var,

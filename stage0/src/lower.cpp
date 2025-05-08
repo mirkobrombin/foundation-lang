@@ -64,6 +64,17 @@ FirCaptureMode lowerCapture(CaptureMode mode) {
     std::terminate();
 }
 
+std::vector<FirContractMethodTarget> lowerContractMethods(
+    const std::vector<CallTarget::ContractMethodTarget> &methods) {
+    std::vector<FirContractMethodTarget> result;
+    result.reserve(methods.size());
+    for (const auto &method : methods) {
+        result.push_back({method.function, method.typeArguments, method.contractDefault,
+                          method.defaultContract, method.delegatePath});
+    }
+    return result;
+}
+
 FirBinaryOperator lowerBinary(BinaryOperator operation) {
     switch (operation) {
     case BinaryOperator::Add:
@@ -140,13 +151,10 @@ class Lowerer {
             type.name = program_.contracts[index].name;
             type.typeParameterCount = program_.contracts[index].typeParameters.size();
             type.exported = program_.contracts[index].exported;
-            for (std::size_t method = 0; method < program_.contracts[index].methods.size();
-                 ++method) {
-                const auto &source = program_.contracts[index].methods[method];
-                const auto &semantic = model_.contracts[index].methods[method];
-                type.methods.push_back({lowerReceiver(source.receiver), source.name,
+            for (const auto &semantic : model_.contracts[index].methods) {
+                type.methods.push_back({lowerReceiver(semantic.receiver), semantic.name,
                                         semantic.returnType, semantic.parameterTypes,
-                                        source.exported});
+                                        semantic.exported});
             }
             result.contracts.push_back(std::move(type));
         }
@@ -340,8 +348,9 @@ class Lowerer {
                     const auto &conversion = *target.argumentConversions[index];
                     const auto converted = current_->expressions.size();
                     current_->expressions.push_back(
-                        {FirContractExpression{argument, conversion.concreteType,
-                                               conversion.contractType, conversion.methods},
+                        {FirContractExpression{
+                             argument, conversion.concreteType, conversion.contractType,
+                             lowerContractMethods(conversion.methods)},
                          conversion.targetType, source.span});
                     argument = converted;
                 }
@@ -390,7 +399,23 @@ class Lowerer {
             } else if (model_.callTargets[id].has_value()) {
                 const auto &target = *model_.callTargets[id];
                 auto receiver = lowerExpression(required(target.receiver));
-                if (target.kind == CallTargetKind::Method &&
+                if (target.receiverConversion.has_value()) {
+                    const auto &conversion = *target.receiverConversion;
+                    const auto borrowed = current_->expressions.size();
+                    const auto operation = target.receiverType.kind == TypeKind::Edit
+                                               ? FirOwnershipOperator::Edit
+                                               : FirOwnershipOperator::View;
+                    current_->expressions.push_back(
+                        {FirOwnershipExpression{operation, receiver}, target.receiverType,
+                         source.span});
+                    const auto converted = current_->expressions.size();
+                    current_->expressions.push_back(
+                        {FirContractExpression{
+                             borrowed, conversion.concreteType, conversion.contractType,
+                             lowerContractMethods(conversion.methods)},
+                         conversion.targetType, source.span});
+                    receiver = converted;
+                } else if (target.kind == CallTargetKind::Method &&
                     (target.receiverType.kind == TypeKind::View ||
                      target.receiverType.kind == TypeKind::Edit)) {
                     const auto lowered = current_->expressions.size();
@@ -412,8 +437,9 @@ class Lowerer {
                         const auto &conversion = *target.argumentConversions[index];
                         const auto converted = current_->expressions.size();
                         current_->expressions.push_back(
-                            {FirContractExpression{argument, conversion.concreteType,
-                                                   conversion.contractType, conversion.methods},
+                            {FirContractExpression{
+                                 argument, conversion.concreteType, conversion.contractType,
+                                 lowerContractMethods(conversion.methods)},
                              conversion.targetType, source.span});
                         argument = converted;
                     }
@@ -456,6 +482,21 @@ class Lowerer {
                                 lowerExpression(match.arms[arm].expression), target.drops[arm]});
             }
             value = FirMatchExpression{lowerExpression(match.value), target.type, std::move(arms)};
+        }
+
+        if (model_.expressionContractConversions[id].has_value()) {
+            const auto &conversion = *model_.expressionContractConversions[id];
+            const auto operand = current_->expressions.size();
+            current_->expressions.push_back(
+                {std::move(value), conversion.sourceType, source.span});
+            const auto lowered = current_->expressions.size();
+            current_->expressions.push_back(
+                {FirContractExpression{
+                     operand, conversion.concreteType, conversion.contractType,
+                     lowerContractMethods(conversion.methods)},
+                 conversion.targetType, source.span});
+            expressionMap_[id] = lowered;
+            return lowered;
         }
 
         const auto lowered = current_->expressions.size();

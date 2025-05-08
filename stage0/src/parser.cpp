@@ -432,11 +432,18 @@ StructDeclaration Parser::structDeclaration() {
     const auto start = expect(TokenKind::Struct, "FDN1031", "expected struct");
     const auto name = expect(TokenKind::Identifier, "FDN1032", "expected struct name");
     auto parameters = typeParameters();
-    std::vector<TypeSyntax> implementations;
+    std::vector<StructImplementation> implementations;
     if (match(TokenKind::Implements)) {
         do {
-            implementations.push_back(
-                typeSyntax("FDN1094", "expected contract after implements"));
+            auto contract = typeSyntax("FDN1094", "expected contract after implements");
+            std::optional<std::string> delegate;
+            if (match(TokenKind::By)) {
+                delegate = expect(TokenKind::Identifier, "FDN1145",
+                                  "expected field after by")
+                               .text;
+            }
+            const auto span = contract.span;
+            implementations.push_back({std::move(contract), std::move(delegate), span});
         } while (match(TokenKind::Comma));
     }
     expect(TokenKind::LeftBrace, "FDN1033", "expected { after struct name");
@@ -497,6 +504,12 @@ ContractDeclaration Parser::contractDeclaration() {
     const auto start = expect(TokenKind::Contract, "FDN1095", "expected contract");
     const auto name = expect(TokenKind::Identifier, "FDN1096", "expected contract name");
     auto parameters = typeParameters();
+    std::vector<TypeSyntax> parents;
+    if (match(TokenKind::Extends)) {
+        do {
+            parents.push_back(typeSyntax("FDN1140", "expected contract after extends"));
+        } while (match(TokenKind::Comma));
+    }
     expect(TokenKind::LeftBrace, "FDN1097", "expected { after contract name");
 
     std::vector<ContractMethod> methods;
@@ -511,11 +524,11 @@ ContractDeclaration Parser::contractDeclaration() {
             advance();
             continue;
         }
-        methods.push_back(contractMethod());
+        methods.push_back(contractMethod(name.text, parameters));
     }
     expect(TokenKind::RightBrace, "FDN1099", "expected } after contract declaration");
-    return {name.text, std::move(parameters), std::move(methods), isExported(name.text),
-            start.span, {}};
+    return {name.text, std::move(parameters), std::move(parents), std::move(methods),
+            isExported(name.text), start.span, {}};
 }
 
 Function Parser::function(bool external) {
@@ -604,7 +617,8 @@ Function Parser::method(const std::string &owner,
             {}};
 }
 
-ContractMethod Parser::contractMethod() {
+ContractMethod Parser::contractMethod(const std::string &owner,
+                                      const std::vector<std::string> &typeParameters) {
     const auto start = expect(TokenKind::Fn, "FDN1106", "expected fn");
     const auto name = expect(TokenKind::Identifier, "FDN1107", "expected contract method name");
     expect(TokenKind::LeftParen, "FDN1108", "expected ( after contract method name");
@@ -617,8 +631,35 @@ ContractMethod Parser::contractMethod() {
     }
     expect(TokenKind::RightParen, "FDN1110", "expected ) after contract method parameters");
     auto returnType = typeSyntax("FDN1111", "expected contract method return type");
+    std::optional<AstFunctionId> defaultFunction;
+    if (check(TokenKind::LeftBrace)) {
+        std::vector<TypeSyntax> ownerArguments;
+        ownerArguments.reserve(typeParameters.size());
+        for (const auto &parameterName : typeParameters) {
+            ownerArguments.push_back({parameterName, {}, start.span});
+        }
+        TypeSyntax ownerType{owner, std::move(ownerArguments), start.span};
+        const auto qualifier = access == ReceiverKind::View ? "view"
+                               : access == ReceiverKind::Edit ? "edit"
+                                                             : "own";
+        std::vector<Parameter> functionParameters;
+        functionParameters.reserve(parameters.size() + 1);
+        functionParameters.push_back(
+            {"self", TypeSyntax{qualifier, {std::move(ownerType)}, start.span}, start.span});
+        functionParameters.insert(functionParameters.end(), parameters.begin(), parameters.end());
+        const auto tailResult = returnType.name != "void" || !returnType.arguments.empty();
+        auto previousTypeParameters = std::move(activeTypeParameters_);
+        activeTypeParameters_ = typeParameters;
+        const auto body = block(tailResult);
+        activeTypeParameters_ = std::move(previousTypeParameters);
+        defaultFunction = program_.functions.size();
+        program_.functions.push_back(
+            {name.text, typeParameters, std::move(functionParameters), returnType, body,
+             isExported(name.text), start.span, {}, {}, access, owner, std::nullopt, true, false,
+             {}});
+    }
     return {name.text, access, std::move(parameters), std::move(returnType),
-            isExported(name.text), start.span};
+            isExported(name.text), start.span, defaultFunction};
 }
 
 ReceiverKind Parser::receiver(const char *code, const char *message) {

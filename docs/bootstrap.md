@@ -13,7 +13,8 @@ primitive expressions, generic nominal value structs and enums, exhaustive match
 Option and Result primitives, Result must-use analysis, `let ... else`, fatal panic traces, field
 access and mutation, `own`, `view`, `edit`, deterministic destruction, immutable UTF-8 String
 values, fixed arrays, borrowed slices, checked indexing, branches, loops, compile-time contracts,
-receiver methods, borrowed dynamic dispatch, semantic resolution, typed FIR, checked i32 and u64
+receiver methods, contract inheritance, default methods, field delegation, borrowed and owned
+dynamic dispatch, semantic resolution, typed FIR, checked i32 and u64
 operations. Named functions are first-class values, generic function values infer from an expected
 signature, and closures use explicit copy, own, view, or edit captures with deterministic
 environment destruction. Mutable places support ownership-preserving replacement, complete struct

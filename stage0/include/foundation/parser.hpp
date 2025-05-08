@@ -42,7 +42,8 @@ class Parser {
     ContractDeclaration contractDeclaration();
     Function function(bool external = false);
     Function method(const std::string &owner, const std::vector<std::string> &typeParameters);
-    ContractMethod contractMethod();
+    ContractMethod contractMethod(const std::string &owner,
+                                  const std::vector<std::string> &typeParameters);
     ReceiverKind receiver(const char *code, const char *message);
     Parameter parameter();
     AstBlockId block(bool tailResult = false);

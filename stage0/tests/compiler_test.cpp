@@ -678,6 +678,117 @@ fn main() i32 {
            "contract conversion does not allocate");
 }
 
+void contractInheritanceFlattensDeterministically() {
+    constexpr std::string_view source = R"(
+contract Named<T> {
+    fn value(view) T
+}
+
+contract Tagged<T> extends Named<T> {
+    fn tag(view) i32
+}
+
+contract Audited<T> extends Named<T> {
+    fn audited(view) bool
+}
+
+contract Principal<T> extends Tagged<T>, Audited<T> {}
+
+struct Entry implements Principal<i32> {
+    stored i32
+
+    fn value(view) i32 { self.stored }
+    fn tag(view) i32 { 2 }
+    fn audited(view) bool { true }
+}
+
+fn readNamed(value view Named<i32>) i32 {
+    value.value()
+}
+
+fn main() i32 {
+    let entry = Entry { stored = 40 }
+    readNamed(view entry) + entry.tag() - 42
+}
+)";
+    const auto first = check(source);
+    const auto second = check(source);
+    expect(!first.diagnostics.hasErrors(), "contract inheritance program has no diagnostics");
+    expect(first.semantic.has_value() && first.fir.has_value(),
+           "contract inheritance program lowers to FIR");
+    expect(second.fir.has_value(), "repeated contract inheritance program lowers to FIR");
+    if (!first.semantic.has_value() || !first.fir.has_value() || !second.fir.has_value()) {
+        return;
+    }
+    expect(first.semantic->contracts.size() == 4 &&
+               first.semantic->contracts[3].methods.size() == 3,
+           "diamond inheritance keeps one copy of an identical method");
+    if (first.semantic->contracts.size() == 4 &&
+        first.semantic->contracts[3].methods.size() == 3) {
+        expect(first.semantic->contracts[3].methods[0].name == "value" &&
+                   first.semantic->contracts[3].methods[1].name == "tag" &&
+                   first.semantic->contracts[3].methods[2].name == "audited",
+               "inherited method order is deterministic");
+    }
+    expect(foundation::emitC(*first.fir) == foundation::emitC(*second.fir),
+           "contract inheritance C emission is deterministic");
+
+    const auto cycle = check(R"cycle(
+contract First extends Second {}
+contract Second extends First {}
+fn main() i32 { 0 }
+)cycle");
+    expect(hasCode(cycle.diagnostics, "FDN2142"),
+           "contract inheritance cycle reports FDN2142");
+
+    const auto conflict = check(R"conflict(
+contract Numbered { fn value(view) i32 }
+contract Flagged { fn value(view) bool }
+contract Invalid extends Numbered, Flagged {}
+fn main() i32 { 0 }
+)conflict");
+    expect(hasCode(conflict.diagnostics, "FDN2143"),
+           "conflicting inherited methods report FDN2143");
+
+    const auto ambiguousDefault = check(R"defaults(
+contract First { fn value(view) i32 { 1 } }
+contract Second { fn value(view) i32 { 2 } }
+contract Invalid extends First, Second {}
+fn main() i32 { 0 }
+)defaults");
+    expect(hasCode(ambiguousDefault.diagnostics, "FDN2144"),
+           "ambiguous inherited defaults report FDN2144");
+
+    const auto resolvedDefault = check(R"defaults(
+contract First { fn value(view) i32 { 1 } }
+contract Second { fn value(view) i32 { 2 } }
+contract Valid extends First, Second { fn value(view) i32 { 3 } }
+struct Number implements Valid {}
+fn read(value view Valid) i32 { value.value() }
+fn main() i32 { let value = Number {} read(view value) - 3 }
+)defaults");
+    expect(!resolvedDefault.diagnostics.hasErrors(),
+           "a direct default resolves inherited default ambiguity");
+
+    const auto unknownDelegate = check(R"delegate(
+contract Named { fn value(view) i32 }
+struct Identity implements Named { fn value(view) i32 { 1 } }
+struct Invalid implements Named by missing { identity Identity }
+fn main() i32 { 0 }
+)delegate");
+    expect(hasCode(unknownDelegate.diagnostics, "FDN2146"),
+           "unknown delegation field reports FDN2146");
+
+    const auto invalidDelegate = check(R"delegate(
+contract Named { fn value(view) i32 }
+struct Identity { value i32 }
+struct Invalid implements Named by identity { identity Identity }
+fn main() i32 { 0 }
+)delegate");
+    expect(hasCode(invalidDelegate.diagnostics, "FDN2147"),
+           "non-conforming delegation field reports FDN2147");
+}
+
 void lightweightSyntaxCarriesVisibilityAndContext() {
     constexpr std::string_view source = R"(
 struct Holder {
@@ -1411,6 +1522,7 @@ int main() {
     sequenceLengthsLowerToU64();
     u64ValuesLowerToCheckedC();
     methodsAndContractsLowerToDeterministicC();
+    contractInheritanceFlattensDeterministically();
     lightweightSyntaxCarriesVisibilityAndContext();
     panicLowersWithSourceFrames();
     divergingCallsCloseGeneratedControlFlow();

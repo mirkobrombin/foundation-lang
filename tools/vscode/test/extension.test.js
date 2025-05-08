@@ -63,6 +63,8 @@ test("grammar and completions track compiler keywords", () => {
         "enum",
         "contract",
         "implements",
+        "extends",
+        "by",
         "fn",
         "let",
         "var",
@@ -377,6 +379,39 @@ test("collects contracts, implementations, and receiver methods", () => {
         "#blocks"
     );
     assert.equal(grammar.repository.blocks.patterns[0].patterns[0].include, "$self");
+});
+
+test("collects contract inheritance, defaults, and delegation", () => {
+    const completions = collectCompletions(`
+        contract Named { fn Name(view) String }
+        contract Principal extends Named {
+            fn DisplayName(view) String { self.Name() }
+        }
+        struct Identity implements Principal {
+            value String
+            fn Name(view) String { self.value }
+        }
+        struct Admin implements Principal by identity {
+            identity Identity
+        }
+        fn main() i32 { 0 }
+    `);
+    const byLabel = new Map(completions.map((entry) => [entry.label, entry]));
+
+    assert.equal(byLabel.get("Principal").detail, "Foundation contract extends Named");
+    assert.equal(byLabel.get("Admin").detail,
+        "Foundation struct implements Principal by identity");
+    assert.equal(byLabel.get("DisplayName").detail,
+        "Default contract method of Principal");
+    assert.equal(byLabel.get("extends").kind, "Keyword");
+    assert.equal(byLabel.get("by").kind, "Keyword");
+
+    const grammar = readJson("syntaxes/foundation.tmLanguage.json");
+    assert.match(grammar.repository.contractDefinitions.patterns[0].beginCaptures[6].name,
+        /inheritance/);
+    const snippets = readJson("snippets/foundation.json");
+    assert.equal(snippets["Delegated contract implementation"].prefix, "implementsby");
+    assert.equal(snippets["Contract default method"].prefix, "contractdefault");
 });
 
 test("collects exported contracts and methods across packages", () => {

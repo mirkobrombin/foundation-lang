@@ -158,6 +158,25 @@
         "body": "struct ${1:Name} implements ${2:Contract} {\n    ${3}\n}",
         "description": "Declare a struct that implements a contract"
     },
+    "Extended contract": {
+        "prefix": "extends",
+        "body": "contract ${1:Name} extends ${2:Parent} {\n    ${3}\n}",
+        "description": "Declare a contract that inherits requirements"
+    },
+    "Delegated contract implementation": {
+        "prefix": "implementsby",
+        "body": "struct ${1:Name} implements ${2:Contract} by ${3:field} {\n    ${3:field} ${4:Implementation}\n    ${5}\n}",
+        "description": "Delegate a contract implementation to a field"
+    },
+    "Contract default method": {
+        "prefix": "contractdefault",
+        "body": [
+            "fn ${1:name}(view${2}) ${3:void} {",
+            "    ${4}",
+            "}"
+        ],
+        "description": "Declare a contract method with a default body"
+    },
     "View method": {
         "prefix": "methodview",
         "body": [
