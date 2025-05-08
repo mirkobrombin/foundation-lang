@@ -855,7 +855,10 @@ int32_t foundation_runtime_fs_open_lines(const fdn_string *path, uint64_t *handl
         if (native_path == NULL) {
             return 3;
         }
-        file = _wfopen(native_path, L"rb");
+        file = NULL;
+        if (_wfopen_s(&file, native_path, L"rb") != 0) {
+            file = NULL;
+        }
         fdn_dealloc(native_path);
     }
 #else
