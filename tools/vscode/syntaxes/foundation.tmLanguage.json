@@ -24,6 +24,7 @@
         { "include": "#enumConstructors" },
         { "include": "#matchPatterns" },
         { "include": "#typePositions" },
+        { "include": "#genericFunctionApplications" },
         { "include": "#genericTypeApplications" },
         { "include": "#languageVariables" },
         { "include": "#methodCalls" },
@@ -498,6 +499,31 @@
                     "patterns": [
                         { "include": "#genericTypeApplications" },
                         { "include": "#ownership" },
+                        { "include": "#types" },
+                        { "include": "#typeParameters" },
+                        { "include": "#nominalTypes" },
+                        { "include": "#punctuation" }
+                    ]
+                }
+            ]
+        },
+        "genericFunctionApplications": {
+            "patterns": [
+                {
+                    "name": "meta.function.specialization.foundation",
+                    "begin": "\\b([a-z_][A-Za-z0-9_]*)\\s*(<)(?=[^\\n{};]*>\\s*(?:\\(|\\.|\\{|,|\\)|\\]|\\}|$))",
+                    "beginCaptures": {
+                        "1": { "name": "entity.name.function.call.foundation" },
+                        "2": { "name": "punctuation.definition.type-arguments.begin.foundation" }
+                    },
+                    "end": ">(?=\\s*(?:\\(|\\.|\\{|,|\\)|\\]|\\}|$))",
+                    "endCaptures": {
+                        "0": { "name": "punctuation.definition.type-arguments.end.foundation" }
+                    },
+                    "patterns": [
+                        { "include": "#genericTypeApplications" },
+                        { "include": "#ownership" },
+                        { "include": "#functionTypes" },
                         { "include": "#types" },
                         { "include": "#typeParameters" },
                         { "include": "#nominalTypes" },

@@ -122,7 +122,7 @@ fn main() i32 {
     let first i32 = 1
     let count = 4
     var current = first
-    let typedIdentity fn(i32) i32 = identity
+    let typedIdentity fn(i32) i32 = identity<i32>
     let copied = 2
     let copyCallback = fn(value i32) i32 capture copied {
         value + copied

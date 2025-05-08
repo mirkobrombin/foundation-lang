@@ -13,6 +13,103 @@ constexpr std::size_t maxBlockDepth = 128;
 constexpr std::size_t maxExpressionDepth = 256;
 constexpr std::size_t maxExpressionNodes = 1024;
 constexpr std::size_t maxTypeDepth = 128;
+constexpr std::size_t maxGenericLookaheadTokens = 4096;
+
+class TypeLookahead {
+  public:
+    TypeLookahead(const std::vector<Token> &tokens, std::size_t start)
+        : tokens_(tokens), start_(start), current_(start) {}
+
+    [[nodiscard]] bool scanTypeArguments(std::size_t depth, std::size_t &closing) {
+        if (depth >= maxTypeDepth || !match(TokenKind::Less) || !scanType(depth + 1)) {
+            return false;
+        }
+        while (match(TokenKind::Comma)) {
+            if (!scanType(depth + 1)) {
+                return false;
+            }
+        }
+        if (!check(TokenKind::Greater)) {
+            return false;
+        }
+        closing = current_;
+        ++current_;
+        return true;
+    }
+
+  private:
+    [[nodiscard]] bool withinBudget() const {
+        return current_ < tokens_.size() &&
+               current_ - start_ < maxGenericLookaheadTokens;
+    }
+
+    [[nodiscard]] bool check(TokenKind kind) const {
+        return withinBudget() && tokens_[current_].kind == kind;
+    }
+
+    bool match(TokenKind kind) {
+        if (!check(kind)) {
+            return false;
+        }
+        ++current_;
+        return true;
+    }
+
+    bool scanType(std::size_t depth) {
+        if (depth >= maxTypeDepth || !withinBudget()) {
+            return false;
+        }
+        if (check(TokenKind::Own) || check(TokenKind::View) || check(TokenKind::Edit)) {
+            ++current_;
+            return scanType(depth + 1);
+        }
+        if (match(TokenKind::Fn)) {
+            if (!match(TokenKind::LeftParen)) {
+                return false;
+            }
+            if (!check(TokenKind::RightParen)) {
+                if (!scanType(depth + 1)) {
+                    return false;
+                }
+                while (match(TokenKind::Comma)) {
+                    if (!scanType(depth + 1)) {
+                        return false;
+                    }
+                }
+            }
+            return match(TokenKind::RightParen) && scanType(depth + 1);
+        }
+        if (match(TokenKind::LeftBracket)) {
+            if (match(TokenKind::Minus)) {
+                if (!match(TokenKind::Integer) || !match(TokenKind::RightBracket)) {
+                    return false;
+                }
+                return scanType(depth + 1);
+            }
+            if (match(TokenKind::Integer)) {
+                return match(TokenKind::RightBracket) && scanType(depth + 1);
+            }
+            return scanType(depth + 1) && match(TokenKind::RightBracket);
+        }
+        if (!match(TokenKind::Identifier)) {
+            return false;
+        }
+        while (match(TokenKind::Dot)) {
+            if (!match(TokenKind::Identifier)) {
+                return false;
+            }
+        }
+        if (check(TokenKind::Less)) {
+            std::size_t closing{};
+            return scanTypeArguments(depth, closing);
+        }
+        return true;
+    }
+
+    const std::vector<Token> &tokens_;
+    std::size_t start_{};
+    std::size_t current_{};
+};
 
 bool isExported(const std::string &name) {
     return !name.empty() && name.front() >= 'A' && name.front() <= 'Z';
@@ -113,22 +210,23 @@ bool Parser::startsGenericPrimary() const {
     if (!check(TokenKind::Less)) {
         return false;
     }
-    std::size_t depth = 0;
-    for (std::size_t distance = 0;; ++distance) {
-        const auto kind = peek(distance).kind;
-        if (kind == TokenKind::Eof) {
-            return false;
-        }
-        if (kind == TokenKind::Less) {
-            ++depth;
-        } else if (kind == TokenKind::Greater) {
-            if (--depth == 0) {
-                const auto next = peek(distance + 1).kind;
-                return next == TokenKind::Dot || next == TokenKind::LeftBrace ||
-                       next == TokenKind::LeftParen;
-            }
-        }
+    std::size_t closing{};
+    TypeLookahead lookahead(tokens_, current_);
+    if (!lookahead.scanTypeArguments(0, closing) || closing + 1 >= tokens_.size()) {
+        return false;
     }
+    const auto &close = tokens_[closing];
+    const auto &next = tokens_[closing + 1];
+    const auto continues = next.span.line == close.span.line;
+    if (continues && (next.kind == TokenKind::Dot || next.kind == TokenKind::LeftBrace ||
+                      next.kind == TokenKind::LeftParen)) {
+        return true;
+    }
+    if (next.kind == TokenKind::Eof || !continues) {
+        return true;
+    }
+    return next.kind == TokenKind::Comma || next.kind == TokenKind::RightParen ||
+           next.kind == TokenKind::RightBracket || next.kind == TokenKind::RightBrace;
 }
 
 bool Parser::match(TokenKind kind) {

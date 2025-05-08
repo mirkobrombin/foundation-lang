@@ -240,6 +240,13 @@ test("tracks generic syntax used by the language tour", () => {
     assert.match(grammar, /entity\.name\.type\.parameter\.foundation/);
     assert.match(grammar, /punctuation\.definition\.type-arguments\.begin\.foundation/);
     assert.match(grammar, /storage\.modifier\.ownership\.foundation/);
+
+    const parsedGrammar = JSON.parse(grammar);
+    const specialization = new RegExp(
+        parsedGrammar.repository.genericFunctionApplications.patterns[0].begin
+    );
+    assert.match("identity<i32>", specialization);
+    assert.doesNotMatch("x < y\nlet b = p > (c)", specialization);
 });
 
 test("tracks ownership declarations and borrowed parameters", () => {
