@@ -4,6 +4,8 @@ const staticCompletions = [
     { label: "package", kind: "Keyword" },
     { label: "import", kind: "Keyword" },
     { label: "as", kind: "Keyword" },
+    { label: "extern", kind: "Keyword", detail: "Declare a C ABI import or export" },
+    { label: "c", kind: "Value", detail: "C application binary interface" },
     { label: "struct", kind: "Keyword" },
     { label: "enum", kind: "Keyword" },
     { label: "contract", kind: "Keyword" },

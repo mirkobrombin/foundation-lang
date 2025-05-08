@@ -2,6 +2,12 @@ package fuzz.bootstrap
 
 import fuzz.support as support
 
+extern c fn unusedNative() i32 as foundation_fuzz_native
+
+extern c fn FoundationFuzzProbe(value i32) i32 as foundation_fuzz_probe {
+    value
+}
+
 enum Maybe<T> {
     None
     Some(T)

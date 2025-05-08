@@ -10,6 +10,7 @@ namespace foundation {
 
 [[nodiscard]] std::string emitC(const FirProgram &program,
                                 std::string_view sourcePath = "<memory>");
+[[nodiscard]] std::string emitCHeader(const FirProgram &program);
 
 } // namespace foundation
 

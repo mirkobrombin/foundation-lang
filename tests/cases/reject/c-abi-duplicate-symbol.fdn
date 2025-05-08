@@ -1,0 +1,6 @@
+extern c fn first() i32 as foundation_duplicate
+extern c fn second() i32 as foundation_duplicate
+
+fn main() i32 {
+    0
+}

@@ -1,0 +1,5 @@
+extern c fn nativeValue() i32 as class
+
+fn main() i32 {
+    0
+}

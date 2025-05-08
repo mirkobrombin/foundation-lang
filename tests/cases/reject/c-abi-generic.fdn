@@ -1,0 +1,5 @@
+extern c fn nativeIdentity<T>(value T) i32 as foundation_native_identity
+
+fn main() i32 {
+    0
+}

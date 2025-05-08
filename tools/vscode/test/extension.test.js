@@ -53,6 +53,7 @@ test("grammar and completions track compiler keywords", () => {
         "package",
         "import",
         "as",
+        "extern",
         "struct",
         "enum",
         "contract",
@@ -81,12 +82,20 @@ test("grammar and completions track compiler keywords", () => {
         assert.match(grammar, new RegExp(`\\b${type}\\b`));
         assert.ok(completionLabels.has(type));
     }
+    assert.ok(completionLabels.has("c"));
+    const parsedGrammar = JSON.parse(grammar);
+    const cAbiDeclaration = parsedGrammar.repository.cAbiDeclarations.patterns[0];
+    assert.equal(cAbiDeclaration.name, "meta.function.external.foundation");
+    assert.match(cAbiDeclaration.begin, /extern/);
+    assert.ok(cAbiDeclaration.patterns.some((pattern) =>
+        pattern.captures?.[2]?.name === "entity.name.function.external.foundation"
+    ));
     for (const sequence of ["[N]T", "view [T]", "edit [T]"]) {
         assert.ok(completionLabels.has(sequence));
     }
     assert.match(grammar, /\\\\\[0nrt/);
     assert.equal(
-        JSON.parse(grammar).repository.punctuation.patterns[1].match,
+        parsedGrammar.repository.punctuation.patterns[1].match,
         "[(){}\\[\\]]"
     );
 });

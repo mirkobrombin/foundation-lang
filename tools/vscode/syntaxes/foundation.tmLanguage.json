@@ -6,6 +6,7 @@
         { "include": "#comments" },
         { "include": "#strings" },
         { "include": "#packageDeclarations" },
+        { "include": "#cAbiDeclarations" },
         { "include": "#contractDefinitions" },
         { "include": "#structDefinitions" },
         { "include": "#enumDefinitions" },
@@ -138,6 +139,36 @@
                 }
             ]
         },
+        "cAbiDeclarations": {
+            "patterns": [
+                {
+                    "name": "meta.function.external.foundation",
+                    "begin": "\\b(extern)\\s+(c)(?=\\s+fn\\b)",
+                    "beginCaptures": {
+                        "1": { "name": "storage.modifier.extern.foundation" },
+                        "2": { "name": "constant.language.abi.foundation" }
+                    },
+                    "end": "$",
+                    "patterns": [
+                        { "include": "#functionDefinitions" },
+                        {
+                            "match": "\\b(as)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                            "captures": {
+                                "1": { "name": "keyword.control.import.as.foundation" },
+                                "2": { "name": "entity.name.function.external.foundation" }
+                            }
+                        },
+                        { "include": "#genericTypeApplications" },
+                        { "include": "#ownership" },
+                        { "include": "#types" },
+                        { "include": "#typeParameters" },
+                        { "include": "#nominalTypes" },
+                        { "include": "#keywords" },
+                        { "include": "#punctuation" }
+                    ]
+                }
+            ]
+        },
         "contractDefinitions": {
             "patterns": [
                 {
@@ -261,7 +292,7 @@
             "patterns": [
                 {
                     "name": "keyword.declaration.foundation",
-                    "match": "\\b(struct|enum|contract|implements|fn)\\b"
+                    "match": "\\b(extern|struct|enum|contract|implements|fn)\\b"
                 },
                 {
                     "name": "keyword.declaration.module.foundation",
@@ -438,7 +469,7 @@
                     }
                 },
                 {
-                    "match": "(?<=\\))\\s*((?:(?:own|view|edit)\\s+)?[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?:\\s*<[^(){};\\n]+>)?)\\s*(?=\\{)",
+                    "match": "(?<=\\))\\s*((?:(?:own|view|edit)\\s+)?[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?:\\s*<[^(){};\\n]+>)?)\\s*(?=\\{|as\\b)",
                     "captures": {
                         "1": { "name": "entity.name.type.foundation" }
                     }

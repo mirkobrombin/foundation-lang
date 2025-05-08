@@ -1,0 +1,31 @@
+package example.abi
+
+extern c fn nativeSum(left i32, right i32) i32 as foundation_native_sum
+
+extern c fn nativeDrive(value i32, label view String) i32 as foundation_native_drive
+
+extern c fn FoundationDouble(value i32) i32 as foundation_double {
+    value * 2
+}
+
+extern c fn FoundationReady(value bool) bool as foundation_ready {
+    value
+}
+
+extern c fn FoundationAcceptLabel(label view String) bool as foundation_accept_label {
+    true
+}
+
+extern c fn FoundationMark() void as foundation_mark {
+    return
+}
+
+fn main() i32 {
+    let label = "abi"
+    let result = nativeDrive(nativeSum(20, 1), view label)
+    if result == 42 {
+        print("c abi ok")
+        return 0
+    }
+    return 1
+}

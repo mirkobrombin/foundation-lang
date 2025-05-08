@@ -1,7 +1,8 @@
 # Foundation Language Tour
 
 `main.fdn` is the executable reference for the current language subset. It is part of the compiler
-test suite and must change with the language.
+test suite and must change with the language. Its unused C import and callable C export keep ABI
+syntax in the tour without requiring a native object to run it.
 
 Build the compiler, then run the tour:
 

@@ -952,6 +952,52 @@ fn main() i32 { 0 }
            "project diagnostic selects the originating source text");
 }
 
+void cAbiFunctionsLowerToDeterministicBoundaries() {
+    constexpr std::string_view source = R"(
+extern c fn nativeAdd(left i32, right i32) i32 as foundation_native_add
+
+extern c fn FoundationDouble(value i32) i32 as foundation_double {
+    value * 2
+}
+
+fn main() i32 {
+    nativeAdd(FoundationDouble(20), 2)
+}
+)";
+    auto first = check(source);
+    auto second = check(source);
+    expect(!first.diagnostics.hasErrors(), "C ABI program has no diagnostics");
+    expect(!second.diagnostics.hasErrors(), "repeated C ABI program has no diagnostics");
+    expect(first.program.functions.size() == 3, "C ABI declarations remain functions in AST");
+    if (first.program.functions.size() == 3) {
+        expect(first.program.functions[0].cSymbol == "foundation_native_add" &&
+                   !first.program.functions[0].hasBody,
+               "bodyless C ABI declaration is an import");
+        expect(first.program.functions[1].cSymbol == "foundation_double" &&
+                   first.program.functions[1].hasBody,
+               "C ABI declaration with a body is an export");
+    }
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        expect(false, "C ABI program lowers to FIR");
+        return;
+    }
+
+    const auto firstC = foundation::emitC(*first.fir, "ffi.fdn");
+    const auto secondC = foundation::emitC(*second.fir, "ffi.fdn");
+    const auto firstHeader = foundation::emitCHeader(*first.fir);
+    const auto secondHeader = foundation::emitCHeader(*second.fir);
+    expect(firstC == secondC, "C ABI source emission is deterministic");
+    expect(firstHeader == secondHeader, "C ABI header emission is deterministic");
+    expect(firstC.find("fdn_frame_enter_native") != std::string::npos,
+           "C ABI wrappers add native trace frames");
+    expect(firstC.find("foundation_native_add(int32_t, int32_t);") != std::string::npos,
+           "C import receives a public C prototype");
+    expect(firstHeader.find("foundation_double(int32_t fdn_arg_0);") != std::string::npos,
+           "C export appears in the public header");
+    expect(firstHeader.find("foundation_native_add") == std::string::npos,
+           "C import does not leak into the public header");
+}
+
 void projectDiagnosticsRetainTheirSource() {
     foundation::Diagnostics diagnostics;
     const auto project = foundation::loadProject(
@@ -994,6 +1040,7 @@ int main() {
     semanticFailuresHaveStableDiagnostics();
     diagnosticsBoundLongSourceExcerpts();
     packageHeadersAndSourceDiagnosticsStayStable();
+    cAbiFunctionsLowerToDeterministicBoundaries();
     projectDiagnosticsRetainTheirSource();
 
     if (failures != 0) {

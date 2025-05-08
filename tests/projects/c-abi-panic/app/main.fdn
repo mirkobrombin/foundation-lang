@@ -1,0 +1,8 @@
+package trace.abi
+
+extern c fn nativeFail() void as foundation_native_fail
+
+fn main() i32 {
+    nativeFail()
+    return 0
+}

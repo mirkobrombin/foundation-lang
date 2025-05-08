@@ -1,5 +1,14 @@
 // This program tracks the complete executable language subset.
 
+// A bodyless C ABI declaration imports its explicit C symbol. It is unused here so the tour
+// remains runnable without a native input.
+extern c fn nativeProbe() i32 as foundation_native_probe
+
+// A C ABI declaration with a body exports its Foundation implementation.
+extern c fn FoundationProbe(value i32) i32 as foundation_tour_probe {
+    value
+}
+
 struct TourResult<T> {
     message String
     code T

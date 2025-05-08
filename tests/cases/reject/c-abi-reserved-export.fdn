@@ -1,0 +1,7 @@
+extern c fn FoundationAlloc(value i32) i32 as fdn_alloc {
+    value
+}
+
+fn main() i32 {
+    0
+}

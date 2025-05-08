@@ -252,6 +252,12 @@ class Monomorphizer {
 
     FirProgram run() {
         result_.main = instantiateFunction(source_.main, {});
+        for (std::size_t index = 0; index < source_.functions.size(); ++index) {
+            const auto &function = source_.functions[index];
+            if (function.cSymbol.has_value() && function.hasBody) {
+                static_cast<void>(instantiateFunction(index, {}));
+            }
+        }
         return std::move(result_);
     }
 
@@ -567,7 +573,7 @@ void markDivergingFunctions(FirProgram &program) {
     do {
         changed = false;
         for (auto &function : program.functions) {
-            if (!function.diverges &&
+            if (function.hasBody && !function.diverges &&
                 blockFlow(program, function, function.body) == ControlFlow::Diverges) {
                 function.diverges = true;
                 changed = true;
@@ -1751,6 +1757,101 @@ void emitSignature(std::ostringstream &out, const FirProgram &program, FirFuncti
     out << ')';
 }
 
+void emitCAbiParameters(std::ostringstream &out, const FirFunction &function,
+                        bool includeNames) {
+    if (function.parameters.empty()) {
+        out << "void";
+        return;
+    }
+    for (std::size_t index = 0; index < function.parameters.size(); ++index) {
+        if (index != 0) {
+            out << ", ";
+        }
+        const auto local = function.parameters[index];
+        out << cType(function.locals[local].type);
+        if (includeNames) {
+            out << " fdn_arg_" << index;
+        }
+    }
+}
+
+void emitCAbiSignature(std::ostringstream &out, const FirFunction &function,
+                       bool includeNames) {
+    out << cType(function.returnType) << ' ' << *function.cSymbol << '(';
+    emitCAbiParameters(out, function, includeNames);
+    out << ')';
+}
+
+std::string sourceFramePath(const FirFunction &function, std::string_view fallback) {
+    return function.sourcePath.empty() ? std::string(fallback) : function.sourcePath;
+}
+
+void emitCArguments(std::ostringstream &out, const FirFunction &function, bool abiNames) {
+    for (std::size_t index = 0; index < function.parameters.size(); ++index) {
+        if (index != 0) {
+            out << ", ";
+        }
+        out << (abiNames ? "fdn_arg_" + std::to_string(index)
+                         : localName(function, function.parameters[index]));
+    }
+}
+
+void emitImportedFunction(std::ostringstream &out, const FirProgram &program,
+                          FirFunctionId id, std::string_view sourcePath) {
+    const auto &function = program.functions[id];
+    emitSignature(out, program, id);
+    out << " {\n";
+    out << "    fdn_frame fdn_frame_current;\n";
+    out << "    fdn_frame_enter_native(&fdn_frame_current, " << cString(*function.cSymbol)
+        << ", " << cString(sourceFramePath(function, sourcePath)) << ", "
+        << function.sourceSpan.line << ", " << function.sourceSpan.column << ");\n";
+    if (function.returnType == voidType) {
+        out << "    " << *function.cSymbol << '(';
+        emitCArguments(out, function, false);
+        out << ");\n";
+        out << "    fdn_frame_leave(&fdn_frame_current);\n";
+        out << "    return;\n";
+    } else {
+        out << "    " << cType(function.returnType) << " fdn_result = " << *function.cSymbol
+            << '(';
+        emitCArguments(out, function, false);
+        out << ");\n";
+        out << "    fdn_frame_leave(&fdn_frame_current);\n";
+        out << "    return fdn_result;\n";
+    }
+    out << "}\n";
+}
+
+void emitExportedWrapper(std::ostringstream &out, const FirProgram &program,
+                         FirFunctionId id, std::string_view sourcePath) {
+    const auto &function = program.functions[id];
+    emitCAbiSignature(out, function, true);
+    out << " {\n";
+    out << "    fdn_frame fdn_frame_current;\n";
+    out << "    fdn_frame_enter_native(&fdn_frame_current, " << cString(*function.cSymbol)
+        << ", " << cString(sourceFramePath(function, sourcePath)) << ", "
+        << function.sourceSpan.line << ", " << function.sourceSpan.column << ");\n";
+    if (function.diverges) {
+        out << "    " << functionName(program, id) << '(';
+        emitCArguments(out, function, true);
+        out << ");\n";
+    } else if (function.returnType == voidType) {
+        out << "    " << functionName(program, id) << '(';
+        emitCArguments(out, function, true);
+        out << ");\n";
+        out << "    fdn_frame_leave(&fdn_frame_current);\n";
+        out << "    return;\n";
+    } else {
+        out << "    " << cType(function.returnType) << " fdn_result = "
+            << functionName(program, id) << '(';
+        emitCArguments(out, function, true);
+        out << ");\n";
+        out << "    fdn_frame_leave(&fdn_frame_current);\n";
+        out << "    return fdn_result;\n";
+    }
+    out << "}\n";
+}
+
 } // namespace
 
 std::string emitC(const FirProgram &source, std::string_view sourcePath) {
@@ -1859,6 +1960,17 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     emitOwnershipPrototypes(out, program, arrays);
     emitOwnershipDefinitions(out, program, arrays);
 
+    for (const auto &function : program.functions) {
+        if (function.cSymbol.has_value()) {
+            emitCAbiSignature(out, function, false);
+            out << ";\n";
+        }
+    }
+    if (std::any_of(program.functions.begin(), program.functions.end(),
+                    [](const FirFunction &function) { return function.cSymbol.has_value(); })) {
+        out << '\n';
+    }
+
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
         emitSignature(out, program, index);
         out << ";\n";
@@ -1871,15 +1983,22 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
 
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
         const auto &function = program.functions[index];
+        if (!function.hasBody) {
+            emitImportedFunction(out, program, index, sourcePath);
+            if (index + 1 != program.functions.size()) {
+                out << '\n';
+            }
+            continue;
+        }
         emitSignature(out, program, index);
         out << " {\n";
         out << "    fdn_frame fdn_frame_current;\n";
-        const auto frameSource = function.sourcePath.empty() ? sourcePath : function.sourcePath;
+        const auto traceSource = function.sourcePath.empty() ? sourcePath : function.sourcePath;
         const auto framePackage = function.packageName.empty()
                                       ? std::string_view("main")
                                       : std::string_view(function.packageName);
         out << "    fdn_frame_enter(&fdn_frame_current, " << cString(framePackage) << ", "
-            << cString(traceFunctionName(function)) << ", " << cString(frameSource) << ", "
+            << cString(traceFunctionName(function)) << ", " << cString(traceSource) << ", "
             << function.sourceSpan.line << ", " << function.sourceSpan.column << ");\n";
         FunctionEmitter emitter(out, program, function);
         for (const auto parameter : function.parameters) {
@@ -1901,6 +2020,51 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
             out << '\n';
         }
     }
+
+    for (std::size_t index = 0; index < program.functions.size(); ++index) {
+        const auto &function = program.functions[index];
+        if (!function.cSymbol.has_value() || !function.hasBody) {
+            continue;
+        }
+        out << '\n';
+        emitExportedWrapper(out, program, index, sourcePath);
+    }
+    return out.str();
+}
+
+std::string emitCHeader(const FirProgram &source) {
+    Monomorphizer monomorphizer(source);
+    const auto program = monomorphizer.run();
+    std::vector<const FirFunction *> exports;
+    for (const auto &function : program.functions) {
+        if (function.cSymbol.has_value() && function.hasBody) {
+            exports.push_back(&function);
+        }
+    }
+    std::sort(exports.begin(), exports.end(), [](const auto *left, const auto *right) {
+        return *left->cSymbol < *right->cSymbol;
+    });
+
+    std::ostringstream out;
+    out << "#ifndef FOUNDATION_GENERATED_C_ABI_H\n";
+    out << "#define FOUNDATION_GENERATED_C_ABI_H\n\n";
+    out << "#include <stdbool.h>\n";
+    out << "#include <stdint.h>\n";
+    out << "#include \"foundation/runtime.h\"\n\n";
+    out << "#ifdef __cplusplus\n";
+    out << "extern \"C\" {\n";
+    out << "#endif\n\n";
+    for (const auto *function : exports) {
+        emitCAbiSignature(out, *function, true);
+        out << ";\n";
+    }
+    if (!exports.empty()) {
+        out << '\n';
+    }
+    out << "#ifdef __cplusplus\n";
+    out << "}\n";
+    out << "#endif\n\n";
+    out << "#endif\n";
     return out.str();
 }
 

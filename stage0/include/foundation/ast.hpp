@@ -215,6 +215,8 @@ struct Function {
     std::string sourcePath;
     std::optional<ReceiverKind> receiver;
     std::string ownerType;
+    std::optional<std::string> cSymbol;
+    bool hasBody{true};
 };
 
 struct StructField {

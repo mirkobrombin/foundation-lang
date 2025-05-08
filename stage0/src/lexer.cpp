@@ -90,6 +90,8 @@ const char *tokenName(TokenKind kind) {
         return "import";
     case TokenKind::As:
         return "as";
+    case TokenKind::Extern:
+        return "extern";
     case TokenKind::Struct:
         return "struct";
     case TokenKind::Enum:
@@ -339,6 +341,8 @@ Token Lexer::identifier() {
         kind = TokenKind::Import;
     } else if (text == "as") {
         kind = TokenKind::As;
+    } else if (text == "extern") {
+        kind = TokenKind::Extern;
     } else if (text == "struct") {
         kind = TokenKind::Struct;
     } else if (text == "enum") {

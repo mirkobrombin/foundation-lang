@@ -1,0 +1,5 @@
+extern rust fn nativeCall() i32 as foundation_native_call
+
+fn main() i32 {
+    0
+}

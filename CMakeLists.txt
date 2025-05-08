@@ -377,6 +377,67 @@ if(BUILD_TESTING)
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/contracts-second.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
     )
+    add_test(
+        NAME stage0.run.c-abi
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi/native/native.c
+            -DNATIVE_SECOND=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi/native/support.c
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native.cmake
+    )
+    add_test(
+        NAME stage0.run.c-abi-native-object
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi/native/native.c
+            -DSUPPORT=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi/native/support.c
+            -DOBJECT=${CMAKE_CURRENT_BINARY_DIR}/c-abi-support${CMAKE_C_OUTPUT_EXTENSION}
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-object.cmake
+    )
+    add_test(
+        NAME stage0.emit.c-abi-header-cpp
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi
+            -DCXX_COMPILER=${CMAKE_CXX_COMPILER}
+            -DCXX_COMPILER_ID=${CMAKE_CXX_COMPILER_ID}
+            -DCPP_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi/native/header_check.cpp
+            -DHEADER=${CMAKE_CURRENT_BINARY_DIR}/foundation_abi.h
+            -DOBJECT=${CMAKE_CURRENT_BINARY_DIR}/c-abi-header${CMAKE_CXX_OUTPUT_EXTENSION}
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-c-abi-cpp-header.cmake
+    )
+    add_test(
+        NAME stage0.emit.c-abi-header-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/c-abi-first.h
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/c-abi-second.h
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-header-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.run.c-abi-panic-trace
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/c-abi-panic
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/c-abi-panic/native/native.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-native-project-panic.cmake
+    )
+    add_test(
+        NAME stage0.run.c-abi-export-panic-trace
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/c-abi-export-panic
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/c-abi-export-panic/native/native.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-export-native-panic.cmake
+    )
     foreach(method_case IN ITEMS
             "missing-contract-method;FDN2096"
             "contract-receiver-mismatch;FDN2097"
@@ -400,6 +461,31 @@ if(BUILD_TESTING)
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${method_name}.fdn
                 -DCODE=${method_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
+    foreach(c_abi_case IN ITEMS
+            "c-abi-generic;FDN2112"
+            "c-abi-return;FDN2113"
+            "c-abi-owner;FDN2114"
+            "c-abi-edit-string;FDN2114"
+            "c-abi-duplicate-symbol;FDN2111"
+            "c-abi-reserved-export;FDN2115"
+            "c-abi-reserved-import;FDN2115"
+            "c-abi-keyword-symbol;FDN2110"
+            "c-abi-cpp-keyword-symbol;FDN2110"
+            "c-abi-struct-parameter;FDN2114"
+            "c-abi-method;FDN2117"
+            "c-abi-main;FDN2116"
+            "c-abi-unknown-abi;FDN1113")
+        list(GET c_abi_case 0 c_abi_name)
+        list(GET c_abi_case 1 c_abi_code)
+        add_test(
+            NAME stage0.check.${c_abi_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${c_abi_name}.fdn
+                -DCODE=${c_abi_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
     endforeach()
@@ -455,6 +541,22 @@ if(BUILD_TESTING)
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.c-abi-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/c-abi-sanitized.c
+                -DHEADER=${CMAKE_CURRENT_BINARY_DIR}/foundation_abi.h
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/c-abi-sanitized
+                -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi/native/native.c
+                -DNATIVE_SECOND=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi/native/support.c
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi/expected.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-sanitized.cmake
         )
     endif()
     add_test(

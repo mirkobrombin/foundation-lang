@@ -1,0 +1,5 @@
+extern c fn nativeText() String as foundation_native_text
+
+fn main() i32 {
+    0
+}

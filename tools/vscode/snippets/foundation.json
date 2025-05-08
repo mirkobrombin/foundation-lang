@@ -9,6 +9,20 @@
         "body": "import ${1:example.library}${2: as ${3:library}}",
         "description": "Import a Foundation package"
     },
+    "C ABI import": {
+        "prefix": "externimport",
+        "body": "extern c fn ${1:nativeCall}(${2}) ${3:i32} as ${4:foundation_native_call}",
+        "description": "Import a C function through the stable ABI"
+    },
+    "C ABI export": {
+        "prefix": "externexport",
+        "body": [
+            "extern c fn ${1:FoundationCall}(${2}) ${3:i32} as ${4:foundation_call} {",
+            "    ${5:0}",
+            "}"
+        ],
+        "description": "Export a Foundation function through the stable C ABI"
+    },
     "Enum": {
         "prefix": "enum",
         "body": [
