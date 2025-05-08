@@ -98,14 +98,18 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_allocation_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_counter_test runtime/tests/allocation_counter_test.c)
     target_link_libraries(foundation_runtime_counter_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_string_test runtime/tests/string_test.c)
+    target_link_libraries(foundation_runtime_string_test PRIVATE foundation_runtime)
     if(MSVC)
         target_compile_options(foundation_runtime_panic_test PRIVATE /W4)
         target_compile_options(foundation_runtime_allocation_test PRIVATE /W4)
         target_compile_options(foundation_runtime_counter_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_string_test PRIVATE /W4)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE /WX)
             target_compile_options(foundation_runtime_allocation_test PRIVATE /WX)
             target_compile_options(foundation_runtime_counter_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_string_test PRIVATE /WX)
         endif()
     else()
         target_compile_options(foundation_runtime_panic_test PRIVATE -Wall -Wextra -Wpedantic)
@@ -113,10 +117,12 @@ if(BUILD_TESTING)
             -Wall -Wextra -Wpedantic
         )
         target_compile_options(foundation_runtime_counter_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_string_test PRIVATE -Wall -Wextra -Wpedantic)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_allocation_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_counter_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_string_test PRIVATE -Werror)
         endif()
     endif()
 
@@ -138,6 +144,7 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME stage0.unit COMMAND foundation_stage0_tests)
+    add_test(NAME runtime.string COMMAND foundation_runtime_string_test)
     add_test(
         NAME runtime.panic-native-boundary
         COMMAND ${CMAKE_COMMAND}
@@ -264,6 +271,14 @@ if(BUILD_TESTING)
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
+    add_test(
+        NAME stage0.run.sequences
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/sequences.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/sequences.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
     if(FOUNDATION_BUILD_FUZZERS)
         add_test(
             NAME stage0.run.ownership-sanitized
@@ -274,6 +289,19 @@ if(BUILD_TESTING)
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/ownership-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/ownership-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.sequences-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/sequences.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/sequences-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/sequences-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/sequences.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
@@ -382,6 +410,135 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/short-circuit-move.fdn
             -DCODE=FDN2066
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.run.index-out-of-bounds
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/index-out-of-bounds.fdn
+            -DPATTERN=index.out.of.bounds
+            -DTRACE_PATTERN=index-out-of-bounds.fdn:3:11
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+    )
+    add_test(
+        NAME stage0.check.empty-array
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/empty-array.fdn
+            -DCODE=FDN2081
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.array-length-mismatch
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/array-length-mismatch.fdn
+            -DCODE=FDN2082
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.mixed-array
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/mixed-array.fdn
+            -DCODE=FDN2011
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.immutable-index
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/immutable-index.fdn
+            -DCODE=FDN2077
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.owned-array-element
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/owned-array-element.fdn
+            -DCODE=FDN2083
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.nested-slice
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/nested-slice.fdn
+            -DCODE=FDN2080
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.negative-array-length
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/negative-array-length.fdn
+            -DCODE=FDN1080
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.large-array-length
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/large-array-length.fdn
+            -DCODE=FDN2080
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.stored-slice
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/stored-slice.fdn
+            -DCODE=FDN2074
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.returned-slice
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/returned-slice.fdn
+            -DCODE=FDN2063
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.string-index
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/string-index.fdn
+            -DCODE=FDN2084
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.run.negative-index
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/negative-index.fdn
+            -DPATTERN=index.out.of.bounds
+            -DTRACE_PATTERN=negative-index.fdn:3:11
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+    )
+    add_test(
+        NAME stage0.check.array-length-overflow
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/array-length-overflow.fdn
+            -DCODE=FDN1080
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.recursive-array
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/recursive-array.fdn
+            -DCODE=FDN2023
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.invalid-utf8
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/invalid-utf8.fdn
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-invalid-utf8.cmake
     )
     add_test(
         NAME stage0.check.unhandled-result

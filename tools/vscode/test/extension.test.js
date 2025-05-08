@@ -69,6 +69,14 @@ test("grammar and completions track compiler keywords", () => {
         assert.match(grammar, new RegExp(`\\b${type}\\b`));
         assert.ok(completionLabels.has(type));
     }
+    for (const sequence of ["[N]T", "view [T]", "edit [T]"]) {
+        assert.ok(completionLabels.has(sequence));
+    }
+    assert.match(grammar, /\\\\\[0nrt/);
+    assert.equal(
+        JSON.parse(grammar).repository.punctuation.patterns[1].match,
+        "[(){}\\[\\]]"
+    );
 });
 
 test("collects enums and dot-qualified variants", () => {
@@ -154,6 +162,27 @@ test("ships Result handling and panic snippets", () => {
     assert.equal(snippets["Owned value"].prefix, "own");
     assert.equal(snippets["View parameter"].prefix, "view");
     assert.equal(snippets["Edit parameter"].prefix, "edit");
+    assert.equal(snippets["Fixed array binding"].prefix, "array");
+    assert.equal(snippets["View slice parameter"].prefix, "viewslice");
+    assert.equal(snippets["Edit slice parameter"].prefix, "editslice");
+    assert.equal(snippets["Indexed assignment"].prefix, "indexset");
+});
+
+test("collects declarations that use arrays and slices", () => {
+    const completions = collectCompletions(`
+        struct Batch { names [2]String }
+        fn first(names view [String], positions [2]i32) void {
+            var local = [1, 2]
+            print(names[positions[0]])
+        }
+    `);
+    assert.ok(completions.some((entry) => entry.label === "names" && entry.kind === "Field"));
+    assert.ok(completions.some(
+        (entry) => entry.label === "positions" && entry.detail === "Function parameter"
+    ));
+    assert.ok(completions.some(
+        (entry) => entry.label === "local" && entry.detail === "Local binding"
+    ));
 });
 
 test("collects structs and their fields", () => {

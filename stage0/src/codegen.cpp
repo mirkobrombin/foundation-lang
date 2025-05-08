@@ -51,6 +51,46 @@ std::string cString(std::string_view value) {
     return out.str();
 }
 
+std::string cTypeTag(const Type &type) {
+    switch (type.kind) {
+    case TypeKind::Void:
+        return "void";
+    case TypeKind::I32:
+        return "i32";
+    case TypeKind::Bool:
+        return "bool";
+    case TypeKind::String:
+        return "string";
+    case TypeKind::Array:
+        return "array_" + std::to_string(type.declaration) + '_' +
+               (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
+    case TypeKind::Slice:
+        return "slice_" +
+               (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
+    case TypeKind::Own:
+        return "own_" +
+               (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
+    case TypeKind::View:
+        return "view_" +
+               (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
+    case TypeKind::Edit:
+        return "edit_" +
+               (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
+    case TypeKind::Struct:
+        return "struct_" + std::to_string(type.declaration);
+    case TypeKind::Enum:
+        return "enum_" + std::to_string(type.declaration);
+    case TypeKind::Parameter:
+    case TypeKind::Invalid:
+        break;
+    }
+    return "invalid";
+}
+
+std::string arrayName(const Type &type) { return "fdn_" + cTypeTag(type); }
+
+std::string sliceName(const Type &type) { return "fdn_" + cTypeTag(type); }
+
 std::string cType(const Type &type) {
     switch (type.kind) {
     case TypeKind::Void:
@@ -61,10 +101,21 @@ std::string cType(const Type &type) {
         return "bool";
     case TypeKind::String:
         return "fdn_string";
+    case TypeKind::Array:
+        return arrayName(type);
+    case TypeKind::Slice:
+        break;
     case TypeKind::Own:
+        return type.arguments.size() == 1 ? cType(type.arguments.front()) + " *" : "void *";
     case TypeKind::Edit:
+        if (type.arguments.size() == 1 && type.arguments.front().kind == TypeKind::Slice) {
+            return sliceName(type);
+        }
         return type.arguments.size() == 1 ? cType(type.arguments.front()) + " *" : "void *";
     case TypeKind::View:
+        if (type.arguments.size() == 1 && type.arguments.front().kind == TypeKind::Slice) {
+            return sliceName(type);
+        }
         return type.arguments.size() == 1 ? "const " + cType(type.arguments.front()) + " *"
                                           : "const void *";
     case TypeKind::Parameter:
@@ -172,11 +223,13 @@ class Monomorphizer {
             std::terminate();
         }
         if (source.kind == TypeKind::Own || source.kind == TypeKind::View ||
-            source.kind == TypeKind::Edit) {
+            source.kind == TypeKind::Edit || source.kind == TypeKind::Array ||
+            source.kind == TypeKind::Slice) {
             if (source.arguments.size() != 1) {
                 std::terminate();
             }
-            return Type{source.kind, 0, {instantiateType(source.arguments.front())}};
+            return Type{source.kind, source.declaration,
+                        {instantiateType(source.arguments.front())}};
         }
         if (source.kind != TypeKind::Struct && source.kind != TypeKind::Enum) {
             return source;
@@ -284,6 +337,11 @@ enum class ControlFlow {
 bool expressionDiverges(const FirProgram &program, const FirFunction &function,
                         FirExpressionId id) {
     const auto &expression = function.expressions[id];
+    if (const auto *array = std::get_if<FirArrayExpression>(&expression.value)) {
+        return std::any_of(array->elements.begin(), array->elements.end(), [&](const auto element) {
+            return expressionDiverges(program, function, element);
+        });
+    }
     if (std::holds_alternative<FirMoveExpression>(expression.value)) {
         return false;
     }
@@ -292,6 +350,10 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
     }
     if (const auto *ownership = std::get_if<FirOwnershipExpression>(&expression.value)) {
         return expressionDiverges(program, function, ownership->operand);
+    }
+    if (const auto *index = std::get_if<FirIndexExpression>(&expression.value)) {
+        return expressionDiverges(program, function, index->base) ||
+               expressionDiverges(program, function, index->index);
     }
     if (const auto *binary = std::get_if<FirBinaryExpression>(&expression.value)) {
         if (expressionDiverges(program, function, binary->left)) {
@@ -422,8 +484,12 @@ void markDivergingFunctions(FirProgram &program) {
 }
 
 bool typeRequiresDrop(const FirProgram &program, const Type &type) {
-    if (type.kind == TypeKind::Own || type.kind == TypeKind::Parameter) {
+    if (type.kind == TypeKind::String || type.kind == TypeKind::Own ||
+        type.kind == TypeKind::Parameter) {
         return true;
+    }
+    if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
+        return typeRequiresDrop(program, type.arguments.front());
     }
     if (type.kind == TypeKind::Struct && type.declaration < program.structs.size()) {
         return std::any_of(program.structs[type.declaration].fields.begin(),
@@ -444,6 +510,9 @@ bool typeRequiresDrop(const FirProgram &program, const Type &type) {
 }
 
 std::string dropName(const Type &type) {
+    if (type.kind == TypeKind::Array) {
+        return "fdn_drop_" + cTypeTag(type);
+    }
     if (type.kind == TypeKind::Struct) {
         return "fdn_drop_struct_" + std::to_string(type.declaration);
     }
@@ -451,6 +520,9 @@ std::string dropName(const Type &type) {
 }
 
 std::string moveName(const Type &type) {
+    if (type.kind == TypeKind::Array) {
+        return "fdn_move_" + cTypeTag(type);
+    }
     if (type.kind == TypeKind::Struct) {
         return "fdn_move_struct_" + std::to_string(type.declaration);
     }
@@ -465,7 +537,10 @@ void emitDropValue(std::ostringstream &out, const FirProgram &program, const Typ
     if (type.kind == TypeKind::Own) {
         out << indentation(depth) << "if (" << value << " != NULL) {\n";
         const auto &target = type.arguments.front();
-        if (target.kind == TypeKind::Struct || target.kind == TypeKind::Enum) {
+        if (target.kind == TypeKind::String) {
+            out << indentation(depth + 1) << "fdn_string_drop(" << value << ");\n";
+        } else if (target.kind == TypeKind::Array || target.kind == TypeKind::Struct ||
+                   target.kind == TypeKind::Enum) {
             if (typeRequiresDrop(program, target)) {
                 out << indentation(depth + 1) << dropName(target) << '(' << value << ");\n";
             }
@@ -475,7 +550,12 @@ void emitDropValue(std::ostringstream &out, const FirProgram &program, const Typ
         out << indentation(depth) << "}\n";
         return;
     }
-    if (type.kind == TypeKind::Struct || type.kind == TypeKind::Enum) {
+    if (type.kind == TypeKind::String) {
+        out << indentation(depth) << "fdn_string_drop(&" << value << ");\n";
+        return;
+    }
+    if (type.kind == TypeKind::Array || type.kind == TypeKind::Struct ||
+        type.kind == TypeKind::Enum) {
         out << indentation(depth) << dropName(type) << "(&" << value << ");\n";
     }
 }
@@ -488,7 +568,12 @@ void emitMoveAssignment(std::ostringstream &out, const FirProgram &program, cons
         out << indentation(depth) << source << " = NULL;\n";
         return;
     }
-    if ((type.kind == TypeKind::Struct || type.kind == TypeKind::Enum) &&
+    if (type.kind == TypeKind::String) {
+        out << indentation(depth) << target << " = fdn_string_move(&" << source << ");\n";
+        return;
+    }
+    if ((type.kind == TypeKind::Array || type.kind == TypeKind::Struct ||
+         type.kind == TypeKind::Enum) &&
         typeRequiresDrop(program, type)) {
         out << indentation(depth) << target << " = " << moveName(type) << "(&" << source
             << ");\n";
@@ -527,7 +612,13 @@ class FunctionEmitter {
             return {boolean->value ? "true" : "false", false};
         }
         if (const auto *string = std::get_if<FirStringExpression>(&expression.value)) {
-            return {cString(string->value), false};
+            const auto temporary = nextTemporary();
+            out_ << indentation(depth) << "fdn_string " << temporary << " = fdn_string_static("
+                 << cString(string->value) << ", " << string->value.size() << ");\n";
+            return {temporary, false};
+        }
+        if (const auto *array = std::get_if<FirArrayExpression>(&expression.value)) {
+            return emitArray(*array, expression.type, depth);
         }
         if (const auto *local = std::get_if<FirLocalExpression>(&expression.value)) {
             return {localName(function_, local->local), false};
@@ -575,6 +666,9 @@ class FunctionEmitter {
             }
             return base;
         }
+        if (const auto *index = std::get_if<FirIndexExpression>(&expression.value)) {
+            return emitIndex(*index, expression.span, depth);
+        }
         if (const auto *constructor = std::get_if<FirEnumExpression>(&expression.value)) {
             return emitEnum(*constructor, depth);
         }
@@ -612,11 +706,84 @@ class FunctionEmitter {
         }
 
         const auto operandType = function_.expressions[ownership.operand].type;
+        if (type.arguments.size() == 1 && type.arguments.front().kind == TypeKind::Slice) {
+            if ((operandType.kind == TypeKind::View || operandType.kind == TypeKind::Edit) &&
+                operandType.arguments.size() == 1 &&
+                operandType.arguments.front().kind == TypeKind::Slice) {
+                return operand;
+            }
+            auto arrayType = operandType;
+            auto pointer = false;
+            if (arrayType.kind == TypeKind::Own && arrayType.arguments.size() == 1) {
+                arrayType = arrayType.arguments.front();
+                pointer = true;
+            }
+            const auto temporary = nextTemporary();
+            out_ << indentation(depth) << cType(type) << ' ' << temporary << ";\n";
+            out_ << indentation(depth) << temporary << ".fdn_data = " << operand.value
+                 << (pointer ? "->fdn_data;\n" : ".fdn_data;\n");
+            out_ << indentation(depth) << temporary << ".fdn_length = " << arrayType.declaration
+                 << ";\n";
+            return {temporary, false};
+        }
         if (operandType.kind == TypeKind::Own || operandType.kind == TypeKind::View ||
             operandType.kind == TypeKind::Edit) {
             return operand;
         }
         return {"&" + operand.value, false};
+    }
+
+    EmittedExpression emitArray(const FirArrayExpression &array, const Type &type,
+                                unsigned int depth) {
+        std::vector<std::string> elements;
+        elements.reserve(array.elements.size());
+        for (const auto element : array.elements) {
+            auto value = emitExpression(element, depth);
+            if (value.diverges) {
+                return value;
+            }
+            elements.push_back(std::move(value.value));
+        }
+        const auto temporary = nextTemporary();
+        out_ << indentation(depth) << cType(type) << ' ' << temporary << " = {0};\n";
+        for (std::size_t index = 0; index < elements.size(); ++index) {
+            out_ << indentation(depth) << temporary << ".fdn_data[" << index
+                 << "] = " << elements[index] << ";\n";
+        }
+        return {temporary, false};
+    }
+
+    EmittedExpression emitIndex(const FirIndexExpression &index, SourceSpan span,
+                                unsigned int depth) {
+        const auto base = emitExpression(index.base, depth);
+        if (base.diverges) {
+            return base;
+        }
+        const auto value = emitExpression(index.index, depth);
+        if (value.diverges) {
+            return value;
+        }
+        const auto &sourceType = function_.expressions[index.base].type;
+        auto sequence = sourceType;
+        auto access = base.value;
+        if (sequence.kind == TypeKind::Own && sequence.arguments.size() == 1) {
+            sequence = sequence.arguments.front();
+            access += "->fdn_data";
+        } else if ((sequence.kind == TypeKind::View || sequence.kind == TypeKind::Edit) &&
+                   sequence.arguments.size() == 1) {
+            sequence = sequence.arguments.front();
+            access += ".fdn_data";
+        } else {
+            access += ".fdn_data";
+        }
+        const auto length = sequence.kind == TypeKind::Array
+                                ? std::to_string(sequence.declaration)
+                                : base.value + ".fdn_length";
+        emitLocation(span, depth);
+        const auto checked = nextTemporary();
+        out_ << indentation(depth) << "size_t " << checked << " = fdn_bounds_check("
+             << value.value << ", " << length << ");\n";
+        return {access + '[' + checked + ']', false};
     }
 
     EmittedExpression emitBinary(const FirBinaryExpression &binary, const Type &type,
@@ -659,7 +826,11 @@ class FunctionEmitter {
         out_ << indentation(depth) << cType(type) << ' ' << temporary << " = ";
         switch (binary.operation) {
         case FirBinaryOperator::Add:
-            out_ << "fdn_i32_add(" << left.value << ", " << right.value << ')';
+            if (type == stringType) {
+                out_ << "fdn_string_concat(" << left.value << ", " << right.value << ')';
+            } else {
+                out_ << "fdn_i32_add(" << left.value << ", " << right.value << ')';
+            }
             break;
         case FirBinaryOperator::Subtract:
             out_ << "fdn_i32_subtract(" << left.value << ", " << right.value << ')';
@@ -674,10 +845,18 @@ class FunctionEmitter {
             out_ << "fdn_i32_remainder(" << left.value << ", " << right.value << ')';
             break;
         case FirBinaryOperator::Equal:
-            out_ << left.value << " == " << right.value;
+            if (function_.expressions[binary.left].type == stringType) {
+                out_ << "fdn_string_equal(" << left.value << ", " << right.value << ')';
+            } else {
+                out_ << left.value << " == " << right.value;
+            }
             break;
         case FirBinaryOperator::NotEqual:
-            out_ << left.value << " != " << right.value;
+            if (function_.expressions[binary.left].type == stringType) {
+                out_ << "!fdn_string_equal(" << left.value << ", " << right.value << ')';
+            } else {
+                out_ << left.value << " != " << right.value;
+            }
             break;
         case FirBinaryOperator::Less:
             out_ << left.value << " < " << right.value;
@@ -696,6 +875,8 @@ class FunctionEmitter {
             break;
         }
         out_ << ";\n";
+        dropInspectedTemporary(binary.left, left, depth);
+        dropInspectedTemporary(binary.right, right, depth);
         return {temporary, false};
     }
 
@@ -743,6 +924,13 @@ class FunctionEmitter {
         }
         if (type == voidType) {
             out_ << indentation(depth) << invocation.str() << ";\n";
+            for (std::size_t index = 0;
+                 index < call.arguments.size() && index < call.argumentDrops.size(); ++index) {
+                if (call.argumentDrops[index]) {
+                    emitDropValue(out_, program_, function_.expressions[call.arguments[index]].type,
+                                  arguments[index], depth);
+                }
+            }
             return {{}, false};
         }
         const auto temporary = nextTemporary();
@@ -996,7 +1184,8 @@ class FunctionEmitter {
         }
         out_ << "#if defined(FOUNDATION_VERIFY_ALLOCATIONS)\n";
         out_ << indentation(depth) << "if (fdn_live_allocations() != 0) {\n";
-        out_ << indentation(depth + 1) << "fdn_panic(\"live allocations after main\");\n";
+        out_ << indentation(depth + 1)
+             << "fdn_panic_cstr(\"live allocations after main\");\n";
         out_ << indentation(depth) << "}\n";
         out_ << "#endif\n";
     }
@@ -1004,6 +1193,28 @@ class FunctionEmitter {
     void discardValue(const EmittedExpression &expression, unsigned int depth) {
         if (!expression.value.empty()) {
             out_ << indentation(depth) << "(void)" << expression.value << ";\n";
+        }
+    }
+
+    bool isPlaceExpression(FirExpressionId id) const {
+        const auto &expression = function_.expressions[id].value;
+        if (std::holds_alternative<FirLocalExpression>(expression)) {
+            return true;
+        }
+        if (const auto *field = std::get_if<FirFieldExpression>(&expression)) {
+            return isPlaceExpression(field->base);
+        }
+        if (const auto *index = std::get_if<FirIndexExpression>(&expression)) {
+            return isPlaceExpression(index->base);
+        }
+        return false;
+    }
+
+    void dropInspectedTemporary(FirExpressionId id, const EmittedExpression &expression,
+                                unsigned int depth) {
+        const auto &type = function_.expressions[id].type;
+        if (!isPlaceExpression(id) && typeRequiresDrop(program_, type)) {
+            emitDropValue(out_, program_, type, expression.value, depth);
         }
     }
 
@@ -1050,7 +1261,91 @@ void emitEnumDefinition(std::ostringstream &out, const FirProgram &program, FirE
     out << "};\n\n";
 }
 
-void emitOwnershipPrototypes(std::ostringstream &out, const FirProgram &program) {
+void collectSequenceType(const Type &type, std::unordered_map<std::string, Type> &arrays,
+                         std::unordered_map<std::string, Type> &slices) {
+    if (type.kind == TypeKind::Array) {
+        arrays.emplace(typeKey(type), type);
+    }
+    if ((type.kind == TypeKind::View || type.kind == TypeKind::Edit) &&
+        type.arguments.size() == 1 && type.arguments.front().kind == TypeKind::Slice) {
+        slices.emplace(typeKey(type), type);
+    }
+    for (const auto &argument : type.arguments) {
+        collectSequenceType(argument, arrays, slices);
+    }
+}
+
+void collectSequenceTypes(const FirProgram &program, std::vector<Type> &arrays,
+                          std::vector<Type> &slices) {
+    std::unordered_map<std::string, Type> arrayTypes;
+    std::unordered_map<std::string, Type> sliceTypes;
+    for (const auto &type : program.structs) {
+        for (const auto &field : type.fields) {
+            collectSequenceType(field.type, arrayTypes, sliceTypes);
+        }
+    }
+    for (const auto &type : program.enums) {
+        for (const auto &variant : type.variants) {
+            if (variant.payload.has_value()) {
+                collectSequenceType(*variant.payload, arrayTypes, sliceTypes);
+            }
+        }
+    }
+    for (const auto &function : program.functions) {
+        collectSequenceType(function.returnType, arrayTypes, sliceTypes);
+        for (const auto &local : function.locals) {
+            collectSequenceType(local.type, arrayTypes, sliceTypes);
+        }
+        for (const auto &expression : function.expressions) {
+            collectSequenceType(expression.type, arrayTypes, sliceTypes);
+        }
+    }
+    for (auto &[key, type] : arrayTypes) {
+        static_cast<void>(key);
+        arrays.push_back(std::move(type));
+    }
+    for (auto &[key, type] : sliceTypes) {
+        static_cast<void>(key);
+        slices.push_back(std::move(type));
+    }
+    const auto byKey = [](const Type &left, const Type &right) {
+        return typeKey(left) < typeKey(right);
+    };
+    std::sort(arrays.begin(), arrays.end(), byKey);
+    std::sort(slices.begin(), slices.end(), byKey);
+}
+
+void emitArrayDefinition(std::ostringstream &out, const Type &type) {
+    out << "struct " << arrayName(type) << " {\n";
+    out << "    " << cType(type.arguments.front()) << " fdn_data["
+        << (type.declaration == 0 ? 1 : type.declaration) << "];\n";
+    out << "};\n\n";
+}
+
+void emitSliceDefinition(std::ostringstream &out, const Type &type) {
+    const auto &slice = type.arguments.front();
+    const auto &element = slice.arguments.front();
+    out << "typedef struct " << sliceName(type) << " {\n";
+    out << "    ";
+    if (type.kind == TypeKind::View) {
+        out << "const ";
+    }
+    out << cType(element) << " *fdn_data;\n";
+    out << "    size_t fdn_length;\n";
+    out << "} " << sliceName(type) << ";\n\n";
+}
+
+void emitOwnershipPrototypes(std::ostringstream &out, const FirProgram &program,
+                             const std::vector<Type> &arrays) {
+    for (const auto &type : arrays) {
+        if (!typeRequiresDrop(program, type)) {
+            continue;
+        }
+        out << "static inline FDN_MAYBE_UNUSED void " << dropName(type) << '(' << cType(type)
+            << " *value);\n";
+        out << "static inline FDN_MAYBE_UNUSED " << cType(type) << ' ' << moveName(type) << '('
+            << cType(type) << " *value);\n";
+    }
     for (std::size_t id = 0; id < program.structs.size(); ++id) {
         const Type type{TypeKind::Struct, id};
         if (!typeRequiresDrop(program, type)) {
@@ -1074,6 +1369,35 @@ void emitOwnershipPrototypes(std::ostringstream &out, const FirProgram &program)
             << " *value);\n";
     }
     out << '\n';
+}
+
+void emitArrayOwnership(std::ostringstream &out, const FirProgram &program, const Type &type) {
+    if (!typeRequiresDrop(program, type)) {
+        return;
+    }
+    const auto &element = type.arguments.front();
+    out << "static inline FDN_MAYBE_UNUSED void " << dropName(type) << '(' << cType(type)
+        << " *value) {\n";
+    if (type.declaration != 0) {
+        out << "    for (size_t fdn_index = " << type.declaration
+            << "; fdn_index-- > 0;) {\n";
+        emitDropValue(out, program, element, "value->fdn_data[fdn_index]", 2);
+        out << "    }\n";
+    }
+    out << "}\n\n";
+
+    out << "static inline FDN_MAYBE_UNUSED " << cType(type) << ' ' << moveName(type) << '('
+        << cType(type) << " *value) {\n";
+    out << "    " << cType(type) << " result;\n";
+    if (type.declaration != 0) {
+        out << "    for (size_t fdn_index = 0; fdn_index < " << type.declaration
+            << "; ++fdn_index) {\n";
+        emitMoveAssignment(out, program, element, "result.fdn_data[fdn_index]",
+                           "value->fdn_data[fdn_index]", 2);
+        out << "    }\n";
+    }
+    out << "    return result;\n";
+    out << "}\n\n";
 }
 
 void emitStructOwnership(std::ostringstream &out, const FirProgram &program, FirStructId id) {
@@ -1148,7 +1472,11 @@ void emitEnumOwnership(std::ostringstream &out, const FirProgram &program, FirEn
     out << "}\n\n";
 }
 
-void emitOwnershipDefinitions(std::ostringstream &out, const FirProgram &program) {
+void emitOwnershipDefinitions(std::ostringstream &out, const FirProgram &program,
+                              const std::vector<Type> &arrays) {
+    for (const auto &type : arrays) {
+        emitArrayOwnership(out, program, type);
+    }
     for (std::size_t id = 0; id < program.structs.size(); ++id) {
         emitStructOwnership(out, program, id);
     }
@@ -1157,12 +1485,18 @@ void emitOwnershipDefinitions(std::ostringstream &out, const FirProgram &program
     }
 }
 
-std::optional<std::size_t> typeNode(const FirProgram &program, const Type &type) {
+std::optional<std::size_t>
+typeNode(const FirProgram &program, const Type &type,
+         const std::unordered_map<std::string, std::size_t> &arrayNodes) {
     if (type.kind == TypeKind::Struct) {
         return type.declaration;
     }
     if (type.kind == TypeKind::Enum) {
         return program.structs.size() + type.declaration;
+    }
+    if (type.kind == TypeKind::Array) {
+        const auto found = arrayNodes.find(typeKey(type));
+        return found == arrayNodes.end() ? std::nullopt : std::optional<std::size_t>{found->second};
     }
     return std::nullopt;
 }
@@ -1200,6 +1534,9 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     Monomorphizer monomorphizer(source);
     auto program = monomorphizer.run();
     markDivergingFunctions(program);
+    std::vector<Type> arrays;
+    std::vector<Type> slices;
+    collectSequenceTypes(program, arrays, slices);
     std::ostringstream out;
     out << "#include <stdbool.h>\n";
     out << "#include <stdint.h>\n";
@@ -1209,24 +1546,33 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     out << "#else\n";
     out << "#define FDN_MAYBE_UNUSED\n";
     out << "#endif\n\n";
-    out << "typedef const char *fdn_string;\n\n";
-
     for (std::size_t index = 0; index < program.structs.size(); ++index) {
         out << "typedef struct fdn_struct_" << index << " fdn_struct_" << index << ";\n";
     }
     for (std::size_t index = 0; index < program.enums.size(); ++index) {
         out << "typedef struct fdn_enum_" << index << " fdn_enum_" << index << ";\n";
     }
-    if (!program.structs.empty() || !program.enums.empty()) {
+    for (const auto &type : arrays) {
+        out << "typedef struct " << arrayName(type) << ' ' << arrayName(type) << ";\n";
+    }
+    if (!program.structs.empty() || !program.enums.empty() || !arrays.empty()) {
         out << '\n';
     }
+    for (const auto &type : slices) {
+        emitSliceDefinition(out, type);
+    }
 
-    const auto typeCount = program.structs.size() + program.enums.size();
+    const auto typeCount = program.structs.size() + program.enums.size() + arrays.size();
+    std::unordered_map<std::string, std::size_t> arrayNodes;
+    for (std::size_t index = 0; index < arrays.size(); ++index) {
+        arrayNodes.emplace(typeKey(arrays[index]), program.structs.size() + program.enums.size() +
+                                                       index);
+    }
     std::vector<std::size_t> dependencies(typeCount);
     std::vector<std::vector<std::size_t>> dependents(typeCount);
     for (std::size_t type = 0; type < program.structs.size(); ++type) {
         for (const auto &field : program.structs[type].fields) {
-            const auto target = typeNode(program, field.type);
+            const auto target = typeNode(program, field.type, arrayNodes);
             if (target.has_value()) {
                 ++dependencies[type];
                 dependents[*target].push_back(type);
@@ -1238,14 +1584,22 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
             if (!variant.payload.has_value()) {
                 continue;
             }
-            const auto target = typeNode(program, *variant.payload);
+            const auto target = typeNode(program, *variant.payload, arrayNodes);
             if (target.has_value()) {
                 ++dependencies[program.structs.size() + type];
                 dependents[*target].push_back(program.structs.size() + type);
             }
         }
     }
-    std::vector<FirStructId> ready;
+    for (std::size_t index = 0; index < arrays.size(); ++index) {
+        const auto node = program.structs.size() + program.enums.size() + index;
+        const auto target = typeNode(program, arrays[index].arguments.front(), arrayNodes);
+        if (target.has_value()) {
+            ++dependencies[node];
+            dependents[*target].push_back(node);
+        }
+    }
+    std::vector<std::size_t> ready;
     for (std::size_t type = 0; type < dependencies.size(); ++type) {
         if (dependencies[type] == 0) {
             ready.push_back(type);
@@ -1254,8 +1608,11 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     for (std::size_t current = 0; current < ready.size(); ++current) {
         if (ready[current] < program.structs.size()) {
             emitStructDefinition(out, program, ready[current]);
-        } else {
+        } else if (ready[current] < program.structs.size() + program.enums.size()) {
             emitEnumDefinition(out, program, ready[current] - program.structs.size());
+        } else {
+            emitArrayDefinition(
+                out, arrays[ready[current] - program.structs.size() - program.enums.size()]);
         }
         for (const auto dependent : dependents[ready[current]]) {
             if (--dependencies[dependent] == 0) {
@@ -1267,8 +1624,8 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
         std::terminate();
     }
 
-    emitOwnershipPrototypes(out, program);
-    emitOwnershipDefinitions(out, program);
+    emitOwnershipPrototypes(out, program, arrays);
+    emitOwnershipDefinitions(out, program, arrays);
 
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
         emitSignature(out, program, index);

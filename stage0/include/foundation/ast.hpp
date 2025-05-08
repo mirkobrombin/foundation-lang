@@ -20,6 +20,7 @@ struct TypeSyntax {
     std::string name;
     std::vector<TypeSyntax> arguments;
     SourceSpan span;
+    std::size_t arrayLength{};
 };
 
 enum class UnaryOperator {
@@ -59,6 +60,10 @@ struct BooleanExpression {
 
 struct StringExpression {
     std::string value;
+};
+
+struct ArrayExpression {
+    std::vector<AstExpressionId> elements;
 };
 
 struct NameExpression {
@@ -106,6 +111,11 @@ struct MemberExpression {
     std::optional<AstExpressionId> payload;
 };
 
+struct IndexExpression {
+    AstExpressionId base{};
+    AstExpressionId index{};
+};
+
 struct MatchArm {
     std::string variant;
     std::optional<std::string> binding;
@@ -119,9 +129,10 @@ struct MatchExpression {
 };
 
 using ExpressionValue =
-    std::variant<IntegerExpression, BooleanExpression, StringExpression, NameExpression,
-                 UnaryExpression, OwnershipExpression, BinaryExpression, CallExpression,
-                 StructExpression, MemberExpression, MatchExpression>;
+    std::variant<IntegerExpression, BooleanExpression, StringExpression, ArrayExpression,
+                 NameExpression, UnaryExpression, OwnershipExpression, BinaryExpression,
+                 CallExpression, StructExpression, MemberExpression, IndexExpression,
+                 MatchExpression>;
 
 struct Expression {
     ExpressionValue value;

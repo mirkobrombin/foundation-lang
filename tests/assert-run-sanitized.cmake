@@ -48,4 +48,4 @@ if(NOT run_output STREQUAL expected)
     message(FATAL_ERROR "program output mismatch:\nexpected:\n${expected}actual:\n${run_output}")
 endif()
 
-message(STATUS "ownership program is clean under ASan, LSan, and UBSan")
+message(STATUS "program is clean under ASan, LSan, and UBSan")

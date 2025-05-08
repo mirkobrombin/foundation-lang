@@ -23,6 +23,7 @@ struct CallTarget {
     CallTargetKind kind{CallTargetKind::Function};
     FirFunctionId function{};
     std::vector<Type> typeArguments;
+    std::vector<bool> argumentDrops;
 };
 
 struct SemanticLocal {

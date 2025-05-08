@@ -284,6 +284,51 @@ fn main() i32 {
            "main can verify that deterministic cleanup reaches zero live allocations");
 }
 
+void sequenceValuesLowerToDeterministicC() {
+    constexpr std::string_view source = R"(
+struct Batch<T> { values [2]T }
+
+fn first(values view [String]) void { print(values[0]) }
+
+fn main() i32 {
+    let numbers = Batch { values = [1, 2] }
+    discard numbers
+    let text = Batch { values = ["left", "right"] }
+    discard text
+    var values = ["A\0B", "C"]
+    first(view values)
+    values[1] = values[0] + values[1]
+    discard values
+    let empty [0]i32 = []
+    discard empty
+    0
+}
+)";
+    auto first = check(source);
+    auto second = check(source);
+    expect(!first.diagnostics.hasErrors(), "sequence program has no diagnostics");
+    expect(first.fir.has_value(), "sequence program lowers to FIR");
+    expect(second.fir.has_value(), "repeated sequence program lowers to FIR");
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        return;
+    }
+
+    const auto firstC = foundation::emitC(*first.fir);
+    const auto secondC = foundation::emitC(*second.fir);
+    expect(firstC == secondC, "sequence C emission is deterministic");
+    expect(firstC.find("fdn_string_static(\"A\\000B\", 3)") != std::string::npos,
+           "String literals preserve embedded NUL bytes and length");
+    expect(firstC.find("fdn_view_slice_string") != std::string::npos,
+           "String slices use a typed fat pointer");
+    expect(firstC.find("fdn_array_2_i32") != std::string::npos &&
+               firstC.find("fdn_array_2_string") != std::string::npos,
+           "generic fields specialize distinct fixed-array layouts");
+    expect(firstC.find("fdn_bounds_check") != std::string::npos,
+           "array and slice indexing use runtime bounds checks");
+    expect(firstC.find("fdn_drop_array_2_string") != std::string::npos,
+           "String arrays receive element drop glue");
+}
+
 void lightweightSyntaxCarriesVisibilityAndContext() {
     constexpr std::string_view source = R"(
 struct Holder {
@@ -416,6 +461,13 @@ void syntaxFailuresHaveStableDiagnostics() {
     const auto nulString = check(nul);
     expect(hasCode(nulString.diagnostics, "FDN0004"),
            "NUL in a string literal reports FDN0004");
+
+    std::string invalidUtf8 = "fn main() i32 { print(\"";
+    invalidUtf8.push_back(static_cast<char>(0xc3));
+    invalidUtf8 += "\") 0 }";
+    const auto invalidUtf8String = check(invalidUtf8);
+    expect(hasCode(invalidUtf8String.diagnostics, "FDN0005"),
+           "invalid UTF-8 in a string literal reports FDN0005");
 
     std::string deepUnary = "fn main() i32 { return ";
     deepUnary.append(4096, '!');
@@ -816,6 +868,7 @@ int main() {
     enumMatchesLowerToDeterministicC();
     genericValuesMonomorphizeDeterministically();
     ownershipLowersToDeterministicC();
+    sequenceValuesLowerToDeterministicC();
     lightweightSyntaxCarriesVisibilityAndContext();
     panicLowersWithSourceFrames();
     divergingCallsCloseGeneratedControlFlow();

@@ -68,6 +68,10 @@ struct FirStringExpression {
     std::string value;
 };
 
+struct FirArrayExpression {
+    std::vector<FirExpressionId> elements;
+};
+
 struct FirLocalExpression {
     FirLocalId local{};
 };
@@ -97,6 +101,7 @@ struct FirCallExpression {
     FirFunctionId function{};
     std::vector<Type> typeArguments;
     std::vector<FirExpressionId> arguments;
+    std::vector<bool> argumentDrops;
 };
 
 struct FirStructFieldValue {
@@ -112,6 +117,11 @@ struct FirStructExpression {
 struct FirFieldExpression {
     FirExpressionId base{};
     FirFieldId field{};
+};
+
+struct FirIndexExpression {
+    FirExpressionId base{};
+    FirExpressionId index{};
 };
 
 struct FirEnumExpression {
@@ -135,9 +145,10 @@ struct FirMatchExpression {
 
 using FirExpressionValue =
     std::variant<FirIntegerExpression, FirBooleanExpression, FirStringExpression,
-                 FirLocalExpression, FirMoveExpression, FirUnaryExpression, FirOwnershipExpression,
-                 FirBinaryExpression, FirCallExpression, FirStructExpression, FirFieldExpression,
-                 FirEnumExpression, FirMatchExpression>;
+                 FirArrayExpression, FirLocalExpression, FirMoveExpression, FirUnaryExpression,
+                 FirOwnershipExpression, FirBinaryExpression, FirCallExpression,
+                 FirStructExpression, FirFieldExpression, FirIndexExpression, FirEnumExpression,
+                 FirMatchExpression>;
 
 struct FirExpression {
     FirExpressionValue value;

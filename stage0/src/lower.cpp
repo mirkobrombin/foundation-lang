@@ -221,6 +221,13 @@ class Lowerer {
             value = FirBooleanExpression{boolean->value};
         } else if (const auto *string = std::get_if<StringExpression>(&source.value)) {
             value = FirStringExpression{string->value};
+        } else if (const auto *array = std::get_if<ArrayExpression>(&source.value)) {
+            std::vector<FirExpressionId> elements;
+            elements.reserve(array->elements.size());
+            for (const auto element : array->elements) {
+                elements.push_back(lowerExpression(element));
+            }
+            value = FirArrayExpression{std::move(elements)};
         } else if (std::holds_alternative<NameExpression>(source.value)) {
             const auto local = required(model_.expressionLocals[id]);
             if (model_.expressionMoves[id]) {
@@ -257,7 +264,7 @@ class Lowerer {
                 break;
             }
             value = FirCallExpression{kind, target.function, target.typeArguments,
-                                      std::move(arguments)};
+                                      std::move(arguments), target.argumentDrops};
         } else if (const auto *literal = std::get_if<StructExpression>(&source.value)) {
             const auto &target = required(model_.structTargets[id]);
             std::vector<FirStructFieldValue> fields;
@@ -279,6 +286,9 @@ class Lowerer {
                 value = FirFieldExpression{lowerExpression(required(member->base)),
                                            required(model_.expressionFields[id])};
             }
+        } else if (const auto *index = std::get_if<IndexExpression>(&source.value)) {
+            value = FirIndexExpression{lowerExpression(index->base),
+                                       lowerExpression(index->index)};
         } else {
             const auto &match = std::get<MatchExpression>(source.value);
             const auto &target = required(model_.matchTargets[id]);

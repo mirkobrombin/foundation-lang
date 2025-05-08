@@ -140,6 +140,60 @@ class Analyzer {
         }
     }
 
+    bool containsBorrow(const Type &type) const {
+        if (type.kind == TypeKind::View || type.kind == TypeKind::Edit) {
+            return true;
+        }
+        for (const auto &argument : type.arguments) {
+            if (containsBorrow(argument)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool containsNestedBorrow(const Type &type, bool allowRoot) const {
+        if (type.kind == TypeKind::View || type.kind == TypeKind::Edit) {
+            if (!allowRoot) {
+                return true;
+            }
+            for (const auto &argument : type.arguments) {
+                if (containsNestedBorrow(argument, false)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        for (const auto &argument : type.arguments) {
+            if (containsNestedBorrow(argument, false)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool containsBareSlice(const Type &type) const {
+        if ((type.kind == TypeKind::View || type.kind == TypeKind::Edit) &&
+            type.arguments.size() == 1 && type.arguments.front().kind == TypeKind::Slice) {
+            const auto &slice = type.arguments.front();
+            for (const auto &element : slice.arguments) {
+                if (containsBareSlice(element)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (type.kind == TypeKind::Slice) {
+            return true;
+        }
+        for (const auto &argument : type.arguments) {
+            if (containsBareSlice(argument)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     void resolveStructs() {
         for (std::size_t index = 0; index < program_.structs.size(); ++index) {
             const auto &declaration = program_.structs[index];
@@ -159,9 +213,12 @@ class Analyzer {
                     diagnostics_.error("FDN2022", "struct field cannot have type void",
                                        source.span);
                 }
-                if (type.kind == TypeKind::View || type.kind == TypeKind::Edit) {
+                if (containsBorrow(type)) {
                     diagnostics_.error("FDN2062", "borrow cannot be stored in a struct field",
                                        source.span);
+                }
+                if (containsBareSlice(type)) {
+                    diagnostics_.error("FDN2080", "slice type requires view or edit", source.span);
                 }
                 semantic.fieldTypes.push_back(type);
             }
@@ -191,9 +248,12 @@ class Analyzer {
                     diagnostics_.error("FDN2033", "enum payload cannot have type void",
                                        source.span);
                 }
-                if (type.kind == TypeKind::View || type.kind == TypeKind::Edit) {
+                if (containsBorrow(type)) {
                     diagnostics_.error("FDN2062", "borrow cannot be stored in an enum payload",
                                        source.span);
+                }
+                if (containsBareSlice(type)) {
+                    diagnostics_.error("FDN2080", "slice type requires view or edit", source.span);
                 }
                 semantic.payloadTypes.push_back(type);
             }
@@ -285,15 +345,23 @@ class Analyzer {
             const auto &fields = model_.structs[type.declaration].fieldTypes;
             children.reserve(fields.size());
             for (std::size_t index = 0; index < fields.size(); ++index) {
-                children.push_back({substitute(fields[index], type.arguments),
-                                    program_.structs[type.declaration].fields[index].span});
+                auto child = substitute(fields[index], type.arguments);
+                while (child.kind == TypeKind::Array && child.arguments.size() == 1) {
+                    child = child.arguments.front();
+                }
+                children.push_back(
+                    {child, program_.structs[type.declaration].fields[index].span});
             }
         } else if (type.kind == TypeKind::Enum && type.declaration < model_.enums.size()) {
             const auto &variants = model_.enums[type.declaration].payloadTypes;
             for (std::size_t index = 0; index < variants.size(); ++index) {
                 if (variants[index].has_value()) {
-                    children.push_back({substitute(*variants[index], type.arguments),
-                                        program_.enums[type.declaration].variants[index].span});
+                    auto child = substitute(*variants[index], type.arguments);
+                    while (child.kind == TypeKind::Array && child.arguments.size() == 1) {
+                        child = child.arguments.front();
+                    }
+                    children.push_back(
+                        {child, program_.enums[type.declaration].variants[index].span});
                 }
             }
         }
@@ -308,8 +376,8 @@ class Analyzer {
             setTypeParameters(function.typeParameters, function.span);
             semantic.typeParameterCount = function.typeParameters.size();
             semantic.returnType = resolveType(function.returnType);
-            if (semantic.returnType.kind == TypeKind::View ||
-                semantic.returnType.kind == TypeKind::Edit) {
+            if (containsBorrow(semantic.returnType) ||
+                containsBareSlice(semantic.returnType)) {
                 diagnostics_.error("FDN2063", "borrow cannot be returned from a function",
                                    function.returnType.span);
             }
@@ -317,6 +385,14 @@ class Analyzer {
                 const auto type = resolveType(parameter.type);
                 if (type == voidType) {
                     diagnostics_.error("FDN2016", "parameter cannot have type void",
+                                       parameter.span);
+                }
+                if (containsBareSlice(type)) {
+                    diagnostics_.error("FDN2080", "slice parameter requires view or edit",
+                                       parameter.span);
+                }
+                if (containsNestedBorrow(type, true)) {
+                    diagnostics_.error("FDN2064", "parameter contains a nested borrow",
                                        parameter.span);
                 }
                 semantic.parameterTypes.push_back(type);
@@ -449,8 +525,12 @@ class Analyzer {
                 diagnostics_.error("FDN2016", "binding initializer cannot be void", statement.span);
                 declared = invalidType;
             }
-            if (declared.kind == TypeKind::View || declared.kind == TypeKind::Edit) {
+            if (containsBorrow(declared)) {
                 diagnostics_.error("FDN2074", "borrow cannot be stored in a local binding",
+                                   statement.span);
+            }
+            if (containsBareSlice(declared)) {
+                diagnostics_.error("FDN2080", "slice binding requires view or edit",
                                    statement.span);
             }
             model_.statementLocals[id] =
@@ -644,6 +724,8 @@ class Analyzer {
             type = boolType;
         } else if (std::holds_alternative<StringExpression>(expression.value)) {
             type = stringType;
+        } else if (const auto *array = std::get_if<ArrayExpression>(&expression.value)) {
+            type = analyzeArray(*array, expected, expression.span);
         } else if (const auto *name = std::get_if<NameExpression>(&expression.value)) {
             const auto local = findLocal(name->name, expression.span);
             if (local.has_value()) {
@@ -682,6 +764,8 @@ class Analyzer {
             type = analyzeStruct(id, *literal, expression.span);
         } else if (const auto *member = std::get_if<MemberExpression>(&expression.value)) {
             type = analyzeMember(id, *member, expected, use, expression.span);
+        } else if (const auto *index = std::get_if<IndexExpression>(&expression.value)) {
+            type = analyzeIndex(*index, use, expression.span);
         } else {
             type = analyzeMatch(id, std::get<MatchExpression>(expression.value), expected,
                                 expression.span);
@@ -728,6 +812,9 @@ class Analyzer {
             value.arguments.size() == 1) {
             target = value.arguments.front();
         }
+        if (target.kind == TypeKind::Array && target.arguments.size() == 1) {
+            target = Type{TypeKind::Slice, 0, {target.arguments.front()}};
+        }
         if (value.kind == TypeKind::View && ownership.operation == OwnershipOperator::Edit) {
             diagnostics_.error("FDN2071", "shared view cannot become an edit", span);
         }
@@ -765,10 +852,64 @@ class Analyzer {
         return boolType;
     }
 
+    Type analyzeArray(const ArrayExpression &array, std::optional<Type> expected,
+                      SourceSpan span) {
+        std::optional<Type> expectedElement;
+        if (expected.has_value() && expected->kind == TypeKind::Array &&
+            expected->arguments.size() == 1) {
+            expectedElement = expected->arguments.front();
+            if (expected->declaration != array.elements.size()) {
+                diagnostics_.error("FDN2082", "array literal length does not match its type",
+                                   span);
+            }
+        }
+        if (array.elements.empty()) {
+            if (!expectedElement.has_value()) {
+                diagnostics_.error("FDN2081", "empty array literal requires an array type", span);
+                return invalidType;
+            }
+            return *expected;
+        }
+
+        auto element = analyzeExpression(array.elements.front(), expectedElement);
+        for (std::size_t index = 1; index < array.elements.size(); ++index) {
+            const auto current = analyzeExpression(array.elements[index], element);
+            requireSame(element, current, program_.expressions[array.elements[index]].span,
+                        "array element");
+        }
+        if (expectedElement.has_value()) {
+            requireSame(*expectedElement, element, span, "array element");
+            element = *expectedElement;
+        }
+        return Type{TypeKind::Array, array.elements.size(), {element}};
+    }
+
+    Type analyzeIndex(const IndexExpression &index, ExpressionUse use, SourceSpan span) {
+        auto base = analyzeExpression(index.base, std::nullopt, ExpressionUse::Inspect);
+        requireSame(i32Type,
+                    analyzeExpression(index.index, std::nullopt, ExpressionUse::Inspect), span,
+                    "index");
+        if ((base.kind == TypeKind::Own || base.kind == TypeKind::View ||
+             base.kind == TypeKind::Edit) &&
+            base.arguments.size() == 1) {
+            base = base.arguments.front();
+        }
+        if ((base.kind != TypeKind::Array && base.kind != TypeKind::Slice) ||
+            base.arguments.size() != 1) {
+            diagnostics_.error("FDN2084", "indexing requires an array or slice", span);
+            return invalidType;
+        }
+        const auto element = base.arguments.front();
+        if (use == ExpressionUse::Consume && requiresDrop(element)) {
+            diagnostics_.error("FDN2083", "owned array element cannot move independently", span);
+        }
+        return element;
+    }
+
     Type analyzeBinary(const BinaryExpression &binary, SourceSpan span) {
-        const auto left = analyzeExpression(binary.left);
+        const auto left = analyzeExpression(binary.left, std::nullopt, ExpressionUse::Inspect);
         const auto movesBeforeRight = moveStates_;
-        const auto right = analyzeExpression(binary.right);
+        const auto right = analyzeExpression(binary.right, std::nullopt, ExpressionUse::Inspect);
         if (binary.operation == BinaryOperator::And || binary.operation == BinaryOperator::Or) {
             std::vector<MoveState> merged(movesBeforeRight.size());
             for (std::size_t local = 0; local < merged.size(); ++local) {
@@ -780,6 +921,14 @@ class Analyzer {
         }
         switch (binary.operation) {
         case BinaryOperator::Add:
+            if (left == stringType || right == stringType) {
+                requireSame(stringType, left, span, "string concatenation operand");
+                requireSame(stringType, right, span, "string concatenation operand");
+                return stringType;
+            }
+            requireSame(i32Type, left, span, "arithmetic operand");
+            requireSame(i32Type, right, span, "arithmetic operand");
+            return i32Type;
         case BinaryOperator::Subtract:
         case BinaryOperator::Multiply:
         case BinaryOperator::Divide:
@@ -796,8 +945,7 @@ class Analyzer {
             return boolType;
         case BinaryOperator::Equal:
         case BinaryOperator::NotEqual:
-            if (left.kind == TypeKind::String || right.kind == TypeKind::String ||
-                left.kind == TypeKind::Parameter || right.kind == TypeKind::Parameter ||
+            if (left.kind == TypeKind::Parameter || right.kind == TypeKind::Parameter ||
                 left.kind == TypeKind::Struct || right.kind == TypeKind::Struct ||
                 left.kind == TypeKind::Enum || right.kind == TypeKind::Enum) {
                 diagnostics_.error("FDN2012", "equality is not available for this type", span);
@@ -823,10 +971,13 @@ class Analyzer {
         transientBorrowsAllowed_ = true;
         std::vector<Type> arguments;
         arguments.reserve(call.arguments.size());
+        const auto inspectsArguments = call.callee == "print" || call.callee == "panic";
         for (const auto argument : call.arguments) {
-            arguments.push_back(analyzeExpression(argument));
+            arguments.push_back(analyzeExpression(
+                argument, std::nullopt,
+                inspectsArguments ? ExpressionUse::Inspect : ExpressionUse::Consume));
         }
-        loanStates_ = loansBefore;
+        restoreLoans(loansBefore);
         transientBorrowsAllowed_ = borrowsAllowedBefore;
         std::vector<Type> explicitTypes;
         explicitTypes.reserve(call.typeArguments.size());
@@ -843,7 +994,14 @@ class Analyzer {
             } else {
                 requireSame(stringType, arguments.front(), span, "print argument");
             }
-            model_.callTargets[id] = CallTarget{CallTargetKind::Print, 0, {}};
+            std::vector<bool> drops;
+            drops.reserve(call.arguments.size());
+            for (std::size_t index = 0; index < call.arguments.size(); ++index) {
+                drops.push_back(index < arguments.size() && requiresDrop(arguments[index]) &&
+                                !isPlaceExpression(call.arguments[index]));
+            }
+            model_.callTargets[id] =
+                CallTarget{CallTargetKind::Print, 0, {}, std::move(drops)};
             return voidType;
         }
         if (call.callee == "panic") {
@@ -855,7 +1013,7 @@ class Analyzer {
             } else {
                 requireSame(stringType, arguments.front(), span, "panic argument");
             }
-            model_.callTargets[id] = CallTarget{CallTargetKind::Panic, 0, {}};
+            model_.callTargets[id] = CallTarget{CallTargetKind::Panic, 0, {}, {}};
             return voidType;
         }
 
@@ -896,7 +1054,7 @@ class Analyzer {
                         span, "function argument");
         }
         model_.callTargets[id] =
-            CallTarget{CallTargetKind::Function, function, typeArguments};
+            CallTarget{CallTargetKind::Function, function, typeArguments, {}};
         if (!program_.functions[currentFunction_].typeParameters.empty() &&
             !program_.functions[function].typeParameters.empty()) {
             genericCalls_.push_back({currentFunction_, function, typeArguments, span});
@@ -1212,6 +1370,23 @@ class Analyzer {
             member != nullptr && member->base.has_value()) {
             return editablePlace(*member->base);
         }
+        if (const auto *index = std::get_if<IndexExpression>(&expression.value)) {
+            return editablePlace(index->base);
+        }
+        return false;
+    }
+
+    bool isPlaceExpression(AstExpressionId id) const {
+        const auto &expression = program_.expressions[id];
+        if (std::holds_alternative<NameExpression>(expression.value)) {
+            return true;
+        }
+        if (const auto *member = std::get_if<MemberExpression>(&expression.value)) {
+            return member->base.has_value() && isPlaceExpression(*member->base);
+        }
+        if (const auto *index = std::get_if<IndexExpression>(&expression.value)) {
+            return isPlaceExpression(index->base);
+        }
         return false;
     }
 
@@ -1427,6 +1602,14 @@ class Analyzer {
             base = boolType;
         } else if (syntax.name == "String") {
             base = stringType;
+        } else if (syntax.name == "[array]") {
+            base = Type{TypeKind::Array, syntax.arrayLength};
+            if (syntax.arrayLength > static_cast<std::size_t>(INT32_MAX)) {
+                diagnostics_.error("FDN2080", "array length exceeds the i32 index range",
+                                   syntax.span);
+            }
+        } else if (syntax.name == "[slice]") {
+            base = Type{TypeKind::Slice};
         } else if (syntax.name == "own") {
             base = Type{TypeKind::Own};
         } else if (syntax.name == "view") {
@@ -1460,7 +1643,8 @@ class Analyzer {
         } else if (base->kind == TypeKind::Enum) {
             expected = program_.enums[base->declaration].typeParameters.size();
         } else if (base->kind == TypeKind::Own || base->kind == TypeKind::View ||
-                   base->kind == TypeKind::Edit) {
+                   base->kind == TypeKind::Edit || base->kind == TypeKind::Array ||
+                   base->kind == TypeKind::Slice) {
             expected = 1;
         }
         if (arguments.size() != expected) {
@@ -1478,6 +1662,12 @@ class Analyzer {
                                    syntax.name + " requires a direct non-void value type",
                                    syntax.span);
             }
+            if (base->kind == TypeKind::Own && target.kind == TypeKind::Slice) {
+                diagnostics_.error("FDN2080", "slice cannot be owned directly", syntax.span);
+            }
+        } else if ((base->kind == TypeKind::Array || base->kind == TypeKind::Slice) &&
+                   !base->arguments.empty() && base->arguments.front() == voidType) {
+            diagnostics_.error("FDN2047", "array or slice element cannot be void", syntax.span);
         }
         return *base;
     }
@@ -1510,6 +1700,7 @@ class Analyzer {
             return;
         }
         if ((pattern.kind == TypeKind::Struct || pattern.kind == TypeKind::Enum ||
+             pattern.kind == TypeKind::Array || pattern.kind == TypeKind::Slice ||
              pattern.kind == TypeKind::Own || pattern.kind == TypeKind::View ||
              pattern.kind == TypeKind::Edit) &&
             pattern.kind == actual.kind && pattern.declaration == actual.declaration &&
@@ -1598,8 +1789,12 @@ class Analyzer {
     }
 
     bool requiresDrop(const Type &type, std::unordered_set<std::string> &active) const {
-        if (type.kind == TypeKind::Own || type.kind == TypeKind::Parameter) {
+        if (type.kind == TypeKind::String || type.kind == TypeKind::Own ||
+            type.kind == TypeKind::Parameter) {
             return true;
+        }
+        if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
+            return requiresDrop(type.arguments.front(), active);
         }
         if (type.kind != TypeKind::Struct && type.kind != TypeKind::Enum) {
             return false;
@@ -1719,6 +1914,18 @@ class Analyzer {
         }
     }
 
+    void restoreLoans(const std::vector<LoanState> &state) {
+        if (loanStates_.size() < state.size()) {
+            loanStates_.resize(state.size(), LoanState::None);
+        }
+        for (std::size_t local = 0; local < state.size(); ++local) {
+            loanStates_[local] = state[local];
+        }
+        for (std::size_t local = state.size(); local < loanStates_.size(); ++local) {
+            loanStates_[local] = LoanState::None;
+        }
+    }
+
     std::vector<MoveState> mergeMoves(const std::vector<MoveState> &before,
                                       const std::vector<MoveState> &thenState,
                                       const std::vector<MoveState> &elseState, bool thenReturns,
@@ -1768,6 +1975,13 @@ class Analyzer {
              type.kind == TypeKind::Edit) &&
             type.arguments.size() == 1) {
             return std::string(typeName(type)) + ' ' + displayType(type.arguments.front());
+        }
+        if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
+            return '[' + std::to_string(type.declaration) + ']' +
+                   displayType(type.arguments.front());
+        }
+        if (type.kind == TypeKind::Slice && type.arguments.size() == 1) {
+            return '[' + displayType(type.arguments.front()) + ']';
         }
         std::string name;
         if (type.kind == TypeKind::Struct && type.declaration < program_.structs.size()) {

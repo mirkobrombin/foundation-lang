@@ -1,0 +1,5 @@
+struct Node {
+    children [1]Node
+}
+
+fn main() i32 { 0 }

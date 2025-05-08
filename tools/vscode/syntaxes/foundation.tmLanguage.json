@@ -45,7 +45,7 @@
                     "patterns": [
                         {
                             "name": "constant.character.escape.foundation",
-                            "match": "\\\\[nrt\"\\\\]"
+                            "match": "\\\\[0nrt\"\\\\]"
                         },
                         {
                             "name": "invalid.illegal.escape.foundation",
@@ -151,7 +151,7 @@
                     "patterns": [
                         {
                             "name": "variable.parameter.foundation",
-                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?\\s*(?:,|\\)))"
+                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+(?:(?:own|view|edit)\\s+)?(?:\\[[^,()\\n]+\\](?:[A-Za-z_][A-Za-z0-9_]*)?|[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?)\\s*(?:,|\\)))"
                         },
                         { "include": "#genericTypeApplications" },
                         { "include": "#ownership" },
@@ -352,7 +352,7 @@
                 },
                 {
                     "name": "punctuation.section.foundation",
-                    "match": "[(){}]"
+                    "match": "[(){}\\[\\]]"
                 }
             ]
         }

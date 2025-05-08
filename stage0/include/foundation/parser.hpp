@@ -39,7 +39,6 @@ class Parser {
     AstStatementId discardStatement(const Token &start);
     AstStatementId ifStatement(const Token &start);
     AstStatementId whileStatement(const Token &start);
-    AstStatementId assignmentStatement();
     AstStatementId expressionStatement();
     AstExpressionId expression();
     AstExpressionId logicalOr();
@@ -53,6 +52,7 @@ class Parser {
     AstExpressionId finishCall(const Token &callee, std::vector<TypeSyntax> typeArguments = {});
     AstExpressionId finishStruct(TypeSyntax type);
     AstExpressionId finishMember(std::optional<AstExpressionId> base);
+    AstExpressionId finishArray(const Token &start);
     AstExpressionId matchExpression(const Token &start);
     AstExpressionId addExpression(ExpressionValue value, SourceSpan span);
     AstStatementId addStatement(StatementValue value, SourceSpan span);

@@ -7,8 +7,14 @@ fn identity<T>(value T) T {
     value
 }
 
+fn first(values view [String]) void {
+    print(values[0])
+}
+
 fn main() i32 {
     print("fuzz seed")
+    let values = ["array", "slice"]
+    first(view values)
     let value = Maybe.Some(identity(0))
     match value {
         None: 1

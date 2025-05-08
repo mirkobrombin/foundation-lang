@@ -23,6 +23,24 @@ const staticCompletions = [
     { label: "void", kind: "TypeParameter" },
     { label: "Option", kind: "TypeParameter", detail: "primitive Option<T>" },
     { label: "Result", kind: "TypeParameter", detail: "primitive Result<T, E>" },
+    {
+        label: "[N]T",
+        kind: "TypeParameter",
+        detail: "fixed array type",
+        insertText: "[${1:N}]${2:T}"
+    },
+    {
+        label: "view [T]",
+        kind: "TypeParameter",
+        detail: "shared slice type",
+        insertText: "view [${1:T}]"
+    },
+    {
+        label: "edit [T]",
+        kind: "TypeParameter",
+        detail: "mutable slice type",
+        insertText: "edit [${1:T}]"
+    },
     { label: ".None", kind: "EnumMember", insertText: ".None" },
     { label: ".Some", kind: "EnumMember", insertText: ".Some(${1:value})" },
     { label: ".Ok", kind: "EnumMember", insertText: ".Ok(${1:value})" },
@@ -205,7 +223,7 @@ function collectCompletions(source) {
     while ((match = functions.exec(masked)) !== null) {
         const typeParameters = collectTypeParameters(match[2]);
         const parameters = splitTopLevel(match[3], ",")
-            .map((parameter) => parameter.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s+[A-Za-z_]/))
+            .map((parameter) => parameter.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s+[A-Za-z_\[]/))
             .filter(Boolean)
             .map((parameter) => parameter[1]);
 

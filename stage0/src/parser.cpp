@@ -133,6 +133,39 @@ TypeSyntax Parser::typeSyntax(const char *code, const char *message) {
         --typeDepth_;
         return type;
     }
+    if (match(TokenKind::LeftBracket)) {
+        const auto start = previous();
+        if (match(TokenKind::Minus)) {
+            const auto sign = previous();
+            if (match(TokenKind::Integer)) {
+                diagnostics_.error("FDN1080", "array length must be non-negative", sign.span);
+                expect(TokenKind::RightBracket, "FDN1081", "expected ] after array length");
+                TypeSyntax type{"[array]", {}, start.span, 0};
+                type.arguments.push_back(typeSyntax(code, message));
+                return type;
+            }
+        }
+        if (match(TokenKind::Integer)) {
+            const auto lengthToken = previous();
+            std::size_t length{};
+            const auto conversion =
+                std::from_chars(lengthToken.text.data(),
+                                lengthToken.text.data() + lengthToken.text.size(), length);
+            if (conversion.ec != std::errc{} ||
+                conversion.ptr != lengthToken.text.data() + lengthToken.text.size()) {
+                diagnostics_.error("FDN1080", "array length is outside the supported range",
+                                   lengthToken.span);
+            }
+            expect(TokenKind::RightBracket, "FDN1081", "expected ] after array length");
+            TypeSyntax type{"[array]", {}, start.span, length};
+            type.arguments.push_back(typeSyntax(code, message));
+            return type;
+        }
+        TypeSyntax type{"[slice]", {}, start.span};
+        type.arguments.push_back(typeSyntax("FDN1082", "expected slice element type"));
+        expect(TokenKind::RightBracket, "FDN1083", "expected ] after slice element type");
+        return type;
+    }
     const auto name = expect(TokenKind::Identifier, code, message);
     TypeSyntax type{name.text, {}, name.span};
     if (!match(TokenKind::Less)) {
@@ -279,16 +312,6 @@ AstStatementId Parser::statement() {
     if (match(TokenKind::While)) {
         return whileStatement(previous());
     }
-    if (check(TokenKind::Identifier)) {
-        std::size_t distance = 1;
-        while (peek(distance).kind == TokenKind::Dot &&
-               peek(distance + 1).kind == TokenKind::Identifier) {
-            distance += 2;
-        }
-        if (peek(distance).kind == TokenKind::Equal) {
-            return assignmentStatement();
-        }
-    }
     return expressionStatement();
 }
 
@@ -349,16 +372,12 @@ AstStatementId Parser::whileStatement(const Token &start) {
     return addStatement(WhileStatement{condition, body}, start.span);
 }
 
-AstStatementId Parser::assignmentStatement() {
-    const auto target = primary();
-    expect(TokenKind::Equal, "FDN1021", "expected = in assignment");
-    const auto value = expression();
-    return addStatement(AssignmentStatement{target, value}, program_.expressions[target].span);
-}
-
 AstStatementId Parser::expressionStatement() {
     const auto start = current().span;
     const auto value = expression();
+    if (match(TokenKind::Equal)) {
+        return addStatement(AssignmentStatement{value, expression()}, start);
+    }
     return addStatement(ExpressionStatement{value}, start);
 }
 
@@ -533,6 +552,8 @@ AstExpressionId Parser::primary() {
     } else if (match(TokenKind::String)) {
         const auto token = previous();
         result = addExpression(StringExpression{token.text}, token.span);
+    } else if (match(TokenKind::LeftBracket)) {
+        result = finishArray(previous());
     } else if (match(TokenKind::Match)) {
         result = matchExpression(previous());
     } else if (match(TokenKind::Dot)) {
@@ -565,8 +586,19 @@ AstExpressionId Parser::primary() {
         result = addExpression(IntegerExpression{0}, bad.span);
     }
 
-    while (continuesLine() && match(TokenKind::Dot)) {
-        result = finishMember(result);
+    while (continuesLine()) {
+        if (match(TokenKind::Dot)) {
+            result = finishMember(result);
+            continue;
+        }
+        if (match(TokenKind::LeftBracket)) {
+            const auto start = previous().span;
+            const auto index = expression();
+            expect(TokenKind::RightBracket, "FDN1084", "expected ] after index");
+            result = addExpression(IndexExpression{result, index}, start);
+            continue;
+        }
+        break;
     }
     return result;
 }
@@ -612,6 +644,17 @@ AstExpressionId Parser::finishMember(std::optional<AstExpressionId> base) {
         expect(TokenKind::RightParen, "FDN1052", "expected ) after member invocation");
     }
     return addExpression(MemberExpression{base, member.text, invoked, payload}, member.span);
+}
+
+AstExpressionId Parser::finishArray(const Token &start) {
+    std::vector<AstExpressionId> elements;
+    if (!check(TokenKind::RightBracket)) {
+        do {
+            elements.push_back(expression());
+        } while (match(TokenKind::Comma));
+    }
+    expect(TokenKind::RightBracket, "FDN1085", "expected ] after array literal");
+    return addExpression(ArrayExpression{std::move(elements)}, start.span);
 }
 
 AstExpressionId Parser::matchExpression(const Token &start) {

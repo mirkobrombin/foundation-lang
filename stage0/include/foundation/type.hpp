@@ -13,6 +13,8 @@ enum class TypeKind {
     I32,
     Bool,
     String,
+    Array,
+    Slice,
     Own,
     View,
     Edit,

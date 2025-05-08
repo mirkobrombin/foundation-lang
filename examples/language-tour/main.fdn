@@ -22,6 +22,18 @@ fn incrementCounter(counter edit TourCounter) void {
     counter.value = counter.value + 1
 }
 
+fn sum(values view [i32]) i32 {
+    values[0] + values[1] + values[2]
+}
+
+fn clearFirst(values edit [i32]) void {
+    values[0] = 0
+}
+
+fn printFirst(values view [String]) void {
+    print(values[0])
+}
+
 fn identity<T>(value T) T {
     value
 }
@@ -71,6 +83,17 @@ fn main() i32 {
     incrementCounter(edit counter)
     let counterValue = readCounter(view counter)
 
+    var numbers = [1, 2, 3]
+    clearFirst(edit numbers)
+    let sequenceValue = sum(view numbers)
+    var labels = ["arrays", " and slices"]
+    let sequenceLabel = labels[0] + labels[1]
+    print(sequenceLabel)
+    labels[1] = " updated"
+    let ownedLabels = own ["owned arrays"]
+    printFirst(view ownedLabels)
+    discard ownedLabels
+
     while current <= count {
         showKind(current)
         current = current + 1
@@ -80,8 +103,9 @@ fn main() i32 {
         code = identity(current - 5)
         message = "done"
     }
-    let state = TourState.Done(result)
     let optional = Option.Some(result.code)
+    print(result.message)
+    let state = TourState.Done(result)
     let delivered = Result<i32, bool>.Ok(maybeOr(optional, 1))
     let deliveredValue = delivered else failed {
         if failed {
@@ -94,10 +118,9 @@ fn main() i32 {
     let movedCounter = counter
     discard movedCounter
     if inRange(current, 5, 5) || false {
-        print(result.message)
         return match state {
-            Running: resultOr(verified, 0) + counterValue
-            Done(done): resultOr(verified, done.code) + counterValue - 1
+            Running: resultOr(verified, 0) + counterValue + sequenceValue - 5
+            Done(done): resultOr(verified, done.code) + counterValue + sequenceValue - 6
         }
     } else {
         discard verified

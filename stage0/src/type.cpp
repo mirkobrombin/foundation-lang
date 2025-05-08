@@ -14,6 +14,10 @@ const char *typeName(Type type) {
         return "bool";
     case TypeKind::String:
         return "String";
+    case TypeKind::Array:
+        return "<array>";
+    case TypeKind::Slice:
+        return "<slice>";
     case TypeKind::Own:
         return "own";
     case TypeKind::View:

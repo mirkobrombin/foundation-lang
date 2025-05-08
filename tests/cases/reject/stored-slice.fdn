@@ -1,0 +1,7 @@
+fn read(values view [i32]) i32 { values[0] }
+
+fn main() i32 {
+    let values = [1]
+    let borrowed = view values
+    read(borrowed)
+}

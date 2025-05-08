@@ -141,6 +141,26 @@
         "body": "${1:value} edit ${2:Type}",
         "description": "Declare an exclusive mutable borrowed parameter"
     },
+    "Fixed array binding": {
+        "prefix": "array",
+        "body": "${1:values} [${2:N}]${3:Type} = [${4}]",
+        "description": "Declare a fixed array value"
+    },
+    "View slice parameter": {
+        "prefix": "viewslice",
+        "body": "${1:values} view [${2:Type}]",
+        "description": "Declare a shared slice parameter"
+    },
+    "Edit slice parameter": {
+        "prefix": "editslice",
+        "body": "${1:values} edit [${2:Type}]",
+        "description": "Declare a mutable slice parameter"
+    },
+    "Indexed assignment": {
+        "prefix": "indexset",
+        "body": "${1:values}[${2:index}] = ${3:value}",
+        "description": "Replace an indexed element"
+    },
     "Print": {
         "prefix": "print",
         "body": "print(${1:\"message\"})",

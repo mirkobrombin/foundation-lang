@@ -18,6 +18,60 @@ bool isIdentifierPart(char value) {
     return std::isalnum(byte) != 0 || value == '_';
 }
 
+bool isContinuationByte(unsigned char value) { return value >= 0x80 && value <= 0xbf; }
+
+bool isValidUtf8(std::string_view value) {
+    std::size_t offset{};
+    while (offset < value.size()) {
+        const auto first = static_cast<unsigned char>(value[offset]);
+        if (first <= 0x7f) {
+            ++offset;
+            continue;
+        }
+        if (first >= 0xc2 && first <= 0xdf) {
+            if (offset + 1 >= value.size() ||
+                !isContinuationByte(static_cast<unsigned char>(value[offset + 1]))) {
+                return false;
+            }
+            offset += 2;
+            continue;
+        }
+        if (first >= 0xe0 && first <= 0xef) {
+            if (offset + 2 >= value.size()) {
+                return false;
+            }
+            const auto second = static_cast<unsigned char>(value[offset + 1]);
+            const auto third = static_cast<unsigned char>(value[offset + 2]);
+            const auto secondValid = first == 0xe0   ? second >= 0xa0 && second <= 0xbf
+                                     : first == 0xed ? second >= 0x80 && second <= 0x9f
+                                                     : isContinuationByte(second);
+            if (!secondValid || !isContinuationByte(third)) {
+                return false;
+            }
+            offset += 3;
+            continue;
+        }
+        if (first >= 0xf0 && first <= 0xf4) {
+            if (offset + 3 >= value.size()) {
+                return false;
+            }
+            const auto second = static_cast<unsigned char>(value[offset + 1]);
+            const auto third = static_cast<unsigned char>(value[offset + 2]);
+            const auto fourth = static_cast<unsigned char>(value[offset + 3]);
+            const auto secondValid = first == 0xf0   ? second >= 0x90 && second <= 0xbf
+                                     : first == 0xf4 ? second >= 0x80 && second <= 0x8f
+                                                     : isContinuationByte(second);
+            if (!secondValid || !isContinuationByte(third) || !isContinuationByte(fourth)) {
+                return false;
+            }
+            offset += 4;
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 const char *tokenName(TokenKind kind) {
@@ -70,6 +124,10 @@ const char *tokenName(TokenKind kind) {
         return "{";
     case TokenKind::RightBrace:
         return "}";
+    case TokenKind::LeftBracket:
+        return "[";
+    case TokenKind::RightBracket:
+        return "]";
     case TokenKind::Comma:
         return ",";
     case TokenKind::Colon:
@@ -190,6 +248,10 @@ Token Lexer::next() {
             return simple(TokenKind::LeftBrace, "{");
         case '}':
             return simple(TokenKind::RightBrace, "}");
+        case '[':
+            return simple(TokenKind::LeftBracket, "[");
+        case ']':
+            return simple(TokenKind::RightBracket, "]");
         case ',':
             return simple(TokenKind::Comma, ",");
         case ':':
@@ -342,6 +404,9 @@ Token Lexer::string() {
         case 't':
             value.push_back('\t');
             break;
+        case '0':
+            value.push_back('\0');
+            break;
         case '"':
             value.push_back('"');
             break;
@@ -360,6 +425,10 @@ Token Lexer::string() {
         diagnostics_.error("FDN0002", "unterminated string", spanFrom(start, line, column));
     } else {
         advance();
+    }
+    if (!isValidUtf8(value)) {
+        diagnostics_.error("FDN0005", "string literal is not valid UTF-8",
+                           spanFrom(start, line, column));
     }
     return {TokenKind::String, std::move(value), spanFrom(start, line, column)};
 }

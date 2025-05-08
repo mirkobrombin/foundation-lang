@@ -16,5 +16,8 @@ endif()
 if(NOT error MATCHES "${PATTERN}")
     message(FATAL_ERROR "program did not report ${PATTERN}:\n${output}${error}")
 endif()
+if(DEFINED TRACE_PATTERN AND NOT error MATCHES "${TRACE_PATTERN}")
+    message(FATAL_ERROR "program did not report ${TRACE_PATTERN}:\n${output}${error}")
+endif()
 
 message(STATUS "program failed with ${PATTERN}")
