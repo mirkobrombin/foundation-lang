@@ -5,7 +5,7 @@ set -eu
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_dir/../../.." && pwd)
 extension_root="$repository_root/tools/vscode"
-output="$repository_root/build/foundation-lang-0.5.0.vsix"
+output="$repository_root/build/foundation-lang-0.6.0.vsix"
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/foundation-vsix.XXXXXX")
 trap 'rm -rf -- "$work_dir"' EXIT HUP INT TERM
 

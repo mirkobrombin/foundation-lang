@@ -54,6 +54,9 @@ test("grammar and completions track compiler keywords", () => {
         "else",
         "while",
         "match",
+        "own",
+        "view",
+        "edit",
         "true",
         "false"
     ]);
@@ -119,6 +122,27 @@ test("tracks generic syntax used by the language tour", () => {
     }
     assert.match(grammar, /entity\.name\.type\.parameter\.foundation/);
     assert.match(grammar, /punctuation\.definition\.type-arguments\.begin\.foundation/);
+    assert.match(grammar, /storage\.modifier\.ownership\.foundation/);
+});
+
+test("tracks ownership declarations and borrowed parameters", () => {
+    const completions = collectCompletions(`
+        struct User { id i32 }
+        struct Holder { user own User count i32 }
+        fn read(user view User) i32 { user.id }
+        fn replace(user edit User, id i32) void { user.id = id }
+        fn main() i32 { 0 }
+    `);
+    const fields = completions
+        .filter((entry) => entry.kind === "Field" && entry.detail === "Field of Holder")
+        .map((entry) => entry.label);
+    const parameters = completions
+        .filter((entry) => entry.kind === "Variable" && entry.detail === "Function parameter")
+        .map((entry) => entry.label);
+
+    assert.deepEqual(fields, ["count", "user"]);
+    assert.ok(parameters.includes("user"));
+    assert.ok(parameters.includes("id"));
 });
 
 test("ships Result handling and panic snippets", () => {
@@ -127,6 +151,9 @@ test("ships Result handling and panic snippets", () => {
     assert.equal(snippets["Result binding"].prefix, "letelse");
     assert.equal(snippets["Discard value"].prefix, "discard");
     assert.equal(snippets.Panic.prefix, "panic");
+    assert.equal(snippets["Owned value"].prefix, "own");
+    assert.equal(snippets["View parameter"].prefix, "view");
+    assert.equal(snippets["Edit parameter"].prefix, "edit");
 });
 
 test("collects structs and their fields", () => {

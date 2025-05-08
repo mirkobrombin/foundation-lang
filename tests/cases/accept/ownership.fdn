@@ -1,0 +1,86 @@
+struct Node {
+    value i32
+    next Option<own Node>
+}
+
+enum Item {
+    Empty
+    Present(own Node)
+}
+
+fn nodeValue(node view Node) i32 {
+    node.value
+}
+
+fn consume(node own Node) i32 {
+    node.value
+}
+
+fn setValue(node edit Node, value i32) void {
+    node.value = value
+}
+
+fn allocate<T>(value T) own T {
+    own value
+}
+
+fn loadNode(value i32) Result<own Node, String> {
+    .Ok(own Node { value = value next = .None })
+}
+
+fn failedNode() Result<i32, own Node> {
+    .Err(own Node { value = 10 next = .None })
+}
+
+fn recoverNode() i32 {
+    let value = failedNode() else node {
+        return node.value
+    }
+    value
+}
+
+fn main() i32 {
+    let tail = own Node { value = 2 next = .None }
+    var head = own Node { value = 7 next = .Some(tail) }
+    let viewed = nodeValue(view head)
+    setValue(edit head, 8)
+    head.value = 9
+    let moved = head
+    let consumed = consume(moved)
+
+    let item = Item.Present(own Node { value = 5 next = .None })
+    let matched = match item {
+        Empty: 0
+        Present(node): node.value
+    }
+
+    let loaded = loadNode(4) else error {
+        panic(error)
+    }
+    let loadedValue = nodeValue(view loaded)
+    discard loaded
+
+    let generic = allocate(Node { value = 6 next = .None })
+    discard generic
+
+    if true {
+        let scoped = own Node { value = 11 next = .None }
+        nodeValue(view scoped)
+    }
+
+    var replaced = own Node { value = 12 next = .None }
+    replaced = own Node { value = 13 next = .None }
+    discard replaced
+
+    var round = 0
+    while round < 2 {
+        let scoped = own Node { value = round next = .None }
+        nodeValue(view scoped)
+        round = round + 1
+    }
+
+    let discarded = own Node { value = 1 next = .None }
+    discard discarded
+    print("ownership ok")
+    viewed + consumed + matched + loadedValue + recoverNode() - 35
+}

@@ -126,6 +126,21 @@
         "body": "discard ${1:value}",
         "description": "Explicitly consume an unused value"
     },
+    "Owned value": {
+        "prefix": "own",
+        "body": "own ${1:value}",
+        "description": "Allocate an exclusive owned value"
+    },
+    "View parameter": {
+        "prefix": "view",
+        "body": "${1:value} view ${2:Type}",
+        "description": "Declare a shared borrowed parameter"
+    },
+    "Edit parameter": {
+        "prefix": "edit",
+        "body": "${1:value} edit ${2:Type}",
+        "description": "Declare an exclusive mutable borrowed parameter"
+    },
     "Print": {
         "prefix": "print",
         "body": "print(${1:\"message\"})",

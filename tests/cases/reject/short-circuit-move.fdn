@@ -1,0 +1,16 @@
+struct User {
+    id i32
+}
+
+fn consume(user own User) bool {
+    true
+}
+
+fn main() i32 {
+    let user = own User { id = 7 }
+    let consumed = false && consume(user)
+    if consumed {
+        return 1
+    }
+    user.id
+}

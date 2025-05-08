@@ -11,6 +11,9 @@
 #endif
 
 static FDN_THREAD_LOCAL fdn_frame *fdn_current_frame;
+static size_t fdn_allocation_count;
+static size_t fdn_deallocation_count;
+static size_t fdn_live_allocation_count;
 
 static const char *fdn_trace_value(const char *value) {
     return value != NULL ? value : "<unknown>";
@@ -80,6 +83,30 @@ void fdn_println(const char *value) {
     fputs(value, stdout);
     fputc('\n', stdout);
 }
+
+void *fdn_alloc(size_t size) {
+    void *value = malloc(size == 0 ? 1 : size);
+    if (value == NULL) {
+        fdn_panic("allocation failed");
+    }
+    ++fdn_allocation_count;
+    ++fdn_live_allocation_count;
+    return value;
+}
+
+void fdn_dealloc(void *value) {
+    if (value != NULL) {
+        ++fdn_deallocation_count;
+        --fdn_live_allocation_count;
+    }
+    free(value);
+}
+
+size_t fdn_total_allocations(void) { return fdn_allocation_count; }
+
+size_t fdn_total_deallocations(void) { return fdn_deallocation_count; }
+
+size_t fdn_live_allocations(void) { return fdn_live_allocation_count; }
 
 _Noreturn void fdn_invalid_enum_tag(void) {
     fdn_panic("invalid enum tag");

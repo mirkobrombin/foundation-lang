@@ -240,6 +240,50 @@ fn main() i32 {
            "distinct generic enum applications have distinct C types");
 }
 
+void ownershipLowersToDeterministicC() {
+    constexpr std::string_view source = R"(
+struct User { id i32 }
+struct Holder { user own User }
+
+fn read(user view User) i32 { user.id }
+fn replace(user edit User, id i32) void { user.id = id }
+
+fn main() i32 {
+    var user = own User { id = 3 }
+    replace(edit user, 4)
+    let value = read(view user)
+    let holder = Holder { user = user }
+    let moved = holder
+    discard moved
+    value - 4
+}
+)";
+    auto first = check(source);
+    auto second = check(source);
+    expect(!first.diagnostics.hasErrors(), "ownership program has no diagnostics");
+    expect(first.fir.has_value(), "ownership program lowers to FIR");
+    expect(second.fir.has_value(), "repeated ownership program lowers to FIR");
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        return;
+    }
+
+    const auto firstC = foundation::emitC(*first.fir);
+    const auto secondC = foundation::emitC(*second.fir);
+    expect(firstC == secondC, "ownership C emission is deterministic");
+    expect(firstC.find("fdn_alloc(sizeof") != std::string::npos,
+           "own allocation uses the runtime allocator");
+    expect(firstC.find("fdn_drop_struct_") != std::string::npos,
+           "owned composites receive drop glue");
+    expect(firstC.find("fdn_move_struct_") != std::string::npos,
+           "owned composites receive move glue");
+    expect(firstC.find(" = NULL;") != std::string::npos,
+           "moves invalidate their source storage");
+    expect(firstC.find("const fdn_struct_") != std::string::npos,
+           "view parameters lower to const pointers");
+    expect(firstC.find("FOUNDATION_VERIFY_ALLOCATIONS") != std::string::npos,
+           "main can verify that deterministic cleanup reaches zero live allocations");
+}
+
 void lightweightSyntaxCarriesVisibilityAndContext() {
     constexpr std::string_view source = R"(
 struct Holder {
@@ -648,6 +692,15 @@ fn main() i32 { return 0 }
     expect(hasCode(voidApplication.diagnostics, "FDN2047"),
            "void generic field reports FDN2047");
 
+    const auto invalidOwnedApplication = check(R"(
+struct Box<T> { value own T }
+struct User { id i32 }
+fn consume(value Box<own User>) i32 { return 0 }
+fn main() i32 { return 0 }
+)");
+    expect(hasCode(invalidOwnedApplication.diagnostics, "FDN2064"),
+           "nested owner introduced by substitution reports FDN2064");
+
     const auto voidFunctionParameter = check(R"(
 fn identity<T>(value T) T { return value }
 fn main() i32 { identity(print("bad")) return 0 }
@@ -762,6 +815,7 @@ int main() {
     deepStructGraphsStayIterative();
     enumMatchesLowerToDeterministicC();
     genericValuesMonomorphizeDeterministically();
+    ownershipLowersToDeterministicC();
     lightweightSyntaxCarriesVisibilityAndContext();
     panicLowersWithSourceFrames();
     divergingCallsCloseGeneratedControlFlow();

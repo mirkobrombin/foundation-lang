@@ -1,6 +1,7 @@
 #ifndef FOUNDATION_RUNTIME_H
 #define FOUNDATION_RUNTIME_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -28,6 +29,11 @@ static inline void fdn_frame_location(fdn_frame *frame, uint32_t line, uint32_t 
 }
 
 void fdn_println(const char *value);
+void *fdn_alloc(size_t size);
+void fdn_dealloc(void *value);
+size_t fdn_total_allocations(void);
+size_t fdn_total_deallocations(void);
+size_t fdn_live_allocations(void);
 #ifdef __cplusplus
 [[noreturn]] void fdn_panic(const char *message);
 [[noreturn]] void fdn_invalid_enum_tag(void);

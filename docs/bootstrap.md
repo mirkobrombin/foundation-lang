@@ -11,8 +11,9 @@ remains available as a recovery compiler after self-hosting.
 The current executable subset includes typed and generic functions, local bindings, calls,
 primitive expressions, generic nominal value structs and enums, exhaustive match expressions,
 Option and Result primitives, Result must-use analysis, `let ... else`, fatal panic traces, field
-access, branches, loops, semantic resolution, typed FIR, and checked i32 operations. Each added
-construct must serve the stage-1 compiler or an already accepted language invariant.
+access and mutation, `own`, `view`, `edit`, deterministic destruction, branches, loops, semantic
+resolution, typed FIR, and checked i32 operations. Each added construct must serve the stage-1
+compiler or an already accepted language invariant.
 
 Stage 0 bounds parser nesting and expression complexity before semantic analysis. It records at
 most 100 specific errors, followed by FDN0000 when more input errors are suppressed. These limits

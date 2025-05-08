@@ -63,6 +63,12 @@ struct MatchTarget {
     Type type{invalidType};
     std::vector<FirVariantId> variants;
     std::vector<std::optional<FirLocalId>> bindings;
+    std::vector<std::vector<FirLocalId>> drops;
+};
+
+struct OwnershipTarget {
+    OwnershipOperator operation{OwnershipOperator::Own};
+    std::optional<FirLocalId> local;
 };
 
 struct SemanticModel {
@@ -73,8 +79,12 @@ struct SemanticModel {
     std::vector<std::optional<FirFieldId>> expressionFields;
     std::vector<std::optional<EnumTarget>> enumTargets;
     std::vector<std::optional<MatchTarget>> matchTargets;
+    std::vector<std::optional<OwnershipTarget>> ownershipTargets;
+    std::vector<bool> expressionMoves;
     std::vector<std::optional<FirLocalId>> statementLocals;
     std::vector<std::optional<FirLocalId>> statementElseLocals;
+    std::vector<std::vector<FirLocalId>> statementDrops;
+    std::vector<std::vector<FirLocalId>> blockDrops;
     std::vector<SemanticStruct> structs;
     std::vector<SemanticEnum> enums;
     std::vector<SemanticFunction> functions;

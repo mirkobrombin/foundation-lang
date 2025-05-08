@@ -12,6 +12,9 @@ const staticCompletions = [
     { label: "else", kind: "Keyword" },
     { label: "while", kind: "Keyword" },
     { label: "match", kind: "Keyword" },
+    { label: "own", kind: "Keyword", detail: "Create or declare an exclusive owner" },
+    { label: "view", kind: "Keyword", detail: "Create or declare a shared borrow" },
+    { label: "edit", kind: "Keyword", detail: "Create or declare an exclusive mutable borrow" },
     { label: "true", kind: "Constant" },
     { label: "false", kind: "Constant" },
     { label: "i32", kind: "TypeParameter" },
@@ -115,7 +118,11 @@ function collectStructFields(source) {
     let offset = 0;
     while (offset + 1 < tokens.length) {
         fields.push(tokens[offset]);
-        offset += 2;
+        offset += 1;
+        if (["own", "view", "edit"].includes(tokens[offset])) {
+            offset += 1;
+        }
+        offset += 1;
         if (tokens[offset] !== "<") {
             continue;
         }

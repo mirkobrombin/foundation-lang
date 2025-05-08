@@ -1,0 +1,12 @@
+struct User {
+    id i32
+}
+
+fn read(user edit User) i32 {
+    user.id
+}
+
+fn main() i32 {
+    let user = own User { id = 7 }
+    read(edit user)
+}

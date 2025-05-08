@@ -10,6 +10,18 @@ enum TourState<T> {
     Done(TourResult<T>)
 }
 
+struct TourCounter {
+    value i32
+}
+
+fn readCounter(counter view TourCounter) i32 {
+    counter.value
+}
+
+fn incrementCounter(counter edit TourCounter) void {
+    counter.value = counter.value + 1
+}
+
 fn identity<T>(value T) T {
     value
 }
@@ -55,6 +67,9 @@ fn main() i32 {
     let first i32 = 1
     let count = 4
     var current = first
+    var counter = own TourCounter { value = 0 }
+    incrementCounter(edit counter)
+    let counterValue = readCounter(view counter)
 
     while current <= count {
         showKind(current)
@@ -76,11 +91,13 @@ fn main() i32 {
     }
     let verified = Result<i32, bool>.Ok(deliveredValue)
     discard Result<i32, bool>.Err(false)
+    let movedCounter = counter
+    discard movedCounter
     if inRange(current, 5, 5) || false {
         print(result.message)
         return match state {
-            Running: resultOr(verified, 0) + 1
-            Done(done): resultOr(verified, done.code)
+            Running: resultOr(verified, 0) + counterValue
+            Done(done): resultOr(verified, done.code) + counterValue - 1
         }
     } else {
         discard verified

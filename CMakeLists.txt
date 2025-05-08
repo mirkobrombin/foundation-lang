@@ -94,15 +94,29 @@ include(CTest)
 if(BUILD_TESTING)
     add_executable(foundation_runtime_panic_test runtime/tests/panic_trace_test.c)
     target_link_libraries(foundation_runtime_panic_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_allocation_test runtime/tests/allocation_panic_test.c)
+    target_link_libraries(foundation_runtime_allocation_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_counter_test runtime/tests/allocation_counter_test.c)
+    target_link_libraries(foundation_runtime_counter_test PRIVATE foundation_runtime)
     if(MSVC)
         target_compile_options(foundation_runtime_panic_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_allocation_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_counter_test PRIVATE /W4)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_allocation_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_counter_test PRIVATE /WX)
         endif()
     else()
         target_compile_options(foundation_runtime_panic_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_allocation_test PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+        target_compile_options(foundation_runtime_counter_test PRIVATE -Wall -Wextra -Wpedantic)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_allocation_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_counter_test PRIVATE -Werror)
         endif()
     endif()
 
@@ -130,6 +144,16 @@ if(BUILD_TESTING)
             -DPROGRAM=$<TARGET_FILE:foundation_runtime_panic_test>
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-native-panic.cmake
     )
+    add_test(
+        NAME runtime.allocation-panic
+        COMMAND ${CMAKE_COMMAND}
+            -DPROGRAM=$<TARGET_FILE:foundation_runtime_allocation_test>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-allocation-panic.cmake
+    )
+    set_tests_properties(runtime.allocation-panic PROPERTIES
+        ENVIRONMENT "ASAN_OPTIONS=allocator_may_return_null=1"
+    )
+    add_test(NAME runtime.allocation-counters COMMAND foundation_runtime_counter_test)
     add_test(
         NAME stage0.check.accept
         COMMAND foundationc check ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fdn
@@ -231,6 +255,133 @@ if(BUILD_TESTING)
         NAME stage0.run.primitive-values
         COMMAND foundationc run
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/primitive-values.fdn
+    )
+    add_test(
+        NAME stage0.run.ownership
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    if(FOUNDATION_BUILD_FUZZERS)
+        add_test(
+            NAME stage0.run.ownership-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/ownership-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/ownership-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+    endif()
+    add_test(
+        NAME stage0.check.use-after-move
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/use-after-move.fdn
+            -DCODE=FDN2065
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.double-consumption
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/double-consumption.fdn
+            -DCODE=FDN2065
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.move-while-borrowed
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/move-while-borrowed.fdn
+            -DCODE=FDN2067
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.maybe-moved
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/maybe-moved.fdn
+            -DCODE=FDN2066
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.conflicting-borrow
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/conflicting-borrow.fdn
+            -DCODE=FDN2073
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.field-assignment-without-edit
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/field-assignment-without-edit.fdn
+            -DCODE=FDN2077
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.owned-field-move
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/owned-field-move.fdn
+            -DCODE=FDN2078
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.edit-immutable
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/edit-immutable.fdn
+            -DCODE=FDN2072
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.stored-borrow
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/stored-borrow.fdn
+            -DCODE=FDN2074
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.borrow-return
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/borrow-return.fdn
+            -DCODE=FDN2063
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.borrow-field
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/borrow-field.fdn
+            -DCODE=FDN2062
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.loop-move
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/loop-move.fdn
+            -DCODE=FDN2079
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.short-circuit-move
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/short-circuit-move.fdn
+            -DCODE=FDN2066
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(
         NAME stage0.check.unhandled-result

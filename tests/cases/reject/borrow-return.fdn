@@ -1,0 +1,11 @@
+struct User {
+    id i32
+}
+
+fn borrow(user view User) view User {
+    user
+}
+
+fn main() i32 {
+    0
+}

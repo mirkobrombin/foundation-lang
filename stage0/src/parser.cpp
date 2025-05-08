@@ -121,6 +121,18 @@ std::vector<std::string> Parser::typeParameters() {
 }
 
 TypeSyntax Parser::typeSyntax(const char *code, const char *message) {
+    if (check(TokenKind::Own) || check(TokenKind::View) || check(TokenKind::Edit)) {
+        const auto qualifier = advance();
+        TypeSyntax type{qualifier.text, {}, qualifier.span};
+        if (typeDepth_ >= maxTypeDepth) {
+            diagnostics_.error("FDN1065", "type nesting exceeds 128 levels", qualifier.span);
+            return type;
+        }
+        ++typeDepth_;
+        type.arguments.push_back(typeSyntax(code, message));
+        --typeDepth_;
+        return type;
+    }
     const auto name = expect(TokenKind::Identifier, code, message);
     TypeSyntax type{name.text, {}, name.span};
     if (!match(TokenKind::Less)) {
@@ -267,8 +279,15 @@ AstStatementId Parser::statement() {
     if (match(TokenKind::While)) {
         return whileStatement(previous());
     }
-    if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Equal) {
-        return assignmentStatement();
+    if (check(TokenKind::Identifier)) {
+        std::size_t distance = 1;
+        while (peek(distance).kind == TokenKind::Dot &&
+               peek(distance + 1).kind == TokenKind::Identifier) {
+            distance += 2;
+        }
+        if (peek(distance).kind == TokenKind::Equal) {
+            return assignmentStatement();
+        }
     }
     return expressionStatement();
 }
@@ -331,10 +350,10 @@ AstStatementId Parser::whileStatement(const Token &start) {
 }
 
 AstStatementId Parser::assignmentStatement() {
-    const auto name = advance();
+    const auto target = primary();
     expect(TokenKind::Equal, "FDN1021", "expected = in assignment");
     const auto value = expression();
-    return addStatement(AssignmentStatement{name.text, value}, name.span);
+    return addStatement(AssignmentStatement{target, value}, program_.expressions[target].span);
 }
 
 AstStatementId Parser::expressionStatement() {
@@ -479,6 +498,15 @@ AstExpressionId Parser::unary() {
     } else if (match(TokenKind::Bang)) {
         const auto start = previous().span;
         result = addExpression(UnaryExpression{UnaryOperator::Not, unary()}, start);
+    } else if (check(TokenKind::Own) || check(TokenKind::View) || check(TokenKind::Edit)) {
+        const auto token = advance();
+        auto operation = OwnershipOperator::Own;
+        if (token.kind == TokenKind::View) {
+            operation = OwnershipOperator::View;
+        } else if (token.kind == TokenKind::Edit) {
+            operation = OwnershipOperator::Edit;
+        }
+        result = addExpression(OwnershipExpression{operation, unary()}, token.span);
     } else {
         result = primary();
     }

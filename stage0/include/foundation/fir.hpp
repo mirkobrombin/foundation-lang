@@ -28,6 +28,12 @@ enum class FirUnaryOperator {
     Not,
 };
 
+enum class FirOwnershipOperator {
+    Own,
+    View,
+    Edit,
+};
+
 enum class FirBinaryOperator {
     Add,
     Subtract,
@@ -66,8 +72,17 @@ struct FirLocalExpression {
     FirLocalId local{};
 };
 
+struct FirMoveExpression {
+    FirLocalId local{};
+};
+
 struct FirUnaryExpression {
     FirUnaryOperator operation{FirUnaryOperator::Negate};
+    FirExpressionId operand{};
+};
+
+struct FirOwnershipExpression {
+    FirOwnershipOperator operation{FirOwnershipOperator::Own};
     FirExpressionId operand{};
 };
 
@@ -109,6 +124,7 @@ struct FirMatchArm {
     FirVariantId variant{};
     std::optional<FirLocalId> binding;
     FirExpressionId expression{};
+    std::vector<FirLocalId> drops;
 };
 
 struct FirMatchExpression {
@@ -119,8 +135,9 @@ struct FirMatchExpression {
 
 using FirExpressionValue =
     std::variant<FirIntegerExpression, FirBooleanExpression, FirStringExpression,
-                 FirLocalExpression, FirUnaryExpression, FirBinaryExpression, FirCallExpression,
-                 FirStructExpression, FirFieldExpression, FirEnumExpression, FirMatchExpression>;
+                 FirLocalExpression, FirMoveExpression, FirUnaryExpression, FirOwnershipExpression,
+                 FirBinaryExpression, FirCallExpression, FirStructExpression, FirFieldExpression,
+                 FirEnumExpression, FirMatchExpression>;
 
 struct FirExpression {
     FirExpressionValue value;
@@ -141,7 +158,7 @@ struct FirLetElseStatement {
 };
 
 struct FirAssignmentStatement {
-    FirLocalId local{};
+    FirExpressionId target{};
     FirExpressionId value{};
 };
 
@@ -149,8 +166,13 @@ struct FirExpressionStatement {
     FirExpressionId expression{};
 };
 
+struct FirDiscardStatement {
+    FirExpressionId expression{};
+};
+
 struct FirReturnStatement {
     std::optional<FirExpressionId> value;
+    std::vector<FirLocalId> drops;
 };
 
 struct FirIfStatement {
@@ -166,7 +188,8 @@ struct FirWhileStatement {
 
 using FirStatementValue =
     std::variant<FirVariableStatement, FirLetElseStatement, FirAssignmentStatement,
-                 FirExpressionStatement, FirReturnStatement, FirIfStatement, FirWhileStatement>;
+                 FirExpressionStatement, FirDiscardStatement, FirReturnStatement, FirIfStatement,
+                 FirWhileStatement>;
 
 struct FirStatement {
     FirStatementValue value;
@@ -175,6 +198,7 @@ struct FirStatement {
 
 struct FirBlock {
     std::vector<FirStatementId> statements;
+    std::vector<FirLocalId> drops;
 };
 
 struct FirLocal {

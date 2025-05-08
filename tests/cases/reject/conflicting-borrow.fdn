@@ -1,0 +1,12 @@
+struct User {
+    id i32
+}
+
+fn compare(left view User, right edit User) i32 {
+    left.id - right.id
+}
+
+fn main() i32 {
+    var user = own User { id = 7 }
+    compare(view user, edit user)
+}

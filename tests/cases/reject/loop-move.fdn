@@ -1,0 +1,15 @@
+struct User {
+    id i32
+}
+
+fn consume(user own User) void {
+    return
+}
+
+fn main() i32 {
+    let user = own User { id = 7 }
+    while true {
+        consume(user)
+    }
+    0
+}

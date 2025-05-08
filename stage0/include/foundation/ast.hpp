@@ -27,6 +27,12 @@ enum class UnaryOperator {
     Not,
 };
 
+enum class OwnershipOperator {
+    Own,
+    View,
+    Edit,
+};
+
 enum class BinaryOperator {
     Add,
     Subtract,
@@ -62,6 +68,11 @@ struct NameExpression {
 
 struct UnaryExpression {
     UnaryOperator operation{UnaryOperator::Negate};
+    AstExpressionId operand{};
+};
+
+struct OwnershipExpression {
+    OwnershipOperator operation{OwnershipOperator::Own};
     AstExpressionId operand{};
 };
 
@@ -109,8 +120,8 @@ struct MatchExpression {
 
 using ExpressionValue =
     std::variant<IntegerExpression, BooleanExpression, StringExpression, NameExpression,
-                 UnaryExpression, BinaryExpression, CallExpression, StructExpression,
-                 MemberExpression, MatchExpression>;
+                 UnaryExpression, OwnershipExpression, BinaryExpression, CallExpression,
+                 StructExpression, MemberExpression, MatchExpression>;
 
 struct Expression {
     ExpressionValue value;
@@ -127,7 +138,7 @@ struct VariableStatement {
 };
 
 struct AssignmentStatement {
-    std::string name;
+    AstExpressionId target{};
     AstExpressionId value{};
 };
 

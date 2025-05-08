@@ -14,6 +14,12 @@ const char *typeName(Type type) {
         return "bool";
     case TypeKind::String:
         return "String";
+    case TypeKind::Own:
+        return "own";
+    case TypeKind::View:
+        return "view";
+    case TypeKind::Edit:
+        return "edit";
     case TypeKind::Parameter:
         return "<type parameter>";
     case TypeKind::Struct:

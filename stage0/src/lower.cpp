@@ -25,6 +25,18 @@ FirUnaryOperator lowerUnary(UnaryOperator operation) {
     std::terminate();
 }
 
+FirOwnershipOperator lowerOwnership(OwnershipOperator operation) {
+    switch (operation) {
+    case OwnershipOperator::Own:
+        return FirOwnershipOperator::Own;
+    case OwnershipOperator::View:
+        return FirOwnershipOperator::View;
+    case OwnershipOperator::Edit:
+        return FirOwnershipOperator::Edit;
+    }
+    std::terminate();
+}
+
 FirBinaryOperator lowerBinary(BinaryOperator operation) {
     switch (operation) {
     case BinaryOperator::Add:
@@ -143,6 +155,7 @@ class Lowerer {
             statements.push_back(lowerStatement(statement));
         }
         current_->blocks[lowered].statements = std::move(statements);
+        current_->blocks[lowered].drops = model_.blockDrops[id];
         return lowered;
     }
 
@@ -164,7 +177,7 @@ class Lowerer {
                                              lowerExpression(variable->initializer)};
             }
         } else if (const auto *assignment = std::get_if<AssignmentStatement>(&source.value)) {
-            value = FirAssignmentStatement{required(model_.statementLocals[id]),
+            value = FirAssignmentStatement{lowerExpression(assignment->target),
                                            lowerExpression(assignment->value)};
         } else if (const auto *expression = std::get_if<ExpressionStatement>(&source.value)) {
             value = FirExpressionStatement{lowerExpression(expression->expression)};
@@ -173,9 +186,9 @@ class Lowerer {
             if (returned->value.has_value()) {
                 result = lowerExpression(*returned->value);
             }
-            value = FirReturnStatement{result};
+            value = FirReturnStatement{result, model_.statementDrops[id]};
         } else if (const auto *discarded = std::get_if<DiscardStatement>(&source.value)) {
-            value = FirExpressionStatement{lowerExpression(discarded->value)};
+            value = FirDiscardStatement{lowerExpression(discarded->value)};
         } else if (const auto *branch = std::get_if<IfStatement>(&source.value)) {
             const auto condition = lowerExpression(branch->condition);
             const auto thenBlock = lowerBlock(branch->thenBlock);
@@ -209,10 +222,18 @@ class Lowerer {
         } else if (const auto *string = std::get_if<StringExpression>(&source.value)) {
             value = FirStringExpression{string->value};
         } else if (std::holds_alternative<NameExpression>(source.value)) {
-            value = FirLocalExpression{required(model_.expressionLocals[id])};
+            const auto local = required(model_.expressionLocals[id]);
+            if (model_.expressionMoves[id]) {
+                value = FirMoveExpression{local};
+            } else {
+                value = FirLocalExpression{local};
+            }
         } else if (const auto *unary = std::get_if<UnaryExpression>(&source.value)) {
             value = FirUnaryExpression{lowerUnary(unary->operation),
                                        lowerExpression(unary->operand)};
+        } else if (const auto *ownership = std::get_if<OwnershipExpression>(&source.value)) {
+            value = FirOwnershipExpression{lowerOwnership(ownership->operation),
+                                           lowerExpression(ownership->operand)};
         } else if (const auto *binary = std::get_if<BinaryExpression>(&source.value)) {
             value = FirBinaryExpression{lowerExpression(binary->left),
                                         lowerBinary(binary->operation),
@@ -265,7 +286,7 @@ class Lowerer {
             arms.reserve(match.arms.size());
             for (std::size_t arm = 0; arm < match.arms.size(); ++arm) {
                 arms.push_back({target.variants[arm], target.bindings[arm],
-                                lowerExpression(match.arms[arm].expression)});
+                                lowerExpression(match.arms[arm].expression), target.drops[arm]});
             }
             value = FirMatchExpression{lowerExpression(match.value), target.type, std::move(arms)};
         }

@@ -1,0 +1,10 @@
+struct User {
+    id i32
+}
+
+fn main() i32 {
+    let user = own User { id = 7 }
+    let moved = user
+    discard moved
+    user.id
+}

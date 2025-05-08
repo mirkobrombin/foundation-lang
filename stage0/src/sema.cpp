@@ -26,6 +26,23 @@ struct GenericCall {
     SourceSpan span;
 };
 
+enum class MoveState {
+    Available,
+    Moved,
+    MaybeMoved,
+};
+
+enum class ExpressionUse {
+    Consume,
+    Inspect,
+};
+
+enum class LoanState {
+    None,
+    View,
+    Edit,
+};
+
 std::string semanticTypeKey(const Type &type) {
     std::string result = std::to_string(static_cast<unsigned int>(type.kind)) + ':' +
                          std::to_string(type.declaration);
@@ -59,8 +76,12 @@ class Analyzer {
         model_.expressionFields.resize(program.expressions.size());
         model_.enumTargets.resize(program.expressions.size());
         model_.matchTargets.resize(program.expressions.size());
+        model_.ownershipTargets.resize(program.expressions.size());
+        model_.expressionMoves.resize(program.expressions.size());
         model_.statementLocals.resize(program.statements.size());
         model_.statementElseLocals.resize(program.statements.size());
+        model_.statementDrops.resize(program.statements.size());
+        model_.blockDrops.resize(program.blocks.size());
         model_.structs.resize(program.structs.size());
         model_.enums.resize(program.enums.size());
         model_.functions.resize(program.functions.size());
@@ -138,6 +159,10 @@ class Analyzer {
                     diagnostics_.error("FDN2022", "struct field cannot have type void",
                                        source.span);
                 }
+                if (type.kind == TypeKind::View || type.kind == TypeKind::Edit) {
+                    diagnostics_.error("FDN2062", "borrow cannot be stored in a struct field",
+                                       source.span);
+                }
                 semantic.fieldTypes.push_back(type);
             }
         }
@@ -164,6 +189,10 @@ class Analyzer {
                 const auto type = resolveType(*source.payloadType);
                 if (type == voidType) {
                     diagnostics_.error("FDN2033", "enum payload cannot have type void",
+                                       source.span);
+                }
+                if (type.kind == TypeKind::View || type.kind == TypeKind::Edit) {
+                    diagnostics_.error("FDN2062", "borrow cannot be stored in an enum payload",
                                        source.span);
                 }
                 semantic.payloadTypes.push_back(type);
@@ -279,6 +308,11 @@ class Analyzer {
             setTypeParameters(function.typeParameters, function.span);
             semantic.typeParameterCount = function.typeParameters.size();
             semantic.returnType = resolveType(function.returnType);
+            if (semantic.returnType.kind == TypeKind::View ||
+                semantic.returnType.kind == TypeKind::Edit) {
+                diagnostics_.error("FDN2063", "borrow cannot be returned from a function",
+                                   function.returnType.span);
+            }
             for (const auto &parameter : function.parameters) {
                 const auto type = resolveType(parameter.type);
                 if (type == voidType) {
@@ -325,6 +359,8 @@ class Analyzer {
         resultOutstanding_.clear();
         resultExitReported_.clear();
         localSpans_.clear();
+        moveStates_.clear();
+        loanStates_.clear();
 
         const auto &function = program_.functions[index];
         setTypeParameters(function.typeParameters, function.span);
@@ -355,6 +391,8 @@ class Analyzer {
                 returns = true;
             }
         }
+
+        model_.blockDrops[id] = scopeDrops(scopes_.back());
 
         if (nested) {
             reportScope(scopes_.back());
@@ -411,27 +449,45 @@ class Analyzer {
                 diagnostics_.error("FDN2016", "binding initializer cannot be void", statement.span);
                 declared = invalidType;
             }
+            if (declared.kind == TypeKind::View || declared.kind == TypeKind::Edit) {
+                diagnostics_.error("FDN2074", "borrow cannot be stored in a local binding",
+                                   statement.span);
+            }
             model_.statementLocals[id] =
                 addLocal(variable->name, declared, variable->mutableBinding, statement.span);
             return false;
         }
         if (const auto *assignment = std::get_if<AssignmentStatement>(&statement.value)) {
-            const auto local = findLocal(assignment->name, statement.span);
-            const auto expected = local.has_value()
-                                      ? std::optional<Type>{model_.functions[currentFunction_]
-                                                                .locals[*local]
-                                                                .type}
-                                      : std::nullopt;
-            const auto value = analyzeExpression(assignment->value, expected);
-            if (local.has_value()) {
+            const auto &targetExpression = program_.expressions[assignment->target];
+            if (const auto *name = std::get_if<NameExpression>(&targetExpression.value)) {
+                const auto local = findLocal(name->name, statement.span);
+                const auto expected = local.has_value()
+                                          ? std::optional<Type>{model_.functions[currentFunction_]
+                                                                    .locals[*local]
+                                                                    .type}
+                                          : std::nullopt;
+                const auto value = analyzeExpression(assignment->value, expected);
+                if (!local.has_value()) {
+                    return false;
+                }
+                model_.expressionLocals[assignment->target] = *local;
+                model_.expressionTypes[assignment->target] = *expected;
                 model_.statementLocals[id] = *local;
                 const auto &declaration = model_.functions[currentFunction_].locals[*local];
                 if (!declaration.mutableBinding) {
                     diagnostics_.error("FDN2013", "cannot assign to immutable binding " +
-                                                        assignment->name,
+                                                        name->name,
                                        statement.span);
                 }
                 requireSame(declaration.type, value, statement.span, "assignment");
+                if (requiresDrop(declaration.type)) {
+                    if (loanStates_[*local] != LoanState::None) {
+                        diagnostics_.error("FDN2075", "cannot replace borrowed binding " +
+                                                            declaration.name,
+                                           statement.span);
+                    }
+                    moveStates_[*local] = MoveState::Available;
+                }
                 if (isResult(declaration.type)) {
                     if (resultOutstanding_[*local]) {
                         diagnostics_.error("FDN2052", "assignment replaces an unhandled Result",
@@ -439,13 +495,28 @@ class Analyzer {
                     }
                     resultOutstanding_[*local] = true;
                 }
+                return false;
             }
+
+            const auto target = analyzeExpression(assignment->target, std::nullopt,
+                                                  ExpressionUse::Inspect);
+            const auto value = analyzeExpression(assignment->value, target);
+            if (!editablePlace(assignment->target)) {
+                diagnostics_.error("FDN2077",
+                                   "field assignment requires a mutable binding or edit borrow",
+                                   statement.span);
+            }
+            requireSame(target, value, statement.span, "assignment");
             return false;
         }
         if (const auto *expression = std::get_if<ExpressionStatement>(&statement.value)) {
             const auto type = analyzeExpression(expression->expression);
             if (isResult(type)) {
                 diagnostics_.error("FDN2051", "Result value must be handled or discarded",
+                                   statement.span);
+            }
+            if (requiresDrop(type)) {
+                diagnostics_.error("FDN2076", "owned value must be handled or discarded",
                                    statement.span);
             }
             const auto &target = model_.callTargets[expression->expression];
@@ -463,6 +534,7 @@ class Analyzer {
                                        statement.span);
                 }
                 reportOutstanding(statement.span);
+                model_.statementDrops[id] = activeDrops();
                 return true;
             }
             const auto value = analyzeExpression(*returned->value, expected);
@@ -478,6 +550,7 @@ class Analyzer {
             }
             requireSame(expected, value, statement.span, "return");
             reportOutstanding(statement.span);
+            model_.statementDrops[id] = activeDrops();
             return true;
         }
         if (const auto *discarded = std::get_if<DiscardStatement>(&statement.value)) {
@@ -488,14 +561,18 @@ class Analyzer {
             requireSame(boolType, analyzeExpression(branch->condition), statement.span,
                         "if condition");
             const auto before = resultOutstanding_;
+            const auto movesBefore = moveStates_;
             const auto thenReturns = analyzeBlock(branch->thenBlock, true);
             const auto thenState = outstandingPrefix(before.size());
+            const auto thenMoves = movePrefix(movesBefore.size());
             restoreOutstanding(before);
+            restoreMoves(movesBefore);
             auto elseReturns = false;
             if (branch->elseBlock.has_value()) {
                 elseReturns = analyzeBlock(*branch->elseBlock, true);
             }
             const auto elseState = outstandingPrefix(before.size());
+            const auto elseMoves = movePrefix(movesBefore.size());
             std::vector<bool> merged(before.size());
             for (std::size_t local = 0; local < before.size(); ++local) {
                 if (thenReturns && elseReturns) {
@@ -509,24 +586,53 @@ class Analyzer {
                 }
             }
             restoreOutstanding(merged);
+            restoreMoves(mergeMoves(movesBefore, thenMoves, elseMoves, thenReturns, elseReturns));
             return thenReturns && elseReturns;
         }
 
         const auto &loop = std::get<WhileStatement>(statement.value);
+        const auto movesBeforeCondition = moveStates_;
         requireSame(boolType, analyzeExpression(loop.condition), statement.span,
                     "while condition");
+        for (std::size_t local = 0; local < movesBeforeCondition.size(); ++local) {
+            if (moveStates_[local] != movesBeforeCondition[local]) {
+                diagnostics_.error("FDN2079", "loop condition cannot move binding " +
+                                                   model_.functions[currentFunction_]
+                                                       .locals[local]
+                                                       .name,
+                                   statement.span);
+            }
+        }
         const auto before = resultOutstanding_;
-        static_cast<void>(analyzeBlock(loop.body, true));
+        const auto movesBefore = moveStates_;
+        const auto bodyReturns = analyzeBlock(loop.body, true);
         const auto bodyState = outstandingPrefix(before.size());
+        const auto bodyMoves = movePrefix(movesBefore.size());
         std::vector<bool> merged(before.size());
         for (std::size_t local = 0; local < before.size(); ++local) {
             merged[local] = before[local] || bodyState[local];
         }
         restoreOutstanding(merged);
+        std::vector<MoveState> loopMoves(movesBefore.size());
+        for (std::size_t local = 0; local < loopMoves.size(); ++local) {
+            if (!bodyReturns && movesBefore[local] != bodyMoves[local]) {
+                diagnostics_.error("FDN2079", "loop body cannot leave binding " +
+                                                   model_.functions[currentFunction_]
+                                                       .locals[local]
+                                                       .name +
+                                                   " moved",
+                                   statement.span);
+            }
+            loopMoves[local] = bodyReturns || movesBefore[local] == bodyMoves[local]
+                                   ? movesBefore[local]
+                                   : MoveState::MaybeMoved;
+        }
+        restoreMoves(loopMoves);
         return false;
     }
 
-    Type analyzeExpression(AstExpressionId id, std::optional<Type> expected = std::nullopt) {
+    Type analyzeExpression(AstExpressionId id, std::optional<Type> expected = std::nullopt,
+                           ExpressionUse use = ExpressionUse::Consume) {
         const auto &expression = program_.expressions[id];
         auto type = invalidType;
         if (const auto *integer = std::get_if<IntegerExpression>(&expression.value)) {
@@ -543,12 +649,31 @@ class Analyzer {
             if (local.has_value()) {
                 model_.expressionLocals[id] = *local;
                 type = model_.functions[currentFunction_].locals[*local].type;
+                if (requiresDrop(type)) {
+                    if (moveStates_[*local] == MoveState::Moved) {
+                        diagnostics_.error("FDN2065", "use of moved binding " + name->name,
+                                           expression.span);
+                    } else if (moveStates_[*local] == MoveState::MaybeMoved) {
+                        diagnostics_.error("FDN2066", "binding may have moved " + name->name,
+                                           expression.span);
+                    } else if (use == ExpressionUse::Consume) {
+                        if (loanStates_[*local] != LoanState::None) {
+                            diagnostics_.error("FDN2067", "cannot move borrowed binding " +
+                                                                name->name,
+                                               expression.span);
+                        }
+                        moveStates_[*local] = MoveState::Moved;
+                        model_.expressionMoves[id] = true;
+                    }
+                }
                 if (isResult(type)) {
                     resultOutstanding_[*local] = false;
                 }
             }
         } else if (const auto *unary = std::get_if<UnaryExpression>(&expression.value)) {
             type = analyzeUnary(*unary, expression.span);
+        } else if (const auto *ownership = std::get_if<OwnershipExpression>(&expression.value)) {
+            type = analyzeOwnership(id, *ownership, expression.span);
         } else if (const auto *binary = std::get_if<BinaryExpression>(&expression.value)) {
             type = analyzeBinary(*binary, expression.span);
         } else if (const auto *call = std::get_if<CallExpression>(&expression.value)) {
@@ -556,13 +681,78 @@ class Analyzer {
         } else if (const auto *literal = std::get_if<StructExpression>(&expression.value)) {
             type = analyzeStruct(id, *literal, expression.span);
         } else if (const auto *member = std::get_if<MemberExpression>(&expression.value)) {
-            type = analyzeMember(id, *member, expected, expression.span);
+            type = analyzeMember(id, *member, expected, use, expression.span);
         } else {
             type = analyzeMatch(id, std::get<MatchExpression>(expression.value), expected,
                                 expression.span);
         }
         model_.expressionTypes[id] = type;
         return type;
+    }
+
+    Type analyzeOwnership(AstExpressionId id, const OwnershipExpression &ownership,
+                          SourceSpan span) {
+        if (ownership.operation == OwnershipOperator::Own) {
+            const auto value = analyzeExpression(ownership.operand);
+            if (value == voidType || value.kind == TypeKind::Invalid ||
+                value.kind == TypeKind::Own || value.kind == TypeKind::View ||
+                value.kind == TypeKind::Edit) {
+                diagnostics_.error("FDN2068", "own requires a non-borrowed value", span);
+                return invalidType;
+            }
+            const auto result = Type{TypeKind::Own, 0, {value}};
+            model_.ownershipTargets[id] = OwnershipTarget{ownership.operation, std::nullopt};
+            return result;
+        }
+
+        const auto &operand = program_.expressions[ownership.operand];
+        if (!std::holds_alternative<NameExpression>(operand.value)) {
+            static_cast<void>(analyzeExpression(ownership.operand, std::nullopt,
+                                                ExpressionUse::Inspect));
+            diagnostics_.error("FDN2069", "borrow requires a binding", span);
+            return invalidType;
+        }
+        const auto value = analyzeExpression(ownership.operand, std::nullopt,
+                                             ExpressionUse::Inspect);
+        const auto local = model_.expressionLocals[ownership.operand];
+        if (!local.has_value()) {
+            return invalidType;
+        }
+        if (!transientBorrowsAllowed_) {
+            diagnostics_.error("FDN2070", "borrow must be passed directly to a function", span);
+        }
+
+        Type target = value;
+        if ((value.kind == TypeKind::Own || value.kind == TypeKind::View ||
+             value.kind == TypeKind::Edit) &&
+            value.arguments.size() == 1) {
+            target = value.arguments.front();
+        }
+        if (value.kind == TypeKind::View && ownership.operation == OwnershipOperator::Edit) {
+            diagnostics_.error("FDN2071", "shared view cannot become an edit", span);
+        }
+        if (ownership.operation == OwnershipOperator::Edit &&
+            !model_.functions[currentFunction_].locals[*local].mutableBinding &&
+            value.kind != TypeKind::Edit) {
+            diagnostics_.error("FDN2072", "edit requires a mutable binding", span);
+        }
+
+        const auto requested = ownership.operation == OwnershipOperator::View ? LoanState::View
+                                                                               : LoanState::Edit;
+        if ((requested == LoanState::View && loanStates_[*local] == LoanState::Edit) ||
+            (requested == LoanState::Edit && loanStates_[*local] != LoanState::None)) {
+            diagnostics_.error("FDN2073", "conflicting borrow of binding " +
+                                                model_.functions[currentFunction_].locals[*local]
+                                                    .name,
+                               span);
+        } else if (requested == LoanState::Edit || loanStates_[*local] == LoanState::None) {
+            loanStates_[*local] = requested;
+        }
+
+        model_.ownershipTargets[id] = OwnershipTarget{ownership.operation, local};
+        return Type{ownership.operation == OwnershipOperator::View ? TypeKind::View
+                                                                    : TypeKind::Edit,
+                    0, {target}};
     }
 
     Type analyzeUnary(const UnaryExpression &unary, SourceSpan span) {
@@ -577,7 +767,17 @@ class Analyzer {
 
     Type analyzeBinary(const BinaryExpression &binary, SourceSpan span) {
         const auto left = analyzeExpression(binary.left);
+        const auto movesBeforeRight = moveStates_;
         const auto right = analyzeExpression(binary.right);
+        if (binary.operation == BinaryOperator::And || binary.operation == BinaryOperator::Or) {
+            std::vector<MoveState> merged(movesBeforeRight.size());
+            for (std::size_t local = 0; local < merged.size(); ++local) {
+                merged[local] = movesBeforeRight[local] == moveStates_[local]
+                                    ? movesBeforeRight[local]
+                                    : MoveState::MaybeMoved;
+            }
+            restoreMoves(merged);
+        }
         switch (binary.operation) {
         case BinaryOperator::Add:
         case BinaryOperator::Subtract:
@@ -618,11 +818,16 @@ class Analyzer {
     }
 
     Type analyzeCall(AstExpressionId id, const CallExpression &call, SourceSpan span) {
+        const auto loansBefore = loanStates_;
+        const auto borrowsAllowedBefore = transientBorrowsAllowed_;
+        transientBorrowsAllowed_ = true;
         std::vector<Type> arguments;
         arguments.reserve(call.arguments.size());
         for (const auto argument : call.arguments) {
             arguments.push_back(analyzeExpression(argument));
         }
+        loanStates_ = loansBefore;
+        transientBorrowsAllowed_ = borrowsAllowedBefore;
         std::vector<Type> explicitTypes;
         explicitTypes.reserve(call.typeArguments.size());
         for (const auto &argument : call.typeArguments) {
@@ -667,7 +872,8 @@ class Analyzer {
         if (arguments.size() != signature.parameters.size()) {
             diagnostics_.error("FDN2010", "wrong argument count for " + call.callee, span);
         }
-        std::vector<std::optional<Type>> inferred(program_.functions[function].typeParameters.size());
+        std::vector<std::optional<Type>> inferred(
+            program_.functions[function].typeParameters.size());
         if (!explicitTypes.empty()) {
             if (explicitTypes.size() != inferred.size()) {
                 diagnostics_.error("FDN2043",
@@ -786,6 +992,41 @@ class Analyzer {
             }
         }
 
+        std::unordered_set<std::string> ownershipValidated;
+        for (const auto &[root, span] : roots) {
+            std::vector<std::pair<Type, SourceSpan>> pending{{root, span}};
+            while (!pending.empty()) {
+                const auto [type, typeSpan] = pending.back();
+                pending.pop_back();
+                const auto key = semanticTypeKey(type);
+                if (!ownershipValidated.insert(key).second) {
+                    continue;
+                }
+                if (type.kind == TypeKind::Own || type.kind == TypeKind::View ||
+                    type.kind == TypeKind::Edit) {
+                    if (type.arguments.size() != 1) {
+                        continue;
+                    }
+                    const auto &target = type.arguments.front();
+                    if (target == voidType || target.kind == TypeKind::Own ||
+                        target.kind == TypeKind::View || target.kind == TypeKind::Edit) {
+                        diagnostics_.error("FDN2064",
+                                           std::string(typeName(type)) +
+                                               " requires a direct non-void value type",
+                                           typeSpan);
+                    } else if (target.kind != TypeKind::Invalid) {
+                        pending.push_back({target, typeSpan});
+                    }
+                    continue;
+                }
+                if (type.kind == TypeKind::Struct || type.kind == TypeKind::Enum) {
+                    for (const auto &[child, childSpan] : layoutChildren(type)) {
+                        pending.push_back({child, childSpan});
+                    }
+                }
+            }
+        }
+
         struct Frame {
             Type type;
             std::string key;
@@ -856,18 +1097,31 @@ class Analyzer {
         std::vector<Type> values;
         fields.reserve(literal.fields.size());
         for (const auto &initializer : literal.fields) {
-            const auto value = analyzeExpression(initializer.value);
             const auto field = findField(type, initializer.name);
             if (!field.has_value()) {
+                static_cast<void>(analyzeExpression(initializer.value));
                 diagnostics_.error("FDN2025", "unknown field " + initializer.name,
                                    initializer.span);
                 continue;
             }
             if (initialized[*field]) {
+                static_cast<void>(analyzeExpression(initializer.value));
                 diagnostics_.error("FDN2026", "duplicate field initializer " + initializer.name,
                                    initializer.span);
                 continue;
             }
+            std::vector<Type> knownArguments;
+            knownArguments.reserve(inferred.size());
+            auto complete = true;
+            for (const auto &argument : inferred) {
+                complete = complete && argument.has_value();
+                knownArguments.push_back(argument.value_or(invalidType));
+            }
+            const auto expectedField = complete
+                                           ? std::optional<Type>{substitute(
+                                                 semantic.fieldTypes[*field], knownArguments)}
+                                           : std::nullopt;
+            const auto value = analyzeExpression(initializer.value, expectedField);
             initialized[*field] = true;
             fields.push_back(*field);
             values.push_back(value);
@@ -892,7 +1146,7 @@ class Analyzer {
     }
 
     Type analyzeMember(AstExpressionId id, const MemberExpression &member,
-                       std::optional<Type> expected, SourceSpan span) {
+                       std::optional<Type> expected, ExpressionUse use, SourceSpan span) {
         if (!member.base.has_value()) {
             return analyzeEnum(id, member, std::nullopt, expected, span);
         }
@@ -914,9 +1168,14 @@ class Analyzer {
             return invalidType;
         }
 
-        const auto base = analyzeExpression(*member.base);
+        auto base = analyzeExpression(*member.base, std::nullopt, ExpressionUse::Inspect);
         if (base.kind == TypeKind::Invalid) {
             return invalidType;
+        }
+        if ((base.kind == TypeKind::Own || base.kind == TypeKind::View ||
+             base.kind == TypeKind::Edit) &&
+            base.arguments.size() == 1) {
+            base = base.arguments.front();
         }
         if (base.kind != TypeKind::Struct || base.declaration >= program_.structs.size()) {
             diagnostics_.error("FDN2028", "field access requires a struct value", span);
@@ -928,7 +1187,32 @@ class Analyzer {
             return invalidType;
         }
         model_.expressionFields[id] = *resolved;
-        return substitute(model_.structs[base.declaration].fieldTypes[*resolved], base.arguments);
+        const auto result =
+            substitute(model_.structs[base.declaration].fieldTypes[*resolved], base.arguments);
+        if (use == ExpressionUse::Consume && requiresDrop(result)) {
+            diagnostics_.error("FDN2078", "owned field cannot move independently", span);
+        }
+        return result;
+    }
+
+    bool editablePlace(AstExpressionId id) const {
+        const auto &expression = program_.expressions[id];
+        if (std::holds_alternative<NameExpression>(expression.value)) {
+            if (id >= model_.expressionTypes.size()) {
+                return false;
+            }
+            if (model_.expressionTypes[id].kind == TypeKind::Edit) {
+                return true;
+            }
+            const auto local = model_.expressionLocals[id];
+            return local.has_value() &&
+                   model_.functions[currentFunction_].locals[*local].mutableBinding;
+        }
+        if (const auto *member = std::get_if<MemberExpression>(&expression.value);
+            member != nullptr && member->base.has_value()) {
+            return editablePlace(*member->base);
+        }
+        return false;
     }
 
     Type analyzeEnum(AstExpressionId id, const MemberExpression &constructor,
@@ -1026,13 +1310,17 @@ class Analyzer {
         const auto enumType = value.declaration;
         const auto &declaration = program_.enums[enumType];
         const auto beforeArms = resultOutstanding_;
+        const auto movesBeforeArms = moveStates_;
         std::vector<bool> covered(declaration.variants.size());
         std::vector<FirVariantId> variants;
         std::vector<std::optional<FirLocalId>> bindings;
+        std::vector<std::vector<FirLocalId>> drops;
         std::vector<std::vector<bool>> armStates;
+        std::vector<std::vector<MoveState>> armMoveStates;
         auto result = invalidType;
         for (const auto &arm : match.arms) {
             restoreOutstanding(beforeArms);
+            restoreMoves(movesBeforeArms);
             auto variant = findVariant(enumType, arm.variant);
             if (!variant.has_value()) {
                 diagnostics_.error("FDN2035", "unknown variant " + arm.variant, arm.span);
@@ -1065,9 +1353,11 @@ class Analyzer {
                                                 ? std::nullopt
                                                 : std::optional<Type>{result});
             const auto armType = analyzeExpression(arm.expression, armExpected);
+            drops.push_back(scopeDrops(scopes_.back()));
             reportScope(scopes_.back());
             scopes_.pop_back();
             armStates.push_back(outstandingPrefix(beforeArms.size()));
+            armMoveStates.push_back(movePrefix(movesBeforeArms.size()));
             if (result.kind == TypeKind::Invalid) {
                 result = armType;
             } else {
@@ -1087,6 +1377,21 @@ class Analyzer {
         } else {
             restoreOutstanding(beforeArms);
         }
+        if (!armMoveStates.empty()) {
+            std::vector<MoveState> merged(movesBeforeArms.size());
+            for (std::size_t local = 0; local < merged.size(); ++local) {
+                merged[local] = armMoveStates.front()[local];
+                for (std::size_t arm = 1; arm < armMoveStates.size(); ++arm) {
+                    if (merged[local] != armMoveStates[arm][local]) {
+                        merged[local] = MoveState::MaybeMoved;
+                        break;
+                    }
+                }
+            }
+            restoreMoves(merged);
+        } else {
+            restoreMoves(movesBeforeArms);
+        }
         for (std::size_t variant = 0; variant < covered.size(); ++variant) {
             if (!covered[variant]) {
                 diagnostics_.error("FDN2040",
@@ -1094,7 +1399,8 @@ class Analyzer {
                                    span);
             }
         }
-        model_.matchTargets[id] = MatchTarget{value, std::move(variants), std::move(bindings)};
+        model_.matchTargets[id] = MatchTarget{value, std::move(variants), std::move(bindings),
+                                              std::move(drops)};
         return result;
     }
 
@@ -1121,6 +1427,12 @@ class Analyzer {
             base = boolType;
         } else if (syntax.name == "String") {
             base = stringType;
+        } else if (syntax.name == "own") {
+            base = Type{TypeKind::Own};
+        } else if (syntax.name == "view") {
+            base = Type{TypeKind::View};
+        } else if (syntax.name == "edit") {
+            base = Type{TypeKind::Edit};
         } else if (const auto parameter = typeParameters_.find(syntax.name);
                    parameter != typeParameters_.end()) {
             base = Type{TypeKind::Parameter, parameter->second};
@@ -1147,12 +1459,26 @@ class Analyzer {
             expected = program_.structs[base->declaration].typeParameters.size();
         } else if (base->kind == TypeKind::Enum) {
             expected = program_.enums[base->declaration].typeParameters.size();
+        } else if (base->kind == TypeKind::Own || base->kind == TypeKind::View ||
+                   base->kind == TypeKind::Edit) {
+            expected = 1;
         }
         if (arguments.size() != expected) {
             diagnostics_.error("FDN2043", "wrong type argument count for " + syntax.name,
                                syntax.span);
         }
         base->arguments = std::move(arguments);
+        if ((base->kind == TypeKind::Own || base->kind == TypeKind::View ||
+             base->kind == TypeKind::Edit) &&
+            !base->arguments.empty()) {
+            const auto &target = base->arguments.front();
+            if (target == voidType || target.kind == TypeKind::View ||
+                target.kind == TypeKind::Edit || target.kind == TypeKind::Own) {
+                diagnostics_.error("FDN2064",
+                                   syntax.name + " requires a direct non-void value type",
+                                   syntax.span);
+            }
+        }
         return *base;
     }
 
@@ -1183,7 +1509,9 @@ class Analyzer {
             }
             return;
         }
-        if ((pattern.kind == TypeKind::Struct || pattern.kind == TypeKind::Enum) &&
+        if ((pattern.kind == TypeKind::Struct || pattern.kind == TypeKind::Enum ||
+             pattern.kind == TypeKind::Own || pattern.kind == TypeKind::View ||
+             pattern.kind == TypeKind::Edit) &&
             pattern.kind == actual.kind && pattern.declaration == actual.declaration &&
             pattern.arguments.size() == actual.arguments.size()) {
             for (std::size_t index = 0; index < pattern.arguments.size(); ++index) {
@@ -1216,7 +1544,8 @@ class Analyzer {
 
     bool isBuiltinType(std::string_view name) const {
         return name == "void" || name == "i32" || name == "bool" || name == "String" ||
-               name == "Option" || name == "Result";
+               name == "Option" || name == "Result" || name == "own" || name == "view" ||
+               name == "edit";
     }
 
     std::optional<FirFieldId> findField(FirStructId type, std::string_view name) const {
@@ -1252,6 +1581,8 @@ class Analyzer {
         resultOutstanding_.push_back(isResult(type));
         resultExitReported_.push_back(false);
         localSpans_.push_back(span);
+        moveStates_.push_back(MoveState::Available);
+        loanStates_.push_back(LoanState::None);
         scope.emplace(name, id);
         return id;
     }
@@ -1259,6 +1590,65 @@ class Analyzer {
     bool isResult(const Type &type) const {
         return type.kind == TypeKind::Enum && type.declaration < program_.enums.size() &&
                program_.enums[type.declaration].builtin == BuiltinEnumKind::Result;
+    }
+
+    bool requiresDrop(const Type &type) const {
+        std::unordered_set<std::string> active;
+        return requiresDrop(type, active);
+    }
+
+    bool requiresDrop(const Type &type, std::unordered_set<std::string> &active) const {
+        if (type.kind == TypeKind::Own || type.kind == TypeKind::Parameter) {
+            return true;
+        }
+        if (type.kind != TypeKind::Struct && type.kind != TypeKind::Enum) {
+            return false;
+        }
+        const auto key = semanticTypeKey(type);
+        if (!active.insert(key).second) {
+            return false;
+        }
+        if (type.kind == TypeKind::Struct && type.declaration < model_.structs.size()) {
+            for (const auto &field : model_.structs[type.declaration].fieldTypes) {
+                if (requiresDrop(substitute(field, type.arguments), active)) {
+                    active.erase(key);
+                    return true;
+                }
+            }
+        } else if (type.kind == TypeKind::Enum && type.declaration < model_.enums.size()) {
+            for (const auto &payload : model_.enums[type.declaration].payloadTypes) {
+                if (payload.has_value() &&
+                    requiresDrop(substitute(*payload, type.arguments), active)) {
+                    active.erase(key);
+                    return true;
+                }
+            }
+        }
+        active.erase(key);
+        return false;
+    }
+
+    std::vector<FirLocalId>
+    scopeDrops(const std::unordered_map<std::string, FirLocalId> &scope) const {
+        std::vector<FirLocalId> drops;
+        for (const auto &[name, local] : scope) {
+            static_cast<void>(name);
+            if (local < model_.functions[currentFunction_].locals.size() &&
+                requiresDrop(model_.functions[currentFunction_].locals[local].type)) {
+                drops.push_back(local);
+            }
+        }
+        std::sort(drops.begin(), drops.end(), std::greater<>());
+        return drops;
+    }
+
+    std::vector<FirLocalId> activeDrops() const {
+        std::vector<FirLocalId> drops;
+        for (auto scope = scopes_.rbegin(); scope != scopes_.rend(); ++scope) {
+            auto current = scopeDrops(*scope);
+            drops.insert(drops.end(), current.begin(), current.end());
+        }
+        return drops;
     }
 
     void reportScope(const std::unordered_map<std::string, FirLocalId> &scope) {
@@ -1312,6 +1702,44 @@ class Analyzer {
         }
     }
 
+    std::vector<MoveState> movePrefix(std::size_t count) const {
+        const auto end = std::min(count, moveStates_.size());
+        return {moveStates_.begin(), moveStates_.begin() + end};
+    }
+
+    void restoreMoves(const std::vector<MoveState> &state) {
+        if (moveStates_.size() < state.size()) {
+            moveStates_.resize(state.size(), MoveState::Available);
+        }
+        for (std::size_t local = 0; local < state.size(); ++local) {
+            moveStates_[local] = state[local];
+        }
+        for (std::size_t local = state.size(); local < moveStates_.size(); ++local) {
+            moveStates_[local] = MoveState::Available;
+        }
+    }
+
+    std::vector<MoveState> mergeMoves(const std::vector<MoveState> &before,
+                                      const std::vector<MoveState> &thenState,
+                                      const std::vector<MoveState> &elseState, bool thenReturns,
+                                      bool elseReturns) const {
+        if (thenReturns && elseReturns) {
+            return before;
+        }
+        if (thenReturns) {
+            return elseState;
+        }
+        if (elseReturns) {
+            return thenState;
+        }
+        std::vector<MoveState> merged(before.size());
+        for (std::size_t local = 0; local < merged.size(); ++local) {
+            merged[local] = thenState[local] == elseState[local] ? thenState[local]
+                                                                 : MoveState::MaybeMoved;
+        }
+        return merged;
+    }
+
     std::optional<FirLocalId> lookupLocal(const std::string &name) const {
         for (auto scope = scopes_.rbegin(); scope != scopes_.rend(); ++scope) {
             const auto found = scope->find(name);
@@ -1335,6 +1763,11 @@ class Analyzer {
         if (type.kind == TypeKind::Parameter &&
             type.declaration < currentTypeParameterNames_.size()) {
             return currentTypeParameterNames_[type.declaration];
+        }
+        if ((type.kind == TypeKind::Own || type.kind == TypeKind::View ||
+             type.kind == TypeKind::Edit) &&
+            type.arguments.size() == 1) {
+            return std::string(typeName(type)) + ' ' + displayType(type.arguments.front());
         }
         std::string name;
         if (type.kind == TypeKind::Struct && type.declaration < program_.structs.size()) {
@@ -1383,6 +1816,9 @@ class Analyzer {
     std::vector<bool> resultOutstanding_;
     std::vector<bool> resultExitReported_;
     std::vector<SourceSpan> localSpans_;
+    std::vector<MoveState> moveStates_;
+    std::vector<LoanState> loanStates_;
+    bool transientBorrowsAllowed_{};
     FirFunctionId currentFunction_{};
 };
 

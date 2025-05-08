@@ -1,0 +1,12 @@
+struct User {
+    id i32
+}
+
+fn keep(left view User, right own User) i32 {
+    left.id + right.id
+}
+
+fn main() i32 {
+    let user = own User { id = 7 }
+    keep(view user, user)
+}

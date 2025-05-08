@@ -1,0 +1,17 @@
+struct User {
+    id i32
+}
+
+struct Box {
+    user own User
+}
+
+fn consume(user own User) void {
+    return
+}
+
+fn main() i32 {
+    let box = Box { user = own User { id = 7 } }
+    consume(box.user)
+    0
+}
