@@ -90,6 +90,13 @@ std::string cTypeTag(const Type &type) {
         return "enum_" + std::to_string(type.declaration);
     case TypeKind::Contract:
         return "contract_" + std::to_string(type.declaration);
+    case TypeKind::Function: {
+        std::string result = "function";
+        for (const auto &argument : type.arguments) {
+            result += '_' + cTypeTag(argument);
+        }
+        return result;
+    }
     case TypeKind::Parameter:
     case TypeKind::Invalid:
         break;
@@ -144,6 +151,8 @@ std::string cType(const Type &type) {
         return "fdn_enum_" + std::to_string(type.declaration);
     case TypeKind::Contract:
         return "fdn_contract_" + std::to_string(type.declaration);
+    case TypeKind::Function:
+        return "fdn_" + cTypeTag(type);
     case TypeKind::Invalid:
         break;
     }
@@ -183,6 +192,18 @@ std::string functionName(const FirProgram &program, FirFunctionId id) {
         name += "_g" + std::to_string(id);
     }
     return name;
+}
+
+std::string functionAdapterName(const FirProgram &program, FirFunctionId id) {
+    return functionName(program, id) + "_value_adapter";
+}
+
+std::string closureEnvironmentName(const FirProgram &program, FirFunctionId id) {
+    return functionName(program, id) + "_environment";
+}
+
+std::string closureDropName(const FirProgram &program, FirFunctionId id) {
+    return closureEnvironmentName(program, id) + "_drop";
 }
 
 std::string localName(const FirFunction &function, FirLocalId id) {
@@ -265,6 +286,14 @@ class Monomorphizer {
     Type instantiateType(const Type &source) {
         if (source.kind == TypeKind::Parameter || source.kind == TypeKind::Invalid) {
             std::terminate();
+        }
+        if (source.kind == TypeKind::Function) {
+            Type result{TypeKind::Function};
+            result.arguments.reserve(source.arguments.size());
+            for (const auto &argument : source.arguments) {
+                result.arguments.push_back(instantiateType(argument));
+            }
+            return result;
         }
         if (source.kind == TypeKind::Own || source.kind == TypeKind::View ||
             source.kind == TypeKind::Edit || source.kind == TypeKind::Array ||
@@ -372,7 +401,19 @@ class Monomorphizer {
         }
         for (auto &expression : function.expressions) {
             expression.type = instantiateType(substitute(expression.type, arguments));
-            if (auto *functionCall = std::get_if<FirCallExpression>(&expression.value);
+            if (auto *functionValue =
+                    std::get_if<FirFunctionValueExpression>(&expression.value)) {
+                std::vector<Type> valueArguments;
+                valueArguments.reserve(functionValue->typeArguments.size());
+                for (const auto &argument : functionValue->typeArguments) {
+                    valueArguments.push_back(substitute(argument, arguments));
+                }
+                functionValue->function =
+                    instantiateFunction(functionValue->function, valueArguments);
+                functionValue->typeArguments.clear();
+            } else if (auto *closure = std::get_if<FirClosureExpression>(&expression.value)) {
+                closure->function = instantiateFunction(closure->function, arguments);
+            } else if (auto *functionCall = std::get_if<FirCallExpression>(&expression.value);
                 functionCall != nullptr && functionCall->kind == FirCallKind::Function) {
                 std::vector<Type> callArguments;
                 callArguments.reserve(functionCall->typeArguments.size());
@@ -439,6 +480,10 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
         });
     }
     if (std::holds_alternative<FirMoveExpression>(expression.value)) {
+        return false;
+    }
+    if (std::holds_alternative<FirFunctionValueExpression>(expression.value) ||
+        std::holds_alternative<FirClosureExpression>(expression.value)) {
         return false;
     }
     if (const auto *unary = std::get_if<FirUnaryExpression>(&expression.value)) {
@@ -584,6 +629,7 @@ void markDivergingFunctions(FirProgram &program) {
 
 bool typeRequiresDrop(const FirProgram &program, const Type &type) {
     if (type.kind == TypeKind::String || type.kind == TypeKind::Own ||
+        type.kind == TypeKind::Function ||
         type.kind == TypeKind::Parameter) {
         return true;
     }
@@ -609,6 +655,9 @@ bool typeRequiresDrop(const FirProgram &program, const Type &type) {
 }
 
 std::string dropName(const Type &type) {
+    if (type.kind == TypeKind::Function) {
+        return "fdn_drop_" + cTypeTag(type);
+    }
     if (type.kind == TypeKind::Array) {
         return "fdn_drop_" + cTypeTag(type);
     }
@@ -619,6 +668,9 @@ std::string dropName(const Type &type) {
 }
 
 std::string moveName(const Type &type) {
+    if (type.kind == TypeKind::Function) {
+        return "fdn_move_" + cTypeTag(type);
+    }
     if (type.kind == TypeKind::Array) {
         return "fdn_move_" + cTypeTag(type);
     }
@@ -653,6 +705,16 @@ void emitDropValue(std::ostringstream &out, const FirProgram &program, const Typ
         out << indentation(depth) << "fdn_string_drop(&" << value << ");\n";
         return;
     }
+    if (type.kind == TypeKind::Function) {
+        out << indentation(depth) << "if (" << value << ".fdn_drop != NULL) {\n";
+        out << indentation(depth + 1) << value << ".fdn_drop(" << value
+            << ".fdn_env);\n";
+        out << indentation(depth) << "}\n";
+        out << indentation(depth) << value << ".fdn_env = NULL;\n";
+        out << indentation(depth) << value << ".fdn_call = NULL;\n";
+        out << indentation(depth) << value << ".fdn_drop = NULL;\n";
+        return;
+    }
     if (type.kind == TypeKind::Array || type.kind == TypeKind::Struct ||
         type.kind == TypeKind::Enum) {
         out << indentation(depth) << dropName(type) << "(&" << value << ");\n";
@@ -671,6 +733,13 @@ void emitMoveAssignment(std::ostringstream &out, const FirProgram &program, cons
         out << indentation(depth) << target << " = fdn_string_move(&" << source << ");\n";
         return;
     }
+    if (type.kind == TypeKind::Function) {
+        out << indentation(depth) << target << " = " << source << ";\n";
+        out << indentation(depth) << source << ".fdn_env = NULL;\n";
+        out << indentation(depth) << source << ".fdn_call = NULL;\n";
+        out << indentation(depth) << source << ".fdn_drop = NULL;\n";
+        return;
+    }
     if ((type.kind == TypeKind::Array || type.kind == TypeKind::Struct ||
          type.kind == TypeKind::Enum) &&
         typeRequiresDrop(program, type)) {
@@ -683,8 +752,8 @@ void emitMoveAssignment(std::ostringstream &out, const FirProgram &program, cons
 
 class FunctionEmitter {
   public:
-    FunctionEmitter(std::ostringstream &out, const FirProgram &program, const FirFunction &function)
-        : out_(out), program_(program), function_(function) {}
+    FunctionEmitter(std::ostringstream &out, const FirProgram &program, FirFunctionId functionId)
+        : out_(out), program_(program), function_(program.functions[functionId]) {}
 
     bool emitBlock(FirBlockId id, unsigned int depth) {
         for (const auto statement : function_.blocks[id].statements) {
@@ -720,10 +789,17 @@ class FunctionEmitter {
             return emitArray(*array, expression.type, depth);
         }
         if (const auto *local = std::get_if<FirLocalExpression>(&expression.value)) {
-            return {localName(function_, local->local), false};
+            return {localValue(local->local), false};
         }
         if (const auto *moved = std::get_if<FirMoveExpression>(&expression.value)) {
             return emitMove(moved->local, depth);
+        }
+        if (const auto *function =
+                std::get_if<FirFunctionValueExpression>(&expression.value)) {
+            return emitFunctionValue(*function, expression.type, depth);
+        }
+        if (const auto *closure = std::get_if<FirClosureExpression>(&expression.value)) {
+            return emitClosure(*closure, expression.type, depth);
         }
         if (const auto *unary = std::get_if<FirUnaryExpression>(&expression.value)) {
             const auto operand = emitExpression(unary->operand, depth);
@@ -780,8 +856,65 @@ class FunctionEmitter {
 
     EmittedExpression emitMove(FirLocalId local, unsigned int depth) {
         const auto &type = function_.locals[local].type;
-        const auto source = localName(function_, local);
+        const auto source = localValue(local);
         return emitMoveValue(type, source, depth);
+    }
+
+    EmittedExpression emitFunctionValue(const FirFunctionValueExpression &function,
+                                        const Type &type, unsigned int depth) {
+        const auto temporary = nextTemporary();
+        out_ << indentation(depth) << cType(type) << ' ' << temporary << ";\n";
+        out_ << indentation(depth) << temporary << ".fdn_env = NULL;\n";
+        out_ << indentation(depth) << temporary << ".fdn_call = &"
+             << functionAdapterName(program_, function.function) << ";\n";
+        out_ << indentation(depth) << temporary << ".fdn_drop = NULL;\n";
+        return {temporary, false};
+    }
+
+    EmittedExpression emitClosure(const FirClosureExpression &closure, const Type &type,
+                                  unsigned int depth) {
+        const auto temporary = nextTemporary();
+        out_ << indentation(depth) << cType(type) << ' ' << temporary << ";\n";
+        const auto &target = program_.functions[closure.function];
+        if (closure.captures.empty()) {
+            out_ << indentation(depth) << temporary << ".fdn_env = NULL;\n";
+            out_ << indentation(depth) << temporary << ".fdn_drop = NULL;\n";
+        } else {
+            const auto environment = nextTemporary();
+            out_ << indentation(depth) << "struct "
+                 << closureEnvironmentName(program_, closure.function) << " *" << environment
+                 << " = fdn_alloc(sizeof(*" << environment << "));\n";
+            std::size_t captureLocal{};
+            for (const auto &capture : closure.captures) {
+                while (captureLocal < target.locals.size() &&
+                       !target.locals[captureLocal].capture) {
+                    ++captureLocal;
+                }
+                if (captureLocal >= target.locals.size()) {
+                    std::terminate();
+                }
+                const auto field = "fdn_capture_" + std::to_string(captureLocal);
+                const auto source = localValue(capture.local);
+                if (capture.mode == FirCaptureMode::Own) {
+                    emitMoveAssignment(out_, program_, function_.locals[capture.local].type,
+                                       environment + "->" + field, source, depth);
+                } else if (capture.mode == FirCaptureMode::View ||
+                           capture.mode == FirCaptureMode::Edit) {
+                    out_ << indentation(depth) << environment << "->" << field << " = &"
+                         << source << ";\n";
+                } else {
+                    out_ << indentation(depth) << environment << "->" << field << " = "
+                         << source << ";\n";
+                }
+                ++captureLocal;
+            }
+            out_ << indentation(depth) << temporary << ".fdn_env = " << environment << ";\n";
+            out_ << indentation(depth) << temporary << ".fdn_drop = &"
+                 << closureDropName(program_, closure.function) << ";\n";
+        }
+        out_ << indentation(depth) << temporary << ".fdn_call = &"
+             << functionName(program_, closure.function) << ";\n";
+        return {temporary, false};
     }
 
     EmittedExpression emitMoveValue(const Type &type, const std::string &source,
@@ -1012,6 +1145,18 @@ class FunctionEmitter {
                 invocation << ", " << arguments[index];
             }
             invocation << ')';
+        } else if (call.kind == FirCallKind::FunctionValue) {
+            const auto callable = localValue(call.local);
+            const auto &localType = function_.locals[call.local].type;
+            const auto pointer = localType.kind == TypeKind::View ||
+                                 localType.kind == TypeKind::Edit;
+            const auto member = pointer ? "->" : ".";
+            invocation << callable << member << "fdn_call(" << callable << member
+                       << "fdn_env";
+            for (const auto &argument : arguments) {
+                invocation << ", " << argument;
+            }
+            invocation << ')';
         } else if (call.kind == FirCallKind::Print) {
             invocation << "fdn_println";
         } else if (call.kind == FirCallKind::Panic) {
@@ -1019,7 +1164,8 @@ class FunctionEmitter {
         } else {
             invocation << functionName(program_, call.function);
         }
-        if (call.kind != FirCallKind::Contract) {
+        if (call.kind != FirCallKind::Contract &&
+            call.kind != FirCallKind::FunctionValue) {
             invocation << '(';
             for (std::size_t index = 0; index < arguments.size(); ++index) {
                 if (index != 0) {
@@ -1143,12 +1289,12 @@ class FunctionEmitter {
                     const auto moved = emitMoveValue(function_.locals[local].type, payload,
                                                      depth + 1);
                     out_ << indentation(depth + 1) << cType(function_.locals[local].type) << ' '
-                         << localName(function_, local) << " = " << moved.value << ";\n";
+                         << localValue(local) << " = " << moved.value << ";\n";
                 } else {
                     out_ << indentation(depth + 1) << cType(function_.locals[local].type) << ' '
-                         << localName(function_, local) << " = " << payload << ";\n";
+                         << localValue(local) << " = " << payload << ";\n";
                 }
-                out_ << indentation(depth + 1) << "(void)" << localName(function_, local)
+                out_ << indentation(depth + 1) << "(void)" << localValue(local)
                      << ";\n";
             }
             const auto armValue = emitExpression(arm.expression, depth + 1);
@@ -1178,8 +1324,8 @@ class FunctionEmitter {
                 return true;
             }
             out_ << indentation(depth) << cType(function_.locals[variable->local].type) << ' '
-                 << localName(function_, variable->local) << " = " << initializer.value << ";\n";
-            out_ << indentation(depth) << "(void)" << localName(function_, variable->local)
+                 << localValue(variable->local) << " = " << initializer.value << ";\n";
+            out_ << indentation(depth) << "(void)" << localValue(variable->local)
                  << ";\n";
             return false;
         }
@@ -1192,12 +1338,12 @@ class FunctionEmitter {
             out_ << indentation(depth) << "if (" << initializer.value << ".fdn_tag == "
                  << enumTag(resultType.declaration, 1) << ") {\n";
             out_ << indentation(depth + 1) << cType(function_.locals[binding->errorLocal].type)
-                 << ' ' << localName(function_, binding->errorLocal) << " = " << initializer.value
+                 << ' ' << localValue(binding->errorLocal) << " = " << initializer.value
                  << ".fdn_data." << payloadName(1) << ";\n";
             static_cast<void>(emitBlock(binding->elseBlock, depth + 1));
             out_ << indentation(depth) << "}\n";
             out_ << indentation(depth) << cType(function_.locals[binding->local].type) << ' '
-                 << localName(function_, binding->local) << " = " << initializer.value
+                 << localValue(binding->local) << " = " << initializer.value
                  << ".fdn_data." << payloadName(0) << ";\n";
             return false;
         }
@@ -1304,8 +1450,21 @@ class FunctionEmitter {
     void emitDrops(const std::vector<FirLocalId> &drops, unsigned int depth) {
         for (const auto local : drops) {
             emitDropValue(out_, program_, function_.locals[local].type,
-                          localName(function_, local), depth);
+                          localValue(local), depth);
         }
+    }
+
+    std::string localValue(FirLocalId local) const {
+        const auto &declaration = function_.locals[local];
+        if (!declaration.capture) {
+            return localName(function_, local);
+        }
+        const auto field = "fdn_env_data->fdn_capture_" + std::to_string(local);
+        if (declaration.captureMode == FirCaptureMode::View ||
+            declaration.captureMode == FirCaptureMode::Edit) {
+            return "(*" + field + ')';
+        }
+        return field;
     }
 
     void emitAllocationCheck(unsigned int depth) {
@@ -1411,6 +1570,119 @@ void emitContractDefinition(std::ostringstream &out, const FirProgram &program,
     out << "    void *fdn_data;\n";
     out << "    const struct fdn_contract_" << id << "_vtable *fdn_vtable;\n";
     out << "};\n\n";
+}
+
+void collectFunctionType(const Type &type, std::unordered_map<std::string, Type> &functions) {
+    if (type.kind == TypeKind::Function) {
+        functions.emplace(typeKey(type), type);
+    }
+    for (const auto &argument : type.arguments) {
+        collectFunctionType(argument, functions);
+    }
+}
+
+std::vector<Type> collectFunctionTypes(const FirProgram &program) {
+    std::unordered_map<std::string, Type> found;
+    for (const auto &type : program.structs) {
+        for (const auto &field : type.fields) {
+            collectFunctionType(field.type, found);
+        }
+    }
+    for (const auto &type : program.enums) {
+        for (const auto &variant : type.variants) {
+            if (variant.payload.has_value()) {
+                collectFunctionType(*variant.payload, found);
+            }
+        }
+    }
+    for (const auto &function : program.functions) {
+        collectFunctionType(function.returnType, found);
+        for (const auto &local : function.locals) {
+            collectFunctionType(local.type, found);
+        }
+        for (const auto &expression : function.expressions) {
+            collectFunctionType(expression.type, found);
+        }
+    }
+    std::vector<Type> result;
+    result.reserve(found.size());
+    for (auto &[key, type] : found) {
+        static_cast<void>(key);
+        result.push_back(std::move(type));
+    }
+    std::sort(result.begin(), result.end(), [](const Type &left, const Type &right) {
+        return typeKey(left) < typeKey(right);
+    });
+    return result;
+}
+
+void emitFunctionTypeDefinition(std::ostringstream &out, const Type &type) {
+    if (type.arguments.empty()) {
+        std::terminate();
+    }
+    out << "struct " << cType(type) << " {\n";
+    out << "    void *fdn_env;\n";
+    out << "    " << cType(type.arguments.front()) << " (*fdn_call)(void *";
+    for (std::size_t index = 1; index < type.arguments.size(); ++index) {
+        out << ", " << cType(type.arguments[index]);
+    }
+    out << ");\n";
+    out << "    void (*fdn_drop)(void *);\n";
+    out << "};\n\n";
+}
+
+void emitClosureEnvironmentDefinition(std::ostringstream &out, const FirProgram &program,
+                                      FirFunctionId id) {
+    const auto &function = program.functions[id];
+    if (!function.closure ||
+        std::none_of(function.locals.begin(), function.locals.end(),
+                     [](const FirLocal &local) { return local.capture; })) {
+        return;
+    }
+    out << "struct " << closureEnvironmentName(program, id) << " {\n";
+    for (std::size_t local = 0; local < function.locals.size(); ++local) {
+        const auto &capture = function.locals[local];
+        if (!capture.capture) {
+            continue;
+        }
+        out << "    ";
+        if (capture.captureMode == FirCaptureMode::View) {
+            out << "const ";
+        }
+        out << cType(capture.type);
+        if (capture.captureMode == FirCaptureMode::View ||
+            capture.captureMode == FirCaptureMode::Edit) {
+            out << " *";
+        } else {
+            out << ' ';
+        }
+        out << "fdn_capture_" << local << ";\n";
+    }
+    out << "};\n\n";
+}
+
+void emitClosureDrop(std::ostringstream &out, const FirProgram &program, FirFunctionId id) {
+    const auto &function = program.functions[id];
+    if (!function.closure ||
+        std::none_of(function.locals.begin(), function.locals.end(),
+                     [](const FirLocal &local) { return local.capture; })) {
+        return;
+    }
+    const auto environment = closureEnvironmentName(program, id);
+    out << "static void " << closureDropName(program, id) << "(void *fdn_raw) {\n";
+    out << "    struct " << environment << " *fdn_env = (struct " << environment
+        << " *)fdn_raw;\n";
+    for (std::size_t local = function.locals.size(); local-- > 0;) {
+        const auto &capture = function.locals[local];
+        if (!capture.capture || capture.captureMode == FirCaptureMode::View ||
+            capture.captureMode == FirCaptureMode::Edit) {
+            continue;
+        }
+        emitDropValue(out, program, capture.type,
+                      "fdn_env->fdn_capture_" + std::to_string(local), 1);
+    }
+    out << "    fdn_dealloc(fdn_env);\n";
+    out << "}\n\n";
 }
 
 struct ContractUse {
@@ -1737,6 +2009,17 @@ void emitSignature(std::ostringstream &out, const FirProgram &program, FirFuncti
         return;
     }
 
+    if (function.closure) {
+        out << cType(function.returnType) << ' ' << functionName(program, id)
+            << "(void *fdn_env";
+        for (const auto parameter : function.parameters) {
+            out << ", " << cType(function.locals[parameter].type) << ' '
+                << localName(function, parameter);
+        }
+        out << ')';
+        return;
+    }
+
     if (function.diverges) {
         out << "_Noreturn void ";
     } else {
@@ -1755,6 +2038,50 @@ void emitSignature(std::ostringstream &out, const FirProgram &program, FirFuncti
         }
     }
     out << ')';
+}
+
+std::vector<FirFunctionId> collectFunctionValueUses(const FirProgram &program) {
+    std::vector<FirFunctionId> result;
+    for (const auto &function : program.functions) {
+        for (const auto &expression : function.expressions) {
+            const auto *value = std::get_if<FirFunctionValueExpression>(&expression.value);
+            if (value != nullptr) {
+                result.push_back(value->function);
+            }
+        }
+    }
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
+}
+
+void emitFunctionValueAdapter(std::ostringstream &out, const FirProgram &program,
+                              FirFunctionId id) {
+    const auto &function = program.functions[id];
+    out << "static " << cType(function.returnType) << ' '
+        << functionAdapterName(program, id) << "(void *fdn_env";
+    for (std::size_t index = 0; index < function.parameters.size(); ++index) {
+        const auto local = function.parameters[index];
+        out << ", " << cType(function.locals[local].type) << " fdn_arg_" << index;
+    }
+    out << ") {\n";
+    out << "    (void)fdn_env;\n";
+    out << "    ";
+    if (function.returnType != voidType && !function.diverges) {
+        out << "return ";
+    }
+    out << functionName(program, id) << '(';
+    for (std::size_t index = 0; index < function.parameters.size(); ++index) {
+        if (index != 0) {
+            out << ", ";
+        }
+        out << "fdn_arg_" << index;
+    }
+    out << ");\n";
+    if (function.diverges) {
+        out << "    fdn_panic_cstr(\"unreachable function value adapter\");\n";
+    }
+    out << "}\n\n";
 }
 
 void emitCAbiParameters(std::ostringstream &out, const FirFunction &function,
@@ -1862,6 +2189,8 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     std::vector<Type> arrays;
     std::vector<Type> slices;
     collectSequenceTypes(program, arrays, slices);
+    const auto functionTypes = collectFunctionTypes(program);
+    const auto functionValueUses = collectFunctionValueUses(program);
     std::ostringstream out;
     out << "#include <stdbool.h>\n";
     out << "#include <stdint.h>\n";
@@ -1883,9 +2212,15 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     for (const auto &type : arrays) {
         out << "typedef struct " << arrayName(type) << ' ' << arrayName(type) << ";\n";
     }
+    for (const auto &type : functionTypes) {
+        out << "typedef struct " << cType(type) << ' ' << cType(type) << ";\n";
+    }
     if (!program.structs.empty() || !program.enums.empty() || !program.contracts.empty() ||
-        !arrays.empty()) {
+        !arrays.empty() || !functionTypes.empty()) {
         out << '\n';
+    }
+    for (const auto &type : functionTypes) {
+        emitFunctionTypeDefinition(out, type);
     }
     for (const auto &type : slices) {
         emitSliceDefinition(out, type);
@@ -1957,8 +2292,15 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
         emitContractDefinition(out, program, index);
     }
 
+    for (std::size_t index = 0; index < program.functions.size(); ++index) {
+        emitClosureEnvironmentDefinition(out, program, index);
+    }
+
     emitOwnershipPrototypes(out, program, arrays);
     emitOwnershipDefinitions(out, program, arrays);
+    for (std::size_t index = 0; index < program.functions.size(); ++index) {
+        emitClosureDrop(out, program, index);
+    }
 
     for (const auto &function : program.functions) {
         if (function.cSymbol.has_value()) {
@@ -1980,6 +2322,9 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     for (const auto &use : contractUses) {
         emitContractAdapters(out, program, use);
     }
+    for (const auto function : functionValueUses) {
+        emitFunctionValueAdapter(out, program, function);
+    }
 
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
         const auto &function = program.functions[index];
@@ -2000,7 +2345,19 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
         out << "    fdn_frame_enter(&fdn_frame_current, " << cString(framePackage) << ", "
             << cString(traceFunctionName(function)) << ", " << cString(traceSource) << ", "
             << function.sourceSpan.line << ", " << function.sourceSpan.column << ");\n";
-        FunctionEmitter emitter(out, program, function);
+        if (function.closure) {
+            const auto hasCaptures = std::any_of(
+                function.locals.begin(), function.locals.end(),
+                [](const FirLocal &local) { return local.capture; });
+            if (hasCaptures) {
+                out << "    struct " << closureEnvironmentName(program, index)
+                    << " *fdn_env_data = (struct "
+                    << closureEnvironmentName(program, index) << " *)fdn_env;\n";
+            } else {
+                out << "    (void)fdn_env;\n";
+            }
+        }
+        FunctionEmitter emitter(out, program, index);
         for (const auto parameter : function.parameters) {
             out << "    (void)" << localName(function, parameter) << ";\n";
         }

@@ -11,6 +11,8 @@
         { "include": "#structDefinitions" },
         { "include": "#enumDefinitions" },
         { "include": "#functionDefinitions" },
+        { "include": "#functionTypes" },
+        { "include": "#captureClauses" },
         { "include": "#bindings" },
         { "include": "#ownership" },
         { "include": "#keywords" },
@@ -271,6 +273,55 @@
                 }
             ]
         },
+        "functionTypes": {
+            "patterns": [
+                {
+                    "name": "meta.type.function.foundation",
+                    "begin": "\\b(fn)\\s*(\\()",
+                    "beginCaptures": {
+                        "1": { "name": "keyword.declaration.function.foundation" },
+                        "2": { "name": "punctuation.section.parens.begin.foundation" }
+                    },
+                    "end": "\\)",
+                    "endCaptures": {
+                        "0": { "name": "punctuation.section.parens.end.foundation" }
+                    },
+                    "patterns": [
+                        {
+                            "name": "variable.parameter.foundation",
+                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+(?:(?:own|view|edit)\\s+)?(?:fn\\s*\\(|\\[[^,()\\n]+\\]|[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?)\\s*(?:,|\\)))"
+                        },
+                        { "include": "#functionTypes" },
+                        { "include": "#genericTypeApplications" },
+                        { "include": "#ownership" },
+                        { "include": "#types" },
+                        { "include": "#typeParameters" },
+                        { "include": "#nominalTypes" },
+                        { "include": "#punctuation" }
+                    ]
+                }
+            ]
+        },
+        "captureClauses": {
+            "patterns": [
+                {
+                    "name": "meta.function.captures.foundation",
+                    "begin": "\\b(capture)\\b",
+                    "beginCaptures": {
+                        "1": { "name": "keyword.control.capture.foundation" }
+                    },
+                    "end": "(?=\\{)",
+                    "patterns": [
+                        { "include": "#ownership" },
+                        {
+                            "name": "variable.other.capture.foundation",
+                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+                        },
+                        { "include": "#punctuation" }
+                    ]
+                }
+            ]
+        },
         "bindings": {
             "patterns": [
                 {
@@ -300,7 +351,7 @@
                 },
                 {
                     "name": "keyword.control.foundation",
-                    "match": "\\b(return|discard|if|else|while|match)\\b"
+                    "match": "\\b(return|discard|if|else|while|match|capture)\\b"
                 },
                 {
                     "name": "constant.language.boolean.foundation",

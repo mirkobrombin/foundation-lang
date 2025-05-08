@@ -1,0 +1,8 @@
+fn main() i32 {
+    let value = "owned"
+    let take = fn() String capture own value {
+        value
+    }
+    discard take
+    0
+}

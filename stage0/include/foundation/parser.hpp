@@ -61,6 +61,7 @@ class Parser {
     AstExpressionId finishMember(std::optional<AstExpressionId> base);
     AstExpressionId finishArray(const Token &start);
     AstExpressionId matchExpression(const Token &start);
+    AstExpressionId functionExpression(const Token &start);
     AstExpressionId addExpression(ExpressionValue value, SourceSpan span);
     AstStatementId addStatement(StatementValue value, SourceSpan span);
     AstBlockId skipNestedBlock(SourceSpan span);
@@ -75,6 +76,7 @@ class Parser {
     std::size_t expressionCalls_{};
     std::size_t expressionNodes_{};
     std::size_t typeDepth_{};
+    std::vector<std::string> activeTypeParameters_;
     bool expressionLimitReported_{};
     bool structLiteralsAllowed_{true};
     bool installBuiltins_{};

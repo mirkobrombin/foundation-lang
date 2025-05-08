@@ -1,0 +1,107 @@
+fn joiner(prefix String) fn(String) String {
+    fn(suffix String) String capture own prefix {
+        prefix + suffix
+    }
+}
+
+struct CallbackBox {
+    callback fn() String
+}
+
+enum CallbackChoice {
+    Missing
+    Ready(fn() String)
+}
+
+fn invokeRead(operation fn() String) String {
+    operation()
+}
+
+fn double(value i32) i32 {
+    value * 2
+}
+
+fn twice(operation fn(i32) i32) fn(i32) i32 {
+    fn(value i32) i32 capture own operation {
+        operation(operation(value))
+    }
+}
+
+fn prefer<T>(value T, ignored view T) T {
+    value
+}
+
+fn keep<T>(captured T) fn(T) T {
+    fn(value T) T capture own captured {
+        prefer(value, view captured)
+    }
+}
+
+enum Branch {
+    First
+    Second
+}
+
+fn main() i32 {
+    let factor = 2
+    let scale = fn(value i32) i32 capture factor {
+        value * factor
+    }
+    let base = 2
+    let read = fn(value i32) i32 capture view base {
+        value + base
+    }
+
+    var total = 0
+    let bump = fn(value i32) i32 capture edit total {
+        total = total + value
+        total
+    }
+
+    let label = "value"
+    let render = fn(suffix String) void capture own label {
+        print(label + suffix)
+    }
+    render("!")
+    let join = joiner("left")
+    let composed = twice(double)
+    let keepText = keep("captured")
+    let keptText = keepText("value")
+    let directLabel = "direct"
+    let directText = invokeRead(fn() String capture own directLabel {
+        directLabel + ""
+    })
+    let boxedLabel = "boxed"
+    let box = CallbackBox {
+        callback = fn() String capture own boxedLabel {
+            boxedLabel + ""
+        }
+    }
+    let movedBox = box
+    discard movedBox
+    let selectedLabel = "selected"
+    let choice = CallbackChoice.Ready(fn() String capture own selectedLabel {
+        selectedLabel + ""
+    })
+    let selectedText = match choice {
+        Missing: "missing"
+        Ready(callback): callback()
+    }
+    var branchTotal = 0
+    let selected = match Branch.First {
+        First: fn(value i32) i32 capture edit branchTotal {
+            branchTotal = branchTotal + value
+            branchTotal
+        }
+        Second: fn(value i32) i32 capture edit branchTotal {
+            branchTotal = branchTotal - value
+            branchTotal
+        }
+    }
+    if join("right") == "leftright" && keptText == "value" && directText == "direct" &&
+        selectedText == "selected" {
+        return scale(20) + bump(2) + read(0) + composed(21) + selected(2) - 130
+    } else {
+        return 1
+    }
+}

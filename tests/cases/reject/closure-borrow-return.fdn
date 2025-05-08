@@ -1,0 +1,10 @@
+fn make(value i32) fn() i32 {
+    fn() i32 capture view value {
+        value
+    }
+}
+
+fn main() i32 {
+    discard make(1)
+    0
+}

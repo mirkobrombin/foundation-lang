@@ -1,5 +1,7 @@
 // This program tracks the complete executable language subset.
 
+package tour
+
 // A bodyless C ABI declaration imports its explicit C symbol. It is unused here so the tour
 // remains runnable without a native input.
 extern c fn nativeProbe() i32 as foundation_native_probe
@@ -60,6 +62,10 @@ fn identity<T>(value T) T {
     value
 }
 
+fn apply<T>(value T, operation view fn(T) T) T {
+    operation(value)
+}
+
 fn typeMarker<T>() void {
     return
 }
@@ -101,6 +107,29 @@ fn main() i32 {
     let first i32 = 1
     let count = 4
     var current = first
+    let typedIdentity fn(i32) i32 = identity
+    let copied = 2
+    let copyCallback = fn(value i32) i32 capture copied {
+        value + copied
+    }
+    let base = 3
+    let viewCallback = fn(value i32) i32 capture view base {
+        value + base
+    }
+    var total = 4
+    let editCallback = fn(value i32) i32 capture edit total {
+        total = total + value
+        total
+    }
+    let label = "owned"
+    let ownCallback = fn() i32 capture own label {
+        if label == "owned" {
+            return 1
+        }
+        0
+    }
+    let callbackValue = apply(1, view typedIdentity) + copyCallback(1) +
+        viewCallback(1) + editCallback(1) + ownCallback()
     var counter = own TourCounter { value = 0 }
     incrementCounter(edit counter)
     let counterValue = readCounter(view counter)
@@ -142,8 +171,8 @@ fn main() i32 {
     discard movedCounter
     if inRange(current, 5, 5) || false {
         return match state {
-            Running: resultOr(verified, 0) + counterValue + directCounterValue + sequenceValue - 6
-            Done(done): resultOr(verified, done.code) + counterValue + directCounterValue + sequenceValue - 7
+            Running: resultOr(verified, 0) + counterValue + directCounterValue + sequenceValue + callbackValue - 20
+            Done(done): resultOr(verified, done.code) + counterValue + directCounterValue + sequenceValue + callbackValue - 21
         }
     } else {
         discard verified

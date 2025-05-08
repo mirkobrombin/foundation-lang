@@ -15,6 +15,7 @@ namespace foundation {
 using AstExpressionId = std::size_t;
 using AstStatementId = std::size_t;
 using AstBlockId = std::size_t;
+using AstFunctionId = std::size_t;
 
 struct TypeSyntax {
     std::string name;
@@ -29,6 +30,13 @@ enum class UnaryOperator {
 };
 
 enum class OwnershipOperator {
+    Own,
+    View,
+    Edit,
+};
+
+enum class CaptureMode {
+    Copy,
     Own,
     View,
     Edit,
@@ -135,11 +143,15 @@ struct MatchExpression {
     std::vector<MatchArm> arms;
 };
 
+struct FunctionExpression {
+    AstFunctionId function{};
+};
+
 using ExpressionValue =
     std::variant<IntegerExpression, BooleanExpression, StringExpression, ArrayExpression,
                  NameExpression, UnaryExpression, OwnershipExpression, BinaryExpression,
                  CallExpression, StructExpression, MemberExpression, IndexExpression,
-                 MatchExpression>;
+                 MatchExpression, FunctionExpression>;
 
 struct Expression {
     ExpressionValue value;
@@ -203,6 +215,12 @@ struct Parameter {
     SourceSpan span;
 };
 
+struct Capture {
+    CaptureMode mode{CaptureMode::Copy};
+    std::string name;
+    SourceSpan span;
+};
+
 struct Function {
     std::string name;
     std::vector<std::string> typeParameters;
@@ -217,6 +235,8 @@ struct Function {
     std::string ownerType;
     std::optional<std::string> cSymbol;
     bool hasBody{true};
+    bool closure{};
+    std::vector<Capture> captures;
 };
 
 struct StructField {

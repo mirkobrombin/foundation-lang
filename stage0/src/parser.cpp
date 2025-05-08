@@ -173,6 +173,21 @@ TypeSyntax Parser::typeSyntax(const char *code, const char *message) {
         --typeDepth_;
         return type;
     }
+    if (match(TokenKind::Fn)) {
+        const auto start = previous();
+        TypeSyntax type{"[function]", {}, start.span};
+        expect(TokenKind::LeftParen, "FDN1120", "expected ( in function type");
+        if (!check(TokenKind::RightParen)) {
+            do {
+                type.arguments.push_back(
+                    typeSyntax("FDN1121", "expected function parameter type"));
+            } while (match(TokenKind::Comma));
+        }
+        expect(TokenKind::RightParen, "FDN1122", "expected ) in function type");
+        type.arguments.insert(type.arguments.begin(),
+                              typeSyntax("FDN1123", "expected function return type"));
+        return type;
+    }
     if (match(TokenKind::LeftBracket)) {
         const auto start = previous();
         if (match(TokenKind::Minus)) {
@@ -356,14 +371,17 @@ Function Parser::function(bool external) {
         hasBody = check(TokenKind::LeftBrace);
     }
     if (hasBody) {
+        auto previousTypeParameters = std::move(activeTypeParameters_);
+        activeTypeParameters_ = typeParameters;
         body = block(tailResult);
+        activeTypeParameters_ = std::move(previousTypeParameters);
     } else {
         program_.blocks.push_back({{}, start.span});
         body = program_.blocks.size() - 1;
     }
     Function result{name.text, std::move(typeParameters), std::move(parameters),
                     std::move(returnType), body, isExported(name.text), start.span, {}, {},
-                    std::nullopt, {}, std::nullopt, true};
+                    std::nullopt, {}, std::nullopt, true, false, {}};
     result.cSymbol = std::move(cSymbol);
     result.hasBody = hasBody;
     return result;
@@ -398,9 +416,13 @@ Function Parser::method(const std::string &owner,
     expect(TokenKind::RightParen, "FDN1104", "expected ) after method parameters");
     auto returnType = typeSyntax("FDN1105", "expected method return type");
     const auto tailResult = returnType.name != "void" || !returnType.arguments.empty();
+    auto previousTypeParameters = std::move(activeTypeParameters_);
+    activeTypeParameters_ = typeParameters;
     const auto body = block(tailResult);
+    activeTypeParameters_ = std::move(previousTypeParameters);
     return {name.text, typeParameters, std::move(parameters), std::move(returnType), body,
-            isExported(name.text), start.span, {}, {}, access, owner, std::nullopt, true};
+            isExported(name.text), start.span, {}, {}, access, owner, std::nullopt, true, false,
+            {}};
 }
 
 ContractMethod Parser::contractMethod() {
@@ -730,6 +752,8 @@ AstExpressionId Parser::primary() {
         result = finishArray(previous());
     } else if (match(TokenKind::Match)) {
         result = matchExpression(previous());
+    } else if (match(TokenKind::Fn)) {
+        result = functionExpression(previous());
     } else if (match(TokenKind::Dot)) {
         result = finishMember(std::nullopt);
     } else if (match(TokenKind::Identifier)) {
@@ -876,6 +900,53 @@ AstExpressionId Parser::matchExpression(const Token &start) {
     }
     expect(TokenKind::RightBrace, "FDN1060", "expected } after match expression");
     return addExpression(MatchExpression{value, std::move(arms)}, start.span);
+}
+
+AstExpressionId Parser::functionExpression(const Token &start) {
+    expect(TokenKind::LeftParen, "FDN1124", "expected ( after fn");
+    std::vector<Parameter> parameters;
+    if (!check(TokenKind::RightParen)) {
+        do {
+            parameters.push_back(parameter());
+        } while (match(TokenKind::Comma));
+    }
+    expect(TokenKind::RightParen, "FDN1125", "expected ) after closure parameters");
+    auto returnType = typeSyntax("FDN1126", "expected closure return type");
+
+    std::vector<Capture> captures;
+    if (match(TokenKind::Capture)) {
+        do {
+            auto mode = CaptureMode::Copy;
+            SourceSpan span = current().span;
+            if (match(TokenKind::Own)) {
+                mode = CaptureMode::Own;
+                span = previous().span;
+            } else if (match(TokenKind::View)) {
+                mode = CaptureMode::View;
+                span = previous().span;
+            } else if (match(TokenKind::Edit)) {
+                mode = CaptureMode::Edit;
+                span = previous().span;
+            }
+            const auto name = expect(TokenKind::Identifier, "FDN1127",
+                                     "expected captured binding");
+            captures.push_back({mode, name.text, span});
+        } while (match(TokenKind::Comma));
+    }
+
+    const auto tailResult = returnType.name != "void" || !returnType.arguments.empty();
+    const auto body = block(tailResult);
+    Function function;
+    function.name = "$closure_" + std::to_string(program_.functions.size());
+    function.typeParameters = activeTypeParameters_;
+    function.parameters = std::move(parameters);
+    function.returnType = std::move(returnType);
+    function.body = body;
+    function.span = start.span;
+    function.closure = true;
+    function.captures = std::move(captures);
+    program_.functions.push_back(std::move(function));
+    return addExpression(FunctionExpression{program_.functions.size() - 1}, start.span);
 }
 
 AstExpressionId Parser::addExpression(ExpressionValue value, SourceSpan span) {

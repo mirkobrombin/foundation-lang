@@ -24,6 +24,13 @@ using FirEnumId = std::size_t;
 using FirVariantId = std::size_t;
 using FirContractId = std::size_t;
 
+enum class FirCaptureMode {
+    Copy,
+    Own,
+    View,
+    Edit,
+};
+
 enum class FirUnaryOperator {
     Negate,
     Not,
@@ -59,6 +66,7 @@ enum class FirBinaryOperator {
 
 enum class FirCallKind {
     Function,
+    FunctionValue,
     Contract,
     Print,
     Panic,
@@ -88,6 +96,21 @@ struct FirMoveExpression {
     FirLocalId local{};
 };
 
+struct FirFunctionValueExpression {
+    FirFunctionId function{};
+    std::vector<Type> typeArguments;
+};
+
+struct FirClosureCapture {
+    FirLocalId local{};
+    FirCaptureMode mode{FirCaptureMode::Copy};
+};
+
+struct FirClosureExpression {
+    FirFunctionId function{};
+    std::vector<FirClosureCapture> captures;
+};
+
 struct FirUnaryExpression {
     FirUnaryOperator operation{FirUnaryOperator::Negate};
     FirExpressionId operand{};
@@ -112,6 +135,7 @@ struct FirCallExpression {
     std::vector<bool> argumentDrops;
     FirContractId contract{};
     std::size_t method{};
+    FirLocalId local{};
 };
 
 struct FirContractExpression {
@@ -163,7 +187,8 @@ struct FirMatchExpression {
 using FirExpressionValue =
     std::variant<FirIntegerExpression, FirBooleanExpression, FirStringExpression,
                  FirArrayExpression, FirLocalExpression, FirMoveExpression, FirUnaryExpression,
-                 FirOwnershipExpression, FirBinaryExpression, FirCallExpression,
+                 FirFunctionValueExpression, FirClosureExpression, FirOwnershipExpression,
+                 FirBinaryExpression, FirCallExpression,
                  FirContractExpression, FirStructExpression, FirFieldExpression,
                  FirIndexExpression, FirEnumExpression, FirMatchExpression>;
 
@@ -233,6 +258,9 @@ struct FirLocal {
     std::string name;
     Type type{invalidType};
     bool mutableBinding{};
+    bool capture{};
+    FirCaptureMode captureMode{FirCaptureMode::Copy};
+    bool borrowedClosure{};
 };
 
 struct FirFunction {
@@ -254,6 +282,7 @@ struct FirFunction {
     bool diverges{};
     std::optional<std::string> cSymbol;
     bool hasBody{true};
+    bool closure{};
 };
 
 struct FirStructField {

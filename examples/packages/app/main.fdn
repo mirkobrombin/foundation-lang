@@ -3,8 +3,16 @@ package tour.app
 import tour.math
 import tour.text as text
 
+fn offset(value i32) i32 {
+    value + 100
+}
+
 fn main() i32 {
     print(text.Message())
+    let add fn(i32, i32) i32 = math.Add
+    let offset fn(i32) i32 = fn(value i32) i32 {
+        value
+    }
     let pair math.Pair = math.MakePair(20, 22)
     let boxed math.Box<i32> = math.BoxOf<i32>(pair.Left)
     let direct math.Box<i32> = math.Box<i32> { Value = boxed.Value }
@@ -18,5 +26,5 @@ fn main() i32 {
         Empty: 0
         Value(value): value
     }
-    math.Add(math.Identity<i32>(unwrapped), pair.Right) - 42 + code
+    add(math.Identity<i32>(unwrapped), pair.Right) - 42 + code + offset(0)
 }

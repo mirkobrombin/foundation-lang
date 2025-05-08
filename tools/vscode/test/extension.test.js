@@ -67,6 +67,7 @@ test("grammar and completions track compiler keywords", () => {
         "else",
         "while",
         "match",
+        "capture",
         "own",
         "view",
         "edit",
@@ -93,11 +94,41 @@ test("grammar and completions track compiler keywords", () => {
     for (const sequence of ["[N]T", "view [T]", "edit [T]"]) {
         assert.ok(completionLabels.has(sequence));
     }
+    assert.ok(completionLabels.has("fn(...) R"));
     assert.match(grammar, /\\\\\[0nrt/);
     assert.equal(
         parsedGrammar.repository.punctuation.patterns[1].match,
         "[(){}\\[\\]]"
     );
+});
+
+test("tracks function values and explicit closure captures", () => {
+    const grammar = readJson("syntaxes/foundation.tmLanguage.json");
+    const snippets = readJson("snippets/foundation.json");
+    const completions = collectCompletions(`
+        struct Callback { call fn(i32) i32 }
+        fn apply(value i32, operation view fn(i32) i32) i32 {
+            operation(value)
+        }
+        fn main() i32 {
+            let factor = 2
+            let scale fn(i32) i32 = fn(value i32) i32 capture factor {
+                value * factor
+            }
+            scale(21) - 42
+        }
+    `);
+    const byLabel = new Map(completions.map((entry) => [entry.label, entry]));
+
+    assert.equal(byLabel.get("capture").kind, "Keyword");
+    assert.equal(byLabel.get("Callback").insertText, "Callback { call = ${1:call} }");
+    assert.match(grammar.repository.functionTypes.patterns[0].begin, /fn/);
+    assert.match(grammar.repository.captureClauses.patterns[0].begin, /capture/);
+    assert.match(grammar.repository.captureClauses.patterns[0].beginCaptures[1].name, /keyword/);
+    assert.match(grammar.repository.captureClauses.patterns[0].patterns[1].name, /capture/);
+    assert.equal(snippets["Function value type"].prefix, "fntype");
+    assert.equal(snippets.Closure.prefix, "closure");
+    assert.equal(snippets["Owning closure"].prefix, "closureown");
 });
 
 test("collects enums and dot-qualified variants", () => {

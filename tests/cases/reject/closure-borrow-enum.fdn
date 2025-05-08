@@ -1,0 +1,13 @@
+enum Holder {
+    Empty
+    Callback(fn() i32)
+}
+
+fn main() i32 {
+    let value = 1
+    let holder = Holder.Callback(fn() i32 capture view value {
+        value
+    })
+    discard holder
+    0
+}

@@ -1,0 +1,10 @@
+fn identity(value i32) i32 {
+    value
+}
+
+fn main() i32 {
+    if identity == identity {
+        return 0
+    }
+    1
+}

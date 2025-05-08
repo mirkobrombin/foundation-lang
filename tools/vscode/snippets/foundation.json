@@ -147,6 +147,29 @@
         ],
         "description": "Declare a generic function"
     },
+    "Function value type": {
+        "prefix": "fntype",
+        "body": "fn(${1:i32}) ${2:i32}",
+        "description": "Declare a function value type"
+    },
+    "Closure": {
+        "prefix": "closure",
+        "body": [
+            "fn(${1:value} ${2:i32}) ${3:i32} capture ${4:captured} {",
+            "    ${5:value}",
+            "}"
+        ],
+        "description": "Create a closure with explicit captures"
+    },
+    "Owning closure": {
+        "prefix": "closureown",
+        "body": [
+            "fn(${1:value} ${2:i32}) ${3:i32} capture own ${4:captured} {",
+            "    ${5:value}",
+            "}"
+        ],
+        "description": "Create a closure that owns a captured value"
+    },
     "If statement": {
         "prefix": "if",
         "body": [

@@ -1,0 +1,9 @@
+fn main() i32 {
+    var value = 1
+    let update = fn() i32 capture edit value {
+        value = value + 1
+        value
+    }
+    value
+    update()
+}

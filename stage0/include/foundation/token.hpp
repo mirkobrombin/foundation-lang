@@ -29,6 +29,7 @@ enum class TokenKind {
     Else,
     While,
     Match,
+    Capture,
     Own,
     View,
     Edit,
