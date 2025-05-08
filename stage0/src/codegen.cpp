@@ -2,7 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
-#include <exception>
+#include <cstdio>
+#include <cstdlib>
 #include <iomanip>
 #include <optional>
 #include <sstream>
@@ -15,6 +16,13 @@
 namespace foundation {
 
 namespace {
+
+[[noreturn]] void internalError(const char *message) {
+    std::fputs("foundation compiler internal error: ", stderr);
+    std::fputs(message, stderr);
+    std::fputc('\n', stderr);
+    std::abort();
+}
 
 std::string cString(std::string_view value) {
     std::ostringstream out;
@@ -285,7 +293,7 @@ class Monomorphizer {
   private:
     Type instantiateType(const Type &source) {
         if (source.kind == TypeKind::Parameter || source.kind == TypeKind::Invalid) {
-            std::terminate();
+            internalError("unresolved type reached monomorphization");
         }
         if (source.kind == TypeKind::Function) {
             Type result{TypeKind::Function};
@@ -299,7 +307,7 @@ class Monomorphizer {
             source.kind == TypeKind::Edit || source.kind == TypeKind::Array ||
             source.kind == TypeKind::Slice) {
             if (source.arguments.size() != 1) {
-                std::terminate();
+                internalError("invalid wrapper type reached monomorphization");
             }
             return Type{source.kind, source.declaration,
                         {instantiateType(source.arguments.front())}};
@@ -387,7 +395,7 @@ class Monomorphizer {
             return found->second;
         }
         if (functions_.size() >= 4096) {
-            std::terminate();
+            internalError("monomorphization function limit exceeded");
         }
 
         const auto id = result_.functions.size();
@@ -891,7 +899,7 @@ class FunctionEmitter {
                     ++captureLocal;
                 }
                 if (captureLocal >= target.locals.size()) {
-                    std::terminate();
+                    internalError("closure capture has no environment field");
                 }
                 const auto field = "fdn_capture_" + std::to_string(captureLocal);
                 const auto source = localValue(capture.local);
@@ -1137,7 +1145,7 @@ class FunctionEmitter {
         std::ostringstream invocation;
         if (call.kind == FirCallKind::Contract) {
             if (arguments.empty()) {
-                std::terminate();
+                internalError("contract call has no receiver");
             }
             invocation << arguments.front() << ".fdn_vtable->fdn_method_" << call.method << '(';
             invocation << arguments.front() << ".fdn_data";
@@ -1618,7 +1626,7 @@ std::vector<Type> collectFunctionTypes(const FirProgram &program) {
 
 void emitFunctionTypeDefinition(std::ostringstream &out, const Type &type) {
     if (type.arguments.empty()) {
-        std::terminate();
+        internalError("function type has no result");
     }
     out << "struct " << cType(type) << " {\n";
     out << "    void *fdn_env;\n";
@@ -1715,7 +1723,7 @@ void emitContractAdapters(std::ostringstream &out, const FirProgram &program,
                           const ContractUse &use) {
     const auto &contract = program.contracts[use.contract.declaration];
     if (use.methods.size() != contract.methods.size()) {
-        std::terminate();
+        internalError("contract adapter method count mismatch");
     }
     const auto table = vtableName(use.contract, use.concrete);
     for (std::size_t method = 0; method < contract.methods.size(); ++method) {
@@ -1723,7 +1731,7 @@ void emitContractAdapters(std::ostringstream &out, const FirProgram &program,
         const auto implementation = use.methods[method];
         if (implementation >= program.functions.size() ||
             program.functions[implementation].parameters.empty()) {
-            std::terminate();
+            internalError("contract adapter implementation is invalid");
         }
         const auto &function = program.functions[implementation];
         const auto adapter = table + "_m" + std::to_string(method);
@@ -2285,7 +2293,7 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
         }
     }
     if (ready.size() != typeCount) {
-        std::terminate();
+        internalError("recursive inline type reached C emission");
     }
 
     for (std::size_t index = 0; index < program.contracts.size(); ++index) {

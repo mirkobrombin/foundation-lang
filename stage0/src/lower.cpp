@@ -404,8 +404,10 @@ class Lowerer {
             const auto &target = required(model_.closureTargets[id]);
             std::vector<FirClosureCapture> captures;
             captures.reserve(target.captures.size());
-            for (std::size_t index = 0; index < target.captures.size(); ++index) {
-                captures.push_back({target.captures[index], lowerCapture(target.modes[index])});
+            for (std::size_t captureIndex = 0; captureIndex < target.captures.size();
+                 ++captureIndex) {
+                captures.push_back({target.captures[captureIndex],
+                                    lowerCapture(target.modes[captureIndex])});
             }
             value = FirClosureExpression{target.function, std::move(captures)};
         } else {
