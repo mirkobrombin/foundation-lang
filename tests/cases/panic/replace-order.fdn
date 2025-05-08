@@ -1,0 +1,16 @@
+package example.replace_order
+
+fn placeIndex() i32 {
+    panic("place evaluated")
+}
+
+fn replacement() String {
+    panic("replacement failed")
+}
+
+fn main() i32 {
+    var values = ["old"]
+    let previous = replace values[placeIndex()] with replacement()
+    discard previous
+    0
+}

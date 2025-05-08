@@ -223,6 +223,30 @@
         "body": "discard ${1:value}",
         "description": "Explicitly consume an unused value"
     },
+    "Replace place": {
+        "prefix": "replace",
+        "body": "replace ${1:place} with ${2:value}",
+        "description": "Replace a mutable place and return its previous value"
+    },
+    "Struct destructuring": {
+        "prefix": "destructure",
+        "body": "let ${1:Type} { ${2:field}${3: as ${4:name}} } = ${5:value}",
+        "description": "Consume every field of a struct value"
+    },
+    "Deterministic drop": {
+        "prefix": "drop",
+        "body": [
+            "fn drop(edit) void {",
+            "    ${1}",
+            "}"
+        ],
+        "description": "Define compiler-managed deterministic cleanup"
+    },
+    "Standard list": {
+        "prefix": "list",
+        "body": "var ${1:values} = collections.NewList<${2:Type}>()",
+        "description": "Create a standard dynamic list"
+    },
     "Owned value": {
         "prefix": "own",
         "body": "own ${1:value}",

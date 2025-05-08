@@ -6,6 +6,7 @@
 #include "foundation/project.hpp"
 #include "foundation/sema.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <iostream>
 #include <optional>
@@ -248,11 +249,11 @@ struct User { id i32 }
 struct Holder { user own User }
 
 fn read(user view User) i32 { user.id }
-fn replace(user edit User, id i32) void { user.id = id }
+fn updateUser(user edit User, id i32) void { user.id = id }
 
 fn main() i32 {
     var user = own User { id = 3 }
-    replace(edit user, 4)
+    updateUser(edit user, 4)
     let value = read(view user)
     let holder = Holder { user = user }
     let moved = holder
@@ -284,6 +285,80 @@ fn main() i32 {
            "view parameters lower to const pointers");
     expect(firstC.find("FOUNDATION_VERIFY_ALLOCATIONS") != std::string::npos,
            "main can verify that deterministic cleanup reaches zero live allocations");
+}
+
+void ownedPlacesLowerToDeterministicC() {
+    constexpr std::string_view source = R"(
+struct Item {
+    value String
+}
+
+struct Box {
+    item own Item
+
+    fn drop(edit) void {
+        let previous = replace self.item with own Item { value = "released" }
+        discard previous
+    }
+}
+
+struct Packet {
+    item own Item
+}
+
+fn unpack(packet own Packet) String {
+    let Packet { item } = packet
+    let Item { value } = item
+    value
+}
+
+fn main() i32 {
+    var box = own Box { item = own Item { value = "first" } }
+    let previous = replace box.item with own Item { value = "next" }
+    discard previous
+    discard box
+    print(unpack(own Packet { item = own Item { value = "payload" } }))
+    0
+}
+)";
+    auto first = check(source);
+    auto second = check(source);
+    expect(!first.diagnostics.hasErrors(), "owned place program has no diagnostics");
+    expect(first.fir.has_value(), "owned place program lowers to FIR");
+    expect(second.fir.has_value(), "repeated owned place program lowers to FIR");
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        return;
+    }
+
+    auto hasReplace = false;
+    auto hasDestructure = false;
+    for (const auto &function : first.fir->functions) {
+        for (const auto &expression : function.expressions) {
+            hasReplace = hasReplace ||
+                         std::holds_alternative<foundation::FirReplaceExpression>(
+                             expression.value);
+        }
+        for (const auto &statement : function.statements) {
+            hasDestructure = hasDestructure ||
+                             std::holds_alternative<
+                                 foundation::FirStructDestructureStatement>(statement.value);
+        }
+    }
+    expect(hasReplace, "replace survives in typed FIR");
+    expect(hasDestructure, "struct destructuring survives in typed FIR");
+    expect(std::any_of(first.fir->structs.begin(), first.fir->structs.end(),
+                       [](const foundation::FirStruct &type) {
+                           return type.dropFunction.has_value();
+                       }),
+           "custom deterministic drop is recorded on the FIR struct");
+
+    const auto firstC = foundation::emitC(*first.fir);
+    const auto secondC = foundation::emitC(*second.fir);
+    expect(firstC == secondC, "owned place C emission is deterministic");
+    expect(firstC.find("fdn_dealloc") != std::string::npos,
+           "owner destructuring releases the outer allocation");
+    expect(firstC.find("fdn_drop_active") != std::string::npos,
+           "custom drop values carry a moved-state guard");
 }
 
 void sequenceValuesLowerToDeterministicC() {
@@ -1061,6 +1136,34 @@ void projectDiagnosticsRetainTheirSource() {
     expect(false, "multiple-main project reports FDN3010");
 }
 
+void standardLibrarySourceIsLoadedOnce() {
+    const auto standardRoot =
+        std::filesystem::path(FOUNDATION_TEST_SOURCE_DIR) / "std";
+    std::size_t sourceCount{};
+    for (const auto &entry : std::filesystem::recursive_directory_iterator(standardRoot)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".fdn") {
+            ++sourceCount;
+        }
+    }
+
+    const auto source = std::filesystem::relative(
+        standardRoot / "collections/list.fdn", std::filesystem::current_path());
+    foundation::Diagnostics diagnostics;
+    const auto project = foundation::loadProject(source, diagnostics);
+    expect(project.has_value(), "relative standard library source is loaded");
+    if (!project.has_value()) {
+        return;
+    }
+    expect(project->sources.size() == sourceCount,
+           "relative standard library source is not loaded twice");
+    expect(!hasCode(diagnostics, "FDN2020"),
+           "relative standard library source has no duplicate types");
+    expect(!hasCode(diagnostics, "FDN2095"),
+           "relative standard library source has no duplicate methods");
+    expect(!hasCode(diagnostics, "FDN2001"),
+           "relative standard library source has no duplicate functions");
+}
+
 } // namespace
 
 int main() {
@@ -1070,6 +1173,7 @@ int main() {
     enumMatchesLowerToDeterministicC();
     genericValuesMonomorphizeDeterministically();
     ownershipLowersToDeterministicC();
+    ownedPlacesLowerToDeterministicC();
     sequenceValuesLowerToDeterministicC();
     methodsAndContractsLowerToDeterministicC();
     lightweightSyntaxCarriesVisibilityAndContext();
@@ -1082,6 +1186,7 @@ int main() {
     cAbiFunctionsLowerToDeterministicBoundaries();
     closuresLowerToDeterministicFunctionValues();
     projectDiagnosticsRetainTheirSource();
+    standardLibrarySourceIsLoadedOnce();
 
     if (failures != 0) {
         std::cerr << failures << " test assertions failed\n";

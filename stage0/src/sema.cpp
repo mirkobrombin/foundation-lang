@@ -146,6 +146,7 @@ class Analyzer {
         model_.expressionMoves.resize(program.expressions.size());
         model_.statementLocals.resize(program.statements.size());
         model_.statementElseLocals.resize(program.statements.size());
+        model_.statementStructTargets.resize(program.statements.size());
         model_.statementDrops.resize(program.statements.size());
         model_.blockDrops.resize(program.blocks.size());
         model_.structs.resize(program.structs.size());
@@ -234,6 +235,11 @@ class Analyzer {
             for (const auto &method : declaration.methods) {
                 if (!methods.emplace(method.name).second) {
                     diagnostics_.error("FDN2091", "duplicate contract method " + method.name,
+                                       method.span);
+                }
+                if (method.name == "drop") {
+                    diagnostics_.error("FDN2138",
+                                       "drop is reserved for deterministic cleanup",
                                        method.span);
                 }
                 SemanticContractMethod target;
@@ -634,6 +640,14 @@ class Analyzer {
                         diagnostics_.error("FDN2095", "duplicate method " + methodName,
                                            function.span);
                     }
+                    if (methodName == "drop" &&
+                        (function.receiver != ReceiverKind::Edit ||
+                         semantic.parameterTypes.size() != 1 ||
+                         semantic.returnType != voidType)) {
+                        diagnostics_.error(
+                            "FDN2137",
+                            "drop must have signature fn drop(edit) void", function.span);
+                    }
                 }
             } else if (!functions_.emplace(function.name, index).second) {
                 diagnostics_.error("FDN2001", "duplicate function " + function.name,
@@ -851,6 +865,104 @@ class Analyzer {
                 model_.functions[currentFunction_].locals[local].borrowedClosure =
                     model_.expressionBorrowedClosures[variable->initializer];
             }
+            return false;
+        }
+        if (const auto *destructure =
+                std::get_if<StructDestructureStatement>(&statement.value)) {
+            const auto initializer = analyzeExpression(destructure->initializer);
+            auto source = initializer;
+            auto owned = false;
+            if (source.kind == TypeKind::Own && source.arguments.size() == 1) {
+                source = source.arguments.front();
+                owned = true;
+            }
+
+            const auto found = structs_.find(destructure->type.name);
+            if (found == structs_.end()) {
+                diagnostics_.error("FDN2024", "unknown struct " + destructure->type.name,
+                                   destructure->type.span);
+            }
+            if (source.kind != TypeKind::Struct ||
+                source.declaration >= program_.structs.size()) {
+                diagnostics_.error("FDN2130",
+                                   "struct destructuring requires a struct value or owner",
+                                   statement.span);
+            } else if (found != structs_.end() && source.declaration != found->second) {
+                diagnostics_.error("FDN2131", "struct pattern does not match initializer",
+                                   statement.span);
+            } else if (source.declaration < methods_.size() &&
+                       methods_[source.declaration].contains("drop")) {
+                diagnostics_.error("FDN2139",
+                                   "struct with custom drop cannot be destructured",
+                                   statement.span);
+            }
+
+            const auto type = source.kind == TypeKind::Struct ? source : invalidType;
+            const auto declarationId =
+                found != structs_.end()
+                    ? found->second
+                    : (source.kind == TypeKind::Struct ? source.declaration
+                                                       : program_.structs.size());
+            std::vector<bool> bound;
+            if (declarationId < program_.structs.size()) {
+                bound.resize(program_.structs[declarationId].fields.size());
+            }
+            std::vector<FirFieldId> fields;
+            std::vector<FirLocalId> bindings;
+            for (const auto &pattern : destructure->fields) {
+                if (declarationId >= program_.structs.size()) {
+                    bindings.push_back(addLocal(pattern.binding, invalidType, false,
+                                                pattern.span));
+                    fields.push_back(0);
+                    continue;
+                }
+                const auto field = findField(declarationId, pattern.field);
+                if (!field.has_value()) {
+                    diagnostics_.error("FDN2025", "unknown field " + pattern.field,
+                                       pattern.span);
+                    bindings.push_back(addLocal(pattern.binding, invalidType, false,
+                                                pattern.span));
+                    fields.push_back(0);
+                    continue;
+                }
+                const auto &declaration = program_.structs[declarationId];
+                if (declaration.packageName != currentPackage() &&
+                    !declaration.fields[*field].exported) {
+                    diagnostics_.error("FDN3008", "field " + pattern.field +
+                                                        " is not exported",
+                                       pattern.span);
+                }
+                if (bound[*field]) {
+                    diagnostics_.error("FDN2132", "duplicate field pattern " + pattern.field,
+                                       pattern.span);
+                }
+                bound[*field] = true;
+                auto fieldType = invalidType;
+                if (type.kind == TypeKind::Struct && type.declaration == declarationId) {
+                    fieldType = substitute(model_.structs[declarationId].fieldTypes[*field],
+                                           type.arguments);
+                }
+                const auto local = addLocal(pattern.binding, fieldType, false, pattern.span);
+                fields.push_back(*field);
+                bindings.push_back(local);
+            }
+            if (declarationId < program_.structs.size()) {
+                for (std::size_t field = 0; field < bound.size(); ++field) {
+                    if (!bound[field]) {
+                        diagnostics_.error(
+                            "FDN2133",
+                            "struct pattern is missing field " +
+                                program_.structs[declarationId].fields[field].name,
+                            statement.span);
+                    }
+                }
+            }
+            if (model_.expressionBorrowedClosures[destructure->initializer]) {
+                diagnostics_.error("FDN2127", "borrowed closure cannot be destructured",
+                                   statement.span);
+            }
+            model_.statementStructTargets[id] = StructDestructureTarget{
+                type, owned, std::move(fields), std::move(bindings)};
             return false;
         }
         if (const auto *assignment = std::get_if<AssignmentStatement>(&statement.value)) {
@@ -1161,6 +1273,8 @@ class Analyzer {
             type = analyzeMember(id, *member, expected, use, expression.span);
         } else if (const auto *index = std::get_if<IndexExpression>(&expression.value)) {
             type = analyzeIndex(*index, use, expression.span);
+        } else if (const auto *replace = std::get_if<ReplaceExpression>(&expression.value)) {
+            type = analyzeReplace(id, *replace, expression.span);
         } else if (const auto *function = std::get_if<FunctionExpression>(&expression.value)) {
             type = analyzeClosure(id, *function, expected, expression.span);
         } else {
@@ -1247,6 +1361,54 @@ class Analyzer {
         }
         requireSame(boolType, operand, span, "unary !");
         return boolType;
+    }
+
+    Type analyzeReplace(AstExpressionId id, const ReplaceExpression &replace,
+                        SourceSpan span) {
+        const auto context = placeContextType(replace.target);
+        const auto root = placeRootLocal(replace.target);
+        const auto before = root.has_value() ? moveStates_[*root] : MoveState::Available;
+        const auto value = analyzeExpression(
+            replace.value,
+            context.kind == TypeKind::Invalid ? std::nullopt : std::optional<Type>{context});
+        const auto consumedDestination =
+            root.has_value() && before == MoveState::Available &&
+            moveStates_[*root] != MoveState::Available;
+        const auto target = analyzeExpression(replace.target, std::nullopt,
+                                              ExpressionUse::Inspect);
+        if (!isPlaceExpression(replace.target)) {
+            diagnostics_.error("FDN2134", "replace requires a place", span);
+        } else if (!editablePlace(replace.target)) {
+            diagnostics_.error("FDN2135", "replace requires a mutable place", span);
+        }
+        if (containsBorrow(target)) {
+            diagnostics_.error("FDN2136", "replace cannot target a borrow", span);
+        }
+        if (root.has_value() && loanStates_[*root] != LoanState::None) {
+            diagnostics_.error("FDN2075", "cannot replace borrowed binding " +
+                                                model_.functions[currentFunction_]
+                                                    .locals[*root]
+                                                    .name,
+                               span);
+        }
+        if (root.has_value() &&
+            model_.functions[currentFunction_].locals[*root].borrowedClosure) {
+            diagnostics_.error("FDN2127", "borrowed closure cannot be replaced", span);
+        }
+        requireSame(target, value, span, "replacement");
+        if (consumedDestination) {
+            diagnostics_.error("FDN2136", "replacement value consumes its destination", span);
+        }
+        if (model_.expressionBorrowedClosures[replace.value]) {
+            diagnostics_.error("FDN2127", "borrowed closure cannot be stored by replace", span);
+            model_.expressionBorrowedClosures[id] = true;
+        }
+        if (root.has_value() &&
+            std::holds_alternative<NameExpression>(program_.expressions[replace.target].value) &&
+            isResult(target)) {
+            resultOutstanding_[*root] = true;
+        }
+        return target;
     }
 
     Type analyzeClosure(AstExpressionId id, const FunctionExpression &expression,
@@ -2048,6 +2210,10 @@ class Analyzer {
 
         const auto function = found->second;
         const auto &declaration = program_.functions[function];
+        if (member.member == "drop") {
+            diagnostics_.error("FDN2138", "drop is called only by deterministic cleanup",
+                               span);
+        }
         if (declaration.packageName != currentPackage() && !declaration.exported) {
             diagnostics_.error("FDN3008", "method " + member.member + " is not exported", span);
         }
@@ -2209,6 +2375,64 @@ class Analyzer {
             return editablePlace(index->base);
         }
         return false;
+    }
+
+    Type placeContextType(AstExpressionId id) const {
+        const auto &expression = program_.expressions[id];
+        if (const auto *name = std::get_if<NameExpression>(&expression.value)) {
+            const auto local = lookupLocal(name->name);
+            return local.has_value()
+                       ? model_.functions[currentFunction_].locals[*local].type
+                       : invalidType;
+        }
+        if (const auto *member = std::get_if<MemberExpression>(&expression.value);
+            member != nullptr && member->base.has_value()) {
+            auto base = placeContextType(*member->base);
+            if ((base.kind == TypeKind::Own || base.kind == TypeKind::View ||
+                 base.kind == TypeKind::Edit) &&
+                base.arguments.size() == 1) {
+                base = base.arguments.front();
+            }
+            if (base.kind != TypeKind::Struct || base.declaration >= model_.structs.size()) {
+                return invalidType;
+            }
+            const auto field = findField(base.declaration, member->member);
+            return field.has_value()
+                       ? substitute(model_.structs[base.declaration].fieldTypes[*field],
+                                    base.arguments)
+                       : invalidType;
+        }
+        if (const auto *index = std::get_if<IndexExpression>(&expression.value)) {
+            auto base = placeContextType(index->base);
+            if ((base.kind == TypeKind::Own || base.kind == TypeKind::View ||
+                 base.kind == TypeKind::Edit) &&
+                base.arguments.size() == 1) {
+                base = base.arguments.front();
+            }
+            if ((base.kind == TypeKind::Array || base.kind == TypeKind::Slice) &&
+                base.arguments.size() == 1) {
+                return base.arguments.front();
+            }
+        }
+        return invalidType;
+    }
+
+    std::optional<FirLocalId> placeRootLocal(AstExpressionId id) const {
+        const auto &expression = program_.expressions[id];
+        if (const auto *name = std::get_if<NameExpression>(&expression.value)) {
+            if (id < model_.expressionLocals.size() && model_.expressionLocals[id].has_value()) {
+                return model_.expressionLocals[id];
+            }
+            return lookupLocal(name->name);
+        }
+        if (const auto *member = std::get_if<MemberExpression>(&expression.value);
+            member != nullptr && member->base.has_value()) {
+            return placeRootLocal(*member->base);
+        }
+        if (const auto *index = std::get_if<IndexExpression>(&expression.value)) {
+            return placeRootLocal(index->base);
+        }
+        return std::nullopt;
     }
 
     bool isPlaceExpression(AstExpressionId id) const {
@@ -2773,6 +2997,11 @@ class Analyzer {
             return false;
         }
         if (type.kind == TypeKind::Struct && type.declaration < model_.structs.size()) {
+            if (type.declaration < methods_.size() &&
+                methods_[type.declaration].contains("drop")) {
+                active.erase(key);
+                return true;
+            }
             for (const auto &field : model_.structs[type.declaration].fieldTypes) {
                 if (requiresDrop(substitute(field, type.arguments), active)) {
                     active.erase(key);

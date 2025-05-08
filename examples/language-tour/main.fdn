@@ -2,6 +2,8 @@
 
 package tour
 
+import std.std.collections
+
 // A bodyless C ABI declaration imports its explicit C symbol. It is unused here so the tour
 // remains runnable without a native input.
 extern c fn nativeProbe() i32 as foundation_native_probe
@@ -14,6 +16,19 @@ extern c fn FoundationProbe(value i32) i32 as foundation_tour_probe {
 struct TourResult<T> {
     message String
     code T
+}
+
+struct TourOwned {
+    label String
+    count i32
+}
+
+struct TourResource {
+    label String
+
+    fn drop(edit) void {
+        self.label = ""
+    }
 }
 
 enum TourState<T> {
@@ -145,6 +160,25 @@ fn main() i32 {
     let ownedLabels = own ["owned arrays"]
     printFirst(view ownedLabels)
     discard ownedLabels
+
+    var phase = "before"
+    let previousPhase = replace phase with "after"
+    print(previousPhase + phase)
+    let TourOwned { label as destructuredLabel count as destructuredCount } =
+        own TourOwned { label = "destructured" count = 1 }
+    if destructuredCount == 1 {
+        print(destructuredLabel)
+    }
+    let resource = own TourResource { label = "cleanup" }
+    discard resource
+
+    var list = collections.NewList<String>()
+    list.PushFront("list item")
+    let listItem = match list.PopFront() {
+        None: "missing list item"
+        Some(value): value
+    }
+    print(listItem)
 
     while current <= count {
         showKind(current)

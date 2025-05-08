@@ -1,0 +1,12 @@
+struct Left {
+    value i32
+}
+
+struct Right {
+    value i32
+}
+
+fn main() i32 {
+    let Left { value } = Right { value = 1 }
+    value
+}

@@ -1,0 +1,11 @@
+contract Disposable {
+    fn drop(edit) void
+}
+
+struct Resource implements Disposable {
+    fn drop(edit) void {}
+}
+
+fn main() i32 {
+    0
+}

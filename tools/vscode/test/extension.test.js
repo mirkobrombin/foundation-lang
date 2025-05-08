@@ -68,6 +68,8 @@ test("grammar and completions track compiler keywords", () => {
         "while",
         "match",
         "capture",
+        "replace",
+        "with",
         "own",
         "view",
         "edit",
@@ -245,7 +247,7 @@ test("tracks ownership declarations and borrowed parameters", () => {
         struct User { id i32 }
         struct Holder { user own User count i32 }
         fn read(user view User) i32 { user.id }
-        fn replace(user edit User, id i32) void { user.id = id }
+        fn updateUser(user edit User, id i32) void { user.id = id }
         fn main() i32 { 0 }
     `);
     const fields = completions
@@ -258,6 +260,32 @@ test("tracks ownership declarations and borrowed parameters", () => {
     assert.deepEqual(fields, ["count", "user"]);
     assert.ok(parameters.includes("user"));
     assert.ok(parameters.includes("id"));
+});
+
+test("tracks owned place operations and struct patterns", () => {
+    const source = `
+        struct Pair { Value String Count i32 }
+        fn main() i32 {
+            var current = "old"
+            let previous = replace current with "new"
+            let Pair { Value as value Count as count } = Pair { Value = previous Count = 1 }
+            count
+        }
+    `;
+    const byLabel = new Map(collectCompletions(source).map((entry) => [entry.label, entry]));
+    const grammar = readJson("syntaxes/foundation.tmLanguage.json");
+    const snippets = readJson("snippets/foundation.json");
+
+    assert.equal(byLabel.get("value").detail, "Destructured field binding");
+    assert.equal(byLabel.get("count").detail, "Destructured field binding");
+    assert.equal(byLabel.has("Pair"), true);
+    assert.match(grammar.repository.structPatterns.patterns[0].begin, /let/);
+    assert.match(grammar.repository.structPatterns.patterns[0].patterns[0].captures[2].name,
+        /keyword/);
+    assert.equal(snippets["Replace place"].prefix, "replace");
+    assert.equal(snippets["Struct destructuring"].prefix, "destructure");
+    assert.equal(snippets["Deterministic drop"].prefix, "drop");
+    assert.equal(snippets["Standard list"].prefix, "list");
 });
 
 test("collects contracts, implementations, and receiver methods", () => {

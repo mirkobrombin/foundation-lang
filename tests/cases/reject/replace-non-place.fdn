@@ -1,0 +1,4 @@
+fn main() i32 {
+    let previous = replace (1 + 2) with 4
+    previous
+}

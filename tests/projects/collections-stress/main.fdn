@@ -1,0 +1,14 @@
+package example.collections_stress
+
+import std.collections
+
+fn main() i32 {
+    var values = collections.NewList<i32>()
+    var value = 0
+    while value < 100000 {
+        values.PushFront(value)
+        value = value + 1
+    }
+    print("list stress ok")
+    0
+}

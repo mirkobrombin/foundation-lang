@@ -25,6 +25,19 @@ struct Counter implements Readable {
     }
 }
 
+struct Packet {
+    value String
+    count i32
+}
+
+struct Resource {
+    value String
+
+    fn drop(edit) void {
+        self.value = "released"
+    }
+}
+
 fn identity<T>(value T) T {
     value
 }
@@ -39,6 +52,13 @@ fn main() i32 {
     first(view values)
     let counter = Counter { value = 42 }
     print(counter.read())
+    var message = "before"
+    let previous = replace message with "after"
+    discard previous
+    let Packet { value count as itemCount } = Packet { value = message count = 1 }
+    discard value
+    discard itemCount
+    discard Resource { value = "live" }
     let value = Maybe.Some(identity(0))
     match value {
         None: 1

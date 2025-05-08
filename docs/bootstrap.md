@@ -16,9 +16,12 @@ values, fixed arrays, borrowed slices, checked indexing, branches, loops, compil
 receiver methods, borrowed dynamic dispatch, semantic resolution, typed FIR, and checked i32
 operations. Named functions are first-class values, generic function values infer from an expected
 signature, and closures use explicit copy, own, view, or edit captures with deterministic
-environment destruction. It also supports checked C ABI imports and exports, deterministic public
-headers, and native C or object inputs. Each added construct must serve the stage-1 compiler or an
-accepted language invariant.
+environment destruction. Mutable places support ownership-preserving replacement, complete struct
+destructuring moves every field, and compiler-managed struct destructors can prepare values for
+automatic field cleanup. The first dynamic collection, `std.collections.List<T>`, is Foundation
+source and drains long owner chains iteratively. Stage 0 also supports checked C ABI imports and
+exports, deterministic public headers, and native C or object inputs. Each added construct must
+serve the stage-1 compiler or an accepted language invariant.
 
 Stage 0 bounds parser nesting and expression complexity before semantic analysis. It records at
 most 100 specific errors, followed by FDN0000 when more input errors are suppressed. These limits
@@ -52,3 +55,9 @@ builtins for operations that cannot yet be expressed, but every builtin must hav
 - a stable runtime ABI operation when runtime support is needed;
 - a tracked removal or permanent-intrinsic decision;
 - conformance tests shared by stage 0 and the self-hosted compiler.
+
+The bootstrap binary currently receives the standard-library source root at its own build time and
+adds every sorted `.fdn` file to a project. This makes official packages available without copying
+them into examples while preserving their Foundation implementation. It is temporary: the product
+toolchain must locate its installed standard library and resolve external packages through versioned
+manifests and a lock file.

@@ -1,0 +1,10 @@
+package example.private_destructure.lib
+
+struct Value {
+    Public i32
+    hidden i32
+}
+
+fn NewValue() Value {
+    Value { Public = 1 hidden = 2 }
+}

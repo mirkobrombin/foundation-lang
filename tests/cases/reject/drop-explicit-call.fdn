@@ -1,0 +1,11 @@
+struct Item {
+    fn drop(edit) void {
+        return
+    }
+}
+
+fn main() i32 {
+    var item = Item {}
+    item.drop()
+    0
+}

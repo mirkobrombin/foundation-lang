@@ -1,0 +1,77 @@
+struct Pair<T> {
+    value T
+    count i32
+}
+
+struct Holder {
+    value String
+}
+
+struct Order {
+    value i32
+}
+
+struct Marker {
+    value i32
+
+    fn drop(edit) void {
+        print("marker")
+    }
+}
+
+fn replacement(order edit Order) String {
+    order.value = order.value * 10 + 1
+    "new"
+}
+
+fn position(order edit Order) i32 {
+    order.value = order.value * 10 + 2
+    0
+}
+
+fn takeIndex(value String) i32 {
+    discard value
+    0
+}
+
+fn extract<T>(pair own Pair<T>) T {
+    let Pair { value count } = pair
+    if count != 1 {
+        panic("invalid pair count")
+    }
+    value
+}
+
+fn main() i32 {
+    let marker = Marker { value = 1 }
+    let movedMarker = marker
+    discard movedMarker
+
+    var current = "first"
+    let previous = replace current with "second"
+
+    var holder = own Holder { value = "inside" }
+    let inside = replace holder.value with "changed"
+
+    var values = ["left", "right"]
+    let left = replace values[0] with "updated"
+
+    var order = Order { value = 0 }
+    var ordered = ["old"]
+    let old = replace ordered[position(edit order)] with replacement(edit order)
+    if order.value != 12 || old != "old" || ordered[0] != "new" {
+        panic("replace evaluation order changed")
+    }
+
+    var analyzed = ["old"]
+    let token = "token"
+    let analyzedPrevious = replace analyzed[takeIndex(token)] with token + "-new"
+
+    let pair = own Pair { value = "payload" count = 1 }
+    let payload = extract(pair)
+
+    print(previous + current + inside + holder.value + left + values[0] +
+          analyzedPrevious + analyzed[0] + payload)
+    discard holder
+    0
+}

@@ -35,6 +35,7 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_C_COMPILER_ID="${CMAKE_C_COMPILER_ID}"
     FOUNDATION_RUNTIME_INCLUDE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/include"
     FOUNDATION_RUNTIME_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c"
+    FOUNDATION_STANDARD_LIBRARY="${CMAKE_CURRENT_SOURCE_DIR}/std"
 )
 
 add_executable(foundationc stage0/src/main.cpp)
@@ -346,6 +347,52 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.owned-places
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/owned-places.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/owned-places.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.collections
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/collections
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/collections/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.emit.collections-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/collections
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/collections-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/collections-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.run.collections-stress
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/collections-stress
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/collections-stress.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/collections-stress
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/collections-stress/expected.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.replace-panic-order
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/panic/replace-order.fdn
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-replace-panic.cmake
+    )
+    add_test(
         NAME stage0.run.sequences
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -620,6 +667,19 @@ if(BUILD_TESTING)
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/closures-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/closures-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.collections-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/collections-stress
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/collections-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/collections-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/collections-stress/expected.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
@@ -971,6 +1031,46 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/negate-overflow.fdn
             -DPATTERN=i32.overflow
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+    )
+
+    foreach(owned_place_case IN ITEMS
+            "replace-non-place;FDN2134"
+            "replace-immutable;FDN2135"
+            "replace-type-mismatch;FDN2011"
+            "replace-consumes-destination;FDN2136"
+            "replace-borrowed;FDN2075"
+            "replace-borrowed-closure;FDN2127"
+            "replace-borrowed-closure-target;FDN2127"
+            "destructure-non-struct;FDN2130"
+            "destructure-wrong-type;FDN2131"
+            "destructure-unknown-field;FDN2025"
+            "destructure-duplicate-field;FDN2132"
+            "destructure-missing-field;FDN2133"
+            "destructure-malformed;FDN1133"
+            "destructure-var;FDN1130"
+            "destructure-use-after-move;FDN2065"
+            "drop-signature;FDN2137"
+            "drop-explicit-call;FDN2138"
+            "drop-contract;FDN2138"
+            "destructure-custom-drop;FDN2139")
+        list(GET owned_place_case 0 owned_place_name)
+        list(GET owned_place_case 1 owned_place_code)
+        add_test(
+            NAME stage0.check.${owned_place_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${owned_place_name}.fdn
+                -DCODE=${owned_place_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
+    add_test(
+        NAME stage0.check.project-private-destructure
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/private-destructure
+            -DCODE=FDN3008
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
 
     find_program(FOUNDATION_NODE_EXECUTABLE NAMES node node.exe)

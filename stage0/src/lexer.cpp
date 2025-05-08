@@ -120,6 +120,10 @@ const char *tokenName(TokenKind kind) {
         return "match";
     case TokenKind::Capture:
         return "capture";
+    case TokenKind::Replace:
+        return "replace";
+    case TokenKind::With:
+        return "with";
     case TokenKind::Own:
         return "own";
     case TokenKind::View:
@@ -373,6 +377,10 @@ Token Lexer::identifier() {
         kind = TokenKind::Match;
     } else if (text == "capture") {
         kind = TokenKind::Capture;
+    } else if (text == "replace") {
+        kind = TokenKind::Replace;
+    } else if (text == "with") {
+        kind = TokenKind::With;
     } else if (text == "own") {
         kind = TokenKind::Own;
     } else if (text == "view") {

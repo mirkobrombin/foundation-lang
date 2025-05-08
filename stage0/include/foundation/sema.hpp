@@ -97,6 +97,13 @@ struct StructLiteralTarget {
     std::vector<FirFieldId> fields;
 };
 
+struct StructDestructureTarget {
+    Type type{invalidType};
+    bool owned{};
+    std::vector<FirFieldId> fields;
+    std::vector<FirLocalId> bindings;
+};
+
 struct EnumTarget {
     Type type{invalidType};
     FirVariantId variant{};
@@ -129,6 +136,7 @@ struct SemanticModel {
     std::vector<bool> expressionMoves;
     std::vector<std::optional<FirLocalId>> statementLocals;
     std::vector<std::optional<FirLocalId>> statementElseLocals;
+    std::vector<std::optional<StructDestructureTarget>> statementStructTargets;
     std::vector<std::vector<FirLocalId>> statementDrops;
     std::vector<std::vector<FirLocalId>> blockDrops;
     std::vector<SemanticStruct> structs;

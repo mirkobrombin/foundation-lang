@@ -17,6 +17,10 @@
 #include <utility>
 #include <vector>
 
+#ifndef FOUNDATION_STANDARD_LIBRARY
+#define FOUNDATION_STANDARD_LIBRARY ""
+#endif
+
 namespace foundation {
 
 namespace {
@@ -50,6 +54,16 @@ std::optional<std::string> readFile(const std::filesystem::path &path) {
         return std::nullopt;
     }
     return contents.str();
+}
+
+std::filesystem::path sourceIdentity(const std::filesystem::path &path) {
+    std::error_code error;
+    auto result = std::filesystem::absolute(path, error);
+    if (error) {
+        return path.lexically_normal();
+    }
+    const auto canonical = std::filesystem::weakly_canonical(result, error);
+    return error ? result.lexically_normal() : canonical;
 }
 
 std::string defaultAlias(std::string_view packageName) {
@@ -101,6 +115,9 @@ void remapExpression(Expression &expression, std::size_t expressionOffset,
     } else if (auto *index = std::get_if<IndexExpression>(&expression.value)) {
         index->base += expressionOffset;
         index->index += expressionOffset;
+    } else if (auto *replace = std::get_if<ReplaceExpression>(&expression.value)) {
+        replace->target += expressionOffset;
+        replace->value += expressionOffset;
     } else if (auto *match = std::get_if<MatchExpression>(&expression.value)) {
         match->value += expressionOffset;
         for (auto &arm : match->arms) {
@@ -118,6 +135,9 @@ void remapStatement(Statement &statement, std::size_t expressionOffset,
         if (variable->elseBlock.has_value()) {
             *variable->elseBlock += blockOffset;
         }
+    } else if (auto *destructure =
+                   std::get_if<StructDestructureStatement>(&statement.value)) {
+        destructure->initializer += expressionOffset;
     } else if (auto *assignment = std::get_if<AssignmentStatement>(&statement.value)) {
         assignment->target += expressionOffset;
         assignment->value += expressionOffset;
@@ -321,6 +341,11 @@ void linkExpression(Program &program, AstExpressionId id, const std::string &cur
                        diagnostics);
         linkExpression(program, index->index, currentPackage, imports, symbols, typeParameters,
                        diagnostics);
+    } else if (auto *replace = std::get_if<ReplaceExpression>(&expression.value)) {
+        linkExpression(program, replace->target, currentPackage, imports, symbols,
+                       typeParameters, diagnostics);
+        linkExpression(program, replace->value, currentPackage, imports, symbols,
+                       typeParameters, diagnostics);
     } else if (auto *match = std::get_if<MatchExpression>(&expression.value)) {
         linkExpression(program, match->value, currentPackage, imports, symbols, typeParameters,
                        diagnostics);
@@ -348,6 +373,12 @@ void linkBlock(Program &program, AstBlockId id, const std::string &currentPackag
                 linkBlock(program, *variable->elseBlock, currentPackage, imports, symbols,
                           typeParameters, diagnostics);
             }
+        } else if (auto *destructure =
+                       std::get_if<StructDestructureStatement>(&statement.value)) {
+            linkType(destructure->type, currentPackage, imports, symbols, typeParameters,
+                     diagnostics);
+            linkExpression(program, destructure->initializer, currentPackage, imports, symbols,
+                           typeParameters, diagnostics);
         } else if (auto *assignment = std::get_if<AssignmentStatement>(&statement.value)) {
             linkExpression(program, assignment->target, currentPackage, imports, symbols,
                            typeParameters, diagnostics);
@@ -417,16 +448,28 @@ void rejectAliasShadows(const Program &program, const ImportAliases &aliases,
     }
     for (const auto &statement : program.statements) {
         const auto *variable = std::get_if<VariableStatement>(&statement.value);
-        if (variable == nullptr) {
+        if (variable != nullptr) {
+            if (aliases.contains(variable->name)) {
+                diagnostics.error("FDN3004", "binding shadows import alias " + variable->name,
+                                  statement.span);
+            }
+            if (variable->elseBinding.has_value() && aliases.contains(*variable->elseBinding)) {
+                diagnostics.error("FDN3004",
+                                  "binding shadows import alias " + *variable->elseBinding,
+                                  statement.span);
+            }
             continue;
         }
-        if (aliases.contains(variable->name)) {
-            diagnostics.error("FDN3004", "binding shadows import alias " + variable->name,
-                              statement.span);
+        const auto *destructure =
+            std::get_if<StructDestructureStatement>(&statement.value);
+        if (destructure == nullptr) {
+            continue;
         }
-        if (variable->elseBinding.has_value() && aliases.contains(*variable->elseBinding)) {
-            diagnostics.error("FDN3004", "binding shadows import alias " + *variable->elseBinding,
-                              statement.span);
+        for (const auto &field : destructure->fields) {
+            if (aliases.contains(field.binding)) {
+                diagnostics.error("FDN3004",
+                                  "binding shadows import alias " + field.binding, field.span);
+            }
         }
     }
     for (const auto &expression : program.expressions) {
@@ -665,11 +708,56 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
         paths.push_back(input);
     }
 
+    const std::filesystem::path standardRoot{FOUNDATION_STANDARD_LIBRARY};
+    const auto standardIdentity = sourceIdentity(standardRoot);
+    if (!standardRoot.empty() && std::filesystem::is_directory(standardRoot, error) && !error) {
+        std::vector<std::filesystem::path> standardPaths;
+        std::filesystem::recursive_directory_iterator iterator(standardRoot, error);
+        const std::filesystem::recursive_directory_iterator end;
+        while (!error && iterator != end) {
+            if (iterator->is_regular_file(error) && !error &&
+                iterator->path().extension() == ".fdn") {
+                standardPaths.push_back(iterator->path());
+            }
+            iterator.increment(error);
+        }
+        if (error) {
+            diagnostics.error("FDN3001", "cannot discover standard library sources",
+                              {0, 0, 1, 1});
+            return std::nullopt;
+        }
+        std::sort(standardPaths.begin(), standardPaths.end(),
+                  [&standardRoot](const auto &left, const auto &right) {
+                      return left.lexically_relative(standardRoot).generic_string() <
+                             right.lexically_relative(standardRoot).generic_string();
+                  });
+        std::unordered_set<std::string> seen;
+        for (const auto &path : paths) {
+            seen.insert(sourceIdentity(path).generic_string());
+        }
+        for (const auto &path : standardPaths) {
+            if (seen.insert(sourceIdentity(path).generic_string()).second) {
+                paths.push_back(path);
+            }
+        }
+    } else {
+        error.clear();
+    }
+
     LoadedProject loaded;
     std::vector<ParsedFile> files;
     for (std::size_t index = 0; index < paths.size(); ++index) {
         const auto contents = readFile(paths[index]);
-        const auto displayPath = directoryInput
+        const auto standardRelative =
+            standardRoot.empty() ? std::filesystem::path{}
+                                 : sourceIdentity(paths[index]).lexically_relative(
+                                       standardIdentity);
+        const auto standardSource =
+            !standardRelative.empty() && *standardRelative.begin() != "..";
+        const auto displayPath = standardSource
+                                     ? (std::filesystem::path{"std"} / standardRelative)
+                                           .generic_string()
+                                 : directoryInput
                                      ? paths[index].lexically_relative(input).generic_string()
                                      : paths[index].generic_string();
         loaded.sources.push_back({displayPath, contents.value_or(std::string{})});

@@ -131,6 +131,11 @@ struct IndexExpression {
     AstExpressionId index{};
 };
 
+struct ReplaceExpression {
+    AstExpressionId target{};
+    AstExpressionId value{};
+};
+
 struct MatchArm {
     std::string variant;
     std::optional<std::string> binding;
@@ -151,7 +156,7 @@ using ExpressionValue =
     std::variant<IntegerExpression, BooleanExpression, StringExpression, ArrayExpression,
                  NameExpression, UnaryExpression, OwnershipExpression, BinaryExpression,
                  CallExpression, StructExpression, MemberExpression, IndexExpression,
-                 MatchExpression, FunctionExpression>;
+                 ReplaceExpression, MatchExpression, FunctionExpression>;
 
 struct Expression {
     ExpressionValue value;
@@ -165,6 +170,18 @@ struct VariableStatement {
     AstExpressionId initializer{};
     std::optional<std::string> elseBinding;
     std::optional<AstBlockId> elseBlock;
+};
+
+struct StructPatternField {
+    std::string field;
+    std::string binding;
+    SourceSpan span;
+};
+
+struct StructDestructureStatement {
+    TypeSyntax type;
+    std::vector<StructPatternField> fields;
+    AstExpressionId initializer{};
 };
 
 struct AssignmentStatement {
@@ -196,8 +213,9 @@ struct WhileStatement {
 };
 
 using StatementValue =
-    std::variant<VariableStatement, AssignmentStatement, ExpressionStatement, ReturnStatement,
-                 DiscardStatement, IfStatement, WhileStatement>;
+    std::variant<VariableStatement, StructDestructureStatement, AssignmentStatement,
+                 ExpressionStatement, ReturnStatement, DiscardStatement, IfStatement,
+                 WhileStatement>;
 
 struct Statement {
     StatementValue value;

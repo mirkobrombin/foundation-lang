@@ -2,6 +2,7 @@
 
 #include <exception>
 #include <optional>
+#include <unordered_map>
 #include <utility>
 
 namespace foundation {
@@ -153,6 +154,24 @@ class Lowerer {
         for (std::size_t index = 0; index < program_.functions.size(); ++index) {
             result.functions.push_back(lowerFunction(index));
         }
+        std::unordered_map<std::string, FirStructId> structs;
+        for (std::size_t index = 0; index < program_.structs.size(); ++index) {
+            structs.emplace(program_.structs[index].name, index);
+        }
+        for (std::size_t index = 0; index < program_.functions.size(); ++index) {
+            const auto &function = program_.functions[index];
+            const auto separator = function.name.rfind('.');
+            const auto methodName = separator == std::string::npos
+                                        ? function.name
+                                        : function.name.substr(separator + 1);
+            if (!function.receiver.has_value() || methodName != "drop") {
+                continue;
+            }
+            const auto owner = structs.find(function.ownerType);
+            if (owner != structs.end()) {
+                result.structs[owner->second].dropFunction = index;
+            }
+        }
         return result;
     }
 
@@ -225,6 +244,17 @@ class Lowerer {
                 value = FirVariableStatement{required(model_.statementLocals[id]),
                                              lowerExpression(variable->initializer)};
             }
+        } else if (const auto *destructure =
+                       std::get_if<StructDestructureStatement>(&source.value)) {
+            const auto &target = required(model_.statementStructTargets[id]);
+            std::vector<FirStructBinding> bindings;
+            bindings.reserve(target.fields.size());
+            for (std::size_t index = 0; index < target.fields.size(); ++index) {
+                bindings.push_back({target.fields[index], target.bindings[index]});
+            }
+            value = FirStructDestructureStatement{lowerExpression(destructure->initializer),
+                                                  target.type, target.owned,
+                                                  std::move(bindings)};
         } else if (const auto *assignment = std::get_if<AssignmentStatement>(&source.value)) {
             value = FirAssignmentStatement{lowerExpression(assignment->target),
                                            lowerExpression(assignment->value)};
@@ -399,6 +429,9 @@ class Lowerer {
         } else if (const auto *index = std::get_if<IndexExpression>(&source.value)) {
             value = FirIndexExpression{lowerExpression(index->base),
                                        lowerExpression(index->index)};
+        } else if (const auto *replace = std::get_if<ReplaceExpression>(&source.value)) {
+            value = FirReplaceExpression{lowerExpression(replace->target),
+                                         lowerExpression(replace->value)};
         } else if (const auto *function = std::get_if<FunctionExpression>(&source.value)) {
             static_cast<void>(function);
             const auto &target = required(model_.closureTargets[id]);

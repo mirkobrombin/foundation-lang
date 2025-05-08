@@ -20,6 +20,8 @@ const staticCompletions = [
     { label: "while", kind: "Keyword" },
     { label: "match", kind: "Keyword" },
     { label: "capture", kind: "Keyword", detail: "Declare explicit closure captures" },
+    { label: "replace", kind: "Keyword", detail: "Replace a mutable place and return its previous value" },
+    { label: "with", kind: "Keyword", detail: "Introduce a replacement value" },
     { label: "own", kind: "Keyword", detail: "Create or declare an exclusive owner" },
     { label: "view", kind: "Keyword", detail: "Create or declare a shared borrow" },
     { label: "edit", kind: "Keyword", detail: "Create or declare an exclusive mutable borrow" },
@@ -429,6 +431,7 @@ function collectCompletions(source, projectSources = []) {
     const enums = collectBracedDeclarations(masked, "enum");
     const contracts = collectBracedDeclarations(masked, "contract");
     const bindings = /\b(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)/g;
+    const structPatterns = /\blet\s+[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\{([^}]*)\}\s*=/g;
     let match;
 
     for (const declaration of structs) {
@@ -554,11 +557,28 @@ function collectCompletions(source, projectSources = []) {
     }
 
     while ((match = bindings.exec(masked)) !== null) {
+        if (/^\s*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\{/.test(
+            masked.slice(bindings.lastIndex)
+        )) {
+            continue;
+        }
         completions.push({
             label: match[1],
             kind: "Variable",
             detail: "Local binding"
         });
+    }
+
+    while ((match = structPatterns.exec(masked)) !== null) {
+        for (const field of match[1].matchAll(
+            /\b([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?/g
+        )) {
+            completions.push({
+                label: field[2] || field[1],
+                kind: "Variable",
+                detail: "Destructured field binding"
+            });
+        }
     }
 
     const unique = new Map();
