@@ -1880,8 +1880,6 @@ void emitDefaultSelfVtable(std::ostringstream &out, const FirProgram &program,
     const auto &effective = program.contracts[use.contract.declaration];
     const auto &origin = program.contracts[target.defaultContract.declaration];
     const auto selfTable = defaultSelfVtableName(table, methodIndex);
-    out << "static const struct fdn_contract_" << target.defaultContract.declaration
-        << "_vtable " << selfTable << ";\n";
     for (std::size_t method = 0; method < origin.methods.size(); ++method) {
         const auto &declaration = origin.methods[method];
         const auto effectiveMethod = contractMethodIndex(effective, declaration.name);
@@ -1894,7 +1892,7 @@ void emitDefaultSelfVtable(std::ostringstream &out, const FirProgram &program,
         if (declaration.returnType != voidType) {
             out << "return ";
         }
-        out << table << ".fdn_method_" << effectiveMethod << "(fdn_data";
+        out << table << "_m" << effectiveMethod << "(fdn_data";
         for (std::size_t parameter = 0; parameter < declaration.parameters.size(); ++parameter) {
             out << ", fdn_arg_" << parameter;
         }
@@ -1938,8 +1936,6 @@ void emitContractAdapters(std::ostringstream &out, const FirProgram &program,
         internalError("contract adapter method count mismatch");
     }
     const auto table = vtableName(use.contract, use.concrete);
-    out << "static const struct fdn_contract_" << use.contract.declaration << "_vtable "
-        << table << ";\n";
     out << "static void " << table << "_drop(void *fdn_data) {\n";
     out << "    if (fdn_data == NULL) {\n";
     out << "        return;\n";
@@ -1950,6 +1946,15 @@ void emitContractAdapters(std::ostringstream &out, const FirProgram &program,
     }
     out << "    fdn_dealloc(fdn_data);\n";
     out << "}\n";
+    for (std::size_t method = 0; method < contract.methods.size(); ++method) {
+        const auto &declaration = contract.methods[method];
+        out << "static " << cType(declaration.returnType) << ' ' << table << "_m" << method
+            << "(void *fdn_data";
+        for (std::size_t parameter = 0; parameter < declaration.parameters.size(); ++parameter) {
+            out << ", " << cType(declaration.parameters[parameter]) << " fdn_arg_" << parameter;
+        }
+        out << ");\n";
+    }
     for (std::size_t method = 0; method < contract.methods.size(); ++method) {
         const auto &declaration = contract.methods[method];
         const auto &target = use.methods[method];
