@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <iomanip>
 #include <istream>
@@ -1016,6 +1017,11 @@ struct OpenDocument {
     double version{};
 };
 
+struct CachedAnalysis {
+    ProjectAnalysis project;
+    std::optional<LanguageIndex> languageIndex;
+};
+
 class LanguageServer {
   public:
     LanguageServer(std::ostream &output, std::ostream &errors)
@@ -1077,6 +1083,8 @@ class LanguageServer {
             didClose(message.find("params"));
         } else if (*method == "workspace/didChangeWorkspaceFolders") {
             didChangeWorkspaceFolders(message.find("params"));
+        } else if (*method == "workspace/didChangeWatchedFiles") {
+            didChangeWatchedFiles();
         } else if (*method == "textDocument/documentSymbol" && id != nullptr) {
             sendMessage(output_, response(*id, provideDocumentSymbols(message.find("params"))));
         } else if (*method == "workspace/symbol" && id != nullptr) {
@@ -1181,6 +1189,7 @@ class LanguageServer {
             version = *value->asNumber();
         }
         documents_[*uri] = {*uri, normalizedPath(*path), *contents, version};
+        invalidateAnalyses();
         publishDiagnostics(*uri);
     }
 
@@ -1211,6 +1220,7 @@ class LanguageServer {
         if (incomingVersion != nullptr) {
             document->second.version = *incomingVersion;
         }
+        invalidateAnalyses();
         publishDiagnostics(*uri);
     }
 
@@ -1221,6 +1231,7 @@ class LanguageServer {
             return;
         }
         documents_.erase(*uri);
+        invalidateAnalyses();
         publishDiagnostics(*uri);
     }
 
@@ -1260,6 +1271,18 @@ class LanguageServer {
                 addWorkspaceRoot(stringField(&folder, "uri"));
             }
         }
+        invalidateAnalyses();
+    }
+
+    void didChangeWatchedFiles() {
+        invalidateAnalyses();
+        std::set<std::filesystem::path> publishedRoots;
+        for (const auto &[uri, document] : documents_) {
+            const auto root = analysisRoot(document);
+            if (publishedRoots.insert(root).second) {
+                publishDiagnostics(uri);
+            }
+        }
     }
 
     [[nodiscard]] std::filesystem::path analysisRoot(const OpenDocument &document) const {
@@ -1296,13 +1319,42 @@ class LanguageServer {
         return pathToFileUri(path);
     }
 
-    [[nodiscard]] std::optional<ProjectAnalysis> analyzeUri(std::string_view uri) const {
+    void invalidateAnalyses() { analysisCache_.clear(); }
+
+    [[nodiscard]] const ProjectAnalysis &analyzeRoot(
+        const std::filesystem::path &root) const {
+        const auto key = normalizedPath(root).generic_string();
+        const auto found = analysisCache_.find(key);
+        if (found != analysisCache_.end()) {
+            return found->second.project;
+        }
+        auto analysis = analyzeProject(root, overlays(), AnalyzeOptions{.requireMain = false});
+        const auto inserted = analysisCache_.emplace(
+            key, CachedAnalysis{std::move(analysis), std::nullopt});
+        return inserted.first->second.project;
+    }
+
+    [[nodiscard]] const LanguageIndex &languageIndex(
+        const ProjectAnalysis &analysis) const {
+        for (auto &[key, cached] : analysisCache_) {
+            static_cast<void>(key);
+            if (&cached.project != &analysis) {
+                continue;
+            }
+            if (!cached.languageIndex.has_value()) {
+                cached.languageIndex = buildLanguageIndex(cached.project);
+            }
+            return *cached.languageIndex;
+        }
+        std::terminate();
+    }
+
+    [[nodiscard]] const ProjectAnalysis *analyzeUri(std::string_view uri) const {
         const auto document = documents_.find(std::string(uri));
         if (document == documents_.end()) {
-            return std::nullopt;
+            return nullptr;
         }
-        return analyzeProject(analysisRoot(document->second), overlays(),
-                              AnalyzeOptions{.requireMain = false});
+        return &analyzeRoot(analysisRoot(document->second));
     }
 
     [[nodiscard]] Json provideDocumentSymbols(const Json *params) const {
@@ -1312,7 +1364,7 @@ class LanguageServer {
             return Json(Json::Array{});
         }
         auto analysis = analyzeUri(*uri);
-        if (!analysis.has_value()) {
+        if (analysis == nullptr) {
             return Json(Json::Array{});
         }
         const auto sourceId = sourceIdForUri(*analysis, *uri);
@@ -1376,8 +1428,7 @@ class LanguageServer {
         }
         Json::Array result;
         for (const auto &root : roots) {
-            const auto analysis =
-                analyzeProject(root, overlays(), AnalyzeOptions{.requireMain = false});
+            const auto &analysis = analyzeRoot(root);
             for (std::size_t sourceId = 0; sourceId < analysis.sources.size(); ++sourceId) {
                 const auto &source = analysis.sources[sourceId];
                 if (source.identity.empty()) {
@@ -1393,7 +1444,7 @@ class LanguageServer {
 
     [[nodiscard]] std::optional<LanguageSymbolId> semanticSymbolAt(
         const ProjectAnalysis &analysis, std::string_view uri, const Json *params,
-        SourceSpan &word, LanguageIndex &index) const {
+        SourceSpan &word, const LanguageIndex &index) const {
         const auto sourceId = sourceIdForUri(analysis, uri);
         const auto position = requestPosition(params);
         if (!sourceId.has_value() || !position.has_value()) {
@@ -1404,7 +1455,6 @@ class LanguageServer {
             return std::nullopt;
         }
         word = *foundWord;
-        index = buildLanguageIndex(analysis);
         const auto *occurrence = index.occurrenceAt(*sourceId, word.offset);
         return occurrence == nullptr ? std::nullopt
                                      : std::optional<LanguageSymbolId>{occurrence->symbol};
@@ -1417,11 +1467,11 @@ class LanguageServer {
             return Json(nullptr);
         }
         auto analysis = analyzeUri(*uri);
-        if (!analysis.has_value()) {
+        if (analysis == nullptr) {
             return Json(nullptr);
         }
         SourceSpan word;
-        LanguageIndex index;
+        const auto &index = languageIndex(*analysis);
         const auto symbolId = semanticSymbolAt(*analysis, *uri, params, word, index);
         const auto *symbol = symbolId.has_value() ? index.symbol(*symbolId) : nullptr;
         if (symbol == nullptr) {
@@ -1445,11 +1495,11 @@ class LanguageServer {
             return Json(nullptr);
         }
         auto analysis = analyzeUri(*uri);
-        if (!analysis.has_value()) {
+        if (analysis == nullptr) {
             return Json(nullptr);
         }
         SourceSpan word;
-        LanguageIndex index;
+        const auto &index = languageIndex(*analysis);
         const auto symbolId = semanticSymbolAt(*analysis, *uri, params, word, index);
         const auto *symbol = symbolId.has_value() ? index.symbol(*symbolId) : nullptr;
         if (symbol == nullptr || symbol->definition.source >= analysis->sources.size()) {
@@ -1467,11 +1517,11 @@ class LanguageServer {
             return Json(Json::Array{});
         }
         auto analysis = analyzeUri(*uri);
-        if (!analysis.has_value()) {
+        if (analysis == nullptr) {
             return Json(Json::Array{});
         }
         SourceSpan word;
-        LanguageIndex index;
+        const auto &index = languageIndex(*analysis);
         const auto symbol = semanticSymbolAt(*analysis, *uri, params, word, index);
         if (!symbol.has_value()) {
             return Json(Json::Array{});
@@ -1504,11 +1554,11 @@ class LanguageServer {
             return Json(nullptr);
         }
         auto analysis = analyzeUri(*uri);
-        if (!analysis.has_value()) {
+        if (analysis == nullptr) {
             return Json(nullptr);
         }
         SourceSpan word;
-        LanguageIndex index;
+        const auto &index = languageIndex(*analysis);
         const auto symbolId = semanticSymbolAt(*analysis, *uri, params, word, index);
         const auto *symbol = symbolId.has_value() ? index.symbol(*symbolId) : nullptr;
         if (symbol == nullptr || !symbol->renameable) {
@@ -1530,11 +1580,11 @@ class LanguageServer {
             return Json(nullptr);
         }
         auto analysis = analyzeUri(*uri);
-        if (!analysis.has_value()) {
+        if (analysis == nullptr) {
             return Json(nullptr);
         }
         SourceSpan word;
-        LanguageIndex index;
+        const auto &index = languageIndex(*analysis);
         const auto symbol = semanticSymbolAt(*analysis, *uri, params, word, index);
         if (!symbol.has_value() || !index.canRename(*symbol, *newName)) {
             return Json(nullptr);
@@ -1602,9 +1652,9 @@ class LanguageServer {
             return Json(Json::Array{});
         }
         auto analysis = analyzeUri(*uri);
-        const auto sourceId = analysis.has_value() ? sourceIdForUri(*analysis, *uri)
-                                                   : std::nullopt;
-        if (!analysis.has_value() || !sourceId.has_value()) {
+        const auto sourceId = analysis == nullptr ? std::nullopt
+                                                  : sourceIdForUri(*analysis, *uri);
+        if (analysis == nullptr || !sourceId.has_value()) {
             return Json(Json::Array{});
         }
         const auto &source = analysis->sources[*sourceId];
@@ -1753,9 +1803,9 @@ class LanguageServer {
             return Json(nullptr);
         }
         auto analysis = analyzeUri(*uri);
-        const auto sourceId = analysis.has_value() ? sourceIdForUri(*analysis, *uri)
-                                                   : std::nullopt;
-        if (!analysis.has_value() || !sourceId.has_value()) {
+        const auto sourceId = analysis == nullptr ? std::nullopt
+                                                  : sourceIdForUri(*analysis, *uri);
+        if (analysis == nullptr || !sourceId.has_value()) {
             return Json(nullptr);
         }
         const auto &source = analysis->sources[*sourceId].contents;
@@ -1791,7 +1841,7 @@ class LanguageServer {
         if (start == end) {
             return Json(nullptr);
         }
-        const auto index = buildLanguageIndex(*analysis);
+        const auto &index = languageIndex(*analysis);
         const auto *occurrence = index.occurrenceAt(*sourceId, start);
         const auto *symbol = occurrence == nullptr ? nullptr : index.symbol(occurrence->symbol);
         if (symbol == nullptr) {
@@ -1850,12 +1900,12 @@ class LanguageServer {
             return Json::object({{"data", Json(Json::Array{})}});
         }
         auto analysis = analyzeUri(*uri);
-        const auto sourceId = analysis.has_value() ? sourceIdForUri(*analysis, *uri)
-                                                   : std::nullopt;
-        if (!analysis.has_value() || !sourceId.has_value()) {
+        const auto sourceId = analysis == nullptr ? std::nullopt
+                                                  : sourceIdForUri(*analysis, *uri);
+        if (analysis == nullptr || !sourceId.has_value()) {
             return Json::object({{"data", Json(Json::Array{})}});
         }
-        const auto index = buildLanguageIndex(*analysis);
+        const auto &index = languageIndex(*analysis);
         const auto &source = analysis->sources[*sourceId].contents;
         Json::Array data;
         Position previous;
@@ -1928,9 +1978,9 @@ class LanguageServer {
             return Json(Json::Array{});
         }
         auto analysis = analyzeUri(*uri);
-        const auto sourceId = analysis.has_value() ? sourceIdForUri(*analysis, *uri)
-                                                   : std::nullopt;
-        if (!analysis.has_value() || !analysis->semantic.has_value() || !sourceId.has_value()) {
+        const auto sourceId = analysis == nullptr ? std::nullopt
+                                                  : sourceIdForUri(*analysis, *uri);
+        if (analysis == nullptr || !analysis->semantic.has_value() || !sourceId.has_value()) {
             return Json(Json::Array{});
         }
         const auto *range = params == nullptr ? nullptr : params->find("range");
@@ -1998,8 +2048,7 @@ class LanguageServer {
             return;
         }
         const auto root = analysisRoot(requested->second);
-        auto analysis = analyzeProject(root, overlays(),
-                                       AnalyzeOptions{.requireMain = false});
+        const auto &analysis = analyzeRoot(root);
         std::map<std::string, Json::Array> grouped;
         grouped[requestedUri];
         for (const auto &[uri, document] : documents_) {
@@ -2047,6 +2096,7 @@ class LanguageServer {
     std::ostream &errors_;
     std::vector<std::filesystem::path> workspaceRoots_;
     std::map<std::string, OpenDocument> documents_;
+    mutable std::map<std::string, CachedAnalysis> analysisCache_;
     std::set<std::string> publishedUris_;
     bool initialized_{};
     bool shutdown_{};

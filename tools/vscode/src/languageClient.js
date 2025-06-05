@@ -162,6 +162,12 @@ class FoundationLanguageClient {
             "function", "method", "struct", "property", "enum", "enumMember",
             "interface", "decorator", "parameter", "variable"
         ], ["declaration"]);
+        const sourceWatcher = this.vscode.workspace.createFileSystemWatcher("**/*.fdn");
+        const watchedFile = (type) => (uri) => {
+            this.notify("workspace/didChangeWatchedFiles", {
+                changes: [{ uri: uri.toString(), type }]
+            });
+        };
 
         for (const document of this.vscode.workspace.textDocuments) {
             if (document.languageId === "foundation") {
@@ -169,6 +175,10 @@ class FoundationLanguageClient {
             }
         }
         this.context.subscriptions.push(
+            sourceWatcher,
+            sourceWatcher.onDidCreate(watchedFile(1)),
+            sourceWatcher.onDidChange(watchedFile(2)),
+            sourceWatcher.onDidDelete(watchedFile(3)),
             this.vscode.workspace.onDidOpenTextDocument((document) => this.open(document)),
             this.vscode.workspace.onDidChangeTextDocument((event) => this.change(event.document)),
             this.vscode.workspace.onDidCloseTextDocument((document) => this.close(document)),

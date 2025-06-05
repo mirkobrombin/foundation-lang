@@ -100,6 +100,10 @@ void diagnosticsUseUnsavedCompilerInput() {
         "\"textDocument\":{\"uri\":\"" +
         sourceUri +
         "\",\"version\":2},\"contentChanges\":[{\"text\":\"package sample\\nfn add(left i32, right i32) i32 { left + right }\\nfn main() i32 { add(1, 2) }\\n\"}]}}";
+    const auto beforeChangeSymbols =
+        "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"textDocument/documentSymbol\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\"}}}";
     const auto documentSymbols =
         "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/documentSymbol\","
         "\"params\":{\"textDocument\":{\"uri\":\"" +
@@ -143,7 +147,8 @@ void diagnosticsUseUnsavedCompilerInput() {
     const auto exit =
         "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
 
-    std::istringstream input(frame(initialize) + frame(open) + frame(change) +
+    std::istringstream input(frame(initialize) + frame(open) + frame(beforeChangeSymbols) +
+                             frame(change) +
                              frame(documentSymbols) + frame(workspaceSymbols) + frame(hover) +
                              frame(definition) + frame(completion) + frame(signature) +
                              frame(semanticTokens) + frame(inlayHints) + frame(renameFunction) +
@@ -165,9 +170,12 @@ void diagnosticsUseUnsavedCompilerInput() {
            "the server declares UTF-16 positions");
     expect(transcript.find("\"documentSymbolProvider\":true") != std::string::npos,
            "initialize advertises document symbols");
-    expect(transcript.find("\"id\":3") != std::string::npos &&
-               transcript.find("\"name\":\"main\"") != std::string::npos,
-           "document symbols come from the compiler AST");
+    expect(responseFor(transcript, 12).find("\"name\":\"main\"") != std::string::npos &&
+               responseFor(transcript, 12).find("\"name\":\"add\"") == std::string::npos,
+           "cached analysis reflects the current document version");
+    expect(responseFor(transcript, 3).find("\"name\":\"main\"") != std::string::npos &&
+               responseFor(transcript, 3).find("\"name\":\"add\"") != std::string::npos,
+           "document changes invalidate cached compiler symbols");
     expect(transcript.find("\"id\":4") != std::string::npos &&
                transcript.find("\"location\"") != std::string::npos,
            "workspace symbol search returns source locations");
@@ -464,13 +472,17 @@ void diagnosticsStayScopedToTheirWorkspace() {
         firstSource +
         "\",\"version\":0},\"contentChanges\":[{\"text\":\"package alpha\\n"
         "fn Value() i32 { 1 }\\n\"}]}}";
+    const auto watchedChange =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\","
+        "\"params\":{\"changes\":[{\"uri\":\"" +
+        firstSource + "\",\"type\":2}]}}";
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
 
     std::istringstream input(frame(initialize) + frame(open(firstSource, "alpha", 1)) +
                              frame(open(secondSource, "beta", 1)) + frame(staleChange) +
-                             frame(shutdown) + frame(exit));
+                             frame(watchedChange) + frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
@@ -491,8 +503,8 @@ void diagnosticsStayScopedToTheirWorkspace() {
 
     expect(status == 0, "workspace diagnostic transcript exits cleanly");
     expect(!firstCleared, "another workspace cannot clear active diagnostics");
-    expect(firstDiagnosticCount == 1,
-           "a stale document version cannot replace or republish newer diagnostics");
+    expect(firstDiagnosticCount == 2,
+           "stale versions are ignored and watched source changes refresh diagnostics");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);
