@@ -35,8 +35,23 @@ extern c fn FoundationProbe(value i32) i32 as foundation_tour_probe {
     value
 }
 
+enum TourCommand {
+    Show
+}
+
+struct TourMetadata {
+    public bool
+    codes [2]i32
+}
+
+attribute TourRoute(command TourCommand, path String, metadata TourMetadata, fallback Option<String>) targets(fn)
+attribute TourLabel(value String) targets(struct, field, variant, method, parameter) repeatable
+
+@TourLabel("result")
 struct TourResult<T> {
     message String
+
+    @TourLabel("status")
     code T
 }
 
@@ -55,6 +70,8 @@ struct TourResource {
 
 enum TourState<T> {
     Running
+
+    @TourLabel("completed")
     Done(TourResult<T>)
 }
 
@@ -74,6 +91,7 @@ contract Counter extends ReadableCounter {
 struct TourCounter implements Counter {
     value i32
 
+    @TourLabel("reader")
     fn read(view) i32 {
         self.value
     }
@@ -87,7 +105,7 @@ struct TourCounterProxy implements Counter by counter {
     counter TourCounter
 }
 
-fn readCounter(counter view Counter) i32 {
+fn readCounter(@TourLabel("counter") counter view Counter) i32 {
     counter.read()
 }
 
@@ -156,6 +174,7 @@ fn parsedTruth(value json.Value) bool {
     }
 }
 
+@TourRoute(.Show, "/tour/:value", TourMetadata { public = true codes = [200, 404] }, .None)
 fn showKind(value i32) void {
     if isEven(value) {
         print("even")

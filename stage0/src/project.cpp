@@ -38,6 +38,7 @@ struct DeclarationInfo {
 struct PackageSymbols {
     std::unordered_map<std::string, DeclarationInfo> types;
     std::unordered_map<std::string, DeclarationInfo> functions;
+    std::unordered_map<std::string, DeclarationInfo> attributes;
 };
 
 using SymbolTable = std::unordered_map<std::string, PackageSymbols>;
@@ -162,6 +163,15 @@ void remapStatement(Statement &statement, std::size_t expressionOffset,
     }
 }
 
+void remapAttributes(std::vector<AttributeApplication> &attributes,
+                     std::size_t expressionOffset) {
+    for (auto &attribute : attributes) {
+        for (auto &argument : attribute.arguments) {
+            argument.value += expressionOffset;
+        }
+    }
+}
+
 void appendProgram(Program &target, Program source) {
     const auto expressionOffset = target.expressions.size();
     const auto statementOffset = target.statements.size();
@@ -182,20 +192,40 @@ void appendProgram(Program &target, Program source) {
         target.blocks.push_back(std::move(block));
     }
     for (auto &declaration : source.structs) {
+        remapAttributes(declaration.attributes, expressionOffset);
+        for (auto &field : declaration.fields) {
+            remapAttributes(field.attributes, expressionOffset);
+        }
         target.structs.push_back(std::move(declaration));
     }
     for (auto &declaration : source.enums) {
+        remapAttributes(declaration.attributes, expressionOffset);
+        for (auto &variant : declaration.variants) {
+            remapAttributes(variant.attributes, expressionOffset);
+        }
         target.enums.push_back(std::move(declaration));
     }
     for (auto &declaration : source.contracts) {
+        remapAttributes(declaration.attributes, expressionOffset);
         for (auto &method : declaration.methods) {
+            remapAttributes(method.attributes, expressionOffset);
+            for (auto &parameter : method.parameters) {
+                remapAttributes(parameter.attributes, expressionOffset);
+            }
             if (method.defaultFunction.has_value()) {
                 *method.defaultFunction += functionOffset;
             }
         }
         target.contracts.push_back(std::move(declaration));
     }
+    for (auto &declaration : source.attributeDeclarations) {
+        target.attributeDeclarations.push_back(std::move(declaration));
+    }
     for (auto &function : source.functions) {
+        remapAttributes(function.attributes, expressionOffset);
+        for (auto &parameter : function.parameters) {
+            remapAttributes(parameter.attributes, expressionOffset);
+        }
         function.body += blockOffset;
         target.functions.push_back(std::move(function));
     }
@@ -210,6 +240,16 @@ const DeclarationInfo *findDeclaration(const SymbolTable &symbols, std::string_v
     const auto &declarations = function ? package->second.functions : package->second.types;
     const auto declaration = declarations.find(std::string(name));
     return declaration == declarations.end() ? nullptr : &declaration->second;
+}
+
+const DeclarationInfo *findAttribute(const SymbolTable &symbols, std::string_view packageName,
+                                     std::string_view name) {
+    const auto package = symbols.find(std::string(packageName));
+    if (package == symbols.end()) {
+        return nullptr;
+    }
+    const auto declaration = package->second.attributes.find(std::string(name));
+    return declaration == package->second.attributes.end() ? nullptr : &declaration->second;
 }
 
 void reportPrivate(Diagnostics &diagnostics, std::string_view packageName, std::string_view name,
@@ -357,6 +397,43 @@ void linkExpression(Program &program, AstExpressionId id, const std::string &cur
                        diagnostics);
         for (auto &arm : match->arms) {
             linkExpression(program, arm.expression, currentPackage, imports, symbols,
+                           typeParameters, diagnostics);
+        }
+    }
+}
+
+void linkAttributes(Program &program, std::vector<AttributeApplication> &attributes,
+                    const std::string &currentPackage, const ImportAliases &imports,
+                    const SymbolTable &symbols,
+                    const std::unordered_set<std::string> &typeParameters,
+                    Diagnostics &diagnostics) {
+    for (auto &attribute : attributes) {
+        const auto separator = attribute.name.find('.');
+        if (separator == std::string::npos) {
+            if (const auto *declaration =
+                    findAttribute(symbols, currentPackage, attribute.name)) {
+                attribute.name = declaration->internalName;
+            }
+        } else {
+            const auto alias = attribute.name.substr(0, separator);
+            const auto name = attribute.name.substr(separator + 1);
+            const auto imported = imports.find(alias);
+            if (imported == imports.end()) {
+                diagnostics.error("FDN3009", "unknown import alias " + alias, attribute.span);
+            } else if (const auto *declaration =
+                           findAttribute(symbols, imported->second, name)) {
+                if (!declaration->exported) {
+                    reportPrivate(diagnostics, imported->second, name, attribute.span);
+                }
+                attribute.name = declaration->internalName;
+            } else {
+                diagnostics.error("FDN3009",
+                                  "unknown attribute " + imported->second + '.' + name,
+                                  attribute.span);
+            }
+        }
+        for (const auto &argument : attribute.arguments) {
+            linkExpression(program, argument.value, currentPackage, imports, symbols,
                            typeParameters, diagnostics);
         }
     }
@@ -516,6 +593,12 @@ void collectSymbols(const std::vector<ParsedFile> &files, SymbolTable &symbols) 
                 DeclarationInfo{internalName(file.program.packageName, declaration.name),
                                 declaration.exported});
         }
+        for (const auto &declaration : file.program.attributeDeclarations) {
+            package.attributes.emplace(
+                declaration.name,
+                DeclarationInfo{internalName(file.program.packageName, declaration.name),
+                                declaration.exported});
+        }
         for (const auto &declaration : file.program.functions) {
             if (declaration.receiver.has_value() || declaration.closure) {
                 continue;
@@ -606,17 +689,30 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
     const auto packageName = file.program.packageName;
     const auto &sourcePath = file.sourcePath;
 
+    for (auto &declaration : file.program.attributeDeclarations) {
+        declaration.packageName = packageName;
+        const std::unordered_set<std::string> parameters;
+        for (auto &parameter : declaration.parameters) {
+            linkType(parameter.type, packageName, aliases, symbols, parameters, diagnostics);
+        }
+        declaration.name = internalName(packageName, declaration.name);
+    }
+
     for (auto &declaration : file.program.structs) {
         declaration.packageName = packageName;
         const std::unordered_set<std::string> parameters(declaration.typeParameters.begin(),
                                                          declaration.typeParameters.end());
         for (auto &field : declaration.fields) {
             linkType(field.type, packageName, aliases, symbols, parameters, diagnostics);
+            linkAttributes(file.program, field.attributes, packageName, aliases, symbols,
+                           parameters, diagnostics);
         }
         for (auto &implementation : declaration.implementations) {
             linkType(implementation.contract, packageName, aliases, symbols, parameters,
                      diagnostics);
         }
+        linkAttributes(file.program, declaration.attributes, packageName, aliases, symbols,
+                       parameters, diagnostics);
         declaration.name = internalName(packageName, declaration.name);
     }
     for (auto &declaration : file.program.enums) {
@@ -631,7 +727,11 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
                 linkType(*variant.payloadType, packageName, aliases, symbols, parameters,
                          diagnostics);
             }
+            linkAttributes(file.program, variant.attributes, packageName, aliases, symbols,
+                           parameters, diagnostics);
         }
+        linkAttributes(file.program, declaration.attributes, packageName, aliases, symbols,
+                       parameters, diagnostics);
         declaration.name = internalName(packageName, declaration.name);
     }
     for (auto &declaration : file.program.contracts) {
@@ -644,9 +744,15 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
         for (auto &method : declaration.methods) {
             for (auto &parameter : method.parameters) {
                 linkType(parameter.type, packageName, aliases, symbols, parameters, diagnostics);
+                linkAttributes(file.program, parameter.attributes, packageName, aliases, symbols,
+                               parameters, diagnostics);
             }
             linkType(method.returnType, packageName, aliases, symbols, parameters, diagnostics);
+            linkAttributes(file.program, method.attributes, packageName, aliases, symbols,
+                           parameters, diagnostics);
         }
+        linkAttributes(file.program, declaration.attributes, packageName, aliases, symbols,
+                       parameters, diagnostics);
         declaration.name = internalName(packageName, declaration.name);
     }
     for (auto &function : file.program.functions) {
@@ -656,8 +762,12 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
                                                          function.typeParameters.end());
         for (auto &parameter : function.parameters) {
             linkType(parameter.type, packageName, aliases, symbols, parameters, diagnostics);
+            linkAttributes(file.program, parameter.attributes, packageName, aliases, symbols,
+                           parameters, diagnostics);
         }
         linkType(function.returnType, packageName, aliases, symbols, parameters, diagnostics);
+        linkAttributes(file.program, function.attributes, packageName, aliases, symbols,
+                       parameters, diagnostics);
         linkBlock(file.program, function.body, packageName, aliases, symbols, parameters,
                   diagnostics);
         if (function.closure) {

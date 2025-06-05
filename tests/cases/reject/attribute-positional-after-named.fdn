@@ -1,0 +1,6 @@
+attribute Pair(left i32, right i32) targets(fn)
+
+@Pair(left = 1, 2)
+fn main() i32 {
+    0
+}

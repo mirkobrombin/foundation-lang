@@ -339,6 +339,7 @@ class Monomorphizer {
                 target.name = method.name;
                 target.returnType =
                     instantiateType(substitute(method.returnType, source.arguments));
+                target.parameterNames = method.parameterNames;
                 target.exported = method.exported;
                 for (const auto &parameter : method.parameters) {
                     target.parameters.push_back(
@@ -369,7 +370,7 @@ class Monomorphizer {
                 instance.fields.push_back({field.name,
                                            instantiateType(
                                                substitute(field.type, source.arguments)),
-                                           field.exported});
+                                           field.exported, {}});
             }
             if (declaration.dropFunction.has_value()) {
                 instance.dropFunction =
@@ -395,7 +396,8 @@ class Monomorphizer {
             if (variant.payload.has_value()) {
                 payload = instantiateType(substitute(*variant.payload, source.arguments));
             }
-            instance.variants.push_back({variant.name, std::move(payload), variant.exported});
+            instance.variants.push_back(
+                {variant.name, std::move(payload), variant.exported, {}});
         }
         result_.enums[id] = std::move(instance);
         return Type{TypeKind::Enum, id, {}};

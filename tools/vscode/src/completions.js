@@ -4,6 +4,9 @@ const staticCompletions = [
     { label: "package", kind: "Keyword" },
     { label: "import", kind: "Keyword" },
     { label: "as", kind: "Keyword" },
+    { label: "attribute", kind: "Keyword", detail: "Declare typed compile-time metadata" },
+    { label: "targets(...)", kind: "Keyword", insertText: "targets(${1|fn,struct,enum,contract,method,field,variant,parameter|})" },
+    { label: "repeatable", kind: "Keyword", detail: "Allow repeated applications of an attribute" },
     { label: "extern", kind: "Keyword", detail: "Declare a C ABI import or export" },
     { label: "c", kind: "Value", detail: "C application binary interface" },
     {
@@ -268,6 +271,43 @@ function maskTrivia(source) {
     return masked;
 }
 
+function maskAttributeApplications(source) {
+    const masked = source.split("");
+    let offset = 0;
+    while (offset < source.length) {
+        if (source[offset] !== "@" || !/[A-Za-z_]/.test(source[offset + 1] || "")) {
+            offset += 1;
+            continue;
+        }
+        const start = offset;
+        offset += 1;
+        while (offset < source.length && /[A-Za-z0-9_.]/.test(source[offset])) {
+            offset += 1;
+        }
+        while (offset < source.length && /\s/.test(source[offset])) {
+            offset += 1;
+        }
+        if (source[offset] !== "(") {
+            continue;
+        }
+        let depth = 0;
+        do {
+            if (source[offset] === "(") {
+                depth += 1;
+            } else if (source[offset] === ")") {
+                depth -= 1;
+            }
+            offset += 1;
+        } while (offset < source.length && depth !== 0);
+        for (let index = start; index < offset; index += 1) {
+            if (masked[index] !== "\n") {
+                masked[index] = " ";
+            }
+        }
+    }
+    return masked.join("");
+}
+
 function splitTopLevel(source, separator) {
     const parts = [];
     let start = 0;
@@ -331,6 +371,26 @@ function collectBracedDeclarations(source, keyword) {
             end: offset
         });
         header.lastIndex = offset;
+    }
+    return declarations;
+}
+
+function collectAttributeDeclarations(source) {
+    const depths = topLevelDepths(source);
+    const declarations = [];
+    const pattern = /\battribute\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s+targets\s*\(([^)]*)\)(?:\s+(repeatable))?/g;
+    let match;
+    while ((match = pattern.exec(source)) !== null) {
+        if (depths[match.index] !== 0) {
+            continue;
+        }
+        declarations.push({
+            name: match[1],
+            kind: "Attribute",
+            parameters: collectParameters(match[2]),
+            targets: match[3].split(",").map((target) => target.trim()).filter(Boolean),
+            repeatable: Boolean(match[4])
+        });
     }
     return declarations;
 }
@@ -447,7 +507,8 @@ function collectStructFields(source) {
 }
 
 function collectPackageDeclarations(source) {
-    const masked = maskTrivia(source);
+    const lexical = maskTrivia(source);
+    const masked = maskAttributeApplications(lexical);
     const depths = topLevelDepths(masked);
     const packageMatch = masked.match(/\bpackage\s+([A-Za-z_][A-Za-z0-9_.]*)/);
     const imported = [...masked.matchAll(
@@ -492,11 +553,13 @@ function collectPackageDeclarations(source) {
             methods: collectMethods(declaration.body, declaration.name, true)
                 .filter((method) => /^[A-Z]/.test(method.name))
         }));
+    const attributes = collectAttributeDeclarations(lexical)
+        .filter((declaration) => /^[A-Z]/.test(declaration.name));
 
     return {
         packageName: packageMatch ? packageMatch[1] : null,
         imports: imported,
-        declarations: [...functions, ...structs, ...enums, ...contracts]
+        declarations: [...functions, ...structs, ...enums, ...contracts, ...attributes]
     };
 }
 
@@ -526,10 +589,20 @@ function importedCompletions(source, projectSources) {
         });
         for (const declaration of packages.get(imported.packageName) || []) {
             const label = `${imported.alias}.${declaration.name}`;
-            const typeArguments = declaration.typeParameters
+            const typeArguments = (declaration.typeParameters || [])
                 .map((parameter, index) => `\${${index + 1}:${parameter}}`)
                 .join(", ");
             const qualified = `${label}${typeArguments ? `<${typeArguments}>` : ""}`;
+            if (declaration.kind === "Attribute") {
+                completions.push({
+                    label: `@${label}`,
+                    kind: "Attribute",
+                    detail: `Typed attribute from ${imported.packageName} for ${declaration.targets.join(", ")}`,
+                    insertText: `@${label}(${declaration.parameters.map((name, index) =>
+                        `\${${index + 1}:${name}}`).join(", ")})`
+                });
+                continue;
+            }
             if (declaration.kind === "Function") {
                 const offset = declaration.typeParameters.length;
                 const argumentsText = declaration.parameters
@@ -576,16 +649,28 @@ function importedCompletions(source, projectSources) {
 }
 
 function collectCompletions(source, projectSources = []) {
-    const masked = maskTrivia(source);
+    const lexical = maskTrivia(source);
+    const masked = maskAttributeApplications(lexical);
     const depths = topLevelDepths(masked);
     const completions = [...staticCompletions, ...importedCompletions(source, projectSources)];
     const functions = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\(([^)]*)\)/g;
     const structs = collectBracedDeclarations(masked, "struct");
     const enums = collectBracedDeclarations(masked, "enum");
     const contracts = collectBracedDeclarations(masked, "contract");
+    const attributes = collectAttributeDeclarations(lexical);
     const bindings = /\b(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)/g;
     const structPatterns = /\blet\s+[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\{([^}]*)\}\s*=/g;
     let match;
+
+    for (const declaration of attributes) {
+        completions.push({
+            label: `@${declaration.name}`,
+            kind: "Attribute",
+            detail: `Typed attribute for ${declaration.targets.join(", ")}${declaration.repeatable ? ", repeatable" : ""}`,
+            insertText: `@${declaration.name}(${declaration.parameters.map((name, index) =>
+                `\${${index + 1}:${name}}`).join(", ")})`
+        });
+    }
 
     for (const declaration of structs) {
         const name = declaration.name;
@@ -761,7 +846,8 @@ function collectCompletions(source, projectSources = []) {
 
 function findHover(source, word, projectSources = []) {
     const completions = collectCompletions(source, projectSources);
-    const exact = completions.find((entry) => entry.label === word);
+    const exact = completions.find((entry) => entry.label === word ||
+        entry.label === `@${word}`);
     if (exact) {
         return exact;
     }
@@ -773,6 +859,7 @@ module.exports = {
     collectCompletions,
     collectPackageDeclarations,
     findHover,
+    maskAttributeApplications,
     maskTrivia,
     splitTopLevel,
     staticCompletions

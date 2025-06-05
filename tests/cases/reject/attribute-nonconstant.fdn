@@ -1,0 +1,10 @@
+attribute Value(value i32) targets(fn)
+
+fn identity(value i32) i32 {
+    value
+}
+
+@Value(identity(1))
+fn main() i32 {
+    0
+}

@@ -1,0 +1,8 @@
+package app
+
+import metadata as meta
+
+@meta.internal("hidden")
+fn main() i32 {
+    0
+}

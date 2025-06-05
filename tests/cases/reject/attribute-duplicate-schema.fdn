@@ -1,0 +1,5 @@
+attribute Pair(value i32, value i32) targets(fn, fn)
+
+fn main() i32 {
+    0
+}

@@ -7,6 +7,7 @@ const test = require("node:test");
 const {
     collectCompletions,
     findHover,
+    maskAttributeApplications,
     maskTrivia,
     staticCompletions
 } = require("../src/completions");
@@ -62,6 +63,7 @@ test("grammar and completions track compiler keywords", () => {
         "struct",
         "enum",
         "contract",
+        "attribute",
         "implements",
         "extends",
         "by",
@@ -94,6 +96,8 @@ test("grammar and completions track compiler keywords", () => {
     }
     assert.ok(completionLabels.has("c"));
     assert.ok(completionLabels.has("@target(...)"));
+    assert.ok(completionLabels.has("targets(...)"));
+    assert.ok(completionLabels.has("repeatable"));
     for (const standard of [
         "std.platform", "platform.Current", "platform.Name",
         "std.env", "env.Get", "env.Home",
@@ -112,6 +116,8 @@ test("grammar and completions track compiler keywords", () => {
     const targetAttribute = parsedGrammar.repository.compilerAttributes.patterns[0];
     assert.match(targetAttribute.match, /target/);
     assert.match(targetAttribute.captures[4].name, /target/);
+    assert.match(parsedGrammar.repository.attributeDefinitions.patterns[0].begin, /attribute/);
+    assert.match(parsedGrammar.repository.attributeApplications.patterns[0].begin, /@/);
     const cAbiDeclaration = parsedGrammar.repository.cAbiDeclarations.patterns[0];
     assert.equal(cAbiDeclaration.name, "meta.function.external.foundation");
     assert.match(cAbiDeclaration.begin, /extern/);
@@ -124,6 +130,8 @@ test("grammar and completions track compiler keywords", () => {
     assert.ok(completionLabels.has("fn(...) R"));
     const snippets = readJson("snippets/foundation.json");
     assert.match(snippets["Target declaration"].body.join("\n"), /@target/);
+    assert.match(snippets["Typed attribute declaration"].body, /targets/);
+    assert.match(snippets["Typed attribute application"].body, /@/);
     assert.match(snippets["Read environment value"].body.join("\n"), /env\.Get\(view/);
     assert.match(snippets["Join path"].body, /path\.Join\(view/);
     assert.match(snippets["Open line reader"].body.join("\n"), /fs\.OpenLines\(view/);
@@ -151,6 +159,45 @@ test("provides hover inventory for standard and project symbols", () => {
     );
     assert.equal(findHover(source, "localValue").detail, "Foundation function");
     assert.equal(findHover(source, "unknown"), undefined);
+});
+
+test("collects typed attributes without polluting declaration fields", () => {
+    const application = `
+        package example.app
+        import example.metadata as meta
+
+        attribute Local(value String) targets(struct, field) repeatable
+
+        @Local("record")
+        struct Request {
+            @meta.Field(name = "user_id")
+            userId u64
+        }
+
+        @meta.Route(.GET, "/users/:id")
+        fn main() i32 { 0 }
+    `;
+    const library = `
+        package example.metadata
+        enum Method { GET }
+        attribute Route(method Method, path String) targets(fn)
+        attribute Field(name String) targets(field)
+        attribute hidden() targets(fn)
+    `;
+    const completions = collectCompletions(application, [application, library]);
+    const byLabel = new Map(completions.map((entry) => [entry.label, entry]));
+
+    assert.equal(byLabel.get("@Local").kind, "Attribute");
+    assert.equal(byLabel.get("@Local").insertText, "@Local(${1:value})");
+    assert.equal(byLabel.get("@meta.Route").insertText,
+        "@meta.Route(${1:method}, ${2:path})");
+    assert.equal(byLabel.get("@meta.Field").kind, "Attribute");
+    assert.equal(byLabel.has("@meta.hidden"), false);
+    assert.equal(byLabel.get("userId").detail, "Field of Request");
+    assert.equal(byLabel.has("Field"), false);
+    assert.match(findHover(application, "Local", [application, library]).detail, /repeatable/);
+    assert.match(findHover(application, "Route", [application, library]).detail,
+        /example\.metadata/);
 });
 
 test("tracks function values and explicit closure captures", () => {
@@ -374,10 +421,9 @@ test("collects contracts, implementations, and receiver methods", () => {
     assert.match(grammar.repository.methodCalls.patterns[0].captures[2].name,
         /method/);
     assert.match(grammar.repository.languageVariables.patterns[0].name, /self/);
-    assert.equal(
-        grammar.repository.structDefinitions.patterns[0].patterns[1].include,
-        "#blocks"
-    );
+    assert.ok(grammar.repository.structDefinitions.patterns[0].patterns.some(
+        (pattern) => pattern.include === "#blocks"
+    ));
     assert.equal(grammar.repository.blocks.patterns[0].patterns[0].include, "$self");
 });
 
@@ -542,6 +588,16 @@ test("masks trivia without changing source offsets", () => {
     assert.equal(masked.split("\n").length, source.split("\n").length);
     assert.match(masked, /fn main/);
     assert.doesNotMatch(masked, /escaped|note/);
+});
+
+test("masks nested attribute applications without changing source offsets", () => {
+    const source = "@Route(.GET, Options { fallback = .Some(\"none\") })\nfn main() i32 { 0 }\n";
+    const masked = maskAttributeApplications(maskTrivia(source));
+
+    assert.equal(masked.length, source.length);
+    assert.equal(masked.split("\n").length, source.split("\n").length);
+    assert.doesNotMatch(masked, /Route|fallback|Some/);
+    assert.match(masked, /fn main/);
 });
 
 test("returns deterministic unique completions", () => {

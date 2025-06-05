@@ -29,6 +29,10 @@ storage.
 Package-scope `@target(linux)`, `@target(macos)`, and `@target(windows)` declarations are selected
 before linking. The Foundation-source `std.platform` package exposes that choice through a typed
 API without C preprocessor conditions in application code.
+Package-defined attributes carry typed constant metadata on declarations and members. Stage 0
+checks their package visibility, targets, repetition, arguments, and metadata-safe aggregate
+types. FIR retains the resolved values, and `emit-metadata` writes the deterministic
+`foundation.metadata/v1` manifest without changing emitted C.
 The Foundation-source `std.env` package returns explicit absence and error values while the C
 runtime copies and validates process text. Its result never borrows native environment storage.
 `std.text` exposes checked byte inspection and UTF-8-boundary slicing. `std.path` builds owned

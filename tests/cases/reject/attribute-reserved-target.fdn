@@ -1,0 +1,5 @@
+attribute target(value String) targets(fn)
+
+fn main() i32 {
+    0
+}

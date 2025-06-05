@@ -1,0 +1,6 @@
+attribute Count(value i32) targets(fn)
+
+@Count("one")
+fn main() i32 {
+    0
+}

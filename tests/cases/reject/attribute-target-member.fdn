@@ -1,0 +1,8 @@
+struct User {
+    @target(linux)
+    id u64
+}
+
+fn main() i32 {
+    0
+}

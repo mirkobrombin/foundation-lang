@@ -24,6 +24,29 @@ struct TypeSyntax {
     std::size_t arrayLength{};
 };
 
+enum class AttributeTarget {
+    Function,
+    Struct,
+    Enum,
+    Contract,
+    Method,
+    Field,
+    Variant,
+    Parameter,
+};
+
+struct AttributeArgument {
+    std::optional<std::string> name;
+    AstExpressionId value{};
+    SourceSpan span;
+};
+
+struct AttributeApplication {
+    std::string name;
+    std::vector<AttributeArgument> arguments;
+    SourceSpan span;
+};
+
 enum class UnaryOperator {
     Negate,
     Not,
@@ -232,6 +255,7 @@ struct Parameter {
     std::string name;
     TypeSyntax type;
     SourceSpan span;
+    std::vector<AttributeApplication> attributes;
 };
 
 struct Capture {
@@ -256,6 +280,7 @@ struct Function {
     bool hasBody{true};
     bool closure{};
     std::vector<Capture> captures;
+    std::vector<AttributeApplication> attributes;
 };
 
 struct StructField {
@@ -263,6 +288,7 @@ struct StructField {
     TypeSyntax type;
     bool exported{};
     SourceSpan span;
+    std::vector<AttributeApplication> attributes;
 };
 
 struct StructImplementation {
@@ -279,6 +305,7 @@ struct StructDeclaration {
     bool exported{};
     SourceSpan span;
     std::string packageName;
+    std::vector<AttributeApplication> attributes;
 };
 
 struct ContractMethod {
@@ -289,6 +316,7 @@ struct ContractMethod {
     bool exported{};
     SourceSpan span;
     std::optional<AstFunctionId> defaultFunction;
+    std::vector<AttributeApplication> attributes;
 };
 
 struct ContractDeclaration {
@@ -299,6 +327,7 @@ struct ContractDeclaration {
     bool exported{};
     SourceSpan span;
     std::string packageName;
+    std::vector<AttributeApplication> attributes;
 };
 
 struct EnumVariant {
@@ -306,6 +335,7 @@ struct EnumVariant {
     std::optional<TypeSyntax> payloadType;
     bool exported{};
     SourceSpan span;
+    std::vector<AttributeApplication> attributes;
 };
 
 enum class BuiltinEnumKind {
@@ -320,6 +350,17 @@ struct EnumDeclaration {
     std::vector<EnumVariant> variants;
     bool exported{};
     BuiltinEnumKind builtin{BuiltinEnumKind::None};
+    SourceSpan span;
+    std::string packageName;
+    std::vector<AttributeApplication> attributes;
+};
+
+struct AttributeDeclaration {
+    std::string name;
+    std::vector<Parameter> parameters;
+    std::vector<AttributeTarget> targets;
+    bool repeatable{};
+    bool exported{};
     SourceSpan span;
     std::string packageName;
 };
@@ -340,6 +381,7 @@ struct Program {
     std::vector<StructDeclaration> structs;
     std::vector<EnumDeclaration> enums;
     std::vector<ContractDeclaration> contracts;
+    std::vector<AttributeDeclaration> attributeDeclarations;
     std::vector<Function> functions;
 };
 

@@ -13,6 +13,7 @@ struct Compilation {
     std::vector<DiagnosticSource> sources;
     std::string generatedC;
     std::string generatedCHeader;
+    std::string generatedMetadata;
     Diagnostics diagnostics;
 };
 
@@ -22,6 +23,8 @@ struct Compilation {
                             const std::filesystem::path &output);
 [[nodiscard]] int emitCHeaderFile(const std::filesystem::path &source,
                                   const std::filesystem::path &output);
+[[nodiscard]] int emitMetadataFile(const std::filesystem::path &source,
+                                   const std::filesystem::path &output);
 [[nodiscard]] int buildFile(const std::filesystem::path &source,
                             const std::filesystem::path &output,
                             const std::vector<std::filesystem::path> &nativeInputs = {});

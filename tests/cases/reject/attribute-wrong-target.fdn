@@ -1,0 +1,10 @@
+attribute Route(path String) targets(fn)
+
+@Route("/users")
+struct User {
+    id u64
+}
+
+fn main() i32 {
+    0
+}

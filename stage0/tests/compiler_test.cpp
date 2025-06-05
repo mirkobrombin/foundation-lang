@@ -2,6 +2,7 @@
 #include "foundation/diagnostic.hpp"
 #include "foundation/lexer.hpp"
 #include "foundation/lower.hpp"
+#include "foundation/metadata.hpp"
 #include "foundation/parser.hpp"
 #include "foundation/project.hpp"
 #include "foundation/sema.hpp"
@@ -46,16 +47,21 @@ void expect(bool condition, std::string_view message);
 
 void targetAttributesSelectOneDeclaration() {
     constexpr std::string_view source = R"(
+attribute Marker(value i32) targets(fn)
+
+@Marker(11)
 @target(linux)
 fn selected() i32 {
     11
 }
 
 @target(macos)
+@Marker(22)
 fn selected() i32 {
     22
 }
 
+@Marker(33)
 @target(windows)
 fn selected() i32 {
     33
@@ -74,6 +80,9 @@ fn main() i32 {
     expect(linux.program.functions.size() == 2 && macos.program.functions.size() == 2 &&
                windows.program.functions.size() == 2,
            "inactive target declarations and their bodies leave no AST entries");
+    expect(linux.program.expressions.size() == macos.program.expressions.size() &&
+               macos.program.expressions.size() == windows.program.expressions.size(),
+           "inactive target attributes leave no AST expressions");
     if (linux.program.functions.size() == 2 && macos.program.functions.size() == 2 &&
         windows.program.functions.size() == 2) {
         const auto selectedValue = [](const CheckedProgram &program) {
@@ -106,6 +115,52 @@ fn main() i32 { 0 }
 )";
     expect(hasCode(check(duplicate).diagnostics, "FDN1144"),
            "duplicate target attributes have a stable diagnostic");
+}
+
+void typedAttributesEmitMetadataWithoutRuntimeCode() {
+    constexpr std::string_view annotated = R"(
+enum Method {
+    GET
+}
+
+attribute Route(method Method, path String) targets(fn)
+
+@Route(.GET, "/health")
+fn main() i32 {
+    0
+}
+)";
+    constexpr std::string_view plain = R"(
+enum Method {
+    GET
+}
+
+
+
+
+fn main() i32 {
+    0
+}
+)";
+    const auto first = check(annotated);
+    const auto second = check(annotated);
+    const auto baseline = check(plain);
+    expect(!first.diagnostics.hasErrors(), "typed attributes pass semantic analysis");
+    expect(first.fir.has_value() && second.fir.has_value() && baseline.fir.has_value(),
+           "typed attributes lower to FIR");
+    if (!first.fir.has_value() || !second.fir.has_value() || !baseline.fir.has_value()) {
+        return;
+    }
+    const auto metadata = foundation::emitMetadata(*first.fir);
+    expect(metadata == foundation::emitMetadata(*second.fir),
+           "attribute metadata emission is deterministic");
+    expect(metadata.find("foundation.metadata/v1") != std::string::npos &&
+               metadata.find("\"name\":\"Route\"") != std::string::npos &&
+               metadata.find("\"case\":\"Method.GET\"") != std::string::npos,
+           "attribute metadata preserves schema, declaration, and enum value");
+    expect(foundation::emitC(*first.fir, "<memory>") ==
+               foundation::emitC(*baseline.fir, "<memory>"),
+           "attributes add no generated C or runtime tables");
 }
 
 bool hasCode(const foundation::Diagnostics &diagnostics, std::string_view code) {
@@ -1509,6 +1564,7 @@ void standardLibrarySourceIsLoadedOnce() {
 
 int main() {
     targetAttributesSelectOneDeclaration();
+    typedAttributesEmitMetadataWithoutRuntimeCode();
     typedProgramLowersToDeterministicC();
     structValuesLowerToDeterministicC();
     deepStructGraphsStayIterative();

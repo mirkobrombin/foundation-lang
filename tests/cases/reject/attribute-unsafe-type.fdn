@@ -1,0 +1,5 @@
+attribute Borrowed(value view String) targets(fn)
+
+fn main() i32 {
+    0
+}
