@@ -2,6 +2,7 @@
 
 #include "foundation/codegen.hpp"
 #include "foundation/lower.hpp"
+#include "foundation/metadata.hpp"
 #include "foundation/process.hpp"
 #include "foundation/project.hpp"
 #include "foundation/sema.hpp"
@@ -201,6 +202,7 @@ Compilation compile(const std::filesystem::path &path) {
     const auto fir = lower(program, *semantic);
     compilation.generatedC = emitC(fir, path.generic_string());
     compilation.generatedCHeader = emitCHeader(fir);
+    compilation.generatedMetadata = emitMetadata(fir);
     return compilation;
 }
 
@@ -223,6 +225,14 @@ int emitCHeaderFile(const std::filesystem::path &source, const std::filesystem::
         return status;
     }
     return writeFile(output, compilation.generatedCHeader) ? 0 : 1;
+}
+
+int emitMetadataFile(const std::filesystem::path &source, const std::filesystem::path &output) {
+    const auto compilation = compile(source);
+    if (const auto status = report(source, compilation); status != 0) {
+        return status;
+    }
+    return writeFile(output, compilation.generatedMetadata) ? 0 : 1;
 }
 
 int buildFile(const std::filesystem::path &source, const std::filesystem::path &output,

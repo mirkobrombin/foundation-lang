@@ -145,14 +145,15 @@ Program Parser::parse() {
         program_.imports.push_back({name, std::move(alias), span});
     }
     while (!atEnd()) {
-        const auto selected = targetAttributes();
         const auto expressions = program_.expressions.size();
         const auto statements = program_.statements.size();
         const auto blocks = program_.blocks.size();
         const auto functions = program_.functions.size();
+        auto parsedAttributes = attributes();
         if (check(TokenKind::Struct)) {
             auto declaration = structDeclaration();
-            if (selected) {
+            declaration.attributes = std::move(parsedAttributes.applications);
+            if (parsedAttributes.selected) {
                 program_.structs.push_back(std::move(declaration));
             } else {
                 restoreProgram(expressions, statements, blocks, functions);
@@ -161,7 +162,8 @@ Program Parser::parse() {
         }
         if (check(TokenKind::Enum)) {
             auto declaration = enumDeclaration();
-            if (selected) {
+            declaration.attributes = std::move(parsedAttributes.applications);
+            if (parsedAttributes.selected) {
                 program_.enums.push_back(std::move(declaration));
             } else {
                 restoreProgram(expressions, statements, blocks, functions);
@@ -170,8 +172,22 @@ Program Parser::parse() {
         }
         if (check(TokenKind::Contract)) {
             auto declaration = contractDeclaration();
-            if (selected) {
+            declaration.attributes = std::move(parsedAttributes.applications);
+            if (parsedAttributes.selected) {
                 program_.contracts.push_back(std::move(declaration));
+            } else {
+                restoreProgram(expressions, statements, blocks, functions);
+            }
+            continue;
+        }
+        if (check(TokenKind::Attribute)) {
+            auto declaration = attributeDeclaration();
+            if (!parsedAttributes.applications.empty()) {
+                diagnostics_.error("FDN1159", "attribute declaration cannot be attributed",
+                                   parsedAttributes.applications.front().span);
+            }
+            if (parsedAttributes.selected) {
+                program_.attributeDeclarations.push_back(std::move(declaration));
             } else {
                 restoreProgram(expressions, statements, blocks, functions);
             }
@@ -179,7 +195,8 @@ Program Parser::parse() {
         }
         if (check(TokenKind::Fn)) {
             auto declaration = function();
-            if (selected) {
+            declaration.attributes = std::move(parsedAttributes.applications);
+            if (parsedAttributes.selected) {
                 program_.functions.push_back(std::move(declaration));
             } else {
                 restoreProgram(expressions, statements, blocks, functions);
@@ -188,7 +205,8 @@ Program Parser::parse() {
         }
         if (check(TokenKind::Extern)) {
             auto declaration = function(true);
-            if (selected) {
+            declaration.attributes = std::move(parsedAttributes.applications);
+            if (parsedAttributes.selected) {
                 program_.functions.push_back(std::move(declaration));
             } else {
                 restoreProgram(expressions, statements, blocks, functions);
@@ -202,31 +220,89 @@ Program Parser::parse() {
     return std::move(program_);
 }
 
-bool Parser::targetAttributes() {
-    auto selected = true;
+Parser::ParsedAttributes Parser::attributes(bool allowTarget) {
+    ParsedAttributes result;
     auto foundTarget = false;
     while (match(TokenKind::At)) {
-        const auto name = expect(TokenKind::Identifier, "FDN1140",
-                                 "expected compiler attribute name after @");
-        expect(TokenKind::LeftParen, "FDN1141", "expected ( after compiler attribute");
-        const auto argument = expect(TokenKind::Identifier, "FDN1142",
-                                     "expected target name in compiler attribute");
-        expect(TokenKind::RightParen, "FDN1143", "expected ) after compiler attribute");
-        if (name.text != "target") {
-            diagnostics_.error("FDN1140", "unknown compiler attribute @" + name.text,
-                               name.span);
+        const auto [name, span] =
+            qualifiedName("FDN1140", "expected attribute name after @");
+        expect(TokenKind::LeftParen, "FDN1141", "expected ( after attribute name");
+        if (name == "target") {
+            const auto argument = expect(TokenKind::Identifier, "FDN1142",
+                                         "expected target name in compiler attribute");
+            expect(TokenKind::RightParen, "FDN1143", "expected ) after compiler attribute");
+            if (!allowTarget) {
+                diagnostics_.error("FDN1146", "@target is only valid on package declarations",
+                                   span);
+            } else if (foundTarget) {
+                diagnostics_.error("FDN1144", "declaration has more than one @target attribute",
+                                   span);
+            } else {
+                foundTarget = true;
+                const auto requested = targetArgument(argument);
+                result.selected = requested != TargetPlatform::Unknown && requested == target_;
+            }
             continue;
         }
-        if (foundTarget) {
-            diagnostics_.error("FDN1144", "declaration has more than one @target attribute",
-                               name.span);
-            continue;
+        std::vector<AttributeArgument> arguments;
+        if (!check(TokenKind::RightParen)) {
+            do {
+                std::optional<std::string> argumentName;
+                auto argumentSpan = current().span;
+                if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Equal) {
+                    argumentName = advance().text;
+                    advance();
+                }
+                arguments.push_back(
+                    {std::move(argumentName), expression(), argumentSpan});
+            } while (match(TokenKind::Comma));
         }
-        foundTarget = true;
-        const auto requested = targetArgument(argument);
-        selected = requested != TargetPlatform::Unknown && requested == target_;
+        expect(TokenKind::RightParen, "FDN1143", "expected ) after attribute arguments");
+        result.applications.push_back({name, std::move(arguments), span});
     }
-    return selected;
+    return result;
+}
+
+std::optional<AttributeTarget> Parser::attributeTarget() {
+    const auto kind = current().kind;
+    if (kind == TokenKind::Fn) {
+        advance();
+        return AttributeTarget::Function;
+    }
+    if (kind == TokenKind::Struct) {
+        advance();
+        return AttributeTarget::Struct;
+    }
+    if (kind == TokenKind::Enum) {
+        advance();
+        return AttributeTarget::Enum;
+    }
+    if (kind == TokenKind::Contract) {
+        advance();
+        return AttributeTarget::Contract;
+    }
+    if (kind != TokenKind::Identifier) {
+        diagnostics_.error("FDN1154", "expected attribute target", current().span);
+        if (!atEnd()) {
+            advance();
+        }
+        return std::nullopt;
+    }
+    const auto target = advance();
+    if (target.text == "method") {
+        return AttributeTarget::Method;
+    }
+    if (target.text == "field") {
+        return AttributeTarget::Field;
+    }
+    if (target.text == "variant") {
+        return AttributeTarget::Variant;
+    }
+    if (target.text == "parameter") {
+        return AttributeTarget::Parameter;
+    }
+    diagnostics_.error("FDN1154", "unknown attribute target " + target.text, target.span);
+    return std::nullopt;
 }
 
 TargetPlatform Parser::targetArgument(const Token &argument) {
@@ -450,13 +526,16 @@ StructDeclaration Parser::structDeclaration() {
 
     std::vector<StructField> fields;
     while (!check(TokenKind::RightBrace) && !atEnd()) {
+        auto parsedAttributes = attributes(false);
         if (check(TokenKind::Extern)) {
             diagnostics_.error("FDN2117", "C ABI function cannot be a method", current().span);
             advance();
             continue;
         }
         if (check(TokenKind::Fn)) {
-            program_.functions.push_back(method(name.text, parameters));
+            auto declaration = method(name.text, parameters);
+            declaration.attributes = std::move(parsedAttributes.applications);
+            program_.functions.push_back(std::move(declaration));
             continue;
         }
         if (!check(TokenKind::Identifier)) {
@@ -466,11 +545,12 @@ StructDeclaration Parser::structDeclaration() {
         }
         const auto field = advance();
         auto type = typeSyntax("FDN1036", "expected struct field type");
-        fields.push_back({field.text, std::move(type), isExported(field.text), field.span});
+        fields.push_back({field.text, std::move(type), isExported(field.text), field.span,
+                          std::move(parsedAttributes.applications)});
     }
     expect(TokenKind::RightBrace, "FDN1037", "expected } after struct declaration");
     return {name.text, std::move(parameters), std::move(implementations), std::move(fields),
-            isExported(name.text), start.span, {}};
+            isExported(name.text), start.span, {}, {}};
 }
 
 EnumDeclaration Parser::enumDeclaration() {
@@ -481,6 +561,7 @@ EnumDeclaration Parser::enumDeclaration() {
 
     std::vector<EnumVariant> variants;
     while (!check(TokenKind::RightBrace) && !atEnd()) {
+        auto parsedAttributes = attributes(false);
         if (!check(TokenKind::Identifier)) {
             diagnostics_.error("FDN1045", "expected enum variant name", current().span);
             advance();
@@ -493,11 +574,12 @@ EnumDeclaration Parser::enumDeclaration() {
             expect(TokenKind::RightParen, "FDN1049", "expected ) after enum payload");
         }
         variants.push_back(
-            {variant.text, std::move(payloadType), isExported(variant.text), variant.span});
+            {variant.text, std::move(payloadType), isExported(variant.text), variant.span,
+             std::move(parsedAttributes.applications)});
     }
     expect(TokenKind::RightBrace, "FDN1050", "expected } after enum declaration");
     return {name.text, std::move(parameters), std::move(variants), isExported(name.text),
-            BuiltinEnumKind::None, start.span, {}};
+            BuiltinEnumKind::None, start.span, {}, {}};
 }
 
 ContractDeclaration Parser::contractDeclaration() {
@@ -514,6 +596,7 @@ ContractDeclaration Parser::contractDeclaration() {
 
     std::vector<ContractMethod> methods;
     while (!check(TokenKind::RightBrace) && !atEnd()) {
+        auto parsedAttributes = attributes(false);
         if (check(TokenKind::Extern)) {
             diagnostics_.error("FDN2117", "C ABI function cannot be a method", current().span);
             advance();
@@ -524,10 +607,53 @@ ContractDeclaration Parser::contractDeclaration() {
             advance();
             continue;
         }
-        methods.push_back(contractMethod(name.text, parameters));
+        auto declaration = contractMethod(name.text, parameters);
+        declaration.attributes = std::move(parsedAttributes.applications);
+        methods.push_back(std::move(declaration));
     }
     expect(TokenKind::RightBrace, "FDN1099", "expected } after contract declaration");
     return {name.text, std::move(parameters), std::move(parents), std::move(methods),
+            isExported(name.text), start.span, {}, {}};
+}
+
+AttributeDeclaration Parser::attributeDeclaration() {
+    const auto start = expect(TokenKind::Attribute, "FDN1150", "expected attribute");
+    const auto name = expect(TokenKind::Identifier, "FDN1151", "expected attribute name");
+    expect(TokenKind::LeftParen, "FDN1152", "expected ( after attribute name");
+    std::vector<Parameter> parameters;
+    if (!check(TokenKind::RightParen)) {
+        do {
+            auto parsed = parameter();
+            if (!parsed.attributes.empty()) {
+                diagnostics_.error("FDN1159", "attribute parameter cannot be attributed",
+                                   parsed.attributes.front().span);
+                parsed.attributes.clear();
+            }
+            parameters.push_back(std::move(parsed));
+        } while (match(TokenKind::Comma));
+    }
+    expect(TokenKind::RightParen, "FDN1153", "expected ) after attribute parameters");
+    const auto targets = expect(TokenKind::Identifier, "FDN1154", "expected targets");
+    if (targets.text != "targets") {
+        diagnostics_.error("FDN1154", "expected targets after attribute parameters",
+                           targets.span);
+    }
+    expect(TokenKind::LeftParen, "FDN1155", "expected ( after targets");
+    std::vector<AttributeTarget> targetList;
+    if (!check(TokenKind::RightParen)) {
+        do {
+            if (const auto target = attributeTarget(); target.has_value()) {
+                targetList.push_back(*target);
+            }
+        } while (match(TokenKind::Comma));
+    }
+    expect(TokenKind::RightParen, "FDN1156", "expected ) after attribute targets");
+    auto repeatable = false;
+    if (check(TokenKind::Identifier) && current().text == "repeatable") {
+        advance();
+        repeatable = true;
+    }
+    return {name.text, std::move(parameters), std::move(targetList), repeatable,
             isExported(name.text), start.span, {}};
 }
 
@@ -573,7 +699,7 @@ Function Parser::function(bool external) {
     }
     Function result{name.text, std::move(typeParameters), std::move(parameters),
                     std::move(returnType), body, isExported(name.text), start.span, {}, {},
-                    std::nullopt, {}, std::nullopt, true, false, {}};
+                    std::nullopt, {}, std::nullopt, true, false, {}, {}};
     result.cSymbol = std::move(cSymbol);
     result.hasBody = hasBody;
     return result;
@@ -599,7 +725,7 @@ Function Parser::method(const std::string &owner,
     std::vector<Parameter> parameters;
     parameters.push_back(
         {"self", TypeSyntax{qualifier, {std::move(ownerType)}, receiverStart.span},
-         receiverStart.span});
+         receiverStart.span, {}});
     if (match(TokenKind::Comma)) {
         do {
             parameters.push_back(parameter());
@@ -614,7 +740,7 @@ Function Parser::method(const std::string &owner,
     activeTypeParameters_ = std::move(previousTypeParameters);
     return {name.text, typeParameters, std::move(parameters), std::move(returnType), body,
             isExported(name.text), start.span, {}, {}, access, owner, std::nullopt, true, false,
-            {}};
+            {}, {}};
 }
 
 ContractMethod Parser::contractMethod(const std::string &owner,
@@ -645,7 +771,7 @@ ContractMethod Parser::contractMethod(const std::string &owner,
         std::vector<Parameter> functionParameters;
         functionParameters.reserve(parameters.size() + 1);
         functionParameters.push_back(
-            {"self", TypeSyntax{qualifier, {std::move(ownerType)}, start.span}, start.span});
+            {"self", TypeSyntax{qualifier, {std::move(ownerType)}, start.span}, start.span, {}});
         functionParameters.insert(functionParameters.end(), parameters.begin(), parameters.end());
         const auto tailResult = returnType.name != "void" || !returnType.arguments.empty();
         auto previousTypeParameters = std::move(activeTypeParameters_);
@@ -656,10 +782,10 @@ ContractMethod Parser::contractMethod(const std::string &owner,
         program_.functions.push_back(
             {name.text, typeParameters, std::move(functionParameters), returnType, body,
              isExported(name.text), start.span, {}, {}, access, owner, std::nullopt, true, false,
-             {}});
+             {}, {}});
     }
     return {name.text, access, std::move(parameters), std::move(returnType),
-            isExported(name.text), start.span, defaultFunction};
+            isExported(name.text), start.span, defaultFunction, {}};
 }
 
 ReceiverKind Parser::receiver(const char *code, const char *message) {
@@ -680,9 +806,10 @@ ReceiverKind Parser::receiver(const char *code, const char *message) {
 }
 
 Parameter Parser::parameter() {
+    auto parsedAttributes = attributes(false);
     const auto name = expect(TokenKind::Identifier, "FDN1026", "expected parameter name");
     auto type = typeSyntax("FDN1028", "expected parameter type");
-    return {name.text, std::move(type), name.span};
+    return {name.text, std::move(type), name.span, std::move(parsedAttributes.applications)};
 }
 
 AstBlockId Parser::block(bool tailResult) {
@@ -1270,11 +1397,12 @@ void Parser::installBuiltins() {
     program_.enums.push_back({
         "Option",
         {"T"},
-        {{"None", std::nullopt, true, span},
-         {"Some", optionValue, true, span}},
+        {{"None", std::nullopt, true, span, {}},
+         {"Some", optionValue, true, span, {}}},
         true,
         BuiltinEnumKind::Option,
         span,
+        {},
         {},
     });
 
@@ -1283,11 +1411,12 @@ void Parser::installBuiltins() {
     program_.enums.push_back({
         "Result",
         {"T", "E"},
-        {{"Ok", resultValue, true, span},
-         {"Err", resultError, true, span}},
+        {{"Ok", resultValue, true, span, {}},
+         {"Err", resultError, true, span, {}}},
         true,
         BuiltinEnumKind::Result,
         span,
+        {},
         {},
     });
 }

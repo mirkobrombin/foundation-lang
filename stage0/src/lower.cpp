@@ -115,17 +115,20 @@ class Lowerer {
     FirProgram run() {
         FirProgram result;
         result.main = model_.main;
+        result.attributeDeclarations = model_.attributeDeclarations;
         result.structs.reserve(program_.structs.size());
         for (std::size_t index = 0; index < program_.structs.size(); ++index) {
             FirStruct type;
             type.name = program_.structs[index].name;
             type.typeParameterCount = program_.structs[index].typeParameters.size();
             type.exported = program_.structs[index].exported;
+            type.attributes = model_.structs[index].attributes;
             type.fields.reserve(program_.structs[index].fields.size());
             for (std::size_t field = 0; field < program_.structs[index].fields.size(); ++field) {
                 type.fields.push_back({program_.structs[index].fields[field].name,
                                        model_.structs[index].fieldTypes[field],
-                                       program_.structs[index].fields[field].exported});
+                                       program_.structs[index].fields[field].exported,
+                                       model_.structs[index].fieldAttributes[field]});
             }
             result.structs.push_back(std::move(type));
         }
@@ -136,12 +139,14 @@ class Lowerer {
             type.typeParameterCount = program_.enums[index].typeParameters.size();
             type.exported = program_.enums[index].exported;
             type.builtin = program_.enums[index].builtin != BuiltinEnumKind::None;
+            type.attributes = model_.enums[index].attributes;
             type.variants.reserve(program_.enums[index].variants.size());
             for (std::size_t variant = 0; variant < program_.enums[index].variants.size();
                  ++variant) {
                 type.variants.push_back({program_.enums[index].variants[variant].name,
                                          model_.enums[index].payloadTypes[variant],
-                                         program_.enums[index].variants[variant].exported});
+                                         program_.enums[index].variants[variant].exported,
+                                         model_.enums[index].variantAttributes[variant]});
             }
             result.enums.push_back(std::move(type));
         }
@@ -151,10 +156,13 @@ class Lowerer {
             type.name = program_.contracts[index].name;
             type.typeParameterCount = program_.contracts[index].typeParameters.size();
             type.exported = program_.contracts[index].exported;
+            type.attributes = model_.contracts[index].attributes;
             for (const auto &semantic : model_.contracts[index].methods) {
                 type.methods.push_back({lowerReceiver(semantic.receiver), semantic.name,
                                         semantic.returnType, semantic.parameterTypes,
-                                        semantic.exported});
+                                        semantic.parameterNames,
+                                        semantic.exported, semantic.attributes,
+                                        semantic.parameterAttributes});
             }
             result.contracts.push_back(std::move(type));
         }
@@ -203,6 +211,9 @@ class Lowerer {
         function.cSymbol = source.cSymbol;
         function.hasBody = source.hasBody;
         function.closure = source.closure;
+        function.method = source.receiver.has_value();
+        function.attributes = semantic.attributes;
+        function.parameterAttributes = semantic.parameterAttributes;
         function.returnType = semantic.returnType;
         function.parameters = semantic.parameters;
         function.locals.reserve(semantic.locals.size());

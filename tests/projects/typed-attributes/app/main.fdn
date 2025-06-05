@@ -1,0 +1,18 @@
+package app
+
+import metadata as meta
+
+struct Request {
+    @meta.Field("user_id")
+    userId u64
+}
+
+@meta.Route(.GET, "/users/:id")
+fn handle(id u64) u64 {
+    id
+}
+
+fn main() i32 {
+    print("cross package attributes")
+    0
+}

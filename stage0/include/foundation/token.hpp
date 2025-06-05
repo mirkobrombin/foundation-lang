@@ -19,6 +19,7 @@ enum class TokenKind {
     Struct,
     Enum,
     Contract,
+    Attribute,
     Implements,
     Extends,
     By,

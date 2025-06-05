@@ -6,6 +6,8 @@
         { "include": "#comments" },
         { "include": "#strings" },
         { "include": "#compilerAttributes" },
+        { "include": "#attributeDefinitions" },
+        { "include": "#attributeApplications" },
         { "include": "#packageDeclarations" },
         { "include": "#cAbiDeclarations" },
         { "include": "#contractDefinitions" },
@@ -51,6 +53,92 @@
                         "4": { "name": "constant.language.target.foundation" },
                         "5": { "name": "punctuation.section.arguments.end.foundation" }
                     }
+                }
+            ]
+        },
+        "attributeDefinitions": {
+            "patterns": [
+                {
+                    "name": "meta.attribute.definition.foundation",
+                    "begin": "\\b(attribute)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()",
+                    "beginCaptures": {
+                        "1": { "name": "keyword.declaration.attribute.foundation" },
+                        "2": { "name": "entity.name.type.attribute.foundation" },
+                        "3": { "name": "punctuation.section.arguments.begin.foundation" }
+                    },
+                    "end": "(\\))\\s+(targets)\\s*(\\()\\s*([^)]*)\\s*(\\))(?:\\s+(repeatable))?",
+                    "endCaptures": {
+                        "1": { "name": "punctuation.section.arguments.end.foundation" },
+                        "2": { "name": "keyword.declaration.attribute.targets.foundation" },
+                        "3": { "name": "punctuation.section.arguments.begin.foundation" },
+                        "4": { "name": "support.type.attribute.target.foundation" },
+                        "5": { "name": "punctuation.section.arguments.end.foundation" },
+                        "6": { "name": "storage.modifier.attribute.repeatable.foundation" }
+                    },
+                    "patterns": [
+                        {
+                            "name": "variable.parameter.foundation",
+                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+(?:\\[[^,()\\n]+\\]|[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?)\\s*(?:,|\\)))"
+                        },
+                        { "include": "#genericTypeApplications" },
+                        { "include": "#types" },
+                        { "include": "#nominalTypes" },
+                        { "include": "#punctuation" }
+                    ]
+                }
+            ]
+        },
+        "attributeApplications": {
+            "patterns": [
+                {
+                    "name": "meta.attribute.application.foundation",
+                    "begin": "(@)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s*(\\()",
+                    "beginCaptures": {
+                        "1": { "name": "punctuation.definition.annotation.foundation" },
+                        "2": { "name": "entity.name.type.attribute.foundation" },
+                        "3": { "name": "punctuation.section.arguments.begin.foundation" }
+                    },
+                    "end": "\\)",
+                    "endCaptures": {
+                        "0": { "name": "punctuation.section.arguments.end.foundation" }
+                    },
+                    "patterns": [
+                        { "include": "#strings" },
+                        { "include": "#attributeArgumentParens" },
+                        { "include": "#blocks" },
+                        { "include": "#structLiterals" },
+                        { "include": "#enumConstructors" },
+                        { "include": "#genericTypeApplications" },
+                        { "include": "#types" },
+                        { "include": "#numbers" },
+                        { "include": "#keywords" },
+                        { "include": "#operators" },
+                        { "include": "#punctuation" }
+                    ]
+                }
+            ]
+        },
+        "attributeArgumentParens": {
+            "patterns": [
+                {
+                    "name": "meta.attribute.arguments.nested.foundation",
+                    "begin": "\\(",
+                    "beginCaptures": {
+                        "0": { "name": "punctuation.section.arguments.begin.foundation" }
+                    },
+                    "end": "\\)",
+                    "endCaptures": {
+                        "0": { "name": "punctuation.section.arguments.end.foundation" }
+                    },
+                    "patterns": [
+                        { "include": "#strings" },
+                        { "include": "#attributeArgumentParens" },
+                        { "include": "#blocks" },
+                        { "include": "#enumConstructors" },
+                        { "include": "#numbers" },
+                        { "include": "#operators" },
+                        { "include": "#punctuation" }
+                    ]
                 }
             ]
         },
@@ -154,6 +242,7 @@
                         "0": { "name": "punctuation.section.block.end.foundation" }
                     },
                     "patterns": [
+                        { "include": "#attributeApplications" },
                         { "include": "#functionDefinitions" },
                         { "include": "#blocks" },
                         {
@@ -184,6 +273,7 @@
                     },
                     "end": "$",
                     "patterns": [
+                        { "include": "#attributeApplications" },
                         { "include": "#functionDefinitions" },
                         {
                             "match": "\\b(as)\\s+([A-Za-z_][A-Za-z0-9_]*)",
@@ -259,6 +349,7 @@
                         "0": { "name": "punctuation.section.block.end.foundation" }
                     },
                     "patterns": [
+                        { "include": "#attributeApplications" },
                         {
                             "match": "^\\s*([A-Za-z_][A-Za-z0-9_]*)",
                             "captures": {
@@ -300,6 +391,7 @@
                         "0": { "name": "punctuation.section.parens.end.foundation" }
                     },
                     "patterns": [
+                        { "include": "#attributeApplications" },
                         {
                             "name": "variable.parameter.foundation",
                             "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+(?:(?:own|view|edit)\\s+)?(?:\\[[^,()\\n]+\\](?:[A-Za-z_][A-Za-z0-9_]*)?|[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?)\\s*(?:,|\\)))"
@@ -411,7 +503,11 @@
             "patterns": [
                 {
                     "name": "keyword.declaration.foundation",
-                    "match": "\\b(extern|struct|enum|contract|implements|extends|by|fn)\\b"
+                    "match": "\\b(attribute|extern|struct|enum|contract|implements|extends|by|fn)\\b"
+                },
+                {
+                    "name": "keyword.declaration.attribute.foundation",
+                    "match": "\\b(targets|repeatable)\\b"
                 },
                 {
                     "name": "keyword.declaration.module.foundation",

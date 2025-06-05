@@ -1,0 +1,9 @@
+struct Recursive {
+    next Recursive
+}
+
+attribute Value(value Recursive) targets(fn)
+
+fn main() i32 {
+    0
+}

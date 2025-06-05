@@ -1,0 +1,10 @@
+package metadata
+
+enum Method {
+    GET
+    POST
+}
+
+attribute Route(method Method, path String) targets(fn)
+attribute Field(name String) targets(field)
+attribute parameterOnly() targets(parameter)

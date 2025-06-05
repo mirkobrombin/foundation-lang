@@ -20,6 +20,11 @@ class Parser {
     [[nodiscard]] Program parse();
 
   private:
+    struct ParsedAttributes {
+        bool selected{true};
+        std::vector<AttributeApplication> applications;
+    };
+
     [[nodiscard]] bool atEnd() const;
     [[nodiscard]] const Token &current() const;
     [[nodiscard]] const Token &previous() const;
@@ -28,7 +33,8 @@ class Parser {
     [[nodiscard]] bool check(TokenKind kind) const;
     [[nodiscard]] bool continuesLine() const;
     [[nodiscard]] bool startsGenericPrimary() const;
-    [[nodiscard]] bool targetAttributes();
+    [[nodiscard]] ParsedAttributes attributes(bool allowTarget = true);
+    [[nodiscard]] std::optional<AttributeTarget> attributeTarget();
     [[nodiscard]] TargetPlatform targetArgument(const Token &argument);
     void restoreProgram(std::size_t expressions, std::size_t statements,
                         std::size_t blocks, std::size_t functions);
@@ -40,6 +46,7 @@ class Parser {
     StructDeclaration structDeclaration();
     EnumDeclaration enumDeclaration();
     ContractDeclaration contractDeclaration();
+    AttributeDeclaration attributeDeclaration();
     Function function(bool external = false);
     Function method(const std::string &owner, const std::vector<std::string> &typeParameters);
     ContractMethod contractMethod(const std::string &owner,

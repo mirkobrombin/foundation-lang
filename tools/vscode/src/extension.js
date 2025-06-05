@@ -4,6 +4,7 @@ const vscode = require("vscode");
 const { collectCompletions, findHover } = require("./completions");
 
 const completionKinds = {
+    Attribute: vscode.CompletionItemKind.Property,
     Constant: vscode.CompletionItemKind.Constant,
     Contract: vscode.CompletionItemKind.Interface,
     Enum: vscode.CompletionItemKind.Enum,
@@ -15,6 +16,7 @@ const completionKinds = {
     Method: vscode.CompletionItemKind.Method,
     Struct: vscode.CompletionItemKind.Struct,
     TypeParameter: vscode.CompletionItemKind.TypeParameter,
+    Value: vscode.CompletionItemKind.Value,
     Variable: vscode.CompletionItemKind.Variable
 };
 
@@ -42,7 +44,7 @@ function activate(context) {
                 return item;
             });
         }
-    }, ".");
+    }, ".", "@");
 
     const hoverProvider = vscode.languages.registerHoverProvider("foundation", {
         async provideHover(document, position) {

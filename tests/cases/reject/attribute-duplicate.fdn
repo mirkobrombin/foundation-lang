@@ -1,0 +1,7 @@
+attribute Once(value String) targets(fn)
+
+@Once("first")
+@Once("second")
+fn main() i32 {
+    0
+}

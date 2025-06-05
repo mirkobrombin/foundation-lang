@@ -98,6 +98,8 @@ const char *tokenName(TokenKind kind) {
         return "enum";
     case TokenKind::Contract:
         return "contract";
+    case TokenKind::Attribute:
+        return "attribute";
     case TokenKind::Implements:
         return "implements";
     case TokenKind::Extends:
@@ -363,6 +365,8 @@ Token Lexer::identifier() {
         kind = TokenKind::Enum;
     } else if (text == "contract") {
         kind = TokenKind::Contract;
+    } else if (text == "attribute") {
+        kind = TokenKind::Attribute;
     } else if (text == "implements") {
         kind = TokenKind::Implements;
     } else if (text == "extends") {

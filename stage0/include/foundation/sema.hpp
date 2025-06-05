@@ -78,6 +78,8 @@ struct SemanticFunction {
     std::vector<Type> parameterTypes;
     std::vector<FirLocalId> parameters;
     std::vector<SemanticLocal> locals;
+    std::vector<FirAttributeUse> attributes;
+    std::vector<std::vector<FirAttributeUse>> parameterAttributes;
 };
 
 struct SemanticStruct {
@@ -85,11 +87,15 @@ struct SemanticStruct {
     std::vector<Type> fieldTypes;
     std::vector<Type> implementations;
     std::vector<std::optional<FirFieldId>> implementationDelegates;
+    std::vector<FirAttributeUse> attributes;
+    std::vector<std::vector<FirAttributeUse>> fieldAttributes;
 };
 
 struct SemanticEnum {
     std::size_t typeParameterCount{};
     std::vector<std::optional<Type>> payloadTypes;
+    std::vector<FirAttributeUse> attributes;
+    std::vector<std::vector<FirAttributeUse>> variantAttributes;
 };
 
 struct SemanticContractMethod {
@@ -97,17 +103,21 @@ struct SemanticContractMethod {
     ReceiverKind receiver{ReceiverKind::View};
     Type returnType{invalidType};
     std::vector<Type> parameterTypes;
+    std::vector<std::string> parameterNames;
     bool exported{};
     SourceSpan span;
     std::size_t originContract{};
     std::vector<Type> originArguments;
     std::optional<AstFunctionId> defaultFunction;
+    std::vector<FirAttributeUse> attributes;
+    std::vector<std::vector<FirAttributeUse>> parameterAttributes;
 };
 
 struct SemanticContract {
     std::size_t typeParameterCount{};
     std::vector<Type> parents;
     std::vector<SemanticContractMethod> methods;
+    std::vector<FirAttributeUse> attributes;
 };
 
 struct StructLiteralTarget {
@@ -161,6 +171,7 @@ struct SemanticModel {
     std::vector<SemanticStruct> structs;
     std::vector<SemanticEnum> enums;
     std::vector<SemanticContract> contracts;
+    std::vector<FirAttributeDeclaration> attributeDeclarations;
     std::vector<SemanticFunction> functions;
     FirFunctionId main{};
 };

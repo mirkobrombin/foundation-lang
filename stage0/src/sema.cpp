@@ -159,6 +159,7 @@ class Analyzer {
         model_.structs.resize(program.structs.size());
         model_.enums.resize(program.enums.size());
         model_.contracts.resize(program.contracts.size());
+        model_.attributeDeclarations.resize(program.attributeDeclarations.size());
         model_.functions.resize(program.functions.size());
     }
 
@@ -166,11 +167,14 @@ class Analyzer {
         declareStructs();
         declareEnums();
         declareContracts();
+        declareAttributes();
         resolveContracts();
         resolveStructs();
         resolveEnums();
         rejectTypeCycles();
+        resolveAttributeDeclarations();
         declareFunctions();
+        resolveAppliedAttributes();
         verifyImplementations();
         for (std::size_t index = 0; index < program_.functions.size(); ++index) {
             if (!program_.functions[index].closure) {
@@ -230,6 +234,45 @@ class Analyzer {
                                    declaration.span);
             }
         }
+    }
+
+    void declareAttributes() {
+        for (std::size_t index = 0; index < program_.attributeDeclarations.size(); ++index) {
+            const auto &declaration = program_.attributeDeclarations[index];
+            const auto separator = declaration.name.rfind('.');
+            const auto sourceName = declaration.name.substr(
+                separator == std::string::npos ? 0 : separator + 1);
+            if (sourceName == "target") {
+                diagnostics_.error("FDN2150", "target is reserved for the compiler",
+                                   declaration.span);
+            }
+            if (!attributes_.emplace(declaration.name, index).second) {
+                diagnostics_.error("FDN2150", "duplicate attribute " + declaration.name,
+                                   declaration.span);
+            }
+        }
+    }
+
+    static FirAttributeTarget lowerAttributeTarget(AttributeTarget target) {
+        switch (target) {
+        case AttributeTarget::Function:
+            return FirAttributeTarget::Function;
+        case AttributeTarget::Struct:
+            return FirAttributeTarget::Struct;
+        case AttributeTarget::Enum:
+            return FirAttributeTarget::Enum;
+        case AttributeTarget::Contract:
+            return FirAttributeTarget::Contract;
+        case AttributeTarget::Method:
+            return FirAttributeTarget::Method;
+        case AttributeTarget::Field:
+            return FirAttributeTarget::Field;
+        case AttributeTarget::Variant:
+            return FirAttributeTarget::Variant;
+        case AttributeTarget::Parameter:
+            return FirAttributeTarget::Parameter;
+        }
+        return FirAttributeTarget::Function;
     }
 
     void resolveContracts() {
@@ -304,6 +347,7 @@ class Analyzer {
                                            parameter.span);
                     }
                     target.parameterTypes.push_back(type);
+                    target.parameterNames.push_back(parameter.name);
                 }
                 semantic.methods.push_back(std::move(target));
             }
@@ -686,6 +730,330 @@ class Analyzer {
             }
         }
         return children;
+    }
+
+    bool metadataType(const Type &type, SourceSpan span,
+                      std::unordered_set<std::string> &active) {
+        if (type == i32Type || type == u64Type || type == boolType || type == stringType) {
+            return true;
+        }
+        if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
+            return metadataType(type.arguments.front(), span, active);
+        }
+        if (type.kind != TypeKind::Struct && type.kind != TypeKind::Enum) {
+            diagnostics_.error("FDN2161", "attribute parameter type is not metadata-safe",
+                               span);
+            return false;
+        }
+        const auto key = std::to_string(static_cast<unsigned int>(type.kind)) + ':' +
+                         std::to_string(type.declaration);
+        if (!active.emplace(key).second) {
+            diagnostics_.error("FDN2162", "attribute metadata type cycle", span);
+            return false;
+        }
+        auto valid = true;
+        for (const auto &[child, childSpan] : layoutChildren(type)) {
+            valid = metadataType(child, childSpan, active) && valid;
+        }
+        active.erase(key);
+        return valid;
+    }
+
+    void resolveAttributeDeclarations() {
+        setTypeParameters({}, {});
+        for (std::size_t index = 0; index < program_.attributeDeclarations.size(); ++index) {
+            const auto &source = program_.attributeDeclarations[index];
+            auto &target = model_.attributeDeclarations[index];
+            target.name = source.name;
+            target.repeatable = source.repeatable;
+            target.exported = source.exported;
+            if (source.targets.empty()) {
+                diagnostics_.error("FDN2151", "attribute must declare at least one target",
+                                   source.span);
+            }
+            std::unordered_set<unsigned int> targets;
+            for (const auto sourceTarget : source.targets) {
+                const auto lowered = lowerAttributeTarget(sourceTarget);
+                if (!targets.emplace(static_cast<unsigned int>(lowered)).second) {
+                    diagnostics_.error("FDN2151", "duplicate attribute target", source.span);
+                }
+                target.targets.push_back(lowered);
+            }
+            std::unordered_set<std::string> parameters;
+            for (const auto &parameter : source.parameters) {
+                if (!parameters.emplace(parameter.name).second) {
+                    diagnostics_.error("FDN2151",
+                                       "duplicate attribute parameter " + parameter.name,
+                                       parameter.span);
+                }
+                const auto type = resolveType(parameter.type);
+                std::unordered_set<std::string> active;
+                static_cast<void>(metadataType(type, parameter.span, active));
+                target.parameters.push_back({parameter.name, type});
+            }
+        }
+    }
+
+    bool attributeConstant(AstExpressionId id) const {
+        const auto &expression = program_.expressions[id];
+        if (std::holds_alternative<IntegerExpression>(expression.value) ||
+            std::holds_alternative<BooleanExpression>(expression.value) ||
+            std::holds_alternative<StringExpression>(expression.value)) {
+            return true;
+        }
+        if (const auto *array = std::get_if<ArrayExpression>(&expression.value)) {
+            return std::all_of(array->elements.begin(), array->elements.end(),
+                               [this](const auto element) {
+                                   return attributeConstant(element);
+                               });
+        }
+        if (const auto *literal = std::get_if<StructExpression>(&expression.value)) {
+            return std::all_of(literal->fields.begin(), literal->fields.end(),
+                               [this](const auto &field) {
+                                   return attributeConstant(field.value);
+                               });
+        }
+        if (const auto *member = std::get_if<MemberExpression>(&expression.value)) {
+            if (member->base.has_value() &&
+                !std::holds_alternative<NameExpression>(
+                    program_.expressions[*member->base].value)) {
+                return false;
+            }
+            return std::all_of(member->arguments.begin(), member->arguments.end(),
+                               [this](const auto argument) {
+                                   return attributeConstant(argument);
+                               });
+        }
+        return false;
+    }
+
+    FirAttributeValue attributeValue(AstExpressionId id) const {
+        const auto &expression = program_.expressions[id];
+        FirAttributeValue result;
+        result.type = model_.expressionTypes[id];
+        if (const auto *integer = std::get_if<IntegerExpression>(&expression.value)) {
+            result.kind = FirAttributeValueKind::Integer;
+            result.magnitude = integer->magnitude;
+            result.negative = integer->negative;
+        } else if (const auto *boolean = std::get_if<BooleanExpression>(&expression.value)) {
+            result.kind = FirAttributeValueKind::Boolean;
+            result.boolean = boolean->value;
+        } else if (const auto *string = std::get_if<StringExpression>(&expression.value)) {
+            result.kind = FirAttributeValueKind::String;
+            result.text = string->value;
+        } else if (const auto *array = std::get_if<ArrayExpression>(&expression.value)) {
+            result.kind = FirAttributeValueKind::Array;
+            for (const auto element : array->elements) {
+                result.children.push_back(attributeValue(element));
+            }
+        } else if (const auto *literal = std::get_if<StructExpression>(&expression.value)) {
+            result.kind = FirAttributeValueKind::Struct;
+            for (const auto &field : literal->fields) {
+                result.members.push_back(field.name);
+                result.children.push_back(attributeValue(field.value));
+            }
+        } else if (const auto *member = std::get_if<MemberExpression>(&expression.value)) {
+            result.kind = FirAttributeValueKind::Enum;
+            if (model_.enumTargets[id].has_value()) {
+                result.variant = model_.enumTargets[id]->variant;
+            }
+            for (const auto argument : member->arguments) {
+                result.children.push_back(attributeValue(argument));
+            }
+        }
+        return result;
+    }
+
+    static const char *attributeTargetName(FirAttributeTarget target) {
+        switch (target) {
+        case FirAttributeTarget::Function:
+            return "fn";
+        case FirAttributeTarget::Struct:
+            return "struct";
+        case FirAttributeTarget::Enum:
+            return "enum";
+        case FirAttributeTarget::Contract:
+            return "contract";
+        case FirAttributeTarget::Method:
+            return "method";
+        case FirAttributeTarget::Field:
+            return "field";
+        case FirAttributeTarget::Variant:
+            return "variant";
+        case FirAttributeTarget::Parameter:
+            return "parameter";
+        }
+        return "declaration";
+    }
+
+    std::vector<FirAttributeUse>
+    resolveAttributes(const std::vector<AttributeApplication> &applications,
+                      FirAttributeTarget target, std::string_view packageName) {
+        std::vector<FirAttributeUse> result;
+        std::unordered_set<FirAttributeId> seen;
+        currentPackageOverride_ = packageName;
+        setTypeParameters({}, {});
+        for (const auto &application : applications) {
+            const auto found = attributes_.find(application.name);
+            if (found == attributes_.end()) {
+                diagnostics_.error("FDN2152", "unknown attribute @" + application.name,
+                                   application.span);
+                continue;
+            }
+            const auto id = found->second;
+            const auto &declaration = model_.attributeDeclarations[id];
+            if (std::find(declaration.targets.begin(), declaration.targets.end(), target) ==
+                declaration.targets.end()) {
+                diagnostics_.error("FDN2153",
+                                   "attribute @" + application.name + " cannot target " +
+                                       attributeTargetName(target),
+                                   application.span);
+            }
+            if (!declaration.repeatable && !seen.emplace(id).second) {
+                diagnostics_.error("FDN2154",
+                                   "attribute @" + application.name + " is not repeatable",
+                                   application.span);
+            }
+
+            std::vector<const AttributeArgument *> ordered(declaration.parameters.size());
+            std::size_t positional{};
+            auto named = false;
+            for (const auto &argument : application.arguments) {
+                if (argument.name.has_value()) {
+                    named = true;
+                    const auto parameter = std::find_if(
+                        declaration.parameters.begin(), declaration.parameters.end(),
+                        [&](const auto &candidate) {
+                            return candidate.name == *argument.name;
+                        });
+                    if (parameter == declaration.parameters.end()) {
+                        diagnostics_.error("FDN2156",
+                                           "unknown attribute argument " + *argument.name,
+                                           argument.span);
+                        continue;
+                    }
+                    const auto index = static_cast<std::size_t>(
+                        std::distance(declaration.parameters.begin(), parameter));
+                    if (ordered[index] != nullptr) {
+                        diagnostics_.error("FDN2157",
+                                           "duplicate attribute argument " + *argument.name,
+                                           argument.span);
+                        continue;
+                    }
+                    ordered[index] = &argument;
+                    continue;
+                }
+                if (named) {
+                    diagnostics_.error("FDN2155",
+                                       "positional attribute argument follows named argument",
+                                       argument.span);
+                    continue;
+                }
+                if (positional >= ordered.size()) {
+                    diagnostics_.error("FDN2156", "too many attribute arguments",
+                                       argument.span);
+                    continue;
+                }
+                ordered[positional++] = &argument;
+            }
+
+            FirAttributeUse use;
+            use.declaration = id;
+            for (std::size_t index = 0; index < declaration.parameters.size(); ++index) {
+                if (ordered[index] == nullptr) {
+                    diagnostics_.error("FDN2158",
+                                       "missing attribute argument " +
+                                           declaration.parameters[index].name,
+                                       application.span);
+                    continue;
+                }
+                const auto expression = ordered[index]->value;
+                if (!attributeConstant(expression)) {
+                    diagnostics_.error("FDN2160", "attribute argument must be constant",
+                                       ordered[index]->span);
+                    continue;
+                }
+                const auto actual = analyzeExpression(
+                    expression, declaration.parameters[index].type, ExpressionUse::Inspect);
+                requireSame(declaration.parameters[index].type, actual,
+                            ordered[index]->span, "attribute argument");
+                use.arguments.push_back({declaration.parameters[index].name,
+                                         attributeValue(expression)});
+            }
+            result.push_back(std::move(use));
+        }
+        currentPackageOverride_ = {};
+        return result;
+    }
+
+    void resolveAppliedAttributes() {
+        currentFunction_ = program_.functions.size();
+        for (std::size_t index = 0; index < program_.structs.size(); ++index) {
+            const auto &source = program_.structs[index];
+            auto &target = model_.structs[index];
+            target.attributes = resolveAttributes(source.attributes, FirAttributeTarget::Struct,
+                                                  source.packageName);
+            target.fieldAttributes.resize(source.fields.size());
+            for (std::size_t field = 0; field < source.fields.size(); ++field) {
+                target.fieldAttributes[field] =
+                    resolveAttributes(source.fields[field].attributes,
+                                      FirAttributeTarget::Field, source.packageName);
+            }
+        }
+        for (std::size_t index = 0; index < program_.enums.size(); ++index) {
+            const auto &source = program_.enums[index];
+            auto &target = model_.enums[index];
+            target.attributes = resolveAttributes(source.attributes, FirAttributeTarget::Enum,
+                                                  source.packageName);
+            target.variantAttributes.resize(source.variants.size());
+            for (std::size_t variant = 0; variant < source.variants.size(); ++variant) {
+                target.variantAttributes[variant] =
+                    resolveAttributes(source.variants[variant].attributes,
+                                      FirAttributeTarget::Variant, source.packageName);
+            }
+        }
+        for (std::size_t index = 0; index < program_.contracts.size(); ++index) {
+            const auto &source = program_.contracts[index];
+            auto &target = model_.contracts[index];
+            target.attributes = resolveAttributes(source.attributes,
+                                                  FirAttributeTarget::Contract,
+                                                  source.packageName);
+            for (auto &method : target.methods) {
+                const auto &origin = program_.contracts[method.originContract];
+                const auto sourceMethod = std::find_if(
+                    origin.methods.begin(), origin.methods.end(), [&](const auto &candidate) {
+                        return candidate.name == method.name;
+                    });
+                if (sourceMethod == origin.methods.end()) {
+                    continue;
+                }
+                method.attributes = resolveAttributes(sourceMethod->attributes,
+                                                      FirAttributeTarget::Method,
+                                                      origin.packageName);
+                method.parameterAttributes.resize(sourceMethod->parameters.size());
+                for (std::size_t parameter = 0;
+                     parameter < sourceMethod->parameters.size(); ++parameter) {
+                    method.parameterAttributes[parameter] = resolveAttributes(
+                        sourceMethod->parameters[parameter].attributes,
+                        FirAttributeTarget::Parameter, origin.packageName);
+                }
+            }
+        }
+        for (std::size_t index = 0; index < program_.functions.size(); ++index) {
+            const auto &source = program_.functions[index];
+            auto &target = model_.functions[index];
+            target.attributes = resolveAttributes(
+                source.attributes,
+                source.receiver.has_value() ? FirAttributeTarget::Method
+                                            : FirAttributeTarget::Function,
+                source.packageName);
+            target.parameterAttributes.resize(source.parameters.size());
+            for (std::size_t parameter = 0; parameter < source.parameters.size(); ++parameter) {
+                target.parameterAttributes[parameter] = resolveAttributes(
+                    source.parameters[parameter].attributes, FirAttributeTarget::Parameter,
+                    source.packageName);
+            }
+        }
     }
 
     void declareFunctions() {
@@ -3338,6 +3706,9 @@ class Analyzer {
     }
 
     std::string_view currentPackage() const {
+        if (!currentPackageOverride_.empty()) {
+            return currentPackageOverride_;
+        }
         return currentFunction_ < program_.functions.size()
                    ? std::string_view(program_.functions[currentFunction_].packageName)
                    : std::string_view{};
@@ -3844,6 +4215,7 @@ class Analyzer {
     std::unordered_map<std::string, FirStructId> structs_;
     std::unordered_map<std::string, FirEnumId> enums_;
     std::unordered_map<std::string, std::size_t> contracts_;
+    std::unordered_map<std::string, FirAttributeId> attributes_;
     std::unordered_map<std::string, FirFunctionId> functions_;
     std::vector<std::unordered_map<std::string, FirFunctionId>> methods_;
     std::unordered_map<std::string, std::size_t> typeParameters_;
@@ -3857,6 +4229,7 @@ class Analyzer {
     std::vector<MoveState> moveStates_;
     std::vector<LoanState> loanStates_;
     std::unordered_set<std::string> closureOuterNames_;
+    std::string_view currentPackageOverride_;
     bool transientBorrowsAllowed_{};
     FirFunctionId currentFunction_{};
 };

@@ -23,6 +23,7 @@ add_library(foundation_compiler STATIC
     stage0/src/driver.cpp
     stage0/src/lexer.cpp
     stage0/src/lower.cpp
+    stage0/src/metadata.cpp
     stage0/src/parser.cpp
     stage0/src/process.cpp
     stage0/src/project.cpp
@@ -89,6 +90,11 @@ if(FOUNDATION_BUILD_FUZZERS)
     configure_file(
         tests/fuzz/corpus/bootstrap.fdn
         "${FOUNDATION_FUZZ_CORPUS_DIR}/bootstrap.fdn"
+        COPYONLY
+    )
+    configure_file(
+        tests/fuzz/corpus/typed-attributes.fdn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/typed-attributes.fdn"
         COPYONLY
     )
 endif()
@@ -245,6 +251,52 @@ if(BUILD_TESTING)
             -DCODE=FDN2011
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
+    add_test(
+        NAME stage0.run.typed-attributes
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-attributes.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-attributes.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.emit.typed-attributes-metadata
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-attributes.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-attributes.metadata.json
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/typed-attributes-first.json
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/typed-attributes-second.json
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-metadata.cmake
+    )
+    foreach(attribute_case IN ITEMS
+            "attribute-unknown;FDN2152"
+            "attribute-wrong-target;FDN2153"
+            "attribute-duplicate;FDN2154"
+            "attribute-positional-after-named;FDN2155"
+            "attribute-unknown-argument;FDN2156"
+            "attribute-extra-argument;FDN2156"
+            "attribute-duplicate-argument;FDN2157"
+            "attribute-missing-argument;FDN2158"
+            "attribute-nonconstant;FDN2160"
+            "attribute-unsafe-type;FDN2161"
+            "attribute-metadata-cycle;FDN2162"
+            "attribute-expanding-cycle;FDN2162"
+            "attribute-reserved-target;FDN2150"
+            "attribute-duplicate-schema;FDN2151"
+            "attribute-target-member;FDN1146"
+            "attribute-type-mismatch;FDN2011")
+        list(GET attribute_case 0 attribute_name)
+        list(GET attribute_case 1 attribute_code)
+        add_test(
+            NAME stage0.check.${attribute_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${attribute_name}.fdn
+                -DCODE=${attribute_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
     add_test(
         NAME stage0.run.typed-control
         COMMAND ${CMAKE_COMMAND}
@@ -564,6 +616,32 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/packages
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/packages/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.typed-attributes-project
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/typed-attributes
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/typed-attributes/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.emit.typed-attributes-project-metadata
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/typed-attributes
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/typed-attributes/expected.metadata.json
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/typed-attributes-project-first.json
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/typed-attributes-project-second.json
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-metadata.cmake
+    )
+    add_test(
+        NAME stage0.check.typed-attributes-private
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/typed-attributes-private
+            -DCODE=FDN3008
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(
         NAME stage0.emit.packages-deterministic

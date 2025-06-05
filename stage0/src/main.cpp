@@ -13,6 +13,7 @@ void printUsage(std::ostream &output) {
            << "  foundationc check <source-or-project>\n"
            << "  foundationc emit-c <source-or-project> -o <output.c>\n"
            << "  foundationc emit-c-header <source-or-project> -o <output.h>\n"
+           << "  foundationc emit-metadata <source-or-project> -o <output.json>\n"
            << "  foundationc build <source-or-project> -o <executable> [--native <input>]...\n"
            << "  foundationc run <source-or-project> [--native <input>]... [-- <argument>...]\n"
            << "  foundationc version\n";
@@ -83,6 +84,10 @@ int main(int argc, char **argv) {
         if (command == "emit-c-header" && outputArgumentsAreValid(argc, argv)) {
             return foundation::emitCHeaderFile(std::filesystem::path(argv[2]),
                                                std::filesystem::path(argv[4]));
+        }
+        if (command == "emit-metadata" && outputArgumentsAreValid(argc, argv)) {
+            return foundation::emitMetadataFile(std::filesystem::path(argv[2]),
+                                                std::filesystem::path(argv[4]));
         }
         if (command == "build" && argc >= 5 && std::string_view(argv[3]) == "-o") {
             std::vector<std::filesystem::path> nativeInputs;

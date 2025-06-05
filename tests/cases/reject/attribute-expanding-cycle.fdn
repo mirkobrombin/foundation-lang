@@ -1,0 +1,9 @@
+struct Grow<T> {
+    next Grow<[1]T>
+}
+
+attribute Value(value Grow<i32>) targets(fn)
+
+fn main() i32 {
+    0
+}

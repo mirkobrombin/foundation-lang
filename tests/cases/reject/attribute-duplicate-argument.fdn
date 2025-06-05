@@ -1,0 +1,6 @@
+attribute Route(path String) targets(fn)
+
+@Route(path = "/users", path = "/other")
+fn main() i32 {
+    0
+}

@@ -1,0 +1,51 @@
+package app
+
+enum HttpMethod {
+    GET
+    POST
+}
+
+attribute Route(method HttpMethod, path String) targets(fn)
+attribute Label(value String) targets(struct, enum, contract, field, variant, method, parameter) repeatable
+
+struct RouteOptions {
+    secure bool
+    statuses [2]i32
+}
+
+attribute Endpoint(options RouteOptions, fallback Option<String>) targets(fn)
+
+@Label("record")
+@Label(value = "public")
+struct User {
+    @Label("identity")
+    id u64
+
+    @Label("formatter")
+    fn display(view, @Label("prefix") prefix String) String {
+        prefix
+    }
+}
+
+@Label("state")
+enum State {
+    @Label("ready")
+    Ready
+}
+
+@Label("reader")
+contract Reader {
+    @Label("read")
+    fn read(view, @Label("fallback") fallback i32) i32
+}
+
+@Route(.GET, "/users/:id")
+@Endpoint(RouteOptions { secure = true statuses = [200, 404] }, .Some("missing"))
+fn load(@Label("identifier") id u64) u64 {
+    id
+}
+
+fn main() i32 {
+    print("typed attributes")
+    0
+}

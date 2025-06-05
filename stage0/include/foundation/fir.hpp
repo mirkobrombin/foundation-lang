@@ -23,6 +23,62 @@ using FirFieldId = std::size_t;
 using FirEnumId = std::size_t;
 using FirVariantId = std::size_t;
 using FirContractId = std::size_t;
+using FirAttributeId = std::size_t;
+
+enum class FirAttributeTarget {
+    Function,
+    Struct,
+    Enum,
+    Contract,
+    Method,
+    Field,
+    Variant,
+    Parameter,
+};
+
+enum class FirAttributeValueKind {
+    Integer,
+    Boolean,
+    String,
+    Enum,
+    Array,
+    Struct,
+};
+
+struct FirAttributeValue {
+    FirAttributeValueKind kind{FirAttributeValueKind::Integer};
+    Type type{invalidType};
+    std::uint64_t magnitude{};
+    bool negative{};
+    bool boolean{};
+    std::string text;
+    FirVariantId variant{};
+    std::vector<std::string> members;
+    std::vector<FirAttributeValue> children;
+};
+
+struct FirAttributeArgument {
+    std::string name;
+    FirAttributeValue value;
+};
+
+struct FirAttributeUse {
+    FirAttributeId declaration{};
+    std::vector<FirAttributeArgument> arguments;
+};
+
+struct FirAttributeParameter {
+    std::string name;
+    Type type{invalidType};
+};
+
+struct FirAttributeDeclaration {
+    std::string name;
+    std::vector<FirAttributeParameter> parameters;
+    std::vector<FirAttributeTarget> targets;
+    bool repeatable{};
+    bool exported{};
+};
 
 enum class FirCaptureMode {
     Copy,
@@ -311,12 +367,16 @@ struct FirFunction {
     std::optional<std::string> cSymbol;
     bool hasBody{true};
     bool closure{};
+    bool method{};
+    std::vector<FirAttributeUse> attributes;
+    std::vector<std::vector<FirAttributeUse>> parameterAttributes;
 };
 
 struct FirStructField {
     std::string name;
     Type type{invalidType};
     bool exported{};
+    std::vector<FirAttributeUse> attributes;
 };
 
 struct FirStruct {
@@ -325,12 +385,14 @@ struct FirStruct {
     std::vector<FirStructField> fields;
     bool exported{};
     std::optional<FirFunctionId> dropFunction;
+    std::vector<FirAttributeUse> attributes;
 };
 
 struct FirEnumVariant {
     std::string name;
     std::optional<Type> payload;
     bool exported{};
+    std::vector<FirAttributeUse> attributes;
 };
 
 struct FirEnum {
@@ -339,6 +401,7 @@ struct FirEnum {
     std::vector<FirEnumVariant> variants;
     bool exported{};
     bool builtin{};
+    std::vector<FirAttributeUse> attributes;
 };
 
 struct FirContractMethod {
@@ -346,7 +409,10 @@ struct FirContractMethod {
     std::string name;
     Type returnType{invalidType};
     std::vector<Type> parameters;
+    std::vector<std::string> parameterNames;
     bool exported{};
+    std::vector<FirAttributeUse> attributes;
+    std::vector<std::vector<FirAttributeUse>> parameterAttributes;
 };
 
 struct FirContract {
@@ -354,12 +420,14 @@ struct FirContract {
     std::size_t typeParameterCount{};
     std::vector<FirContractMethod> methods;
     bool exported{};
+    std::vector<FirAttributeUse> attributes;
 };
 
 struct FirProgram {
     std::vector<FirStruct> structs;
     std::vector<FirEnum> enums;
     std::vector<FirContract> contracts;
+    std::vector<FirAttributeDeclaration> attributeDeclarations;
     std::vector<FirFunction> functions;
     FirFunctionId main{};
 };

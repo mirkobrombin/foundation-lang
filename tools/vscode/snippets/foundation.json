@@ -88,6 +88,16 @@
         ],
         "description": "Select a declaration for one compilation target"
     },
+    "Typed attribute declaration": {
+        "prefix": "attribute",
+        "body": "attribute ${1:Route}(${2:path String}) targets(${3|fn,struct,enum,contract,method,field,variant,parameter|})${4: repeatable}",
+        "description": "Declare typed compile-time metadata"
+    },
+    "Typed attribute application": {
+        "prefix": "applyattribute",
+        "body": "@${1:Route}(${2})",
+        "description": "Apply typed compile-time metadata"
+    },
     "Enum": {
         "prefix": "enum",
         "body": [
