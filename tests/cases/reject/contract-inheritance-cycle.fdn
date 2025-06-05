@@ -1,0 +1,4 @@
+contract First extends Second {}
+contract Second extends First {}
+
+fn main() i32 { 0 }

@@ -1,0 +1,13 @@
+contract Named {
+    fn value(view) i32
+}
+
+struct Identity {
+    value i32
+}
+
+struct Invalid implements Named by identity {
+    identity Identity
+}
+
+fn main() i32 { 0 }

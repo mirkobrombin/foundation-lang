@@ -188,6 +188,11 @@ void appendProgram(Program &target, Program source) {
         target.enums.push_back(std::move(declaration));
     }
     for (auto &declaration : source.contracts) {
+        for (auto &method : declaration.methods) {
+            if (method.defaultFunction.has_value()) {
+                *method.defaultFunction += functionOffset;
+            }
+        }
         target.contracts.push_back(std::move(declaration));
     }
     for (auto &function : source.functions) {
@@ -609,7 +614,8 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
             linkType(field.type, packageName, aliases, symbols, parameters, diagnostics);
         }
         for (auto &implementation : declaration.implementations) {
-            linkType(implementation, packageName, aliases, symbols, parameters, diagnostics);
+            linkType(implementation.contract, packageName, aliases, symbols, parameters,
+                     diagnostics);
         }
         declaration.name = internalName(packageName, declaration.name);
     }
@@ -632,6 +638,9 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
         declaration.packageName = packageName;
         const std::unordered_set<std::string> parameters(declaration.typeParameters.begin(),
                                                          declaration.typeParameters.end());
+        for (auto &parent : declaration.parents) {
+            linkType(parent, packageName, aliases, symbols, parameters, diagnostics);
+        }
         for (auto &method : declaration.methods) {
             for (auto &parameter : method.parameters) {
                 linkType(parameter.type, packageName, aliases, symbols, parameters, diagnostics);

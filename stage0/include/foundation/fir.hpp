@@ -140,11 +140,19 @@ struct FirCallExpression {
     FirLocalId local{};
 };
 
+struct FirContractMethodTarget {
+    FirFunctionId function{};
+    std::vector<Type> typeArguments;
+    bool contractDefault{};
+    Type defaultContract{invalidType};
+    std::vector<FirFieldId> delegatePath;
+};
+
 struct FirContractExpression {
     FirExpressionId value{};
     Type concreteType{invalidType};
     Type contractType{invalidType};
-    std::vector<FirFunctionId> methods;
+    std::vector<FirContractMethodTarget> methods;
 };
 
 struct FirStructFieldValue {

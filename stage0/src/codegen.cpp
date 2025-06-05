@@ -464,7 +464,17 @@ class Monomorphizer {
                 contractValue->concreteType = instantiateType(concrete);
                 contractValue->contractType = instantiateType(contractType);
                 for (auto &method : contractValue->methods) {
-                    method = instantiateFunction(method, concrete.arguments);
+                    std::vector<Type> methodArguments;
+                    methodArguments.reserve(method.typeArguments.size());
+                    for (const auto &argument : method.typeArguments) {
+                        methodArguments.push_back(substitute(argument, arguments));
+                    }
+                    method.function = instantiateFunction(method.function, methodArguments);
+                    method.typeArguments.clear();
+                    if (method.contractDefault) {
+                        method.defaultContract = instantiateType(
+                            substitute(method.defaultContract, arguments));
+                    }
                 }
             } else if (auto *literal = std::get_if<FirStructExpression>(&expression.value)) {
                 literal->type = instantiateType(substitute(literal->type, arguments));
@@ -731,6 +741,9 @@ void emitDropValue(std::ostringstream &out, const FirProgram &program, const Typ
         const auto &target = type.arguments.front();
         if (target.kind == TypeKind::String) {
             out << indentation(depth + 1) << "fdn_string_drop(" << value << ");\n";
+        } else if (target.kind == TypeKind::Contract) {
+            out << indentation(depth + 1) << value
+                << "->fdn_vtable->fdn_drop(" << value << "->fdn_data);\n";
         } else if (target.kind == TypeKind::Array || target.kind == TypeKind::Struct ||
                    target.kind == TypeKind::Enum) {
             if (typeRequiresDrop(program, target)) {
@@ -1010,6 +1023,10 @@ class FunctionEmitter {
         }
         if (operandType.kind == TypeKind::Own || operandType.kind == TypeKind::View ||
             operandType.kind == TypeKind::Edit) {
+            if (operandType.kind == TypeKind::Own && operandType.arguments.size() == 1 &&
+                operandType.arguments.front().kind == TypeKind::Contract) {
+                return {"*" + operand.value, false};
+            }
             return operand;
         }
         return {"&" + operand.value, false};
@@ -1211,8 +1228,11 @@ class FunctionEmitter {
             if (arguments.empty()) {
                 internalError("contract call has no receiver");
             }
-            invocation << arguments.front() << ".fdn_vtable->fdn_method_" << call.method << '(';
-            invocation << arguments.front() << ".fdn_data";
+            const auto receiverType = function_.expressions[call.arguments.front()].type;
+            const auto member = receiverType.kind == TypeKind::Own ? "->" : ".";
+            invocation << arguments.front() << member << "fdn_vtable->fdn_method_" << call.method
+                       << '(';
+            invocation << arguments.front() << member << "fdn_data";
             for (std::size_t index = 1; index < arguments.size(); ++index) {
                 invocation << ", " << arguments[index];
             }
@@ -1278,6 +1298,10 @@ class FunctionEmitter {
         }
         if (type == voidType) {
             out_ << indentation(depth) << invocation.str() << ";\n";
+            if (contractCallConsumesReceiver(call)) {
+                out_ << indentation(depth) << "fdn_dealloc(" << arguments.front() << ");\n";
+                out_ << indentation(depth) << arguments.front() << " = NULL;\n";
+            }
             for (std::size_t index = 0;
                  index < call.arguments.size() && index < call.argumentDrops.size(); ++index) {
                 if (call.argumentDrops[index]) {
@@ -1290,7 +1314,18 @@ class FunctionEmitter {
         const auto temporary = nextTemporary();
         out_ << indentation(depth) << cType(type) << ' ' << temporary << " = "
              << invocation.str() << ";\n";
+        if (contractCallConsumesReceiver(call)) {
+            out_ << indentation(depth) << "fdn_dealloc(" << arguments.front() << ");\n";
+            out_ << indentation(depth) << arguments.front() << " = NULL;\n";
+        }
         return {temporary, false};
+    }
+
+    bool contractCallConsumesReceiver(const FirCallExpression &call) const {
+        return call.kind == FirCallKind::Contract && call.contract < program_.contracts.size() &&
+               call.method < program_.contracts[call.contract].methods.size() &&
+               program_.contracts[call.contract].methods[call.method].receiver ==
+                   FirReceiverKind::Own;
     }
 
     EmittedExpression emitContract(const FirContractExpression &contract, const Type &type,
@@ -1300,11 +1335,20 @@ class FunctionEmitter {
             return value;
         }
         const auto temporary = nextTemporary();
-        out_ << indentation(depth) << cType(type) << ' ' << temporary << ";\n";
-        out_ << indentation(depth) << temporary << ".fdn_data = (void *)" << value.value
-             << ";\n";
-        out_ << indentation(depth) << temporary << ".fdn_vtable = &"
-             << vtableName(contract.contractType, contract.concreteType) << ";\n";
+        if (type.kind == TypeKind::Own) {
+            out_ << indentation(depth) << cType(type) << ' ' << temporary
+                 << " = fdn_alloc(sizeof(*" << temporary << "));\n";
+            out_ << indentation(depth) << temporary << "->fdn_data = (void *)" << value.value
+                 << ";\n";
+            out_ << indentation(depth) << temporary << "->fdn_vtable = &"
+                 << vtableName(contract.contractType, contract.concreteType) << ";\n";
+        } else {
+            out_ << indentation(depth) << cType(type) << ' ' << temporary << ";\n";
+            out_ << indentation(depth) << temporary << ".fdn_data = (void *)" << value.value
+                 << ";\n";
+            out_ << indentation(depth) << temporary << ".fdn_vtable = &"
+                 << vtableName(contract.contractType, contract.concreteType) << ";\n";
+        }
         return {temporary, false};
     }
 
@@ -1662,6 +1706,7 @@ void emitEnumDefinition(std::ostringstream &out, const FirProgram &program, FirE
 void emitContractDefinition(std::ostringstream &out, const FirProgram &program,
                             FirContractId id) {
     out << "struct fdn_contract_" << id << "_vtable {\n";
+    out << "    void (*fdn_drop)(void *);\n";
     for (std::size_t method = 0; method < program.contracts[id].methods.size(); ++method) {
         const auto &declaration = program.contracts[id].methods[method];
         out << "    " << cType(declaration.returnType) << " (*fdn_method_" << method
@@ -1794,8 +1839,75 @@ void emitClosureDrop(std::ostringstream &out, const FirProgram &program, FirFunc
 struct ContractUse {
     Type contract{invalidType};
     Type concrete{invalidType};
-    std::vector<FirFunctionId> methods;
+    std::vector<FirContractMethodTarget> methods;
 };
+
+std::string contractTargetData(const FirProgram &program, const ContractUse &use,
+                               const FirContractMethodTarget &target) {
+    auto data = std::string("fdn_data");
+    auto type = use.concrete;
+    for (const auto field : target.delegatePath) {
+        if (type.kind != TypeKind::Struct || type.declaration >= program.structs.size() ||
+            field >= program.structs[type.declaration].fields.size()) {
+            internalError("contract delegation path is invalid");
+        }
+        data = "&((" + cType(type) + " *)" + data + ")->" + fieldName(field);
+        type = program.structs[type.declaration].fields[field].type;
+    }
+    return data;
+}
+
+std::size_t contractMethodIndex(const FirContract &contract, std::string_view name) {
+    for (std::size_t index = 0; index < contract.methods.size(); ++index) {
+        if (contract.methods[index].name == name) {
+            return index;
+        }
+    }
+    internalError("default contract method is missing from the effective contract");
+}
+
+std::string defaultSelfVtableName(std::string_view table, std::size_t method) {
+    return std::string(table) + "_m" + std::to_string(method) + "_self";
+}
+
+void emitDefaultSelfVtable(std::ostringstream &out, const FirProgram &program,
+                           const ContractUse &use, const FirContractMethodTarget &target,
+                           std::string_view table, std::size_t methodIndex) {
+    if (target.defaultContract.kind != TypeKind::Contract ||
+        target.defaultContract.declaration >= program.contracts.size()) {
+        internalError("default method contract is invalid");
+    }
+    const auto &effective = program.contracts[use.contract.declaration];
+    const auto &origin = program.contracts[target.defaultContract.declaration];
+    const auto selfTable = defaultSelfVtableName(table, methodIndex);
+    for (std::size_t method = 0; method < origin.methods.size(); ++method) {
+        const auto &declaration = origin.methods[method];
+        const auto effectiveMethod = contractMethodIndex(effective, declaration.name);
+        out << "static " << cType(declaration.returnType) << ' ' << selfTable << "_m" << method
+            << "(void *fdn_data";
+        for (std::size_t parameter = 0; parameter < declaration.parameters.size(); ++parameter) {
+            out << ", " << cType(declaration.parameters[parameter]) << " fdn_arg_" << parameter;
+        }
+        out << ") {\n    ";
+        if (declaration.returnType != voidType) {
+            out << "return ";
+        }
+        out << table << "_m" << effectiveMethod << "(fdn_data";
+        for (std::size_t parameter = 0; parameter < declaration.parameters.size(); ++parameter) {
+            out << ", fdn_arg_" << parameter;
+        }
+        out << ");\n}\n";
+    }
+    out << "static const struct fdn_contract_" << target.defaultContract.declaration
+        << "_vtable " << selfTable << " = {\n";
+    out << "    " << table << "_drop";
+    out << (origin.methods.empty() ? "\n" : ",\n");
+    for (std::size_t method = 0; method < origin.methods.size(); ++method) {
+        out << "    " << selfTable << "_m" << method;
+        out << (method + 1 == origin.methods.size() ? "\n" : ",\n");
+    }
+    out << "};\n";
+}
 
 std::vector<ContractUse> collectContractUses(const FirProgram &program) {
     std::vector<ContractUse> uses;
@@ -1824,27 +1936,62 @@ void emitContractAdapters(std::ostringstream &out, const FirProgram &program,
         internalError("contract adapter method count mismatch");
     }
     const auto table = vtableName(use.contract, use.concrete);
+    out << "static void " << table << "_drop(void *fdn_data) {\n";
+    out << "    if (fdn_data == NULL) {\n";
+    out << "        return;\n";
+    out << "    }\n";
+    if (typeRequiresDrop(program, use.concrete)) {
+        out << "    " << dropName(use.concrete) << "((" << cType(use.concrete)
+            << " *)fdn_data);\n";
+    }
+    out << "    fdn_dealloc(fdn_data);\n";
+    out << "}\n";
     for (std::size_t method = 0; method < contract.methods.size(); ++method) {
         const auto &declaration = contract.methods[method];
-        const auto implementation = use.methods[method];
+        out << "static " << cType(declaration.returnType) << ' ' << table << "_m" << method
+            << "(void *fdn_data";
+        for (std::size_t parameter = 0; parameter < declaration.parameters.size(); ++parameter) {
+            out << ", " << cType(declaration.parameters[parameter]) << " fdn_arg_" << parameter;
+        }
+        out << ");\n";
+    }
+    for (std::size_t method = 0; method < contract.methods.size(); ++method) {
+        const auto &declaration = contract.methods[method];
+        const auto &target = use.methods[method];
+        const auto implementation = target.function;
         if (implementation >= program.functions.size() ||
             program.functions[implementation].parameters.empty()) {
             internalError("contract adapter implementation is invalid");
         }
         const auto &function = program.functions[implementation];
         const auto adapter = table + "_m" + std::to_string(method);
+        if (target.contractDefault) {
+            emitDefaultSelfVtable(out, program, use, target, table, method);
+        }
         out << "static " << cType(declaration.returnType) << ' ' << adapter
             << "(void *fdn_data";
         for (std::size_t parameter = 0; parameter < declaration.parameters.size(); ++parameter) {
             out << ", " << cType(declaration.parameters[parameter]) << " fdn_arg_" << parameter;
         }
         out << ") {\n";
-        out << "    ";
-        if (declaration.returnType != voidType && !function.diverges) {
-            out << "return ";
+        if (target.contractDefault) {
+            out << "    struct fdn_contract_" << target.defaultContract.declaration
+                << " fdn_self = {fdn_data, &" << defaultSelfVtableName(table, method)
+                << "};\n";
+            out << "    ";
+            if (declaration.returnType != voidType && !function.diverges) {
+                out << "return ";
+            }
+            out << functionName(program, implementation) << "(fdn_self";
+        } else {
+            out << "    ";
+            if (declaration.returnType != voidType && !function.diverges) {
+                out << "return ";
+            }
+            out << functionName(program, implementation) << "(("
+                << cType(function.locals[function.parameters.front()].type) << ")"
+                << contractTargetData(program, use, target);
         }
-        out << functionName(program, implementation) << "(("
-            << cType(function.locals[function.parameters.front()].type) << ")fdn_data";
         for (std::size_t parameter = 0; parameter < declaration.parameters.size(); ++parameter) {
             out << ", fdn_arg_" << parameter;
         }
@@ -1853,6 +2000,8 @@ void emitContractAdapters(std::ostringstream &out, const FirProgram &program,
     }
     out << "static const struct fdn_contract_" << use.contract.declaration << "_vtable "
         << table << " = {\n";
+    out << "    " << table << "_drop";
+    out << (contract.methods.empty() ? "\n" : ",\n");
     for (std::size_t method = 0; method < contract.methods.size(); ++method) {
         out << "    " << table << "_m" << method;
         out << (method + 1 == contract.methods.size() ? "\n" : ",\n");

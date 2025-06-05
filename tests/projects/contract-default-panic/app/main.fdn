@@ -1,0 +1,25 @@
+package trace.defaultapp
+
+import trace.defaults
+
+contract Principal extends defaults.Failure {}
+
+struct PrincipalImpl implements Principal {
+    fn Cause(view) void {
+        panic("default contract failure")
+    }
+}
+
+struct Wrapped implements Principal by inner {
+    inner PrincipalImpl
+}
+
+fn run(value view defaults.Failure) void {
+    value.Fail()
+}
+
+fn main() i32 {
+    let value = Wrapped { inner = PrincipalImpl {} }
+    run(view value)
+    0
+}

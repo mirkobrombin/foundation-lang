@@ -1,0 +1,9 @@
+contract Named {
+    fn value(view) i32
+}
+
+struct Invalid implements Named by missing {
+    value i32
+}
+
+fn main() i32 { 0 }

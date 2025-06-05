@@ -596,6 +596,13 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/contract-panic
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-contract-panic.cmake
     )
+    add_test(
+        NAME stage0.run.contract-default-panic-trace
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/contract-default-panic
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-contract-default-panic.cmake
+    )
     foreach(project_case IN ITEMS
             "empty;FDN3002"
             "missing-package;FDN3003"
@@ -764,6 +771,37 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.contract-inheritance
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.contract-inheritance-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/contract-inheritance.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/contract-inheritance
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.contract-inheritance-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.fdn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/contract-inheritance-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/contract-inheritance-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
         NAME stage0.run.function-values
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -893,7 +931,17 @@ if(BUILD_TESTING)
             "non-conforming-contract-borrow;FDN2011"
             "duplicate-contract-implementation;FDN2093"
             "empty-contract;FDN2090"
-            "use-after-own-method;FDN2065")
+            "use-after-own-method;FDN2065"
+            "extends-non-contract;FDN2140"
+            "duplicate-contract-parent;FDN2141"
+            "contract-inheritance-cycle;FDN2142"
+            "contract-inherited-conflict;FDN2143"
+            "contract-default-ambiguity;FDN2144"
+            "delegation-unknown-field;FDN2146"
+            "delegation-non-conforming;FDN2147"
+            "contract-own-default;FDN2148"
+            "delegation-own-method;FDN2149"
+            "own-contract-use-after-move;FDN2065")
         list(GET method_case 0 method_name)
         list(GET method_case 1 method_code)
         add_test(
@@ -1009,6 +1057,19 @@ if(BUILD_TESTING)
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/methods-contracts-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/methods-contracts-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/methods-contracts.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.contract-inheritance-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/contract-inheritance-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/contract-inheritance-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake

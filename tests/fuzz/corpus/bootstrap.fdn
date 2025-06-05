@@ -32,12 +32,29 @@ contract Readable {
     fn read(view) i32
 }
 
-struct Counter implements Readable {
+contract CounterValue extends Readable {
+    fn increment(edit) void
+
+    fn incrementTwice(edit) void {
+        self.increment()
+        self.increment()
+    }
+}
+
+struct Counter implements CounterValue {
     value i32
 
     fn read(view) i32 {
         self.value
     }
+
+    fn increment(edit) void {
+        self.value = self.value + 1
+    }
+}
+
+struct CounterWrapper implements CounterValue by counter {
+    counter Counter
 }
 
 struct Packet {
@@ -61,6 +78,10 @@ fn first(values view [String]) void {
     print(values[0])
 }
 
+fn makeReadable(value i32) own Readable {
+    own Counter { value = value }
+}
+
 fn main(args view [String]) i32 {
     print("fuzz seed")
     print(selectedTarget())
@@ -68,8 +89,12 @@ fn main(args view [String]) i32 {
     discard bytes
     let values = ["array", "slice"]
     first(view values)
-    let counter = Counter { value = 42 }
+    var counter = CounterWrapper { counter = Counter { value = 40 } }
+    counter.incrementTwice()
     print(counter.read())
+    let dynamic = makeReadable(42)
+    print(dynamic.read())
+    discard dynamic
     var message = "before"
     let previous = replace message with "after"
     discard previous

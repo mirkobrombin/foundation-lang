@@ -1,0 +1,9 @@
+package trace.defaults
+
+contract Failure {
+    fn Cause(view) void
+
+    fn Fail(view) void {
+        self.Cause()
+    }
+}

@@ -1,0 +1,11 @@
+contract Numbered {
+    fn value(view) i32
+}
+
+contract Flagged {
+    fn value(view) bool
+}
+
+contract Invalid extends Numbered, Flagged {}
+
+fn main() i32 { 0 }
