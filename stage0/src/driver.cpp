@@ -183,23 +183,34 @@ int buildCompilation(const std::filesystem::path &source, const std::filesystem:
 
 } // namespace
 
-Compilation compile(const std::filesystem::path &path) {
-    Compilation compilation;
-    auto loaded = loadProject(path, compilation.diagnostics);
+ProjectAnalysis analyzeProject(const std::filesystem::path &path,
+                               const std::vector<SourceOverlay> &overlays,
+                               AnalyzeOptions options) {
+    ProjectAnalysis analysis;
+    auto loaded = loadProject(path, analysis.diagnostics, overlays);
     if (!loaded.has_value()) {
-        return compilation;
+        return analysis;
     }
-    compilation.sources = std::move(loaded->sources);
-    auto program = std::move(loaded->program);
-    if (compilation.diagnostics.hasErrors()) {
-        return compilation;
+    analysis.sources = std::move(loaded->sources);
+    analysis.program = std::move(loaded->program);
+    if (analysis.diagnostics.hasErrors()) {
+        return analysis;
     }
-    const auto semantic = analyze(program, compilation.diagnostics);
-    if (!semantic.has_value()) {
+    analysis.semantic = analyze(analysis.program, analysis.diagnostics, options);
+    return analysis;
+}
+
+Compilation compile(const std::filesystem::path &path,
+                    const std::vector<SourceOverlay> &overlays) {
+    Compilation compilation;
+    auto analysis = analyzeProject(path, overlays);
+    compilation.sources = std::move(analysis.sources);
+    compilation.diagnostics = std::move(analysis.diagnostics);
+    if (!analysis.semantic.has_value()) {
         return compilation;
     }
 
-    const auto fir = lower(program, *semantic);
+    const auto fir = lower(analysis.program, *analysis.semantic);
     compilation.generatedC = emitC(fir, path.generic_string());
     compilation.generatedCHeader = emitCHeader(fir);
     compilation.generatedMetadata = emitMetadata(fir);

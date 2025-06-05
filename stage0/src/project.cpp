@@ -44,7 +44,15 @@ struct PackageSymbols {
 using SymbolTable = std::unordered_map<std::string, PackageSymbols>;
 using ImportAliases = std::unordered_map<std::string, std::string>;
 
-std::optional<std::string> readFile(const std::filesystem::path &path) {
+std::filesystem::path sourceIdentity(const std::filesystem::path &path);
+
+std::optional<std::string> readFile(
+    const std::filesystem::path &path,
+    const std::unordered_map<std::string, std::string> &overlays) {
+    const auto overlay = overlays.find(sourceIdentity(path).generic_string());
+    if (overlay != overlays.end()) {
+        return overlay->second;
+    }
     std::ifstream input(path, std::ios::binary);
     if (!input) {
         return std::nullopt;
@@ -793,8 +801,13 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
 } // namespace
 
 std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
-                                         Diagnostics &diagnostics) {
+                                         Diagnostics &diagnostics,
+                                         const std::vector<SourceOverlay> &overlays) {
     std::error_code error;
+    std::unordered_map<std::string, std::string> overlayContents;
+    for (const auto &overlay : overlays) {
+        overlayContents[sourceIdentity(overlay.path).generic_string()] = overlay.contents;
+    }
     const auto directoryInput = std::filesystem::is_directory(input, error);
     if (error) {
         diagnostics.error("FDN3001", "cannot inspect source input", {0, 0, 1, 1});
@@ -815,6 +828,19 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
         if (error) {
             diagnostics.error("FDN3001", "cannot discover project sources", {0, 0, 1, 1});
             return std::nullopt;
+        }
+        std::unordered_set<std::string> seen;
+        for (const auto &path : paths) {
+            seen.insert(sourceIdentity(path).generic_string());
+        }
+        const auto inputIdentity = sourceIdentity(input);
+        for (const auto &overlay : overlays) {
+            const auto identity = sourceIdentity(overlay.path);
+            const auto relative = identity.lexically_relative(inputIdentity);
+            if (overlay.path.extension() == ".fdn" && !relative.empty() &&
+                *relative.begin() != ".." && seen.insert(identity.generic_string()).second) {
+                paths.push_back(overlay.path);
+            }
         }
         std::sort(paths.begin(), paths.end(), [&input](const auto &left, const auto &right) {
             return left.lexically_relative(input).generic_string() <
@@ -867,7 +893,7 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
     LoadedProject loaded;
     std::vector<ParsedFile> files;
     for (std::size_t index = 0; index < paths.size(); ++index) {
-        const auto contents = readFile(paths[index]);
+        const auto contents = readFile(paths[index], overlayContents);
         const auto standardRelative =
             standardRoot.empty() ? std::filesystem::path{}
                                  : sourceIdentity(paths[index]).lexically_relative(
@@ -880,7 +906,8 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
                                  : directoryInput
                                      ? paths[index].lexically_relative(input).generic_string()
                                      : paths[index].generic_string();
-        loaded.sources.push_back({displayPath, contents.value_or(std::string{})});
+        loaded.sources.push_back({displayPath, contents.value_or(std::string{}),
+                                  sourceIdentity(paths[index]).generic_string()});
         if (!contents.has_value()) {
             diagnostics.error("FDN3001", "cannot read source file", {0, 0, 1, 1, index});
             continue;
@@ -895,6 +922,7 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
         if (!program.hasPackageDeclaration) {
             program.packageName = directoryInput ? "main" : "";
         }
+        loaded.sources.back().packageName = program.packageName;
         files.push_back({std::move(program), displayPath});
     }
     if (diagnostics.hasErrors()) {

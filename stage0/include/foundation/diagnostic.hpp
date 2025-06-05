@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace foundation {
@@ -19,6 +20,13 @@ struct SourceSpan {
 struct DiagnosticSource {
     std::string path;
     std::string contents;
+    std::string identity;
+    std::string packageName;
+
+    DiagnosticSource(std::string pathValue, std::string contentsValue,
+                     std::string identityValue = {}, std::string packageNameValue = {})
+        : path(std::move(pathValue)), contents(std::move(contentsValue)),
+          identity(std::move(identityValue)), packageName(std::move(packageNameValue)) {}
 };
 
 struct Diagnostic {

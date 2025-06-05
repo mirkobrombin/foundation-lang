@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace foundation {
@@ -15,8 +16,14 @@ struct LoadedProject {
     std::vector<DiagnosticSource> sources;
 };
 
+struct SourceOverlay {
+    std::filesystem::path path;
+    std::string contents;
+};
+
 [[nodiscard]] std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
-                                                       Diagnostics &diagnostics);
+                                                       Diagnostics &diagnostics,
+                                                       const std::vector<SourceOverlay> &overlays = {});
 
 } // namespace foundation
 

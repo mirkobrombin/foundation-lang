@@ -136,8 +136,8 @@ bool isIntegerType(const Type &type) { return type == i32Type || type == u64Type
 
 class Analyzer {
   public:
-    Analyzer(const Program &program, Diagnostics &diagnostics)
-        : program_(program), diagnostics_(diagnostics) {
+    Analyzer(const Program &program, Diagnostics &diagnostics, AnalyzeOptions options)
+        : program_(program), diagnostics_(diagnostics), options_(options) {
         model_.expressionTypes.resize(program.expressions.size(), invalidType);
         model_.expressionContractConversions.resize(program.expressions.size());
         model_.expressionLocals.resize(program.expressions.size());
@@ -1193,7 +1193,7 @@ class Analyzer {
                     function.span);
             }
         }
-        if (!foundMain) {
+        if (!foundMain && options_.requireMain) {
             diagnostics_.error("FDN2006", "program must declare main", {0, 0, 1, 1});
         }
     }
@@ -4211,6 +4211,7 @@ class Analyzer {
 
     const Program &program_;
     Diagnostics &diagnostics_;
+    AnalyzeOptions options_;
     SemanticModel model_;
     std::unordered_map<std::string, FirStructId> structs_;
     std::unordered_map<std::string, FirEnumId> enums_;
@@ -4236,8 +4237,9 @@ class Analyzer {
 
 } // namespace
 
-std::optional<SemanticModel> analyze(const Program &program, Diagnostics &diagnostics) {
-    Analyzer analyzer(program, diagnostics);
+std::optional<SemanticModel> analyze(const Program &program, Diagnostics &diagnostics,
+                                     AnalyzeOptions options) {
+    Analyzer analyzer(program, diagnostics, options);
     return analyzer.run();
 }
 

@@ -1,9 +1,13 @@
 #ifndef FOUNDATION_DRIVER_HPP
 #define FOUNDATION_DRIVER_HPP
 
+#include "foundation/ast.hpp"
 #include "foundation/diagnostic.hpp"
+#include "foundation/project.hpp"
+#include "foundation/sema.hpp"
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,7 +21,19 @@ struct Compilation {
     Diagnostics diagnostics;
 };
 
-[[nodiscard]] Compilation compile(const std::filesystem::path &path);
+struct ProjectAnalysis {
+    std::vector<DiagnosticSource> sources;
+    Program program;
+    std::optional<SemanticModel> semantic;
+    Diagnostics diagnostics;
+};
+
+[[nodiscard]] ProjectAnalysis analyzeProject(
+    const std::filesystem::path &path,
+    const std::vector<SourceOverlay> &overlays = {},
+    AnalyzeOptions options = {});
+[[nodiscard]] Compilation compile(const std::filesystem::path &path,
+                                  const std::vector<SourceOverlay> &overlays = {});
 [[nodiscard]] int checkFile(const std::filesystem::path &path);
 [[nodiscard]] int emitCFile(const std::filesystem::path &source,
                             const std::filesystem::path &output);

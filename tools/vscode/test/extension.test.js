@@ -11,6 +11,11 @@ const {
     maskTrivia,
     staticCompletions
 } = require("../src/completions");
+const {
+    FoundationLanguageClient,
+    MessageReader,
+    encodeMessage
+} = require("../src/languageClient");
 
 const extensionRoot = path.resolve(__dirname, "..");
 const repositoryRoot = path.resolve(extensionRoot, "../..");
@@ -41,8 +46,81 @@ test("registers Foundation source files", () => {
         path.join(extensionRoot, "scripts/package.sh"),
         "utf8"
     );
+    const languageClient = fs.readFileSync(
+        path.join(extensionRoot, "src/languageClient.js"),
+        "utf8"
+    );
     assert.match(packagingScript, /package\.json/);
     assert.match(packagingScript, /foundation-lang-\$version\.vsix/);
+    assert.match(packagingScript, /languageClient\.js/);
+    assert.match(languageClient, /registerDocumentSymbolProvider/);
+    assert.match(languageClient, /registerWorkspaceSymbolProvider/);
+    assert.match(languageClient, /registerCompletionItemProvider/);
+    assert.match(languageClient, /registerSignatureHelpProvider/);
+    assert.match(languageClient, /registerHoverProvider/);
+    assert.match(languageClient, /registerDefinitionProvider/);
+    assert.match(languageClient, /registerReferenceProvider/);
+    assert.match(languageClient, /registerRenameProvider/);
+    assert.match(languageClient, /registerDocumentSemanticTokensProvider/);
+    assert.match(languageClient, /registerInlayHintsProvider/);
+    assert.equal(manifest.version, "0.22.0");
+    assert.equal(
+        manifest.contributes.configuration.properties["foundation.languageServer.path"].default,
+        ""
+    );
+});
+
+test("frames language server messages across stream chunks", () => {
+    const messages = [];
+    const errors = [];
+    const reader = new MessageReader(
+        (message) => messages.push(message),
+        (error) => errors.push(error)
+    );
+    const first = encodeMessage({ jsonrpc: "2.0", id: 1, result: { ready: true } });
+    const second = encodeMessage({
+        jsonrpc: "2.0",
+        method: "textDocument/publishDiagnostics",
+        params: { uri: "file:///tmp/main.fdn", diagnostics: [] }
+    });
+    const stream = Buffer.concat([first, second]);
+
+    reader.append(stream.subarray(0, 7));
+    reader.append(stream.subarray(7, first.length + 11));
+    reader.append(stream.subarray(first.length + 11));
+
+    assert.equal(errors.length, 0);
+    assert.equal(messages.length, 2);
+    assert.deepEqual(messages[0].result, { ready: true });
+    assert.equal(messages[1].method, "textDocument/publishDiagnostics");
+});
+
+test("cancels pending language server requests", async () => {
+    class CancellationError extends Error {}
+    const sent = [];
+    const token = {
+        isCancellationRequested: false,
+        onCancellationRequested(listener) {
+            this.listener = listener;
+            return { dispose() { token.disposed = true; } };
+        }
+    };
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.vscode = { CancellationError };
+    client.nextId = 1;
+    client.pending = new Map();
+    client.send = (message) => sent.push(message);
+
+    const request = client.request("workspace/symbol", { query: "Value" }, token);
+    token.listener();
+
+    await assert.rejects(request, CancellationError);
+    assert.deepEqual(sent, [
+        { jsonrpc: "2.0", id: 1, method: "workspace/symbol", params: { query: "Value" } },
+        { jsonrpc: "2.0", method: "$/cancelRequest", params: { id: 1 } }
+    ]);
+    assert.equal(client.pending.size, 0);
+    assert.equal(token.disposed, true);
 });
 
 test("grammar and completions track compiler keywords", () => {

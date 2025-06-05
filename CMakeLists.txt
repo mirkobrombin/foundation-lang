@@ -21,7 +21,9 @@ add_library(foundation_compiler STATIC
     stage0/src/codegen.cpp
     stage0/src/diagnostic.cpp
     stage0/src/driver.cpp
+    stage0/src/language_service.cpp
     stage0/src/lexer.cpp
+    stage0/src/lsp.cpp
     stage0/src/lower.cpp
     stage0/src/metadata.cpp
     stage0/src/parser.cpp
@@ -43,23 +45,30 @@ target_compile_definitions(foundation_compiler PRIVATE
 add_executable(foundationc stage0/src/main.cpp)
 target_link_libraries(foundationc PRIVATE foundation_compiler)
 
+add_executable(foundation-ls stage0/src/lsp_main.cpp)
+target_link_libraries(foundation-ls PRIVATE foundation_compiler)
+
 if(MSVC)
     target_compile_options(foundation_runtime PRIVATE /W4)
     target_compile_options(foundation_compiler PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(foundationc PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(foundation-ls PRIVATE /W4 /permissive- /EHsc)
     if(FOUNDATION_WARNINGS_AS_ERRORS)
         target_compile_options(foundation_runtime PRIVATE /WX)
         target_compile_options(foundation_compiler PRIVATE /WX)
         target_compile_options(foundationc PRIVATE /WX)
+        target_compile_options(foundation-ls PRIVATE /WX)
     endif()
 else()
     target_compile_options(foundation_runtime PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(foundation_compiler PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(foundationc PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(foundation-ls PRIVATE -Wall -Wextra -Wpedantic)
     if(FOUNDATION_WARNINGS_AS_ERRORS)
         target_compile_options(foundation_runtime PRIVATE -Werror)
         target_compile_options(foundation_compiler PRIVATE -Werror)
         target_compile_options(foundationc PRIVATE -Werror)
+        target_compile_options(foundation-ls PRIVATE -Werror)
     endif()
 endif()
 
@@ -72,6 +81,7 @@ if(FOUNDATION_BUILD_FUZZERS)
         -fsanitize=fuzzer-no-link,address,undefined
     )
     target_link_options(foundationc PRIVATE -fsanitize=address,undefined)
+    target_link_options(foundation-ls PRIVATE -fsanitize=address,undefined)
     add_executable(foundation_parser_fuzz stage0/fuzz/parser_fuzz.cpp)
     target_link_libraries(foundation_parser_fuzz PRIVATE foundation_compiler)
     target_compile_options(foundation_parser_fuzz PRIVATE
@@ -164,22 +174,30 @@ if(BUILD_TESTING)
     target_compile_definitions(foundation_stage0_tests PRIVATE
         FOUNDATION_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
+    add_executable(foundation_lsp_tests stage0/tests/lsp_test.cpp)
+    target_link_libraries(foundation_lsp_tests PRIVATE foundation_compiler)
     if(FOUNDATION_BUILD_FUZZERS)
         target_link_options(foundation_stage0_tests PRIVATE -fsanitize=address,undefined)
+        target_link_options(foundation_lsp_tests PRIVATE -fsanitize=address,undefined)
     endif()
     if(MSVC)
         target_compile_options(foundation_stage0_tests PRIVATE /W4 /permissive- /EHsc)
+        target_compile_options(foundation_lsp_tests PRIVATE /W4 /permissive- /EHsc)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_stage0_tests PRIVATE /WX)
+            target_compile_options(foundation_lsp_tests PRIVATE /WX)
         endif()
     else()
         target_compile_options(foundation_stage0_tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_lsp_tests PRIVATE -Wall -Wextra -Wpedantic)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_stage0_tests PRIVATE -Werror)
+            target_compile_options(foundation_lsp_tests PRIVATE -Werror)
         endif()
     endif()
 
     add_test(NAME stage0.unit COMMAND foundation_stage0_tests)
+    add_test(NAME tooling.lsp.unit COMMAND foundation_lsp_tests)
     add_test(NAME runtime.string COMMAND foundation_runtime_string_test)
     add_test(NAME runtime.u64 COMMAND foundation_runtime_u64_test)
     add_test(NAME runtime.env COMMAND foundation_runtime_env_test)

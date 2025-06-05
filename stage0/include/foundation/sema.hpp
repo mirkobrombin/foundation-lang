@@ -176,8 +176,13 @@ struct SemanticModel {
     FirFunctionId main{};
 };
 
+struct AnalyzeOptions {
+    bool requireMain{true};
+};
+
 [[nodiscard]] std::optional<SemanticModel> analyze(const Program &program,
-                                                   Diagnostics &diagnostics);
+                                                   Diagnostics &diagnostics,
+                                                   AnalyzeOptions options = {});
 
 } // namespace foundation
 

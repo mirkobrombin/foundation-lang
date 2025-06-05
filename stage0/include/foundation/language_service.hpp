@@ -1,0 +1,77 @@
+#ifndef FOUNDATION_LANGUAGE_SERVICE_HPP
+#define FOUNDATION_LANGUAGE_SERVICE_HPP
+
+#include "foundation/diagnostic.hpp"
+
+#include <cstddef>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace foundation {
+
+struct ProjectAnalysis;
+
+enum class LanguageSymbolKind {
+    Function,
+    Method,
+    Struct,
+    Field,
+    Enum,
+    EnumVariant,
+    Contract,
+    ContractMethod,
+    Attribute,
+    Parameter,
+    Local,
+};
+
+struct LanguageSymbolId {
+    LanguageSymbolKind kind{LanguageSymbolKind::Function};
+    std::size_t owner{};
+    std::size_t member{};
+
+    bool operator==(const LanguageSymbolId &) const = default;
+};
+
+struct LanguageSymbol {
+    LanguageSymbolId id;
+    std::string name;
+    std::string detail;
+    std::string scope;
+    SourceSpan definition;
+    bool renameable{true};
+};
+
+struct LanguageOccurrence {
+    LanguageSymbolId symbol;
+    SourceSpan span;
+    bool definition{};
+};
+
+class LanguageIndex {
+  public:
+    LanguageIndex() = default;
+    LanguageIndex(std::vector<LanguageSymbol> symbols,
+                  std::vector<LanguageOccurrence> occurrences);
+
+    [[nodiscard]] const std::vector<LanguageSymbol> &symbols() const;
+    [[nodiscard]] const std::vector<LanguageOccurrence> &occurrences() const;
+    [[nodiscard]] const LanguageSymbol *symbol(LanguageSymbolId id) const;
+    [[nodiscard]] const LanguageOccurrence *occurrenceAt(std::size_t source,
+                                                         std::size_t offset) const;
+    [[nodiscard]] std::vector<LanguageOccurrence>
+    references(LanguageSymbolId id, bool includeDefinition) const;
+    [[nodiscard]] bool canRename(LanguageSymbolId id, std::string_view name) const;
+
+  private:
+    std::vector<LanguageSymbol> symbols_;
+    std::vector<LanguageOccurrence> occurrences_;
+};
+
+[[nodiscard]] LanguageIndex buildLanguageIndex(const ProjectAnalysis &analysis);
+
+} // namespace foundation
+
+#endif
