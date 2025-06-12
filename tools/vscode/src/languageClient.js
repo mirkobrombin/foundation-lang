@@ -201,6 +201,14 @@ class FoundationLanguageClient {
                 provideDefinition: (document, position, token) =>
                     this.definition(document, position, token)
             }),
+            this.vscode.languages.registerImplementationProvider("foundation", {
+                provideImplementation: (document, position, token) =>
+                    this.implementations(document, position, token)
+            }),
+            this.vscode.languages.registerDocumentHighlightProvider("foundation", {
+                provideDocumentHighlights: (document, position, token) =>
+                    this.documentHighlights(document, position, token)
+            }),
             this.vscode.languages.registerReferenceProvider("foundation", {
                 provideReferences: (document, position, context, token) =>
                     this.references(document, position, context, token)
@@ -371,6 +379,28 @@ class FoundationLanguageClient {
             this.vscode.Uri.parse(result.uri),
             this.range(result.range)
         );
+    }
+
+    async implementations(document, position, token) {
+        const result = await this.request("textDocument/implementation", {
+            textDocument: { uri: document.uri.toString() },
+            position: { line: position.line, character: position.character }
+        }, token);
+        return (result || []).map((value) => new this.vscode.Location(
+            this.vscode.Uri.parse(value.uri),
+            this.range(value.range)
+        ));
+    }
+
+    async documentHighlights(document, position, token) {
+        const result = await this.request("textDocument/documentHighlight", {
+            textDocument: { uri: document.uri.toString() },
+            position: { line: position.line, character: position.character }
+        }, token);
+        return (result || []).map((value) => new this.vscode.DocumentHighlight(
+            this.range(value.range),
+            value.kind
+        ));
     }
 
     async references(document, position, context, token) {

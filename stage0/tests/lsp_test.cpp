@@ -26,6 +26,25 @@ std::string frame(std::string_view body) {
            std::string(body);
 }
 
+std::string jsonEscape(std::string_view value) {
+    std::string result;
+    for (const auto character : value) {
+        if (character == '\\' || character == '"') {
+            result += '\\';
+            result += character;
+        } else if (character == '\n') {
+            result += "\\n";
+        } else if (character == '\r') {
+            result += "\\r";
+        } else if (character == '\t') {
+            result += "\\t";
+        } else {
+            result += character;
+        }
+    }
+    return result;
+}
+
 std::string fileUri(const std::filesystem::path &path) {
     auto value = std::filesystem::absolute(path).lexically_normal().generic_string();
 #ifdef _WIN32
@@ -339,14 +358,15 @@ void semanticNavigationSeparatesHomonyms() {
     const auto visibilityRename =
         request(14, "textDocument/rename", 3, 38, ",\"newName\":\"Value\"");
     const auto prepare = request(15, "textDocument/prepareRename", 3, 38);
+    const auto highlights = request(16, "textDocument/documentHighlight", 3, 38);
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
 
     std::istringstream input(frame(initialize) + frame(open) + frame(leftDefinition) +
                              frame(rightDefinition) + frame(leftReferences) + frame(leftRename) +
-                             frame(visibilityRename) + frame(prepare) + frame(shutdown) +
-                             frame(exit));
+                             frame(visibilityRename) + frame(prepare) + frame(highlights) +
+                             frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
@@ -381,6 +401,78 @@ void semanticNavigationSeparatesHomonyms() {
     expect(responseFor(transcript, 15).find("\"placeholder\":\"value\"") !=
                std::string::npos,
            "prepare rename returns the resolved source range");
+    const auto highlightResponse = responseFor(transcript, 16);
+    expect(highlightResponse.find("\"line\":1") != std::string::npos &&
+               highlightResponse.find("\"line\":3") != std::string::npos &&
+               highlightResponse.find("\"line\":2") == std::string::npos &&
+               highlightResponse.find("\"line\":4") == std::string::npos,
+           "document highlights include only the resolved symbol in the active file");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
+void contractImplementationsIncludeInheritedAndDelegatedTypes() {
+    const auto root = temporaryRoot();
+    std::filesystem::create_directories(root);
+    const auto source = root / "contracts.fdn";
+    const auto rootUri = fileUri(root);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        rootUri + "\"}}";
+    const auto contents =
+        "package sample\n"
+        "contract Named {\n"
+        "    fn name(view) String\n"
+        "}\n"
+        "contract Tagged extends Named {}\n"
+        "struct Identity implements Named {\n"
+        "    fn name(view) String { \"identity\" }\n"
+        "}\n"
+        "struct Admin implements Tagged {\n"
+        "    fn name(view) String { \"admin\" }\n"
+        "}\n"
+        "struct Wrapper implements Named by identity {\n"
+        "    identity Identity\n"
+        "}\n";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::size_t line, std::size_t character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/implementation\",\"params\":{"
+               "\"textDocument\":{\"uri\":\"" +
+               sourceUri + "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto contractImplementations = request(17, 1, 10);
+    const auto methodImplementations = request(18, 2, 8);
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+
+    std::istringstream input(frame(initialize) + frame(open) +
+                             frame(contractImplementations) + frame(methodImplementations) +
+                             frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto contracts = responseFor(transcript, 17);
+    const auto methods = responseFor(transcript, 18);
+
+    expect(status == 0, "implementation navigation transcript exits cleanly");
+    expect(errors.str().empty(), "implementation navigation writes no server errors");
+    expect(contracts.find("\"line\":5") != std::string::npos &&
+               contracts.find("\"line\":8") != std::string::npos &&
+               contracts.find("\"line\":11") != std::string::npos,
+           "contract implementations include direct, inherited, and delegated types");
+    expect(methods.find("\"line\":6") != std::string::npos &&
+               methods.find("\"line\":9") != std::string::npos &&
+               methods.find("\"line\":11") != std::string::npos,
+           "contract method implementations include methods and delegated owners");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);
@@ -519,6 +611,7 @@ int main() {
     invalidJsonRpcEnvelopeIsRejected();
     unopenedLibraryDoesNotRequireMain();
     semanticNavigationSeparatesHomonyms();
+    contractImplementationsIncludeInheritedAndDelegatedTypes();
     workspaceFoldersAreIndependentAndDynamic();
     diagnosticsStayScopedToTheirWorkspace();
 

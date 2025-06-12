@@ -1093,6 +1093,10 @@ class LanguageServer {
             sendMessage(output_, response(*id, provideHover(message.find("params"))));
         } else if (*method == "textDocument/definition" && id != nullptr) {
             sendMessage(output_, response(*id, provideDefinition(message.find("params"))));
+        } else if (*method == "textDocument/implementation" && id != nullptr) {
+            sendMessage(output_, response(*id, provideImplementations(message.find("params"))));
+        } else if (*method == "textDocument/documentHighlight" && id != nullptr) {
+            sendMessage(output_, response(*id, provideDocumentHighlights(message.find("params"))));
         } else if (*method == "textDocument/references" && id != nullptr) {
             sendMessage(output_, response(*id, provideReferences(message.find("params"))));
         } else if (*method == "textDocument/prepareRename" && id != nullptr) {
@@ -1143,6 +1147,8 @@ class LanguageServer {
                             {"textDocumentSync", 1},
                             {"hoverProvider", true},
                             {"definitionProvider", true},
+                            {"implementationProvider", true},
+                            {"documentHighlightProvider", true},
                             {"referencesProvider", true},
                             {"renameProvider", Json::object({{"prepareProvider", true}})},
                             {"completionProvider",
@@ -1508,6 +1514,139 @@ class LanguageServer {
         const auto &source = analysis->sources[symbol->definition.source];
         return Json::object({{"uri", pathToFileUri(source.identity)},
                              {"range", lspRange(source.contents, symbol->definition)}});
+    }
+
+    [[nodiscard]] bool contractExtends(const SemanticModel &semantic, std::size_t contract,
+                                       std::size_t target,
+                                       std::set<std::size_t> &visited) const {
+        if (contract == target) {
+            return true;
+        }
+        if (contract >= semantic.contracts.size() || !visited.insert(contract).second) {
+            return false;
+        }
+        for (const auto &parent : semantic.contracts[contract].parents) {
+            if (parent.kind == TypeKind::Contract &&
+                contractExtends(semantic, parent.declaration, target, visited)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool structImplements(const SemanticModel &semantic,
+                                        std::size_t declaration,
+                                        std::size_t contract) const {
+        if (declaration >= semantic.structs.size()) {
+            return false;
+        }
+        for (const auto &implementation : semantic.structs[declaration].implementations) {
+            std::set<std::size_t> visited;
+            if (implementation.kind == TypeKind::Contract &&
+                contractExtends(semantic, implementation.declaration, contract, visited)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] Json provideImplementations(const Json *params) const {
+        const auto *textDocument = params == nullptr ? nullptr : params->find("textDocument");
+        const auto uri = stringField(textDocument, "uri");
+        if (!uri.has_value()) {
+            return Json(Json::Array{});
+        }
+        auto analysis = analyzeUri(*uri);
+        if (analysis == nullptr || !analysis->semantic.has_value()) {
+            return Json(Json::Array{});
+        }
+        SourceSpan word;
+        const auto &index = languageIndex(*analysis);
+        const auto symbolId = semanticSymbolAt(*analysis, *uri, params, word, index);
+        if (!symbolId.has_value() ||
+            (symbolId->kind != LanguageSymbolKind::Contract &&
+             symbolId->kind != LanguageSymbolKind::ContractMethod)) {
+            return Json(Json::Array{});
+        }
+        const auto contract = symbolId->owner;
+        const auto method = symbolId->kind == LanguageSymbolKind::ContractMethod
+                                ? index.symbol(*symbolId)
+                                : nullptr;
+        Json::Array result;
+        std::set<std::pair<std::size_t, std::size_t>> locations;
+        const auto addLocation = [&](SourceSpan span) {
+            if (span.source >= analysis->sources.size() ||
+                !locations.emplace(span.source, span.offset).second) {
+                return;
+            }
+            const auto &source = analysis->sources[span.source];
+            result.push_back(Json::object({{"uri", pathToFileUri(source.identity)},
+                                           {"range", lspRange(source.contents, span)}}));
+        };
+        for (std::size_t declaration = 0;
+             declaration < analysis->program.structs.size(); ++declaration) {
+            if (!structImplements(*analysis->semantic, declaration, contract)) {
+                continue;
+            }
+            auto foundMethod = false;
+            if (method != nullptr) {
+                const auto &owner = analysis->program.structs[declaration];
+                for (std::size_t function = 0;
+                     function < analysis->program.functions.size(); ++function) {
+                    const auto &candidate = analysis->program.functions[function];
+                    if (!candidate.receiver.has_value() || candidate.ownerType != owner.name ||
+                        shortName(candidate.name) != method->name) {
+                        continue;
+                    }
+                    const auto *functionSymbol = index.symbol(
+                        {LanguageSymbolKind::Method, function, 0});
+                    if (functionSymbol != nullptr) {
+                        addLocation(functionSymbol->definition);
+                        foundMethod = true;
+                    }
+                }
+            }
+            if (method == nullptr || !foundMethod) {
+                const auto *structSymbol = index.symbol(
+                    {LanguageSymbolKind::Struct, declaration, 0});
+                if (structSymbol != nullptr) {
+                    addLocation(structSymbol->definition);
+                }
+            }
+        }
+        return Json(std::move(result));
+    }
+
+    [[nodiscard]] Json provideDocumentHighlights(const Json *params) const {
+        const auto *textDocument = params == nullptr ? nullptr : params->find("textDocument");
+        const auto uri = stringField(textDocument, "uri");
+        if (!uri.has_value()) {
+            return Json(Json::Array{});
+        }
+        auto analysis = analyzeUri(*uri);
+        if (analysis == nullptr) {
+            return Json(Json::Array{});
+        }
+        const auto sourceId = sourceIdForUri(*analysis, *uri);
+        if (!sourceId.has_value()) {
+            return Json(Json::Array{});
+        }
+        SourceSpan word;
+        const auto &index = languageIndex(*analysis);
+        const auto symbol = semanticSymbolAt(*analysis, *uri, params, word, index);
+        if (!symbol.has_value()) {
+            return Json(Json::Array{});
+        }
+        Json::Array result;
+        for (const auto &reference : index.references(*symbol, true)) {
+            if (reference.span.source != *sourceId) {
+                continue;
+            }
+            result.push_back(Json::object(
+                {{"range", lspRange(analysis->sources[*sourceId].contents, reference.span)},
+                 {"kind", 1}}));
+        }
+        return Json(std::move(result));
     }
 
     [[nodiscard]] Json provideReferences(const Json *params) const {
