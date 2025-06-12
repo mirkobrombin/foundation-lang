@@ -1097,6 +1097,8 @@ class LanguageServer {
             sendMessage(output_, response(*id, provideImplementations(message.find("params"))));
         } else if (*method == "textDocument/documentHighlight" && id != nullptr) {
             sendMessage(output_, response(*id, provideDocumentHighlights(message.find("params"))));
+        } else if (*method == "textDocument/codeLens" && id != nullptr) {
+            sendMessage(output_, response(*id, provideCodeLenses(message.find("params"))));
         } else if (*method == "textDocument/references" && id != nullptr) {
             sendMessage(output_, response(*id, provideReferences(message.find("params"))));
         } else if (*method == "textDocument/prepareRename" && id != nullptr) {
@@ -1149,6 +1151,8 @@ class LanguageServer {
                             {"definitionProvider", true},
                             {"implementationProvider", true},
                             {"documentHighlightProvider", true},
+                            {"codeLensProvider",
+                             Json::object({{"resolveProvider", false}})},
                             {"referencesProvider", true},
                             {"renameProvider", Json::object({{"prepareProvider", true}})},
                             {"completionProvider",
@@ -1645,6 +1649,63 @@ class LanguageServer {
             result.push_back(Json::object(
                 {{"range", lspRange(analysis->sources[*sourceId].contents, reference.span)},
                  {"kind", 1}}));
+        }
+        return Json(std::move(result));
+    }
+
+    [[nodiscard]] Json provideCodeLenses(const Json *params) const {
+        const auto *textDocument = params == nullptr ? nullptr : params->find("textDocument");
+        const auto uri = stringField(textDocument, "uri");
+        if (!uri.has_value()) {
+            return Json(Json::Array{});
+        }
+        auto analysis = analyzeUri(*uri);
+        if (analysis == nullptr) {
+            return Json(Json::Array{});
+        }
+        const auto sourceId = sourceIdForUri(*analysis, *uri);
+        if (!sourceId.has_value()) {
+            return Json(Json::Array{});
+        }
+        const auto &index = languageIndex(*analysis);
+        std::vector<const LanguageSymbol *> symbols;
+        for (const auto &symbol : index.symbols()) {
+            if (symbol.definition.source == *sourceId &&
+                symbol.id.kind != LanguageSymbolKind::Parameter &&
+                symbol.id.kind != LanguageSymbolKind::Local) {
+                symbols.push_back(&symbol);
+            }
+        }
+        std::sort(symbols.begin(), symbols.end(), [](const auto *left, const auto *right) {
+            return left->definition.offset < right->definition.offset;
+        });
+        Json::Array result;
+        const auto &requestedSource = analysis->sources[*sourceId];
+        for (const auto *symbol : symbols) {
+            const auto references = index.references(symbol->id, false);
+            Json::Array locations;
+            for (const auto &reference : references) {
+                if (reference.span.source >= analysis->sources.size()) {
+                    continue;
+                }
+                const auto &source = analysis->sources[reference.span.source];
+                locations.push_back(
+                    Json::object({{"uri", pathToFileUri(source.identity)},
+                                  {"range", lspRange(source.contents, reference.span)}}));
+            }
+            const auto title = std::to_string(locations.size()) +
+                               (locations.size() == 1 ? " reference" : " references");
+            const auto position = positionAt(requestedSource.contents,
+                                             symbol->definition.offset);
+            result.push_back(Json::object(
+                {{"range", lspRange(requestedSource.contents, symbol->definition)},
+                 {"command",
+                  Json::object(
+                      {{"title", title},
+                       {"command", "editor.action.showReferences"},
+                       {"arguments",
+                        Json::array({*uri, lspPosition(position),
+                                     Json(std::move(locations))})}})}}));
         }
         return Json(std::move(result));
     }

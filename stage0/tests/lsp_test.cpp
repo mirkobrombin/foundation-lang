@@ -161,6 +161,10 @@ void diagnosticsUseUnsavedCompilerInput() {
         "\"params\":{\"textDocument\":{\"uri\":\"" +
         sourceUri +
         "\"},\"position\":{\"line\":2,\"character\":17},\"newName\":\"sum\"}}";
+    const auto codeLenses =
+        "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"textDocument/codeLens\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\"}}}";
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit =
@@ -171,7 +175,7 @@ void diagnosticsUseUnsavedCompilerInput() {
                              frame(documentSymbols) + frame(workspaceSymbols) + frame(hover) +
                              frame(definition) + frame(completion) + frame(signature) +
                              frame(semanticTokens) + frame(inlayHints) + frame(renameFunction) +
-                             frame(shutdown) + frame(exit));
+                             frame(codeLenses) + frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
@@ -227,6 +231,12 @@ void diagnosticsUseUnsavedCompilerInput() {
                functionRenameResponse.find("\"character\":16") != std::string::npos &&
                functionRenameResponse.find("\"character\":19") != std::string::npos,
            "function rename edits only callee identifiers, not call expressions");
+    const auto codeLensResponse = responseFor(transcript, 13);
+    expect(codeLensResponse.find("\"title\":\"1 reference\"") != std::string::npos &&
+               codeLensResponse.find("\"command\":\"editor.action.showReferences\"") !=
+                   std::string::npos &&
+               codeLensResponse.find(sourceUri) != std::string::npos,
+           "code lenses expose clickable compiler-resolved reference counts");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);

@@ -61,6 +61,8 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /registerDefinitionProvider/);
     assert.match(languageClient, /registerImplementationProvider/);
     assert.match(languageClient, /registerDocumentHighlightProvider/);
+    assert.match(languageClient, /registerCodeLensProvider/);
+    assert.match(languageClient, /textDocument\/codeLens/);
     assert.match(languageClient, /registerReferenceProvider/);
     assert.match(languageClient, /registerRenameProvider/);
     assert.match(languageClient, /registerDocumentSemanticTokensProvider/);
@@ -125,6 +127,72 @@ test("cancels pending language server requests", async () => {
     ]);
     assert.equal(client.pending.size, 0);
     assert.equal(token.disposed, true);
+});
+
+test("maps reference code lenses to clickable VS Code locations", async () => {
+    class Position {
+        constructor(line, character) {
+            this.line = line;
+            this.character = character;
+        }
+    }
+    class Range {
+        constructor(startLine, startCharacter, endLine, endCharacter) {
+            this.start = new Position(startLine, startCharacter);
+            this.end = new Position(endLine, endCharacter);
+        }
+    }
+    class Location {
+        constructor(uri, range) {
+            this.uri = uri;
+            this.range = range;
+        }
+    }
+    class CodeLens {
+        constructor(range, command) {
+            this.range = range;
+            this.command = command;
+        }
+    }
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.vscode = {
+        Position,
+        Range,
+        Location,
+        CodeLens,
+        Uri: { parse: (value) => ({ value }) }
+    };
+    client.request = async () => [{
+        range: {
+            start: { line: 1, character: 3 },
+            end: { line: 1, character: 6 }
+        },
+        command: {
+            title: "1 reference",
+            command: "editor.action.showReferences",
+            arguments: [
+                "file:///tmp/main.fdn",
+                { line: 1, character: 3 },
+                [{
+                    uri: "file:///tmp/main.fdn",
+                    range: {
+                        start: { line: 2, character: 12 },
+                        end: { line: 2, character: 15 }
+                    }
+                }]
+            ]
+        }
+    }];
+
+    const lenses = await client.codeLenses({
+        uri: { toString: () => "file:///tmp/main.fdn" }
+    });
+
+    assert.equal(lenses.length, 1);
+    assert.equal(lenses[0].command.title, "1 reference");
+    assert.equal(lenses[0].command.arguments[0].value, "file:///tmp/main.fdn");
+    assert.deepEqual(lenses[0].command.arguments[1], new Position(1, 3));
+    assert.equal(lenses[0].command.arguments[2][0].range.start.line, 2);
 });
 
 test("grammar and completions track compiler keywords", () => {

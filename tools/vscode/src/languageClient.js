@@ -209,6 +209,9 @@ class FoundationLanguageClient {
                 provideDocumentHighlights: (document, position, token) =>
                     this.documentHighlights(document, position, token)
             }),
+            this.vscode.languages.registerCodeLensProvider("foundation", {
+                provideCodeLenses: (document, token) => this.codeLenses(document, token)
+            }),
             this.vscode.languages.registerReferenceProvider("foundation", {
                 provideReferences: (document, position, context, token) =>
                     this.references(document, position, context, token)
@@ -401,6 +404,28 @@ class FoundationLanguageClient {
             this.range(value.range),
             value.kind
         ));
+    }
+
+    async codeLenses(document, token) {
+        const result = await this.request("textDocument/codeLens", {
+            textDocument: { uri: document.uri.toString() }
+        }, token);
+        return (result || []).map((value) => {
+            const [uri, position, locations] = value.command.arguments;
+            const command = {
+                title: value.command.title,
+                command: value.command.command,
+                arguments: [
+                    this.vscode.Uri.parse(uri),
+                    new this.vscode.Position(position.line, position.character),
+                    locations.map((location) => new this.vscode.Location(
+                        this.vscode.Uri.parse(location.uri),
+                        this.range(location.range)
+                    ))
+                ]
+            };
+            return new this.vscode.CodeLens(this.range(value.range), command);
+        });
     }
 
     async references(document, position, context, token) {
