@@ -220,6 +220,14 @@ class FoundationLanguageClient {
                 provideTypeHierarchySubtypes: (item, token) =>
                     this.typeHierarchySubtypes(item, token)
             }),
+            this.vscode.languages.registerCallHierarchyProvider("foundation", {
+                prepareCallHierarchy: (document, position, token) =>
+                    this.prepareCallHierarchy(document, position, token),
+                provideCallHierarchyIncomingCalls: (item, token) =>
+                    this.callHierarchyIncomingCalls(item, token),
+                provideCallHierarchyOutgoingCalls: (item, token) =>
+                    this.callHierarchyOutgoingCalls(item, token)
+            }),
             this.vscode.languages.registerReferenceProvider("foundation", {
                 provideReferences: (document, position, context, token) =>
                     this.references(document, position, context, token)
@@ -469,6 +477,47 @@ class FoundationLanguageClient {
             item: { data: item.data }
         }, token);
         return (result || []).map((value) => this.typeHierarchyItem(value));
+    }
+
+    callHierarchyItem(value) {
+        const item = new this.vscode.CallHierarchyItem(
+            Math.max(0, value.kind - 1),
+            value.name,
+            value.detail || "",
+            this.vscode.Uri.parse(value.uri),
+            this.range(value.range),
+            this.range(value.selectionRange)
+        );
+        item.data = value.data;
+        return item;
+    }
+
+    async prepareCallHierarchy(document, position, token) {
+        const result = await this.request("textDocument/prepareCallHierarchy", {
+            textDocument: { uri: document.uri.toString() },
+            position: { line: position.line, character: position.character }
+        }, token);
+        return (result || []).map((value) => this.callHierarchyItem(value));
+    }
+
+    async callHierarchyIncomingCalls(item, token) {
+        const result = await this.request("callHierarchy/incomingCalls", {
+            item: { data: item.data }
+        }, token);
+        return (result || []).map((value) => new this.vscode.CallHierarchyIncomingCall(
+            this.callHierarchyItem(value.from),
+            value.fromRanges.map((range) => this.range(range))
+        ));
+    }
+
+    async callHierarchyOutgoingCalls(item, token) {
+        const result = await this.request("callHierarchy/outgoingCalls", {
+            item: { data: item.data }
+        }, token);
+        return (result || []).map((value) => new this.vscode.CallHierarchyOutgoingCall(
+            this.callHierarchyItem(value.to),
+            value.fromRanges.map((range) => this.range(range))
+        ));
     }
 
     async references(document, position, context, token) {

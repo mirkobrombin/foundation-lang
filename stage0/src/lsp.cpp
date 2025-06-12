@@ -1107,6 +1107,12 @@ class LanguageServer {
         } else if (*method == "typeHierarchy/subtypes" && id != nullptr) {
             sendMessage(output_, response(*id, provideTypeHierarchySubtypes(
                                                    message.find("params"))));
+        } else if (*method == "textDocument/prepareCallHierarchy" && id != nullptr) {
+            sendMessage(output_, response(*id, prepareCallHierarchy(message.find("params"))));
+        } else if (*method == "callHierarchy/incomingCalls" && id != nullptr) {
+            sendMessage(output_, response(*id, provideIncomingCalls(message.find("params"))));
+        } else if (*method == "callHierarchy/outgoingCalls" && id != nullptr) {
+            sendMessage(output_, response(*id, provideOutgoingCalls(message.find("params"))));
         } else if (*method == "textDocument/references" && id != nullptr) {
             sendMessage(output_, response(*id, provideReferences(message.find("params"))));
         } else if (*method == "textDocument/prepareRename" && id != nullptr) {
@@ -1162,6 +1168,7 @@ class LanguageServer {
                             {"codeLensProvider",
                              Json::object({{"resolveProvider", false}})},
                             {"typeHierarchyProvider", true},
+                            {"callHierarchyProvider", true},
                             {"referencesProvider", true},
                             {"renameProvider", Json::object({{"prepareProvider", true}})},
                             {"completionProvider",
@@ -1868,6 +1875,163 @@ class LanguageServer {
             if (symbol != nullptr) {
                 result.push_back(typeHierarchyItem(*context->analysis, *symbol));
             }
+        }
+        return Json(std::move(result));
+    }
+
+    [[nodiscard]] bool callableSymbol(LanguageSymbolKind kind) const {
+        return kind == LanguageSymbolKind::Function || kind == LanguageSymbolKind::Method ||
+               kind == LanguageSymbolKind::ContractMethod;
+    }
+
+    [[nodiscard]] Json callHierarchyItem(const ProjectAnalysis &analysis,
+                                         const LanguageSymbol &symbol) const {
+        if (symbol.definition.source >= analysis.sources.size()) {
+            return Json(nullptr);
+        }
+        const auto &source = analysis.sources[symbol.definition.source];
+        const auto kind = symbol.id.kind == LanguageSymbolKind::Function
+                              ? "function"
+                          : symbol.id.kind == LanguageSymbolKind::Method
+                              ? "method"
+                              : "contractMethod";
+        return Json::object(
+            {{"name", symbol.name},
+             {"kind", symbol.id.kind == LanguageSymbolKind::Function ? 12 : 6},
+             {"detail", symbol.detail},
+             {"uri", sourceUri(source.identity)},
+             {"range", lspRange(source.contents, symbol.definition)},
+             {"selectionRange", lspRange(source.contents, symbol.definition)},
+             {"data", Json::object({{"kind", kind},
+                                     {"name", symbol.name},
+                                     {"scope", symbol.scope},
+                                     {"uri", sourceUri(source.identity)}})}});
+    }
+
+    [[nodiscard]] std::optional<HierarchyContext> callContext(const Json *params) const {
+        const auto *item = params == nullptr ? nullptr : params->find("item");
+        const auto *data = item == nullptr ? nullptr : item->find("data");
+        const auto kind = stringField(data, "kind");
+        const auto name = stringField(data, "name");
+        const auto scope = stringField(data, "scope");
+        const auto uri = stringField(data, "uri");
+        if (!kind.has_value() || !name.has_value() || !scope.has_value() ||
+            !uri.has_value()) {
+            return std::nullopt;
+        }
+        const auto path = fileUriToPath(*uri);
+        if (!path.has_value()) {
+            return std::nullopt;
+        }
+        const auto &analysis = analyzeRoot(analysisRoot(normalizedPath(*path)));
+        const auto &index = languageIndex(analysis);
+        const auto symbolKind = *kind == "function" ? LanguageSymbolKind::Function
+                                : *kind == "method" ? LanguageSymbolKind::Method
+                                : *kind == "contractMethod"
+                                    ? LanguageSymbolKind::ContractMethod
+                                    : LanguageSymbolKind::Local;
+        for (const auto &symbol : index.symbols()) {
+            if (symbol.id.kind == symbolKind && symbol.name == *name &&
+                symbol.scope == *scope) {
+                return HierarchyContext{&analysis, &index, &symbol};
+            }
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] Json prepareCallHierarchy(const Json *params) const {
+        const auto *textDocument = params == nullptr ? nullptr : params->find("textDocument");
+        const auto uri = stringField(textDocument, "uri");
+        if (!uri.has_value()) {
+            return Json(nullptr);
+        }
+        auto analysis = analyzeUri(*uri);
+        if (analysis == nullptr) {
+            return Json(nullptr);
+        }
+        SourceSpan word;
+        const auto &index = languageIndex(*analysis);
+        const auto symbolId = semanticSymbolAt(*analysis, *uri, params, word, index);
+        const auto *symbol = symbolId.has_value() ? index.symbol(*symbolId) : nullptr;
+        if (symbol == nullptr || !callableSymbol(symbol->id.kind)) {
+            return Json(nullptr);
+        }
+        return Json::array({callHierarchyItem(*analysis, *symbol)});
+    }
+
+    struct CallGroup {
+        const LanguageSymbol *symbol{};
+        std::vector<SourceSpan> ranges;
+    };
+
+    [[nodiscard]] Json provideIncomingCalls(const Json *params) const {
+        const auto context = callContext(params);
+        if (!context.has_value()) {
+            return Json(Json::Array{});
+        }
+        std::vector<CallGroup> groups;
+        for (const auto &call : context->index->incomingCalls(context->symbol->id)) {
+            const auto *caller = context->index->symbol(call.caller);
+            if (caller == nullptr) {
+                continue;
+            }
+            const auto found = std::find_if(groups.begin(), groups.end(), [&](const auto &group) {
+                return group.symbol->id == caller->id;
+            });
+            if (found != groups.end()) {
+                found->ranges.push_back(call.span);
+            } else {
+                groups.push_back({caller, {call.span}});
+            }
+        }
+        Json::Array result;
+        for (const auto &group : groups) {
+            Json::Array ranges;
+            for (const auto span : group.ranges) {
+                if (span.source < context->analysis->sources.size()) {
+                    ranges.push_back(lspRange(
+                        context->analysis->sources[span.source].contents, span));
+                }
+            }
+            result.push_back(Json::object(
+                {{"from", callHierarchyItem(*context->analysis, *group.symbol)},
+                 {"fromRanges", Json(std::move(ranges))}}));
+        }
+        return Json(std::move(result));
+    }
+
+    [[nodiscard]] Json provideOutgoingCalls(const Json *params) const {
+        const auto context = callContext(params);
+        if (!context.has_value()) {
+            return Json(Json::Array{});
+        }
+        std::vector<CallGroup> groups;
+        for (const auto &call : context->index->outgoingCalls(context->symbol->id)) {
+            const auto *callee = context->index->symbol(call.callee);
+            if (callee == nullptr) {
+                continue;
+            }
+            const auto found = std::find_if(groups.begin(), groups.end(), [&](const auto &group) {
+                return group.symbol->id == callee->id;
+            });
+            if (found != groups.end()) {
+                found->ranges.push_back(call.span);
+            } else {
+                groups.push_back({callee, {call.span}});
+            }
+        }
+        Json::Array result;
+        for (const auto &group : groups) {
+            Json::Array ranges;
+            for (const auto span : group.ranges) {
+                if (span.source < context->analysis->sources.size()) {
+                    ranges.push_back(lspRange(
+                        context->analysis->sources[span.source].contents, span));
+                }
+            }
+            result.push_back(Json::object(
+                {{"to", callHierarchyItem(*context->analysis, *group.symbol)},
+                 {"fromRanges", Json(std::move(ranges))}}));
         }
         return Json(std::move(result));
     }

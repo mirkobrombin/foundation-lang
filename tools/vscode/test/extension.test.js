@@ -66,6 +66,9 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /registerTypeHierarchyProvider/);
     assert.match(languageClient, /typeHierarchy\/supertypes/);
     assert.match(languageClient, /typeHierarchy\/subtypes/);
+    assert.match(languageClient, /registerCallHierarchyProvider/);
+    assert.match(languageClient, /callHierarchy\/incomingCalls/);
+    assert.match(languageClient, /callHierarchy\/outgoingCalls/);
     assert.match(languageClient, /registerReferenceProvider/);
     assert.match(languageClient, /registerRenameProvider/);
     assert.match(languageClient, /registerDocumentSemanticTokensProvider/);
@@ -264,6 +267,90 @@ test("round trips compiler type hierarchy identities", async () => {
         "typeHierarchy/subtypes"
     ]);
     assert.deepEqual(requests[1].params.item.data, value.data);
+});
+
+test("maps compiler call hierarchy edges to VS Code calls", async () => {
+    class Position {
+        constructor(line, character) {
+            this.line = line;
+            this.character = character;
+        }
+    }
+    class Range {
+        constructor(startLine, startCharacter, endLine, endCharacter) {
+            this.start = new Position(startLine, startCharacter);
+            this.end = new Position(endLine, endCharacter);
+        }
+    }
+    class CallHierarchyItem {
+        constructor(kind, name, detail, uri, range, selectionRange) {
+            Object.assign(this, { kind, name, detail, uri, range, selectionRange });
+        }
+    }
+    class CallHierarchyIncomingCall {
+        constructor(from, fromRanges) {
+            Object.assign(this, { from, fromRanges });
+        }
+    }
+    class CallHierarchyOutgoingCall {
+        constructor(to, fromRanges) {
+            Object.assign(this, { to, fromRanges });
+        }
+    }
+    const range = {
+        start: { line: 1, character: 3 },
+        end: { line: 1, character: 6 }
+    };
+    const item = {
+        name: "add",
+        kind: 12,
+        detail: "fn add() i32",
+        uri: "file:///tmp/main.fdn",
+        range,
+        selectionRange: range,
+        data: {
+            kind: "function",
+            name: "add",
+            scope: "function:sample",
+            uri: "file:///tmp/main.fdn"
+        }
+    };
+    const methods = [];
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.vscode = {
+        Position,
+        Range,
+        CallHierarchyItem,
+        CallHierarchyIncomingCall,
+        CallHierarchyOutgoingCall,
+        Uri: { parse: (uri) => ({ value: uri }) }
+    };
+    client.request = async (method) => {
+        methods.push(method);
+        if (method === "callHierarchy/incomingCalls") {
+            return [{ from: item, fromRanges: [range] }];
+        }
+        if (method === "callHierarchy/outgoingCalls") {
+            return [{ to: item, fromRanges: [range] }];
+        }
+        return [item];
+    };
+    const document = { uri: { toString: () => item.uri } };
+
+    const prepared = await client.prepareCallHierarchy(document, new Position(1, 4));
+    const incoming = await client.callHierarchyIncomingCalls(prepared[0]);
+    const outgoing = await client.callHierarchyOutgoingCalls(prepared[0]);
+
+    assert.equal(prepared[0].name, "add");
+    assert.deepEqual(prepared[0].data, item.data);
+    assert.equal(incoming[0].from.name, "add");
+    assert.equal(incoming[0].fromRanges[0].start.line, 1);
+    assert.equal(outgoing[0].to.uri.value, item.uri);
+    assert.deepEqual(methods, [
+        "textDocument/prepareCallHierarchy",
+        "callHierarchy/incomingCalls",
+        "callHierarchy/outgoingCalls"
+    ]);
 });
 
 test("grammar and completions track compiler keywords", () => {

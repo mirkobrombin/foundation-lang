@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <set>
@@ -179,7 +180,8 @@ class IndexBuilder {
         }
         addDeclarationTypeReferences();
         finish();
-        return LanguageIndex(std::move(symbols_), std::move(occurrences_));
+        return LanguageIndex(std::move(symbols_), std::move(occurrences_),
+                             std::move(calls_));
     }
 
   private:
@@ -193,11 +195,13 @@ class IndexBuilder {
         return value != nullptr && (value->path == "std" || value->path.starts_with("std/"));
     }
 
-    void addSymbol(LanguageSymbol symbol) {
+    void addSymbol(LanguageSymbol symbol, bool addDefinition = true) {
         if (symbol.definition.source >= analysis_.sources.size()) {
             return;
         }
-        occurrences_.push_back({symbol.id, symbol.definition, true});
+        if (addDefinition) {
+            occurrences_.push_back({symbol.id, symbol.definition, true});
+        }
         symbols_.push_back(std::move(symbol));
     }
 
@@ -383,10 +387,15 @@ class IndexBuilder {
                        !standardSource(declaration.span)});
             for (std::size_t method = 0; method < declaration.methods.size(); ++method) {
                 const auto &value = declaration.methods[method];
-                addSymbol({{LanguageSymbolKind::ContractMethod, id, method}, value.name,
-                           contractMethodDetail(value), "contract-method:" + std::to_string(id),
+                const LanguageSymbolId methodSymbol{
+                    LanguageSymbolKind::ContractMethod, id, method};
+                addSymbol({methodSymbol, value.name, contractMethodDetail(value),
+                           "contract-method:" + std::to_string(id),
                            identifierSpan(analysis_, value.span, value.name),
                            !standardSource(value.span)});
+                if (value.defaultFunction.has_value()) {
+                    functionSymbols_[*value.defaultFunction] = methodSymbol;
+                }
             }
         }
         for (std::size_t id = 0; id < analysis_.program.attributeDeclarations.size(); ++id) {
@@ -489,7 +498,8 @@ class IndexBuilder {
     }
 
     void declareLocal(std::size_t function, FirLocalId local, LanguageSymbolKind kind,
-                      SourceSpan span, bool renameable = true) {
+                      SourceSpan span, bool renameable = true,
+                      bool addDefinition = true) {
         if (function >= localSymbols_.size() || local >= localSymbols_[function].size() ||
             function >= analysis_.program.functions.size()) {
             return;
@@ -502,7 +512,8 @@ class IndexBuilder {
                    declaration.name + ' ' +
                        displayType(declaration.type, analysis_.program.functions[function]),
                    "local:" + std::to_string(function), span,
-                   renameable && !standardSource(span)});
+                   renameable && !standardSource(span)},
+                  addDefinition);
     }
 
     void addLocalDeclarations() {
@@ -523,7 +534,8 @@ class IndexBuilder {
                     renameable = false;
                 }
                 declareLocal(function, semanticFunction.parameters[parameter],
-                             LanguageSymbolKind::Parameter, span, renameable);
+                             LanguageSymbolKind::Parameter, span, renameable,
+                             value.name != "self");
             }
         }
         for (std::size_t statement = 0; statement < analysis_.program.statements.size();
@@ -750,20 +762,36 @@ class IndexBuilder {
 
     void addCallReference(AstExpressionId expression, const CallTarget &target,
                           SourceSpan span) {
+        std::optional<LanguageSymbolId> callee;
         if (target.kind == CallTargetKind::Function || target.kind == CallTargetKind::Method) {
             const auto found = functionSymbols_.find(target.function);
             if (found != functionSymbols_.end()) {
-                addNamedOccurrence(found->second, span);
+                callee = found->second;
             }
         } else if (target.kind == CallTargetKind::ContractMethod) {
-            if (const auto symbol = contractMethodSymbol(target); symbol.has_value()) {
-                addNamedOccurrence(*symbol, span);
-            }
+            callee = contractMethodSymbol(target);
         } else if (target.kind == CallTargetKind::FunctionValue &&
                    expressionOwners_[expression].has_value()) {
             if (const auto symbol = resolveLocal(*expressionOwners_[expression], target.local);
                 symbol.has_value()) {
                 addNamedOccurrence(*symbol, span);
+            }
+        }
+        if (!callee.has_value()) {
+            return;
+        }
+        const auto *calleeSymbol = symbol(*callee);
+        if (calleeSymbol == nullptr) {
+            return;
+        }
+        addNamedOccurrence(*callee, span);
+        if (expression < expressionOwners_.size() &&
+            expressionOwners_[expression].has_value()) {
+            const auto caller = functionSymbols_.find(*expressionOwners_[expression]);
+            if (caller != functionSymbols_.end()) {
+                calls_.push_back({caller->second, *callee,
+                                  identifierSpan(analysis_, span,
+                                                 calleeSymbol->name)});
             }
         }
     }
@@ -913,12 +941,34 @@ class IndexBuilder {
                                    left.definition == right.definition;
                         }),
             occurrences_.end());
+        std::sort(calls_.begin(), calls_.end(), [](const auto &left, const auto &right) {
+            if (!sameId(left.caller, right.caller)) {
+                return idLess(left.caller, right.caller);
+            }
+            if (!sameId(left.callee, right.callee)) {
+                return idLess(left.callee, right.callee);
+            }
+            if (left.span.source != right.span.source) {
+                return left.span.source < right.span.source;
+            }
+            return left.span.offset < right.span.offset;
+        });
+        calls_.erase(std::unique(calls_.begin(), calls_.end(), [](const auto &left,
+                                                                  const auto &right) {
+                         return sameId(left.caller, right.caller) &&
+                                sameId(left.callee, right.callee) &&
+                                left.span.source == right.span.source &&
+                                left.span.offset == right.span.offset &&
+                                left.span.length == right.span.length;
+                     }),
+                     calls_.end());
     }
 
     const ProjectAnalysis &analysis_;
     const SemanticModel *semantic_{};
     std::vector<LanguageSymbol> symbols_;
     std::vector<LanguageOccurrence> occurrences_;
+    std::vector<LanguageCall> calls_;
     std::vector<std::optional<std::size_t>> expressionOwners_;
     std::vector<std::optional<std::size_t>> statementOwners_;
     std::vector<std::vector<std::optional<LanguageSymbolId>>> localSymbols_;
@@ -952,8 +1002,10 @@ bool reservedIdentifier(std::string_view name) {
 } // namespace
 
 LanguageIndex::LanguageIndex(std::vector<LanguageSymbol> symbols,
-                             std::vector<LanguageOccurrence> occurrences)
-    : symbols_(std::move(symbols)), occurrences_(std::move(occurrences)) {}
+                             std::vector<LanguageOccurrence> occurrences,
+                             std::vector<LanguageCall> calls)
+    : symbols_(std::move(symbols)), occurrences_(std::move(occurrences)),
+      calls_(std::move(calls)) {}
 
 const std::vector<LanguageSymbol> &LanguageIndex::symbols() const { return symbols_; }
 
@@ -993,6 +1045,20 @@ std::vector<LanguageOccurrence> LanguageIndex::references(LanguageSymbolId id,
             result.push_back(occurrence);
         }
     }
+    return result;
+}
+
+std::vector<LanguageCall> LanguageIndex::incomingCalls(LanguageSymbolId id) const {
+    std::vector<LanguageCall> result;
+    std::copy_if(calls_.begin(), calls_.end(), std::back_inserter(result),
+                 [id](const auto &call) { return call.callee == id; });
+    return result;
+}
+
+std::vector<LanguageCall> LanguageIndex::outgoingCalls(LanguageSymbolId id) const {
+    std::vector<LanguageCall> result;
+    std::copy_if(calls_.begin(), calls_.end(), std::back_inserter(result),
+                 [id](const auto &call) { return call.caller == id; });
     return result;
 }
 

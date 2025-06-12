@@ -165,6 +165,22 @@ void diagnosticsUseUnsavedCompilerInput() {
         "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"textDocument/codeLens\","
         "\"params\":{\"textDocument\":{\"uri\":\"" +
         sourceUri + "\"}}}";
+    const auto prepareCalls =
+        "{\"jsonrpc\":\"2.0\",\"id\":14,"
+        "\"method\":\"textDocument/prepareCallHierarchy\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\"},\"position\":{\"line\":1,\"character\":4}}}";
+    const auto callRequest = [&sourceUri](int id, std::string_view method,
+                                          std::string_view name) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"callHierarchy/" + std::string(method) +
+               "\",\"params\":{\"item\":{\"data\":{\"kind\":\"function\","
+               "\"name\":\"" + std::string(name) +
+               "\",\"scope\":\"function:sample\",\"uri\":\"" + sourceUri +
+               "\"}}}}";
+    };
+    const auto incomingCalls = callRequest(15, "incomingCalls", "add");
+    const auto outgoingCalls = callRequest(16, "outgoingCalls", "main");
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit =
@@ -175,7 +191,8 @@ void diagnosticsUseUnsavedCompilerInput() {
                              frame(documentSymbols) + frame(workspaceSymbols) + frame(hover) +
                              frame(definition) + frame(completion) + frame(signature) +
                              frame(semanticTokens) + frame(inlayHints) + frame(renameFunction) +
-                             frame(codeLenses) + frame(shutdown) + frame(exit));
+                             frame(codeLenses) + frame(prepareCalls) + frame(incomingCalls) +
+                             frame(outgoingCalls) + frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
@@ -237,6 +254,19 @@ void diagnosticsUseUnsavedCompilerInput() {
                    std::string::npos &&
                codeLensResponse.find(sourceUri) != std::string::npos,
            "code lenses expose clickable compiler-resolved reference counts");
+    expect(responseFor(transcript, 14).find("\"name\":\"add\"") !=
+               std::string::npos,
+           "call hierarchy preparation resolves callable symbols");
+    const auto incomingResponse = responseFor(transcript, 15);
+    expect(incomingResponse.find("\"from\":{") != std::string::npos &&
+               incomingResponse.find("\"name\":\"main\"") != std::string::npos &&
+               incomingResponse.find("\"character\":16") != std::string::npos,
+           "incoming calls identify the compiler-resolved caller and call range");
+    const auto outgoingResponse = responseFor(transcript, 16);
+    expect(outgoingResponse.find("\"to\":{") != std::string::npos &&
+               outgoingResponse.find("\"name\":\"add\"") != std::string::npos &&
+               outgoingResponse.find("\"character\":16") != std::string::npos,
+           "outgoing calls identify the compiler-resolved callee and call range");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);
@@ -518,6 +548,67 @@ void contractImplementationsIncludeInheritedAndDelegatedTypes() {
     std::filesystem::remove_all(root, error);
 }
 
+void callHierarchySeparatesHomonymousMethods() {
+    const auto root = temporaryRoot();
+    std::filesystem::create_directories(root);
+    const auto source = root / "calls.fdn";
+    const auto rootUri = fileUri(root);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        rootUri + "\"}}";
+    const auto contents =
+        "package sample\n"
+        "struct Left {\n"
+        "    fn value(view) i32 { 1 }\n"
+        "}\n"
+        "struct Right {\n"
+        "    fn value(view) i32 { 2 }\n"
+        "}\n"
+        "fn readLeft(item Left) i32 { item.value() }\n"
+        "fn readRight(item Right) i32 { item.value() }\n";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto prepare =
+        "{\"jsonrpc\":\"2.0\",\"id\":22,"
+        "\"method\":\"textDocument/prepareCallHierarchy\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\"},\"position\":{\"line\":2,\"character\":8}}}";
+    const auto incoming =
+        "{\"jsonrpc\":\"2.0\",\"id\":23,"
+        "\"method\":\"callHierarchy/incomingCalls\",\"params\":{\"item\":{\"data\":{"
+        "\"kind\":\"method\",\"name\":\"value\","
+        "\"scope\":\"method:sample.Left\",\"uri\":\"" +
+        sourceUri + "\"}}}}";
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+
+    std::istringstream input(frame(initialize) + frame(open) + frame(prepare) +
+                             frame(incoming) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto prepared = responseFor(transcript, 22);
+    const auto callers = responseFor(transcript, 23);
+
+    expect(status == 0, "homonymous call hierarchy transcript exits cleanly");
+    expect(errors.str().empty(), "homonymous call hierarchy writes no server errors");
+    expect(prepared.find("\"scope\":\"method:sample.Left\"") != std::string::npos,
+           "call hierarchy preparation preserves the concrete method owner");
+    expect(callers.find("\"name\":\"readLeft\"") != std::string::npos &&
+               callers.find("\"line\":7") != std::string::npos &&
+               callers.find("\"name\":\"readRight\"") == std::string::npos &&
+               callers.find("\"line\":8") == std::string::npos,
+           "incoming calls exclude a homonymous method on another struct");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void workspaceFoldersAreIndependentAndDynamic() {
     const auto root = temporaryRoot();
     const auto first = root / "first";
@@ -652,6 +743,7 @@ int main() {
     unopenedLibraryDoesNotRequireMain();
     semanticNavigationSeparatesHomonyms();
     contractImplementationsIncludeInheritedAndDelegatedTypes();
+    callHierarchySeparatesHomonymousMethods();
     workspaceFoldersAreIndependentAndDynamic();
     diagnosticsStayScopedToTheirWorkspace();
 

@@ -50,11 +50,18 @@ struct LanguageOccurrence {
     bool definition{};
 };
 
+struct LanguageCall {
+    LanguageSymbolId caller;
+    LanguageSymbolId callee;
+    SourceSpan span;
+};
+
 class LanguageIndex {
   public:
     LanguageIndex() = default;
     LanguageIndex(std::vector<LanguageSymbol> symbols,
-                  std::vector<LanguageOccurrence> occurrences);
+                  std::vector<LanguageOccurrence> occurrences,
+                  std::vector<LanguageCall> calls);
 
     [[nodiscard]] const std::vector<LanguageSymbol> &symbols() const;
     [[nodiscard]] const std::vector<LanguageOccurrence> &occurrences() const;
@@ -63,11 +70,14 @@ class LanguageIndex {
                                                          std::size_t offset) const;
     [[nodiscard]] std::vector<LanguageOccurrence>
     references(LanguageSymbolId id, bool includeDefinition) const;
+    [[nodiscard]] std::vector<LanguageCall> incomingCalls(LanguageSymbolId id) const;
+    [[nodiscard]] std::vector<LanguageCall> outgoingCalls(LanguageSymbolId id) const;
     [[nodiscard]] bool canRename(LanguageSymbolId id, std::string_view name) const;
 
   private:
     std::vector<LanguageSymbol> symbols_;
     std::vector<LanguageOccurrence> occurrences_;
+    std::vector<LanguageCall> calls_;
 };
 
 [[nodiscard]] LanguageIndex buildLanguageIndex(const ProjectAnalysis &analysis);
