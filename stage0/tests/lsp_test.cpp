@@ -459,19 +459,38 @@ void contractImplementationsIncludeInheritedAndDelegatedTypes() {
     };
     const auto contractImplementations = request(17, 1, 10);
     const auto methodImplementations = request(18, 2, 8);
+    const auto prepareHierarchy =
+        "{\"jsonrpc\":\"2.0\",\"id\":19,"
+        "\"method\":\"textDocument/prepareTypeHierarchy\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\"},\"position\":{\"line\":1,\"character\":10}}}";
+    const auto hierarchyRequest = [&sourceUri](int id, std::string_view method,
+                                                std::string_view name) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"typeHierarchy/" + std::string(method) +
+               "\",\"params\":{\"item\":{\"data\":{\"kind\":\"contract\","
+               "\"name\":\"" + std::string(name) +
+               "\",\"scope\":\"type:sample\",\"uri\":\"" + sourceUri + "\"}}}}";
+    };
+    const auto hierarchySubtypes = hierarchyRequest(20, "subtypes", "Named");
+    const auto hierarchySupertypes = hierarchyRequest(21, "supertypes", "Tagged");
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
 
     std::istringstream input(frame(initialize) + frame(open) +
                              frame(contractImplementations) + frame(methodImplementations) +
-                             frame(shutdown) + frame(exit));
+                             frame(prepareHierarchy) + frame(hierarchySubtypes) +
+                             frame(hierarchySupertypes) + frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
     const auto transcript = output.str();
     const auto contracts = responseFor(transcript, 17);
     const auto methods = responseFor(transcript, 18);
+    const auto preparedHierarchy = responseFor(transcript, 19);
+    const auto subtypes = responseFor(transcript, 20);
+    const auto supertypes = responseFor(transcript, 21);
 
     expect(status == 0, "implementation navigation transcript exits cleanly");
     expect(errors.str().empty(), "implementation navigation writes no server errors");
@@ -483,6 +502,17 @@ void contractImplementationsIncludeInheritedAndDelegatedTypes() {
                methods.find("\"line\":9") != std::string::npos &&
                methods.find("\"line\":11") != std::string::npos,
            "contract method implementations include methods and delegated owners");
+    expect(preparedHierarchy.find("\"name\":\"Named\"") != std::string::npos &&
+               preparedHierarchy.find("\"kind\":11") != std::string::npos &&
+               preparedHierarchy.find("\"scope\":\"type:sample\"") != std::string::npos,
+           "type hierarchy preparation preserves a stable semantic identity");
+    expect(subtypes.find("\"name\":\"Tagged\"") != std::string::npos &&
+               subtypes.find("\"name\":\"Identity\"") != std::string::npos &&
+               subtypes.find("\"name\":\"Wrapper\"") != std::string::npos &&
+               subtypes.find("\"name\":\"Admin\"") == std::string::npos,
+           "type hierarchy returns direct child contracts and implementing structs");
+    expect(supertypes.find("\"name\":\"Named\"") != std::string::npos,
+           "type hierarchy returns direct parent contracts");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);

@@ -212,6 +212,14 @@ class FoundationLanguageClient {
             this.vscode.languages.registerCodeLensProvider("foundation", {
                 provideCodeLenses: (document, token) => this.codeLenses(document, token)
             }),
+            this.vscode.languages.registerTypeHierarchyProvider("foundation", {
+                prepareTypeHierarchy: (document, position, token) =>
+                    this.prepareTypeHierarchy(document, position, token),
+                provideTypeHierarchySupertypes: (item, token) =>
+                    this.typeHierarchySupertypes(item, token),
+                provideTypeHierarchySubtypes: (item, token) =>
+                    this.typeHierarchySubtypes(item, token)
+            }),
             this.vscode.languages.registerReferenceProvider("foundation", {
                 provideReferences: (document, position, context, token) =>
                     this.references(document, position, context, token)
@@ -426,6 +434,41 @@ class FoundationLanguageClient {
             };
             return new this.vscode.CodeLens(this.range(value.range), command);
         });
+    }
+
+    typeHierarchyItem(value) {
+        const item = new this.vscode.TypeHierarchyItem(
+            Math.max(0, value.kind - 1),
+            value.name,
+            value.detail || "",
+            this.vscode.Uri.parse(value.uri),
+            this.range(value.range),
+            this.range(value.selectionRange)
+        );
+        item.data = value.data;
+        return item;
+    }
+
+    async prepareTypeHierarchy(document, position, token) {
+        const result = await this.request("textDocument/prepareTypeHierarchy", {
+            textDocument: { uri: document.uri.toString() },
+            position: { line: position.line, character: position.character }
+        }, token);
+        return (result || []).map((value) => this.typeHierarchyItem(value));
+    }
+
+    async typeHierarchySupertypes(item, token) {
+        const result = await this.request("typeHierarchy/supertypes", {
+            item: { data: item.data }
+        }, token);
+        return (result || []).map((value) => this.typeHierarchyItem(value));
+    }
+
+    async typeHierarchySubtypes(item, token) {
+        const result = await this.request("typeHierarchy/subtypes", {
+            item: { data: item.data }
+        }, token);
+        return (result || []).map((value) => this.typeHierarchyItem(value));
     }
 
     async references(document, position, context, token) {

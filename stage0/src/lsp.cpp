@@ -1099,6 +1099,14 @@ class LanguageServer {
             sendMessage(output_, response(*id, provideDocumentHighlights(message.find("params"))));
         } else if (*method == "textDocument/codeLens" && id != nullptr) {
             sendMessage(output_, response(*id, provideCodeLenses(message.find("params"))));
+        } else if (*method == "textDocument/prepareTypeHierarchy" && id != nullptr) {
+            sendMessage(output_, response(*id, prepareTypeHierarchy(message.find("params"))));
+        } else if (*method == "typeHierarchy/supertypes" && id != nullptr) {
+            sendMessage(output_, response(*id, provideTypeHierarchySupertypes(
+                                                   message.find("params"))));
+        } else if (*method == "typeHierarchy/subtypes" && id != nullptr) {
+            sendMessage(output_, response(*id, provideTypeHierarchySubtypes(
+                                                   message.find("params"))));
         } else if (*method == "textDocument/references" && id != nullptr) {
             sendMessage(output_, response(*id, provideReferences(message.find("params"))));
         } else if (*method == "textDocument/prepareRename" && id != nullptr) {
@@ -1153,6 +1161,7 @@ class LanguageServer {
                             {"documentHighlightProvider", true},
                             {"codeLensProvider",
                              Json::object({{"resolveProvider", false}})},
+                            {"typeHierarchyProvider", true},
                             {"referencesProvider", true},
                             {"renameProvider", Json::object({{"prepareProvider", true}})},
                             {"completionProvider",
@@ -1295,10 +1304,11 @@ class LanguageServer {
         }
     }
 
-    [[nodiscard]] std::filesystem::path analysisRoot(const OpenDocument &document) const {
+    [[nodiscard]] std::filesystem::path analysisRoot(
+        const std::filesystem::path &path) const {
         const std::filesystem::path *best{};
         for (const auto &root : workspaceRoots_) {
-            if (containsPath(root, document.path) &&
+            if (containsPath(root, path) &&
                 (best == nullptr || root.generic_string().size() > best->generic_string().size())) {
                 best = &root;
             }
@@ -1306,7 +1316,11 @@ class LanguageServer {
         if (best != nullptr) {
             return *best;
         }
-        return document.path.parent_path();
+        return path.parent_path();
+    }
+
+    [[nodiscard]] std::filesystem::path analysisRoot(const OpenDocument &document) const {
+        return analysisRoot(document.path);
     }
 
     [[nodiscard]] std::vector<SourceOverlay> overlays() const {
@@ -1706,6 +1720,154 @@ class LanguageServer {
                        {"arguments",
                         Json::array({*uri, lspPosition(position),
                                      Json(std::move(locations))})}})}}));
+        }
+        return Json(std::move(result));
+    }
+
+    struct HierarchyContext {
+        const ProjectAnalysis *analysis{};
+        const LanguageIndex *index{};
+        const LanguageSymbol *symbol{};
+    };
+
+    [[nodiscard]] Json typeHierarchyItem(const ProjectAnalysis &analysis,
+                                         const LanguageSymbol &symbol) const {
+        if (symbol.definition.source >= analysis.sources.size()) {
+            return Json(nullptr);
+        }
+        const auto &source = analysis.sources[symbol.definition.source];
+        const auto kind = symbol.id.kind == LanguageSymbolKind::Struct ? "struct" : "contract";
+        return Json::object(
+            {{"name", symbol.name},
+             {"kind", symbol.id.kind == LanguageSymbolKind::Struct ? 23 : 11},
+             {"detail", symbol.detail},
+             {"uri", sourceUri(source.identity)},
+             {"range", lspRange(source.contents, symbol.definition)},
+             {"selectionRange", lspRange(source.contents, symbol.definition)},
+             {"data", Json::object({{"kind", kind},
+                                     {"name", symbol.name},
+                                     {"scope", symbol.scope},
+                                     {"uri", sourceUri(source.identity)}})}});
+    }
+
+    [[nodiscard]] std::optional<HierarchyContext> hierarchyContext(
+        const Json *params) const {
+        const auto *item = params == nullptr ? nullptr : params->find("item");
+        const auto *data = item == nullptr ? nullptr : item->find("data");
+        const auto kind = stringField(data, "kind");
+        const auto name = stringField(data, "name");
+        const auto scope = stringField(data, "scope");
+        const auto uri = stringField(data, "uri");
+        if (!kind.has_value() || !name.has_value() || !scope.has_value() ||
+            !uri.has_value()) {
+            return std::nullopt;
+        }
+        const auto path = fileUriToPath(*uri);
+        if (!path.has_value()) {
+            return std::nullopt;
+        }
+        const auto &analysis = analyzeRoot(analysisRoot(normalizedPath(*path)));
+        const auto &index = languageIndex(analysis);
+        const auto symbolKind = *kind == "struct" ? LanguageSymbolKind::Struct
+                                : *kind == "contract" ? LanguageSymbolKind::Contract
+                                                      : LanguageSymbolKind::Local;
+        for (const auto &symbol : index.symbols()) {
+            if (symbol.id.kind == symbolKind && symbol.name == *name &&
+                symbol.scope == *scope) {
+                return HierarchyContext{&analysis, &index, &symbol};
+            }
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] Json prepareTypeHierarchy(const Json *params) const {
+        const auto *textDocument = params == nullptr ? nullptr : params->find("textDocument");
+        const auto uri = stringField(textDocument, "uri");
+        if (!uri.has_value()) {
+            return Json(nullptr);
+        }
+        auto analysis = analyzeUri(*uri);
+        if (analysis == nullptr) {
+            return Json(nullptr);
+        }
+        SourceSpan word;
+        const auto &index = languageIndex(*analysis);
+        const auto symbolId = semanticSymbolAt(*analysis, *uri, params, word, index);
+        const auto *symbol = symbolId.has_value() ? index.symbol(*symbolId) : nullptr;
+        if (symbol == nullptr ||
+            (symbol->id.kind != LanguageSymbolKind::Struct &&
+             symbol->id.kind != LanguageSymbolKind::Contract)) {
+            return Json(nullptr);
+        }
+        return Json::array({typeHierarchyItem(*analysis, *symbol)});
+    }
+
+    [[nodiscard]] Json provideTypeHierarchySupertypes(const Json *params) const {
+        const auto context = hierarchyContext(params);
+        if (!context.has_value() || !context->analysis->semantic.has_value()) {
+            return Json(Json::Array{});
+        }
+        std::vector<Type> parents;
+        if (context->symbol->id.kind == LanguageSymbolKind::Struct &&
+            context->symbol->id.owner < context->analysis->semantic->structs.size()) {
+            parents = context->analysis->semantic->structs[context->symbol->id.owner]
+                          .implementations;
+        } else if (context->symbol->id.kind == LanguageSymbolKind::Contract &&
+                   context->symbol->id.owner < context->analysis->semantic->contracts.size()) {
+            parents = context->analysis->semantic->contracts[context->symbol->id.owner].parents;
+        }
+        Json::Array result;
+        for (const auto &parent : parents) {
+            const auto *symbol = parent.kind == TypeKind::Contract
+                                     ? context->index->symbol(
+                                           {LanguageSymbolKind::Contract,
+                                            parent.declaration, 0})
+                                     : nullptr;
+            if (symbol != nullptr) {
+                result.push_back(typeHierarchyItem(*context->analysis, *symbol));
+            }
+        }
+        return Json(std::move(result));
+    }
+
+    [[nodiscard]] Json provideTypeHierarchySubtypes(const Json *params) const {
+        const auto context = hierarchyContext(params);
+        if (!context.has_value() || !context->analysis->semantic.has_value() ||
+            context->symbol->id.kind != LanguageSymbolKind::Contract) {
+            return Json(Json::Array{});
+        }
+        Json::Array result;
+        const auto contract = context->symbol->id.owner;
+        for (std::size_t declaration = 0;
+             declaration < context->analysis->semantic->contracts.size(); ++declaration) {
+            const auto &candidate = context->analysis->semantic->contracts[declaration];
+            const auto direct = std::any_of(candidate.parents.begin(), candidate.parents.end(),
+                                            [contract](const auto &parent) {
+                                                return parent.kind == TypeKind::Contract &&
+                                                       parent.declaration == contract;
+                                            });
+            const auto *symbol = direct ? context->index->symbol(
+                                              {LanguageSymbolKind::Contract, declaration, 0})
+                                        : nullptr;
+            if (symbol != nullptr) {
+                result.push_back(typeHierarchyItem(*context->analysis, *symbol));
+            }
+        }
+        for (std::size_t declaration = 0;
+             declaration < context->analysis->semantic->structs.size(); ++declaration) {
+            const auto &candidate = context->analysis->semantic->structs[declaration];
+            const auto direct = std::any_of(candidate.implementations.begin(),
+                                            candidate.implementations.end(),
+                                            [contract](const auto &implementation) {
+                                                return implementation.kind == TypeKind::Contract &&
+                                                       implementation.declaration == contract;
+                                            });
+            const auto *symbol = direct ? context->index->symbol(
+                                              {LanguageSymbolKind::Struct, declaration, 0})
+                                        : nullptr;
+            if (symbol != nullptr) {
+                result.push_back(typeHierarchyItem(*context->analysis, *symbol));
+            }
         }
         return Json(std::move(result));
     }

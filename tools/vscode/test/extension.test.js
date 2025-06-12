@@ -63,6 +63,9 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /registerDocumentHighlightProvider/);
     assert.match(languageClient, /registerCodeLensProvider/);
     assert.match(languageClient, /textDocument\/codeLens/);
+    assert.match(languageClient, /registerTypeHierarchyProvider/);
+    assert.match(languageClient, /typeHierarchy\/supertypes/);
+    assert.match(languageClient, /typeHierarchy\/subtypes/);
     assert.match(languageClient, /registerReferenceProvider/);
     assert.match(languageClient, /registerRenameProvider/);
     assert.match(languageClient, /registerDocumentSemanticTokensProvider/);
@@ -193,6 +196,74 @@ test("maps reference code lenses to clickable VS Code locations", async () => {
     assert.equal(lenses[0].command.arguments[0].value, "file:///tmp/main.fdn");
     assert.deepEqual(lenses[0].command.arguments[1], new Position(1, 3));
     assert.equal(lenses[0].command.arguments[2][0].range.start.line, 2);
+});
+
+test("round trips compiler type hierarchy identities", async () => {
+    class Position {
+        constructor(line, character) {
+            this.line = line;
+            this.character = character;
+        }
+    }
+    class Range {
+        constructor(startLine, startCharacter, endLine, endCharacter) {
+            this.start = new Position(startLine, startCharacter);
+            this.end = new Position(endLine, endCharacter);
+        }
+    }
+    class TypeHierarchyItem {
+        constructor(kind, name, detail, uri, range, selectionRange) {
+            Object.assign(this, { kind, name, detail, uri, range, selectionRange });
+        }
+    }
+    const value = {
+        name: "Named",
+        kind: 11,
+        detail: "contract Named",
+        uri: "file:///tmp/main.fdn",
+        range: {
+            start: { line: 1, character: 9 },
+            end: { line: 1, character: 14 }
+        },
+        selectionRange: {
+            start: { line: 1, character: 9 },
+            end: { line: 1, character: 14 }
+        },
+        data: {
+            kind: "contract",
+            name: "Named",
+            scope: "type:sample",
+            uri: "file:///tmp/main.fdn"
+        }
+    };
+    const requests = [];
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.vscode = {
+        Position,
+        Range,
+        TypeHierarchyItem,
+        Uri: { parse: (uri) => ({ value: uri }) }
+    };
+    client.request = async (method, params) => {
+        requests.push({ method, params });
+        return [value];
+    };
+    const document = { uri: { toString: () => value.uri } };
+
+    const prepared = await client.prepareTypeHierarchy(document, new Position(1, 10));
+    const parents = await client.typeHierarchySupertypes(prepared[0]);
+    const children = await client.typeHierarchySubtypes(prepared[0]);
+
+    assert.equal(prepared[0].kind, 10);
+    assert.deepEqual(prepared[0].data, value.data);
+    assert.equal(parents[0].name, "Named");
+    assert.equal(children[0].uri.value, value.uri);
+    assert.deepEqual(requests.map((request) => request.method), [
+        "textDocument/prepareTypeHierarchy",
+        "typeHierarchy/supertypes",
+        "typeHierarchy/subtypes"
+    ]);
+    assert.deepEqual(requests[1].params.item.data, value.data);
 });
 
 test("grammar and completions track compiler keywords", () => {
