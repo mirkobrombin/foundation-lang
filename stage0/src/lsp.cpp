@@ -1159,6 +1159,8 @@ class LanguageServer {
             sendMessage(output_, response(*id, provideSemanticTokens(message.find("params"))));
         } else if (*method == "textDocument/inlayHint" && id != nullptr) {
             sendMessage(output_, response(*id, provideInlayHints(message.find("params"))));
+        } else if (*method == "textDocument/codeAction" && id != nullptr) {
+            sendMessage(output_, response(*id, provideCodeActions(message.find("params"))));
         } else if (*method == "textDocument/formatting" && id != nullptr) {
             sendMessage(output_, response(*id, provideFormatting(message.find("params"))));
         } else if (*method == "textDocument/rangeFormatting" && id != nullptr) {
@@ -1225,6 +1227,8 @@ class LanguageServer {
                                         {"tokenModifiers", Json::array({"declaration"})}})},
                                   {"full", true}})},
                             {"inlayHintProvider", true},
+                            {"codeActionProvider",
+                             Json::object({{"codeActionKinds", Json::array({"quickfix"})}})},
                             {"documentFormattingProvider", true},
                             {"documentRangeFormattingProvider", true},
                             {"documentSymbolProvider", true},
@@ -2624,6 +2628,59 @@ class LanguageServer {
         const auto uri = stringField(textDocument, "uri");
         const auto document = uri.has_value() ? documents_.find(*uri) : documents_.end();
         return document == documents_.end() ? nullptr : &document->second;
+    }
+
+    [[nodiscard]] Json provideCodeActions(const Json *params) const {
+        const auto *textDocument = params == nullptr ? nullptr : params->find("textDocument");
+        const auto uri = stringField(textDocument, "uri");
+        const auto *range = params == nullptr ? nullptr : params->find("range");
+        const auto startPosition = jsonPosition(range == nullptr ? nullptr : range->find("start"));
+        const auto endPosition = jsonPosition(range == nullptr ? nullptr : range->find("end"));
+        if (!uri.has_value() || !startPosition.has_value() || !endPosition.has_value()) {
+            return Json(Json::Array{});
+        }
+        const auto *analysis = analyzeUri(*uri);
+        const auto sourceId = analysis == nullptr ? std::nullopt
+                                                  : sourceIdForUri(*analysis, *uri);
+        if (analysis == nullptr || !sourceId.has_value()) {
+            return Json(Json::Array{});
+        }
+        const auto &source = analysis->sources[*sourceId].contents;
+        const auto start = offsetAt(source, *startPosition);
+        const auto end = offsetAt(source, *endPosition);
+        if (!start.has_value() || !end.has_value()) {
+            return Json(Json::Array{});
+        }
+
+        Json::Array result;
+        std::set<std::pair<std::size_t, std::size_t>> emitted;
+        for (const auto &diagnostic : analysis->diagnostics.all()) {
+            if (diagnostic.span.source != *sourceId ||
+                (diagnostic.code != "FDN2051" && diagnostic.code != "FDN2076")) {
+                continue;
+            }
+            const auto diagnosticEnd = diagnostic.span.offset + diagnostic.span.length;
+            const auto selected = *start == *end
+                                      ? diagnostic.span.offset <= *start &&
+                                            *start <= diagnosticEnd
+                                      : diagnostic.span.offset < *end && diagnosticEnd > *start;
+            if (!selected ||
+                !emitted.emplace(diagnostic.span.offset, diagnostic.span.length).second) {
+                continue;
+            }
+            const auto insertion = positionAt(source, diagnostic.span.offset);
+            Json::Object changes;
+            changes.emplace(
+                *uri,
+                Json::array({Json::object({{"range", lspRange(insertion, insertion)},
+                                           {"newText", "discard "}})}));
+            result.push_back(Json::object(
+                {{"title", "Handle explicitly with discard"},
+                 {"kind", "quickfix"},
+                 {"isPreferred", true},
+                 {"edit", Json::object({{"changes", Json(std::move(changes))}})}}));
+        }
+        return Json(std::move(result));
     }
 
     [[nodiscard]] Json provideFormatting(const Json *params) const {

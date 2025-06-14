@@ -534,6 +534,73 @@ void formatsUnsavedDocumentsAndRanges() {
     std::filesystem::remove_all(root, error);
 }
 
+void offersCompilerBackedDiscardQuickFixes() {
+    const auto root = temporaryRoot();
+    std::filesystem::create_directories(root);
+    const auto source = root / "main.fdn";
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri +
+        "\",\"version\":1,\"text\":\"package sample\\nfn makeResult() Result<i32, bool> { "
+        "Result<i32, bool>.Ok(1) }\\nfn makeText() String { \\\"owned\\\" }\\n\\n"
+        "fn main() i32 {\\n    makeResult()\\n    makeText()\\n    0\\n}\\n\"}}}";
+    const auto codeAction =
+        "{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"textDocument/codeAction\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri +
+        "\"},\"range\":{\"start\":{\"line\":5,\"character\":8},"
+        "\"end\":{\"line\":5,\"character\":8}},\"context\":{\"diagnostics\":[]}}}";
+    const auto ownedCodeAction =
+        "{\"jsonrpc\":\"2.0\",\"id\":32,\"method\":\"textDocument/codeAction\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri +
+        "\"},\"range\":{\"start\":{\"line\":6,\"character\":8},"
+        "\"end\":{\"line\":6,\"character\":8}},\"context\":{\"diagnostics\":[]}}}";
+    const auto unrelated =
+        "{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"textDocument/codeAction\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri +
+        "\"},\"range\":{\"start\":{\"line\":4,\"character\":0},"
+        "\"end\":{\"line\":4,\"character\":0}},\"context\":{\"diagnostics\":[]}}}";
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+
+    std::istringstream input(frame(initialize) + frame(open) + frame(codeAction) +
+                             frame(ownedCodeAction) + frame(unrelated) + frame(shutdown) +
+                             frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto initialized = responseFor(transcript, 1);
+    const auto action = responseFor(transcript, 30);
+    const auto ownedAction = responseFor(transcript, 32);
+    const auto empty = responseFor(transcript, 31);
+
+    expect(status == 0, "code action transcript exits cleanly");
+    expect(errors.str().empty(), "code action writes no server errors");
+    expect(initialized.find("\"codeActionKinds\":[\"quickfix\"]") != std::string::npos,
+           "server advertises quick fixes");
+    expect(action.find("Handle explicitly with discard") != std::string::npos &&
+               action.find("\"newText\":\"discard \"") != std::string::npos &&
+               action.find("\"character\":4,\"line\":5") != std::string::npos,
+           "must-use diagnostic offers an insertion at the statement start");
+    expect(ownedAction.find("Handle explicitly with discard") != std::string::npos &&
+               ownedAction.find("\"character\":4,\"line\":6") != std::string::npos,
+           "owned-value diagnostic offers the same explicit handling fix");
+    expect(empty.find("\"result\":[]") != std::string::npos,
+           "unrelated selections do not receive quick fixes");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void contractImplementationsIncludeInheritedAndDelegatedTypes() {
     const auto root = temporaryRoot();
     std::filesystem::create_directories(root);
@@ -850,6 +917,7 @@ int main() {
     unopenedLibraryDoesNotRequireMain();
     semanticNavigationSeparatesHomonyms();
     formatsUnsavedDocumentsAndRanges();
+    offersCompilerBackedDiscardQuickFixes();
     contractImplementationsIncludeInheritedAndDelegatedTypes();
     callHierarchySeparatesHomonymousMethods();
     workspaceFoldersAreIndependentAndDynamic();

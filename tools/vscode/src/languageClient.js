@@ -262,6 +262,12 @@ class FoundationLanguageClient {
                 provideInlayHints: (document, range, token) =>
                     this.inlayHints(document, range, token)
             }),
+            this.vscode.languages.registerCodeActionsProvider("foundation", {
+                provideCodeActions: (document, range, context, token) =>
+                    this.codeActions(document, range, context, token)
+            }, {
+                providedCodeActionKinds: [this.vscode.CodeActionKind.QuickFix]
+            }),
             this.vscode.languages.registerDocumentFormattingEditProvider("foundation", {
                 provideDocumentFormattingEdits: (document, options, token) =>
                     this.formatting(document, options, token)
@@ -667,6 +673,54 @@ class FoundationLanguageClient {
             hint.paddingLeft = value.paddingLeft || false;
             hint.paddingRight = value.paddingRight || false;
             return hint;
+        });
+    }
+
+    workspaceEdit(changes) {
+        const edit = new this.vscode.WorkspaceEdit();
+        for (const [uri, values] of Object.entries(changes || {})) {
+            const target = this.vscode.Uri.parse(uri);
+            for (const value of values) {
+                edit.replace(target, this.range(value.range), value.newText);
+            }
+        }
+        return edit;
+    }
+
+    async codeActions(document, range, context, token) {
+        const result = await this.request("textDocument/codeAction", {
+            textDocument: { uri: document.uri.toString() },
+            range: {
+                start: { line: range.start.line, character: range.start.character },
+                end: { line: range.end.line, character: range.end.character }
+            },
+            context: {
+                diagnostics: context.diagnostics.map((diagnostic) => ({
+                    range: {
+                        start: {
+                            line: diagnostic.range.start.line,
+                            character: diagnostic.range.start.character
+                        },
+                        end: {
+                            line: diagnostic.range.end.line,
+                            character: diagnostic.range.end.character
+                        }
+                    },
+                    severity: diagnostic.severity,
+                    code: diagnostic.code,
+                    source: diagnostic.source,
+                    message: diagnostic.message
+                }))
+            }
+        }, token);
+        return (result || []).map((value) => {
+            const action = new this.vscode.CodeAction(
+                value.title,
+                this.vscode.CodeActionKind.QuickFix
+            );
+            action.isPreferred = value.isPreferred || false;
+            action.edit = this.workspaceEdit(value.edit?.changes);
+            return action;
         });
     }
 

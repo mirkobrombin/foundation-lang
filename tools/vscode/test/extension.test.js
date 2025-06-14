@@ -77,12 +77,14 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /registerRenameProvider/);
     assert.match(languageClient, /registerDocumentSemanticTokensProvider/);
     assert.match(languageClient, /registerInlayHintsProvider/);
+    assert.match(languageClient, /registerCodeActionsProvider/);
+    assert.match(languageClient, /textDocument\/codeAction/);
     assert.match(languageClient, /registerDocumentFormattingEditProvider/);
     assert.match(languageClient, /registerDocumentRangeFormattingEditProvider/);
     assert.match(languageClient, /textDocument\/rangeFormatting/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/\*\.fdn"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.22.0");
+    assert.equal(manifest.version, "0.23.0");
     assert.equal(
         manifest.contributes.configuration.properties["foundation.languageServer.path"].default,
         ""
@@ -185,6 +187,83 @@ test("maps language server formatting edits", async () => {
     });
     assert.equal(edits[0].newText, "    value");
     assert.equal(edits[0].range.start.line, 1);
+});
+
+test("maps compiler quick fixes to workspace edits", async () => {
+    class Position {
+        constructor(line, character) {
+            this.line = line;
+            this.character = character;
+        }
+    }
+    class Range {
+        constructor(startLine, startCharacter, endLine, endCharacter) {
+            this.start = new Position(startLine, startCharacter);
+            this.end = new Position(endLine, endCharacter);
+        }
+    }
+    class CodeAction {
+        constructor(title, kind) {
+            this.title = title;
+            this.kind = kind;
+        }
+    }
+    class WorkspaceEdit {
+        constructor() {
+            this.replacements = [];
+        }
+
+        replace(uri, range, newText) {
+            this.replacements.push({ uri, range, newText });
+        }
+    }
+    const requests = [];
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.vscode = {
+        Position,
+        Range,
+        CodeAction,
+        WorkspaceEdit,
+        CodeActionKind: { QuickFix: "quickfix" },
+        Uri: { parse: (value) => ({ value }) }
+    };
+    client.request = async (method, params) => {
+        requests.push({ method, params });
+        return [{
+            title: "Handle explicitly with discard",
+            kind: "quickfix",
+            isPreferred: true,
+            edit: {
+                changes: {
+                    "file:///tmp/main.fdn": [{
+                        range: {
+                            start: { line: 4, character: 4 },
+                            end: { line: 4, character: 4 }
+                        },
+                        newText: "discard "
+                    }]
+                }
+            }
+        }];
+    };
+    const document = { uri: { toString: () => "file:///tmp/main.fdn" } };
+    const range = new Range(4, 8, 4, 8);
+    const diagnostic = {
+        range: new Range(4, 4, 4, 16),
+        severity: 0,
+        code: "FDN2051",
+        source: "foundation",
+        message: "Result value must be handled or discarded"
+    };
+
+    const actions = await client.codeActions(document, range, { diagnostics: [diagnostic] });
+
+    assert.equal(requests[0].method, "textDocument/codeAction");
+    assert.equal(requests[0].params.context.diagnostics[0].code, "FDN2051");
+    assert.equal(actions[0].title, "Handle explicitly with discard");
+    assert.equal(actions[0].isPreferred, true);
+    assert.equal(actions[0].edit.replacements[0].newText, "discard ");
+    assert.equal(actions[0].edit.replacements[0].range.start.character, 4);
 });
 
 test("maps reference code lenses to clickable VS Code locations", async () => {
