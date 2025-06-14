@@ -199,6 +199,9 @@ void appendProgram(Program &target, Program source) {
         }
         target.blocks.push_back(std::move(block));
     }
+    for (auto &imported : source.imports) {
+        target.imports.push_back(std::move(imported));
+    }
     for (auto &declaration : source.structs) {
         remapAttributes(declaration.attributes, expressionOffset);
         for (auto &field : declaration.fields) {

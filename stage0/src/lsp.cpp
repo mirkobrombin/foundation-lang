@@ -1535,6 +1535,66 @@ class LanguageServer {
                                      : std::optional<LanguageSymbolId>{occurrence->symbol};
     }
 
+    static const ImportDeclaration *importAt(const ProjectAnalysis &analysis,
+                                             std::size_t sourceId,
+                                             std::size_t offset) {
+        for (const auto &imported : analysis.program.imports) {
+            if (imported.span.source == sourceId && imported.span.offset <= offset &&
+                offset <= imported.span.offset + imported.span.length) {
+                return &imported;
+            }
+        }
+        return nullptr;
+    }
+
+    static SourceSpan packageNameSpan(const DiagnosticSource &source,
+                                      std::size_t sourceId) {
+        std::size_t lineStart{};
+        while (lineStart < source.contents.size()) {
+            const auto lineEnd = source.contents.find('\n', lineStart);
+            const auto limit = lineEnd == std::string::npos ? source.contents.size() : lineEnd;
+            auto offset = lineStart;
+            while (offset < limit &&
+                   (source.contents[offset] == ' ' || source.contents[offset] == '\t' ||
+                    source.contents[offset] == '\r')) {
+                ++offset;
+            }
+            constexpr std::string_view keyword = "package";
+            if (source.contents.substr(offset, keyword.size()) == keyword) {
+                offset += keyword.size();
+                while (offset < limit &&
+                       (source.contents[offset] == ' ' || source.contents[offset] == '\t' ||
+                        source.contents[offset] == '\r')) {
+                    ++offset;
+                }
+                if (source.contents.substr(offset, source.packageName.size()) ==
+                    source.packageName) {
+                    return {offset, source.packageName.size(), 1, 1, sourceId};
+                }
+            }
+            if (lineEnd == std::string::npos) {
+                break;
+            }
+            lineStart = lineEnd + 1;
+        }
+        return {0, 0, 1, 1, sourceId};
+    }
+
+    [[nodiscard]] Json packageLocations(const ProjectAnalysis &analysis,
+                                        const ImportDeclaration &imported) const {
+        Json::Array result;
+        for (std::size_t sourceId = 0; sourceId < analysis.sources.size(); ++sourceId) {
+            const auto &source = analysis.sources[sourceId];
+            if (source.packageName != imported.packageName || source.identity.empty()) {
+                continue;
+            }
+            result.push_back(Json::object(
+                {{"uri", sourceUri(source.identity)},
+                 {"range", lspRange(source.contents, packageNameSpan(source, sourceId))}}));
+        }
+        return Json(std::move(result));
+    }
+
     [[nodiscard]] Json provideHover(const Json *params) const {
         const auto *textDocument = params == nullptr ? nullptr : params->find("textDocument");
         const auto uri = stringField(textDocument, "uri");
@@ -1545,6 +1605,32 @@ class LanguageServer {
         if (analysis == nullptr) {
             return Json(nullptr);
         }
+        const auto sourceId = sourceIdForUri(*analysis, *uri);
+        const auto position = requestPosition(params);
+        if (sourceId.has_value() && position.has_value()) {
+            const auto &source = analysis->sources[*sourceId];
+            const auto offset = offsetAt(source.contents, *position);
+            const auto *imported = offset.has_value()
+                                       ? importAt(*analysis, *sourceId, *offset)
+                                       : nullptr;
+            if (imported != nullptr) {
+                auto sourceCount = std::size_t{};
+                for (const auto &candidate : analysis->sources) {
+                    sourceCount += candidate.packageName == imported->packageName ? 1U : 0U;
+                }
+                auto detail = "package " + imported->packageName;
+                if (!imported->alias.empty()) {
+                    detail += " as " + imported->alias;
+                }
+                detail += "\n\n" + std::to_string(sourceCount) +
+                          (sourceCount == 1 ? " source file" : " source files");
+                return Json::object(
+                    {{"contents",
+                      Json::object({{"kind", "markdown"},
+                                    {"value", "```foundation\n" + detail + "\n```"}})},
+                     {"range", lspRange(source.contents, imported->span)}});
+            }
+        }
         SourceSpan word;
         const auto &index = languageIndex(*analysis);
         const auto symbolId = semanticSymbolAt(*analysis, *uri, params, word, index);
@@ -1552,7 +1638,6 @@ class LanguageServer {
         if (symbol == nullptr) {
             return Json(nullptr);
         }
-        const auto sourceId = sourceIdForUri(*analysis, *uri);
         if (!sourceId.has_value()) {
             return Json(nullptr);
         }
@@ -1572,6 +1657,18 @@ class LanguageServer {
         auto analysis = analyzeUri(*uri);
         if (analysis == nullptr) {
             return Json(nullptr);
+        }
+        const auto sourceId = sourceIdForUri(*analysis, *uri);
+        const auto position = requestPosition(params);
+        if (sourceId.has_value() && position.has_value()) {
+            const auto &source = analysis->sources[*sourceId];
+            const auto offset = offsetAt(source.contents, *position);
+            const auto *imported = offset.has_value()
+                                       ? importAt(*analysis, *sourceId, *offset)
+                                       : nullptr;
+            if (imported != nullptr) {
+                return packageLocations(*analysis, *imported);
+            }
         }
         SourceSpan word;
         const auto &index = languageIndex(*analysis);

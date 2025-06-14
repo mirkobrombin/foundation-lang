@@ -84,7 +84,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /textDocument\/rangeFormatting/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/\*\.fdn"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.23.0");
+    assert.equal(manifest.version, "0.24.0");
     assert.equal(
         manifest.contributes.configuration.properties["foundation.languageServer.path"].default,
         ""
@@ -142,6 +142,57 @@ test("cancels pending language server requests", async () => {
     ]);
     assert.equal(client.pending.size, 0);
     assert.equal(token.disposed, true);
+});
+
+test("maps all package definition locations", async () => {
+    class Position {
+        constructor(line, character) {
+            Object.assign(this, { line, character });
+        }
+    }
+    class Range {
+        constructor(startLine, startCharacter, endLine, endCharacter) {
+            this.start = new Position(startLine, startCharacter);
+            this.end = new Position(endLine, endCharacter);
+        }
+    }
+    class Location {
+        constructor(uri, range) {
+            Object.assign(this, { uri, range });
+        }
+    }
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.vscode = {
+        Location,
+        Range,
+        Uri: { parse: (value) => ({ value }) }
+    };
+    client.request = async () => [
+        {
+            uri: "file:///tmp/first.fdn",
+            range: {
+                start: { line: 0, character: 8 },
+                end: { line: 0, character: 22 }
+            }
+        },
+        {
+            uri: "file:///tmp/second.fdn",
+            range: {
+                start: { line: 0, character: 8 },
+                end: { line: 0, character: 22 }
+            }
+        }
+    ];
+
+    const locations = await client.definition(
+        { uri: { toString: () => "file:///tmp/main.fdn" } },
+        new Position(1, 12)
+    );
+
+    assert.equal(locations.length, 2);
+    assert.equal(locations[0].uri.value, "file:///tmp/first.fdn");
+    assert.equal(locations[1].uri.value, "file:///tmp/second.fdn");
+    assert.equal(locations[1].range.start.character, 8);
 });
 
 test("maps language server formatting edits", async () => {

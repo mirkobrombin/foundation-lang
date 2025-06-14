@@ -366,6 +366,79 @@ void unopenedLibraryDoesNotRequireMain() {
     std::filesystem::remove_all(root, error);
 }
 
+void importedPackagesExposeHoverAndAllDefinitions() {
+    const auto root = temporaryRoot();
+    const auto app = root / "app";
+    const auto library = root / "library";
+    std::filesystem::create_directories(app);
+    std::filesystem::create_directories(library);
+    const auto appSource = app / "main.fdn";
+    const auto firstSource = library / "first.fdn";
+    const auto secondSource = library / "second.fdn";
+    {
+        std::ofstream file(appSource, std::ios::binary);
+        file << "package sample.app\n"
+                "import sample.library as lib\n"
+                "fn Value() i32 { lib.FirstValue() }\n";
+    }
+    {
+        std::ofstream file(firstSource, std::ios::binary);
+        file << "package sample.library\nfn FirstValue() i32 { 1 }\n";
+    }
+    {
+        std::ofstream file(secondSource, std::ios::binary);
+        file << "package sample.library\nfn SecondValue() i32 { 2 }\n";
+    }
+    const auto sourceUri = fileUri(appSource);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri +
+        "\",\"version\":1,\"text\":\"package sample.app\\nimport sample.library as lib\\n"
+        "fn Value() i32 { lib.FirstValue() }\\n\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":1,\"character\":12}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+
+    std::istringstream input(frame(initialize) + frame(open) + frame(request(70, "hover")) +
+                             frame(request(71, "definition")) +
+                             frame(request(72, "declaration")) + frame(shutdown) +
+                             frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto hover = responseFor(transcript, 70);
+    const auto definitions = responseFor(transcript, 71);
+    const auto declarations = responseFor(transcript, 72);
+
+    expect(status == 0, "package navigation transcript exits cleanly");
+    expect(errors.str().empty(), "package navigation writes no server errors");
+    expect(hover.find("package sample.library as lib") != std::string::npos &&
+               hover.find("2 source files") != std::string::npos &&
+               hover.find("\"character\":7,\"line\":1") != std::string::npos,
+           "import hover identifies the package, alias, source count, and full range");
+    expect(definitions.find(fileUri(firstSource)) != std::string::npos &&
+               definitions.find(fileUri(secondSource)) != std::string::npos &&
+               definitions.find("\"character\":8,\"line\":0") != std::string::npos,
+           "import definition returns every source in the package");
+    expect(declarations.find(fileUri(firstSource)) != std::string::npos &&
+               declarations.find(fileUri(secondSource)) != std::string::npos,
+           "import declaration uses the same package source locations");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void semanticNavigationSeparatesHomonyms() {
     const auto root = temporaryRoot();
     std::filesystem::create_directories(root);
@@ -915,6 +988,7 @@ int main() {
     lifecycleRejectsInvalidRequestOrder();
     invalidJsonRpcEnvelopeIsRejected();
     unopenedLibraryDoesNotRequireMain();
+    importedPackagesExposeHoverAndAllDefinitions();
     semanticNavigationSeparatesHomonyms();
     formatsUnsavedDocumentsAndRanges();
     offersCompilerBackedDiscardQuickFixes();

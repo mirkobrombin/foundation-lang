@@ -413,13 +413,7 @@ class FoundationLanguageClient {
             textDocument: { uri: document.uri.toString() },
             position: { line: position.line, character: position.character }
         }, token);
-        if (!result) {
-            return undefined;
-        }
-        return new this.vscode.Location(
-            this.vscode.Uri.parse(result.uri),
-            this.range(result.range)
-        );
+        return this.locations(result);
     }
 
     async declaration(document, position, token) {
@@ -427,13 +421,7 @@ class FoundationLanguageClient {
             textDocument: { uri: document.uri.toString() },
             position: { line: position.line, character: position.character }
         }, token);
-        if (!result) {
-            return undefined;
-        }
-        return new this.vscode.Location(
-            this.vscode.Uri.parse(result.uri),
-            this.range(result.range)
-        );
+        return this.locations(result);
     }
 
     async typeDefinition(document, position, token) {
@@ -441,13 +429,18 @@ class FoundationLanguageClient {
             textDocument: { uri: document.uri.toString() },
             position: { line: position.line, character: position.character }
         }, token);
+        return this.locations(result);
+    }
+
+    locations(result) {
         if (!result) {
             return undefined;
         }
-        return new this.vscode.Location(
-            this.vscode.Uri.parse(result.uri),
-            this.range(result.range)
-        );
+        const values = Array.isArray(result) ? result : [result];
+        return values.map((value) => new this.vscode.Location(
+            this.vscode.Uri.parse(value.uri),
+            this.range(value.range)
+        ));
     }
 
     async implementations(document, position, token) {
@@ -455,10 +448,7 @@ class FoundationLanguageClient {
             textDocument: { uri: document.uri.toString() },
             position: { line: position.line, character: position.character }
         }, token);
-        return (result || []).map((value) => new this.vscode.Location(
-            this.vscode.Uri.parse(value.uri),
-            this.range(value.range)
-        ));
+        return this.locations(result) || [];
     }
 
     async documentHighlights(document, position, token) {
