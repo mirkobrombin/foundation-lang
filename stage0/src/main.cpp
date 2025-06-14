@@ -11,6 +11,9 @@ namespace {
 void printUsage(std::ostream &output) {
     output << "usage:\n"
            << "  foundationc check <source-or-project>\n"
+           << "  foundationc format <source>\n"
+           << "  foundationc format --check <source-or-project>\n"
+           << "  foundationc format --write <source-or-project>\n"
            << "  foundationc emit-c <source-or-project> -o <output.c>\n"
            << "  foundationc emit-c-header <source-or-project> -o <output.h>\n"
            << "  foundationc emit-metadata <source-or-project> -o <output.json>\n"
@@ -76,6 +79,21 @@ int main(int argc, char **argv) {
         const std::string_view command = argv[1];
         if (command == "check" && argc == 3) {
             return foundation::checkFile(std::filesystem::path(argv[2]));
+        }
+        if (command == "format" && argc == 3) {
+            return foundation::formatPath(std::filesystem::path(argv[2]),
+                                          foundation::FormatMode::Stdout);
+        }
+        if (command == "format" && argc == 4) {
+            const std::string_view mode = argv[2];
+            if (mode == "--check") {
+                return foundation::formatPath(std::filesystem::path(argv[3]),
+                                              foundation::FormatMode::Check);
+            }
+            if (mode == "--write") {
+                return foundation::formatPath(std::filesystem::path(argv[3]),
+                                              foundation::FormatMode::Write);
+            }
         }
         if (command == "emit-c" && outputArgumentsAreValid(argc, argv)) {
             return foundation::emitCFile(std::filesystem::path(argv[2]),

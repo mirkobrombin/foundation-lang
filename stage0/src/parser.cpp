@@ -117,6 +117,19 @@ bool isExported(const std::string &name) {
 
 } // namespace
 
+std::optional<std::size_t>
+typeArgumentListClosingToken(const std::vector<Token> &tokens, std::size_t opening) {
+    if (opening >= tokens.size() || tokens[opening].kind != TokenKind::Less) {
+        return std::nullopt;
+    }
+    std::size_t closing{};
+    TypeLookahead lookahead(tokens, opening);
+    if (!lookahead.scanTypeArguments(0, closing)) {
+        return std::nullopt;
+    }
+    return closing;
+}
+
 Parser::Parser(std::vector<Token> tokens, Diagnostics &diagnostics, bool installBuiltins,
                TargetPlatform target)
     : tokens_(std::move(tokens)), diagnostics_(diagnostics), installBuiltins_(installBuiltins),
@@ -364,16 +377,12 @@ bool Parser::continuesLine() const {
 }
 
 bool Parser::startsGenericPrimary() const {
-    if (!check(TokenKind::Less)) {
+    const auto closing = typeArgumentListClosingToken(tokens_, current_);
+    if (!closing.has_value() || *closing + 1 >= tokens_.size()) {
         return false;
     }
-    std::size_t closing{};
-    TypeLookahead lookahead(tokens_, current_);
-    if (!lookahead.scanTypeArguments(0, closing) || closing + 1 >= tokens_.size()) {
-        return false;
-    }
-    const auto &close = tokens_[closing];
-    const auto &next = tokens_[closing + 1];
+    const auto &close = tokens_[*closing];
+    const auto &next = tokens_[*closing + 1];
     const auto continues = next.span.line == close.span.line;
     if (continues && (next.kind == TokenKind::Dot || next.kind == TokenKind::LeftBrace ||
                       next.kind == TokenKind::LeftParen)) {

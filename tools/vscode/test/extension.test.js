@@ -77,6 +77,9 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /registerRenameProvider/);
     assert.match(languageClient, /registerDocumentSemanticTokensProvider/);
     assert.match(languageClient, /registerInlayHintsProvider/);
+    assert.match(languageClient, /registerDocumentFormattingEditProvider/);
+    assert.match(languageClient, /registerDocumentRangeFormattingEditProvider/);
+    assert.match(languageClient, /textDocument\/rangeFormatting/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/\*\.fdn"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
     assert.equal(manifest.version, "0.22.0");
@@ -137,6 +140,51 @@ test("cancels pending language server requests", async () => {
     ]);
     assert.equal(client.pending.size, 0);
     assert.equal(token.disposed, true);
+});
+
+test("maps language server formatting edits", async () => {
+    class Position {
+        constructor(line, character) {
+            this.line = line;
+            this.character = character;
+        }
+    }
+    class Range {
+        constructor(startLine, startCharacter, endLine, endCharacter) {
+            this.start = new Position(startLine, startCharacter);
+            this.end = new Position(endLine, endCharacter);
+        }
+    }
+    class TextEdit {
+        constructor(range, newText) {
+            this.range = range;
+            this.newText = newText;
+        }
+    }
+    const requests = [];
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.vscode = { Position, Range, TextEdit };
+    client.request = async (method, params) => {
+        requests.push({ method, params });
+        return [{
+            range: {
+                start: { line: 1, character: 0 },
+                end: { line: 1, character: 6 }
+            },
+            newText: "    value"
+        }];
+    };
+    const document = { uri: { toString: () => "file:///tmp/main.fdn" } };
+    const range = new Range(1, 0, 2, 0);
+    const edits = await client.rangeFormatting(document, range, { tabSize: 4 }, null);
+
+    assert.equal(requests[0].method, "textDocument/rangeFormatting");
+    assert.deepEqual(requests[0].params.range, {
+        start: { line: 1, character: 0 },
+        end: { line: 2, character: 0 }
+    });
+    assert.equal(edits[0].newText, "    value");
+    assert.equal(edits[0].range.start.line, 1);
 });
 
 test("maps reference code lenses to clickable VS Code locations", async () => {

@@ -7,11 +7,15 @@
 #include "foundation/token.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace foundation {
+
+[[nodiscard]] std::optional<std::size_t>
+typeArgumentListClosingToken(const std::vector<Token> &tokens, std::size_t opening);
 
 class Parser {
   public:

@@ -1,6 +1,7 @@
 #include "foundation/lsp.hpp"
 
 #include "foundation/driver.hpp"
+#include "foundation/formatter.hpp"
 #include "foundation/language_service.hpp"
 
 #include <algorithm>
@@ -677,10 +678,37 @@ Json lspPosition(Position position) {
                          {"character", static_cast<double>(position.character)}});
 }
 
+Json lspRange(Position start, Position end) {
+    return Json::object({{"start", lspPosition(start)}, {"end", lspPosition(end)}});
+}
+
 Json lspRange(std::string_view source, SourceSpan span) {
     const auto start = positionAt(source, span.offset);
     const auto end = positionAt(source, span.offset + std::max<std::size_t>(span.length, 1));
     return Json::object({{"start", lspPosition(start)}, {"end", lspPosition(end)}});
+}
+
+struct TextLine {
+    std::size_t offset{};
+    std::size_t length{};
+};
+
+std::vector<TextLine> textLines(std::string_view source) {
+    std::vector<TextLine> result;
+    std::size_t start{};
+    while (start <= source.size()) {
+        const auto newline = source.find('\n', start);
+        auto end = newline == std::string_view::npos ? source.size() : newline;
+        if (end != start && source[end - 1] == '\r') {
+            --end;
+        }
+        result.push_back({start, end - start});
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        start = newline + 1;
+    }
+    return result;
 }
 
 std::string shortName(std::string_view name) {
@@ -1131,6 +1159,10 @@ class LanguageServer {
             sendMessage(output_, response(*id, provideSemanticTokens(message.find("params"))));
         } else if (*method == "textDocument/inlayHint" && id != nullptr) {
             sendMessage(output_, response(*id, provideInlayHints(message.find("params"))));
+        } else if (*method == "textDocument/formatting" && id != nullptr) {
+            sendMessage(output_, response(*id, provideFormatting(message.find("params"))));
+        } else if (*method == "textDocument/rangeFormatting" && id != nullptr) {
+            sendMessage(output_, response(*id, provideRangeFormatting(message.find("params"))));
         } else if (*method == "$/cancelRequest" || *method == "initialized" ||
                    *method == "workspace/didChangeConfiguration") {
         } else if (id != nullptr) {
@@ -1193,6 +1225,8 @@ class LanguageServer {
                                         {"tokenModifiers", Json::array({"declaration"})}})},
                                   {"full", true}})},
                             {"inlayHintProvider", true},
+                            {"documentFormattingProvider", true},
+                            {"documentRangeFormattingProvider", true},
                             {"documentSymbolProvider", true},
                             {"workspaceSymbolProvider", true},
                             {"workspace",
@@ -2583,6 +2617,68 @@ class LanguageServer {
             }
         }
         return Json(std::move(result));
+    }
+
+    [[nodiscard]] const OpenDocument *openDocument(const Json *params) const {
+        const auto *textDocument = params == nullptr ? nullptr : params->find("textDocument");
+        const auto uri = stringField(textDocument, "uri");
+        const auto document = uri.has_value() ? documents_.find(*uri) : documents_.end();
+        return document == documents_.end() ? nullptr : &document->second;
+    }
+
+    [[nodiscard]] Json provideFormatting(const Json *params) const {
+        const auto *document = openDocument(params);
+        if (document == nullptr) {
+            return Json(Json::Array{});
+        }
+        const auto formatted = formatSource(document->contents);
+        if (formatted.diagnostics.hasErrors() || formatted.contents == document->contents) {
+            return Json(Json::Array{});
+        }
+        const auto end = positionAt(document->contents, document->contents.size());
+        return Json::array({Json::object({{"range", lspRange(Position{}, end)},
+                                          {"newText", formatted.contents}})});
+    }
+
+    [[nodiscard]] Json provideRangeFormatting(const Json *params) const {
+        const auto *document = openDocument(params);
+        const auto *range = params == nullptr ? nullptr : params->find("range");
+        const auto start = jsonPosition(range == nullptr ? nullptr : range->find("start"));
+        const auto end = jsonPosition(range == nullptr ? nullptr : range->find("end"));
+        if (document == nullptr || !start.has_value() || !end.has_value()) {
+            return Json(Json::Array{});
+        }
+        const auto formatted = formatSource(document->contents);
+        if (formatted.diagnostics.hasErrors() || formatted.contents == document->contents) {
+            return Json(Json::Array{});
+        }
+        const auto originalLines = textLines(document->contents);
+        const auto formattedLines = textLines(formatted.contents);
+        if (originalLines.size() != formattedLines.size() || start->line >= originalLines.size() ||
+            end->line >= originalLines.size() || end->line < start->line) {
+            return Json(Json::Array{});
+        }
+        auto last = end->line;
+        if (last != start->line && end->character == 0) {
+            --last;
+        }
+        Json::Array edits;
+        for (auto line = start->line; line <= last; ++line) {
+            const auto original = document->contents.substr(originalLines[line].offset,
+                                                            originalLines[line].length);
+            const auto replacement = formatted.contents.substr(formattedLines[line].offset,
+                                                                formattedLines[line].length);
+            if (original == replacement) {
+                continue;
+            }
+            const auto lineEnd = positionAt(document->contents,
+                                            originalLines[line].offset +
+                                                originalLines[line].length);
+            edits.push_back(Json::object(
+                {{"range", lspRange(Position{line, 0}, lineEnd)},
+                 {"newText", std::string(replacement)}}));
+        }
+        return Json(std::move(edits));
     }
 
     void sendDiagnostics(std::string uri, Json::Array diagnostics) {

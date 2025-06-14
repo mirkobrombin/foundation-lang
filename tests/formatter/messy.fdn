@@ -1,0 +1,10 @@
+package   sample
+// formatter fixture
+struct Value<T>{
+item   T
+}
+fn main()i32{
+let value=Value<i32>{item=2}
+discard Result<i32,bool> .Err(false)
+return value.item
+}

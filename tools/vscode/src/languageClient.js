@@ -262,6 +262,14 @@ class FoundationLanguageClient {
                 provideInlayHints: (document, range, token) =>
                     this.inlayHints(document, range, token)
             }),
+            this.vscode.languages.registerDocumentFormattingEditProvider("foundation", {
+                provideDocumentFormattingEdits: (document, options, token) =>
+                    this.formatting(document, options, token)
+            }),
+            this.vscode.languages.registerDocumentRangeFormattingEditProvider("foundation", {
+                provideDocumentRangeFormattingEdits: (document, range, options, token) =>
+                    this.rangeFormatting(document, range, options, token)
+            }),
             this.vscode.languages.registerWorkspaceSymbolProvider({
                 provideWorkspaceSymbols: (query, token) => this.workspaceSymbols(query, token)
             })
@@ -660,6 +668,33 @@ class FoundationLanguageClient {
             hint.paddingRight = value.paddingRight || false;
             return hint;
         });
+    }
+
+    formattingEdits(values) {
+        return (values || []).map((value) => new this.vscode.TextEdit(
+            this.range(value.range),
+            value.newText
+        ));
+    }
+
+    async formatting(document, options, token) {
+        const result = await this.request("textDocument/formatting", {
+            textDocument: { uri: document.uri.toString() },
+            options
+        }, token);
+        return this.formattingEdits(result);
+    }
+
+    async rangeFormatting(document, range, options, token) {
+        const result = await this.request("textDocument/rangeFormatting", {
+            textDocument: { uri: document.uri.toString() },
+            range: {
+                start: { line: range.start.line, character: range.start.character },
+                end: { line: range.end.line, character: range.end.character }
+            },
+            options
+        }, token);
+        return this.formattingEdits(result);
     }
 
     request(method, params, token) {

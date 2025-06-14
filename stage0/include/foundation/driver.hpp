@@ -28,6 +28,12 @@ struct ProjectAnalysis {
     Diagnostics diagnostics;
 };
 
+enum class FormatMode {
+    Stdout,
+    Check,
+    Write,
+};
+
 [[nodiscard]] ProjectAnalysis analyzeProject(
     const std::filesystem::path &path,
     const std::vector<SourceOverlay> &overlays = {},
@@ -35,6 +41,7 @@ struct ProjectAnalysis {
 [[nodiscard]] Compilation compile(const std::filesystem::path &path,
                                   const std::vector<SourceOverlay> &overlays = {});
 [[nodiscard]] int checkFile(const std::filesystem::path &path);
+[[nodiscard]] int formatPath(const std::filesystem::path &path, FormatMode mode);
 [[nodiscard]] int emitCFile(const std::filesystem::path &source,
                             const std::filesystem::path &output);
 [[nodiscard]] int emitCHeaderFile(const std::filesystem::path &source,

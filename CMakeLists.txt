@@ -21,6 +21,7 @@ add_library(foundation_compiler STATIC
     stage0/src/codegen.cpp
     stage0/src/diagnostic.cpp
     stage0/src/driver.cpp
+    stage0/src/formatter.cpp
     stage0/src/language_service.cpp
     stage0/src/lexer.cpp
     stage0/src/lsp.cpp
@@ -176,28 +177,49 @@ if(BUILD_TESTING)
     )
     add_executable(foundation_lsp_tests stage0/tests/lsp_test.cpp)
     target_link_libraries(foundation_lsp_tests PRIVATE foundation_compiler)
+    add_executable(foundation_formatter_tests stage0/tests/formatter_test.cpp)
+    target_link_libraries(foundation_formatter_tests PRIVATE foundation_compiler)
+    target_compile_definitions(foundation_formatter_tests PRIVATE
+        FOUNDATION_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
     if(FOUNDATION_BUILD_FUZZERS)
         target_link_options(foundation_stage0_tests PRIVATE -fsanitize=address,undefined)
         target_link_options(foundation_lsp_tests PRIVATE -fsanitize=address,undefined)
+        target_link_options(foundation_formatter_tests PRIVATE -fsanitize=address,undefined)
     endif()
     if(MSVC)
         target_compile_options(foundation_stage0_tests PRIVATE /W4 /permissive- /EHsc)
         target_compile_options(foundation_lsp_tests PRIVATE /W4 /permissive- /EHsc)
+        target_compile_options(foundation_formatter_tests PRIVATE /W4 /permissive- /EHsc)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_stage0_tests PRIVATE /WX)
             target_compile_options(foundation_lsp_tests PRIVATE /WX)
+            target_compile_options(foundation_formatter_tests PRIVATE /WX)
         endif()
     else()
         target_compile_options(foundation_stage0_tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_lsp_tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_formatter_tests PRIVATE -Wall -Wextra -Wpedantic)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_stage0_tests PRIVATE -Werror)
             target_compile_options(foundation_lsp_tests PRIVATE -Werror)
+            target_compile_options(foundation_formatter_tests PRIVATE -Werror)
         endif()
     endif()
 
     add_test(NAME stage0.unit COMMAND foundation_stage0_tests)
     add_test(NAME tooling.lsp.unit COMMAND foundation_lsp_tests)
+    add_test(NAME tooling.formatter.unit COMMAND foundation_formatter_tests)
+    add_test(
+        NAME tooling.formatter.cli
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/formatter/messy.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/formatter/expected.fdn
+            -DINVALID=${CMAKE_CURRENT_SOURCE_DIR}/tests/formatter/invalid.fdn
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/formatter-project
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-format.cmake
+    )
     add_test(NAME runtime.string COMMAND foundation_runtime_string_test)
     add_test(NAME runtime.u64 COMMAND foundation_runtime_u64_test)
     add_test(NAME runtime.env COMMAND foundation_runtime_env_test)

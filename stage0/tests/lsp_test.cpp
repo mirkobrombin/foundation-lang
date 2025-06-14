@@ -463,6 +463,77 @@ void semanticNavigationSeparatesHomonyms() {
     std::filesystem::remove_all(root, error);
 }
 
+void formatsUnsavedDocumentsAndRanges() {
+    const auto root = temporaryRoot();
+    std::filesystem::create_directories(root);
+    const auto source = root / "format.fdn";
+    const auto rootUri = fileUri(root);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        rootUri + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri +
+        "\",\"version\":1,\"text\":\"package   sample\\nstruct Value<T>{\\nitem   T\\n}\\n"
+        "fn main()i32{\\nlet value=Value<i32>{item=2}\\nprint(  \\\"h\\u00e9\\\"  )\\n"
+        "return value.item\\n}\\n\"}}}";
+    const auto formatting =
+        "{\"jsonrpc\":\"2.0\",\"id\":27,\"method\":\"textDocument/formatting\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\"},\"options\":{\"tabSize\":4,\"insertSpaces\":true}}}";
+    const auto rangeFormatting =
+        "{\"jsonrpc\":\"2.0\",\"id\":28,\"method\":\"textDocument/rangeFormatting\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri +
+        "\"},\"range\":{\"start\":{\"line\":2,\"character\":0},"
+        "\"end\":{\"line\":3,\"character\":0}},"
+        "\"options\":{\"tabSize\":4,\"insertSpaces\":true}}}";
+    const auto unicodeRangeFormatting =
+        "{\"jsonrpc\":\"2.0\",\"id\":29,\"method\":\"textDocument/rangeFormatting\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri +
+        "\"},\"range\":{\"start\":{\"line\":6,\"character\":0},"
+        "\"end\":{\"line\":7,\"character\":0}},"
+        "\"options\":{\"tabSize\":4,\"insertSpaces\":true}}}";
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+
+    std::istringstream input(frame(initialize) + frame(open) + frame(formatting) +
+                             frame(rangeFormatting) + frame(unicodeRangeFormatting) +
+                             frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto initialized = responseFor(transcript, 1);
+    const auto documentEdit = responseFor(transcript, 27);
+    const auto rangeEdit = responseFor(transcript, 28);
+    const auto unicodeRangeEdit = responseFor(transcript, 29);
+
+    expect(status == 0, "formatting transcript exits cleanly");
+    expect(errors.str().empty(), "formatting writes no server errors");
+    expect(initialized.find("\"documentFormattingProvider\":true") != std::string::npos &&
+               initialized.find("\"documentRangeFormattingProvider\":true") !=
+                   std::string::npos,
+           "server advertises document and range formatting");
+    expect(documentEdit.find("package sample\\nstruct Value<T> {\\n    item T") !=
+               std::string::npos &&
+               documentEdit.find("let value = Value<i32> { item = 2 }") != std::string::npos,
+           "document formatting uses the shared formatter on an unsaved overlay");
+    expect(rangeEdit.find("\"newText\":\"    item T\"") != std::string::npos &&
+               rangeEdit.find("package sample") == std::string::npos,
+           "range formatting edits only selected lines with full-document indentation context");
+    expect(unicodeRangeEdit.find("\"end\":{\"character\":15,\"line\":6}") !=
+               std::string::npos,
+           "range formatting reports UTF-16 line endings");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void contractImplementationsIncludeInheritedAndDelegatedTypes() {
     const auto root = temporaryRoot();
     std::filesystem::create_directories(root);
@@ -778,6 +849,7 @@ int main() {
     invalidJsonRpcEnvelopeIsRejected();
     unopenedLibraryDoesNotRequireMain();
     semanticNavigationSeparatesHomonyms();
+    formatsUnsavedDocumentsAndRanges();
     contractImplementationsIncludeInheritedAndDelegatedTypes();
     callHierarchySeparatesHomonymousMethods();
     workspaceFoldersAreIndependentAndDynamic();

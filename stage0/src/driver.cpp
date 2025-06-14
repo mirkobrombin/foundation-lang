@@ -1,17 +1,22 @@
 #include "foundation/driver.hpp"
 
 #include "foundation/codegen.hpp"
+#include "foundation/formatter.hpp"
 #include "foundation/lower.hpp"
 #include "foundation/metadata.hpp"
 #include "foundation/process.hpp"
 #include "foundation/project.hpp"
 #include "foundation/sema.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -19,7 +24,10 @@
 
 #ifdef _WIN32
 #include <process.h>
+#include <windows.h>
 #else
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -88,12 +96,213 @@ bool writeFile(const std::filesystem::path &path, std::string_view contents) {
     return false;
 }
 
+std::optional<std::string> readSourceFile(const std::filesystem::path &path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        std::cerr << "foundationc: cannot read " << path.string() << '\n';
+        return std::nullopt;
+    }
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    if (input.bad()) {
+        std::cerr << "foundationc: failed while reading " << path.string() << '\n';
+        return std::nullopt;
+    }
+    return contents.str();
+}
+
 long processId() {
 #ifdef _WIN32
     return static_cast<long>(_getpid());
 #else
     return static_cast<long>(getpid());
 #endif
+}
+
+bool replaceableFile(const std::filesystem::path &path) {
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(path, error);
+    if (error) {
+        std::cerr << "foundationc: cannot inspect " << path.string() << ": " << error.message()
+                  << '\n';
+        return false;
+    }
+    if (std::filesystem::is_symlink(status)) {
+        std::cerr << "foundationc: refusing to replace symbolic link " << path.string() << '\n';
+        return false;
+    }
+    if (!std::filesystem::is_regular_file(status)) {
+        std::cerr << "foundationc: refusing to replace non-regular file " << path.string() << '\n';
+        return false;
+    }
+    return true;
+}
+
+bool writeExclusiveFile(const std::filesystem::path &path, std::string_view contents) {
+#ifdef _WIN32
+    const auto handle = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        std::cerr << "foundationc: cannot create temporary file " << path.string()
+                  << ": win32 error " << GetLastError() << '\n';
+        return false;
+    }
+    std::size_t offset{};
+    bool written = true;
+    while (offset < contents.size()) {
+        const auto remaining = contents.size() - offset;
+        const auto limit = static_cast<std::size_t>(std::numeric_limits<DWORD>::max());
+        const auto chunk = static_cast<DWORD>(remaining < limit ? remaining : limit);
+        DWORD count{};
+        if (WriteFile(handle, contents.data() + offset, chunk, &count, nullptr) == 0 ||
+            count == 0) {
+            written = false;
+            break;
+        }
+        offset += count;
+    }
+    if (written && FlushFileBuffers(handle) == 0) {
+        written = false;
+    }
+    if (CloseHandle(handle) == 0) {
+        written = false;
+    }
+#else
+    auto flags = O_WRONLY | O_CREAT | O_EXCL;
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+    const auto descriptor = open(path.c_str(), flags, S_IRUSR | S_IWUSR);
+    if (descriptor < 0) {
+        std::cerr << "foundationc: cannot create temporary file " << path.string() << '\n';
+        return false;
+    }
+    std::size_t offset{};
+    bool written = true;
+    while (offset < contents.size()) {
+        const auto count = write(descriptor, contents.data() + offset, contents.size() - offset);
+        if (count < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            written = false;
+            break;
+        }
+        if (count == 0) {
+            written = false;
+            break;
+        }
+        offset += static_cast<std::size_t>(count);
+    }
+    if (written && fsync(descriptor) != 0) {
+        written = false;
+    }
+    if (close(descriptor) != 0) {
+        written = false;
+    }
+#endif
+    if (written) {
+        return true;
+    }
+    std::cerr << "foundationc: failed while writing temporary file " << path.string() << '\n';
+    std::error_code removeError;
+    std::filesystem::remove(path, removeError);
+    return false;
+}
+
+bool replaceFile(const std::filesystem::path &path, std::string_view contents) {
+    if (!replaceableFile(path)) {
+        return false;
+    }
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(path, error);
+    if (error) {
+        std::cerr << "foundationc: cannot inspect " << path.string() << ": " << error.message()
+                  << '\n';
+        return false;
+    }
+
+    static std::atomic<unsigned long> sequence{};
+    const auto suffix = ".foundation-format-" + std::to_string(processId()) + "-" +
+                        std::to_string(sequence.fetch_add(1, std::memory_order_relaxed));
+    auto temporary = path;
+    temporary += suffix;
+    if (!writeExclusiveFile(temporary, contents)) {
+        return false;
+    }
+    std::filesystem::permissions(temporary, status.permissions(), error);
+    if (error) {
+        std::cerr << "foundationc: cannot preserve permissions for " << path.string() << ": "
+                  << error.message() << '\n';
+        std::filesystem::remove(temporary, error);
+        return false;
+    }
+#ifdef _WIN32
+    if (MoveFileExW(temporary.c_str(), path.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+        return true;
+    }
+    std::cerr << "foundationc: cannot replace " << path.string() << ": win32 error "
+              << GetLastError() << '\n';
+#else
+    std::filesystem::rename(temporary, path, error);
+    if (!error) {
+        return true;
+    }
+    std::cerr << "foundationc: cannot replace " << path.string() << ": " << error.message()
+              << '\n';
+#endif
+    std::filesystem::remove(temporary, error);
+    return false;
+}
+
+std::optional<std::vector<std::filesystem::path>> formatterSources(
+    const std::filesystem::path &input) {
+    std::error_code error;
+    const auto status = std::filesystem::status(input, error);
+    if (error) {
+        std::cerr << "foundationc: cannot inspect " << input.string() << ": " << error.message()
+                  << '\n';
+        return std::nullopt;
+    }
+    if (std::filesystem::is_regular_file(status)) {
+        if (input.extension() != ".fdn") {
+            std::cerr << "foundationc: expected a .fdn source file\n";
+            return std::nullopt;
+        }
+        return std::vector<std::filesystem::path>{input};
+    }
+    if (!std::filesystem::is_directory(status)) {
+        std::cerr << "foundationc: expected a Foundation source file or project directory\n";
+        return std::nullopt;
+    }
+
+    std::vector<std::filesystem::path> sources;
+    std::filesystem::recursive_directory_iterator current(input, error);
+    const std::filesystem::recursive_directory_iterator end;
+    while (!error && current != end) {
+        const auto &entry = *current;
+        const auto name = entry.path().filename().string();
+        if (entry.is_directory(error) && (name == "build" || (!name.empty() && name[0] == '.'))) {
+            current.disable_recursion_pending();
+        } else if (!error && entry.is_regular_file(error) && entry.path().extension() == ".fdn") {
+            sources.push_back(entry.path());
+        }
+        current.increment(error);
+    }
+    if (error) {
+        std::cerr << "foundationc: cannot walk " << input.string() << ": " << error.message()
+                  << '\n';
+        return std::nullopt;
+    }
+    std::sort(sources.begin(), sources.end(), [](const auto &left, const auto &right) {
+        return left.generic_string() < right.generic_string();
+    });
+    if (sources.empty()) {
+        std::cerr << "foundationc: no .fdn source files found under " << input.string() << '\n';
+        return std::nullopt;
+    }
+    return sources;
 }
 
 std::optional<TempDirectory> createTempDirectory() {
@@ -220,6 +429,68 @@ Compilation compile(const std::filesystem::path &path,
 int checkFile(const std::filesystem::path &path) {
     const auto compilation = compile(path);
     return report(path, compilation);
+}
+
+int formatPath(const std::filesystem::path &path, FormatMode mode) {
+    const auto sources = formatterSources(path);
+    if (!sources.has_value()) {
+        return 2;
+    }
+    if (mode == FormatMode::Stdout && sources->size() != 1) {
+        std::cerr << "foundationc: stdout formatting requires one source file\n";
+        return 2;
+    }
+    if (mode == FormatMode::Write) {
+        for (const auto &source : *sources) {
+            if (!replaceableFile(source)) {
+                return 1;
+            }
+        }
+    }
+
+    struct FormattedFile {
+        std::filesystem::path path;
+        std::string contents;
+    };
+    std::vector<FormattedFile> changed;
+    for (const auto &source : *sources) {
+        const auto contents = readSourceFile(source);
+        if (!contents.has_value()) {
+            return 1;
+        }
+        auto formatted = formatSource(*contents);
+        if (formatted.diagnostics.hasErrors()) {
+            std::cerr << renderDiagnostics(source.string(), *contents, formatted.diagnostics);
+            return 1;
+        }
+        if (mode == FormatMode::Stdout) {
+            std::cout << formatted.contents;
+            if (!std::cout) {
+                std::cerr << "foundationc: failed while writing formatted source\n";
+                return 1;
+            }
+        } else if (formatted.contents != *contents) {
+            changed.push_back({source, std::move(formatted.contents)});
+        }
+    }
+    if (mode == FormatMode::Check) {
+        for (const auto &file : changed) {
+            std::cout << file.path.generic_string() << '\n';
+        }
+        if (!std::cout) {
+            std::cerr << "foundationc: failed while writing formatter check output\n";
+            return 1;
+        }
+        return changed.empty() ? 0 : 1;
+    }
+    if (mode == FormatMode::Write) {
+        for (const auto &file : changed) {
+            if (!replaceFile(file.path, file.contents)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
 }
 
 int emitCFile(const std::filesystem::path &source, const std::filesystem::path &output) {
