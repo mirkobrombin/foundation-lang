@@ -58,6 +58,8 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /registerCompletionItemProvider/);
     assert.match(languageClient, /registerSignatureHelpProvider/);
     assert.match(languageClient, /registerHoverProvider/);
+    assert.match(languageClient, /registerDeclarationProvider/);
+    assert.match(languageClient, /textDocument\/declaration/);
     assert.match(languageClient, /registerDefinitionProvider/);
     assert.match(languageClient, /registerTypeDefinitionProvider/);
     assert.match(languageClient, /textDocument\/typeDefinition/);

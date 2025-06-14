@@ -400,6 +400,7 @@ void semanticNavigationSeparatesHomonyms() {
     const auto prepare = request(15, "textDocument/prepareRename", 3, 38);
     const auto highlights = request(16, "textDocument/documentHighlight", 3, 38);
     const auto typeDefinition = request(17, "textDocument/typeDefinition", 3, 14);
+    const auto declaration = request(18, "textDocument/declaration", 3, 38);
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
@@ -407,7 +408,8 @@ void semanticNavigationSeparatesHomonyms() {
     std::istringstream input(frame(initialize) + frame(open) + frame(leftDefinition) +
                              frame(rightDefinition) + frame(leftReferences) + frame(leftRename) +
                              frame(visibilityRename) + frame(prepare) + frame(highlights) +
-                             frame(typeDefinition) + frame(shutdown) + frame(exit));
+                             frame(typeDefinition) + frame(declaration) + frame(shutdown) +
+                             frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
@@ -452,6 +454,10 @@ void semanticNavigationSeparatesHomonyms() {
     expect(typeDefinitionResponse.find("\"line\":1") != std::string::npos &&
                typeDefinitionResponse.find("\"character\":7") != std::string::npos,
            "type definition follows a parameter to its nominal struct declaration");
+    const auto declarationResponse = responseFor(transcript, 18);
+    expect(declarationResponse.find("\"line\":1") != std::string::npos &&
+               declarationResponse.find("\"character\":14") != std::string::npos,
+           "declaration navigation uses the resolved field identity");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);

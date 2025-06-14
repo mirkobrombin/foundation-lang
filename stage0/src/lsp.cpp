@@ -1091,6 +1091,8 @@ class LanguageServer {
             sendMessage(output_, response(*id, provideWorkspaceSymbols(message.find("params"))));
         } else if (*method == "textDocument/hover" && id != nullptr) {
             sendMessage(output_, response(*id, provideHover(message.find("params"))));
+        } else if (*method == "textDocument/declaration" && id != nullptr) {
+            sendMessage(output_, response(*id, provideDefinition(message.find("params"))));
         } else if (*method == "textDocument/definition" && id != nullptr) {
             sendMessage(output_, response(*id, provideDefinition(message.find("params"))));
         } else if (*method == "textDocument/typeDefinition" && id != nullptr) {
@@ -1164,6 +1166,7 @@ class LanguageServer {
               Json::object({{"positionEncoding", "utf-16"},
                             {"textDocumentSync", 1},
                             {"hoverProvider", true},
+                            {"declarationProvider", true},
                             {"definitionProvider", true},
                             {"typeDefinitionProvider", true},
                             {"implementationProvider", true},

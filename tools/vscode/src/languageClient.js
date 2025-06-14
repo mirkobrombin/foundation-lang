@@ -197,6 +197,10 @@ class FoundationLanguageClient {
             this.vscode.languages.registerHoverProvider("foundation", {
                 provideHover: (document, position, token) => this.hover(document, position, token)
             }),
+            this.vscode.languages.registerDeclarationProvider("foundation", {
+                provideDeclaration: (document, position, token) =>
+                    this.declaration(document, position, token)
+            }),
             this.vscode.languages.registerDefinitionProvider("foundation", {
                 provideDefinition: (document, position, token) =>
                     this.definition(document, position, token)
@@ -392,6 +396,20 @@ class FoundationLanguageClient {
 
     async definition(document, position, token) {
         const result = await this.request("textDocument/definition", {
+            textDocument: { uri: document.uri.toString() },
+            position: { line: position.line, character: position.character }
+        }, token);
+        if (!result) {
+            return undefined;
+        }
+        return new this.vscode.Location(
+            this.vscode.Uri.parse(result.uri),
+            this.range(result.range)
+        );
+    }
+
+    async declaration(document, position, token) {
+        const result = await this.request("textDocument/declaration", {
             textDocument: { uri: document.uri.toString() },
             position: { line: position.line, character: position.character }
         }, token);
