@@ -56,12 +56,18 @@ struct LanguageCall {
     SourceSpan span;
 };
 
+struct LanguageTypeLink {
+    LanguageSymbolId symbol;
+    LanguageSymbolId type;
+};
+
 class LanguageIndex {
   public:
     LanguageIndex() = default;
     LanguageIndex(std::vector<LanguageSymbol> symbols,
                   std::vector<LanguageOccurrence> occurrences,
-                  std::vector<LanguageCall> calls);
+                  std::vector<LanguageCall> calls,
+                  std::vector<LanguageTypeLink> typeLinks);
 
     [[nodiscard]] const std::vector<LanguageSymbol> &symbols() const;
     [[nodiscard]] const std::vector<LanguageOccurrence> &occurrences() const;
@@ -72,12 +78,14 @@ class LanguageIndex {
     references(LanguageSymbolId id, bool includeDefinition) const;
     [[nodiscard]] std::vector<LanguageCall> incomingCalls(LanguageSymbolId id) const;
     [[nodiscard]] std::vector<LanguageCall> outgoingCalls(LanguageSymbolId id) const;
+    [[nodiscard]] const LanguageSymbol *typeDefinition(LanguageSymbolId id) const;
     [[nodiscard]] bool canRename(LanguageSymbolId id, std::string_view name) const;
 
   private:
     std::vector<LanguageSymbol> symbols_;
     std::vector<LanguageOccurrence> occurrences_;
     std::vector<LanguageCall> calls_;
+    std::vector<LanguageTypeLink> typeLinks_;
 };
 
 [[nodiscard]] LanguageIndex buildLanguageIndex(const ProjectAnalysis &analysis);

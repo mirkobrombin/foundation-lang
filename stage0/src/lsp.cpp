@@ -1093,6 +1093,8 @@ class LanguageServer {
             sendMessage(output_, response(*id, provideHover(message.find("params"))));
         } else if (*method == "textDocument/definition" && id != nullptr) {
             sendMessage(output_, response(*id, provideDefinition(message.find("params"))));
+        } else if (*method == "textDocument/typeDefinition" && id != nullptr) {
+            sendMessage(output_, response(*id, provideTypeDefinition(message.find("params"))));
         } else if (*method == "textDocument/implementation" && id != nullptr) {
             sendMessage(output_, response(*id, provideImplementations(message.find("params"))));
         } else if (*method == "textDocument/documentHighlight" && id != nullptr) {
@@ -1163,6 +1165,7 @@ class LanguageServer {
                             {"textDocumentSync", 1},
                             {"hoverProvider", true},
                             {"definitionProvider", true},
+                            {"typeDefinitionProvider", true},
                             {"implementationProvider", true},
                             {"documentHighlightProvider", true},
                             {"codeLensProvider",
@@ -1539,6 +1542,28 @@ class LanguageServer {
         const auto &source = analysis->sources[symbol->definition.source];
         return Json::object({{"uri", pathToFileUri(source.identity)},
                              {"range", lspRange(source.contents, symbol->definition)}});
+    }
+
+    [[nodiscard]] Json provideTypeDefinition(const Json *params) const {
+        const auto *textDocument = params == nullptr ? nullptr : params->find("textDocument");
+        const auto uri = stringField(textDocument, "uri");
+        if (!uri.has_value()) {
+            return Json(nullptr);
+        }
+        auto analysis = analyzeUri(*uri);
+        if (analysis == nullptr) {
+            return Json(nullptr);
+        }
+        SourceSpan word;
+        const auto &index = languageIndex(*analysis);
+        const auto symbolId = semanticSymbolAt(*analysis, *uri, params, word, index);
+        const auto *type = symbolId.has_value() ? index.typeDefinition(*symbolId) : nullptr;
+        if (type == nullptr || type->definition.source >= analysis->sources.size()) {
+            return Json(nullptr);
+        }
+        const auto &source = analysis->sources[type->definition.source];
+        return Json::object({{"uri", pathToFileUri(source.identity)},
+                             {"range", lspRange(source.contents, type->definition)}});
     }
 
     [[nodiscard]] bool contractExtends(const SemanticModel &semantic, std::size_t contract,

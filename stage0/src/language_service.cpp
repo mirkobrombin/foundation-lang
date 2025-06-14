@@ -174,6 +174,7 @@ class IndexBuilder {
         addDeclarations();
         if (semantic_ != nullptr) {
             addLocalDeclarations();
+            addTypeLinks();
             bindCaptures();
             addStatementReferences();
             addExpressionReferences();
@@ -181,7 +182,7 @@ class IndexBuilder {
         addDeclarationTypeReferences();
         finish();
         return LanguageIndex(std::move(symbols_), std::move(occurrences_),
-                             std::move(calls_));
+                             std::move(calls_), std::move(typeLinks_));
     }
 
   private:
@@ -605,6 +606,101 @@ class IndexBuilder {
         }
     }
 
+    std::optional<LanguageSymbolId> typeSymbol(Type type) const {
+        while ((type.kind == TypeKind::Own || type.kind == TypeKind::View ||
+                type.kind == TypeKind::Edit || type.kind == TypeKind::Array ||
+                type.kind == TypeKind::Slice) &&
+               type.arguments.size() == 1) {
+            type = type.arguments.front();
+        }
+        if (type.kind == TypeKind::Struct) {
+            return LanguageSymbolId{LanguageSymbolKind::Struct, type.declaration, 0};
+        }
+        if (type.kind == TypeKind::Enum) {
+            return LanguageSymbolId{LanguageSymbolKind::Enum, type.declaration, 0};
+        }
+        if (type.kind == TypeKind::Contract) {
+            return LanguageSymbolId{LanguageSymbolKind::Contract, type.declaration, 0};
+        }
+        return std::nullopt;
+    }
+
+    std::optional<LanguageSymbolId> typeSymbol(const TypeSyntax &type) const {
+        if ((type.name == "own" || type.name == "view" || type.name == "edit" ||
+             type.name == "[array]" || type.name == "[slice]") &&
+            type.arguments.size() == 1) {
+            return typeSymbol(type.arguments.front());
+        }
+        const auto found = typeSymbols_.find(type.name);
+        return found == typeSymbols_.end() ? std::nullopt
+                                          : std::optional<LanguageSymbolId>{found->second};
+    }
+
+    void addTypeLink(LanguageSymbolId symbol,
+                     const std::optional<LanguageSymbolId> &type) {
+        if (type.has_value()) {
+            typeLinks_.push_back({symbol, *type});
+        }
+    }
+
+    void addTypeLinks() {
+        for (std::size_t declaration = 0;
+             declaration < analysis_.program.structs.size(); ++declaration) {
+            const LanguageSymbolId owner{LanguageSymbolKind::Struct, declaration, 0};
+            addTypeLink(owner, owner);
+            if (declaration >= semantic_->structs.size()) {
+                continue;
+            }
+            const auto &semantic = semantic_->structs[declaration];
+            for (std::size_t field = 0; field < semantic.fieldTypes.size(); ++field) {
+                addTypeLink({LanguageSymbolKind::Field, declaration, field},
+                            typeSymbol(semantic.fieldTypes[field]));
+            }
+        }
+        for (std::size_t declaration = 0;
+             declaration < analysis_.program.enums.size(); ++declaration) {
+            const LanguageSymbolId owner{LanguageSymbolKind::Enum, declaration, 0};
+            addTypeLink(owner, owner);
+            if (declaration >= semantic_->enums.size()) {
+                continue;
+            }
+            const auto &semantic = semantic_->enums[declaration];
+            for (std::size_t variant = 0; variant < semantic.payloadTypes.size(); ++variant) {
+                if (semantic.payloadTypes[variant].has_value()) {
+                    addTypeLink({LanguageSymbolKind::EnumVariant, declaration, variant},
+                                typeSymbol(*semantic.payloadTypes[variant]));
+                }
+            }
+        }
+        for (std::size_t declaration = 0;
+             declaration < analysis_.program.contracts.size(); ++declaration) {
+            const LanguageSymbolId owner{LanguageSymbolKind::Contract, declaration, 0};
+            addTypeLink(owner, owner);
+            const auto &contract = analysis_.program.contracts[declaration];
+            for (std::size_t method = 0; method < contract.methods.size(); ++method) {
+                addTypeLink({LanguageSymbolKind::ContractMethod, declaration, method},
+                            typeSymbol(contract.methods[method].returnType));
+            }
+        }
+        for (std::size_t function = 0;
+             function < semantic_->functions.size(); ++function) {
+            const auto callable = functionSymbols_.find(function);
+            if (callable != functionSymbols_.end()) {
+                addTypeLink(callable->second,
+                            typeSymbol(semantic_->functions[function].returnType));
+            }
+            for (std::size_t local = 0;
+                 function < localSymbols_.size() &&
+                 local < localSymbols_[function].size() &&
+                 local < semantic_->functions[function].locals.size(); ++local) {
+                if (localSymbols_[function][local].has_value()) {
+                    addTypeLink(*localSymbols_[function][local],
+                                typeSymbol(semantic_->functions[function].locals[local].type));
+                }
+            }
+        }
+    }
+
     std::optional<LanguageSymbolId> resolveLocal(std::size_t function, FirLocalId local,
                                                   std::set<std::pair<std::size_t, FirLocalId>> &seen) const {
         if (function >= localSymbols_.size() || local >= localSymbols_[function].size()) {
@@ -962,6 +1058,19 @@ class IndexBuilder {
                                 left.span.length == right.span.length;
                      }),
                      calls_.end());
+        std::sort(typeLinks_.begin(), typeLinks_.end(), [](const auto &left,
+                                                           const auto &right) {
+            if (!sameId(left.symbol, right.symbol)) {
+                return idLess(left.symbol, right.symbol);
+            }
+            return idLess(left.type, right.type);
+        });
+        typeLinks_.erase(
+            std::unique(typeLinks_.begin(), typeLinks_.end(), [](const auto &left,
+                                                                 const auto &right) {
+                return sameId(left.symbol, right.symbol) && sameId(left.type, right.type);
+            }),
+            typeLinks_.end());
     }
 
     const ProjectAnalysis &analysis_;
@@ -969,6 +1078,7 @@ class IndexBuilder {
     std::vector<LanguageSymbol> symbols_;
     std::vector<LanguageOccurrence> occurrences_;
     std::vector<LanguageCall> calls_;
+    std::vector<LanguageTypeLink> typeLinks_;
     std::vector<std::optional<std::size_t>> expressionOwners_;
     std::vector<std::optional<std::size_t>> statementOwners_;
     std::vector<std::vector<std::optional<LanguageSymbolId>>> localSymbols_;
@@ -1003,9 +1113,10 @@ bool reservedIdentifier(std::string_view name) {
 
 LanguageIndex::LanguageIndex(std::vector<LanguageSymbol> symbols,
                              std::vector<LanguageOccurrence> occurrences,
-                             std::vector<LanguageCall> calls)
+                             std::vector<LanguageCall> calls,
+                             std::vector<LanguageTypeLink> typeLinks)
     : symbols_(std::move(symbols)), occurrences_(std::move(occurrences)),
-      calls_(std::move(calls)) {}
+      calls_(std::move(calls)), typeLinks_(std::move(typeLinks)) {}
 
 const std::vector<LanguageSymbol> &LanguageIndex::symbols() const { return symbols_; }
 
@@ -1060,6 +1171,14 @@ std::vector<LanguageCall> LanguageIndex::outgoingCalls(LanguageSymbolId id) cons
     std::copy_if(calls_.begin(), calls_.end(), std::back_inserter(result),
                  [id](const auto &call) { return call.caller == id; });
     return result;
+}
+
+const LanguageSymbol *LanguageIndex::typeDefinition(LanguageSymbolId id) const {
+    const auto found = std::lower_bound(typeLinks_.begin(), typeLinks_.end(), id,
+                                        [](const auto &link, const auto &value) {
+                                            return idLess(link.symbol, value);
+                                        });
+    return found != typeLinks_.end() && found->symbol == id ? symbol(found->type) : nullptr;
 }
 
 bool LanguageIndex::canRename(LanguageSymbolId id, std::string_view name) const {

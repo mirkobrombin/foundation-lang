@@ -201,6 +201,10 @@ class FoundationLanguageClient {
                 provideDefinition: (document, position, token) =>
                     this.definition(document, position, token)
             }),
+            this.vscode.languages.registerTypeDefinitionProvider("foundation", {
+                provideTypeDefinition: (document, position, token) =>
+                    this.typeDefinition(document, position, token)
+            }),
             this.vscode.languages.registerImplementationProvider("foundation", {
                 provideImplementation: (document, position, token) =>
                     this.implementations(document, position, token)
@@ -388,6 +392,20 @@ class FoundationLanguageClient {
 
     async definition(document, position, token) {
         const result = await this.request("textDocument/definition", {
+            textDocument: { uri: document.uri.toString() },
+            position: { line: position.line, character: position.character }
+        }, token);
+        if (!result) {
+            return undefined;
+        }
+        return new this.vscode.Location(
+            this.vscode.Uri.parse(result.uri),
+            this.range(result.range)
+        );
+    }
+
+    async typeDefinition(document, position, token) {
+        const result = await this.request("textDocument/typeDefinition", {
             textDocument: { uri: document.uri.toString() },
             position: { line: position.line, character: position.character }
         }, token);

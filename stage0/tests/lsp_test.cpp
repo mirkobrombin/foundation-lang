@@ -399,6 +399,7 @@ void semanticNavigationSeparatesHomonyms() {
         request(14, "textDocument/rename", 3, 38, ",\"newName\":\"Value\"");
     const auto prepare = request(15, "textDocument/prepareRename", 3, 38);
     const auto highlights = request(16, "textDocument/documentHighlight", 3, 38);
+    const auto typeDefinition = request(17, "textDocument/typeDefinition", 3, 14);
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
@@ -406,7 +407,7 @@ void semanticNavigationSeparatesHomonyms() {
     std::istringstream input(frame(initialize) + frame(open) + frame(leftDefinition) +
                              frame(rightDefinition) + frame(leftReferences) + frame(leftRename) +
                              frame(visibilityRename) + frame(prepare) + frame(highlights) +
-                             frame(shutdown) + frame(exit));
+                             frame(typeDefinition) + frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
@@ -447,6 +448,10 @@ void semanticNavigationSeparatesHomonyms() {
                highlightResponse.find("\"line\":2") == std::string::npos &&
                highlightResponse.find("\"line\":4") == std::string::npos,
            "document highlights include only the resolved symbol in the active file");
+    const auto typeDefinitionResponse = responseFor(transcript, 17);
+    expect(typeDefinitionResponse.find("\"line\":1") != std::string::npos &&
+               typeDefinitionResponse.find("\"character\":7") != std::string::npos,
+           "type definition follows a parameter to its nominal struct declaration");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);
@@ -475,6 +480,11 @@ void contractImplementationsIncludeInheritedAndDelegatedTypes() {
         "}\n"
         "struct Wrapper implements Named by identity {\n"
         "    identity Identity\n"
+        "}\n"
+        "fn make() Identity { Identity {} }\n"
+        "fn use() Identity {\n"
+        "    let value = make()\n"
+        "    value\n"
         "}\n";
     const auto open =
         "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
@@ -504,6 +514,17 @@ void contractImplementationsIncludeInheritedAndDelegatedTypes() {
     };
     const auto hierarchySubtypes = hierarchyRequest(20, "subtypes", "Named");
     const auto hierarchySupertypes = hierarchyRequest(21, "supertypes", "Tagged");
+    const auto typeDefinitionRequest = [&sourceUri](int id, std::size_t line,
+                                                     std::size_t character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/typeDefinition\",\"params\":{"
+               "\"textDocument\":{\"uri\":\"" +
+               sourceUri + "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto fieldTypeDefinition = typeDefinitionRequest(24, 12, 6);
+    const auto callableTypeDefinition = typeDefinitionRequest(25, 14, 4);
+    const auto localTypeDefinition = typeDefinitionRequest(26, 17, 6);
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
@@ -511,7 +532,9 @@ void contractImplementationsIncludeInheritedAndDelegatedTypes() {
     std::istringstream input(frame(initialize) + frame(open) +
                              frame(contractImplementations) + frame(methodImplementations) +
                              frame(prepareHierarchy) + frame(hierarchySubtypes) +
-                             frame(hierarchySupertypes) + frame(shutdown) + frame(exit));
+                             frame(hierarchySupertypes) + frame(fieldTypeDefinition) +
+                             frame(callableTypeDefinition) + frame(localTypeDefinition) +
+                             frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
@@ -521,6 +544,9 @@ void contractImplementationsIncludeInheritedAndDelegatedTypes() {
     const auto preparedHierarchy = responseFor(transcript, 19);
     const auto subtypes = responseFor(transcript, 20);
     const auto supertypes = responseFor(transcript, 21);
+    const auto fieldType = responseFor(transcript, 24);
+    const auto callableType = responseFor(transcript, 25);
+    const auto localType = responseFor(transcript, 26);
 
     expect(status == 0, "implementation navigation transcript exits cleanly");
     expect(errors.str().empty(), "implementation navigation writes no server errors");
@@ -543,6 +569,10 @@ void contractImplementationsIncludeInheritedAndDelegatedTypes() {
            "type hierarchy returns direct child contracts and implementing structs");
     expect(supertypes.find("\"name\":\"Named\"") != std::string::npos,
            "type hierarchy returns direct parent contracts");
+    expect(fieldType.find("\"line\":5") != std::string::npos &&
+               callableType.find("\"line\":5") != std::string::npos &&
+               localType.find("\"line\":5") != std::string::npos,
+           "type definition resolves fields, callable returns, and inferred locals");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);
