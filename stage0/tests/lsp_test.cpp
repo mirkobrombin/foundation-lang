@@ -439,6 +439,82 @@ void importedPackagesExposeHoverAndAllDefinitions() {
     std::filesystem::remove_all(root, error);
 }
 
+void foldingAndSelectionRangesFollowCompilerTokens() {
+    const auto root = temporaryRoot();
+    std::filesystem::create_directories(root);
+    const auto source = root / "main.fdn";
+    const auto contents =
+        "package sample\n"
+        "import std.text\n"
+        "import std.path\n"
+        "// hidden {\n"
+        "// }\n"
+        "fn Value(input i32) i32 {\n"
+        "    if true {\n"
+        "        return input\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n";
+    {
+        std::ofstream file(source, std::ios::binary);
+        file << contents;
+    }
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto folding =
+        "{\"jsonrpc\":\"2.0\",\"id\":73,\"method\":\"textDocument/foldingRange\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\"}}}";
+    const auto selection =
+        "{\"jsonrpc\":\"2.0\",\"id\":74,\"method\":\"textDocument/selectionRange\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\"},\"positions\":[{\"line\":7,\"character\":17},"
+                    "{\"line\":3,\"character\":5}]}}";
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+
+    std::istringstream input(frame(initialize) + frame(open) + frame(folding) +
+                             frame(selection) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto initialized = responseFor(transcript, 1);
+    const auto folds = responseFor(transcript, 73);
+    const auto selections = responseFor(transcript, 74);
+
+    expect(status == 0, "structural range transcript exits cleanly");
+    expect(errors.str().empty(), "structural range requests write no server errors");
+    expect(initialized.find("\"foldingRangeProvider\":true") != std::string::npos &&
+               initialized.find("\"selectionRangeProvider\":true") != std::string::npos,
+           "server advertises folding and selection ranges");
+    expect(folds.find("\"endLine\":2,\"kind\":\"imports\",\"startLine\":1") !=
+                   std::string::npos &&
+               folds.find("\"endLine\":9,\"startLine\":5") != std::string::npos &&
+               folds.find("\"endLine\":7,\"startLine\":6") != std::string::npos,
+           "folding ranges include imports and nested executable blocks");
+    expect(folds.find("\"startLine\":3") == std::string::npos,
+           "braces inside comments do not create folding ranges");
+    expect(selections.find("\"character\":20,\"line\":7") != std::string::npos &&
+               selections.find("\"character\":15,\"line\":7") != std::string::npos &&
+               selections.find("\"character\":12,\"line\":6") != std::string::npos &&
+               selections.find("\"character\":0,\"line\":0") != std::string::npos &&
+               selections.find("\"character\":0,\"line\":11") != std::string::npos,
+           "selection ranges expand from the identifier through nested blocks to the document");
+    expect(selections.find("\"line\":3") == std::string::npos,
+           "words inside comments are not compiler token selections");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void semanticNavigationSeparatesHomonyms() {
     const auto root = temporaryRoot();
     std::filesystem::create_directories(root);
@@ -989,6 +1065,7 @@ int main() {
     invalidJsonRpcEnvelopeIsRejected();
     unopenedLibraryDoesNotRequireMain();
     importedPackagesExposeHoverAndAllDefinitions();
+    foldingAndSelectionRangesFollowCompilerTokens();
     semanticNavigationSeparatesHomonyms();
     formatsUnsavedDocumentsAndRanges();
     offersCompilerBackedDiscardQuickFixes();

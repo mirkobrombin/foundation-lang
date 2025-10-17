@@ -268,6 +268,14 @@ class FoundationLanguageClient {
             }, {
                 providedCodeActionKinds: [this.vscode.CodeActionKind.QuickFix]
             }),
+            this.vscode.languages.registerFoldingRangeProvider("foundation", {
+                provideFoldingRanges: (document, context, token) =>
+                    this.foldingRanges(document, token)
+            }),
+            this.vscode.languages.registerSelectionRangeProvider("foundation", {
+                provideSelectionRanges: (document, positions, token) =>
+                    this.selectionRanges(document, positions, token)
+            }),
             this.vscode.languages.registerDocumentFormattingEditProvider("foundation", {
                 provideDocumentFormattingEdits: (document, options, token) =>
                     this.formatting(document, options, token)
@@ -712,6 +720,34 @@ class FoundationLanguageClient {
             action.edit = this.workspaceEdit(value.edit?.changes);
             return action;
         });
+    }
+
+    async foldingRanges(document, token) {
+        const result = await this.request("textDocument/foldingRange", {
+            textDocument: { uri: document.uri.toString() }
+        }, token);
+        return (result || []).map((value) => {
+            const kind = value.kind === "imports"
+                ? this.vscode.FoldingRangeKind.Imports
+                : undefined;
+            return new this.vscode.FoldingRange(value.startLine, value.endLine, kind);
+        });
+    }
+
+    selectionRange(value) {
+        const parent = value.parent ? this.selectionRange(value.parent) : undefined;
+        return new this.vscode.SelectionRange(this.range(value.range), parent);
+    }
+
+    async selectionRanges(document, positions, token) {
+        const result = await this.request("textDocument/selectionRange", {
+            textDocument: { uri: document.uri.toString() },
+            positions: positions.map((position) => ({
+                line: position.line,
+                character: position.character
+            }))
+        }, token);
+        return (result || []).map((value) => this.selectionRange(value));
     }
 
     formattingEdits(values) {

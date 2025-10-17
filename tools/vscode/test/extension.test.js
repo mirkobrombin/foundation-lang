@@ -79,12 +79,16 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /registerInlayHintsProvider/);
     assert.match(languageClient, /registerCodeActionsProvider/);
     assert.match(languageClient, /textDocument\/codeAction/);
+    assert.match(languageClient, /registerFoldingRangeProvider/);
+    assert.match(languageClient, /textDocument\/foldingRange/);
+    assert.match(languageClient, /registerSelectionRangeProvider/);
+    assert.match(languageClient, /textDocument\/selectionRange/);
     assert.match(languageClient, /registerDocumentFormattingEditProvider/);
     assert.match(languageClient, /registerDocumentRangeFormattingEditProvider/);
     assert.match(languageClient, /textDocument\/rangeFormatting/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/\*\.fdn"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.24.0");
+    assert.equal(manifest.version, "0.25.0");
     assert.equal(
         manifest.contributes.configuration.properties["foundation.languageServer.path"].default,
         ""
@@ -193,6 +197,72 @@ test("maps all package definition locations", async () => {
     assert.equal(locations[0].uri.value, "file:///tmp/first.fdn");
     assert.equal(locations[1].uri.value, "file:///tmp/second.fdn");
     assert.equal(locations[1].range.start.character, 8);
+});
+
+test("maps structural folding and selection ranges", async () => {
+    class Position {
+        constructor(line, character) {
+            Object.assign(this, { line, character });
+        }
+    }
+    class Range {
+        constructor(startLine, startCharacter, endLine, endCharacter) {
+            this.start = new Position(startLine, startCharacter);
+            this.end = new Position(endLine, endCharacter);
+        }
+    }
+    class FoldingRange {
+        constructor(start, end, kind) {
+            Object.assign(this, { start, end, kind });
+        }
+    }
+    class SelectionRange {
+        constructor(range, parent) {
+            Object.assign(this, { range, parent });
+        }
+    }
+    const requests = [];
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.vscode = {
+        FoldingRange,
+        FoldingRangeKind: { Imports: "imports" },
+        Position,
+        Range,
+        SelectionRange
+    };
+    client.request = async (method, params) => {
+        requests.push({ method, params });
+        if (method === "textDocument/foldingRange") {
+            return [
+                { startLine: 1, endLine: 2, kind: "imports" },
+                { startLine: 5, endLine: 9 }
+            ];
+        }
+        return [{
+            range: {
+                start: { line: 7, character: 15 },
+                end: { line: 7, character: 20 }
+            },
+            parent: {
+                range: {
+                    start: { line: 6, character: 12 },
+                    end: { line: 8, character: 5 }
+                }
+            }
+        }];
+    };
+    const document = { uri: { toString: () => "file:///tmp/main.fdn" } };
+
+    const folds = await client.foldingRanges(document);
+    const selections = await client.selectionRanges(document, [new Position(7, 17)]);
+
+    assert.equal(requests[0].method, "textDocument/foldingRange");
+    assert.equal(folds[0].kind, "imports");
+    assert.equal(folds[1].start, 5);
+    assert.equal(requests[1].method, "textDocument/selectionRange");
+    assert.deepEqual(requests[1].params.positions, [{ line: 7, character: 17 }]);
+    assert.equal(selections[0].range.start.character, 15);
+    assert.equal(selections[0].parent.range.start.line, 6);
 });
 
 test("maps language server formatting edits", async () => {

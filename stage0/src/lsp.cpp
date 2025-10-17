@@ -3,6 +3,7 @@
 #include "foundation/driver.hpp"
 #include "foundation/formatter.hpp"
 #include "foundation/language_service.hpp"
+#include "foundation/lexer.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -1038,6 +1039,61 @@ std::optional<SourceSpan> wordAt(std::string_view source, Position position,
     return SourceSpan{start, end - start, position.line + 1, position.character + 1, sourceId};
 }
 
+struct DelimiterRange {
+    TokenKind opening{TokenKind::LeftBrace};
+    SourceSpan span;
+};
+
+bool closes(TokenKind opening, TokenKind closing) {
+    return (opening == TokenKind::LeftBrace && closing == TokenKind::RightBrace) ||
+           (opening == TokenKind::LeftParen && closing == TokenKind::RightParen) ||
+           (opening == TokenKind::LeftBracket && closing == TokenKind::RightBracket);
+}
+
+std::vector<DelimiterRange> delimiterRanges(std::string_view source,
+                                            std::size_t sourceId) {
+    Diagnostics diagnostics;
+    Lexer lexer(source, diagnostics, sourceId);
+    std::vector<Token> stack;
+    std::vector<DelimiterRange> result;
+    for (const auto &token : lexer.scan()) {
+        if (token.kind == TokenKind::LeftBrace || token.kind == TokenKind::LeftParen ||
+            token.kind == TokenKind::LeftBracket) {
+            stack.push_back(token);
+            continue;
+        }
+        if (token.kind != TokenKind::RightBrace && token.kind != TokenKind::RightParen &&
+            token.kind != TokenKind::RightBracket) {
+            continue;
+        }
+        if (stack.empty() || !closes(stack.back().kind, token.kind)) {
+            continue;
+        }
+        const auto opening = stack.back();
+        stack.pop_back();
+        result.push_back({opening.kind,
+                          {opening.span.offset,
+                           token.span.offset + token.span.length - opening.span.offset,
+                           opening.span.line, opening.span.column, sourceId}});
+    }
+    return result;
+}
+
+std::optional<SourceSpan> tokenAt(std::string_view source, std::size_t offset,
+                                  std::size_t sourceId) {
+    Diagnostics diagnostics;
+    Lexer lexer(source, diagnostics, sourceId);
+    for (const auto &token : lexer.scan()) {
+        if (token.kind == TokenKind::Eof) {
+            break;
+        }
+        if (token.span.offset <= offset && offset < token.span.offset + token.span.length) {
+            return token.span;
+        }
+    }
+    return std::nullopt;
+}
+
 struct OpenDocument {
     std::string uri;
     std::filesystem::path path;
@@ -1161,6 +1217,10 @@ class LanguageServer {
             sendMessage(output_, response(*id, provideInlayHints(message.find("params"))));
         } else if (*method == "textDocument/codeAction" && id != nullptr) {
             sendMessage(output_, response(*id, provideCodeActions(message.find("params"))));
+        } else if (*method == "textDocument/foldingRange" && id != nullptr) {
+            sendMessage(output_, response(*id, provideFoldingRanges(message.find("params"))));
+        } else if (*method == "textDocument/selectionRange" && id != nullptr) {
+            sendMessage(output_, response(*id, provideSelectionRanges(message.find("params"))));
         } else if (*method == "textDocument/formatting" && id != nullptr) {
             sendMessage(output_, response(*id, provideFormatting(message.find("params"))));
         } else if (*method == "textDocument/rangeFormatting" && id != nullptr) {
@@ -1229,6 +1289,8 @@ class LanguageServer {
                             {"inlayHintProvider", true},
                             {"codeActionProvider",
                              Json::object({{"codeActionKinds", Json::array({"quickfix"})}})},
+                            {"foldingRangeProvider", true},
+                            {"selectionRangeProvider", true},
                             {"documentFormattingProvider", true},
                             {"documentRangeFormattingProvider", true},
                             {"documentSymbolProvider", true},
@@ -2776,6 +2838,123 @@ class LanguageServer {
                  {"kind", "quickfix"},
                  {"isPreferred", true},
                  {"edit", Json::object({{"changes", Json(std::move(changes))}})}}));
+        }
+        return Json(std::move(result));
+    }
+
+    [[nodiscard]] Json provideFoldingRanges(const Json *params) const {
+        const auto *document = openDocument(params);
+        if (document == nullptr) {
+            return Json(Json::Array{});
+        }
+        Json::Array result;
+        for (const auto &delimiter : delimiterRanges(document->contents, 0)) {
+            if (delimiter.opening != TokenKind::LeftBrace) {
+                continue;
+            }
+            const auto start = positionAt(document->contents, delimiter.span.offset);
+            const auto closing = positionAt(
+                document->contents, delimiter.span.offset + delimiter.span.length - 1);
+            if (closing.line <= start.line + 1) {
+                continue;
+            }
+            result.push_back(Json::object(
+                {{"startLine", static_cast<double>(start.line)},
+                 {"endLine", static_cast<double>(closing.line - 1)}}));
+        }
+
+        const auto uri = document->uri;
+        const auto *analysis = analyzeUri(uri);
+        const auto sourceId = analysis == nullptr ? std::nullopt
+                                                  : sourceIdForUri(*analysis, uri);
+        if (analysis != nullptr && sourceId.has_value()) {
+            std::vector<std::size_t> lines;
+            for (const auto &imported : analysis->program.imports) {
+                if (imported.span.source == *sourceId) {
+                    lines.push_back(imported.span.line - 1);
+                }
+            }
+            std::sort(lines.begin(), lines.end());
+            if (lines.size() > 1 && lines.front() < lines.back()) {
+                result.push_back(Json::object(
+                    {{"startLine", static_cast<double>(lines.front())},
+                     {"endLine", static_cast<double>(lines.back())}, {"kind", "imports"}}));
+            }
+        }
+        std::sort(result.begin(), result.end(), [](const Json &left, const Json &right) {
+            const auto *leftStart = left.find("startLine")->asNumber();
+            const auto *rightStart = right.find("startLine")->asNumber();
+            if (*leftStart != *rightStart) {
+                return *leftStart < *rightStart;
+            }
+            return *left.find("endLine")->asNumber() > *right.find("endLine")->asNumber();
+        });
+        return Json(std::move(result));
+    }
+
+    [[nodiscard]] static Json selectionRange(std::string_view source, Position position,
+                                             const std::vector<DelimiterRange> &delimiters) {
+        const auto offset = offsetAt(source, position).value_or(source.size());
+        std::vector<SourceSpan> candidates;
+        if (const auto token = tokenAt(source, offset, 0); token.has_value()) {
+            candidates.push_back(*token);
+        }
+        for (const auto &delimiter : delimiters) {
+            const auto end = delimiter.span.offset + delimiter.span.length;
+            if (delimiter.span.offset <= offset && offset < end) {
+                candidates.push_back(delimiter.span);
+            }
+        }
+        candidates.push_back({0, source.size(), 1, 1, 0});
+        std::sort(candidates.begin(), candidates.end(), [](SourceSpan left, SourceSpan right) {
+            if (left.length != right.length) {
+                return left.length < right.length;
+            }
+            return left.offset > right.offset;
+        });
+
+        std::vector<SourceSpan> chain;
+        for (const auto candidate : candidates) {
+            if (!chain.empty()) {
+                const auto child = chain.back();
+                const auto duplicate = candidate.offset == child.offset &&
+                                       candidate.length == child.length;
+                const auto contains = candidate.offset <= child.offset &&
+                                      candidate.offset + candidate.length >=
+                                          child.offset + child.length;
+                if (duplicate || !contains) {
+                    continue;
+                }
+            }
+            chain.push_back(candidate);
+        }
+        constexpr std::size_t maxSelectionRanges = 256;
+        if (chain.size() > maxSelectionRanges) {
+            const auto document = chain.back();
+            chain.resize(maxSelectionRanges - 1);
+            chain.push_back(document);
+        }
+        auto current = Json::object({{"range", lspRange(source, chain.back())}});
+        for (auto index = chain.size() - 1; index != 0; --index) {
+            current = Json::object({{"range", lspRange(source, chain[index - 1])},
+                                    {"parent", std::move(current)}});
+        }
+        return current;
+    }
+
+    [[nodiscard]] Json provideSelectionRanges(const Json *params) const {
+        const auto *document = openDocument(params);
+        const auto *positions = params == nullptr ? nullptr : params->find("positions");
+        if (document == nullptr || positions == nullptr || positions->asArray() == nullptr) {
+            return Json(Json::Array{});
+        }
+        const auto delimiters = delimiterRanges(document->contents, 0);
+        Json::Array result;
+        result.reserve(positions->asArray()->size());
+        for (const auto &value : *positions->asArray()) {
+            const auto position = jsonPosition(&value).value_or(
+                positionAt(document->contents, document->contents.size()));
+            result.push_back(selectionRange(document->contents, position, delimiters));
         }
         return Json(std::move(result));
     }
