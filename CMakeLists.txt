@@ -14,6 +14,7 @@ option(FOUNDATION_BUILD_FUZZERS "Build Clang libFuzzer targets" OFF)
 
 add_library(foundation_runtime STATIC
     runtime/src/runtime.c
+    runtime/src/task.c
 )
 target_include_directories(foundation_runtime PUBLIC runtime/include)
 
@@ -51,6 +52,7 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_C_COMPILER_ID="${CMAKE_C_COMPILER_ID}"
     FOUNDATION_RUNTIME_INCLUDE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/include"
     FOUNDATION_RUNTIME_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c"
+    FOUNDATION_RUNTIME_TASK_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c"
     FOUNDATION_STANDARD_LIBRARY="${CMAKE_CURRENT_SOURCE_DIR}/std"
 )
 
@@ -139,6 +141,8 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_fs_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_time_test runtime/tests/time_test.c)
     target_link_libraries(foundation_runtime_time_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_task_test runtime/tests/task_test.c)
+    target_link_libraries(foundation_runtime_task_test PRIVATE foundation_runtime)
     if(MSVC)
         target_compile_options(foundation_runtime_panic_test PRIVATE /W4)
         target_compile_options(foundation_runtime_allocation_test PRIVATE /W4)
@@ -148,6 +152,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_env_test PRIVATE /W4)
         target_compile_options(foundation_runtime_fs_test PRIVATE /W4)
         target_compile_options(foundation_runtime_time_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_task_test PRIVATE /W4)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE /WX)
             target_compile_options(foundation_runtime_allocation_test PRIVATE /WX)
@@ -157,6 +162,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_env_test PRIVATE /WX)
             target_compile_options(foundation_runtime_fs_test PRIVATE /WX)
             target_compile_options(foundation_runtime_time_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_task_test PRIVATE /WX)
         endif()
     else()
         target_compile_options(foundation_runtime_panic_test PRIVATE -Wall -Wextra -Wpedantic)
@@ -169,6 +175,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_env_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_fs_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_time_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_task_test PRIVATE -Wall -Wextra -Wpedantic)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_allocation_test PRIVATE -Werror)
@@ -178,6 +185,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_env_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_fs_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_time_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_task_test PRIVATE -Werror)
         endif()
     endif()
 
@@ -267,6 +275,7 @@ if(BUILD_TESTING)
     add_test(NAME runtime.u64 COMMAND foundation_runtime_u64_test)
     add_test(NAME runtime.env COMMAND foundation_runtime_env_test)
     add_test(NAME runtime.time COMMAND foundation_runtime_time_test)
+    add_test(NAME runtime.task COMMAND foundation_runtime_task_test)
     set_tests_properties(runtime.env PROPERTIES
         ENVIRONMENT "FOUNDATION_ENV_TEST=foundation env value"
     )
@@ -314,6 +323,46 @@ if(BUILD_TESTING)
     set_tests_properties(stage0.run.accept PROPERTIES
         PASS_REGULAR_EXPRESSION "hello from foundation"
     )
+    add_test(
+        NAME stage0.run.tasks
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tasks.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tasks.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.tasks-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tasks.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/tasks.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/tasks
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tasks.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    foreach(task_case IN ITEMS
+            "task-direct-call;FDN2163"
+            "task-wait-without-transfer;FDN2166"
+            "task-double-wait;FDN2065"
+            "spawn-function;FDN2163"
+            "task-borrow-parameter;FDN2165")
+        list(GET task_case 0 task_name)
+        list(GET task_case 1 task_code)
+        add_test(
+            NAME stage0.check.${task_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${task_name}.fdn
+                -DCODE=${task_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
     add_test(
         NAME stage0.check.reject
         COMMAND ${CMAKE_COMMAND}

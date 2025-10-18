@@ -271,6 +271,38 @@ fn main() i32 {
            "unterminated block comments report FDN0006");
 }
 
+void tasksLowerToOwnedRuntimeHandles() {
+    constexpr std::string_view source = R"(
+task announce(message String) String {
+    print(message)
+    message
+}
+
+fn main() i32 {
+    const pending = spawn announce("task")
+    const result = $pending.wait()
+    print(result)
+    0
+}
+)";
+    const auto first = check(source);
+    const auto second = check(source);
+    expect(!first.diagnostics.hasErrors(), "task source is accepted");
+    expect(first.fir.has_value() && second.fir.has_value(), "task source lowers to FIR");
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        return;
+    }
+    const auto firstC = foundation::emitC(*first.fir, "tasks.fdn");
+    const auto secondC = foundation::emitC(*second.fir, "tasks.fdn");
+    expect(firstC == secondC, "task C emission is deterministic");
+    expect(firstC.find("fdn_task_spawn") != std::string::npos,
+           "spawn lowers to the runtime executor");
+    expect(firstC.find("fdn_task_wait") != std::string::npos,
+           "transferred wait lowers to consuming runtime wait");
+    expect(firstC.find("fdn_task_drop") != std::string::npos,
+           "task locals retain deterministic cleanup");
+}
+
 void structValuesLowerToDeterministicC() {
     constexpr std::string_view source = R"(
 struct Point {
@@ -1605,6 +1637,7 @@ int main() {
     typedAttributesEmitMetadataWithoutRuntimeCode();
     typedProgramLowersToDeterministicC();
     immutableBindingsAndCommentsLexDeterministically();
+    tasksLowerToOwnedRuntimeHandles();
     structValuesLowerToDeterministicC();
     deepStructGraphsStayIterative();
     enumMatchesLowerToDeterministicC();

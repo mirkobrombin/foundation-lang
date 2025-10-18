@@ -216,6 +216,16 @@ Program Parser::parse() {
             }
             continue;
         }
+        if (check(TokenKind::Task)) {
+            auto declaration = function(false, true);
+            declaration.attributes = std::move(parsedAttributes.applications);
+            if (parsedAttributes.selected) {
+                program_.functions.push_back(std::move(declaration));
+            } else {
+                restoreProgram(expressions, statements, blocks, functions);
+            }
+            continue;
+        }
         if (check(TokenKind::Extern)) {
             auto declaration = function(true);
             declaration.attributes = std::move(parsedAttributes.applications);
@@ -666,7 +676,7 @@ AttributeDeclaration Parser::attributeDeclaration() {
             isExported(name.text), start.span, {}};
 }
 
-Function Parser::function(bool external) {
+Function Parser::function(bool external, bool task) {
     auto start = current();
     if (external) {
         start = expect(TokenKind::Extern, "FDN1112", "expected extern");
@@ -675,7 +685,8 @@ Function Parser::function(bool external) {
             diagnostics_.error("FDN1113", "only the c external ABI is supported", abi.span);
         }
     }
-    expect(TokenKind::Fn, "FDN1002", "expected fn");
+    expect(task ? TokenKind::Task : TokenKind::Fn, "FDN1002",
+           task ? "expected task" : "expected fn");
     const auto name = expect(TokenKind::Identifier, "FDN1003", "expected function name");
     auto typeParameters = this->typeParameters();
     expect(TokenKind::LeftParen, "FDN1004", "expected ( after function name");
@@ -711,6 +722,7 @@ Function Parser::function(bool external) {
                     std::nullopt, {}, std::nullopt, true, false, {}, {}};
     result.cSymbol = std::move(cSymbol);
     result.hasBody = hasBody;
+    result.task = task;
     return result;
 }
 
@@ -1126,6 +1138,12 @@ AstExpressionId Parser::unary() {
     } else if (match(TokenKind::Bang)) {
         const auto start = previous().span;
         result = addExpression(UnaryExpression{UnaryOperator::Not, unary()}, start);
+    } else if (match(TokenKind::Dollar)) {
+        const auto start = previous().span;
+        result = addExpression(OwnershipExpression{OwnershipOperator::Own, unary()}, start);
+    } else if (match(TokenKind::Spawn)) {
+        const auto start = previous().span;
+        result = addExpression(SpawnExpression{unary()}, start);
     } else if (check(TokenKind::Own) || check(TokenKind::View) || check(TokenKind::Edit)) {
         const auto token = advance();
         auto operation = OwnershipOperator::Own;

@@ -108,6 +108,10 @@ const char *tokenName(TokenKind kind) {
         return "by";
     case TokenKind::Fn:
         return "fn";
+    case TokenKind::Task:
+        return "task";
+    case TokenKind::Spawn:
+        return "spawn";
     case TokenKind::Let:
         return "let";
     case TokenKind::Const:
@@ -192,6 +196,8 @@ const char *tokenName(TokenKind kind) {
         return "||";
     case TokenKind::At:
         return "@";
+    case TokenKind::Dollar:
+        return "$";
     }
     return "token";
 }
@@ -322,6 +328,8 @@ Token Lexer::next() {
             return simple(TokenKind::Percent, "%");
         case '@':
             return simple(TokenKind::At, "@");
+        case '$':
+            return simple(TokenKind::Dollar, "$");
         case '-':
             return simple(TokenKind::Minus, "-");
         case '=':
@@ -403,6 +411,10 @@ Token Lexer::identifier() {
         kind = TokenKind::By;
     } else if (text == "fn") {
         kind = TokenKind::Fn;
+    } else if (text == "task") {
+        kind = TokenKind::Task;
+    } else if (text == "spawn") {
+        kind = TokenKind::Spawn;
     } else if (text == "let") {
         kind = TokenKind::Let;
     } else if (text == "const") {

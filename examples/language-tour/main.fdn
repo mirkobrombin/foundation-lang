@@ -133,6 +133,10 @@ fn identity<T>(value T) T {
     value
 }
 
+task backgroundIdentity<T>(value T) T {
+    value
+}
+
 fn apply<T>(value T, operation view fn(T) T) T {
     operation(value)
 }
@@ -302,9 +306,11 @@ fn main(args view [String]) i32 {
     const argumentCount = len(args)
     const formattedCount = format.U64(argumentCount)
     discard formattedCount
+    const pendingIdentity = spawn backgroundIdentity<i32>(42)
+    const backgroundValue = $pendingIdentity.wait()
     if (inRange(current, 5, 5) || false) && nextByteCount == 11925602364 &&
         platformMatches && pathMatches && jsonMatches && timeMatches && argumentCount == 0 &&
-        proxyCounterValue == 2 && dynamicCounterValue == 1 {
+        proxyCounterValue == 2 && dynamicCounterValue == 1 && backgroundValue == 42 {
         return match state {
             Running: resultOr(verified, 0) + counterValue + directCounterValue + sequenceValue + callbackValue - 20
             Done(done): resultOr(verified, done.code) + counterValue + directCounterValue + sequenceValue + callbackValue - 21

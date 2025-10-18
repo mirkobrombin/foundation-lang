@@ -77,6 +77,7 @@ const staticCompletions = [
     { label: "never", kind: "TypeParameter" },
     { label: "Option", kind: "TypeParameter", detail: "primitive Option<T>" },
     { label: "Result", kind: "TypeParameter", detail: "primitive Result<T, E>" },
+    { label: "Task", kind: "TypeParameter", detail: "owned concurrent result handle" },
     { label: "std.platform", kind: "Module", detail: "Compilation target information" },
     { label: "std.env", kind: "Module", detail: "Read-only process environment" },
     { label: "std.text", kind: "Module", detail: "UTF-8 String inspection" },
@@ -583,7 +584,7 @@ function collectPackageDeclarations(source) {
         alias: match[2] || match[1].split(".").at(-1)
     }));
     const functions = [...masked.matchAll(
-        /\bfn\s+([A-Z][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\(([^)]*)\)/g
+        /\b(?:fn|task)\s+([A-Z][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\(([^)]*)\)/g
     )].filter((match) => depths[match.index] === 0).map((match) => ({
         name: match[1],
         kind: "Function",
@@ -718,7 +719,7 @@ function collectCompletions(source, projectSources = []) {
     const masked = maskAttributeApplications(lexical);
     const depths = topLevelDepths(masked);
     const completions = [...staticCompletions, ...importedCompletions(source, projectSources)];
-    const functions = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\(([^)]*)\)/g;
+    const functions = /\b(?:fn|task)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\(([^)]*)\)/g;
     const structs = collectBracedDeclarations(masked, "struct");
     const methodBlocks = collectBracedDeclarations(masked, "methods");
     const enums = collectBracedDeclarations(masked, "enum");

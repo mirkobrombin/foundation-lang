@@ -108,7 +108,8 @@ std::string typeParameterSuffix(const std::vector<std::string> &parameters) {
 }
 
 std::string functionDetail(const Function &function) {
-    std::string result = "fn " + shortName(function.name) +
+    std::string result = std::string(function.task ? "task " : "fn ") +
+                         shortName(function.name) +
                          typeParameterSuffix(function.typeParameters) + '(';
     for (std::size_t index = 0; index < function.parameters.size(); ++index) {
         if (index != 0) {
@@ -466,6 +467,9 @@ class IndexBuilder {
             }
             result += ") " + displayType(type.arguments[0], function);
             return result;
+        }
+        if (type.kind == TypeKind::Task && type.arguments.size() == 1) {
+            return "Task<" + displayType(type.arguments[0], function) + '>';
         }
         std::string result;
         if (type.kind == TypeKind::Struct && type.declaration < analysis_.program.structs.size()) {

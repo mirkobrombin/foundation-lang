@@ -25,6 +25,17 @@ typedef struct fdn_string {
     uint8_t owned;
 } fdn_string;
 
+typedef struct fdn_task fdn_task;
+
+typedef enum fdn_task_poll {
+    FDN_TASK_PENDING = 0,
+    FDN_TASK_READY = 1,
+} fdn_task_poll;
+
+typedef fdn_task_poll (*fdn_task_poll_fn)(void *frame, bool cancellation_requested);
+typedef void (*fdn_task_move_result_fn)(void *frame, void *result);
+typedef void (*fdn_task_drop_frame_fn)(void *frame);
+
 static inline fdn_string fdn_string_static(const char *data, size_t length) {
     fdn_string value = {data, length, 0};
     return value;
@@ -51,6 +62,13 @@ void fdn_dealloc(void *value);
 size_t fdn_total_allocations(void);
 size_t fdn_total_deallocations(void);
 size_t fdn_live_allocations(void);
+fdn_task *fdn_task_spawn(void *frame, fdn_task_poll_fn poll,
+                         fdn_task_move_result_fn move_result,
+                         fdn_task_drop_frame_fn drop_frame);
+void fdn_task_wait(fdn_task **task, void *result);
+void fdn_task_drop(fdn_task **task);
+bool fdn_task_cancellation_requested(const fdn_task *task);
+size_t fdn_task_live_count(void);
 #ifdef __cplusplus
 [[noreturn]] void fdn_panic(fdn_string message);
 [[noreturn]] void fdn_panic_cstr(const char *message);

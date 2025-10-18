@@ -236,6 +236,14 @@ struct FirReplaceExpression {
     FirExpressionId value{};
 };
 
+struct FirSpawnExpression {
+    FirExpressionId call{};
+};
+
+struct FirTaskWaitExpression {
+    FirExpressionId task{};
+};
+
 struct FirEnumExpression {
     Type type{invalidType};
     FirVariantId variant{};
@@ -262,7 +270,7 @@ using FirExpressionValue =
                  FirBinaryExpression, FirCallExpression,
                  FirContractExpression, FirStructExpression, FirFieldExpression,
                  FirIndexExpression, FirReplaceExpression, FirEnumExpression,
-                 FirMatchExpression>;
+                 FirSpawnExpression, FirTaskWaitExpression, FirMatchExpression>;
 
 struct FirExpression {
     FirExpressionValue value;
@@ -370,6 +378,7 @@ struct FirFunction {
     bool method{};
     std::vector<FirAttributeUse> attributes;
     std::vector<std::vector<FirAttributeUse>> parameterAttributes;
+    bool task{};
 };
 
 struct FirStructField {

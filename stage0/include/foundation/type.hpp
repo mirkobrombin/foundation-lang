@@ -24,6 +24,7 @@ enum class TypeKind {
     Enum,
     Contract,
     Function,
+    Task,
 };
 
 struct Type {

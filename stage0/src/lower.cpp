@@ -212,6 +212,7 @@ class Lowerer {
         function.hasBody = source.hasBody;
         function.closure = source.closure;
         function.method = source.receiver.has_value();
+        function.task = source.task;
         function.attributes = semantic.attributes;
         function.parameterAttributes = semantic.parameterAttributes;
         function.returnType = semantic.returnType;
@@ -342,8 +343,13 @@ class Lowerer {
             value = FirUnaryExpression{lowerUnary(unary->operation),
                                        lowerExpression(unary->operand)};
         } else if (const auto *ownership = std::get_if<OwnershipExpression>(&source.value)) {
-            value = FirOwnershipExpression{lowerOwnership(ownership->operation),
-                                           lowerExpression(ownership->operand)};
+            if (model_.taskWaitTargets[id].has_value()) {
+                value = FirTaskWaitExpression{
+                    lowerExpression(model_.taskWaitTargets[id]->task)};
+            } else {
+                value = FirOwnershipExpression{lowerOwnership(ownership->operation),
+                                               lowerExpression(ownership->operand)};
+            }
         } else if (const auto *binary = std::get_if<BinaryExpression>(&source.value)) {
             value = FirBinaryExpression{lowerExpression(binary->left),
                                         lowerBinary(binary->operation),
@@ -399,6 +405,8 @@ class Lowerer {
                     {target.fields[index], lowerExpression(literal->fields[index].value)});
             }
             value = FirStructExpression{target.type, std::move(fields)};
+        } else if (const auto *spawn = std::get_if<SpawnExpression>(&source.value)) {
+            value = FirSpawnExpression{lowerExpression(spawn->call)};
         } else if (const auto *member = std::get_if<MemberExpression>(&source.value)) {
             if (model_.enumTargets[id].has_value()) {
                 const auto &target = *model_.enumTargets[id];

@@ -143,6 +143,22 @@ void preservesDocumentationAndNestedComments() {
            "comment formatting is idempotent");
 }
 
+void keepsTaskOwnershipCompact() {
+    constexpr std::string_view source =
+        "task double(value i32)i32{value*2}\n"
+        "fn main()i32{\n"
+        "const pending=spawn double(21)\n"
+        "const result=$ pending.wait()\n"
+        "result-42\n"
+        "}\n";
+    const auto formatted = foundation::formatSource(source);
+    expect(!formatted.diagnostics.hasErrors(), "task ownership source formats");
+    expect(formatted.contents.find("const result = $pending.wait()") != std::string::npos,
+           "task transfer marker stays attached to its handle");
+    expect(foundation::formatSource(formatted.contents).contents == formatted.contents,
+           "task formatting is idempotent");
+}
+
 void rejectsInvalidSourceWithoutChangingIt() {
     constexpr std::string_view source = "fn main( {\n";
     const auto formatted = foundation::formatSource(source);
@@ -214,6 +230,7 @@ int main() {
     formatsFoundationSource();
     preservesLineSensitiveSyntax();
     preservesDocumentationAndNestedComments();
+    keepsTaskOwnershipCompact();
     rejectsInvalidSourceWithoutChangingIt();
     preservesEstablishedFoundationStyle();
     formatsRepositorySources();

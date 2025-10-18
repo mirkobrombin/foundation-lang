@@ -442,6 +442,14 @@
         ],
         "description": "Declare a suspendable typed function"
     },
+    "Spawn and wait": {
+        "prefix": "spawnwait",
+        "body": [
+            "const ${1:pending} = spawn ${2:work}(${3})",
+            "const ${4:value} = \\$${1:pending}.wait()"
+        ],
+        "description": "Spawn a task and consume its result"
+    },
     "State machine": {
         "prefix": "statemachine",
         "body": [

@@ -160,6 +160,10 @@ struct ReplaceExpression {
     AstExpressionId value{};
 };
 
+struct SpawnExpression {
+    AstExpressionId call{};
+};
+
 struct MatchArm {
     std::string variant;
     std::optional<std::string> binding;
@@ -180,7 +184,7 @@ using ExpressionValue =
     std::variant<IntegerExpression, BooleanExpression, StringExpression, ArrayExpression,
                  NameExpression, UnaryExpression, OwnershipExpression, BinaryExpression,
                  CallExpression, StructExpression, MemberExpression, IndexExpression,
-                 ReplaceExpression, MatchExpression, FunctionExpression>;
+                 ReplaceExpression, SpawnExpression, MatchExpression, FunctionExpression>;
 
 struct Expression {
     ExpressionValue value;
@@ -281,6 +285,7 @@ struct Function {
     bool closure{};
     std::vector<Capture> captures;
     std::vector<AttributeApplication> attributes;
+    bool task{};
 };
 
 struct StructField {

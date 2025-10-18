@@ -2992,7 +2992,8 @@ class LanguageServer {
         if (!attributeContext) {
             constexpr std::string_view keywords[] = {
                 "package", "import", "as",      "extern", "struct", "enum",  "contract",
-                "attribute", "implements", "extends", "by",     "fn",    "let",   "var",
+                "attribute", "implements", "extends", "by",     "fn",    "task",  "spawn",
+                "let",      "const",      "var",
                 "return",  "discard", "if",      "else",   "while",  "match", "capture",
                 "replace", "with",    "own",     "view",   "edit",   "true",  "false",
             };
@@ -3000,7 +3001,7 @@ class LanguageServer {
                 addCompletion(items, std::string(keyword), 14);
             }
             for (const auto type : {"i32", "u64", "bool", "String", "void", "Option",
-                                    "Result"}) {
+                                    "Result", "Task"}) {
                 addCompletion(items, type, 25);
             }
             for (const auto builtin : {"print", "panic", "len"}) {

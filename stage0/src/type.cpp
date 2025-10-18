@@ -36,6 +36,8 @@ const char *typeName(Type type) {
         return "<contract>";
     case TypeKind::Function:
         return "fn";
+    case TypeKind::Task:
+        return "Task";
     }
     return "<invalid>";
 }

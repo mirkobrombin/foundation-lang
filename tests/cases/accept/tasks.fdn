@@ -1,0 +1,34 @@
+task announce(message String) String {
+    print(message)
+    message
+}
+
+task finish() void {
+    return
+}
+
+task preserve(message String) String {
+    message
+}
+
+task fail() i32 {
+    panic("unreachable task")
+}
+
+fn main() i32 {
+    const message = "ta" + "sk"
+    const pending = spawn announce(message)
+    print("before")
+    const result = $pending.wait()
+    const finishing = spawn finish()
+    $finishing.wait()
+    const abandoned = spawn preserve("silent" + " task")
+    discard abandoned
+    if false {
+        const failed = spawn fail()
+        discard failed
+        return 1
+    }
+    print(result)
+    0
+}

@@ -90,7 +90,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.27.0");
+    assert.equal(manifest.version, "0.28.0");
     assert.equal(
         manifest.contributes.configuration.properties["foundation.languageServer.path"].default,
         ""
@@ -630,6 +630,8 @@ test("grammar and completions track compiler keywords", () => {
         "extends",
         "by",
         "fn",
+        "task",
+        "spawn",
         "let",
         "const",
         "var",
@@ -653,7 +655,7 @@ test("grammar and completions track compiler keywords", () => {
         assert.ok(completionLabels.has(keyword));
     }
 
-    for (const type of ["i32", "u64", "bool", "String", "void", "Option", "Result", "len", "print", "panic"]) {
+    for (const type of ["i32", "u64", "bool", "String", "void", "Option", "Result", "Task", "len", "print", "panic"]) {
         assert.match(grammar, new RegExp(`\\b${type}\\b`));
         assert.ok(completionLabels.has(type));
     }
@@ -1100,6 +1102,7 @@ test("ships Result handling and panic snippets", () => {
     assert.equal(snippets["Postfix conditional"].prefix, "ifvalue");
     assert.equal(snippets.Service.prefix, "service");
     assert.equal(snippets.Task.prefix, "task");
+    assert.equal(snippets["Spawn and wait"].prefix, "spawnwait");
     assert.equal(snippets["State machine"].prefix, "statemachine");
     assert.equal(snippets["Channel select"].prefix, "select");
     assert.equal(snippets.Pipeline.prefix, "pipeline");
@@ -1129,6 +1132,25 @@ test("tracks accepted bindings and distributed methods", () => {
     assert.equal(byLabel.get("user").detail, "Local binding");
     assert.equal(byLabel.get("displayName").detail, "Distributed method of User");
     assert.equal(byLabel.get("rename").detail, "Distributed method of User");
+});
+
+test("tracks task declarations and owned waits", () => {
+    const completions = collectCompletions(`
+        task fetchUser(id i32) i32 {
+            id
+        }
+
+        fn main() i32 {
+            const pending = spawn fetchUser(1)
+            const user = $pending.wait()
+            user
+        }
+    `);
+    const labels = new Set(completions.map((entry) => entry.label));
+    assert.ok(labels.has("fetchUser"));
+    assert.ok(labels.has("pending"));
+    assert.ok(labels.has("user"));
+    assert.ok(labels.has("Task"));
 });
 
 test("collects declarations that use arrays and slices", () => {

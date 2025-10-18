@@ -149,6 +149,10 @@ struct OwnershipTarget {
     std::optional<FirLocalId> local;
 };
 
+struct TaskWaitTarget {
+    AstExpressionId task{};
+};
+
 struct SemanticModel {
     std::vector<Type> expressionTypes;
     std::vector<std::optional<CallTarget::ContractConversion>> expressionContractConversions;
@@ -161,6 +165,7 @@ struct SemanticModel {
     std::vector<std::optional<OwnershipTarget>> ownershipTargets;
     std::vector<std::optional<FunctionValueTarget>> functionValueTargets;
     std::vector<std::optional<ClosureTarget>> closureTargets;
+    std::vector<std::optional<TaskWaitTarget>> taskWaitTargets;
     std::vector<bool> expressionBorrowedClosures;
     std::vector<bool> expressionMoves;
     std::vector<std::optional<FirLocalId>> statementLocals;

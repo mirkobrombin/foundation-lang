@@ -149,6 +149,7 @@ class Analyzer {
         model_.ownershipTargets.resize(program.expressions.size());
         model_.functionValueTargets.resize(program.expressions.size());
         model_.closureTargets.resize(program.expressions.size());
+        model_.taskWaitTargets.resize(program.expressions.size());
         model_.expressionBorrowedClosures.resize(program.expressions.size());
         model_.expressionMoves.resize(program.expressions.size());
         model_.statementLocals.resize(program.statements.size());
@@ -1066,6 +1067,14 @@ class Analyzer {
             setTypeParameters(function.typeParameters, function.span);
             semantic.typeParameterCount = function.typeParameters.size();
             semantic.returnType = resolveType(function.returnType);
+            if (function.task && function.cSymbol.has_value()) {
+                diagnostics_.error("FDN2163", "task cannot use an external ABI declaration",
+                                   function.span);
+            }
+            if (function.task && function.name == "main") {
+                diagnostics_.error("FDN2164", "main must be a function, not a task",
+                                   function.span);
+            }
             if (containsBorrow(semantic.returnType) ||
                 containsBareSlice(semantic.returnType) ||
                 containsBareContract(semantic.returnType)) {
@@ -1092,6 +1101,10 @@ class Analyzer {
                                        parameter.span);
                 }
                 semantic.parameterTypes.push_back(type);
+                if (function.task && containsBorrow(type)) {
+                    diagnostics_.error("FDN2165", "task parameter cannot borrow from its caller",
+                                       parameter.span);
+                }
             }
 
             if (function.cSymbol.has_value()) {
@@ -1803,6 +1816,10 @@ class Analyzer {
                     diagnostics_.error("FDN2019", "main cannot be used as a value",
                                        expression.span);
                 }
+                if (program_.functions[functionId].task) {
+                    diagnostics_.error("FDN2163", "task cannot be used as a function value",
+                                       expression.span);
+                }
                 const auto &signature = signatures_[functionId];
                 std::vector<std::optional<Type>> inferred(
                     program_.functions[functionId].typeParameters.size());
@@ -1840,6 +1857,8 @@ class Analyzer {
             type = analyzeUnary(*unary, expression.span);
         } else if (const auto *ownership = std::get_if<OwnershipExpression>(&expression.value)) {
             type = analyzeOwnership(id, *ownership, expression.span);
+        } else if (const auto *spawn = std::get_if<SpawnExpression>(&expression.value)) {
+            type = analyzeSpawn(id, *spawn, expression.span);
         } else if (const auto *binary = std::get_if<BinaryExpression>(&expression.value)) {
             type = analyzeBinary(*binary, expected, expression.span);
         } else if (const auto *call = std::get_if<CallExpression>(&expression.value)) {
@@ -1872,6 +1891,22 @@ class Analyzer {
     Type analyzeOwnership(AstExpressionId id, const OwnershipExpression &ownership,
                           SourceSpan span) {
         if (ownership.operation == OwnershipOperator::Own) {
+            if (const auto *member = std::get_if<MemberExpression>(
+                    &program_.expressions[ownership.operand].value);
+                member != nullptr && member->invoked && member->member == "wait" &&
+                member->base.has_value()) {
+                if (!member->arguments.empty() || !member->typeArguments.empty()) {
+                    diagnostics_.error("FDN2167", "Task.wait does not accept arguments", span);
+                }
+                const auto task = analyzeExpression(*member->base, std::nullopt,
+                                                    ExpressionUse::Consume);
+                if (task.kind != TypeKind::Task || task.arguments.size() != 1) {
+                    diagnostics_.error("FDN2166", "$value.wait() requires a Task", span);
+                    return invalidType;
+                }
+                model_.taskWaitTargets[id] = TaskWaitTarget{*member->base};
+                return task.arguments.front();
+            }
             const auto value = analyzeExpression(ownership.operand);
             if (value == voidType || value.kind == TypeKind::Invalid ||
                 value.kind == TypeKind::Own || value.kind == TypeKind::View ||
@@ -1949,6 +1984,25 @@ class Analyzer {
         return Type{ownership.operation == OwnershipOperator::View ? TypeKind::View
                                                                     : TypeKind::Edit,
                     0, {target}};
+    }
+
+    Type analyzeSpawn(AstExpressionId, const SpawnExpression &spawn, SourceSpan span) {
+        if (!std::holds_alternative<CallExpression>(program_.expressions[spawn.call].value)) {
+            static_cast<void>(analyzeExpression(spawn.call));
+            diagnostics_.error("FDN2163", "spawn requires a direct task call", span);
+            return invalidType;
+        }
+        const auto previous = spawnCall_;
+        spawnCall_ = spawn.call;
+        const auto result = analyzeExpression(spawn.call);
+        spawnCall_ = previous;
+        const auto &target = model_.callTargets[spawn.call];
+        if (!target.has_value() || target->kind != CallTargetKind::Function ||
+            target->function >= program_.functions.size() ||
+            !program_.functions[target->function].task) {
+            return invalidType;
+        }
+        return Type{TypeKind::Task, 0, {result}};
     }
 
     Type analyzeUnary(const UnaryExpression &unary, SourceSpan span) {
@@ -2315,7 +2369,8 @@ class Analyzer {
             if (left.kind == TypeKind::Parameter || right.kind == TypeKind::Parameter ||
                 left.kind == TypeKind::Struct || right.kind == TypeKind::Struct ||
                 left.kind == TypeKind::Enum || right.kind == TypeKind::Enum ||
-                left.kind == TypeKind::Function || right.kind == TypeKind::Function) {
+                left.kind == TypeKind::Function || right.kind == TypeKind::Function ||
+                left.kind == TypeKind::Task || right.kind == TypeKind::Task) {
                 diagnostics_.error("FDN2012", "equality is not available for this type", span);
             } else {
                 requireSame(left, right, span, "equality operand");
@@ -2499,6 +2554,11 @@ class Analyzer {
             return invalidType;
         }
         const auto function = found->second;
+        if (program_.functions[function].task && spawnCall_ != id) {
+            diagnostics_.error("FDN2163", "task call requires spawn", span);
+        } else if (!program_.functions[function].task && spawnCall_ == id) {
+            diagnostics_.error("FDN2163", "spawn requires a task call", span);
+        }
         if (program_.functions[function].name == "main") {
             diagnostics_.error("FDN2019", "main cannot be called", span);
         }
@@ -2831,6 +2891,18 @@ class Analyzer {
             return invalidType;
         }
         auto base = sourceType;
+        if (base.kind == TypeKind::Task) {
+            for (const auto argument : member.arguments) {
+                static_cast<void>(analyzeExpression(argument));
+            }
+            if (member.invoked && member.member == "wait") {
+                diagnostics_.error("FDN2166", "Task.wait consumes its handle; use $handle.wait()",
+                                   span);
+            } else {
+                diagnostics_.error("FDN2100", "unknown Task member " + member.member, span);
+            }
+            return invalidType;
+        }
         if ((base.kind == TypeKind::Own || base.kind == TypeKind::View ||
              base.kind == TypeKind::Edit) &&
             base.arguments.size() == 1) {
@@ -3546,6 +3618,8 @@ class Analyzer {
             base = Type{TypeKind::Edit};
         } else if (syntax.name == "[function]") {
             base = Type{TypeKind::Function};
+        } else if (syntax.name == "Task") {
+            base = Type{TypeKind::Task};
         } else if (const auto parameter = typeParameters_.find(syntax.name);
                    parameter != typeParameters_.end()) {
             base = Type{TypeKind::Parameter, parameter->second};
@@ -3591,7 +3665,7 @@ class Analyzer {
             }
         } else if (base->kind == TypeKind::Own || base->kind == TypeKind::View ||
                    base->kind == TypeKind::Edit || base->kind == TypeKind::Array ||
-                   base->kind == TypeKind::Slice) {
+                   base->kind == TypeKind::Slice || base->kind == TypeKind::Task) {
             expected = 1;
         }
         if (arguments.size() != expected) {
@@ -3615,6 +3689,9 @@ class Analyzer {
         } else if ((base->kind == TypeKind::Array || base->kind == TypeKind::Slice) &&
                    !base->arguments.empty() && base->arguments.front() == voidType) {
             diagnostics_.error("FDN2047", "array or slice element cannot be void", syntax.span);
+        } else if (base->kind == TypeKind::Task && !base->arguments.empty() &&
+                   containsBorrow(base->arguments.front())) {
+            diagnostics_.error("FDN2165", "Task result cannot contain a borrow", syntax.span);
         }
         return *base;
     }
@@ -3665,6 +3742,7 @@ class Analyzer {
         if ((pattern.kind == TypeKind::Struct || pattern.kind == TypeKind::Enum ||
              pattern.kind == TypeKind::Contract ||
              pattern.kind == TypeKind::Function ||
+             pattern.kind == TypeKind::Task ||
              pattern.kind == TypeKind::Array || pattern.kind == TypeKind::Slice ||
              pattern.kind == TypeKind::Own || pattern.kind == TypeKind::View ||
              pattern.kind == TypeKind::Edit) &&
@@ -3701,7 +3779,8 @@ class Analyzer {
     bool isBuiltinType(std::string_view name) const {
         return name == "void" || name == "i32" || name == "u64" || name == "bool" ||
                name == "String" ||
-               name == "Option" || name == "Result" || name == "own" || name == "view" ||
+               name == "Option" || name == "Result" || name == "Task" ||
+               name == "own" || name == "view" ||
                name == "edit";
     }
 
@@ -3921,6 +4000,7 @@ class Analyzer {
 
     bool requiresDrop(const Type &type, std::unordered_set<std::string> &active) const {
         if (type.kind == TypeKind::String || type.kind == TypeKind::Own ||
+            type.kind == TypeKind::Task ||
             type.kind == TypeKind::Function ||
             type.kind == TypeKind::Parameter) {
             return true;
@@ -4173,6 +4253,9 @@ class Analyzer {
             name += displayType(type.arguments.front());
             return name;
         }
+        if (type.kind == TypeKind::Task && type.arguments.size() == 1) {
+            return "Task<" + displayType(type.arguments.front()) + '>';
+        }
         std::string name;
         if (type.kind == TypeKind::Struct && type.declaration < program_.structs.size()) {
             name = program_.structs[type.declaration].name;
@@ -4232,6 +4315,7 @@ class Analyzer {
     std::unordered_set<std::string> closureOuterNames_;
     std::string_view currentPackageOverride_;
     bool transientBorrowsAllowed_{};
+    std::optional<AstExpressionId> spawnCall_;
     FirFunctionId currentFunction_{};
 };
 

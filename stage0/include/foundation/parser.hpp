@@ -51,7 +51,7 @@ class Parser {
     EnumDeclaration enumDeclaration();
     ContractDeclaration contractDeclaration();
     AttributeDeclaration attributeDeclaration();
-    Function function(bool external = false);
+    Function function(bool external = false, bool task = false);
     Function method(const std::string &owner, const std::vector<std::string> &typeParameters);
     ContractMethod contractMethod(const std::string &owner,
                                   const std::vector<std::string> &typeParameters);

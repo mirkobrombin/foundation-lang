@@ -107,6 +107,9 @@ std::string cTypeTag(const Type &type) {
         }
         return result;
     }
+    case TypeKind::Task:
+        return "task_" +
+               (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
     case TypeKind::Parameter:
     case TypeKind::Invalid:
         break;
@@ -165,6 +168,8 @@ std::string cType(const Type &type) {
         return "fdn_contract_" + std::to_string(type.declaration);
     case TypeKind::Function:
         return "fdn_" + cTypeTag(type);
+    case TypeKind::Task:
+        return "fdn_task *";
     case TypeKind::Invalid:
         break;
     }
@@ -208,6 +213,22 @@ std::string functionName(const FirProgram &program, FirFunctionId id) {
 
 std::string functionAdapterName(const FirProgram &program, FirFunctionId id) {
     return functionName(program, id) + "_value_adapter";
+}
+
+std::string taskFrameName(const FirProgram &program, FirFunctionId id) {
+    return functionName(program, id) + "_task_frame";
+}
+
+std::string taskPollName(const FirProgram &program, FirFunctionId id) {
+    return functionName(program, id) + "_task_poll";
+}
+
+std::string taskMoveResultName(const FirProgram &program, FirFunctionId id) {
+    return functionName(program, id) + "_task_move_result";
+}
+
+std::string taskDropFrameName(const FirProgram &program, FirFunctionId id) {
+    return functionName(program, id) + "_task_drop_frame";
 }
 
 std::string closureEnvironmentName(const FirProgram &program, FirFunctionId id) {
@@ -314,7 +335,7 @@ class Monomorphizer {
         }
         if (source.kind == TypeKind::Own || source.kind == TypeKind::View ||
             source.kind == TypeKind::Edit || source.kind == TypeKind::Array ||
-            source.kind == TypeKind::Slice) {
+            source.kind == TypeKind::Slice || source.kind == TypeKind::Task) {
             if (source.arguments.size() != 1) {
                 internalError("invalid wrapper type reached monomorphization");
             }
@@ -532,6 +553,20 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
     if (const auto *ownership = std::get_if<FirOwnershipExpression>(&expression.value)) {
         return expressionDiverges(program, function, ownership->operand);
     }
+    if (const auto *spawn = std::get_if<FirSpawnExpression>(&expression.value)) {
+        const auto *call = std::get_if<FirCallExpression>(
+            &function.expressions[spawn->call].value);
+        if (call == nullptr) {
+            return false;
+        }
+        return std::any_of(call->arguments.begin(), call->arguments.end(),
+                           [&](const auto argument) {
+                               return expressionDiverges(program, function, argument);
+                           });
+    }
+    if (const auto *wait = std::get_if<FirTaskWaitExpression>(&expression.value)) {
+        return expressionDiverges(program, function, wait->task);
+    }
     if (const auto *index = std::get_if<FirIndexExpression>(&expression.value)) {
         return expressionDiverges(program, function, index->base) ||
                expressionDiverges(program, function, index->index);
@@ -679,6 +714,7 @@ void markDivergingFunctions(FirProgram &program) {
 
 bool typeRequiresDrop(const FirProgram &program, const Type &type) {
     if (type.kind == TypeKind::String || type.kind == TypeKind::Own ||
+        type.kind == TypeKind::Task ||
         type.kind == TypeKind::Function ||
         type.kind == TypeKind::Parameter) {
         return true;
@@ -761,6 +797,10 @@ void emitDropValue(std::ostringstream &out, const FirProgram &program, const Typ
         out << indentation(depth) << "fdn_string_drop(&" << value << ");\n";
         return;
     }
+    if (type.kind == TypeKind::Task) {
+        out << indentation(depth) << "fdn_task_drop(&" << value << ");\n";
+        return;
+    }
     if (type.kind == TypeKind::Function) {
         out << indentation(depth) << "if (" << value << ".fdn_drop != NULL) {\n";
         out << indentation(depth + 1) << value << ".fdn_drop(" << value
@@ -780,7 +820,7 @@ void emitDropValue(std::ostringstream &out, const FirProgram &program, const Typ
 void emitMoveAssignment(std::ostringstream &out, const FirProgram &program, const Type &type,
                         const std::string &target, const std::string &source,
                         unsigned int depth) {
-    if (type.kind == TypeKind::Own) {
+    if (type.kind == TypeKind::Own || type.kind == TypeKind::Task) {
         out << indentation(depth) << target << " = " << source << ";\n";
         out << indentation(depth) << source << " = NULL;\n";
         return;
@@ -885,6 +925,12 @@ class FunctionEmitter {
         if (const auto *call = std::get_if<FirCallExpression>(&expression.value)) {
             return emitCall(*call, expression.type, expression.span, depth);
         }
+        if (const auto *spawn = std::get_if<FirSpawnExpression>(&expression.value)) {
+            return emitSpawn(*spawn, depth);
+        }
+        if (const auto *wait = std::get_if<FirTaskWaitExpression>(&expression.value)) {
+            return emitTaskWait(*wait, expression.type, depth);
+        }
         if (const auto *contract = std::get_if<FirContractExpression>(&expression.value)) {
             return emitContract(*contract, expression.type, depth);
         }
@@ -919,6 +965,59 @@ class FunctionEmitter {
         const auto &type = function_.locals[local].type;
         const auto source = localValue(local);
         return emitMoveValue(type, source, depth);
+    }
+
+    EmittedExpression emitSpawn(const FirSpawnExpression &spawn, unsigned int depth) {
+        const auto *call = std::get_if<FirCallExpression>(
+            &function_.expressions[spawn.call].value);
+        if (call == nullptr || call->kind != FirCallKind::Function ||
+            call->function >= program_.functions.size() ||
+            !program_.functions[call->function].task) {
+            internalError("spawn did not lower to a task call");
+        }
+        std::vector<std::string> arguments;
+        arguments.reserve(call->arguments.size());
+        for (const auto argument : call->arguments) {
+            auto value = emitExpression(argument, depth);
+            if (value.diverges) {
+                return value;
+            }
+            arguments.push_back(std::move(value.value));
+        }
+        const auto frame = nextTemporary();
+        const auto task = nextTemporary();
+        out_ << indentation(depth) << "struct " << taskFrameName(program_, call->function)
+             << " *" << frame << " = fdn_alloc(sizeof(*" << frame << "));\n";
+        for (std::size_t index = 0; index < arguments.size(); ++index) {
+            out_ << indentation(depth) << frame << "->fdn_arg_" << index << " = "
+                 << arguments[index] << ";\n";
+        }
+        out_ << indentation(depth) << frame << "->fdn_arguments_active = true;\n";
+        if (program_.functions[call->function].returnType != voidType) {
+            out_ << indentation(depth) << frame << "->fdn_result_active = false;\n";
+        }
+        out_ << indentation(depth) << "fdn_task *" << task << " = fdn_task_spawn(" << frame
+             << ", &" << taskPollName(program_, call->function) << ", &"
+             << taskMoveResultName(program_, call->function) << ", &"
+             << taskDropFrameName(program_, call->function) << ");\n";
+        return {task, false};
+    }
+
+    EmittedExpression emitTaskWait(const FirTaskWaitExpression &wait, const Type &type,
+                                   unsigned int depth) {
+        auto task = emitExpression(wait.task, depth);
+        if (task.diverges) {
+            return task;
+        }
+        if (type == voidType) {
+            out_ << indentation(depth) << "fdn_task_wait(&" << task.value << ", NULL);\n";
+            return {{}, false};
+        }
+        const auto result = nextTemporary();
+        out_ << indentation(depth) << cType(type) << ' ' << result << ";\n";
+        out_ << indentation(depth) << "fdn_task_wait(&" << task.value << ", &" << result
+             << ");\n";
+        return {result, false};
     }
 
     EmittedExpression emitFunctionValue(const FirFunctionValueExpression &function,
@@ -2323,6 +2422,89 @@ void emitSignature(std::ostringstream &out, const FirProgram &program, FirFuncti
     out << ')';
 }
 
+void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunctionId id) {
+    const auto &function = program.functions[id];
+    if (!function.task) {
+        return;
+    }
+    const auto frame = taskFrameName(program, id);
+    out << "struct " << frame << " {\n";
+    for (std::size_t index = 0; index < function.parameters.size(); ++index) {
+        const auto local = function.parameters[index];
+        out << "    " << cType(function.locals[local].type) << " fdn_arg_" << index << ";\n";
+    }
+    if (function.returnType != voidType) {
+        out << "    " << cType(function.returnType) << " fdn_result;\n";
+        out << "    bool fdn_result_active;\n";
+    }
+    out << "    bool fdn_arguments_active;\n";
+    out << "};\n\n";
+
+    out << "static fdn_task_poll " << taskPollName(program, id)
+        << "(void *fdn_raw, bool fdn_cancellation_requested) {\n";
+    out << "    struct " << frame << " *fdn_frame = (struct " << frame
+        << " *)fdn_raw;\n";
+    out << "    (void)fdn_cancellation_requested;\n";
+    out << "    fdn_frame->fdn_arguments_active = false;\n";
+    out << "    ";
+    if (!function.diverges && function.returnType != voidType) {
+        out << "fdn_frame->fdn_result = ";
+    }
+    out << functionName(program, id) << '(';
+    for (std::size_t index = 0; index < function.parameters.size(); ++index) {
+        if (index != 0) {
+            out << ", ";
+        }
+        out << "fdn_frame->fdn_arg_" << index;
+    }
+    out << ");\n";
+    if (function.diverges) {
+        out << "    fdn_panic_cstr(\"unreachable task poll\");\n";
+    } else if (function.returnType != voidType) {
+        out << "    fdn_frame->fdn_result_active = true;\n";
+    }
+    if (!function.diverges) {
+        out << "    return FDN_TASK_READY;\n";
+    }
+    out << "}\n\n";
+
+    out << "static void " << taskMoveResultName(program, id)
+        << "(void *fdn_raw, void *fdn_raw_result) {\n";
+    out << "    struct " << frame << " *fdn_frame = (struct " << frame
+        << " *)fdn_raw;\n";
+    if (function.returnType == voidType) {
+        out << "    (void)fdn_frame;\n";
+        out << "    (void)fdn_raw_result;\n";
+    } else {
+        out << "    if (!fdn_frame->fdn_result_active || fdn_raw_result == NULL) {\n";
+        out << "        fdn_panic_cstr(\"task result is unavailable\");\n";
+        out << "    }\n";
+        const auto target = "*(" + cType(function.returnType) + " *)fdn_raw_result";
+        emitMoveAssignment(out, program, function.returnType, target,
+                           "fdn_frame->fdn_result", 1);
+        out << "    fdn_frame->fdn_result_active = false;\n";
+    }
+    out << "}\n\n";
+
+    out << "static void " << taskDropFrameName(program, id) << "(void *fdn_raw) {\n";
+    out << "    struct " << frame << " *fdn_frame = (struct " << frame
+        << " *)fdn_raw;\n";
+    out << "    if (fdn_frame->fdn_arguments_active) {\n";
+    for (std::size_t index = function.parameters.size(); index-- > 0;) {
+        const auto local = function.parameters[index];
+        emitDropValue(out, program, function.locals[local].type,
+                      "fdn_frame->fdn_arg_" + std::to_string(index), 2);
+    }
+    out << "    }\n";
+    if (function.returnType != voidType) {
+        out << "    if (fdn_frame->fdn_result_active) {\n";
+        emitDropValue(out, program, function.returnType, "fdn_frame->fdn_result", 2);
+        out << "    }\n";
+    }
+    out << "    fdn_dealloc(fdn_frame);\n";
+    out << "}\n\n";
+}
+
 void emitMainWrapper(std::ostringstream &out, const FirProgram &program) {
     const auto &function = program.functions[program.main];
     const auto acceptsArguments = function.parameters.size() == 1;
@@ -2670,6 +2852,10 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
         out << ";\n";
     }
     out << '\n';
+
+    for (std::size_t index = 0; index < program.functions.size(); ++index) {
+        emitTaskSupport(out, program, index);
+    }
 
     for (const auto &use : contractUses) {
         emitContractAdapters(out, program, use);

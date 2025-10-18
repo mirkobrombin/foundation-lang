@@ -149,7 +149,8 @@ bool spaceBetween(const std::vector<Token> &tokens, std::size_t index,
     }
     if (previous == TokenKind::LeftParen || previous == TokenKind::LeftBracket ||
         previous == TokenKind::At || previous == TokenKind::Dot ||
-        previous == TokenKind::Bang || unaryMinus(tokens, index - 1)) {
+        previous == TokenKind::Bang || previous == TokenKind::Dollar ||
+        unaryMinus(tokens, index - 1)) {
         return false;
     }
     if (current == TokenKind::LeftParen) {

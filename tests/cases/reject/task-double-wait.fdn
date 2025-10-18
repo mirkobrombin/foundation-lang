@@ -1,0 +1,12 @@
+task double(value i32) i32 {
+    value * 2
+}
+
+fn main() i32 {
+    const pending = spawn double(21)
+    const first = $pending.wait()
+    const second = $pending.wait()
+    discard first
+    discard second
+    0
+}

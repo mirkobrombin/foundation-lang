@@ -24,6 +24,8 @@ enum class TokenKind {
     Extends,
     By,
     Fn,
+    Task,
+    Spawn,
     Let,
     Const,
     Var,
@@ -66,6 +68,7 @@ enum class TokenKind {
     AndAnd,
     OrOr,
     At,
+    Dollar,
 };
 
 struct Token {

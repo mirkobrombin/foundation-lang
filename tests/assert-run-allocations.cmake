@@ -4,6 +4,11 @@ if(NOT DEFINED COMPILER OR NOT DEFINED C_COMPILER OR NOT DEFINED C_COMPILER_ID O
     message(FATAL_ERROR "allocation run assertion is missing an input")
 endif()
 
+set(runtime_sources "${RUNTIME_SOURCE}")
+if(DEFINED RUNTIME_TASK_SOURCE)
+    list(APPEND runtime_sources "${RUNTIME_TASK_SOURCE}")
+endif()
+
 execute_process(
     COMMAND "${COMPILER}" emit-c "${SOURCE}" -o "${GENERATED}"
     RESULT_VARIABLE emit_result
@@ -19,7 +24,7 @@ if(C_COMPILER_ID STREQUAL "MSVC")
     set(executable "${OUTPUT}.exe")
     execute_process(
         COMMAND "${C_COMPILER}" /nologo /std:c11 /W4 /WX
-                /DFOUNDATION_VERIFY_ALLOCATIONS "${GENERATED}" "${RUNTIME_SOURCE}"
+                /DFOUNDATION_VERIFY_ALLOCATIONS "${GENERATED}" ${runtime_sources}
                 "/I${RUNTIME_INCLUDE}" "/Fe:${executable}"
         RESULT_VARIABLE build_result
         OUTPUT_VARIABLE build_output
@@ -28,7 +33,7 @@ if(C_COMPILER_ID STREQUAL "MSVC")
 else()
     execute_process(
         COMMAND "${C_COMPILER}" -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror
-                -DFOUNDATION_VERIFY_ALLOCATIONS "${GENERATED}" "${RUNTIME_SOURCE}"
+                -DFOUNDATION_VERIFY_ALLOCATIONS "${GENERATED}" ${runtime_sources}
                 -I "${RUNTIME_INCLUDE}" -o "${executable}"
         RESULT_VARIABLE build_result
         OUTPUT_VARIABLE build_output
