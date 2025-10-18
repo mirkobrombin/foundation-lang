@@ -1,0 +1,5 @@
+package example.greeting
+
+fn Message() String {
+    "hello from cache"
+}

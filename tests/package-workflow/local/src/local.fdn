@@ -1,0 +1,5 @@
+package example.local
+
+fn Value() String {
+    "42"
+}

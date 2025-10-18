@@ -1,0 +1,10 @@
+package example.app
+
+import example.greeting
+import example.local
+
+fn main() i32 {
+    print(greeting.Message())
+    print(local.Value())
+    0
+}

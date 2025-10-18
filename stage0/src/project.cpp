@@ -1,6 +1,7 @@
 #include "foundation/project.hpp"
 
 #include "foundation/lexer.hpp"
+#include "foundation/package.hpp"
 #include "foundation/parser.hpp"
 
 #include <algorithm>
@@ -818,7 +819,70 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
     }
 
     std::vector<std::filesystem::path> paths;
-    if (directoryInput) {
+    std::unordered_map<std::string, std::string> packageDisplayPaths;
+    const auto packageManifest = discoverPackageManifest(input);
+    const auto packageInput = packageManifest.has_value();
+    std::filesystem::path projectRoot = input;
+    if (packageInput) {
+        const auto sdk = *parsePackageVersion("0.1.0");
+        const auto package = loadLockedPackageProject(
+            *packageManifest, sdk, hostTargetPlatform(), defaultPackageCachePath());
+        if (!package.value.has_value()) {
+            for (const auto &packageError : package.errors) {
+                diagnostics.error(packageError.code,
+                                  packageError.path.generic_string() + ": " +
+                                      packageError.message,
+                                  {0, 0, packageError.line, packageError.column});
+            }
+            return std::nullopt;
+        }
+        projectRoot = package.value->projectRoot;
+        std::unordered_set<std::string> seen;
+        for (std::size_t sourceIndex = 0; sourceIndex < package.value->sources.size();
+             ++sourceIndex) {
+            const auto &source = package.value->sources[sourceIndex];
+            std::vector<std::filesystem::path> sourcePaths;
+            std::filesystem::recursive_directory_iterator iterator(source.sourceRoot, error);
+            const std::filesystem::recursive_directory_iterator end;
+            while (!error && iterator != end) {
+                if (iterator->is_regular_file(error) && !error &&
+                    iterator->path().extension() == ".fdn") {
+                    sourcePaths.push_back(iterator->path());
+                }
+                iterator.increment(error);
+            }
+            if (error) {
+                diagnostics.error("FDN3001", "cannot discover locked package sources",
+                                  {0, 0, 1, 1});
+                return std::nullopt;
+            }
+            std::sort(sourcePaths.begin(), sourcePaths.end(), [&](const auto &left,
+                                                                  const auto &right) {
+                return left.lexically_relative(source.packageRoot).generic_string() <
+                       right.lexically_relative(source.packageRoot).generic_string();
+            });
+            for (const auto &path : sourcePaths) {
+                const auto identity = sourceIdentity(path).generic_string();
+                if (!seen.insert(identity).second) {
+                    continue;
+                }
+                paths.push_back(path);
+                const auto relative =
+                    path.lexically_relative(source.packageRoot).generic_string();
+                packageDisplayPaths.emplace(
+                    identity, sourceIndex == 0
+                                  ? relative
+                                  : (std::filesystem::path{"packages"} / source.name /
+                                     relative)
+                                        .generic_string());
+            }
+        }
+        if (paths.empty()) {
+            diagnostics.error("FDN3002", "package project contains no .fdn source files",
+                              {0, 0, 1, 1});
+            return std::nullopt;
+        }
+    } else if (directoryInput) {
         std::filesystem::recursive_directory_iterator iterator(input, error);
         const std::filesystem::recursive_directory_iterator end;
         while (!error && iterator != end) {
@@ -903,12 +967,16 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
                                        standardIdentity);
         const auto standardSource =
             !standardRelative.empty() && *standardRelative.begin() != "..";
-        const auto displayPath = standardSource
-                                     ? (std::filesystem::path{"std"} / standardRelative)
-                                           .generic_string()
-                                 : directoryInput
-                                     ? paths[index].lexically_relative(input).generic_string()
-                                     : paths[index].generic_string();
+        const auto packageDisplay =
+            packageDisplayPaths.find(sourceIdentity(paths[index]).generic_string());
+        const auto displayPath =
+            packageDisplay != packageDisplayPaths.end()
+                ? packageDisplay->second
+                : standardSource
+                      ? (std::filesystem::path{"std"} / standardRelative).generic_string()
+                  : directoryInput
+                      ? paths[index].lexically_relative(projectRoot).generic_string()
+                      : paths[index].generic_string();
         loaded.sources.push_back({displayPath, contents.value_or(std::string{}),
                                   sourceIdentity(paths[index]).generic_string()});
         if (!contents.has_value()) {
@@ -918,12 +986,12 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
         Lexer lexer(*contents, diagnostics, index);
         Parser parser(lexer.scan(), diagnostics, index == 0);
         auto program = parser.parse();
-        if (directoryInput && !program.hasPackageDeclaration) {
+        if ((directoryInput || packageInput) && !program.hasPackageDeclaration) {
             diagnostics.error("FDN3003", "project source must declare a package",
                               {0, 0, 1, 1, index});
         }
         if (!program.hasPackageDeclaration) {
-            program.packageName = directoryInput ? "main" : "";
+            program.packageName = directoryInput || packageInput ? "main" : "";
         }
         loaded.sources.back().packageName = program.packageName;
         files.push_back({std::move(program), displayPath});

@@ -27,10 +27,21 @@ add_library(foundation_compiler STATIC
     stage0/src/lsp.cpp
     stage0/src/lower.cpp
     stage0/src/metadata.cpp
+    stage0/src/package.cpp
+    stage0/src/package_cache.cpp
+    stage0/src/package_catalog.cpp
+    stage0/src/package_cli.cpp
+    stage0/src/package_environment.cpp
+    stage0/src/package_lock.cpp
+    stage0/src/package_project.cpp
+    stage0/src/package_registry.cpp
+    stage0/src/package_resolver.cpp
+    stage0/src/package_source.cpp
     stage0/src/parser.cpp
     stage0/src/process.cpp
     stage0/src/project.cpp
     stage0/src/sema.cpp
+    stage0/src/sha256.cpp
     stage0/src/target.cpp
     stage0/src/type.cpp
 )
@@ -219,6 +230,38 @@ if(BUILD_TESTING)
             -DINVALID=${CMAKE_CURRENT_SOURCE_DIR}/tests/formatter/invalid.fdn
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/formatter-project
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-format.cmake
+    )
+    add_executable(foundation_package_tests
+        stage0/tests/package_test.cpp
+        stage0/tests/package_cache_test.cpp
+        stage0/tests/package_catalog_test.cpp
+        stage0/tests/package_lock_test.cpp
+        stage0/tests/package_project_test.cpp
+        stage0/tests/package_registry_test.cpp
+        stage0/tests/package_resolver_test.cpp
+        stage0/tests/package_source_test.cpp
+        stage0/tests/sha256_test.cpp
+    )
+    target_link_libraries(foundation_package_tests PRIVATE foundation_compiler)
+    if(MSVC)
+        target_compile_options(foundation_package_tests PRIVATE /W4 /permissive- /EHsc)
+        if(FOUNDATION_WARNINGS_AS_ERRORS)
+            target_compile_options(foundation_package_tests PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(foundation_package_tests PRIVATE -Wall -Wextra -Wpedantic)
+        if(FOUNDATION_WARNINGS_AS_ERRORS)
+            target_compile_options(foundation_package_tests PRIVATE -Werror)
+        endif()
+    endif()
+    add_test(NAME packages.unit COMMAND foundation_package_tests)
+    add_test(
+        NAME packages.workflow
+        COMMAND ${CMAKE_COMMAND}
+            -DPROGRAM=$<TARGET_FILE:foundationc>
+            -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/tests/package-workflow
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/package-workflow-test
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-package-workflow.cmake
     )
     add_test(NAME runtime.string COMMAND foundation_runtime_string_test)
     add_test(NAME runtime.u64 COMMAND foundation_runtime_u64_test)

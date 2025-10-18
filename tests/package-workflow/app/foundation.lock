@@ -1,0 +1,7 @@
+format foundation.lock/v1
+root example.app 1.0.0
+target linux
+package example.greeting 1.0.0 sha256:6365ac346ca54ab3f35b0fc0845fd60ca6547021202b5950d4ba35ee3df21c64 registry default
+package example.local 1.0.0 sha256:fbb42515663e7dd75cea4ee3ccb82e69a0359a288fb6e3a23f336eb0830a6889 path ../local
+edge example.app example.greeting
+edge example.app example.local

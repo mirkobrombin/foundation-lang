@@ -1,4 +1,5 @@
 #include "foundation/driver.hpp"
+#include "foundation/package_cli.hpp"
 
 #include <filesystem>
 #include <iostream>
@@ -19,6 +20,7 @@ void printUsage(std::ostream &output) {
            << "  foundationc emit-metadata <source-or-project> -o <output.json>\n"
            << "  foundationc build <source-or-project> -o <executable> [--native <input>]...\n"
            << "  foundationc run <source-or-project> [--native <input>]... [-- <argument>...]\n"
+           << "  foundationc package <init|resolve|fetch|verify|inspect|prune> ...\n"
            << "  foundationc version\n";
 }
 
@@ -77,6 +79,9 @@ int main(int argc, char **argv) {
 
     if (argc >= 2) {
         const std::string_view command = argv[1];
+        if (command == "package") {
+            return foundation::runPackageCommand(argc, argv);
+        }
         if (command == "check" && argc == 3) {
             return foundation::checkFile(std::filesystem::path(argv[2]));
         }
