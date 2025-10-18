@@ -1094,6 +1094,189 @@ std::optional<SourceSpan> tokenAt(std::string_view source, std::size_t offset,
     return std::nullopt;
 }
 
+struct CompletionAccess {
+    std::size_t dot{};
+    std::size_t receiverEnd{};
+    std::size_t suffixEnd{};
+};
+
+std::optional<CompletionAccess> completionAccess(std::string_view source,
+                                                 std::size_t offset) {
+    if (offset > source.size()) {
+        return std::nullopt;
+    }
+    auto prefix = offset;
+    while (prefix != 0 &&
+           identifierByte(static_cast<unsigned char>(source[prefix - 1]))) {
+        --prefix;
+    }
+    if (prefix == 0 || source[prefix - 1] != '.') {
+        return std::nullopt;
+    }
+    auto receiverEnd = prefix - 1;
+    while (receiverEnd != 0 &&
+           (source[receiverEnd - 1] == ' ' || source[receiverEnd - 1] == '\t')) {
+        --receiverEnd;
+    }
+    if (receiverEnd == 0) {
+        return std::nullopt;
+    }
+    auto suffixEnd = offset;
+    while (suffixEnd < source.size() &&
+           identifierByte(static_cast<unsigned char>(source[suffixEnd]))) {
+        ++suffixEnd;
+    }
+    return CompletionAccess{prefix - 1, receiverEnd, suffixEnd};
+}
+
+const DelimiterRange *completionBlockRange(const Program &program, AstBlockId id,
+                                           const std::vector<DelimiterRange> &delimiters) {
+    if (id >= program.blocks.size()) {
+        return nullptr;
+    }
+    const auto opening = program.blocks[id].span.offset;
+    const auto source = program.blocks[id].span.source;
+    const auto found = std::find_if(delimiters.begin(), delimiters.end(),
+                                    [opening, source](const auto &delimiter) {
+                                        return delimiter.opening == TokenKind::LeftBrace &&
+                                               delimiter.span.offset == opening &&
+                                               delimiter.span.source == source;
+                                    });
+    return found == delimiters.end() ? nullptr : &*found;
+}
+
+std::optional<std::size_t> completionFunction(
+    const Program &program, std::size_t sourceId, std::size_t offset,
+    const std::vector<DelimiterRange> &delimiters) {
+    std::optional<std::size_t> result;
+    for (std::size_t function = 0; function < program.functions.size(); ++function) {
+        const auto &candidate = program.functions[function];
+        const auto *range = candidate.hasBody
+                                ? completionBlockRange(program, candidate.body, delimiters)
+                                : nullptr;
+        if (range == nullptr || range->span.source != sourceId ||
+            offset < range->span.offset ||
+            offset >= range->span.offset + range->span.length) {
+            continue;
+        }
+        const auto *selected = result.has_value()
+                                   ? completionBlockRange(program,
+                                                          program.functions[*result].body,
+                                                          delimiters)
+                                   : nullptr;
+        if (selected == nullptr || range->span.length < selected->span.length) {
+            result = function;
+        }
+    }
+    return result;
+}
+
+bool completionBlockPath(const Program &program, AstBlockId id,
+                         std::size_t sourceId, std::size_t offset,
+                         const std::vector<DelimiterRange> &delimiters,
+                         std::vector<AstBlockId> &path) {
+    const auto *range = completionBlockRange(program, id, delimiters);
+    if (range == nullptr || range->span.source != sourceId ||
+        offset < range->span.offset || offset >= range->span.offset + range->span.length) {
+        return false;
+    }
+    path.push_back(id);
+    for (const auto statementId : program.blocks[id].statements) {
+        if (statementId >= program.statements.size()) {
+            continue;
+        }
+        const auto &value = program.statements[statementId].value;
+        if (const auto *variable = std::get_if<VariableStatement>(&value);
+            variable != nullptr && variable->elseBlock.has_value() &&
+            completionBlockPath(program, *variable->elseBlock, sourceId, offset,
+                                delimiters, path)) {
+            return true;
+        }
+        if (const auto *branch = std::get_if<IfStatement>(&value); branch != nullptr) {
+            if (completionBlockPath(program, branch->thenBlock, sourceId, offset,
+                                    delimiters, path) ||
+                (branch->elseBlock.has_value() &&
+                 completionBlockPath(program, *branch->elseBlock, sourceId, offset,
+                                     delimiters, path))) {
+                return true;
+            }
+        }
+        if (const auto *loop = std::get_if<WhileStatement>(&value);
+            loop != nullptr &&
+            completionBlockPath(program, loop->body, sourceId, offset, delimiters, path)) {
+            return true;
+        }
+    }
+    return true;
+}
+
+std::size_t completionExpressionEnd(
+    const Program &program, AstExpressionId id,
+    const std::vector<DelimiterRange> &delimiters) {
+    if (id >= program.expressions.size()) {
+        return 0;
+    }
+    const auto &expression = program.expressions[id];
+    auto end = expression.span.offset + expression.span.length;
+    const auto include = [&](AstExpressionId child) {
+        end = std::max(end, completionExpressionEnd(program, child, delimiters));
+    };
+    std::visit(
+        [&](const auto &value) {
+            using Value = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<Value, ArrayExpression>) {
+                for (const auto child : value.elements) {
+                    include(child);
+                }
+            } else if constexpr (std::is_same_v<Value, UnaryExpression> ||
+                                 std::is_same_v<Value, OwnershipExpression>) {
+                include(value.operand);
+            } else if constexpr (std::is_same_v<Value, BinaryExpression>) {
+                include(value.left);
+                include(value.right);
+            } else if constexpr (std::is_same_v<Value, CallExpression>) {
+                for (const auto child : value.arguments) {
+                    include(child);
+                }
+            } else if constexpr (std::is_same_v<Value, StructExpression>) {
+                for (const auto &field : value.fields) {
+                    include(field.value);
+                }
+            } else if constexpr (std::is_same_v<Value, MemberExpression>) {
+                if (value.base.has_value()) {
+                    include(*value.base);
+                }
+                for (const auto child : value.arguments) {
+                    include(child);
+                }
+            } else if constexpr (std::is_same_v<Value, IndexExpression>) {
+                include(value.base);
+                include(value.index);
+            } else if constexpr (std::is_same_v<Value, ReplaceExpression>) {
+                include(value.target);
+                include(value.value);
+            } else if constexpr (std::is_same_v<Value, MatchExpression>) {
+                include(value.value);
+                for (const auto &arm : value.arms) {
+                    include(arm.expression);
+                }
+            } else if constexpr (std::is_same_v<Value, FunctionExpression>) {
+                if (value.function < program.functions.size()) {
+                    const auto &function = program.functions[value.function];
+                    if (function.hasBody) {
+                        if (const auto *range = completionBlockRange(
+                                program, function.body, delimiters)) {
+                            end = std::max(end,
+                                           range->span.offset + range->span.length);
+                        }
+                    }
+                }
+            }
+        },
+        expression.value);
+    return end;
+}
+
 struct OpenDocument {
     std::string uri;
     std::filesystem::path path;
@@ -1444,6 +1627,32 @@ class LanguageServer {
             result.push_back({document.path, document.contents});
         }
         return result;
+    }
+
+    [[nodiscard]] ProjectAnalysis analyzeCompletion(const OpenDocument &document,
+                                                    const CompletionAccess &access) const {
+        auto source = document.contents;
+        const auto end = std::min(access.suffixEnd, source.size());
+        for (auto offset = access.dot; offset < end; ++offset) {
+            if (source[offset] != '\r' && source[offset] != '\n') {
+                source[offset] = ' ';
+            }
+        }
+        auto inputs = overlays();
+        auto replaced = false;
+        for (auto &input : inputs) {
+            if (normalizedPath(input.path) == document.path) {
+                input.contents = source;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            inputs.push_back({document.path, std::move(source)});
+        }
+        return analyzeProject(analysisRoot(document), inputs,
+                              AnalyzeOptions{.requireMain = false,
+                                             .retainInvalidModel = true});
     }
 
     [[nodiscard]] std::string sourceUri(const std::filesystem::path &path) const {
@@ -2392,8 +2601,289 @@ class LanguageServer {
         items.emplace(std::move(label), Json(std::move(item)));
     }
 
+    static Json completionResult(std::map<std::string, Json> items) {
+        Json::Array result;
+        result.reserve(items.size());
+        for (auto &[label, item] : items) {
+            static_cast<void>(label);
+            result.push_back(std::move(item));
+        }
+        return Json(std::move(result));
+    }
+
     static std::string packageAlias(std::string_view packageName) {
         return shortName(packageName);
+    }
+
+    static std::optional<std::pair<std::size_t, std::size_t>> identifierBefore(
+        std::string_view source, std::size_t end) {
+        if (end == 0 || end > source.size() ||
+            !identifierByte(static_cast<unsigned char>(source[end - 1]))) {
+            return std::nullopt;
+        }
+        auto start = end - 1;
+        while (start != 0 &&
+               identifierByte(static_cast<unsigned char>(source[start - 1]))) {
+            --start;
+        }
+        return std::pair{start, end};
+    }
+
+    static void setCompletion(std::map<std::string, Json> &items, std::string label,
+                              int kind, std::string detail = {}) {
+        Json::Object item{{"label", label}, {"kind", kind}};
+        if (!detail.empty()) {
+            item.emplace("detail", std::move(detail));
+        }
+        items.insert_or_assign(std::move(label), Json(std::move(item)));
+    }
+
+    static bool accessible(std::string_view ownerPackage, bool exported,
+                           std::string_view currentPackage) {
+        return ownerPackage == currentPackage || exported;
+    }
+
+    static std::string semanticMethodDetail(const ProjectAnalysis &analysis,
+                                            const SemanticContractMethod &method) {
+        if (method.originContract >= analysis.program.contracts.size()) {
+            return "Foundation contract method";
+        }
+        for (const auto &candidate : analysis.program.contracts[method.originContract].methods) {
+            if (candidate.name == method.name && candidate.span.source == method.span.source &&
+                candidate.span.offset == method.span.offset) {
+                return contractMethodDetail(candidate);
+            }
+        }
+        return "Foundation contract method";
+    }
+
+    static Type completionValueType(Type type) {
+        while ((type.kind == TypeKind::Own || type.kind == TypeKind::View ||
+                type.kind == TypeKind::Edit) &&
+               type.arguments.size() == 1) {
+            type = type.arguments.front();
+        }
+        return type;
+    }
+
+    static std::optional<Type> completionReceiverType(const ProjectAnalysis &analysis,
+                                                      std::size_t sourceId,
+                                                      std::size_t receiverEnd) {
+        if (!analysis.semantic.has_value()) {
+            return std::nullopt;
+        }
+        std::optional<AstExpressionId> selected;
+        for (AstExpressionId id = 0; id < analysis.program.expressions.size() &&
+                                      id < analysis.semantic->expressionTypes.size();
+             ++id) {
+            const auto span = analysis.program.expressions[id].span;
+            if (span.source != sourceId || span.offset + span.length != receiverEnd ||
+                analysis.semantic->expressionTypes[id].kind == TypeKind::Invalid) {
+                continue;
+            }
+            if (!selected.has_value() ||
+                span.length > analysis.program.expressions[*selected].span.length) {
+                selected = id;
+            }
+        }
+        return selected.has_value()
+                   ? std::optional<Type>{completionValueType(
+                         analysis.semantic->expressionTypes[*selected])}
+                   : std::nullopt;
+    }
+
+    static void addContractCompletions(std::map<std::string, Json> &items,
+                                       const ProjectAnalysis &analysis,
+                                       std::size_t contract,
+                                       std::string_view currentPackage,
+                                       bool defaultsOnly) {
+        if (!analysis.semantic.has_value() ||
+            contract >= analysis.semantic->contracts.size()) {
+            return;
+        }
+        for (const auto &method : analysis.semantic->contracts[contract].methods) {
+            if (defaultsOnly && !method.defaultFunction.has_value()) {
+                continue;
+            }
+            const auto owner = method.originContract < analysis.program.contracts.size()
+                                   ? analysis.program.contracts[method.originContract].packageName
+                                   : std::string{};
+            if (!accessible(owner, method.exported, currentPackage)) {
+                continue;
+            }
+            addCompletion(items, method.name, 2, semanticMethodDetail(analysis, method),
+                          method.name + "($0)");
+        }
+    }
+
+    static void addValueMemberCompletions(std::map<std::string, Json> &items,
+                                          const ProjectAnalysis &analysis,
+                                          Type type, std::string_view currentPackage) {
+        type = completionValueType(std::move(type));
+        if (type.kind == TypeKind::Struct && type.declaration < analysis.program.structs.size()) {
+            const auto &declaration = analysis.program.structs[type.declaration];
+            for (const auto &field : declaration.fields) {
+                if (accessible(declaration.packageName, field.exported, currentPackage)) {
+                    addCompletion(items, field.name, 5,
+                                  field.name + ' ' + displayTypeSyntax(field.type));
+                }
+            }
+            for (const auto &function : analysis.program.functions) {
+                if (!function.receiver.has_value() || shortName(function.name) == "drop" ||
+                    function.packageName != declaration.packageName ||
+                    shortName(function.ownerType) != shortName(declaration.name) ||
+                    !accessible(function.packageName, function.exported, currentPackage)) {
+                    continue;
+                }
+                const auto name = shortName(function.name);
+                addCompletion(items, name, 2, functionDetail(function), name + "($0)");
+            }
+            if (analysis.semantic.has_value() &&
+                type.declaration < analysis.semantic->structs.size()) {
+                for (const auto &implementation :
+                     analysis.semantic->structs[type.declaration].implementations) {
+                    if (implementation.kind == TypeKind::Contract) {
+                        addContractCompletions(items, analysis, implementation.declaration,
+                                               currentPackage, true);
+                    }
+                }
+            }
+            return;
+        }
+        if (type.kind == TypeKind::Contract) {
+            addContractCompletions(items, analysis, type.declaration, currentPackage, false);
+            return;
+        }
+        if (type.kind == TypeKind::Enum && type.declaration < analysis.program.enums.size()) {
+            const auto &declaration = analysis.program.enums[type.declaration];
+            for (const auto &variant : declaration.variants) {
+                if (accessible(declaration.packageName, variant.exported, currentPackage)) {
+                    addCompletion(items, variant.name, 20, "Foundation enum variant");
+                }
+            }
+        }
+    }
+
+    static bool addPackageMemberCompletions(std::map<std::string, Json> &items,
+                                            const ProjectAnalysis &analysis,
+                                            std::size_t sourceId,
+                                            std::string_view alias,
+                                            bool attributeContext) {
+        std::optional<std::string> packageName;
+        for (const auto &imported : analysis.program.imports) {
+            const auto currentAlias = imported.alias.empty()
+                                          ? packageAlias(imported.packageName)
+                                          : imported.alias;
+            if (imported.span.source == sourceId && currentAlias == alias) {
+                packageName = imported.packageName;
+                break;
+            }
+        }
+        if (!packageName.has_value()) {
+            return false;
+        }
+        if (attributeContext) {
+            for (const auto &declaration : analysis.program.attributeDeclarations) {
+                if (declaration.packageName == *packageName && declaration.exported) {
+                    const auto name = shortName(declaration.name);
+                    addCompletion(items, name, 10, "typed Foundation attribute",
+                                  name + "($0)");
+                }
+            }
+            return true;
+        }
+        for (const auto &function : analysis.program.functions) {
+            if (function.packageName != *packageName || !function.exported ||
+                function.receiver.has_value() || function.closure) {
+                continue;
+            }
+            const auto name = shortName(function.name);
+            addCompletion(items, name, 3, functionDetail(function), name + "($0)");
+        }
+        for (const auto &declaration : analysis.program.structs) {
+            if (declaration.packageName == *packageName && declaration.exported) {
+                addCompletion(items, shortName(declaration.name), 22, "Foundation struct");
+            }
+        }
+        for (const auto &declaration : analysis.program.enums) {
+            if (declaration.packageName == *packageName && declaration.exported &&
+                declaration.builtin == BuiltinEnumKind::None) {
+                addCompletion(items, shortName(declaration.name), 13, "Foundation enum");
+            }
+        }
+        for (const auto &declaration : analysis.program.contracts) {
+            if (declaration.packageName == *packageName && declaration.exported) {
+                addCompletion(items, shortName(declaration.name), 8, "Foundation contract");
+            }
+        }
+        return true;
+    }
+
+    static void addVisibleLocalCompletions(std::map<std::string, Json> &items,
+                                           const ProjectAnalysis &analysis,
+                                           std::size_t sourceId, std::size_t offset,
+                                           std::string_view source) {
+        const auto delimiters = delimiterRanges(source, sourceId);
+        const auto functionId = completionFunction(analysis.program, sourceId, offset,
+                                                   delimiters);
+        if (!functionId.has_value()) {
+            return;
+        }
+        const auto &function = analysis.program.functions[*functionId];
+        for (const auto &parameter : function.parameters) {
+            const auto detail = parameter.name == "self"
+                                    ? function.ownerType
+                                    : parameter.name + ' ' + displayTypeSyntax(parameter.type);
+            setCompletion(items, parameter.name, 6, detail);
+        }
+        for (const auto &capture : function.captures) {
+            setCompletion(items, capture.name, 6, "Foundation closure capture");
+        }
+        std::vector<AstBlockId> path;
+        if (!completionBlockPath(analysis.program, function.body, sourceId, offset,
+                                 delimiters, path)) {
+            return;
+        }
+        for (const auto blockId : path) {
+            const auto &statements = analysis.program.blocks[blockId].statements;
+            for (const auto statementId : statements) {
+                if (statementId >= analysis.program.statements.size()) {
+                    continue;
+                }
+                const auto &statement = analysis.program.statements[statementId];
+                if (const auto *variable =
+                        std::get_if<VariableStatement>(&statement.value)) {
+                    const auto insideElse = variable->elseBlock.has_value() &&
+                                            std::find(path.begin(), path.end(),
+                                                      *variable->elseBlock) != path.end();
+                    auto ready = completionExpressionEnd(
+                        analysis.program, variable->initializer, delimiters);
+                    if (variable->elseBlock.has_value()) {
+                        if (const auto *range = completionBlockRange(
+                                analysis.program, *variable->elseBlock, delimiters)) {
+                            ready = std::max(ready,
+                                             range->span.offset + range->span.length);
+                        }
+                    }
+                    if (!insideElse && ready <= offset) {
+                        setCompletion(items, variable->name, 6, "Foundation local binding");
+                    }
+                    if (insideElse && variable->elseBinding.has_value()) {
+                        setCompletion(items, *variable->elseBinding, 6,
+                                      "Foundation error binding");
+                    }
+                } else if (const auto *destructure =
+                               std::get_if<StructDestructureStatement>(&statement.value)) {
+                    if (completionExpressionEnd(analysis.program, destructure->initializer,
+                                                delimiters) <= offset) {
+                        for (const auto &field : destructure->fields) {
+                            setCompletion(items, field.binding, 6,
+                                          "Foundation local binding");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     [[nodiscard]] Json provideCompletions(const Json *params) const {
@@ -2410,19 +2900,72 @@ class LanguageServer {
         }
         const auto &source = analysis->sources[*sourceId];
         auto attributeContext = false;
-        if (const auto position = requestPosition(params); position.has_value()) {
-            if (const auto offset = offsetAt(source.contents, *position); offset.has_value()) {
-                auto previous = *offset;
-                while (previous != 0 &&
-                       (source.contents[previous - 1] == ' ' ||
-                        source.contents[previous - 1] == '\t')) {
-                    --previous;
-                }
-                attributeContext = previous != 0 && source.contents[previous - 1] == '@';
+        const auto position = requestPosition(params);
+        const auto requested = position.has_value() ? offsetAt(source.contents, *position)
+                                                     : std::nullopt;
+        if (requested.has_value()) {
+            auto previous = *requested;
+            while (previous != 0 &&
+                   (source.contents[previous - 1] == ' ' ||
+                    source.contents[previous - 1] == '\t')) {
+                --previous;
             }
+            attributeContext = previous != 0 && source.contents[previous - 1] == '@';
         }
 
         std::map<std::string, Json> items;
+        if (requested.has_value()) {
+            if (const auto access = completionAccess(source.contents, *requested);
+                access.has_value()) {
+                const auto receiver = identifierBefore(source.contents, access->receiverEnd);
+                if (receiver.has_value()) {
+                    const auto alias = source.contents.substr(
+                        receiver->first, receiver->second - receiver->first);
+                    const auto attributeAccess = receiver->first != 0 &&
+                                                 source.contents[receiver->first - 1] == '@';
+                    if (addPackageMemberCompletions(items, *analysis, *sourceId, alias,
+                                                    attributeAccess)) {
+                        return completionResult(std::move(items));
+                    }
+                }
+
+                const auto document = documents_.find(*uri);
+                if (document == documents_.end()) {
+                    return Json(Json::Array{});
+                }
+                const auto completion = analyzeCompletion(document->second, *access);
+                const auto completionSource = sourceIdForUri(completion, *uri);
+                if (!completionSource.has_value()) {
+                    return Json(Json::Array{});
+                }
+                if (const auto type = completionReceiverType(
+                        completion, *completionSource, access->receiverEnd);
+                    type.has_value()) {
+                    addValueMemberCompletions(
+                        items, completion, *type,
+                        completion.sources[*completionSource].packageName);
+                    return completionResult(std::move(items));
+                }
+                if (receiver.has_value()) {
+                    const auto name = source.contents.substr(
+                        receiver->first, receiver->second - receiver->first);
+                    const auto currentPackage =
+                        completion.sources[*completionSource].packageName;
+                    for (std::size_t declaration = 0;
+                         declaration < completion.program.enums.size(); ++declaration) {
+                        const auto &candidate = completion.program.enums[declaration];
+                        if (shortName(candidate.name) == name &&
+                            (candidate.builtin != BuiltinEnumKind::None ||
+                             candidate.packageName == currentPackage)) {
+                            addValueMemberCompletions(
+                                items, completion,
+                                Type{TypeKind::Enum, declaration}, currentPackage);
+                        }
+                    }
+                }
+                return completionResult(std::move(items));
+            }
+        }
         if (!attributeContext) {
             constexpr std::string_view keywords[] = {
                 "package", "import", "as",      "extern", "struct", "enum",  "contract",
@@ -2501,9 +3044,6 @@ class LanguageServer {
                         addCompletion(items, *label, 13, "Foundation enum");
                     }
                 }
-                for (const auto &variant : declaration.variants) {
-                    addCompletion(items, variant.name, 20, "Foundation enum variant");
-                }
             }
             for (const auto &declaration : analysis->program.contracts) {
                 const auto label = qualified(declaration.packageName, shortName(declaration.name),
@@ -2512,38 +3052,12 @@ class LanguageServer {
                     addCompletion(items, *label, 8, "Foundation contract");
                 }
             }
-            for (const auto &statement : analysis->program.statements) {
-                if (statement.span.source != *sourceId) {
-                    continue;
-                }
-                if (const auto *variable = std::get_if<VariableStatement>(&statement.value)) {
-                    addCompletion(items, variable->name, 6, "Foundation local binding");
-                } else if (const auto *destructure =
-                               std::get_if<StructDestructureStatement>(&statement.value)) {
-                    for (const auto &field : destructure->fields) {
-                        addCompletion(items, field.binding, 6, "Foundation local binding");
-                    }
-                }
-            }
-            for (const auto &function : analysis->program.functions) {
-                if (function.span.source != *sourceId) {
-                    continue;
-                }
-                for (const auto &parameter : function.parameters) {
-                    if (parameter.name != "self") {
-                        addCompletion(items, parameter.name, 6,
-                                      parameter.name + ' ' + displayTypeSyntax(parameter.type));
-                    }
-                }
+            if (requested.has_value()) {
+                addVisibleLocalCompletions(items, *analysis, *sourceId, *requested,
+                                           source.contents);
             }
         }
-        Json::Array result;
-        result.reserve(items.size());
-        for (auto &[label, item] : items) {
-            static_cast<void>(label);
-            result.push_back(std::move(item));
-        }
-        return Json(std::move(result));
+        return completionResult(std::move(items));
     }
 
     [[nodiscard]] Json provideSignatureHelp(const Json *params) const {

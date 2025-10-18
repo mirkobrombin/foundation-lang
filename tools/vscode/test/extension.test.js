@@ -88,7 +88,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /textDocument\/rangeFormatting/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/\*\.fdn"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.25.0");
+    assert.equal(manifest.version, "0.26.0");
     assert.equal(
         manifest.contributes.configuration.properties["foundation.languageServer.path"].default,
         ""

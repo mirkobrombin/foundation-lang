@@ -185,7 +185,7 @@ class Analyzer {
         if (!diagnostics_.hasErrors()) {
             rejectVoidApplications();
         }
-        if (diagnostics_.hasErrors()) {
+        if (diagnostics_.hasErrors() && !options_.retainInvalidModel) {
             return std::nullopt;
         }
         return std::move(model_);

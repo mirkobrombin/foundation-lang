@@ -178,6 +178,7 @@ struct SemanticModel {
 
 struct AnalyzeOptions {
     bool requireMain{true};
+    bool retainInvalidModel{};
 };
 
 [[nodiscard]] std::optional<SemanticModel> analyze(const Program &program,

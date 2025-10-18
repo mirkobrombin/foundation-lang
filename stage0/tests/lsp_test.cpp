@@ -439,6 +439,145 @@ void importedPackagesExposeHoverAndAllDefinitions() {
     std::filesystem::remove_all(root, error);
 }
 
+void completionsRespectScopesAndMemberAccess() {
+    const auto root = temporaryRoot();
+    const auto widgets = root / "widgets";
+    std::filesystem::create_directories(widgets);
+    const auto library = widgets / "widgets.fdn";
+    const auto source = root / "main.fdn";
+    const auto libraryContents =
+        "package widgets\n"
+        "contract Reader {\n"
+        "    fn Read(view) i32\n"
+        "}\n"
+        "struct Public implements Reader {\n"
+        "    Visible i32\n"
+        "    hidden i32\n"
+        "    fn Read(view) i32 { self.Visible }\n"
+        "    fn internal(view) i32 { self.hidden }\n"
+        "}\n"
+        "struct internalType {}\n"
+        "fn Make(value i32) Public {\n"
+        "    Public {\n"
+        "        Visible = value\n"
+        "        hidden = 0\n"
+        "    }\n"
+        "}\n"
+        "fn hiddenFn() i32 { 0 }\n";
+    const auto contents =
+        "package sample\n"
+        "import widgets as w\n"
+        "fn inspect(person view w.Public) i32 {\n"
+        "    let outer = 1\n"
+        "    if true {\n"
+        "        let inner = 2\n"
+        "        return person.Visible + inner + outer\n"
+        "    }\n"
+        "    let later = 3\n"
+        "    return later\n"
+        "}\n"
+        "fn usePackage() w.Public {\n"
+        "    w.Make(4)\n"
+        "}\n"
+        "fn choose() Option<i32> {\n"
+        "    Option.Some(1)\n"
+        "}\n"
+        "fn finalBinding() void {\n"
+        "    let finalLocal = 1\n"
+        "    \n"
+        "}\n";
+    const auto incomplete =
+        "package sample\n"
+        "import widgets as w\n"
+        "fn inspect(person view w.Public) i32 {\n"
+        "    return person.\n"
+        "}\n";
+    {
+        std::ofstream file(library, std::ios::binary);
+        file << libraryContents;
+    }
+    {
+        std::ofstream file(source, std::ios::binary);
+        file << contents;
+    }
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto completion = [&sourceUri](int id, int line, int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/completion\",\"params\":{"
+               "\"textDocument\":{\"uri\":\"" +
+               sourceUri + "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto scoped = completion(75, 6, 44);
+    const auto packageMembers = completion(76, 12, 6);
+    const auto valueMembers = completion(77, 6, 22);
+    const auto enumMembers = completion(79, 15, 11);
+    const auto finalLocal = completion(80, 19, 4);
+    const auto change =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":2},\"contentChanges\":[{\"text\":\"" +
+        jsonEscape(incomplete) + "\"}]}}";
+    const auto incompleteMembers = completion(78, 3, 18);
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+
+    std::istringstream input(frame(initialize) + frame(open) + frame(scoped) +
+                             frame(packageMembers) + frame(valueMembers) + frame(enumMembers) +
+                             frame(finalLocal) + frame(change) + frame(incompleteMembers) +
+                             frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto scopedResponse = responseFor(transcript, 75);
+    const auto packageResponse = responseFor(transcript, 76);
+    const auto valueResponse = responseFor(transcript, 77);
+    const auto enumResponse = responseFor(transcript, 79);
+    const auto finalLocalResponse = responseFor(transcript, 80);
+    const auto incompleteResponse = responseFor(transcript, 78);
+
+    expect(status == 0, "completion transcript exits cleanly");
+    expect(errors.str().empty(), "completion requests write no server errors");
+    expect(scopedResponse.find("\"label\":\"person\"") != std::string::npos &&
+               scopedResponse.find("\"label\":\"outer\"") != std::string::npos &&
+               scopedResponse.find("\"label\":\"inner\"") != std::string::npos &&
+               scopedResponse.find("\"label\":\"later\"") == std::string::npos,
+           "local completions follow lexical scope and declaration order");
+    expect(packageResponse.find("\"label\":\"Make\"") != std::string::npos &&
+               packageResponse.find("\"label\":\"Public\"") != std::string::npos &&
+               packageResponse.find("\"label\":\"Reader\"") != std::string::npos &&
+               packageResponse.find("hiddenFn") == std::string::npos &&
+               packageResponse.find("internalType") == std::string::npos,
+           "package member completions expose only exported declarations");
+    expect(valueResponse.find("\"label\":\"Visible\"") != std::string::npos &&
+               valueResponse.find("\"label\":\"Read\"") != std::string::npos &&
+               valueResponse.find("hidden") == std::string::npos &&
+               valueResponse.find("internal") == std::string::npos &&
+               valueResponse.find("\"label\":\"Make\"") == std::string::npos,
+           "value member completions use the compiler receiver type and access rules");
+    expect(enumResponse.find("\"label\":\"None\"") != std::string::npos &&
+               enumResponse.find("\"label\":\"Some\"") != std::string::npos &&
+               enumResponse.find("\"label\":\"Ok\"") == std::string::npos,
+           "enum member completions stay on the selected enum type");
+    expect(finalLocalResponse.find("\"label\":\"finalLocal\"") != std::string::npos,
+           "the last local declaration in a block becomes visible after its initializer");
+    expect(incompleteResponse.find("\"label\":\"Visible\"") != std::string::npos &&
+               incompleteResponse.find("\"label\":\"Read\"") != std::string::npos,
+           "member completions survive an unfinished dot expression");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void foldingAndSelectionRangesFollowCompilerTokens() {
     const auto root = temporaryRoot();
     std::filesystem::create_directories(root);
@@ -1065,6 +1204,7 @@ int main() {
     invalidJsonRpcEnvelopeIsRejected();
     unopenedLibraryDoesNotRequireMain();
     importedPackagesExposeHoverAndAllDefinitions();
+    completionsRespectScopesAndMemberAccess();
     foldingAndSelectionRangesFollowCompilerTokens();
     semanticNavigationSeparatesHomonyms();
     formatsUnsavedDocumentsAndRanges();
