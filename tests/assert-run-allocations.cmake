@@ -8,6 +8,9 @@ set(runtime_sources "${RUNTIME_SOURCE}")
 if(DEFINED RUNTIME_TASK_SOURCE)
     list(APPEND runtime_sources "${RUNTIME_TASK_SOURCE}")
 endif()
+if(DEFINED RUNTIME_CANCELLATION_SOURCE)
+    list(APPEND runtime_sources "${RUNTIME_CANCELLATION_SOURCE}")
+endif()
 
 execute_process(
     COMMAND "${COMPILER}" emit-c "${SOURCE}" -o "${GENERATED}"

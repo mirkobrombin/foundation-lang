@@ -1,0 +1,45 @@
+package std.concurrent
+
+extern c fn openNative() u64 as foundation_runtime_cancellation_open
+extern c fn retainNative(handle u64) u64 as foundation_runtime_cancellation_retain
+extern c fn requestNative(handle u64) void as foundation_runtime_cancellation_request
+extern c fn requestedNative(handle u64) bool as foundation_runtime_cancellation_requested
+extern c fn releaseNative(handle u64) void as foundation_runtime_cancellation_release
+
+struct Cancellation {
+    handle u64
+
+    fn IsRequested(view) bool {
+        requestedNative(self.handle)
+    }
+
+    fn drop(edit) void {
+        releaseNative(self.handle)
+        self.handle = 0
+    }
+}
+
+struct CancellationSource {
+    handle u64
+
+    fn Token(view) Cancellation {
+        Cancellation { handle = retainNative(self.handle) }
+    }
+
+    fn Cancel(view) void {
+        requestNative(self.handle)
+    }
+
+    fn IsCancellationRequested(view) bool {
+        requestedNative(self.handle)
+    }
+
+    fn drop(edit) void {
+        releaseNative(self.handle)
+        self.handle = 0
+    }
+}
+
+fn NewCancellationSource() CancellationSource {
+    CancellationSource { handle = openNative() }
+}

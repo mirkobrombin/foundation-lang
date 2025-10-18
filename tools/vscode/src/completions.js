@@ -87,6 +87,7 @@ const staticCompletions = [
     { label: "std.format", kind: "Module", detail: "Primitive value formatting" },
     { label: "std.json", kind: "Module", detail: "Owned JSON values and parsing" },
     { label: "std.time", kind: "Module", detail: "Unix time values" },
+    { label: "std.concurrent", kind: "Module", detail: "Structured cancellation values" },
     {
         label: "platform.Current",
         kind: "Function",
@@ -212,6 +213,30 @@ const staticCompletions = [
         kind: "Method",
         detail: "fn FormatUtc(view) Result<String, time.Error>",
         insertText: "FormatUtc()"
+    },
+    {
+        label: "concurrent.NewCancellationSource",
+        kind: "Function",
+        detail: "fn NewCancellationSource() concurrent.CancellationSource",
+        insertText: "concurrent.NewCancellationSource()"
+    },
+    {
+        label: "concurrent.CancellationSource.Token",
+        kind: "Method",
+        detail: "fn Token(view) concurrent.Cancellation",
+        insertText: "Token()"
+    },
+    {
+        label: "concurrent.CancellationSource.Cancel",
+        kind: "Method",
+        detail: "fn Cancel(view) void",
+        insertText: "Cancel()"
+    },
+    {
+        label: "concurrent.Cancellation.IsRequested",
+        kind: "Method",
+        detail: "fn IsRequested(view) bool",
+        insertText: "IsRequested()"
     },
     {
         label: "fn(...) R",

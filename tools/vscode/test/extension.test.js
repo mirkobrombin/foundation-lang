@@ -90,7 +90,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.28.0");
+    assert.equal(manifest.version, "0.29.0");
     assert.equal(
         manifest.contributes.configuration.properties["foundation.languageServer.path"].default,
         ""
@@ -687,7 +687,10 @@ test("grammar and completions track compiler keywords", () => {
         "fs.LineReader.Next", "fs.LineReader.NextLimited",
         "std.format", "format.I32", "format.U64",
         "std.json", "json.Parse",
-        "std.time", "time.Now", "time.FromUnix", "time.Instant.FormatUtc"
+        "std.time", "time.Now", "time.FromUnix", "time.Instant.FormatUtc",
+        "std.concurrent", "concurrent.NewCancellationSource",
+        "concurrent.CancellationSource.Token", "concurrent.CancellationSource.Cancel",
+        "concurrent.Cancellation.IsRequested"
     ]) {
         assert.ok(completionLabels.has(standard));
     }
@@ -1103,6 +1106,7 @@ test("ships Result handling and panic snippets", () => {
     assert.equal(snippets.Service.prefix, "service");
     assert.equal(snippets.Task.prefix, "task");
     assert.equal(snippets["Spawn and wait"].prefix, "spawnwait");
+    assert.equal(snippets["Cancellation source"].prefix, "cancellation");
     assert.equal(snippets["State machine"].prefix, "statemachine");
     assert.equal(snippets["Channel select"].prefix, "select");
     assert.equal(snippets.Pipeline.prefix, "pipeline");

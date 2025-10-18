@@ -301,6 +301,9 @@ fn main() i32 {
            "transferred wait lowers to consuming runtime wait");
     expect(firstC.find("fdn_task_drop") != std::string::npos,
            "task locals retain deterministic cleanup");
+    expect(firstC.find("fdn_task_cancellation_enter") != std::string::npos &&
+               firstC.find("fdn_task_cancellation_leave") != std::string::npos,
+           "task polls expose structured cancellation to standard tokens");
 }
 
 void structValuesLowerToDeterministicC() {

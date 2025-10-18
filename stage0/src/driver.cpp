@@ -387,6 +387,7 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
         arguments.insert(arguments.end(), {"/nologo", "/std:c11", "/W4", "/WX",
                                            generated.string(), FOUNDATION_RUNTIME_SOURCE,
                                            FOUNDATION_RUNTIME_TASK_SOURCE,
+                                           FOUNDATION_RUNTIME_CANCELLATION_SOURCE,
                                            "/I" FOUNDATION_RUNTIME_INCLUDE,
                                            "/I" + nativeInclude.string()});
         for (const auto &input : nativeInputs) {
@@ -398,7 +399,8 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
 
     arguments.insert(arguments.end(), {"-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
                                        generated.string(), FOUNDATION_RUNTIME_SOURCE,
-                                       FOUNDATION_RUNTIME_TASK_SOURCE, "-I",
+                                       FOUNDATION_RUNTIME_TASK_SOURCE,
+                                       FOUNDATION_RUNTIME_CANCELLATION_SOURCE, "-I",
                                        FOUNDATION_RUNTIME_INCLUDE, "-I", nativeInclude.string()});
     for (const auto &input : nativeInputs) {
         arguments.push_back(input.string());

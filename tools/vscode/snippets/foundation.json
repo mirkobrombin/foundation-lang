@@ -450,6 +450,16 @@
         ],
         "description": "Spawn a task and consume its result"
     },
+    "Cancellation source": {
+        "prefix": "cancellation",
+        "body": [
+            "const ${1:source} = concurrent.NewCancellationSource()",
+            "const ${2:pending} = spawn ${3:work}(${1:source}.Token())",
+            "${1:source}.Cancel()",
+            "const ${4:value} = \\$${2:pending}.wait()"
+        ],
+        "description": "Spawn work with explicit structured cancellation"
+    },
     "State machine": {
         "prefix": "statemachine",
         "body": [

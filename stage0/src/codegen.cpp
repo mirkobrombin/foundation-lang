@@ -2444,7 +2444,12 @@ void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunc
         << "(void *fdn_raw, bool fdn_cancellation_requested) {\n";
     out << "    struct " << frame << " *fdn_frame = (struct " << frame
         << " *)fdn_raw;\n";
-    out << "    (void)fdn_cancellation_requested;\n";
+    if (function.diverges) {
+        out << "    (void)fdn_task_cancellation_enter(fdn_cancellation_requested);\n";
+    } else {
+        out << "    bool fdn_previous_cancellation = "
+               "fdn_task_cancellation_enter(fdn_cancellation_requested);\n";
+    }
     out << "    fdn_frame->fdn_arguments_active = false;\n";
     out << "    ";
     if (!function.diverges && function.returnType != voidType) {
@@ -2460,10 +2465,11 @@ void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunc
     out << ");\n";
     if (function.diverges) {
         out << "    fdn_panic_cstr(\"unreachable task poll\");\n";
-    } else if (function.returnType != voidType) {
-        out << "    fdn_frame->fdn_result_active = true;\n";
-    }
-    if (!function.diverges) {
+    } else {
+        out << "    fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
+        if (function.returnType != voidType) {
+            out << "    fdn_frame->fdn_result_active = true;\n";
+        }
         out << "    return FDN_TASK_READY;\n";
     }
     out << "}\n\n";

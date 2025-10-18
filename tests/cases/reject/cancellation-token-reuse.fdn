@@ -1,0 +1,15 @@
+import std.concurrent
+
+task observe(cancel concurrent.Cancellation) bool {
+    cancel.IsRequested()
+}
+
+fn main() i32 {
+    const source = concurrent.NewCancellationSource()
+    const token = source.Token()
+    const first = spawn observe(token)
+    const second = spawn observe(token)
+    discard first
+    discard second
+    0
+}

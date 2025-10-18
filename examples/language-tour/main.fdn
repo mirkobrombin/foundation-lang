@@ -3,6 +3,7 @@
 package tour
 
 import std.collections
+import std.concurrent
 import std.env
 import std.format
 import std.json
@@ -135,6 +136,10 @@ fn identity<T>(value T) T {
 
 task backgroundIdentity<T>(value T) T {
     value
+}
+
+task observeCancellation(cancel concurrent.Cancellation) bool {
+    cancel.IsRequested()
 }
 
 fn apply<T>(value T, operation view fn(T) T) T {
@@ -308,9 +313,16 @@ fn main(args view [String]) i32 {
     discard formattedCount
     const pendingIdentity = spawn backgroundIdentity<i32>(42)
     const backgroundValue = $pendingIdentity.wait()
+    const cancellation = concurrent.NewCancellationSource()
+    const beforeCancellationPending = spawn observeCancellation(cancellation.Token())
+    const beforeCancellation = $beforeCancellationPending.wait()
+    cancellation.Cancel()
+    const afterCancellationPending = spawn observeCancellation(cancellation.Token())
+    const afterCancellation = $afterCancellationPending.wait()
     if (inRange(current, 5, 5) || false) && nextByteCount == 11925602364 &&
         platformMatches && pathMatches && jsonMatches && timeMatches && argumentCount == 0 &&
-        proxyCounterValue == 2 && dynamicCounterValue == 1 && backgroundValue == 42 {
+        proxyCounterValue == 2 && dynamicCounterValue == 1 && backgroundValue == 42 &&
+        !beforeCancellation && afterCancellation {
         return match state {
             Running: resultOr(verified, 0) + counterValue + directCounterValue + sequenceValue + callbackValue - 20
             Done(done): resultOr(verified, done.code) + counterValue + directCounterValue + sequenceValue + callbackValue - 21

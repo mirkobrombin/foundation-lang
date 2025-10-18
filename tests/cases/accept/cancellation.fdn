@@ -1,0 +1,29 @@
+import std.concurrent
+
+task observe(cancel concurrent.Cancellation) bool {
+    cancel.IsRequested()
+}
+
+task report(cancel concurrent.Cancellation) void {
+    if cancel.IsRequested() {
+        print("cancelled")
+    }
+}
+
+fn main() i32 {
+    const source = concurrent.NewCancellationSource()
+    const beforePending = spawn observe(source.Token())
+    const before = $beforePending.wait()
+    source.Cancel()
+    const afterPending = spawn observe(source.Token())
+    const after = $afterPending.wait()
+
+    const dropSource = concurrent.NewCancellationSource()
+    const dropped = spawn report(dropSource.Token())
+    discard dropped
+
+    if before || !after {
+        return 1
+    }
+    0
+}

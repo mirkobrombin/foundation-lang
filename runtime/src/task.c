@@ -22,6 +22,7 @@ struct fdn_task {
 static FDN_THREAD_LOCAL fdn_task *fdn_task_queue_head;
 static FDN_THREAD_LOCAL fdn_task *fdn_task_queue_tail;
 static FDN_THREAD_LOCAL size_t fdn_task_count;
+static FDN_THREAD_LOCAL bool fdn_task_current_cancellation;
 
 static void fdn_task_enqueue(fdn_task *task) {
     if (task->queued || task->ready) {
@@ -125,6 +126,20 @@ void fdn_task_drop(fdn_task **task) {
 
 bool fdn_task_cancellation_requested(const fdn_task *task) {
     return task != NULL && task->cancellation_requested;
+}
+
+bool fdn_task_cancellation_enter(bool requested) {
+    const bool previous = fdn_task_current_cancellation;
+    fdn_task_current_cancellation = previous || requested;
+    return previous;
+}
+
+void fdn_task_cancellation_leave(bool previous) {
+    fdn_task_current_cancellation = previous;
+}
+
+bool fdn_task_cancellation_current(void) {
+    return fdn_task_current_cancellation;
 }
 
 size_t fdn_task_live_count(void) { return fdn_task_count; }

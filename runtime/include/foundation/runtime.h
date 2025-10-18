@@ -68,6 +68,9 @@ fdn_task *fdn_task_spawn(void *frame, fdn_task_poll_fn poll,
 void fdn_task_wait(fdn_task **task, void *result);
 void fdn_task_drop(fdn_task **task);
 bool fdn_task_cancellation_requested(const fdn_task *task);
+bool fdn_task_cancellation_enter(bool requested);
+void fdn_task_cancellation_leave(bool previous);
+bool fdn_task_cancellation_current(void);
 size_t fdn_task_live_count(void);
 #ifdef __cplusplus
 [[noreturn]] void fdn_panic(fdn_string message);
@@ -112,6 +115,12 @@ fdn_string foundation_runtime_format_i32(int32_t value);
 fdn_string foundation_runtime_format_u64(uint64_t value);
 uint64_t foundation_runtime_time_unix_seconds(void);
 int32_t foundation_runtime_time_format_utc(uint64_t unix_seconds, fdn_string *result);
+uint64_t foundation_runtime_cancellation_open(void);
+uint64_t foundation_runtime_cancellation_retain(uint64_t handle);
+void foundation_runtime_cancellation_request(uint64_t handle);
+bool foundation_runtime_cancellation_requested(uint64_t handle);
+void foundation_runtime_cancellation_release(uint64_t handle);
+uint64_t foundation_runtime_cancellation_live_states(void);
 int32_t foundation_runtime_fs_open_lines(const fdn_string *path, uint64_t *handle);
 int32_t foundation_runtime_fs_next_line(uint64_t handle, fdn_string *line);
 int32_t foundation_runtime_fs_next_line_limited(uint64_t handle, uint64_t max_length,

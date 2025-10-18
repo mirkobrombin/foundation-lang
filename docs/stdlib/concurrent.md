@@ -1,0 +1,38 @@
+# `std.concurrent`
+
+`std.concurrent` defines the shared cancellation values used by tasks, IO, channels, and native
+adapters. Cancellation is an observation, not an exception or an operation error.
+
+```foundation
+import std.concurrent
+
+enum LoadError {
+    Cancelled
+}
+
+task load(cancel concurrent.Cancellation) Result<String, LoadError> {
+    if cancel.IsRequested() {
+        return .Err(.Cancelled)
+    }
+    .Ok("value")
+}
+
+fn main() i32 {
+    const source = concurrent.NewCancellationSource()
+    const pending = spawn load(source.Token())
+    source.Cancel()
+    discard $pending.wait()
+    0
+}
+```
+
+`CancellationSource` owns one reference to the shared state. `Token()` returns a new owned
+`Cancellation` reference. Moving a token into a task consumes that token, while the source remains
+available to request cancellation. Dropping either value releases exactly one reference.
+
+`Cancellation.IsRequested()` observes both its source and the current task's structured
+cancellation state. Dropping a live task handle therefore reaches code that already checks its
+token; APIs do not need a second cancellation mechanism for structured shutdown.
+
+The shared request flag uses release/acquire synchronization. Its native representation is an
+opaque `u64` handle private to the standard library and is not a public package ABI.

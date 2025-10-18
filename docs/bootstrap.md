@@ -44,6 +44,8 @@ oversized input.
 `std.format`, `std.parse`, `std.json`, and `std.time` supply integer conversion, owned JSON values,
 UTC instants, and fixed calendar formatting in Foundation source. Native code remains limited to
 clock access, calendar conversion, byte-level String operations, and platform filesystem handles.
+`std.concurrent` supplies ref-counted cancellation sources and tokens. A token observes explicit
+source cancellation and structured task cancellation through one API.
 
 Stage 0 bounds parser nesting and expression complexity before semantic analysis. It records at
 most 100 specific errors, followed by FDN0000 when more input errors are suppressed. These limits
