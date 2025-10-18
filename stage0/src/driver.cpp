@@ -4,6 +4,7 @@
 #include "foundation/formatter.hpp"
 #include "foundation/lower.hpp"
 #include "foundation/metadata.hpp"
+#include "foundation/package.hpp"
 #include "foundation/process.hpp"
 #include "foundation/project.hpp"
 #include "foundation/sema.hpp"
@@ -277,8 +278,37 @@ std::optional<std::vector<std::filesystem::path>> formatterSources(
         return std::nullopt;
     }
 
+    auto sourceRoot = input;
+    if (const auto manifest = discoverPackageManifest(input); manifest.has_value()) {
+        const auto absoluteInput = std::filesystem::absolute(input, error);
+        if (error) {
+            std::cerr << "foundationc: cannot identify package project " << input.string()
+                      << ": " << error.message() << '\n';
+            return std::nullopt;
+        }
+        const auto sameProject =
+            std::filesystem::equivalent(absoluteInput, manifest->parent_path(), error);
+        if (error) {
+            std::cerr << "foundationc: cannot identify package project " << input.string()
+                      << ": " << error.message() << '\n';
+            return std::nullopt;
+        }
+        if (sameProject) {
+            const auto sdk = *parsePackageVersion("0.1.0");
+            const auto project = loadLockedPackageProject(
+                *manifest, sdk, hostTargetPlatform(), defaultPackageCachePath());
+            if (!project.value.has_value()) {
+                for (const auto &packageError : project.errors) {
+                    std::cerr << renderPackageError(packageError);
+                }
+                return std::nullopt;
+            }
+            sourceRoot = project.value->sources.front().sourceRoot;
+        }
+    }
+
     std::vector<std::filesystem::path> sources;
-    std::filesystem::recursive_directory_iterator current(input, error);
+    std::filesystem::recursive_directory_iterator current(sourceRoot, error);
     const std::filesystem::recursive_directory_iterator end;
     while (!error && current != end) {
         const auto &entry = *current;
@@ -291,7 +321,8 @@ std::optional<std::vector<std::filesystem::path>> formatterSources(
         current.increment(error);
     }
     if (error) {
-        std::cerr << "foundationc: cannot walk " << input.string() << ": " << error.message()
+        std::cerr << "foundationc: cannot walk " << sourceRoot.string() << ": "
+                  << error.message()
                   << '\n';
         return std::nullopt;
     }
@@ -299,7 +330,8 @@ std::optional<std::vector<std::filesystem::path>> formatterSources(
         return left.generic_string() < right.generic_string();
     });
     if (sources.empty()) {
-        std::cerr << "foundationc: no .fdn source files found under " << input.string() << '\n';
+        std::cerr << "foundationc: no .fdn source files found under " << sourceRoot.string()
+                  << '\n';
         return std::nullopt;
     }
     return sources;

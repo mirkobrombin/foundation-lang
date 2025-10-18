@@ -1,13 +1,21 @@
 #include "foundation/lsp.hpp"
+#include "foundation/package.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -60,6 +68,62 @@ std::filesystem::path temporaryRoot() {
     return std::filesystem::temp_directory_path() /
            ("foundation-language-server-" + std::to_string(sequence));
 }
+
+void writeFile(const std::filesystem::path &path, std::string_view contents) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::binary);
+    output << contents;
+}
+
+class PackageCacheOverride {
+  public:
+    explicit PackageCacheOverride(const std::filesystem::path &path) {
+#ifdef _WIN32
+        const auto required = GetEnvironmentVariableW(L"FOUNDATION_PACKAGE_CACHE", nullptr, 0);
+        if (required != 0) {
+            std::wstring value(required, L'\0');
+            const auto copied = GetEnvironmentVariableW(L"FOUNDATION_PACKAGE_CACHE",
+                                                        value.data(), required);
+            if (copied != 0 && copied < required) {
+                value.resize(copied);
+                previous_ = std::move(value);
+            }
+        }
+        valid_ = SetEnvironmentVariableW(L"FOUNDATION_PACKAGE_CACHE", path.c_str()) != 0;
+#else
+        if (const auto *value = std::getenv("FOUNDATION_PACKAGE_CACHE"); value != nullptr) {
+            previous_ = value;
+        }
+        valid_ = setenv("FOUNDATION_PACKAGE_CACHE", path.c_str(), 1) == 0;
+#endif
+    }
+
+    PackageCacheOverride(const PackageCacheOverride &) = delete;
+    PackageCacheOverride &operator=(const PackageCacheOverride &) = delete;
+
+    ~PackageCacheOverride() {
+#ifdef _WIN32
+        SetEnvironmentVariableW(L"FOUNDATION_PACKAGE_CACHE",
+                                previous_.has_value() ? previous_->c_str() : nullptr);
+#else
+        if (previous_.has_value()) {
+            static_cast<void>(setenv("FOUNDATION_PACKAGE_CACHE", previous_->c_str(), 1));
+        } else {
+            static_cast<void>(unsetenv("FOUNDATION_PACKAGE_CACHE"));
+        }
+#endif
+    }
+
+    [[nodiscard]] bool valid() const { return valid_; }
+
+  private:
+#ifdef _WIN32
+    std::optional<std::wstring> previous_;
+#else
+    std::optional<std::string> previous_;
+#endif
+    bool valid_{};
+};
 
 std::vector<std::string> messages(std::string_view transcript) {
     std::vector<std::string> result;
@@ -1071,6 +1135,141 @@ void callHierarchySeparatesHomonymousMethods() {
     std::filesystem::remove_all(root, error);
 }
 
+void lockedPackageWorkspaceLoadsCachedDependencies() {
+    const auto root = temporaryRoot();
+    const auto app = root / "apps" / "sample";
+    const auto dependencyRoot = root / "registry" / "example.greeting" / "1.0.0";
+    const auto cache = root / "cache";
+    const auto appSource = app / "src" / "main.fdn";
+    const auto dependencySource = dependencyRoot / "src" / "greeting.fdn";
+    const auto appContents = std::string{
+        "package example.app\n\n"
+        "import example.greeting\n\n"
+        "fn main() i32 {\n"
+        "    print(greeting.Message())\n"
+        "    0\n"
+        "}\n"};
+    writeFile(dependencyRoot / "foundation.package",
+              "format foundation.package/v1\n"
+              "name example.greeting\n"
+              "version 1.0.0\n"
+              "sdk ^0.1.0\n"
+              "source src\n");
+    writeFile(dependencySource,
+              "package example.greeting\n\n"
+              "fn Message() String {\n"
+              "    \"hello\"\n"
+              "}\n");
+
+    foundation::PackageManifest appManifest;
+    appManifest.name = "example.app";
+    appManifest.version = *foundation::parsePackageVersion("1.0.0");
+    appManifest.sdk = *foundation::parsePackageRequirement("^0.1.0");
+    appManifest.source = "src";
+    appManifest.dependencies.push_back(
+        {"example.greeting", *foundation::parsePackageRequirement("^1.0.0"),
+         foundation::PackageLocationKind::Registry, "default", std::nullopt});
+    writeFile(app / "foundation.package", foundation::renderPackageManifest(appManifest));
+    writeFile(appSource, appContents);
+
+    const auto dependencyManifest =
+        foundation::readPackageManifest(dependencyRoot / "foundation.package");
+    if (!dependencyManifest.value.has_value()) {
+        expect(false, "cached dependency manifest parses for language server test");
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+        return;
+    }
+    const auto snapshot =
+        foundation::inspectPackageSource(dependencyRoot, *dependencyManifest.value);
+    if (!snapshot.value.has_value()) {
+        expect(false, "cached dependency snapshot exists for language server test");
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+        return;
+    }
+    foundation::PackageCandidate candidate;
+    candidate.manifest = *dependencyManifest.value;
+    candidate.digest = snapshot.value->digest;
+    candidate.kind = foundation::PackageLocationKind::Registry;
+    candidate.location = "default";
+    candidate.root = dependencyRoot;
+    const auto installed = foundation::installPackageInCache(cache, candidate);
+    if (!installed.value.has_value()) {
+        expect(false, "cached dependency installs for language server test");
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+        return;
+    }
+
+    foundation::PackageLock lock;
+    lock.rootName = appManifest.name;
+    lock.rootVersion = appManifest.version;
+    lock.target = foundation::hostTargetPlatform();
+    lock.packages.push_back({candidate.manifest.name, candidate.manifest.version,
+                             candidate.digest, candidate.kind, candidate.location});
+    lock.edges.push_back({appManifest.name, candidate.manifest.name});
+    const auto written =
+        foundation::writePackageLockAtomically(app / "foundation.lock", lock);
+    if (!written.errors.empty()) {
+        expect(false, "package lock writes for language server test");
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+        return;
+    }
+
+    PackageCacheOverride environment(cache);
+    expect(environment.valid(), "language server test sets the package cache environment");
+    const auto rootUri = fileUri(root);
+    const auto sourceUri = fileUri(appSource);
+    const auto cachedSourceUri = fileUri(*installed.value / "src" / "greeting.fdn");
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{"
+        "\"rootUri\":\"" +
+        rootUri + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(appContents) + "\"}}}";
+    const auto hover =
+        "{\"jsonrpc\":\"2.0\",\"id\":40,\"method\":\"textDocument/hover\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\"},\"position\":{\"line\":5,\"character\":22}}}";
+    const auto definition =
+        "{\"jsonrpc\":\"2.0\",\"id\":41,\"method\":\"textDocument/definition\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\"},\"position\":{\"line\":5,\"character\":22}}}";
+    const auto symbols =
+        "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"workspace/symbol\","
+        "\"params\":{\"query\":\"Message\"}}";
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+
+    std::istringstream input(frame(initialize) + frame(open) + frame(hover) +
+                             frame(definition) + frame(symbols) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+
+    expect(status == 0, "locked package language server transcript exits cleanly");
+    expect(errors.str().empty(), "locked package language server writes no server errors");
+    expect(transcript.find("\"diagnostics\":[]") != std::string::npos,
+           "locked package workspace has no diagnostics");
+    expect(responseFor(transcript, 40).find("fn Message() String") != std::string::npos,
+           "hover resolves a function from locked cached content");
+    expect(responseFor(transcript, 41).find(cachedSourceUri) != std::string::npos,
+           "definition opens the verified cached source");
+    const auto workspaceSymbols = responseFor(transcript, 42);
+    expect(workspaceSymbols.find("Message") != std::string::npos &&
+               workspaceSymbols.find(cachedSourceUri) != std::string::npos,
+           "workspace symbols include locked cached packages from a nested project");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void workspaceFoldersAreIndependentAndDynamic() {
     const auto root = temporaryRoot();
     const auto first = root / "first";
@@ -1211,6 +1410,7 @@ int main() {
     offersCompilerBackedDiscardQuickFixes();
     contractImplementationsIncludeInheritedAndDelegatedTypes();
     callHierarchySeparatesHomonymousMethods();
+    lockedPackageWorkspaceLoadsCachedDependencies();
     workspaceFoldersAreIndependentAndDynamic();
     diagnosticsStayScopedToTheirWorkspace();
 

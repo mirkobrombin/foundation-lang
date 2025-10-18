@@ -49,6 +49,30 @@ if(NOT repeated_fetch_output MATCHES "verified .*sha256/")
 endif()
 
 execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env "FOUNDATION_PACKAGE_CACHE=${PACKAGE_CACHE}"
+            "${PROGRAM}" format --check "${PROJECT}"
+    RESULT_VARIABLE format_result
+    OUTPUT_VARIABLE format_output
+    ERROR_VARIABLE format_error
+)
+if(NOT format_result EQUAL 0)
+    message(FATAL_ERROR "locked project format check failed: ${format_error}${format_output}")
+endif()
+
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env
+            "FOUNDATION_PACKAGE_CACHE=${WORK}/missing-format-cache"
+            "${PROGRAM}" format --check "${PROJECT}"
+    RESULT_VARIABLE offline_format_result
+    OUTPUT_VARIABLE offline_format_output
+    ERROR_VARIABLE offline_format_error
+)
+if(offline_format_result EQUAL 0 OR NOT offline_format_error MATCHES "FDN4070")
+    message(FATAL_ERROR
+        "offline formatting without locked content did not fail clearly: ${offline_format_error}")
+endif()
+
+execute_process(
     COMMAND "${PROGRAM}" package verify "${PROJECT}" --cache "${PACKAGE_CACHE}"
     RESULT_VARIABLE verify_result
     OUTPUT_VARIABLE verify_output

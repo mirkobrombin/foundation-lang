@@ -4,6 +4,7 @@
 #include "foundation/formatter.hpp"
 #include "foundation/language_service.hpp"
 #include "foundation/lexer.hpp"
+#include "foundation/package.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -1610,7 +1611,14 @@ class LanguageServer {
             }
         }
         if (best != nullptr) {
+            if (const auto manifest = discoverPackageManifest(path);
+                manifest.has_value() && containsPath(*best, manifest->parent_path())) {
+                return normalizedPath(manifest->parent_path());
+            }
             return *best;
+        }
+        if (const auto manifest = discoverPackageManifest(path); manifest.has_value()) {
+            return normalizedPath(manifest->parent_path());
         }
         return path.parent_path();
     }
@@ -1762,14 +1770,29 @@ class LanguageServer {
 
     [[nodiscard]] Json provideWorkspaceSymbols(const Json *params) const {
         const auto query = stringField(params, "query").value_or(std::string{});
-        std::vector<std::filesystem::path> roots = workspaceRoots_;
-        if (roots.empty()) {
+        std::vector<std::filesystem::path> roots;
+        const auto addRoot = [&roots](const std::filesystem::path &root) {
+            if (std::find(roots.begin(), roots.end(), root) == roots.end()) {
+                roots.push_back(root);
+            }
+        };
+        for (const auto &workspace : workspaceRoots_) {
+            auto hasDocument = false;
             for (const auto &[uri, document] : documents_) {
                 static_cast<void>(uri);
-                const auto root = analysisRoot(document);
-                if (std::find(roots.begin(), roots.end(), root) == roots.end()) {
-                    roots.push_back(root);
+                if (containsPath(workspace, document.path)) {
+                    addRoot(analysisRoot(document));
+                    hasDocument = true;
                 }
+            }
+            if (!hasDocument) {
+                addRoot(workspace);
+            }
+        }
+        if (workspaceRoots_.empty()) {
+            for (const auto &[uri, document] : documents_) {
+                static_cast<void>(uri);
+                addRoot(analysisRoot(document));
             }
         }
         Json::Array result;

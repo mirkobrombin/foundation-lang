@@ -163,6 +163,10 @@ class FoundationLanguageClient {
             "interface", "decorator", "parameter", "variable"
         ], ["declaration"]);
         const sourceWatcher = this.vscode.workspace.createFileSystemWatcher("**/*.fdn");
+        const manifestWatcher = this.vscode.workspace.createFileSystemWatcher(
+            "**/foundation.package"
+        );
+        const lockWatcher = this.vscode.workspace.createFileSystemWatcher("**/foundation.lock");
         const watchedFile = (type) => (uri) => {
             this.notify("workspace/didChangeWatchedFiles", {
                 changes: [{ uri: uri.toString(), type }]
@@ -176,9 +180,17 @@ class FoundationLanguageClient {
         }
         this.context.subscriptions.push(
             sourceWatcher,
+            manifestWatcher,
+            lockWatcher,
             sourceWatcher.onDidCreate(watchedFile(1)),
             sourceWatcher.onDidChange(watchedFile(2)),
             sourceWatcher.onDidDelete(watchedFile(3)),
+            manifestWatcher.onDidCreate(watchedFile(1)),
+            manifestWatcher.onDidChange(watchedFile(2)),
+            manifestWatcher.onDidDelete(watchedFile(3)),
+            lockWatcher.onDidCreate(watchedFile(1)),
+            lockWatcher.onDidChange(watchedFile(2)),
+            lockWatcher.onDidDelete(watchedFile(3)),
             this.vscode.workspace.onDidOpenTextDocument((document) => this.open(document)),
             this.vscode.workspace.onDidChangeTextDocument((event) => this.change(event.document)),
             this.vscode.workspace.onDidCloseTextDocument((document) => this.close(document)),

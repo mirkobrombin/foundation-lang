@@ -87,6 +87,8 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /registerDocumentRangeFormattingEditProvider/);
     assert.match(languageClient, /textDocument\/rangeFormatting/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/\*\.fdn"\)/);
+    assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
+    assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
     assert.equal(manifest.version, "0.26.0");
     assert.equal(
