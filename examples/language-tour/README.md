@@ -8,6 +8,11 @@ reference without C preprocessor conditions. The tour also exercises read-only e
 checked text inspection, portable path joining, JSON parsing, UTC time formatting, and typed
 package-defined attributes with metadata-safe aggregate values.
 
+The complete accepted 1.0 syntax and its implementation table live in
+`../../docs/language.md`. The 24-chapter newcomer tour remains in
+`../../docs/foundation-syntax-newcomer-review.md`; it includes accepted target forms that stage 0
+does not compile yet.
+
 Build the compiler, then run the tour:
 
 ```sh

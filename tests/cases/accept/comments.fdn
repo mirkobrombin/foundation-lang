@@ -1,0 +1,11 @@
+/**
+Nested block comments are ignored without losing source positions.
+/* The inner block closes before the outer block. */
+*/
+fn main() i32 {
+    /// This immutable binding uses the accepted 1.0 spelling.
+    const answer = 42
+    // Implementation comments remain ordinary trivia.
+    /* Inline blocks /* may nest too. */ */
+    answer - 42
+}

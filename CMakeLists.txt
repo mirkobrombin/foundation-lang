@@ -298,6 +298,10 @@ if(BUILD_TESTING)
         COMMAND foundationc check ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fdn
     )
     add_test(
+        NAME stage0.check.comments
+        COMMAND foundationc check ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/comments.fdn
+    )
+    add_test(
         NAME stage0.emit.accept
         COMMAND foundationc emit-c
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fdn
@@ -316,6 +320,14 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/legacy-semicolon.fdn
             -DCODE=FDN0001
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.unterminated-block-comment
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/unterminated-block-comment.fdn
+            -DCODE=FDN0006
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(

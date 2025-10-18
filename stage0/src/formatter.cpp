@@ -291,6 +291,26 @@ class Writer {
         lineStart_ = false;
     }
 
+    void writeBlockComment(std::string_view comment) {
+        if (lineStart_) {
+            indent(TokenKind::Eof);
+        } else {
+            trimLine();
+            output_.push_back(' ');
+        }
+        for (std::size_t offset = 0; offset < comment.size(); ++offset) {
+            if (comment[offset] == '\r') {
+                if (offset + 1 < comment.size() && comment[offset + 1] == '\n') {
+                    ++offset;
+                }
+                output_.push_back('\n');
+            } else {
+                output_.push_back(comment[offset]);
+            }
+        }
+        lineStart_ = !output_.empty() && output_.back() == '\n';
+    }
+
     void trivia(std::string_view value) {
         std::size_t offset{};
         while (offset < value.size()) {
@@ -300,6 +320,25 @@ class Writer {
                     ++end;
                 }
                 writeComment(value.substr(offset, end - offset));
+                offset = end;
+                continue;
+            }
+            if (value[offset] == '/' && offset + 1 < value.size() && value[offset + 1] == '*') {
+                auto end = offset + 2;
+                std::size_t depth{1};
+                while (end < value.size() && depth != 0) {
+                    if (end + 1 < value.size() && value[end] == '/' && value[end + 1] == '*') {
+                        end += 2;
+                        ++depth;
+                    } else if (end + 1 < value.size() && value[end] == '*' &&
+                               value[end + 1] == '/') {
+                        end += 2;
+                        --depth;
+                    } else {
+                        ++end;
+                    }
+                }
+                writeBlockComment(value.substr(offset, end - offset));
                 offset = end;
                 continue;
             }

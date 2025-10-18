@@ -233,6 +233,44 @@ fn main() i32 {
            "user function call uses a stable C name");
 }
 
+void immutableBindingsAndCommentsLexDeterministically() {
+    constexpr std::string_view source = R"(
+/** Public entry point.
+ /* Nested documentation detail. */
+*/
+fn main() i32 {
+    /// The immutable answer.
+    const answer = 21
+    // The implementation remains ordinary source.
+    /* A nested block /* keeps its contents. */ */
+    answer * 2 - 42
+}
+)";
+    auto first = check(source);
+    auto second = check(source);
+    expect(!first.diagnostics.hasErrors(), "const and all comment forms are accepted");
+    expect(first.fir.has_value() && second.fir.has_value(),
+           "const source lowers to FIR repeatedly");
+    if (first.fir.has_value() && second.fir.has_value()) {
+        expect(foundation::emitC(*first.fir, "comments.fdn") ==
+                   foundation::emitC(*second.fir, "comments.fdn"),
+               "comments do not affect deterministic C emission");
+    }
+
+    foundation::Diagnostics tokensDiagnostics;
+    foundation::Lexer lexer("const value = 1", tokensDiagnostics);
+    const auto tokens = lexer.scan();
+    expect(!tokensDiagnostics.hasErrors() && !tokens.empty() &&
+               tokens.front().kind == foundation::TokenKind::Const,
+           "const has a distinct compiler token");
+
+    foundation::Diagnostics commentDiagnostics;
+    foundation::Lexer unterminated("/* outer /* nested */", commentDiagnostics);
+    static_cast<void>(unterminated.scan());
+    expect(hasCode(commentDiagnostics, "FDN0006"),
+           "unterminated block comments report FDN0006");
+}
+
 void structValuesLowerToDeterministicC() {
     constexpr std::string_view source = R"(
 struct Point {
@@ -1566,6 +1604,7 @@ int main() {
     targetAttributesSelectOneDeclaration();
     typedAttributesEmitMetadataWithoutRuntimeCode();
     typedProgramLowersToDeterministicC();
+    immutableBindingsAndCommentsLexDeterministically();
     structValuesLowerToDeterministicC();
     deepStructGraphsStayIterative();
     enumMatchesLowerToDeterministicC();

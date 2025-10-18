@@ -110,6 +110,8 @@ const char *tokenName(TokenKind kind) {
         return "fn";
     case TokenKind::Let:
         return "let";
+    case TokenKind::Const:
+        return "const";
     case TokenKind::Var:
         return "var";
     case TokenKind::Return:
@@ -236,6 +238,32 @@ void Lexer::skipIgnored() {
         if (value == '/' && peek(1) == '/') {
             while (!atEnd() && peek() != '\n') {
                 advance();
+            }
+            continue;
+        }
+        if (value == '/' && peek(1) == '*') {
+            const auto start = offset_;
+            const auto line = line_;
+            const auto column = column_;
+            advance();
+            advance();
+            std::size_t depth{1};
+            while (!atEnd() && depth != 0) {
+                if (peek() == '/' && peek(1) == '*') {
+                    advance();
+                    advance();
+                    ++depth;
+                } else if (peek() == '*' && peek(1) == '/') {
+                    advance();
+                    advance();
+                    --depth;
+                } else {
+                    advance();
+                }
+            }
+            if (depth != 0) {
+                diagnostics_.error("FDN0006", "unterminated block comment",
+                                   spanFrom(start, line, column));
             }
             continue;
         }
@@ -377,6 +405,8 @@ Token Lexer::identifier() {
         kind = TokenKind::Fn;
     } else if (text == "let") {
         kind = TokenKind::Let;
+    } else if (text == "const") {
+        kind = TokenKind::Const;
     } else if (text == "var") {
         kind = TokenKind::Var;
     } else if (text == "return") {

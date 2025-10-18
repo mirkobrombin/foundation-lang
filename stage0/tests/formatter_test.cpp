@@ -112,6 +112,37 @@ void preservesLineSensitiveSyntax() {
            "line-sensitive source remains idempotent");
 }
 
+void preservesDocumentationAndNestedComments() {
+    constexpr std::string_view source =
+        "/** Long documentation.\r\n"
+        "No leading stars are required.\r\n"
+        "/* Nested detail. */\r\n"
+        "*/\r\n"
+        "fn main()i32{\r\n"
+        "/// Immutable answer.   \r\n"
+        "const answer=21 /* keep this prose */\r\n"
+        "// implementation note   \r\n"
+        "answer*2-42\r\n"
+        "}\r\n";
+    constexpr std::string_view expected =
+        "/** Long documentation.\n"
+        "No leading stars are required.\n"
+        "/* Nested detail. */\n"
+        "*/\n"
+        "fn main() i32 {\n"
+        "    /// Immutable answer.\n"
+        "    const answer = 21 /* keep this prose */\n"
+        "    // implementation note\n"
+        "    answer * 2 - 42\n"
+        "}\n";
+    const auto formatted = foundation::formatSource(source);
+    expect(!formatted.diagnostics.hasErrors(), "documentation comments format without errors");
+    expect(formatted.contents == expected,
+           "formatter distinguishes comments while preserving block prose");
+    expect(foundation::formatSource(formatted.contents).contents == formatted.contents,
+           "comment formatting is idempotent");
+}
+
 void rejectsInvalidSourceWithoutChangingIt() {
     constexpr std::string_view source = "fn main( {\n";
     const auto formatted = foundation::formatSource(source);
@@ -182,6 +213,7 @@ void formatsRepositorySources() {
 int main() {
     formatsFoundationSource();
     preservesLineSensitiveSyntax();
+    preservesDocumentationAndNestedComments();
     rejectsInvalidSourceWithoutChangingIt();
     preservesEstablishedFoundationStyle();
     formatsRepositorySources();

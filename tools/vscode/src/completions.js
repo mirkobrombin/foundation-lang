@@ -21,28 +21,60 @@ const staticCompletions = [
     { label: "implements", kind: "Keyword" },
     { label: "extends", kind: "Keyword", detail: "Inherit contract requirements" },
     { label: "by", kind: "Keyword", detail: "Delegate a contract to a field" },
+    { label: "methods", kind: "Keyword", detail: "Add methods to a package-owned type" },
+    { label: "forward", kind: "Keyword", detail: "Forward a contract to a field" },
+    { label: "service", kind: "Keyword", detail: "Declare a Foundation service" },
+    { label: "action", kind: "Keyword", detail: "Declare a typed action handler" },
+    { label: "state_machine", kind: "Keyword", detail: "Declare a typed state machine" },
+    { label: "pipeline", kind: "Keyword", detail: "Declare a typed pipeline" },
+    { label: "saga", kind: "Keyword", detail: "Declare a compensated workflow" },
+    { label: "task", kind: "Keyword", detail: "Declare a suspendable function" },
+    { label: "spawn", kind: "Keyword", detail: "Start a task on the active scheduler" },
+    { label: "select", kind: "Keyword", detail: "Wait on typed channel operations" },
+    { label: "test", kind: "Keyword", detail: "Declare an executable test" },
+    { label: "unsafe", kind: "Keyword", detail: "Bound raw pointer operations" },
     { label: "fn", kind: "Keyword" },
-    { label: "let", kind: "Keyword" },
+    { label: "const", kind: "Keyword", detail: "Declare an immutable binding" },
+    { label: "let", kind: "Keyword", detail: "Bootstrap immutable binding" },
     { label: "var", kind: "Keyword" },
     { label: "return", kind: "Keyword" },
     { label: "discard", kind: "Keyword" },
     { label: "if", kind: "Keyword" },
     { label: "else", kind: "Keyword" },
     { label: "while", kind: "Keyword" },
+    { label: "for", kind: "Keyword" },
+    { label: "in", kind: "Keyword" },
+    { label: "break", kind: "Keyword" },
+    { label: "continue", kind: "Keyword" },
     { label: "match", kind: "Keyword" },
     { label: "capture", kind: "Keyword", detail: "Declare explicit closure captures" },
     { label: "replace", kind: "Keyword", detail: "Replace a mutable place and return its previous value" },
     { label: "with", kind: "Keyword", detail: "Introduce a replacement value" },
+    { label: "new", kind: "Keyword", detail: "Construct a fresh owned value" },
+    { label: "&value", kind: "Keyword", detail: "Grant an exclusive edit loan" },
+    { label: "$value", kind: "Keyword", detail: "Transfer ownership" },
     { label: "own", kind: "Keyword", detail: "Create or declare an exclusive owner" },
     { label: "view", kind: "Keyword", detail: "Create or declare a shared borrow" },
     { label: "edit", kind: "Keyword", detail: "Create or declare an exclusive mutable borrow" },
     { label: "true", kind: "Constant" },
     { label: "false", kind: "Constant" },
+    { label: "i8", kind: "TypeParameter" },
+    { label: "i16", kind: "TypeParameter" },
     { label: "i32", kind: "TypeParameter" },
+    { label: "i64", kind: "TypeParameter" },
+    { label: "u8", kind: "TypeParameter" },
+    { label: "u16", kind: "TypeParameter" },
+    { label: "u32", kind: "TypeParameter" },
     { label: "u64", kind: "TypeParameter" },
+    { label: "f32", kind: "TypeParameter" },
+    { label: "f64", kind: "TypeParameter" },
+    { label: "isize", kind: "TypeParameter" },
+    { label: "usize", kind: "TypeParameter" },
     { label: "bool", kind: "TypeParameter" },
     { label: "String", kind: "TypeParameter" },
+    { label: "UUID", kind: "TypeParameter", detail: "standard RFC 9562 UUID value" },
     { label: "void", kind: "TypeParameter" },
+    { label: "never", kind: "TypeParameter" },
     { label: "Option", kind: "TypeParameter", detail: "primitive Option<T>" },
     { label: "Result", kind: "TypeParameter", detail: "primitive Result<T, E>" },
     { label: "std.platform", kind: "Module", detail: "Compilation target information" },
@@ -193,6 +225,18 @@ const staticCompletions = [
         insertText: "[${1:N}]${2:T}"
     },
     {
+        label: "[T]",
+        kind: "TypeParameter",
+        detail: "read-only sequence parameter",
+        insertText: "[${1:T}]"
+    },
+    {
+        label: "&[T]",
+        kind: "TypeParameter",
+        detail: "editable sequence parameter",
+        insertText: "&[${1:T}]"
+    },
+    {
         label: "view [T]",
         kind: "TypeParameter",
         detail: "shared slice type",
@@ -242,6 +286,25 @@ function maskTrivia(source) {
                 masked += " ";
                 offset += 1;
             }
+            continue;
+        }
+
+        if (source[offset] === "/" && source[offset + 1] === "*") {
+            let depth = 0;
+            do {
+                if (source[offset] === "/" && source[offset + 1] === "*") {
+                    masked += "  ";
+                    offset += 2;
+                    depth += 1;
+                } else if (source[offset] === "*" && source[offset + 1] === "/") {
+                    masked += "  ";
+                    offset += 2;
+                    depth -= 1;
+                } else {
+                    masked += source[offset] === "\n" ? "\n" : " ";
+                    offset += 1;
+                }
+            } while (offset < source.length && depth !== 0);
             continue;
         }
 
@@ -337,7 +400,9 @@ function collectTypeParameters(source) {
 
 function collectParameters(source) {
     return splitTopLevel(source, ",")
-        .map((parameter) => parameter.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s+[A-Za-z_\[]/))
+        .map((parameter) => parameter.match(
+            /^\s*(?:@[A-Za-z_][A-Za-z0-9_.]*\([^)]*\)\s*)*[&$]?([A-Za-z_][A-Za-z0-9_]*)\s+[A-Za-z_\[]/
+        ))
         .filter(Boolean)
         .map((parameter) => parameter[1]);
 }
@@ -655,11 +720,12 @@ function collectCompletions(source, projectSources = []) {
     const completions = [...staticCompletions, ...importedCompletions(source, projectSources)];
     const functions = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\(([^)]*)\)/g;
     const structs = collectBracedDeclarations(masked, "struct");
+    const methodBlocks = collectBracedDeclarations(masked, "methods");
     const enums = collectBracedDeclarations(masked, "enum");
     const contracts = collectBracedDeclarations(masked, "contract");
     const attributes = collectAttributeDeclarations(lexical);
-    const bindings = /\b(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)/g;
-    const structPatterns = /\blet\s+[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\{([^}]*)\}\s*=/g;
+    const bindings = /\b(?:let|const|var)\s+([A-Za-z_][A-Za-z0-9_]*)/g;
+    const structPatterns = /\b(?:let|const)\s+[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\{([^}]*)\}\s*=/g;
     let match;
 
     for (const declaration of attributes) {
@@ -701,6 +767,18 @@ function collectCompletions(source, projectSources = []) {
                 label: method.name,
                 kind: "Method",
                 detail: `Method of ${name}`,
+                insertText: `${method.name}(${method.parameters.map((parameter, index) =>
+                    `\${${index + 1}:${parameter}}`).join(", ")})`
+            });
+        }
+    }
+
+    for (const declaration of methodBlocks) {
+        for (const method of collectMethods(declaration.body, declaration.name)) {
+            completions.push({
+                label: method.name,
+                kind: "Method",
+                detail: `Distributed method of ${declaration.name}`,
                 insertText: `${method.name}(${method.parameters.map((parameter, index) =>
                     `\${${index + 1}:${parameter}}`).join(", ")})`
             });

@@ -25,6 +25,7 @@ enum class TokenKind {
     By,
     Fn,
     Let,
+    Const,
     Var,
     Return,
     Discard,

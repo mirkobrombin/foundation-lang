@@ -846,7 +846,7 @@ AstBlockId Parser::block(bool tailResult) {
 }
 
 AstStatementId Parser::statement() {
-    if (match(TokenKind::Let)) {
+    if (match(TokenKind::Let) || match(TokenKind::Const)) {
         auto distance = std::size_t{};
         auto pattern = peek(distance).kind == TokenKind::Identifier;
         if (pattern) {
@@ -874,7 +874,7 @@ AstStatementId Parser::statement() {
             pattern = peek(distance).kind == TokenKind::LeftBrace;
         }
         if (pattern) {
-            diagnostics_.error("FDN1130", "struct destructuring requires let",
+            diagnostics_.error("FDN1130", "struct destructuring requires an immutable binding",
                                previous().span);
             return structDestructureStatement(previous());
         }

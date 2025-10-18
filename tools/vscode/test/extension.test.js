@@ -90,7 +90,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.26.0");
+    assert.equal(manifest.version, "0.27.0");
     assert.equal(
         manifest.contributes.configuration.properties["foundation.languageServer.path"].default,
         ""
@@ -631,6 +631,7 @@ test("grammar and completions track compiler keywords", () => {
         "by",
         "fn",
         "let",
+        "const",
         "var",
         "return",
         "discard",
@@ -653,6 +654,20 @@ test("grammar and completions track compiler keywords", () => {
     }
 
     for (const type of ["i32", "u64", "bool", "String", "void", "Option", "Result", "len", "print", "panic"]) {
+        assert.match(grammar, new RegExp(`\\b${type}\\b`));
+        assert.ok(completionLabels.has(type));
+    }
+    for (const keyword of [
+        "const", "methods", "forward", "service", "action", "state_machine", "pipeline",
+        "saga", "task", "spawn", "select", "test", "unsafe", "new", "for", "in"
+    ]) {
+        assert.match(grammar, new RegExp(`\\b${keyword}\\b`));
+        assert.ok(completionLabels.has(keyword));
+    }
+    for (const type of [
+        "i8", "i16", "i64", "u8", "u16", "u32", "f32", "f64", "isize", "usize",
+        "never", "UUID"
+    ]) {
         assert.match(grammar, new RegExp(`\\b${type}\\b`));
         assert.ok(completionLabels.has(type));
     }
@@ -686,7 +701,7 @@ test("grammar and completions track compiler keywords", () => {
     assert.ok(cAbiDeclaration.patterns.some((pattern) =>
         pattern.captures?.[2]?.name === "entity.name.function.external.foundation"
     ));
-    for (const sequence of ["[N]T", "view [T]", "edit [T]"]) {
+    for (const sequence of ["[N]T", "[T]", "&[T]", "view [T]", "edit [T]"]) {
         assert.ok(completionLabels.has(sequence));
     }
     assert.ok(completionLabels.has("fn(...) R"));
@@ -694,14 +709,29 @@ test("grammar and completions track compiler keywords", () => {
     assert.match(snippets["Target declaration"].body.join("\n"), /@target/);
     assert.match(snippets["Typed attribute declaration"].body, /targets/);
     assert.match(snippets["Typed attribute application"].body, /@/);
-    assert.match(snippets["Read environment value"].body.join("\n"), /env\.Get\(view/);
-    assert.match(snippets["Join path"].body, /path\.Join\(view/);
-    assert.match(snippets["Open line reader"].body.join("\n"), /fs\.OpenLines\(view/);
-    assert.match(snippets["Parse JSON value"].body.join("\n"), /json\.Parse\(view/);
+    assert.match(snippets["Read environment value"].body.join("\n"), /env\.Get\(/);
+    assert.doesNotMatch(snippets["Read environment value"].body.join("\n"), /\blet\b|\bview\b/);
+    assert.match(snippets["Join path"].body, /path\.Join\(/);
+    assert.match(snippets["Open line reader"].body.join("\n"), /fs\.OpenLines\(/);
+    assert.match(snippets["Parse JSON value"].body.join("\n"), /json\.Parse\(/);
     assert.match(snippets["String builder"].body.join("\n"), /text\.NewBuilder/);
     assert.match(snippets["Format UTC time"].body.join("\n"), /FormatUtc/);
     assert.match(snippets["Main function with arguments"].body.join("\n"),
-        /main\(args view \[String\]\) i32/);
+        /main\(args \[String\]\) i32/);
+    assert.equal(parsedGrammar.repository.comments.patterns[0].name,
+        "comment.line.documentation.foundation");
+    assert.ok(parsedGrammar.repository.comments.patterns.some((pattern) =>
+        pattern.name === "comment.block.documentation.foundation"
+    ));
+    const blockPatterns = parsedGrammar.repository.comments.patterns.filter((pattern) =>
+        pattern.name?.startsWith("comment.block.")
+    );
+    assert.ok(blockPatterns.every((pattern) =>
+        pattern.patterns?.[0]?.include === "#nestedBlockComments"
+    ));
+    assert.ok(parsedGrammar.repository.nestedBlockComments.patterns.every((pattern) =>
+        pattern.name.startsWith("comment.block.")
+    ));
     assert.match(grammar, /\\\\\[0nrt/);
     assert.equal(
         parsedGrammar.repository.punctuation.patterns[1].match,
@@ -1047,14 +1077,14 @@ test("collects exported contracts and methods across packages", () => {
 test("ships Result handling and panic snippets", () => {
     const snippets = readJson("snippets/foundation.json");
 
-    assert.equal(snippets["Result binding"].prefix, "letelse");
+    assert.equal(snippets["Result binding"].prefix, "constelse");
     assert.equal(snippets["Discard value"].prefix, "discard");
     assert.equal(snippets.Panic.prefix, "panic");
-    assert.equal(snippets["Owned value"].prefix, "own");
-    assert.equal(snippets["View parameter"].prefix, "view");
-    assert.equal(snippets["Edit parameter"].prefix, "edit");
+    assert.equal(snippets["New owned value"].prefix, "new");
+    assert.equal(snippets["Read parameter"].prefix, "readparam");
+    assert.equal(snippets["Edit parameter"].prefix, "editparam");
     assert.equal(snippets["Fixed array binding"].prefix, "array");
-    assert.equal(snippets["View slice parameter"].prefix, "viewslice");
+    assert.equal(snippets["Read slice parameter"].prefix, "readslice");
     assert.equal(snippets["Edit slice parameter"].prefix, "editslice");
     assert.equal(snippets["Indexed assignment"].prefix, "indexset");
     assert.equal(snippets["Package declaration"].prefix, "package");
@@ -1065,6 +1095,40 @@ test("ships Result handling and panic snippets", () => {
     assert.equal(snippets["View method"].prefix, "methodview");
     assert.equal(snippets["Edit method"].prefix, "methodedit");
     assert.equal(snippets["Own method"].prefix, "methodown");
+    assert.equal(snippets["Methods block"].prefix, "methods");
+    assert.equal(snippets["Short guard"].prefix, "guard");
+    assert.equal(snippets["Postfix conditional"].prefix, "ifvalue");
+    assert.equal(snippets.Service.prefix, "service");
+    assert.equal(snippets.Task.prefix, "task");
+    assert.equal(snippets["State machine"].prefix, "statemachine");
+    assert.equal(snippets["Channel select"].prefix, "select");
+    assert.equal(snippets.Pipeline.prefix, "pipeline");
+    assert.equal(snippets.Saga.prefix, "saga");
+    assert.equal(snippets.Test.prefix, "test");
+    assert.equal(snippets["Unsafe block"].prefix, "unsafe");
+});
+
+test("tracks accepted bindings and distributed methods", () => {
+    const completions = collectCompletions(`
+        struct User {
+            name String
+        }
+
+        methods User {
+            fn displayName(self) String { self.name }
+            fn rename(&self, name String) void { self.name = name }
+        }
+
+        fn main() i32 {
+            const user = new User { name = "Mirko" }
+            0
+        }
+    `);
+    const byLabel = new Map(completions.map((entry) => [entry.label, entry]));
+
+    assert.equal(byLabel.get("user").detail, "Local binding");
+    assert.equal(byLabel.get("displayName").detail, "Distributed method of User");
+    assert.equal(byLabel.get("rename").detail, "Distributed method of User");
 });
 
 test("collects declarations that use arrays and slices", () => {
@@ -1127,6 +1191,10 @@ test("collects functions, parameters, and local bindings", () => {
 test("ignores declarations in comments and strings", () => {
     const source = `
         // fn hidden(commented i32) i32 {}
+        /*
+        fn hidden_in_block(blocked i32) i32 {}
+        /* fn hidden_nested(value i32) i32 {} */
+        */
         fn visible(actual String) void {
             let text = "fn hidden_in_string(value i32)"
         }
@@ -1139,17 +1207,20 @@ test("ignores declarations in comments and strings", () => {
     assert.ok(!labels.includes("hidden"));
     assert.ok(!labels.includes("commented"));
     assert.ok(!labels.includes("hidden_in_string"));
+    assert.ok(!labels.includes("hidden_in_block"));
+    assert.ok(!labels.includes("hidden_nested"));
+    assert.ok(!labels.includes("blocked"));
     assert.ok(!labels.includes("value"));
 });
 
 test("masks trivia without changing source offsets", () => {
-    const source = "fn main() void {\n    print(\"escaped \\\" text\") // note\n}\n";
+    const source = "/* outer\n/* nested */\n*/\nfn main() void {\n    print(\"escaped \\\" text\") // note\n}\n";
     const masked = maskTrivia(source);
 
     assert.equal(masked.length, source.length);
     assert.equal(masked.split("\n").length, source.split("\n").length);
     assert.match(masked, /fn main/);
-    assert.doesNotMatch(masked, /escaped|note/);
+    assert.doesNotMatch(masked, /outer|nested|escaped|note/);
 });
 
 test("masks nested attribute applications without changing source offsets", () => {

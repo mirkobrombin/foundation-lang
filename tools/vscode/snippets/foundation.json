@@ -12,8 +12,8 @@
     "Read environment value": {
         "prefix": "envget",
         "body": [
-            "let ${1:key} = \"${2:NAME}\"",
-            "let ${3:value} = env.Get(view ${1:key}) else ${4:error} {",
+            "const ${1:key} = \"${2:NAME}\"",
+            "const ${3:value} = env.Get(${1:key}) else ${4:error} {",
             "    ${5:return 1}",
             "}"
         ],
@@ -21,13 +21,13 @@
     },
     "Join path": {
         "prefix": "pathjoin",
-        "body": "path.Join(view ${1:base}, view ${2:child})",
+        "body": "path.Join(${1:base}, ${2:child})",
         "description": "Join two portable path components"
     },
     "Open line reader": {
         "prefix": "openlines",
         "body": [
-            "let ${1:opened} = fs.OpenLines(view ${2:path}) else ${3:error} {",
+            "const ${1:opened} = fs.OpenLines(${2:path}) else ${3:error} {",
             "    ${4:return 1}",
             "}",
             "var ${5:reader} = ${1:opened}"
@@ -37,7 +37,7 @@
     "Parse JSON value": {
         "prefix": "jsonparse",
         "body": [
-            "let ${1:value} = json.Parse(view ${2:source}) else ${3:error} {",
+            "const ${1:value} = json.Parse(${2:source}) else ${3:error} {",
             "    ${4:return 1}",
             "}"
         ],
@@ -47,8 +47,8 @@
         "prefix": "stringbuilder",
         "body": [
             "var ${1:builder} = text.NewBuilder()",
-            "discard ${1:builder}.Write(view ${2:value})",
-            "let ${3:result} = ${1:builder}.Finish() else ${4:error} {",
+            "discard ${1:builder}.Write(${2:value})",
+            "const ${3:result} = ${1:builder}.Finish() else ${4:error} {",
             "    ${5:return 1}",
             "}"
         ],
@@ -57,8 +57,8 @@
     "Format UTC time": {
         "prefix": "timeutc",
         "body": [
-            "let ${1:instant} = time.FromUnix(${2:seconds})",
-            "let ${3:formatted} = ${1:instant}.FormatUtc() else ${4:error} {",
+            "const ${1:instant} = time.FromUnix(${2:seconds})",
+            "const ${3:formatted} = ${1:instant}.FormatUtc() else ${4:error} {",
             "    ${5:return 1}",
             "}"
         ],
@@ -149,7 +149,7 @@
         "prefix": "contract",
         "body": [
             "contract ${1:Name} {",
-            "    fn ${2:method}(view${3}) ${4:void}",
+            "    fn ${2:method}(self${3}) ${4:void}",
             "}"
         ],
         "description": "Declare a compile-time contract"
@@ -158,7 +158,7 @@
         "prefix": "contractg",
         "body": [
             "contract ${1:Name}<${2:T}> {",
-            "    fn ${3:method}(view, ${4:value} ${2:T}) ${5:void}",
+            "    fn ${3:method}(self, ${4:value} ${2:T}) ${5:void}",
             "}"
         ],
         "description": "Declare a generic compile-time contract"
@@ -175,13 +175,13 @@
     },
     "Delegated contract implementation": {
         "prefix": "implementsby",
-        "body": "struct ${1:Name} implements ${2:Contract} by ${3:field} {\n    ${3:field} ${4:Implementation}\n    ${5}\n}",
+        "body": "struct ${1:Name} implements ${2:Contract} {\n    ${3:field} ${4:Implementation}\n\n    forward ${2:Contract} as ${3:field}\n    ${5}\n}",
         "description": "Delegate a contract implementation to a field"
     },
     "Contract default method": {
         "prefix": "contractdefault",
         "body": [
-            "fn ${1:name}(view${2}) ${3:void} {",
+            "fn ${1:name}(self${2}) ${3:void} {",
             "    ${4}",
             "}"
         ],
@@ -190,7 +190,7 @@
     "View method": {
         "prefix": "methodview",
         "body": [
-            "fn ${1:name}(view${2}) ${3:void} {",
+            "fn ${1:name}(self${2}) ${3:void} {",
             "    ${4}",
             "}"
         ],
@@ -199,7 +199,7 @@
     "Edit method": {
         "prefix": "methodedit",
         "body": [
-            "fn ${1:name}(edit${2}) ${3:void} {",
+            "fn ${1:name}(&self${2}) ${3:void} {",
             "    ${4}",
             "}"
         ],
@@ -208,7 +208,7 @@
     "Own method": {
         "prefix": "methodown",
         "body": [
-            "fn ${1:name}(own${2}) ${3:void} {",
+            "fn ${1:name}(\\$self${2}) ${3:void} {",
             "    ${4}",
             "}"
         ],
@@ -226,7 +226,7 @@
     "Main function with arguments": {
         "prefix": "mainargs",
         "body": [
-            "fn main(args view [String]) i32 {",
+            "fn main(args [String]) i32 {",
             "    ${1:0}",
             "}"
         ],
@@ -258,7 +258,7 @@
     "Closure": {
         "prefix": "closure",
         "body": [
-            "fn(${1:value} ${2:i32}) ${3:i32} capture ${4:captured} {",
+            "fn(${1:value} ${2:i32}) ${3:i32} capture(${4:captured}) {",
             "    ${5:value}",
             "}"
         ],
@@ -267,7 +267,7 @@
     "Owning closure": {
         "prefix": "closureown",
         "body": [
-            "fn(${1:value} ${2:i32}) ${3:i32} capture own ${4:captured} {",
+            "fn(${1:value} ${2:i32}) ${3:i32} capture(\\$${4:captured}) {",
             "    ${5:value}",
             "}"
         ],
@@ -303,8 +303,8 @@
         "description": "Create a while loop"
     },
     "Immutable binding": {
-        "prefix": "let",
-        "body": "let ${1:name} = ${2:value}",
+        "prefix": "const",
+        "body": "const ${1:name} = ${2:value}",
         "description": "Declare an immutable local binding"
     },
     "Mutable binding": {
@@ -313,9 +313,9 @@
         "description": "Declare a mutable local binding"
     },
     "Result binding": {
-        "prefix": "letelse",
+        "prefix": "constelse",
         "body": [
-            "let ${1:value} = ${2:result} else ${3:error} {",
+            "const ${1:value} = ${2:result} else ${3:error} {",
             "    ${4:return .Err(${3:error})}",
             "}"
         ],
@@ -333,13 +333,13 @@
     },
     "Struct destructuring": {
         "prefix": "destructure",
-        "body": "let ${1:Type} { ${2:field}${3: as ${4:name}} } = ${5:value}",
+        "body": "const ${1:Type} { ${2:field}${3: as ${4:name}} } = ${5:value}",
         "description": "Consume every field of a struct value"
     },
     "Deterministic drop": {
         "prefix": "drop",
         "body": [
-            "fn drop(edit) void {",
+            "fn drop(&self) void {",
             "    ${1}",
             "}"
         ],
@@ -350,19 +350,19 @@
         "body": "var ${1:values} = collections.NewList<${2:Type}>()",
         "description": "Create a standard dynamic list"
     },
-    "Owned value": {
-        "prefix": "own",
-        "body": "own ${1:value}",
-        "description": "Allocate an exclusive owned value"
+    "New owned value": {
+        "prefix": "new",
+        "body": "new ${1:Type} {\n    ${2}\n}",
+        "description": "Construct a fresh owned value"
     },
-    "View parameter": {
-        "prefix": "view",
-        "body": "${1:value} view ${2:Type}",
-        "description": "Declare a shared borrowed parameter"
+    "Read parameter": {
+        "prefix": "readparam",
+        "body": "${1:value} ${2:Type}",
+        "description": "Declare a read-only parameter"
     },
     "Edit parameter": {
-        "prefix": "edit",
-        "body": "${1:value} edit ${2:Type}",
+        "prefix": "editparam",
+        "body": "&${1:value} ${2:Type}",
         "description": "Declare an exclusive mutable borrowed parameter"
     },
     "Fixed array binding": {
@@ -370,15 +370,137 @@
         "body": "${1:values} [${2:N}]${3:Type} = [${4}]",
         "description": "Declare a fixed array value"
     },
-    "View slice parameter": {
-        "prefix": "viewslice",
-        "body": "${1:values} view [${2:Type}]",
+    "Read slice parameter": {
+        "prefix": "readslice",
+        "body": "${1:values} [${2:Type}]",
         "description": "Declare a shared slice parameter"
     },
     "Edit slice parameter": {
         "prefix": "editslice",
-        "body": "${1:values} edit [${2:Type}]",
+        "body": "&${1:values} [${2:Type}]",
         "description": "Declare a mutable slice parameter"
+    },
+    "Transfer parameter": {
+        "prefix": "transferparam",
+        "body": "\\$${1:value} ${2:Type}",
+        "description": "Declare a consuming parameter"
+    },
+    "Methods block": {
+        "prefix": "methods",
+        "body": [
+            "methods ${1:Type} {",
+            "    fn ${2:name}(self) ${3:void} {",
+            "        ${4}",
+            "    }",
+            "}"
+        ],
+        "description": "Add methods to a package-owned type"
+    },
+    "Short guard": {
+        "prefix": "guard",
+        "body": "if ${1:condition} return ${2:value}",
+        "description": "Exit through a one-line divergent guard"
+    },
+    "Postfix conditional": {
+        "prefix": "ifvalue",
+        "body": "${1:value} if ${2:condition} else ${3:fallback}",
+        "description": "Choose between two simple values"
+    },
+    "For loop": {
+        "prefix": "for",
+        "body": [
+            "for ${1:value} in ${2:values} {",
+            "    ${3}",
+            "}"
+        ],
+        "description": "Iterate over a sequence or iterator"
+    },
+    "Service": {
+        "prefix": "service",
+        "body": [
+            "service ${1:Name} {",
+            "    ${2}",
+            "}"
+        ],
+        "description": "Declare a Foundation service"
+    },
+    "Action": {
+        "prefix": "action",
+        "body": [
+            "action ${1:Name}(${2:command} ${3:Command}) Result<${4:void}, ${5:Error}> {",
+            "    ${6:.Ok}",
+            "}"
+        ],
+        "description": "Declare a typed action handler"
+    },
+    "Task": {
+        "prefix": "task",
+        "body": [
+            "task ${1:name}(${2}) ${3:Result<void, Error>} {",
+            "    ${4:.Ok}",
+            "}"
+        ],
+        "description": "Declare a suspendable typed function"
+    },
+    "State machine": {
+        "prefix": "statemachine",
+        "body": [
+            "state_machine ${1:Name} {",
+            "    state ${2:Initial}",
+            "    state ${3:Done}",
+            "",
+            "    on ${4:Complete} from ${2:Initial} to ${3:Done}",
+            "}"
+        ],
+        "description": "Declare typed states and transitions"
+    },
+    "Channel select": {
+        "prefix": "select",
+        "body": [
+            "select {",
+            "    const ${1:value} = ${2:receiver}.receive(): ${3}",
+            "    timeout ${4:5.seconds}: ${5}",
+            "}"
+        ],
+        "description": "Wait for a channel operation or timeout"
+    },
+    "Pipeline": {
+        "prefix": "pipeline",
+        "body": [
+            "pipeline ${1:Name}(${2:input} ${3:Input}) ${4:Result<Output, Error>} {",
+            "    step ${5:name} using ${6:function}",
+            "}"
+        ],
+        "description": "Declare a typed processing pipeline"
+    },
+    "Saga": {
+        "prefix": "saga",
+        "body": [
+            "saga ${1:Name}(${2:input} ${3:Input}) ${4:Result<Output, Error>} {",
+            "    step ${5:name} using ${6:function}",
+            "        compensate ${7:compensation}",
+            "}"
+        ],
+        "description": "Declare a compensated workflow"
+    },
+    "Test": {
+        "prefix": "test",
+        "body": [
+            "test \"${1:description}\" {",
+            "    ${2}",
+            "}"
+        ],
+        "description": "Declare an executable Foundation test"
+    },
+    "Unsafe block": {
+        "prefix": "unsafe",
+        "body": [
+            "// SAFETY: ${1:proof}",
+            "unsafe {",
+            "    ${2}",
+            "}"
+        ],
+        "description": "Bound raw pointer or unsafe native operations"
     },
     "Indexed assignment": {
         "prefix": "indexset",

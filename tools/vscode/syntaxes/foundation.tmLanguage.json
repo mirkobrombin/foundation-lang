@@ -9,6 +9,7 @@
         { "include": "#attributeDefinitions" },
         { "include": "#attributeApplications" },
         { "include": "#packageDeclarations" },
+        { "include": "#targetDeclarations" },
         { "include": "#cAbiDeclarations" },
         { "include": "#contractDefinitions" },
         { "include": "#structDefinitions" },
@@ -145,9 +146,50 @@
         "comments": {
             "patterns": [
                 {
-                    "name": "comment.line.double-slash.foundation",
-                    "begin": "//",
+                    "name": "comment.line.documentation.foundation",
+                    "begin": "///",
                     "end": "$"
+                },
+                {
+                    "name": "comment.line.double-slash.foundation",
+                    "begin": "//(?!/)",
+                    "end": "$"
+                },
+                {
+                    "name": "comment.block.documentation.foundation",
+                    "begin": "/\\*\\*",
+                    "end": "\\*/",
+                    "patterns": [
+                        { "include": "#nestedBlockComments" }
+                    ]
+                },
+                {
+                    "name": "comment.block.foundation",
+                    "begin": "/\\*(?!\\*)",
+                    "end": "\\*/",
+                    "patterns": [
+                        { "include": "#nestedBlockComments" }
+                    ]
+                }
+            ]
+        },
+        "nestedBlockComments": {
+            "patterns": [
+                {
+                    "name": "comment.block.documentation.foundation",
+                    "begin": "/\\*\\*",
+                    "end": "\\*/",
+                    "patterns": [
+                        { "include": "#nestedBlockComments" }
+                    ]
+                },
+                {
+                    "name": "comment.block.foundation",
+                    "begin": "/\\*(?!\\*)",
+                    "end": "\\*/",
+                    "patterns": [
+                        { "include": "#nestedBlockComments" }
+                    ]
                 }
             ]
         },
@@ -204,6 +246,40 @@
                         "2": { "name": "entity.name.namespace.foundation" },
                         "3": { "name": "keyword.control.import.as.foundation" },
                         "4": { "name": "variable.other.alias.foundation" }
+                    }
+                }
+            ]
+        },
+        "targetDeclarations": {
+            "patterns": [
+                {
+                    "match": "\\b(methods|service|state_machine|pipeline|saga)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.foundation" },
+                        "2": { "name": "entity.name.type.foundation" }
+                    }
+                },
+                {
+                    "match": "\\b(task|action)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.function.foundation" },
+                        "2": { "name": "entity.name.function.foundation" }
+                    }
+                },
+                {
+                    "match": "\\b(forward)\\s+([A-Z][A-Za-z0-9_]*(?:\\s*<[^{}()\\n]+>)?)\\s+(as)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.delegation.foundation" },
+                        "2": { "name": "entity.name.type.interface.foundation" },
+                        "3": { "name": "keyword.control.import.as.foundation" },
+                        "4": { "name": "variable.other.member.delegate.foundation" }
+                    }
+                },
+                {
+                    "match": "\\b(test)\\s+(\"(?:\\\\.|[^\"\\\\])*\")",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.function.foundation" },
+                        "2": { "name": "string.quoted.double.foundation" }
                     }
                 }
             ]
@@ -458,7 +534,7 @@
         "bindings": {
             "patterns": [
                 {
-                    "match": "\\b(let|var)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "match": "\\b(let|const|var)\\s+([A-Za-z_][A-Za-z0-9_]*)",
                     "captures": {
                         "1": { "name": "storage.type.foundation" },
                         "2": { "name": "variable.other.readwrite.foundation" }
@@ -476,7 +552,7 @@
             "patterns": [
                 {
                     "name": "meta.struct.pattern.foundation",
-                    "begin": "\\b(let)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s*(\\{)",
+                    "begin": "\\b(let|const)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s*(\\{)",
                     "beginCaptures": {
                         "1": { "name": "storage.type.foundation" },
                         "2": { "name": "entity.name.type.struct.foundation" },
@@ -503,7 +579,7 @@
             "patterns": [
                 {
                     "name": "keyword.declaration.foundation",
-                    "match": "\\b(attribute|extern|struct|enum|contract|implements|extends|by|fn)\\b"
+                    "match": "\\b(attribute|extern|struct|enum|contract|implements|extends|by|fn|methods|service|action|state_machine|pipeline|saga|task|test)\\b"
                 },
                 {
                     "name": "keyword.declaration.attribute.foundation",
@@ -515,7 +591,7 @@
                 },
                 {
                     "name": "keyword.control.foundation",
-                    "match": "\\b(return|discard|if|else|while|match|capture|replace|with)\\b"
+                    "match": "\\b(return|discard|if|else|while|for|in|break|continue|match|capture|replace|with|new|spawn|select|timeout|unsafe|state|on|from|to|step|using|retry|compensate|forward)\\b"
                 },
                 {
                     "name": "constant.language.boolean.foundation",
@@ -528,6 +604,10 @@
                 {
                     "name": "storage.modifier.ownership.foundation",
                     "match": "\\b(own|view|edit)\\b"
+                },
+                {
+                    "name": "storage.modifier.ownership.foundation",
+                    "match": "[&$](?=[A-Za-z_])"
                 }
             ]
         },
@@ -535,7 +615,7 @@
             "patterns": [
                 {
                     "name": "support.type.foundation",
-                    "match": "\\b(i32|u64|bool|String|void|Option|Result)\\b"
+                    "match": "\\b(bool|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|isize|usize|void|never|String|UUID|Option|Result|Sender|Receiver|Cancellation|Task)\\b"
                 }
             ]
         },
@@ -622,7 +702,7 @@
             "patterns": [
                 {
                     "name": "meta.type.application.foundation",
-                    "begin": "\\b([A-Z][A-Za-z0-9_]*|i32|u64|bool|String|void)\\s*(<)",
+                    "begin": "\\b([A-Z][A-Za-z0-9_]*|bool|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|isize|usize|void|never|String|UUID)\\s*(<)",
                     "beginCaptures": {
                         "1": { "name": "entity.name.type.foundation" },
                         "2": { "name": "punctuation.definition.type-arguments.begin.foundation" }
@@ -703,7 +783,7 @@
         "typePositions": {
             "patterns": [
                 {
-                    "match": "\\b(?:let|var)\\s+[A-Za-z_][A-Za-z0-9_]*\\s+((?:(?:own|view|edit)\\s+)?[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?:\\s*<[^={};\\n]+>)?)\\s*(?==)",
+                    "match": "\\b(?:let|const|var)\\s+[A-Za-z_][A-Za-z0-9_]*\\s+((?:(?:own|view|edit)\\s+)?[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?:\\s*<[^={};\\n]+>)?)\\s*(?==)",
                     "captures": {
                         "1": { "name": "entity.name.type.foundation" }
                     }
@@ -747,7 +827,7 @@
             "patterns": [
                 {
                     "name": "keyword.operator.foundation",
-                    "match": "==|!=|<=|>=|&&|\\|\\||[=+\\-*/%!<>]"
+                    "match": "==|!=|<=|>=|&&|\\|\\||[=+\\-*/%!<>&$]"
                 }
             ]
         },

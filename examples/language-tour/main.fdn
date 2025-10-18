@@ -188,71 +188,71 @@ fn main(args view [String]) i32 {
     discard env.Home()
     typeMarker<Result<i32, bool>>()
 
-    let first i32 = 1
-    let byteCount u64 = 11925602363
-    let nextByteCount = byteCount + 1
-    let count = 4
+    const first i32 = 1
+    const byteCount u64 = 11925602363
+    const nextByteCount = byteCount + 1
+    const count = 4
     var current = first
-    let typedIdentity fn(i32) i32 = identity<i32>
-    let copied = 2
-    let copyCallback = fn(value i32) i32 capture copied {
+    const typedIdentity fn(i32) i32 = identity<i32>
+    const copied = 2
+    const copyCallback = fn(value i32) i32 capture copied {
         value + copied
     }
-    let base = 3
-    let viewCallback = fn(value i32) i32 capture view base {
+    const base = 3
+    const viewCallback = fn(value i32) i32 capture view base {
         value + base
     }
     var total = 4
-    let editCallback = fn(value i32) i32 capture edit total {
+    const editCallback = fn(value i32) i32 capture edit total {
         total = total + value
         total
     }
-    let label = "owned"
-    let ownCallback = fn() i32 capture own label {
+    const label = "owned"
+    const ownCallback = fn() i32 capture own label {
         if label == "owned" {
             return 1
         }
         0
     }
-    let callbackValue = apply(1, view typedIdentity) + copyCallback(1) +
+    const callbackValue = apply(1, view typedIdentity) + copyCallback(1) +
         viewCallback(1) + editCallback(1) + ownCallback()
     var counter = own TourCounter { value = 0 }
     incrementCounter(edit counter)
-    let counterValue = readCounter(view counter)
-    let directCounterValue = counter.read()
+    const counterValue = readCounter(view counter)
+    const directCounterValue = counter.read()
     var counterProxy = TourCounterProxy { counter = TourCounter { value = 0 } }
     counterProxy.incrementTwice()
-    let proxyCounterValue = readCounter(view counterProxy)
+    const proxyCounterValue = readCounter(view counterProxy)
     var dynamicCounter = makeCounter(0)
     incrementCounter(edit dynamicCounter)
-    let dynamicCounterValue = readCounter(view dynamicCounter)
+    const dynamicCounterValue = readCounter(view dynamicCounter)
     discard dynamicCounter
 
     var numbers = [1, 2, 3]
     clearFirst(edit numbers)
-    let sequenceValue = sum(view numbers)
+    const sequenceValue = sum(view numbers)
     var labels = ["arrays", " and slices"]
-    let sequenceLabel = labels[0] + labels[1]
+    const sequenceLabel = labels[0] + labels[1]
     print(sequenceLabel)
     labels[1] = " updated"
-    let ownedLabels = own ["owned arrays"]
+    const ownedLabels = own ["owned arrays"]
     printFirst(view ownedLabels)
     discard ownedLabels
 
     var phase = "before"
-    let previousPhase = replace phase with "after"
+    const previousPhase = replace phase with "after"
     print(previousPhase + phase)
-    let TourOwned { label as destructuredLabel count as destructuredCount } =
+    const TourOwned { label as destructuredLabel count as destructuredCount } =
         own TourOwned { label = "destructured" count = 1 }
     if destructuredCount == 1 {
         print(destructuredLabel)
     }
-    let resource = own TourResource { label = "cleanup" }
+    const resource = own TourResource { label = "cleanup" }
     discard resource
 
     var list = collections.NewList<String>()
     list.PushFront("list item")
-    let listItem = match list.PopFront() {
+    const listItem = match list.PopFront() {
         None: "missing list item"
         Some(value): value
     }
@@ -263,44 +263,44 @@ fn main(args view [String]) i32 {
         current = current + 1
     }
 
-    let result = TourResult {
+    const result = TourResult {
         code = identity(current - 5)
         message = "done"
     }
-    let optional = Option.Some(result.code)
+    const optional = Option.Some(result.code)
     print(result.message)
-    let state = TourState.Done(result)
-    let delivered = Result<i32, bool>.Ok(maybeOr(optional, 1))
-    let deliveredValue = delivered else failed {
+    const state = TourState.Done(result)
+    const delivered = Result<i32, bool>.Ok(maybeOr(optional, 1))
+    const deliveredValue = delivered else failed {
         if failed {
             panic("delivery failed")
         }
         return 1
     }
-    let epoch = time.FromUnix(0)
-    let epochText = epoch.FormatUtc() else error {
+    const epoch = time.FromUnix(0)
+    const epochText = epoch.FormatUtc() else error {
         discard error
         return 1
     }
-    let timeMatches = epochText == "1970-01-01T00:00:00Z"
+    const timeMatches = epochText == "1970-01-01T00:00:00Z"
     discard Result<i32, bool>.Err(false)
-    let movedCounter = counter
+    const movedCounter = counter
     discard movedCounter
-    let platformMatches = platform.Name(platform.Current()) == expectedPlatform()
-    let pathBase = "/tmp"
-    let pathChild = "foundation"
-    let joinedPath = path.Join(view pathBase, view pathChild)
-    let pathPart = "foundation"
-    let pathMatches = text.Contains(view joinedPath, view pathPart)
-    let jsonSource = "true"
-    let decoded = json.Parse(view jsonSource) else error {
+    const platformMatches = platform.Name(platform.Current()) == expectedPlatform()
+    const pathBase = "/tmp"
+    const pathChild = "foundation"
+    const joinedPath = path.Join(view pathBase, view pathChild)
+    const pathPart = "foundation"
+    const pathMatches = text.Contains(view joinedPath, view pathPart)
+    const jsonSource = "true"
+    const decoded = json.Parse(view jsonSource) else error {
         discard error
         return 1
     }
-    let jsonMatches = parsedTruth(decoded)
-    let verified = Result<i32, bool>.Ok(deliveredValue)
-    let argumentCount = len(args)
-    let formattedCount = format.U64(argumentCount)
+    const jsonMatches = parsedTruth(decoded)
+    const verified = Result<i32, bool>.Ok(deliveredValue)
+    const argumentCount = len(args)
+    const formattedCount = format.U64(argumentCount)
     discard formattedCount
     if (inRange(current, 5, 5) || false) && nextByteCount == 11925602364 &&
         platformMatches && pathMatches && jsonMatches && timeMatches && argumentCount == 0 &&

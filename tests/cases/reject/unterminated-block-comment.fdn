@@ -1,0 +1,4 @@
+fn main() i32 {
+    const answer = 42
+    /* The outer comment never closes.
+    /* The nested comment does. */
