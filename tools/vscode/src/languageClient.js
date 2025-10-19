@@ -178,7 +178,7 @@ class FoundationLanguageClient {
         this.process.stderr.on("data", (chunk) => this.output.append(chunk.toString("utf8")));
         this.process.on("error", (error) => this.fail(error));
         this.process.on("exit", (code, signal) => {
-            if (!this.stopping && code !== 0) {
+            if (!this.stopping) {
                 this.fail(new Error(`foundation-ls exited with code ${code}, signal ${signal}`));
             }
         });
@@ -197,8 +197,7 @@ class FoundationLanguageClient {
             }))
         });
         this.notify("initialized", {});
-        this.ready = true;
-        this.setStatus("ready", executable);
+        this.output.appendLine("Server initialized");
 
         const semanticLegend = new this.vscode.SemanticTokensLegend([
             "function", "method", "struct", "property", "enum", "enumMember",
@@ -215,11 +214,6 @@ class FoundationLanguageClient {
             });
         };
 
-        for (const document of this.vscode.workspace.textDocuments) {
-            if (document.languageId === "foundation") {
-                this.open(document);
-            }
-        }
         this.context.subscriptions.push(
             sourceWatcher,
             manifestWatcher,
@@ -351,6 +345,12 @@ class FoundationLanguageClient {
                 (uri, position) => this.openCompositeType(uri, position)
             )
         );
+        this.ready = true;
+        for (const document of this.vscode.workspace.textDocuments) {
+            this.open(document);
+        }
+        this.setStatus("ready", executable);
+        this.output.appendLine("IntelliSense providers registered");
     }
 
     open(document) {
@@ -1128,6 +1128,7 @@ class FoundationLanguageClient {
     }
 
     fail(error) {
+        this.ready = false;
         this.output.appendLine(error.message);
         this.setStatus("error", error.message);
         this.output.show(true);

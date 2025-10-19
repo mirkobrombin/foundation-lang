@@ -1,0 +1,7 @@
+format foundation.package/v1
+name tour.app
+version 1.0.0
+sdk ^0.1.0
+source src
+dependency tour.math 1.0.0 path ../math
+dependency tour.text 1.0.0 path ../text

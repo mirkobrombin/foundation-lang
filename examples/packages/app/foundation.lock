@@ -1,0 +1,7 @@
+format foundation.lock/v1
+root tour.app 1.0.0
+target linux
+package tour.math 1.0.0 sha256:73e4873fc12f5460a0bd801857754e1dd53233f867ac2fa909c688af575e1dff path ../math
+package tour.text 1.0.0 sha256:ad765341987e7e61eb81097c6cccca99d203a11aba1babab0b2bf89218815ad8 path ../text
+edge tour.app tour.math
+edge tour.app tour.text

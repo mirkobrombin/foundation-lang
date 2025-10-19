@@ -1,12 +1,13 @@
 # Foundation package example
 
-This project is the executable reference for package declarations, file-local imports, aliases,
-same-package internal access, exported generic functions and value types, and cross-package enum
-matching. It also proves that a local function value can shadow a package function. It is part of
-the end-to-end compiler suite.
+This project is the runnable package-system reference. The application depends on local packages
+through locked paths, imports them per file, and uses both public declarations and same-package
+internal declarations. The source also covers aliases, generic exports, cross-package enum matches,
+and local shadowing of a package function. Each package keeps the lock for its own target.
 
 ```sh
 cmake --preset dev
 cmake --build --preset dev
-./build/dev/foundationc run examples/packages
+./build/dev/foundationc package verify examples/packages/app
+./build/dev/foundationc run examples/packages/app
 ```

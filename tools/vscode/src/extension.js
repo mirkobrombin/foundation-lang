@@ -8,6 +8,7 @@ let languageClient;
 function activate(context) {
     languageClient = new FoundationLanguageClient(vscode, context);
     languageClient.start().catch((error) => {
+        languageClient.fail(error);
         vscode.window.showErrorMessage(`Foundation language server: ${error.message}`);
     });
 }

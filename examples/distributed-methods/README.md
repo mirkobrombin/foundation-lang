@@ -4,7 +4,7 @@ This project keeps one `User` type, its constructor, and its methods in separate
 owning package. It is the executable fixture for method aggregation and compiler-backed editor
 features.
 
-Open `app/main.fdn`, then try:
+Open `app/src/main.fdn`, then try:
 
 - Hover `NewUser`, `Rename`, `AddScore`, and `User` for declarations and documentation.
 - Place the cursor inside a call to see the active parameter and its documentation.
@@ -13,5 +13,6 @@ Open `app/main.fdn`, then try:
 - Run `Foundation: Open Composite Type View` on `User` to edit its distributed declaration.
 
 ```sh
-foundationc run examples/distributed-methods
+foundationc package verify examples/distributed-methods/app
+foundationc run examples/distributed-methods/app
 ```

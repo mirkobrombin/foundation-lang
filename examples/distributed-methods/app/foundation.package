@@ -1,0 +1,6 @@
+format foundation.package/v1
+name example.app
+version 1.0.0
+sdk ^0.1.0
+source src
+dependency example.profile 1.0.0 path ../profile

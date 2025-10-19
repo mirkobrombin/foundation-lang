@@ -57,6 +57,10 @@ test("registers Foundation source files", () => {
         path.join(extensionRoot, "src/languageClient.js"),
         "utf8"
     );
+    const extensionEntry = fs.readFileSync(
+        path.join(extensionRoot, "src/extension.js"),
+        "utf8"
+    );
     assert.match(packagingScript, /package\.json/);
     assert.match(packagingScript, /foundation-lang-\$version\.vsix/);
     assert.match(packagingScript, /languageClient\.js/);
@@ -99,7 +103,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.32.0");
+    assert.equal(manifest.version, "0.33.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -110,6 +114,9 @@ test("registers Foundation source files", () => {
     );
     assert.match(packagingScript, /extension\/bin\/\$platform/);
     assert.match(packagingScript, /FOUNDATION_LANGUAGE_SERVER/);
+    assert.match(extensionEntry, /languageClient\.fail\(error\)/);
+    assert.match(languageClient, /Server initialized/);
+    assert.match(languageClient, /IntelliSense providers registered/);
 });
 
 test("prefers the bundled platform language server", () => {
