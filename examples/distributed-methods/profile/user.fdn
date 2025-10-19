@@ -1,0 +1,10 @@
+package example.profile
+
+/// A user profile assembled with methods from several source files.
+struct User {
+    /// The name shown to people.
+    Name String
+
+    /// The current profile score.
+    Score i32
+}

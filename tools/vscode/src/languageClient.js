@@ -2,7 +2,14 @@
 
 const childProcess = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
+const {
+    compositeTypeName,
+    extractCompositeEdits,
+    renderCompositeType,
+    textAtRange
+} = require("./compositeType");
 
 const maxMessageBytes = 16 * 1024 * 1024;
 
@@ -115,6 +122,7 @@ class FoundationLanguageClient {
         this.pending = new Map();
         this.ready = false;
         this.stopping = false;
+        this.compositeSessions = new Map();
         this.output = vscode.window.createOutputChannel("Foundation Language Server");
         this.diagnostics = vscode.languages.createDiagnosticCollection("foundation");
         context.subscriptions.push(this.output, this.diagnostics);
@@ -194,6 +202,8 @@ class FoundationLanguageClient {
             this.vscode.workspace.onDidOpenTextDocument((document) => this.open(document)),
             this.vscode.workspace.onDidChangeTextDocument((event) => this.change(event.document)),
             this.vscode.workspace.onDidCloseTextDocument((document) => this.close(document)),
+            this.vscode.workspace.onDidSaveTextDocument((document) =>
+                this.saveCompositeType(document)),
             this.vscode.workspace.onDidChangeWorkspaceFolders((event) => {
                 const folder = (item) => ({ uri: item.uri.toString(), name: item.name });
                 this.notify("workspace/didChangeWorkspaceFolders", {
@@ -231,6 +241,9 @@ class FoundationLanguageClient {
             }),
             this.vscode.languages.registerCodeLensProvider("foundation", {
                 provideCodeLenses: (document, token) => this.codeLenses(document, token)
+            }),
+            this.vscode.languages.registerDocumentLinkProvider("foundation", {
+                provideDocumentLinks: (document) => this.compositeDocumentLinks(document)
             }),
             this.vscode.languages.registerTypeHierarchyProvider("foundation", {
                 prepareTypeHierarchy: (document, position, token) =>
@@ -298,7 +311,11 @@ class FoundationLanguageClient {
             }),
             this.vscode.languages.registerWorkspaceSymbolProvider({
                 provideWorkspaceSymbols: (query, token) => this.workspaceSymbols(query, token)
-            })
+            }),
+            this.vscode.commands.registerCommand(
+                "foundation.openCompositeType",
+                (uri, position) => this.openCompositeType(uri, position)
+            )
         );
     }
 
@@ -327,6 +344,12 @@ class FoundationLanguageClient {
             textDocument: { uri: document.uri.toString() }
         });
         this.diagnostics.delete(document.uri);
+        const key = document.uri.toString();
+        const session = this.compositeSessions.get(key);
+        if (session) {
+            this.compositeSessions.delete(key);
+            fs.rmSync(session.directory, { recursive: true, force: true });
+        }
     }
 
     handleMessage(message) {
@@ -425,6 +448,20 @@ class FoundationLanguageClient {
             return undefined;
         }
         const contents = new this.vscode.MarkdownString(result.contents?.value || "");
+        if (result.foundationComposite) {
+            const argumentsValue = encodeURIComponent(JSON.stringify([
+                result.foundationComposite.uri,
+                result.foundationComposite.position
+            ]));
+            const link = `\n\n[$(symbol-structure) Open Composite Type View]` +
+                `(command:foundation.openCompositeType?${argumentsValue})`;
+            if (typeof contents.appendMarkdown === "function") {
+                contents.appendMarkdown(link);
+            } else {
+                contents.value += link;
+            }
+            contents.isTrusted = { enabledCommands: ["foundation.openCompositeType"] };
+        }
         return new this.vscode.Hover(contents, this.range(result.range));
     }
 
@@ -487,6 +524,17 @@ class FoundationLanguageClient {
             textDocument: { uri: document.uri.toString() }
         }, token);
         return (result || []).map((value) => {
+            if (value.command.command === "foundation.openCompositeType") {
+                const [uri, position] = value.command.arguments;
+                return new this.vscode.CodeLens(this.range(value.range), {
+                    title: value.command.title,
+                    command: value.command.command,
+                    arguments: [
+                        this.vscode.Uri.parse(uri),
+                        new this.vscode.Position(position.line, position.character)
+                    ]
+                });
+            }
             const [uri, position, locations] = value.command.arguments;
             const command = {
                 title: value.command.title,
@@ -502,6 +550,201 @@ class FoundationLanguageClient {
             };
             return new this.vscode.CodeLens(this.range(value.range), command);
         });
+    }
+
+    compositeModel(model) {
+        return {
+            ...model,
+            fragments: model.fragments.map((fragment) => ({
+                ...fragment,
+                displayPath: typeof this.vscode.workspace.asRelativePath === "function"
+                    ? this.vscode.workspace.asRelativePath(
+                        this.vscode.Uri.parse(fragment.uri), false)
+                    : fragment.path
+            }))
+        };
+    }
+
+    compositeDocumentLinks(document) {
+        const session = this.compositeSessions.get(document.uri.toString());
+        if (!session) {
+            return [];
+        }
+        const contents = document.getText();
+        const links = [];
+        for (const fragment of session.fragments) {
+            const location = `${fragment.displayPath || fragment.path}:${fragment.line}`;
+            const header = `// Source: ${location}`;
+            const headerOffset = contents.indexOf(header);
+            if (headerOffset < 0) {
+                continue;
+            }
+            const start = headerOffset + header.indexOf(location);
+            const sourceUri = this.vscode.Uri.parse(fragment.uri);
+            links.push({
+                range: new this.vscode.Range(
+                    document.positionAt(start),
+                    document.positionAt(start + location.length)
+                ),
+                target: sourceUri.with({ fragment: `L${fragment.line}` }),
+                tooltip: `Open ${location}`
+            });
+        }
+        return links;
+    }
+
+    async requestCompositeType(sourceUri, position, typeName, packageName) {
+        const params = typeName
+            ? { sourceUri, typeName, packageName }
+            : {
+                textDocument: { uri: sourceUri },
+                position: { line: position.line, character: position.character }
+            };
+        return this.request("foundation/compositeType", params);
+    }
+
+    async openCompositeType(uriValue, positionValue) {
+        const sourceUri = typeof uriValue === "string" ? uriValue : uriValue.toString();
+        const position = positionValue || { line: 0, character: 0 };
+        const value = await this.requestCompositeType(sourceUri, position);
+        if (!value) {
+            this.vscode.window.showErrorMessage(
+                "Foundation could not assemble this type from the current project"
+            );
+            return;
+        }
+        const model = this.compositeModel(value);
+        const rendered = renderCompositeType(model);
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), "foundation-composite-"));
+        const filename = model.typeName.replace(/[^A-Za-z0-9_]/g, "_") + ".fdn";
+        const file = path.join(directory, filename);
+        fs.writeFileSync(file, rendered.text, "utf8");
+        const uri = this.vscode.Uri.file(file);
+        this.compositeSessions.set(uri.toString(), {
+            directory,
+            sourceUri: model.sourceUri,
+            typeName: model.typeName,
+            packageName: model.packageName,
+            fragments: rendered.fragments,
+            suppressSave: false
+        });
+        const document = await this.vscode.workspace.openTextDocument(uri);
+        await this.vscode.window.showTextDocument(document, { preview: false });
+    }
+
+    async sourceText(uri) {
+        const open = this.vscode.workspace.textDocuments.find(
+            (document) => document.uri.toString() === uri.toString()
+        );
+        if (open) {
+            return open.getText();
+        }
+        return Buffer.from(await this.vscode.workspace.fs.readFile(uri)).toString("utf8");
+    }
+
+    async refreshCompositeType(document, session, typeName) {
+        const value = await this.requestCompositeType(
+            session.sourceUri, { line: 0, character: 0 }, typeName, session.packageName
+        );
+        if (!value) {
+            return;
+        }
+        const model = this.compositeModel(value);
+        const rendered = renderCompositeType(model);
+        const edit = new this.vscode.WorkspaceEdit();
+        edit.replace(
+            document.uri,
+            new this.vscode.Range(
+                new this.vscode.Position(0, 0),
+                document.positionAt(document.getText().length)
+            ),
+            rendered.text
+        );
+        session.suppressSave = true;
+        try {
+            if (await this.vscode.workspace.applyEdit(edit)) {
+                session.fragments = rendered.fragments;
+                session.typeName = model.typeName;
+                session.packageName = model.packageName;
+                await document.save();
+            }
+        } finally {
+            session.suppressSave = false;
+        }
+    }
+
+    async saveCompositeType(document) {
+        const session = this.compositeSessions.get(document.uri.toString());
+        if (!session || session.suppressSave) {
+            return;
+        }
+        try {
+            const requestedTypeName = compositeTypeName(document.getText(), session.typeName);
+            if (requestedTypeName !== session.typeName) {
+                throw new Error("Rename the type with Foundation Rename, then reopen this view");
+            }
+            const current = await this.requestCompositeType(
+                session.sourceUri,
+                { line: 0, character: 0 },
+                session.typeName,
+                session.packageName
+            );
+            if (!current) {
+                throw new Error("The source type no longer exists");
+            }
+            const sourceFragments = new Map(
+                current.fragments.map((fragment) => [fragment.key, fragment])
+            );
+            const requestedEdits = extractCompositeEdits(
+                document.getText(), session.fragments
+            );
+            const workspaceEdit = new this.vscode.WorkspaceEdit();
+            const changedUris = new Set();
+            let editCount = 0;
+            for (const requested of requestedEdits) {
+                const source = sourceFragments.get(requested.fragment.key);
+                if (!source || source.text !== requested.fragment.text) {
+                    throw new Error(
+                        `Source changed since the view opened: ${requested.fragment.displayPath}`
+                    );
+                }
+                const uri = this.vscode.Uri.parse(source.uri);
+                const contents = await this.sourceText(uri);
+                if (textAtRange(contents, source.range) !== source.text) {
+                    throw new Error(
+                        `Source changed since the view opened: ${requested.fragment.displayPath}`
+                    );
+                }
+                if (requested.text === source.text) {
+                    continue;
+                }
+                workspaceEdit.replace(uri, this.range(source.range), requested.text);
+                changedUris.add(source.uri);
+                ++editCount;
+            }
+            if (editCount === 0) {
+                this.vscode.window.setStatusBarMessage(
+                    "Foundation: composite type has no source changes", 2500
+                );
+                return;
+            }
+            if (!await this.vscode.workspace.applyEdit(workspaceEdit)) {
+                throw new Error("VS Code rejected the composite workspace edit");
+            }
+            this.notify("workspace/didChangeWatchedFiles", {
+                changes: [...changedUris].map((uri) => ({ uri, type: 2 }))
+            });
+            await this.refreshCompositeType(document, session, requestedTypeName);
+            this.vscode.window.setStatusBarMessage(
+                `Foundation: applied ${editCount} composite source edit` +
+                    (editCount === 1 ? "" : "s"),
+                3000
+            );
+        } catch (error) {
+            this.vscode.window.showErrorMessage(
+                `Foundation Composite Type View: ${error.message}`
+            );
+        }
     }
 
     typeHierarchyItem(value) {
@@ -633,6 +876,11 @@ class FoundationLanguageClient {
                 Math.max(0, value.kind - 1)
             );
             item.detail = value.detail;
+            if (value.documentation) {
+                item.documentation = new this.vscode.MarkdownString(
+                    value.documentation.value || value.documentation
+                );
+            }
             if (value.insertText) {
                 item.insertText = value.insertTextFormat === 2
                     ? new this.vscode.SnippetString(value.insertText)
@@ -651,9 +899,27 @@ class FoundationLanguageClient {
             return undefined;
         }
         const help = new this.vscode.SignatureHelp();
-        help.signatures = (result.signatures || []).map((value) =>
-            new this.vscode.SignatureInformation(value.label)
-        );
+        help.signatures = (result.signatures || []).map((value) => {
+            const signature = new this.vscode.SignatureInformation(
+                value.label,
+                value.documentation
+                    ? new this.vscode.MarkdownString(
+                        value.documentation.value || value.documentation
+                    )
+                    : undefined
+            );
+            signature.parameters = (value.parameters || []).map((parameter) =>
+                new this.vscode.ParameterInformation(
+                    parameter.label,
+                    parameter.documentation
+                        ? new this.vscode.MarkdownString(
+                            parameter.documentation.value || parameter.documentation
+                        )
+                        : undefined
+                )
+            );
+            return signature;
+        });
         help.activeSignature = result.activeSignature || 0;
         help.activeParameter = result.activeParameter || 0;
         return help;

@@ -1080,6 +1080,64 @@ std::vector<DelimiterRange> delimiterRanges(std::string_view source,
     return result;
 }
 
+std::optional<SourceSpan> declarationExtent(std::string_view source,
+                                            SourceSpan declaration) {
+    const auto delimiters = delimiterRanges(source, declaration.source);
+    const DelimiterRange *body = nullptr;
+    for (const auto &candidate : delimiters) {
+        if (candidate.opening != TokenKind::LeftBrace ||
+            candidate.span.offset < declaration.offset) {
+            continue;
+        }
+        if (body == nullptr || candidate.span.offset < body->span.offset) {
+            body = &candidate;
+        }
+    }
+    if (body == nullptr) {
+        return std::nullopt;
+    }
+    auto start = source.rfind('\n', declaration.offset == 0 ? 0 : declaration.offset - 1);
+    start = start == std::string_view::npos ? 0 : start + 1;
+    while (start != 0) {
+        const auto previousEnd = start - 1;
+        const auto previousStart = source.rfind(
+            '\n', previousEnd == 0 ? 0 : previousEnd - 1);
+        const auto lineStart = previousStart == std::string_view::npos ? 0 : previousStart + 1;
+        auto line = source.substr(lineStart, previousEnd - lineStart);
+        while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
+            line.remove_prefix(1);
+        }
+        if (line.starts_with("///") || line.starts_with('@')) {
+            start = lineStart;
+            continue;
+        }
+        if (!line.ends_with("*/")) {
+            break;
+        }
+        auto documentationStart = lineStart;
+        auto foundStart = line.find("/**") != std::string_view::npos;
+        while (!foundStart && documentationStart != 0) {
+            const auto documentationEnd = documentationStart - 1;
+            const auto precedingBreak = source.rfind(
+                '\n', documentationEnd == 0 ? 0 : documentationEnd - 1);
+            const auto precedingStart =
+                precedingBreak == std::string_view::npos ? 0 : precedingBreak + 1;
+            const auto precedingLine =
+                source.substr(precedingStart, documentationEnd - precedingStart);
+            documentationStart = precedingStart;
+            foundStart = precedingLine.find("/**") != std::string_view::npos;
+        }
+        if (!foundStart) {
+            break;
+        }
+        start = documentationStart;
+    }
+    const auto end = body->span.offset + body->span.length;
+    const auto position = positionAt(source, start);
+    return SourceSpan{start, end - start, position.line + 1, position.character + 1,
+                      declaration.source};
+}
+
 std::optional<SourceSpan> tokenAt(std::string_view source, std::size_t offset,
                                   std::size_t sourceId) {
     Diagnostics diagnostics;
@@ -1371,6 +1429,8 @@ class LanguageServer {
             sendMessage(output_, response(*id, provideDocumentHighlights(message.find("params"))));
         } else if (*method == "textDocument/codeLens" && id != nullptr) {
             sendMessage(output_, response(*id, provideCodeLenses(message.find("params"))));
+        } else if (*method == "foundation/compositeType" && id != nullptr) {
+            sendMessage(output_, response(*id, provideCompositeType(message.find("params"))));
         } else if (*method == "textDocument/prepareTypeHierarchy" && id != nullptr) {
             sendMessage(output_, response(*id, prepareTypeHierarchy(message.find("params"))));
         } else if (*method == "typeHierarchy/supertypes" && id != nullptr) {
@@ -1935,11 +1995,45 @@ class LanguageServer {
         if (!sourceId.has_value()) {
             return Json(nullptr);
         }
-        return Json::object(
-            {{"contents",
-              Json::object({{"kind", "markdown"},
-                            {"value", "```foundation\n" + symbol->detail + "\n```"}})},
-             {"range", lspRange(analysis->sources[*sourceId].contents, word)}});
+        auto value = "```foundation\n" + symbol->detail + "\n```";
+        if (!symbol->documentation.empty()) {
+            value += "\n\n" + symbol->documentation;
+        }
+        Json::Object result;
+        const auto *type = symbol->id.kind == LanguageSymbolKind::Struct
+                               ? symbol
+                               : index.typeDefinition(symbol->id);
+        if (type != nullptr && type->id.kind == LanguageSymbolKind::Struct) {
+            const auto &declaration = analysis->program.structs[type->id.owner];
+            auto methodCount = std::size_t{};
+            std::set<std::size_t> sourceFiles{declaration.span.source};
+            for (const auto &function : analysis->program.functions) {
+                if (!function.receiver.has_value() ||
+                    function.ownerType != declaration.name) {
+                    continue;
+                }
+                ++methodCount;
+                sourceFiles.insert(function.span.source);
+            }
+            auto summary = "\n\n" + std::to_string(declaration.fields.size()) +
+                           (declaration.fields.size() == 1 ? " field, " : " fields, ") +
+                           std::to_string(methodCount) +
+                           (methodCount == 1 ? " method across " : " methods across ") +
+                           std::to_string(sourceFiles.size()) +
+                           (sourceFiles.size() == 1 ? " file" : " files");
+            value += summary;
+            const auto &source = analysis->sources[declaration.span.source];
+            result.emplace(
+                "foundationComposite",
+                Json::object({{"uri", sourceUri(source.identity)},
+                              {"position", lspPosition(positionAt(
+                                               source.contents,
+                                               declaration.span.offset))}}));
+        }
+        result.emplace("contents", Json::object({{"kind", "markdown"},
+                                                   {"value", std::move(value)}}));
+        result.emplace("range", lspRange(analysis->sources[*sourceId].contents, word));
+        return Json(std::move(result));
     }
 
     [[nodiscard]] Json provideDefinition(const Json *params) const {
@@ -2131,6 +2225,167 @@ class LanguageServer {
         return Json(std::move(result));
     }
 
+    [[nodiscard]] Json provideCompositeType(const Json *params) const {
+        const auto *textDocument = params == nullptr ? nullptr : params->find("textDocument");
+        auto uri = stringField(textDocument, "uri");
+        if (!uri.has_value()) {
+            uri = stringField(params, "sourceUri");
+        }
+        if (!uri.has_value()) {
+            return Json(nullptr);
+        }
+        const auto *analysis = analyzeUri(*uri);
+        if (analysis == nullptr) {
+            return Json(nullptr);
+        }
+        const auto &index = languageIndex(*analysis);
+        const StructDeclaration *declaration = nullptr;
+        auto declarationIndex = std::size_t{};
+        if (const auto typeName = stringField(params, "typeName"); typeName.has_value()) {
+            const auto packageName = stringField(params, "packageName");
+            for (std::size_t current = 0; current < analysis->program.structs.size(); ++current) {
+                const auto &candidate = analysis->program.structs[current];
+                if (shortName(candidate.name) != *typeName ||
+                    (packageName.has_value() && candidate.packageName != *packageName)) {
+                    continue;
+                }
+                declaration = &candidate;
+                declarationIndex = current;
+                break;
+            }
+        } else {
+            SourceSpan word;
+            const auto symbolId = semanticSymbolAt(*analysis, *uri, params, word, index);
+            const auto *symbol = symbolId.has_value() ? index.symbol(*symbolId) : nullptr;
+            if (symbol != nullptr && symbol->id.kind != LanguageSymbolKind::Struct) {
+                symbol = index.typeDefinition(symbol->id);
+            }
+            if (symbol != nullptr && symbol->id.kind == LanguageSymbolKind::Struct &&
+                symbol->id.owner < analysis->program.structs.size()) {
+                declarationIndex = symbol->id.owner;
+                declaration = &analysis->program.structs[declarationIndex];
+            }
+        }
+        if (declaration == nullptr || declaration->span.source >= analysis->sources.size()) {
+            return Json(nullptr);
+        }
+        const auto &structSource = analysis->sources[declaration->span.source];
+        const auto structExtent = declarationExtent(structSource.contents, declaration->span);
+        if (!structExtent.has_value() || structExtent->length < 2) {
+            return Json(nullptr);
+        }
+
+        struct MethodFragment {
+            const Function *function{};
+            SourceSpan extent;
+        };
+        std::vector<MethodFragment> externalMethods;
+        auto methodCount = std::size_t{};
+        std::set<std::size_t> sourceFiles{declaration->span.source};
+        for (const auto &function : analysis->program.functions) {
+            if (!function.receiver.has_value() || function.ownerType != declaration->name ||
+                function.span.source >= analysis->sources.size()) {
+                continue;
+            }
+            ++methodCount;
+            sourceFiles.insert(function.span.source);
+            const auto &source = analysis->sources[function.span.source];
+            const auto extent = declarationExtent(source.contents, function.span);
+            if (!extent.has_value()) {
+                continue;
+            }
+            const auto end = extent->offset + extent->length;
+            const auto structEnd = structExtent->offset + structExtent->length;
+            if (extent->source == structExtent->source &&
+                structExtent->offset <= extent->offset && end <= structEnd) {
+                continue;
+            }
+            externalMethods.push_back({&function, *extent});
+        }
+        std::sort(externalMethods.begin(), externalMethods.end(),
+                  [analysis](const auto &left, const auto &right) {
+                      const auto leftName = shortName(left.function->name);
+                      const auto rightName = shortName(right.function->name);
+                      if (leftName != rightName) {
+                          return leftName < rightName;
+                      }
+                      const auto &leftSource = analysis->sources[left.extent.source].identity;
+                      const auto &rightSource = analysis->sources[right.extent.source].identity;
+                      if (leftSource != rightSource) {
+                          return leftSource < rightSource;
+                      }
+                      return left.extent.offset < right.extent.offset;
+                  });
+
+        const auto fragment = [this, analysis](std::string key, std::string kind,
+                                               std::string name, SourceSpan span,
+                                               int indent) {
+            const auto &source = analysis->sources[span.source];
+            return Json::object(
+                {{"key", std::move(key)},
+                 {"kind", std::move(kind)},
+                 {"name", std::move(name)},
+                 {"uri", sourceUri(source.identity)},
+                 {"path", source.identity},
+                 {"line", static_cast<double>(positionAt(source.contents, span.offset).line + 1)},
+                 {"range", lspRange(source.contents, span)},
+                 {"text", source.contents.substr(span.offset, span.length)},
+                 {"indent", indent}});
+        };
+
+        Json::Array fragments;
+        const SourceSpan prefix{structExtent->offset, structExtent->length - 1,
+                                structExtent->line, structExtent->column,
+                                structExtent->source};
+        const auto suffixOffset = structExtent->offset + structExtent->length - 1;
+        const auto suffixPosition = positionAt(structSource.contents, suffixOffset);
+        const SourceSpan suffix{suffixOffset, 1, suffixPosition.line + 1,
+                                suffixPosition.character + 1, structExtent->source};
+        fragments.push_back(fragment("struct-prefix", "struct", shortName(declaration->name),
+                                     prefix, 0));
+        for (const auto &method : externalMethods) {
+            const auto &source = analysis->sources[method.extent.source];
+            const auto key = "method:" + source.identity + ':' +
+                             std::to_string(method.extent.offset) + ':' +
+                             shortName(method.function->name);
+            fragments.push_back(fragment(key, "method", shortName(method.function->name),
+                                         method.extent, 4));
+        }
+        fragments.push_back(fragment("struct-suffix", "struct", shortName(declaration->name),
+                                     suffix, 0));
+
+        std::set<std::string> imports;
+        for (const auto &imported : analysis->program.imports) {
+            if (imported.span.source >= analysis->sources.size() ||
+                analysis->sources[imported.span.source].packageName !=
+                    declaration->packageName) {
+                continue;
+            }
+            auto text = "import " + imported.packageName;
+            if (!imported.alias.empty()) {
+                text += " as " + imported.alias;
+            }
+            imports.insert(std::move(text));
+        }
+        Json::Array importValues;
+        for (const auto &imported : imports) {
+            importValues.emplace_back(imported);
+        }
+        const auto *structSymbol = index.symbol(
+            {LanguageSymbolKind::Struct, declarationIndex, 0});
+        return Json::object(
+            {{"typeName", shortName(declaration->name)},
+             {"packageName", declaration->packageName},
+             {"sourceUri", sourceUri(structSource.identity)},
+             {"documentation", structSymbol == nullptr ? std::string{}
+                                                       : structSymbol->documentation},
+             {"fieldCount", static_cast<double>(declaration->fields.size())},
+             {"methodCount", static_cast<double>(methodCount)},
+             {"fileCount", static_cast<double>(sourceFiles.size())},
+             {"imports", Json(std::move(importValues))},
+             {"fragments", Json(std::move(fragments))}});
+    }
+
     [[nodiscard]] Json provideCodeLenses(const Json *params) const {
         const auto *textDocument = params == nullptr ? nullptr : params->find("textDocument");
         const auto uri = stringField(textDocument, "uri");
@@ -2160,6 +2415,17 @@ class LanguageServer {
         Json::Array result;
         const auto &requestedSource = analysis->sources[*sourceId];
         for (const auto *symbol : symbols) {
+            if (symbol->id.kind == LanguageSymbolKind::Struct) {
+                const auto position = positionAt(requestedSource.contents,
+                                                 symbol->definition.offset);
+                result.push_back(Json::object(
+                    {{"range", lspRange(requestedSource.contents, symbol->definition)},
+                     {"command",
+                      Json::object(
+                          {{"title", "Open Composite Type View"},
+                           {"command", "foundation.openCompositeType"},
+                           {"arguments", Json::array({*uri, lspPosition(position)})}})}}));
+            }
             const auto references = index.references(symbol->id, false);
             Json::Array locations;
             for (const auto &reference : references) {
@@ -2612,10 +2878,16 @@ class LanguageServer {
 
     static void addCompletion(std::map<std::string, Json> &items, std::string label,
                               int kind, std::string detail = {},
-                              std::optional<std::string> insertText = std::nullopt) {
+                              std::optional<std::string> insertText = std::nullopt,
+                              std::string documentation = {}) {
         Json::Object item{{"label", label}, {"kind", kind}};
         if (!detail.empty()) {
             item.emplace("detail", std::move(detail));
+        }
+        if (!documentation.empty()) {
+            item.emplace("documentation",
+                         Json::object({{"kind", "markdown"},
+                                       {"value", std::move(documentation)}}));
         }
         if (insertText.has_value()) {
             item.emplace("insertText", std::move(*insertText));
@@ -2715,11 +2987,11 @@ class LanguageServer {
                    : std::nullopt;
     }
 
-    static void addContractCompletions(std::map<std::string, Json> &items,
-                                       const ProjectAnalysis &analysis,
-                                       std::size_t contract,
-                                       std::string_view currentPackage,
-                                       bool defaultsOnly) {
+    void addContractCompletions(std::map<std::string, Json> &items,
+                                const ProjectAnalysis &analysis,
+                                std::size_t contract,
+                                std::string_view currentPackage,
+                                bool defaultsOnly) const {
         if (!analysis.semantic.has_value() ||
             contract >= analysis.semantic->contracts.size()) {
             return;
@@ -2734,24 +3006,43 @@ class LanguageServer {
             if (!accessible(owner, method.exported, currentPackage)) {
                 continue;
             }
+            SourceSpan documentationSpan = method.span;
+            if (method.originContract < analysis.program.contracts.size()) {
+                const auto &origin = analysis.program.contracts[method.originContract];
+                for (std::size_t candidate = 0; candidate < origin.methods.size(); ++candidate) {
+                    if (origin.methods[candidate].name == method.name &&
+                        origin.methods[candidate].span.source == method.span.source &&
+                        origin.methods[candidate].span.offset == method.span.offset) {
+                        documentationSpan = origin.methods[candidate].span;
+                        break;
+                    }
+                }
+            }
             addCompletion(items, method.name, 2, semanticMethodDetail(analysis, method),
-                          method.name + "($0)");
+                          method.name + "($0)",
+                          languageDocumentation(analysis, documentationSpan));
         }
     }
 
-    static void addValueMemberCompletions(std::map<std::string, Json> &items,
-                                          const ProjectAnalysis &analysis,
-                                          Type type, std::string_view currentPackage) {
+    void addValueMemberCompletions(std::map<std::string, Json> &items,
+                                   const ProjectAnalysis &analysis,
+                                   Type type, std::string_view currentPackage) const {
         type = completionValueType(std::move(type));
         if (type.kind == TypeKind::Struct && type.declaration < analysis.program.structs.size()) {
             const auto &declaration = analysis.program.structs[type.declaration];
-            for (const auto &field : declaration.fields) {
+            for (std::size_t fieldIndex = 0; fieldIndex < declaration.fields.size();
+                 ++fieldIndex) {
+                const auto &field = declaration.fields[fieldIndex];
                 if (accessible(declaration.packageName, field.exported, currentPackage)) {
                     addCompletion(items, field.name, 5,
-                                  field.name + ' ' + displayTypeSyntax(field.type));
+                                  field.name + ' ' + displayTypeSyntax(field.type),
+                                  std::nullopt,
+                                  languageDocumentation(analysis, field.span));
                 }
             }
-            for (const auto &function : analysis.program.functions) {
+            for (std::size_t functionIndex = 0;
+                 functionIndex < analysis.program.functions.size(); ++functionIndex) {
+                const auto &function = analysis.program.functions[functionIndex];
                 if (!function.receiver.has_value() || shortName(function.name) == "drop" ||
                     function.packageName != declaration.packageName ||
                     shortName(function.ownerType) != shortName(declaration.name) ||
@@ -2759,7 +3050,8 @@ class LanguageServer {
                     continue;
                 }
                 const auto name = shortName(function.name);
-                addCompletion(items, name, 2, functionDetail(function), name + "($0)");
+                addCompletion(items, name, 2, functionDetail(function), name + "($0)",
+                              languageDocumentation(analysis, function.span));
             }
             if (analysis.semantic.has_value() &&
                 type.declaration < analysis.semantic->structs.size()) {
@@ -2787,11 +3079,11 @@ class LanguageServer {
         }
     }
 
-    static bool addPackageMemberCompletions(std::map<std::string, Json> &items,
-                                            const ProjectAnalysis &analysis,
-                                            std::size_t sourceId,
-                                            std::string_view alias,
-                                            bool attributeContext) {
+    bool addPackageMemberCompletions(std::map<std::string, Json> &items,
+                                     const ProjectAnalysis &analysis,
+                                     std::size_t sourceId,
+                                     std::string_view alias,
+                                     bool attributeContext) const {
         std::optional<std::string> packageName;
         for (const auto &imported : analysis.program.imports) {
             const auto currentAlias = imported.alias.empty()
@@ -2815,17 +3107,29 @@ class LanguageServer {
             }
             return true;
         }
-        for (const auto &function : analysis.program.functions) {
+        const auto &index = languageIndex(analysis);
+        for (std::size_t functionIndex = 0;
+             functionIndex < analysis.program.functions.size(); ++functionIndex) {
+            const auto &function = analysis.program.functions[functionIndex];
             if (function.packageName != *packageName || !function.exported ||
                 function.receiver.has_value() || function.closure) {
                 continue;
             }
             const auto name = shortName(function.name);
-            addCompletion(items, name, 3, functionDetail(function), name + "($0)");
+            const auto *symbol = index.symbol(
+                {LanguageSymbolKind::Function, functionIndex, 0});
+            addCompletion(items, name, 3, functionDetail(function), name + "($0)",
+                          symbol == nullptr ? std::string{} : symbol->documentation);
         }
-        for (const auto &declaration : analysis.program.structs) {
+        for (std::size_t declarationIndex = 0;
+             declarationIndex < analysis.program.structs.size(); ++declarationIndex) {
+            const auto &declaration = analysis.program.structs[declarationIndex];
             if (declaration.packageName == *packageName && declaration.exported) {
-                addCompletion(items, shortName(declaration.name), 22, "Foundation struct");
+                const auto *symbol = index.symbol(
+                    {LanguageSymbolKind::Struct, declarationIndex, 0});
+                addCompletion(items, shortName(declaration.name), 22, "Foundation struct",
+                              std::nullopt,
+                              symbol == nullptr ? std::string{} : symbol->documentation);
             }
         }
         for (const auto &declaration : analysis.program.enums) {
@@ -2992,7 +3296,7 @@ class LanguageServer {
         if (!attributeContext) {
             constexpr std::string_view keywords[] = {
                 "package", "import", "as",      "extern", "struct", "enum",  "contract",
-                "attribute", "implements", "extends", "by",     "fn",    "task",  "spawn",
+                "attribute", "implements", "extends", "by", "methods", "fn", "task", "spawn",
                 "let",      "const",      "var",
                 "return",  "discard", "if",      "else",   "while",  "match", "capture",
                 "replace", "with",    "own",     "view",   "edit",   "true",  "false",
@@ -3149,8 +3453,44 @@ class LanguageServer {
                 ++activeParameter;
             }
         }
+        Json::Object signature{{"label", symbol->detail}};
+        if (!symbol->documentation.empty()) {
+            signature.emplace("documentation",
+                              Json::object({{"kind", "markdown"},
+                                            {"value", symbol->documentation}}));
+        }
+        Json::Array parameters;
+        if ((symbol->id.kind == LanguageSymbolKind::Function ||
+             symbol->id.kind == LanguageSymbolKind::Method) &&
+            symbol->id.owner < analysis->program.functions.size() &&
+            analysis->semantic.has_value() &&
+            symbol->id.owner < analysis->semantic->functions.size()) {
+            const auto &function = analysis->program.functions[symbol->id.owner];
+            const auto &semantic = analysis->semantic->functions[symbol->id.owner];
+            const auto first = function.receiver.has_value() ? 1U : 0U;
+            for (std::size_t parameter = first;
+                 parameter < function.parameters.size() &&
+                 parameter < semantic.parameters.size(); ++parameter) {
+                const auto &declaration = function.parameters[parameter];
+                Json::Object item{{"label", declaration.name + ' ' +
+                                               displayTypeSyntax(declaration.type)}};
+                const auto *parameterSymbol = index.symbol(
+                    {LanguageSymbolKind::Parameter, symbol->id.owner,
+                     semantic.parameters[parameter]});
+                if (parameterSymbol != nullptr &&
+                    !parameterSymbol->documentation.empty()) {
+                    item.emplace("documentation",
+                                 Json::object({{"kind", "markdown"},
+                                               {"value", parameterSymbol->documentation}}));
+                }
+                parameters.push_back(Json(std::move(item)));
+            }
+        }
+        if (!parameters.empty()) {
+            signature.emplace("parameters", Json(std::move(parameters)));
+        }
         return Json::object(
-            {{"signatures", Json::array({Json::object({{"label", symbol->detail}})})},
+            {{"signatures", Json::array({Json(std::move(signature))})},
              {"activeSignature", 0},
              {"activeParameter", static_cast<double>(activeParameter)}});
     }

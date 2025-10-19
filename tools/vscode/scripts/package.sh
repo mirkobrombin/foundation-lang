@@ -23,6 +23,7 @@ cp "$extension_root/language-configuration.json" "$work_dir/extension/language-c
 cp "$extension_root/README.md" "$work_dir/extension/README.md"
 cp "$extension_root/src/extension.js" "$work_dir/extension/src/extension.js"
 cp "$extension_root/src/languageClient.js" "$work_dir/extension/src/languageClient.js"
+cp "$extension_root/src/compositeType.js" "$work_dir/extension/src/compositeType.js"
 cp "$extension_root/snippets/foundation.json" "$work_dir/extension/snippets/foundation.json"
 cp "$extension_root/syntaxes/foundation.tmLanguage.json" \
     "$work_dir/extension/syntaxes/foundation.tmLanguage.json"

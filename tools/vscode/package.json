@@ -2,7 +2,7 @@
     "name": "foundation-lang",
     "displayName": "Foundation Lang",
     "description": "Language support for Foundation Lang",
-    "version": "0.30.0",
+    "version": "0.31.0",
     "publisher": "mirkobrombin",
     "license": "MIT",
     "engines": {
@@ -12,7 +12,8 @@
         "Programming Languages"
     ],
     "activationEvents": [
-        "onLanguage:foundation"
+        "onLanguage:foundation",
+        "onCommand:foundation.openCompositeType"
     ],
     "main": "./src/extension.js",
     "scripts": {
@@ -43,6 +44,13 @@
             {
                 "language": "foundation",
                 "path": "./snippets/foundation.json"
+            }
+        ],
+        "commands": [
+            {
+                "command": "foundation.openCompositeType",
+                "title": "Foundation: Open Composite Type View",
+                "category": "Foundation"
             }
         ],
         "configuration": {

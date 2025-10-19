@@ -17,6 +17,7 @@ enum class TokenKind {
     As,
     Extern,
     Struct,
+    Methods,
     Enum,
     Contract,
     Attribute,

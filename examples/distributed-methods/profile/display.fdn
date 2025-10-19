@@ -1,0 +1,8 @@
+package example.profile
+
+methods User {
+    /// Prints the name shown by the application.
+    fn Display(view) void {
+        print(self.Name)
+    }
+}

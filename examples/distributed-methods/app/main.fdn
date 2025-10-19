@@ -1,0 +1,12 @@
+package example.app
+
+import example.profile
+
+/// Runs the distributed-method example.
+fn main() i32 {
+    var user = profile.User { Name = "Ada" Score = 40 }
+    user.Rename("Ada Lovelace")
+    user.AddScore(2)
+    user.Display()
+    user.Score - 42
+}

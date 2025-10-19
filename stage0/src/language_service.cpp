@@ -23,6 +23,102 @@ bool identifierByte(unsigned char value) {
            (value >= '0' && value <= '9') || value == '_';
 }
 
+std::string_view trimWhitespace(std::string_view value) {
+    while (!value.empty() &&
+           std::isspace(static_cast<unsigned char>(value.front())) != 0) {
+        value.remove_prefix(1);
+    }
+    while (!value.empty() &&
+           std::isspace(static_cast<unsigned char>(value.back())) != 0) {
+        value.remove_suffix(1);
+    }
+    return value;
+}
+
+std::pair<std::size_t, std::size_t> previousLine(std::string_view source,
+                                                 std::size_t lineStart) {
+    if (lineStart == 0) {
+        return {0, 0};
+    }
+    auto end = lineStart - 1;
+    if (end != 0 && source[end - 1] == '\r') {
+        --end;
+    }
+    const auto newline = end == 0 ? std::string_view::npos : source.rfind('\n', end - 1);
+    const auto start = newline == std::string_view::npos ? 0 : newline + 1;
+    return {start, end};
+}
+
+std::string documentationBefore(std::string_view source, std::size_t offset) {
+    if (offset > source.size()) {
+        return {};
+    }
+    const auto newline = offset == 0 ? std::string_view::npos : source.rfind('\n', offset - 1);
+    auto cursor = newline == std::string_view::npos ? 0 : newline + 1;
+    std::vector<std::string> lines;
+    while (cursor != 0) {
+        const auto [start, end] = previousLine(source, cursor);
+        const auto line = trimWhitespace(source.substr(start, end - start));
+        if (!line.starts_with("///")) {
+            break;
+        }
+        auto text = line.substr(3);
+        if (!text.empty() && text.front() == ' ') {
+            text.remove_prefix(1);
+        }
+        lines.emplace_back(text);
+        cursor = start;
+    }
+    if (!lines.empty()) {
+        std::reverse(lines.begin(), lines.end());
+        std::string result;
+        for (std::size_t index = 0; index < lines.size(); ++index) {
+            if (index != 0) {
+                result += '\n';
+            }
+            result += lines[index];
+        }
+        return result;
+    }
+    if (cursor == 0) {
+        return {};
+    }
+    const auto [start, end] = previousLine(source, cursor);
+    const auto line = trimWhitespace(source.substr(start, end - start));
+    if (!line.ends_with("*/")) {
+        return {};
+    }
+    const auto close = source.rfind("*/", end);
+    const auto open = close == std::string_view::npos ? std::string_view::npos
+                                                       : source.rfind("/**", close);
+    if (open == std::string_view::npos || close < open + 3) {
+        return {};
+    }
+    std::string result;
+    auto body = source.substr(open + 3, close - open - 3);
+    while (!body.empty()) {
+        const auto next = body.find('\n');
+        auto part = trimWhitespace(body.substr(0, next));
+        if (part.starts_with("*")) {
+            part.remove_prefix(1);
+            if (!part.empty() && part.front() == ' ') {
+                part.remove_prefix(1);
+            }
+        }
+        if (!part.empty()) {
+            if (!result.empty()) {
+                result += '\n';
+            }
+            result += part;
+        }
+        if (next == std::string_view::npos) {
+            break;
+        }
+        body.remove_prefix(next + 1);
+    }
+    return result;
+}
+
 std::string shortName(std::string_view name) {
     const auto separator = name.rfind('.');
     return std::string(name.substr(separator == std::string_view::npos ? 0 : separator + 1));
@@ -200,6 +296,11 @@ class IndexBuilder {
     void addSymbol(LanguageSymbol symbol, bool addDefinition = true) {
         if (symbol.definition.source >= analysis_.sources.size()) {
             return;
+        }
+        if (symbol.documentation.empty()) {
+            symbol.documentation = documentationBefore(
+                analysis_.sources[symbol.definition.source].contents,
+                symbol.definition.offset);
         }
         if (addDefinition) {
             occurrences_.push_back({symbol.id, symbol.definition, true});
@@ -1204,6 +1305,14 @@ bool LanguageIndex::canRename(LanguageSymbolId id, std::string_view name) const 
 
 LanguageIndex buildLanguageIndex(const ProjectAnalysis &analysis) {
     return IndexBuilder(analysis).build();
+}
+
+std::string languageDocumentation(const ProjectAnalysis &analysis,
+                                  SourceSpan definition) {
+    return definition.source < analysis.sources.size()
+               ? documentationBefore(analysis.sources[definition.source].contents,
+                                     definition.offset)
+               : std::string{};
 }
 
 } // namespace foundation

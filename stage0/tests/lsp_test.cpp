@@ -1394,6 +1394,127 @@ void diagnosticsStayScopedToTheirWorkspace() {
     std::filesystem::remove_all(root, error);
 }
 
+void distributedMethodsExposeDocumentationAndParameters() {
+    const auto root = temporaryRoot();
+    const auto app = root / "app" / "main.fdn";
+    const auto user = root / "profile" / "user.fdn";
+    const auto rename = root / "profile" / "rename.fdn";
+    writeFile(user,
+              "package sample.profile\n"
+              "/// A profile edited across source files.\n"
+              "struct User { Name String }\n");
+    writeFile(rename,
+              "package sample.profile\n"
+              "methods User {\n"
+              "    /**\n"
+              "     * Replaces the displayed profile name.\n"
+              "     */\n"
+              "    fn Rename(\n"
+              "        edit,\n"
+              "        /// The new user-facing name.\n"
+              "        name String\n"
+              "    ) void { self.Name = name }\n"
+              "}\n");
+    const std::string appContents =
+        "package sample.app\n"
+        "import sample.profile\n"
+        "fn main() i32 {\n"
+        "    var user = profile.User { Name = \"Ada\" }\n"
+        "    user.Rename(\"Grace\")\n"
+        "    0\n"
+        "}\n";
+    writeFile(app, appContents);
+
+    const auto rootUri = fileUri(root);
+    const auto appUri = fileUri(app);
+    const auto renameUri = fileUri(rename);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        rootUri + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" + appUri +
+        "\",\"languageId\":\"foundation\",\"version\":1,\"text\":\"" +
+        jsonEscape(appContents) + "\"}}}";
+    const std::string completionContents =
+        "package sample.app\n"
+        "import sample.profile\n"
+        "fn main() i32 {\n"
+        "    var user = profile.User { Name = \"Ada\" }\n"
+        "    user.\n"
+        "    0\n"
+        "}\n";
+    const auto changeForCompletion =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" + appUri +
+        "\",\"version\":2},\"contentChanges\":[{\"text\":\"" +
+        jsonEscape(completionContents) + "\"}]}}";
+    const auto request = [&appUri](int id, std::string_view method, int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + appUri +
+               "\"},\"position\":{\"line\":4,\"character\":" +
+               std::to_string(character) + "}}}";
+    };
+    const auto typeHover =
+        "{\"jsonrpc\":\"2.0\",\"id\":95,\"method\":\"textDocument/hover\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" + appUri +
+        "\"},\"position\":{\"line\":3,\"character\":24}}}";
+    const auto composite =
+        "{\"jsonrpc\":\"2.0\",\"id\":94,\"method\":\"foundation/compositeType\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" + appUri +
+        "\"},\"position\":{\"line\":3,\"character\":24}}}";
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(frame(initialize) + frame(open) +
+                             frame(request(90, "hover", 10)) +
+                             frame(typeHover) + frame(composite) +
+                             frame(request(92, "signatureHelp", 22)) +
+                             frame(request(93, "definition", 10)) +
+                             frame(changeForCompletion) +
+                             frame(request(91, "completion", 9)) + frame(shutdown) +
+                             frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto hover = responseFor(transcript, 90);
+    const auto completion = responseFor(transcript, 91);
+    const auto signature = responseFor(transcript, 92);
+    const auto definition = responseFor(transcript, 93);
+    const auto compositeType = responseFor(transcript, 94);
+    const auto userHover = responseFor(transcript, 95);
+
+    expect(status == 0, "distributed-method language server transcript exits cleanly");
+    expect(errors.str().empty(), "distributed-method requests write no server errors");
+    expect(hover.find("fn Rename(edit, name String) void") != std::string::npos &&
+               hover.find("Replaces the displayed profile name.") != std::string::npos,
+           "method hover combines its compiler signature and documentation");
+    expect(completion.find("\"label\":\"Rename\"") != std::string::npos &&
+               completion.find("Replaces the displayed profile name.") != std::string::npos,
+           "member completion carries method documentation");
+    expect(signature.find("\"label\":\"name String\"") != std::string::npos &&
+               signature.find("The new user-facing name.") != std::string::npos &&
+               signature.find("Replaces the displayed profile name.") != std::string::npos,
+           "signature help carries callable and parameter documentation");
+    expect(definition.find(renameUri) != std::string::npos,
+           "method definition navigates to its distributed source file");
+    expect(compositeType.find("\"typeName\":\"User\"") != std::string::npos &&
+               compositeType.find("\"methodCount\":1") != std::string::npos &&
+               compositeType.find("\"fileCount\":2") != std::string::npos &&
+               compositeType.find("\"kind\":\"method\"") != std::string::npos &&
+               compositeType.find("/**") != std::string::npos &&
+               compositeType.find(renameUri) != std::string::npos,
+           "composite type request preserves documented editable fragments across files");
+    expect(userHover.find("1 field, 1 method across 2 files") != std::string::npos &&
+               userHover.find("foundationComposite") != std::string::npos,
+           "struct hover summarizes its distributed shape and exposes the composite action");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 } // namespace
 
 int main() {
@@ -1413,6 +1534,7 @@ int main() {
     lockedPackageWorkspaceLoadsCachedDependencies();
     workspaceFoldersAreIndependentAndDynamic();
     diagnosticsStayScopedToTheirWorkspace();
+    distributedMethodsExposeDocumentationAndParameters();
 
     if (failures != 0) {
         std::cerr << failures << " language server assertions failed\n";

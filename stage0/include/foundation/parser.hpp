@@ -48,6 +48,7 @@ class Parser {
     std::vector<std::string> typeParameters();
     TypeSyntax typeSyntax(const char *code, const char *message);
     StructDeclaration structDeclaration();
+    void methodsDeclaration();
     EnumDeclaration enumDeclaration();
     ContractDeclaration contractDeclaration();
     AttributeDeclaration attributeDeclaration();

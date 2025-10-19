@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace foundation {
@@ -42,6 +43,15 @@ struct LanguageSymbol {
     std::string scope;
     SourceSpan definition;
     bool renameable{true};
+    std::string documentation;
+
+    LanguageSymbol() = default;
+    LanguageSymbol(LanguageSymbolId id, std::string name, std::string detail,
+                   std::string scope, SourceSpan definition, bool renameable = true,
+                   std::string documentation = {})
+        : id(id), name(std::move(name)), detail(std::move(detail)),
+          scope(std::move(scope)), definition(definition), renameable(renameable),
+          documentation(std::move(documentation)) {}
 };
 
 struct LanguageOccurrence {
@@ -89,6 +99,8 @@ class LanguageIndex {
 };
 
 [[nodiscard]] LanguageIndex buildLanguageIndex(const ProjectAnalysis &analysis);
+[[nodiscard]] std::string languageDocumentation(const ProjectAnalysis &analysis,
+                                                SourceSpan definition);
 
 } // namespace foundation
 

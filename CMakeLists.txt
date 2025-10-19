@@ -1179,6 +1179,23 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
     )
     add_test(
+        NAME stage0.run.distributed-methods
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/distributed-methods
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/distributed-methods/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.emit.distributed-methods-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/distributed-methods
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/distributed-methods-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/distributed-methods-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
         NAME stage0.run.c-abi
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>

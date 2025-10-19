@@ -94,6 +94,8 @@ const char *tokenName(TokenKind kind) {
         return "extern";
     case TokenKind::Struct:
         return "struct";
+    case TokenKind::Methods:
+        return "methods";
     case TokenKind::Enum:
         return "enum";
     case TokenKind::Contract:
@@ -397,6 +399,8 @@ Token Lexer::identifier() {
         kind = TokenKind::Extern;
     } else if (text == "struct") {
         kind = TokenKind::Struct;
+    } else if (text == "methods") {
+        kind = TokenKind::Methods;
     } else if (text == "enum") {
         kind = TokenKind::Enum;
     } else if (text == "contract") {

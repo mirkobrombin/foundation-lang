@@ -173,6 +173,17 @@ Program Parser::parse() {
             }
             continue;
         }
+        if (check(TokenKind::Methods)) {
+            if (!parsedAttributes.applications.empty()) {
+                diagnostics_.error("FDN1160", "methods block cannot be attributed",
+                                   parsedAttributes.applications.front().span);
+            }
+            methodsDeclaration();
+            if (!parsedAttributes.selected) {
+                restoreProgram(expressions, statements, blocks, functions);
+            }
+            continue;
+        }
         if (check(TokenKind::Enum)) {
             auto declaration = enumDeclaration();
             declaration.attributes = std::move(parsedAttributes.applications);
@@ -570,6 +581,31 @@ StructDeclaration Parser::structDeclaration() {
     expect(TokenKind::RightBrace, "FDN1037", "expected } after struct declaration");
     return {name.text, std::move(parameters), std::move(implementations), std::move(fields),
             isExported(name.text), start.span, {}, {}};
+}
+
+void Parser::methodsDeclaration() {
+    expect(TokenKind::Methods, "FDN1161", "expected methods");
+    const auto owner =
+        expect(TokenKind::Identifier, "FDN1162", "expected type name after methods");
+    const auto parameters = typeParameters();
+    expect(TokenKind::LeftBrace, "FDN1163", "expected { after methods type");
+    while (!check(TokenKind::RightBrace) && !atEnd()) {
+        auto parsedAttributes = attributes(false);
+        if (check(TokenKind::Extern)) {
+            diagnostics_.error("FDN2117", "C ABI function cannot be a method", current().span);
+            advance();
+            continue;
+        }
+        if (!check(TokenKind::Fn)) {
+            diagnostics_.error("FDN1164", "expected method declaration", current().span);
+            advance();
+            continue;
+        }
+        auto declaration = method(owner.text, parameters);
+        declaration.attributes = std::move(parsedAttributes.applications);
+        program_.functions.push_back(std::move(declaration));
+    }
+    expect(TokenKind::RightBrace, "FDN1165", "expected } after methods block");
 }
 
 EnumDeclaration Parser::enumDeclaration() {

@@ -16,6 +16,11 @@ const {
     MessageReader,
     encodeMessage
 } = require("../src/languageClient");
+const {
+    extractCompositeEdits,
+    renderCompositeType,
+    textAtRange
+} = require("../src/compositeType");
 
 const extensionRoot = path.resolve(__dirname, "..");
 const repositoryRoot = path.resolve(extensionRoot, "../..");
@@ -53,6 +58,7 @@ test("registers Foundation source files", () => {
     assert.match(packagingScript, /package\.json/);
     assert.match(packagingScript, /foundation-lang-\$version\.vsix/);
     assert.match(packagingScript, /languageClient\.js/);
+    assert.match(packagingScript, /compositeType\.js/);
     assert.match(languageClient, /registerDocumentSymbolProvider/);
     assert.match(languageClient, /registerWorkspaceSymbolProvider/);
     assert.match(languageClient, /registerCompletionItemProvider/);
@@ -67,6 +73,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /registerDocumentHighlightProvider/);
     assert.match(languageClient, /registerCodeLensProvider/);
     assert.match(languageClient, /textDocument\/codeLens/);
+    assert.match(languageClient, /registerDocumentLinkProvider/);
     assert.match(languageClient, /registerTypeHierarchyProvider/);
     assert.match(languageClient, /typeHierarchy\/supertypes/);
     assert.match(languageClient, /typeHierarchy\/subtypes/);
@@ -90,7 +97,9 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.30.0");
+    assert.equal(manifest.version, "0.31.0");
+    assert.equal(manifest.contributes.commands[0].command,
+        "foundation.openCompositeType");
     assert.equal(
         manifest.contributes.configuration.properties["foundation.languageServer.path"].default,
         ""
@@ -199,6 +208,91 @@ test("maps all package definition locations", async () => {
     assert.equal(locations[0].uri.value, "file:///tmp/first.fdn");
     assert.equal(locations[1].uri.value, "file:///tmp/second.fdn");
     assert.equal(locations[1].range.start.character, 8);
+});
+
+test("maps documented completions and parameter signature help", async () => {
+    class MarkdownString {
+        constructor(value) {
+            this.value = value;
+        }
+    }
+    class CompletionItem {
+        constructor(label, kind) {
+            Object.assign(this, { label, kind });
+        }
+    }
+    class SnippetString {
+        constructor(value) {
+            this.value = value;
+        }
+    }
+    class SignatureHelp {}
+    class SignatureInformation {
+        constructor(label, documentation) {
+            Object.assign(this, { label, documentation });
+        }
+    }
+    class ParameterInformation {
+        constructor(label, documentation) {
+            Object.assign(this, { label, documentation });
+        }
+    }
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.vscode = {
+        MarkdownString,
+        CompletionItem,
+        SnippetString,
+        SignatureHelp,
+        SignatureInformation,
+        ParameterInformation
+    };
+    client.request = async (method) => {
+        if (method === "textDocument/completion") {
+            return [{
+                label: "Rename",
+                kind: 2,
+                detail: "fn Rename(edit, name String) void",
+                insertText: "Rename($0)",
+                insertTextFormat: 2,
+                documentation: {
+                    kind: "markdown",
+                    value: "Replaces the displayed profile name."
+                }
+            }];
+        }
+        return {
+            signatures: [{
+                label: "fn Rename(edit, name String) void",
+                documentation: {
+                    kind: "markdown",
+                    value: "Replaces the displayed profile name."
+                },
+                parameters: [{
+                    label: "name String",
+                    documentation: {
+                        kind: "markdown",
+                        value: "The new user-facing name."
+                    }
+                }]
+            }],
+            activeSignature: 0,
+            activeParameter: 0
+        };
+    };
+    const document = { uri: { toString: () => "file:///tmp/main.fdn" } };
+    const position = { line: 4, character: 9 };
+
+    const completions = await client.completions(document, position);
+    const signature = await client.signatureHelp(document, position);
+
+    assert.equal(completions[0].documentation.value,
+        "Replaces the displayed profile name.");
+    assert.equal(completions[0].insertText.value, "Rename($0)");
+    assert.equal(signature.signatures[0].documentation.value,
+        "Replaces the displayed profile name.");
+    assert.equal(signature.signatures[0].parameters[0].label, "name String");
+    assert.equal(signature.signatures[0].parameters[0].documentation.value,
+        "The new user-facing name.");
 });
 
 test("maps structural folding and selection ranges", async () => {
@@ -422,37 +516,308 @@ test("maps reference code lenses to clickable VS Code locations", async () => {
         CodeLens,
         Uri: { parse: (value) => ({ value }) }
     };
-    client.request = async () => [{
-        range: {
-            start: { line: 1, character: 3 },
-            end: { line: 1, character: 6 }
+    client.request = async () => [
+        {
+            range: {
+                start: { line: 1, character: 3 },
+                end: { line: 1, character: 6 }
+            },
+            command: {
+                title: "Open Composite Type View",
+                command: "foundation.openCompositeType",
+                arguments: ["file:///tmp/main.fdn", { line: 1, character: 3 }]
+            }
         },
-        command: {
-            title: "1 reference",
-            command: "editor.action.showReferences",
-            arguments: [
-                "file:///tmp/main.fdn",
-                { line: 1, character: 3 },
-                [{
-                    uri: "file:///tmp/main.fdn",
-                    range: {
-                        start: { line: 2, character: 12 },
-                        end: { line: 2, character: 15 }
-                    }
-                }]
-            ]
+        {
+            range: {
+                start: { line: 1, character: 3 },
+                end: { line: 1, character: 6 }
+            },
+            command: {
+                title: "1 reference",
+                command: "editor.action.showReferences",
+                arguments: [
+                    "file:///tmp/main.fdn",
+                    { line: 1, character: 3 },
+                    [{
+                        uri: "file:///tmp/main.fdn",
+                        range: {
+                            start: { line: 2, character: 12 },
+                            end: { line: 2, character: 15 }
+                        }
+                    }]
+                ]
+            }
         }
-    }];
+    ];
 
     const lenses = await client.codeLenses({
         uri: { toString: () => "file:///tmp/main.fdn" }
     });
 
-    assert.equal(lenses.length, 1);
-    assert.equal(lenses[0].command.title, "1 reference");
+    assert.equal(lenses.length, 2);
+    assert.equal(lenses[0].command.title, "Open Composite Type View");
     assert.equal(lenses[0].command.arguments[0].value, "file:///tmp/main.fdn");
     assert.deepEqual(lenses[0].command.arguments[1], new Position(1, 3));
-    assert.equal(lenses[0].command.arguments[2][0].range.start.line, 2);
+    assert.equal(lenses[1].command.title, "1 reference");
+    assert.equal(lenses[1].command.arguments[2][0].range.start.line, 2);
+});
+
+test("round trips editable composite type fragments", () => {
+    const model = {
+        typeName: "User",
+        packageName: "sample.profile",
+        imports: [],
+        fragments: [
+            {
+                key: "struct-prefix",
+                kind: "struct",
+                path: "profile/user.fdn",
+                line: 3,
+                text: "struct User {\n    name String\n"
+            },
+            {
+                key: "method:rename",
+                kind: "method",
+                path: "profile/rename.fdn",
+                line: 4,
+                text: "    fn Rename(edit, name String) void {\n" +
+                    "        self.name = name\n" +
+                    "    }"
+            },
+            {
+                key: "struct-suffix",
+                kind: "struct",
+                path: "profile/user.fdn",
+                line: 5,
+                text: "}"
+            }
+        ]
+    };
+    const rendered = renderCompositeType(model);
+    const changed = rendered.text.replace("self.name = name", "self.name = name + \"!\"");
+    const edits = extractCompositeEdits(changed, rendered.fragments);
+
+    assert.deepEqual(edits.map((entry) => entry.text), [
+        model.fragments[0].text,
+        model.fragments[1].text.replace("self.name = name", "self.name = name + \"!\""),
+        model.fragments[2].text
+    ]);
+    assert.match(rendered.text, /Source: profile\/rename\.fdn:4/);
+    assert.throws(
+        () => extractCompositeEdits(
+            rendered.text.replace("foundation:fragment 1 end", "fragment removed"),
+            rendered.fragments
+        ),
+        /Source markers/
+    );
+});
+
+test("reads UTF-16 workspace ranges for conflict checks", () => {
+    const source = "first\nemoji \ud83d\ude00 value\nlast";
+    assert.equal(textAtRange(source, {
+        start: { line: 1, character: 6 },
+        end: { line: 1, character: 8 }
+    }), "\ud83d\ude00");
+});
+
+test("links composite source labels to their original lines", () => {
+    class Position {
+        constructor(line, character) {
+            Object.assign(this, { line, character });
+        }
+    }
+    class Range {
+        constructor(start, end) {
+            Object.assign(this, { start, end });
+        }
+    }
+    const model = {
+        typeName: "User",
+        packageName: "sample.profile",
+        imports: [],
+        fragments: [{
+            key: "method:rename",
+            kind: "method",
+            uri: "file:///project/profile/rename.fdn",
+            path: "profile/rename.fdn",
+            displayPath: "profile/rename.fdn",
+            line: 12,
+            text: "    fn Rename(edit, name String) void {}"
+        }]
+    };
+    const rendered = renderCompositeType(model);
+    const documentUri = { toString: () => "file:///tmp/User.fdn" };
+    const document = {
+        uri: documentUri,
+        getText: () => rendered.text,
+        positionAt(offset) {
+            const before = rendered.text.slice(0, offset).split("\n");
+            return new Position(before.length - 1, before.at(-1).length);
+        }
+    };
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.compositeSessions = new Map([[documentUri.toString(), {
+        fragments: rendered.fragments
+    }]]);
+    client.vscode = {
+        Position,
+        Range,
+        Uri: {
+            parse(value) {
+                return {
+                    value,
+                    with(change) { return { value, ...change }; }
+                };
+            }
+        }
+    };
+
+    const links = client.compositeDocumentLinks(document);
+
+    assert.equal(links.length, 1);
+    assert.equal(links[0].target.value, model.fragments[0].uri);
+    assert.equal(links[0].target.fragment, "L12");
+    assert.equal(links[0].tooltip, "Open profile/rename.fdn:12");
+});
+
+test("applies composite saves as one checked workspace edit", async () => {
+    class Position {
+        constructor(line, character) {
+            Object.assign(this, { line, character });
+        }
+    }
+    class Range {
+        constructor(startLine, startCharacter, endLine, endCharacter) {
+            if (startLine instanceof Position) {
+                this.start = startLine;
+                this.end = startCharacter;
+                return;
+            }
+            this.start = new Position(startLine, startCharacter);
+            this.end = new Position(endLine, endCharacter);
+        }
+    }
+    class WorkspaceEdit {
+        constructor() {
+            this.replacements = [];
+        }
+        replace(uri, range, newText) {
+            this.replacements.push({ uri, range, newText });
+        }
+    }
+    const sourceUri = "file:///project/profile/rename.fdn";
+    const sourceText = "    fn Rename(edit, name String) void {\n" +
+        "        self.name = name\n" +
+        "    }";
+    const model = {
+        typeName: "User",
+        packageName: "sample.profile",
+        sourceUri: "file:///project/profile/user.fdn",
+        imports: [],
+        fragments: [{
+            key: "method:rename",
+            kind: "method",
+            uri: sourceUri,
+            path: "profile/rename.fdn",
+            displayPath: "profile/rename.fdn",
+            line: 1,
+            range: {
+                start: { line: 0, character: 0 },
+                end: { line: 2, character: 5 }
+            },
+            text: sourceText
+        }]
+    };
+    const rendered = renderCompositeType(model);
+    const editedText = rendered.text.replace("self.name = name", "self.name = name + \"!\"");
+    const documentUri = { toString: () => "file:///tmp/User.fdn" };
+    const document = { uri: documentUri, getText: () => editedText };
+    const applied = [];
+    const errors = [];
+    const notifications = [];
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.compositeSessions = new Map([[documentUri.toString(), {
+        sourceUri: model.sourceUri,
+        typeName: model.typeName,
+        packageName: model.packageName,
+        fragments: rendered.fragments,
+        suppressSave: false
+    }]]);
+    client.vscode = {
+        Position,
+        Range,
+        WorkspaceEdit,
+        Uri: { parse: (value) => ({ value, toString: () => value }) },
+        workspace: { applyEdit: async (edit) => { applied.push(edit); return true; } },
+        window: {
+            setStatusBarMessage() {},
+            showErrorMessage(message) { errors.push(message); }
+        }
+    };
+    client.requestCompositeType = async () => model;
+    client.sourceText = async () => sourceText;
+    client.refreshCompositeType = async () => {};
+    client.notify = (method, params) => notifications.push({ method, params });
+
+    await client.saveCompositeType(document);
+
+    assert.equal(errors.length, 0);
+    assert.equal(applied.length, 1);
+    assert.equal(applied[0].replacements.length, 1);
+    assert.match(applied[0].replacements[0].newText, /name \+ "!"/);
+    assert.equal(notifications[0].method, "workspace/didChangeWatchedFiles");
+});
+
+test("keeps composite edits when a source conflict is detected", async () => {
+    const model = {
+        typeName: "User",
+        packageName: "sample.profile",
+        sourceUri: "file:///project/profile/user.fdn",
+        imports: [],
+        fragments: [{
+            key: "struct-prefix",
+            kind: "struct",
+            uri: "file:///project/profile/user.fdn",
+            path: "profile/user.fdn",
+            displayPath: "profile/user.fdn",
+            line: 1,
+            range: {
+                start: { line: 0, character: 0 },
+                end: { line: 1, character: 0 }
+            },
+            text: "struct User {\n"
+        }]
+    };
+    const rendered = renderCompositeType(model);
+    const documentUri = { toString: () => "file:///tmp/User.fdn" };
+    const errors = [];
+    let applied = false;
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.compositeSessions = new Map([[documentUri.toString(), {
+        sourceUri: model.sourceUri,
+        typeName: model.typeName,
+        packageName: model.packageName,
+        fragments: rendered.fragments,
+        suppressSave: false
+    }]]);
+    client.vscode = {
+        WorkspaceEdit: class {},
+        workspace: { applyEdit: async () => { applied = true; return true; } },
+        window: {
+            setStatusBarMessage() {},
+            showErrorMessage(message) { errors.push(message); }
+        }
+    };
+    client.requestCompositeType = async () => ({
+        ...model,
+        fragments: [{ ...model.fragments[0], text: "struct User {\n    changed i32\n" }]
+    });
+
+    await client.saveCompositeType({ uri: documentUri, getText: () => rendered.text });
+
+    assert.equal(applied, false);
+    assert.match(errors[0], /Source changed since the view opened/);
 });
 
 test("round trips compiler type hierarchy identities", async () => {
@@ -623,6 +988,7 @@ test("grammar and completions track compiler keywords", () => {
         "as",
         "extern",
         "struct",
+        "methods",
         "enum",
         "contract",
         "attribute",
