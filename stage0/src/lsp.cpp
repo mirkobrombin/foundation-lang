@@ -822,6 +822,31 @@ std::string functionDetail(const Function &function) {
     return result;
 }
 
+std::string callSnippet(std::string_view name, const std::vector<Parameter> &parameters,
+                        std::size_t first = 0) {
+    std::string result(name);
+    result += '(';
+    auto placeholder = std::size_t{1};
+    for (std::size_t index = first; index < parameters.size(); ++index) {
+        if (index != first) {
+            result += ", ";
+        }
+        const auto &parameter = parameters[index];
+        if ((parameter.type.name == "own" || parameter.type.name == "view" ||
+             parameter.type.name == "edit") &&
+            parameter.type.arguments.size() == 1) {
+            result += parameter.type.name + ' ';
+        }
+        result += "${" + std::to_string(placeholder++) + ':' + parameter.name + '}';
+    }
+    result += ")$0";
+    return result;
+}
+
+std::string functionCallSnippet(const Function &function, std::string_view name) {
+    return callSnippet(name, function.parameters, function.receiver.has_value() ? 1U : 0U);
+}
+
 std::string contractMethodDetail(const ContractMethod &method) {
     std::string result = "fn " + method.name + '(';
     result += method.receiver == ReceiverKind::View ? "view"
@@ -1999,6 +2024,69 @@ class LanguageServer {
         if (!symbol->documentation.empty()) {
             value += "\n\n" + symbol->documentation;
         }
+        const auto appendDocumentedMember = [&value](std::string_view heading,
+                                                     std::string_view name,
+                                                     std::string documentation) {
+            if (documentation.empty()) {
+                return;
+            }
+            if (value.find(std::string("\n\n**") + std::string(heading) + "**") ==
+                std::string::npos) {
+                value += "\n\n**" + std::string(heading) + "**";
+            }
+            std::replace(documentation.begin(), documentation.end(), '\n', ' ');
+            value += "\n\n- `" + std::string(name) + "`: " + documentation;
+        };
+        if ((symbol->id.kind == LanguageSymbolKind::Function ||
+             symbol->id.kind == LanguageSymbolKind::Method) &&
+            symbol->id.owner < analysis->program.functions.size()) {
+            const auto &function = analysis->program.functions[symbol->id.owner];
+            const auto first = function.receiver.has_value() ? 1U : 0U;
+            for (std::size_t parameter = first; parameter < function.parameters.size();
+                 ++parameter) {
+                const auto &declaration = function.parameters[parameter];
+                appendDocumentedMember(
+                    "Parameters", declaration.name,
+                    languageDocumentation(*analysis, declaration.span));
+            }
+        } else if (symbol->id.kind == LanguageSymbolKind::ContractMethod &&
+                   symbol->id.owner < analysis->program.contracts.size() &&
+                   symbol->id.member <
+                       analysis->program.contracts[symbol->id.owner].methods.size()) {
+            const auto &method =
+                analysis->program.contracts[symbol->id.owner].methods[symbol->id.member];
+            for (const auto &parameter : method.parameters) {
+                appendDocumentedMember(
+                    "Parameters", parameter.name,
+                    languageDocumentation(*analysis, parameter.span));
+            }
+        } else if (symbol->id.kind == LanguageSymbolKind::Attribute &&
+                   symbol->id.owner < analysis->program.attributeDeclarations.size()) {
+            for (const auto &parameter :
+                 analysis->program.attributeDeclarations[symbol->id.owner].parameters) {
+                appendDocumentedMember(
+                    "Parameters", parameter.name,
+                    languageDocumentation(*analysis, parameter.span));
+            }
+        } else if (symbol->id.kind == LanguageSymbolKind::Struct &&
+                   symbol->id.owner < analysis->program.structs.size()) {
+            for (const auto &field : analysis->program.structs[symbol->id.owner].fields) {
+                appendDocumentedMember("Fields", field.name,
+                                       languageDocumentation(*analysis, field.span));
+            }
+        } else if (symbol->id.kind == LanguageSymbolKind::Enum &&
+                   symbol->id.owner < analysis->program.enums.size()) {
+            for (const auto &variant : analysis->program.enums[symbol->id.owner].variants) {
+                appendDocumentedMember("Variants", variant.name,
+                                       languageDocumentation(*analysis, variant.span));
+            }
+        } else if (symbol->id.kind == LanguageSymbolKind::Contract &&
+                   symbol->id.owner < analysis->program.contracts.size()) {
+            for (const auto &method : analysis->program.contracts[symbol->id.owner].methods) {
+                appendDocumentedMember("Methods", method.name,
+                                       languageDocumentation(*analysis, method.span));
+            }
+        }
         Json::Object result;
         const auto *type = symbol->id.kind == LanguageSymbolKind::Struct
                                ? symbol
@@ -2890,8 +2978,15 @@ class LanguageServer {
                                        {"value", std::move(documentation)}}));
         }
         if (insertText.has_value()) {
+            const auto hasParameters = insertText->find("${1:") != std::string::npos;
             item.emplace("insertText", std::move(*insertText));
             item.emplace("insertTextFormat", 2);
+            if (hasParameters) {
+                item.emplace("command",
+                             Json::object({{"title", "Show parameter information"},
+                                           {"command",
+                                            "editor.action.triggerParameterHints"}}));
+            }
         }
         items.emplace(std::move(label), Json(std::move(item)));
     }
@@ -3018,8 +3113,22 @@ class LanguageServer {
                     }
                 }
             }
+            auto snippet = method.name + "($0)";
+            if (method.originContract < analysis.program.contracts.size()) {
+                const auto &origin = analysis.program.contracts[method.originContract];
+                const auto declaration = std::find_if(
+                    origin.methods.begin(), origin.methods.end(),
+                    [&method](const auto &candidate) {
+                        return candidate.name == method.name &&
+                               candidate.span.source == method.span.source &&
+                               candidate.span.offset == method.span.offset;
+                    });
+                if (declaration != origin.methods.end()) {
+                    snippet = callSnippet(method.name, declaration->parameters);
+                }
+            }
             addCompletion(items, method.name, 2, semanticMethodDetail(analysis, method),
-                          method.name + "($0)",
+                          snippet,
                           languageDocumentation(analysis, documentationSpan));
         }
     }
@@ -3050,7 +3159,8 @@ class LanguageServer {
                     continue;
                 }
                 const auto name = shortName(function.name);
-                addCompletion(items, name, 2, functionDetail(function), name + "($0)",
+                addCompletion(items, name, 2, functionDetail(function),
+                              functionCallSnippet(function, name),
                               languageDocumentation(analysis, function.span));
             }
             if (analysis.semantic.has_value() &&
@@ -3073,7 +3183,9 @@ class LanguageServer {
             const auto &declaration = analysis.program.enums[type.declaration];
             for (const auto &variant : declaration.variants) {
                 if (accessible(declaration.packageName, variant.exported, currentPackage)) {
-                    addCompletion(items, variant.name, 20, "Foundation enum variant");
+                    addCompletion(items, variant.name, 20, "Foundation enum variant",
+                                  std::nullopt,
+                                  languageDocumentation(analysis, variant.span));
                 }
             }
         }
@@ -3097,17 +3209,27 @@ class LanguageServer {
         if (!packageName.has_value()) {
             return false;
         }
+        const auto &index = languageIndex(analysis);
         if (attributeContext) {
-            for (const auto &declaration : analysis.program.attributeDeclarations) {
+            for (std::size_t declarationIndex = 0;
+                 declarationIndex < analysis.program.attributeDeclarations.size();
+                 ++declarationIndex) {
+                const auto &declaration =
+                    analysis.program.attributeDeclarations[declarationIndex];
                 if (declaration.packageName == *packageName && declaration.exported) {
                     const auto name = shortName(declaration.name);
-                    addCompletion(items, name, 10, "typed Foundation attribute",
-                                  name + "($0)");
+                    const auto *symbol = index.symbol(
+                        {LanguageSymbolKind::Attribute, declarationIndex, 0});
+                    addCompletion(items, name, 10,
+                                  symbol == nullptr ? "typed Foundation attribute"
+                                                    : symbol->detail,
+                                  callSnippet(name, declaration.parameters),
+                                  symbol == nullptr ? std::string{}
+                                                    : symbol->documentation);
                 }
             }
             return true;
         }
-        const auto &index = languageIndex(analysis);
         for (std::size_t functionIndex = 0;
              functionIndex < analysis.program.functions.size(); ++functionIndex) {
             const auto &function = analysis.program.functions[functionIndex];
@@ -3118,7 +3240,8 @@ class LanguageServer {
             const auto name = shortName(function.name);
             const auto *symbol = index.symbol(
                 {LanguageSymbolKind::Function, functionIndex, 0});
-            addCompletion(items, name, 3, functionDetail(function), name + "($0)",
+            addCompletion(items, name, 3, functionDetail(function),
+                          functionCallSnippet(function, name),
                           symbol == nullptr ? std::string{} : symbol->documentation);
         }
         for (std::size_t declarationIndex = 0;
@@ -3127,20 +3250,37 @@ class LanguageServer {
             if (declaration.packageName == *packageName && declaration.exported) {
                 const auto *symbol = index.symbol(
                     {LanguageSymbolKind::Struct, declarationIndex, 0});
-                addCompletion(items, shortName(declaration.name), 22, "Foundation struct",
+                addCompletion(items, shortName(declaration.name), 22,
+                              symbol == nullptr ? "Foundation struct" : symbol->detail,
                               std::nullopt,
                               symbol == nullptr ? std::string{} : symbol->documentation);
             }
         }
-        for (const auto &declaration : analysis.program.enums) {
+        for (std::size_t declarationIndex = 0;
+             declarationIndex < analysis.program.enums.size(); ++declarationIndex) {
+            const auto &declaration = analysis.program.enums[declarationIndex];
             if (declaration.packageName == *packageName && declaration.exported &&
                 declaration.builtin == BuiltinEnumKind::None) {
-                addCompletion(items, shortName(declaration.name), 13, "Foundation enum");
+                const auto *symbol = index.symbol(
+                    {LanguageSymbolKind::Enum, declarationIndex, 0});
+                addCompletion(items, shortName(declaration.name), 13,
+                              symbol == nullptr ? "Foundation enum" : symbol->detail,
+                              std::nullopt,
+                              symbol == nullptr ? std::string{}
+                                                : symbol->documentation);
             }
         }
-        for (const auto &declaration : analysis.program.contracts) {
+        for (std::size_t declarationIndex = 0;
+             declarationIndex < analysis.program.contracts.size(); ++declarationIndex) {
+            const auto &declaration = analysis.program.contracts[declarationIndex];
             if (declaration.packageName == *packageName && declaration.exported) {
-                addCompletion(items, shortName(declaration.name), 8, "Foundation contract");
+                const auto *symbol = index.symbol(
+                    {LanguageSymbolKind::Contract, declarationIndex, 0});
+                addCompletion(items, shortName(declaration.name), 8,
+                              symbol == nullptr ? "Foundation contract" : symbol->detail,
+                              std::nullopt,
+                              symbol == nullptr ? std::string{}
+                                                : symbol->documentation);
             }
         }
         return true;
@@ -3241,6 +3381,7 @@ class LanguageServer {
         }
 
         std::map<std::string, Json> items;
+        const auto &index = languageIndex(*analysis);
         if (requested.has_value()) {
             if (const auto access = completionAccess(source.contents, *requested);
                 access.has_value()) {
@@ -3335,49 +3476,88 @@ class LanguageServer {
             return alias->second + '.' + std::string(name);
         };
 
-        for (const auto &declaration : analysis->program.attributeDeclarations) {
+        for (std::size_t declarationIndex = 0;
+             declarationIndex < analysis->program.attributeDeclarations.size();
+             ++declarationIndex) {
+            const auto &declaration =
+                analysis->program.attributeDeclarations[declarationIndex];
             const auto label = qualified(declaration.packageName, shortName(declaration.name),
                                          declaration.exported);
             if (!label.has_value()) {
                 continue;
             }
             auto application = '@' + *label;
-            addCompletion(items, application, 10, "typed Foundation attribute",
-                          application + "($0)");
+            const auto *symbol = index.symbol(
+                {LanguageSymbolKind::Attribute, declarationIndex, 0});
+            addCompletion(items, application, 10,
+                          symbol == nullptr ? "typed Foundation attribute" : symbol->detail,
+                          callSnippet(application, declaration.parameters),
+                          symbol == nullptr ? std::string{} : symbol->documentation);
         }
         if (!attributeContext) {
-            for (const auto &function : analysis->program.functions) {
+            for (std::size_t functionIndex = 0;
+                 functionIndex < analysis->program.functions.size(); ++functionIndex) {
+                const auto &function = analysis->program.functions[functionIndex];
                 if (function.receiver.has_value() || function.closure) {
                     continue;
                 }
                 const auto label = qualified(function.packageName, shortName(function.name),
                                              function.exported || function.name == "main");
                 if (label.has_value()) {
-                    addCompletion(items, *label, 3, functionDetail(function), *label + "($0)");
+                    const auto *symbol = index.symbol(
+                        {LanguageSymbolKind::Function, functionIndex, 0});
+                    addCompletion(items, *label, 3, functionDetail(function),
+                                  functionCallSnippet(function, *label),
+                                  symbol == nullptr ? std::string{}
+                                                    : symbol->documentation);
                 }
             }
-            for (const auto &declaration : analysis->program.structs) {
+            for (std::size_t declarationIndex = 0;
+                 declarationIndex < analysis->program.structs.size(); ++declarationIndex) {
+                const auto &declaration = analysis->program.structs[declarationIndex];
                 const auto label = qualified(declaration.packageName, shortName(declaration.name),
                                              declaration.exported);
                 if (label.has_value()) {
-                    addCompletion(items, *label, 22, "Foundation struct");
+                    const auto *symbol = index.symbol(
+                        {LanguageSymbolKind::Struct, declarationIndex, 0});
+                    addCompletion(items, *label, 22,
+                                  symbol == nullptr ? "Foundation struct" : symbol->detail,
+                                  std::nullopt,
+                                  symbol == nullptr ? std::string{}
+                                                    : symbol->documentation);
                 }
             }
-            for (const auto &declaration : analysis->program.enums) {
+            for (std::size_t declarationIndex = 0;
+                 declarationIndex < analysis->program.enums.size(); ++declarationIndex) {
+                const auto &declaration = analysis->program.enums[declarationIndex];
                 if (declaration.builtin == BuiltinEnumKind::None) {
                     const auto label = qualified(declaration.packageName,
                                                  shortName(declaration.name),
                                                  declaration.exported);
                     if (label.has_value()) {
-                        addCompletion(items, *label, 13, "Foundation enum");
+                        const auto *symbol = index.symbol(
+                            {LanguageSymbolKind::Enum, declarationIndex, 0});
+                        addCompletion(items, *label, 13,
+                                      symbol == nullptr ? "Foundation enum" : symbol->detail,
+                                      std::nullopt,
+                                      symbol == nullptr ? std::string{}
+                                                        : symbol->documentation);
                     }
                 }
             }
-            for (const auto &declaration : analysis->program.contracts) {
+            for (std::size_t declarationIndex = 0;
+                 declarationIndex < analysis->program.contracts.size(); ++declarationIndex) {
+                const auto &declaration = analysis->program.contracts[declarationIndex];
                 const auto label = qualified(declaration.packageName, shortName(declaration.name),
                                              declaration.exported);
                 if (label.has_value()) {
-                    addCompletion(items, *label, 8, "Foundation contract");
+                    const auto *symbol = index.symbol(
+                        {LanguageSymbolKind::Contract, declarationIndex, 0});
+                    addCompletion(items, *label, 8,
+                                  symbol == nullptr ? "Foundation contract" : symbol->detail,
+                                  std::nullopt,
+                                  symbol == nullptr ? std::string{}
+                                                    : symbol->documentation);
                 }
             }
             if (requested.has_value()) {
@@ -3460,31 +3640,40 @@ class LanguageServer {
                                             {"value", symbol->documentation}}));
         }
         Json::Array parameters;
-        if ((symbol->id.kind == LanguageSymbolKind::Function ||
-             symbol->id.kind == LanguageSymbolKind::Method) &&
-            symbol->id.owner < analysis->program.functions.size() &&
-            analysis->semantic.has_value() &&
-            symbol->id.owner < analysis->semantic->functions.size()) {
-            const auto &function = analysis->program.functions[symbol->id.owner];
-            const auto &semantic = analysis->semantic->functions[symbol->id.owner];
-            const auto first = function.receiver.has_value() ? 1U : 0U;
-            for (std::size_t parameter = first;
-                 parameter < function.parameters.size() &&
-                 parameter < semantic.parameters.size(); ++parameter) {
-                const auto &declaration = function.parameters[parameter];
+        const auto appendParameters = [&parameters, &analysis](
+                                          const std::vector<Parameter> &declarations,
+                                          std::size_t first = 0) {
+            for (auto parameter = first; parameter < declarations.size(); ++parameter) {
+                const auto &declaration = declarations[parameter];
                 Json::Object item{{"label", declaration.name + ' ' +
                                                displayTypeSyntax(declaration.type)}};
-                const auto *parameterSymbol = index.symbol(
-                    {LanguageSymbolKind::Parameter, symbol->id.owner,
-                     semantic.parameters[parameter]});
-                if (parameterSymbol != nullptr &&
-                    !parameterSymbol->documentation.empty()) {
+                const auto documentation =
+                    languageDocumentation(*analysis, declaration.span);
+                if (!documentation.empty()) {
                     item.emplace("documentation",
                                  Json::object({{"kind", "markdown"},
-                                               {"value", parameterSymbol->documentation}}));
+                                               {"value", documentation}}));
                 }
                 parameters.push_back(Json(std::move(item)));
             }
+        };
+        if ((symbol->id.kind == LanguageSymbolKind::Function ||
+             symbol->id.kind == LanguageSymbolKind::Method) &&
+            symbol->id.owner < analysis->program.functions.size()) {
+            const auto &function = analysis->program.functions[symbol->id.owner];
+            appendParameters(function.parameters, function.receiver.has_value() ? 1U : 0U);
+        } else if (symbol->id.kind == LanguageSymbolKind::ContractMethod &&
+                   symbol->id.owner < analysis->program.contracts.size() &&
+                   symbol->id.member <
+                       analysis->program.contracts[symbol->id.owner].methods.size()) {
+            appendParameters(
+                analysis->program.contracts[symbol->id.owner]
+                    .methods[symbol->id.member]
+                    .parameters);
+        } else if (symbol->id.kind == LanguageSymbolKind::Attribute &&
+                   symbol->id.owner < analysis->program.attributeDeclarations.size()) {
+            appendParameters(
+                analysis->program.attributeDeclarations[symbol->id.owner].parameters);
         }
         if (!parameters.empty()) {
             signature.emplace("parameters", Json(std::move(parameters)));

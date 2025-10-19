@@ -70,6 +70,10 @@ function executableName() {
     return process.platform === "win32" ? "foundation-ls.exe" : "foundation-ls";
 }
 
+function platformDirectory() {
+    return `${process.platform}-${process.arch}`;
+}
+
 function findLanguageServer(vscode, extensionPath) {
     const configured = vscode.workspace
         .getConfiguration("foundation")
@@ -79,9 +83,14 @@ function findLanguageServer(vscode, extensionPath) {
     }
 
     const name = executableName();
-    const bundled = path.join(extensionPath, "bin", name);
+    const bundled = path.join(extensionPath, "bin", platformDirectory(), name);
     if (fs.existsSync(bundled)) {
         return bundled;
+    }
+
+    const legacyBundled = path.join(extensionPath, "bin", name);
+    if (fs.existsSync(legacyBundled)) {
+        return legacyBundled;
     }
 
     for (const folder of vscode.workspace.workspaceFolders || []) {
@@ -125,11 +134,35 @@ class FoundationLanguageClient {
         this.compositeSessions = new Map();
         this.output = vscode.window.createOutputChannel("Foundation Language Server");
         this.diagnostics = vscode.languages.createDiagnosticCollection("foundation");
-        context.subscriptions.push(this.output, this.diagnostics);
+        this.status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+        this.status.name = "Foundation IntelliSense";
+        this.status.command = "foundation.showOutput";
+        this.setStatus("starting");
+        context.subscriptions.push(
+            this.output,
+            this.diagnostics,
+            this.status,
+            vscode.commands.registerCommand("foundation.showOutput", () => this.output.show(true))
+        );
+    }
+
+    setStatus(state, detail = "") {
+        const values = {
+            starting: ["$(sync~spin) Foundation: Starting", "Foundation IntelliSense is starting"],
+            ready: ["$(check) Foundation: Ready", "Foundation IntelliSense is ready"],
+            error: ["$(error) Foundation: Error", "Foundation IntelliSense failed"],
+            stopped: ["$(circle-slash) Foundation: Stopped", "Foundation IntelliSense stopped"]
+        };
+        const [text, tooltip] = values[state] || values.error;
+        this.status.text = text;
+        this.status.tooltip = detail ? `${tooltip}\n${detail}` : tooltip;
+        this.status.show();
     }
 
     async start() {
         const executable = findLanguageServer(this.vscode, this.context.extensionPath);
+        this.setStatus("starting", executable);
+        this.output.appendLine(`Starting ${executable}`);
         const folder = this.vscode.workspace.workspaceFolders?.[0];
         const options = folder ? { cwd: folder.uri.fsPath } : {};
         this.process = childProcess.spawn(executable, [], {
@@ -165,6 +198,7 @@ class FoundationLanguageClient {
         });
         this.notify("initialized", {});
         this.ready = true;
+        this.setStatus("ready", executable);
 
         const semanticLegend = new this.vscode.SemanticTokensLegend([
             "function", "method", "struct", "property", "enum", "enumMember",
@@ -886,6 +920,9 @@ class FoundationLanguageClient {
                     ? new this.vscode.SnippetString(value.insertText)
                     : value.insertText;
             }
+            if (value.command) {
+                item.command = value.command;
+            }
             return item;
         });
     }
@@ -1092,6 +1129,7 @@ class FoundationLanguageClient {
 
     fail(error) {
         this.output.appendLine(error.message);
+        this.setStatus("error", error.message);
         this.output.show(true);
         for (const pending of this.pending.values()) {
             pending.cancellation?.dispose();
@@ -1111,6 +1149,7 @@ class FoundationLanguageClient {
             this.output.appendLine(error.message);
         }
         this.notify("exit", null);
+        this.setStatus("stopped");
         const process = this.process;
         setTimeout(() => {
             if (process.exitCode === null) {
@@ -1124,5 +1163,6 @@ module.exports = {
     FoundationLanguageClient,
     MessageReader,
     encodeMessage,
-    findLanguageServer
+    findLanguageServer,
+    platformDirectory
 };

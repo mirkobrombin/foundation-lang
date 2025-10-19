@@ -14,7 +14,9 @@ const {
 const {
     FoundationLanguageClient,
     MessageReader,
-    encodeMessage
+    encodeMessage,
+    findLanguageServer,
+    platformDirectory
 } = require("../src/languageClient");
 const {
     extractCompositeEdits,
@@ -97,13 +99,77 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.31.0");
+    assert.equal(manifest.version, "0.32.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
+    assert.equal(manifest.contributes.commands[1].command,
+        "foundation.showOutput");
     assert.equal(
         manifest.contributes.configuration.properties["foundation.languageServer.path"].default,
         ""
     );
+    assert.match(packagingScript, /extension\/bin\/\$platform/);
+    assert.match(packagingScript, /FOUNDATION_LANGUAGE_SERVER/);
+});
+
+test("prefers the bundled platform language server", () => {
+    const root = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "foundation-vscode-"));
+    const name = process.platform === "win32" ? "foundation-ls.exe" : "foundation-ls";
+    const bundled = path.join(root, "bin", platformDirectory(), name);
+    fs.mkdirSync(path.dirname(bundled), { recursive: true });
+    fs.writeFileSync(bundled, "server");
+
+    const vscode = {
+        workspace: {
+            getConfiguration: () => ({ get: () => "" }),
+            workspaceFolders: []
+        }
+    };
+
+    assert.equal(findLanguageServer(vscode, root), bundled);
+    fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("shows the language server state and output command", () => {
+    let command;
+    let shown = false;
+    const status = { show() { this.visible = true; } };
+    const output = {
+        show() { shown = true; },
+        appendLine() {},
+        dispose() {}
+    };
+    const vscode = {
+        StatusBarAlignment: { Right: 2 },
+        commands: {
+            registerCommand(name, callback) {
+                command = { name, callback };
+                return { dispose() {} };
+            }
+        },
+        languages: {
+            createDiagnosticCollection: () => ({ dispose() {} })
+        },
+        window: {
+            createOutputChannel: () => output,
+            createStatusBarItem: () => status
+        }
+    };
+    const client = new FoundationLanguageClient(vscode, {
+        subscriptions: [],
+        extensionPath: "/extension"
+    });
+
+    assert.equal(status.text, "$(sync~spin) Foundation: Starting");
+    assert.equal(status.command, "foundation.showOutput");
+    assert.equal(status.visible, true);
+    assert.equal(command.name, "foundation.showOutput");
+    command.callback();
+    assert.equal(shown, true);
+
+    client.setStatus("ready", "/extension/bin/foundation-ls");
+    assert.equal(status.text, "$(check) Foundation: Ready");
+    assert.match(status.tooltip, /foundation-ls/);
 });
 
 test("frames language server messages across stream chunks", () => {
@@ -254,6 +320,10 @@ test("maps documented completions and parameter signature help", async () => {
                 detail: "fn Rename(edit, name String) void",
                 insertText: "Rename($0)",
                 insertTextFormat: 2,
+                command: {
+                    title: "Show parameter information",
+                    command: "editor.action.triggerParameterHints"
+                },
                 documentation: {
                     kind: "markdown",
                     value: "Replaces the displayed profile name."
@@ -288,6 +358,8 @@ test("maps documented completions and parameter signature help", async () => {
     assert.equal(completions[0].documentation.value,
         "Replaces the displayed profile name.");
     assert.equal(completions[0].insertText.value, "Rename($0)");
+    assert.equal(completions[0].command.command,
+        "editor.action.triggerParameterHints");
     assert.equal(signature.signatures[0].documentation.value,
         "Replaces the displayed profile name.");
     assert.equal(signature.signatures[0].parameters[0].label, "name String");

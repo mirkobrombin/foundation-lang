@@ -1402,7 +1402,10 @@ void distributedMethodsExposeDocumentationAndParameters() {
     writeFile(user,
               "package sample.profile\n"
               "/// A profile edited across source files.\n"
-              "struct User { Name String }\n");
+              "struct User {\n"
+              "    /// The name shown to people.\n"
+              "    Name String\n"
+              "}\n");
     writeFile(rename,
               "package sample.profile\n"
               "methods User {\n"
@@ -1489,11 +1492,15 @@ void distributedMethodsExposeDocumentationAndParameters() {
     expect(status == 0, "distributed-method language server transcript exits cleanly");
     expect(errors.str().empty(), "distributed-method requests write no server errors");
     expect(hover.find("fn Rename(edit, name String) void") != std::string::npos &&
-               hover.find("Replaces the displayed profile name.") != std::string::npos,
-           "method hover combines its compiler signature and documentation");
+               hover.find("Replaces the displayed profile name.") != std::string::npos &&
+               hover.find("**Parameters**") != std::string::npos &&
+               hover.find("The new user-facing name.") != std::string::npos,
+           "method hover combines its signature, documentation, and parameter documentation");
     expect(completion.find("\"label\":\"Rename\"") != std::string::npos &&
-               completion.find("Replaces the displayed profile name.") != std::string::npos,
-           "member completion carries method documentation");
+               completion.find("Replaces the displayed profile name.") != std::string::npos &&
+               completion.find("Rename(${1:name})$0") != std::string::npos &&
+               completion.find("editor.action.triggerParameterHints") != std::string::npos,
+           "member completion carries documentation, parameter placeholders, and signature trigger");
     expect(signature.find("\"label\":\"name String\"") != std::string::npos &&
                signature.find("The new user-facing name.") != std::string::npos &&
                signature.find("Replaces the displayed profile name.") != std::string::npos,
@@ -1508,8 +1515,10 @@ void distributedMethodsExposeDocumentationAndParameters() {
                compositeType.find(renameUri) != std::string::npos,
            "composite type request preserves documented editable fragments across files");
     expect(userHover.find("1 field, 1 method across 2 files") != std::string::npos &&
+               userHover.find("**Fields**") != std::string::npos &&
+               userHover.find("The name shown to people.") != std::string::npos &&
                userHover.find("foundationComposite") != std::string::npos,
-           "struct hover summarizes its distributed shape and exposes the composite action");
+           "struct hover documents fields, summarizes its shape, and exposes the composite action");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);
