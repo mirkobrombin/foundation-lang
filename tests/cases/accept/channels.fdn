@@ -1,0 +1,5 @@
+fn main() i32 {
+    const Channel { sender receiver } = channel<String>(2)
+    print("channel endpoints")
+    0
+}

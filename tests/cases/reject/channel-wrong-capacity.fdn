@@ -1,0 +1,5 @@
+fn main() i32 {
+    const endpoints = channel<i32>("zero")
+    discard endpoints
+    0
+}

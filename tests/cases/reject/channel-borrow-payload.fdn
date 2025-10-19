@@ -1,0 +1,5 @@
+fn main() i32 {
+    const endpoints = channel<view String>(0)
+    discard endpoints
+    0
+}

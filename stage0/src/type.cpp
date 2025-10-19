@@ -38,6 +38,12 @@ const char *typeName(Type type) {
         return "fn";
     case TypeKind::Task:
         return "Task";
+    case TypeKind::Channel:
+        return "Channel";
+    case TypeKind::Sender:
+        return "Sender";
+    case TypeKind::Receiver:
+        return "Receiver";
     }
     return "<invalid>";
 }

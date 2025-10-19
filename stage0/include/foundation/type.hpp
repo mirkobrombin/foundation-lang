@@ -25,6 +25,9 @@ enum class TypeKind {
     Contract,
     Function,
     Task,
+    Channel,
+    Sender,
+    Receiver,
 };
 
 struct Type {

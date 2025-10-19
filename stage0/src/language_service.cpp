@@ -572,6 +572,11 @@ class IndexBuilder {
         if (type.kind == TypeKind::Task && type.arguments.size() == 1) {
             return "Task<" + displayType(type.arguments[0], function) + '>';
         }
+        if ((type.kind == TypeKind::Channel || type.kind == TypeKind::Sender ||
+             type.kind == TypeKind::Receiver) && type.arguments.size() == 1) {
+            return std::string(typeName(type)) + '<' +
+                   displayType(type.arguments[0], function) + '>';
+        }
         std::string result;
         if (type.kind == TypeKind::Struct && type.declaration < analysis_.program.structs.size()) {
             result = shortName(analysis_.program.structs[type.declaration].name);
@@ -1210,7 +1215,8 @@ bool reservedIdentifier(std::string_view name) {
         "attribute", "implements", "extends", "by", "fn", "let", "var", "return",
         "discard", "if", "else", "while", "match", "capture", "replace", "with",
         "own", "view", "edit", "true", "false", "print", "panic", "len", "i32",
-        "u64", "bool", "String", "void", "Option", "Result"};
+        "u64", "bool", "String", "void", "Option", "Result", "Task", "Channel",
+        "Sender", "Receiver", "channel"};
     return reserved.contains(name);
 }
 

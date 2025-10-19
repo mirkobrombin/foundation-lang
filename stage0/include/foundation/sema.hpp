@@ -21,6 +21,7 @@ enum class CallTargetKind {
     Print,
     Panic,
     Len,
+    Channel,
 };
 
 struct CallTarget {

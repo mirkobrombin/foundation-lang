@@ -39,11 +39,15 @@ opaque `u64` handle private to the standard library and is not a public package 
 
 ## Channels
 
+`channel<T>(capacity)` returns a move-only `Channel<T>` pair. A complete
+`const Channel { sender receiver }` pattern transfers each direction into its own lexical owner.
+The compiler rejects borrowed payloads and emits cleanup for the pair and both endpoint types.
+
 The runtime transport for `Sender<T>` and `Receiver<T>` is implemented. A zero-capacity channel
 performs a rendezvous; a positive capacity stores values in FIFO order. Sender and receiver counts
 are independent, buffered owned values use generated drop glue, and closing either direction wakes
 operations that can no longer complete. Structured task cancellation removes a parked operation
 from its channel queue before resuming it as cancelled.
 
-The Foundation endpoint facade and `select` lowering are still pending. Until they are executable,
-this transport is an internal runtime contract rather than a public `std.concurrent` API.
+Send, receive, and `select` lowering remain pending. Endpoint creation and deterministic close are
+already executable language behavior.

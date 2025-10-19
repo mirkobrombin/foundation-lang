@@ -11,6 +11,9 @@ endif()
 if(DEFINED RUNTIME_CANCELLATION_SOURCE)
     list(APPEND runtime_sources "${RUNTIME_CANCELLATION_SOURCE}")
 endif()
+if(DEFINED RUNTIME_CHANNEL_SOURCE)
+    list(APPEND runtime_sources "${RUNTIME_CHANNEL_SOURCE}")
+endif()
 
 execute_process(
     COMMAND "${COMPILER}" emit-c "${SOURCE}" -o "${GENERATED}"

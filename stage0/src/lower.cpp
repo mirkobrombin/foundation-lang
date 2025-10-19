@@ -373,29 +373,36 @@ class Lowerer {
                 }
                 arguments.push_back(argument);
             }
-            auto kind = FirCallKind::Function;
-            switch (target.kind) {
-            case CallTargetKind::Function:
-            case CallTargetKind::Method:
-                break;
-            case CallTargetKind::FunctionValue:
-                kind = FirCallKind::FunctionValue;
-                break;
-            case CallTargetKind::ContractMethod:
-                std::terminate();
-            case CallTargetKind::Print:
-                kind = FirCallKind::Print;
-                break;
-            case CallTargetKind::Panic:
-                kind = FirCallKind::Panic;
-                break;
-            case CallTargetKind::Len:
-                kind = FirCallKind::Len;
-                break;
+            if (target.kind == CallTargetKind::Channel) {
+                value = FirChannelExpression{
+                    target.typeArguments.empty() ? invalidType : target.typeArguments.front(),
+                    arguments.empty() ? 0 : arguments.front()};
+            } else {
+                auto kind = FirCallKind::Function;
+                switch (target.kind) {
+                case CallTargetKind::Function:
+                case CallTargetKind::Method:
+                    break;
+                case CallTargetKind::FunctionValue:
+                    kind = FirCallKind::FunctionValue;
+                    break;
+                case CallTargetKind::ContractMethod:
+                case CallTargetKind::Channel:
+                    std::terminate();
+                case CallTargetKind::Print:
+                    kind = FirCallKind::Print;
+                    break;
+                case CallTargetKind::Panic:
+                    kind = FirCallKind::Panic;
+                    break;
+                case CallTargetKind::Len:
+                    kind = FirCallKind::Len;
+                    break;
+                }
+                value = FirCallExpression{kind, target.function, target.typeArguments,
+                                          std::move(arguments), target.argumentDrops, 0, 0,
+                                          target.local};
             }
-            value = FirCallExpression{kind, target.function, target.typeArguments,
-                                      std::move(arguments), target.argumentDrops, 0, 0,
-                                      target.local};
         } else if (const auto *literal = std::get_if<StructExpression>(&source.value)) {
             const auto &target = required(model_.structTargets[id]);
             std::vector<FirStructFieldValue> fields;

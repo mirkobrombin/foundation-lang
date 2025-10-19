@@ -3137,6 +3137,11 @@ class LanguageServer {
                                    const ProjectAnalysis &analysis,
                                    Type type, std::string_view currentPackage) const {
         type = completionValueType(std::move(type));
+        if (type.kind == TypeKind::Channel && type.arguments.size() == 1) {
+            addCompletion(items, "sender", 5, "Sender endpoint");
+            addCompletion(items, "receiver", 5, "Receiver endpoint");
+            return;
+        }
         if (type.kind == TypeKind::Struct && type.declaration < analysis.program.structs.size()) {
             const auto &declaration = analysis.program.structs[type.declaration];
             for (std::size_t fieldIndex = 0; fieldIndex < declaration.fields.size();
@@ -3446,13 +3451,15 @@ class LanguageServer {
                 addCompletion(items, std::string(keyword), 14);
             }
             for (const auto type : {"i32", "u64", "bool", "String", "void", "Option",
-                                    "Result", "Task"}) {
+                                    "Result", "Task", "Channel", "Sender", "Receiver"}) {
                 addCompletion(items, type, 25);
             }
             for (const auto builtin : {"print", "panic", "len"}) {
                 addCompletion(items, builtin, 3, "Foundation builtin",
                               std::string(builtin) + "(${1:value})");
             }
+            addCompletion(items, "channel", 3, "Open directional channel endpoints",
+                          "channel<${1:T}>(${2:capacity})");
         }
 
         std::map<std::string, std::string> aliases;

@@ -327,6 +327,9 @@ fn main(args view [String]) i32 {
     cancellation.Cancel()
     const afterCancellationPending = spawn observeCancellation(cancellation.Token())
     const afterCancellation = $afterCancellationPending.wait()
+    const Channel { sender receiver } = channel<String>(1)
+    discard sender
+    discard receiver
     if (inRange(current, 5, 5) || false) && nextByteCount == 11925602364 &&
         platformMatches && pathMatches && jsonMatches && timeMatches && argumentCount == 0 &&
         proxyCounterValue == 2 && dynamicCounterValue == 1 && backgroundValue == 42 &&

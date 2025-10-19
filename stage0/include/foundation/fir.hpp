@@ -244,6 +244,11 @@ struct FirTaskWaitExpression {
     FirExpressionId task{};
 };
 
+struct FirChannelExpression {
+    Type payload{invalidType};
+    FirExpressionId capacity{};
+};
+
 struct FirEnumExpression {
     Type type{invalidType};
     FirVariantId variant{};
@@ -270,7 +275,8 @@ using FirExpressionValue =
                  FirBinaryExpression, FirCallExpression,
                  FirContractExpression, FirStructExpression, FirFieldExpression,
                  FirIndexExpression, FirReplaceExpression, FirEnumExpression,
-                 FirSpawnExpression, FirTaskWaitExpression, FirMatchExpression>;
+                 FirSpawnExpression, FirTaskWaitExpression, FirChannelExpression,
+                 FirMatchExpression>;
 
 struct FirExpression {
     FirExpressionValue value;

@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iomanip>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -110,6 +111,15 @@ std::string cTypeTag(const Type &type) {
     case TypeKind::Task:
         return "task_" +
                (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
+    case TypeKind::Channel:
+        return "channel_" +
+               (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
+    case TypeKind::Sender:
+        return "sender_" +
+               (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
+    case TypeKind::Receiver:
+        return "receiver_" +
+               (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
     case TypeKind::Parameter:
     case TypeKind::Invalid:
         break;
@@ -120,6 +130,10 @@ std::string cTypeTag(const Type &type) {
 std::string arrayName(const Type &type) { return "fdn_" + cTypeTag(type); }
 
 std::string sliceName(const Type &type) { return "fdn_" + cTypeTag(type); }
+
+std::string channelDropName(const Type &type) {
+    return "fdn_channel_drop_" + cTypeTag(type);
+}
 
 std::string cType(const Type &type) {
     switch (type.kind) {
@@ -170,6 +184,11 @@ std::string cType(const Type &type) {
         return "fdn_" + cTypeTag(type);
     case TypeKind::Task:
         return "fdn_task *";
+    case TypeKind::Channel:
+        return "fdn_channel_pair";
+    case TypeKind::Sender:
+    case TypeKind::Receiver:
+        return "fdn_channel *";
     case TypeKind::Invalid:
         break;
     }
@@ -567,6 +586,9 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
     if (const auto *wait = std::get_if<FirTaskWaitExpression>(&expression.value)) {
         return expressionDiverges(program, function, wait->task);
     }
+    if (const auto *channel = std::get_if<FirChannelExpression>(&expression.value)) {
+        return expressionDiverges(program, function, channel->capacity);
+    }
     if (const auto *index = std::get_if<FirIndexExpression>(&expression.value)) {
         return expressionDiverges(program, function, index->base) ||
                expressionDiverges(program, function, index->index);
@@ -714,7 +736,8 @@ void markDivergingFunctions(FirProgram &program) {
 
 bool typeRequiresDrop(const FirProgram &program, const Type &type) {
     if (type.kind == TypeKind::String || type.kind == TypeKind::Own ||
-        type.kind == TypeKind::Task ||
+        type.kind == TypeKind::Task || type.kind == TypeKind::Channel ||
+        type.kind == TypeKind::Sender || type.kind == TypeKind::Receiver ||
         type.kind == TypeKind::Function ||
         type.kind == TypeKind::Parameter) {
         return true;
@@ -801,6 +824,21 @@ void emitDropValue(std::ostringstream &out, const FirProgram &program, const Typ
         out << indentation(depth) << "fdn_task_drop(&" << value << ");\n";
         return;
     }
+    if (type.kind == TypeKind::Channel) {
+        out << indentation(depth) << "fdn_channel_drop_receiver(&" << value
+            << ".fdn_field_1);\n";
+        out << indentation(depth) << "fdn_channel_drop_sender(&" << value
+            << ".fdn_field_0);\n";
+        return;
+    }
+    if (type.kind == TypeKind::Sender) {
+        out << indentation(depth) << "fdn_channel_drop_sender(&" << value << ");\n";
+        return;
+    }
+    if (type.kind == TypeKind::Receiver) {
+        out << indentation(depth) << "fdn_channel_drop_receiver(&" << value << ");\n";
+        return;
+    }
     if (type.kind == TypeKind::Function) {
         out << indentation(depth) << "if (" << value << ".fdn_drop != NULL) {\n";
         out << indentation(depth + 1) << value << ".fdn_drop(" << value
@@ -820,9 +858,16 @@ void emitDropValue(std::ostringstream &out, const FirProgram &program, const Typ
 void emitMoveAssignment(std::ostringstream &out, const FirProgram &program, const Type &type,
                         const std::string &target, const std::string &source,
                         unsigned int depth) {
-    if (type.kind == TypeKind::Own || type.kind == TypeKind::Task) {
+    if (type.kind == TypeKind::Own || type.kind == TypeKind::Task ||
+        type.kind == TypeKind::Sender || type.kind == TypeKind::Receiver) {
         out << indentation(depth) << target << " = " << source << ";\n";
         out << indentation(depth) << source << " = NULL;\n";
+        return;
+    }
+    if (type.kind == TypeKind::Channel) {
+        out << indentation(depth) << target << " = " << source << ";\n";
+        out << indentation(depth) << source << ".fdn_field_0 = NULL;\n";
+        out << indentation(depth) << source << ".fdn_field_1 = NULL;\n";
         return;
     }
     if (type.kind == TypeKind::String) {
@@ -932,6 +977,9 @@ class FunctionEmitter {
         if (const auto *call = std::get_if<FirCallExpression>(&expression.value)) {
             return emitCall(*call, expression.type, expression.span, depth);
         }
+        if (const auto *channel = std::get_if<FirChannelExpression>(&expression.value)) {
+            return emitChannel(*channel, depth);
+        }
         if (const auto *spawn = std::get_if<FirSpawnExpression>(&expression.value)) {
             return emitSpawn(*spawn, depth);
         }
@@ -1039,6 +1087,30 @@ class FunctionEmitter {
         out_ << indentation(depth) << cType(type) << ' ' << result << ";\n";
         out_ << indentation(depth) << "fdn_task_wait(&" << task.value << ", &" << result
              << ");\n";
+        return {result, false};
+    }
+
+    EmittedExpression emitChannel(const FirChannelExpression &channel, unsigned int depth) {
+        auto capacity = emitExpression(channel.capacity, depth);
+        if (capacity.diverges) {
+            return capacity;
+        }
+        const auto result = nextTemporary();
+        out_ << indentation(depth) << "fdn_channel_pair " << result << " = {NULL, NULL};\n";
+        out_ << indentation(depth) << "fdn_channel_open(";
+        if (channel.payload == voidType) {
+            out_ << "0";
+        } else {
+            out_ << "sizeof(" << cType(channel.payload) << ')';
+        }
+        out_ << ", (size_t)" << capacity.value << ", ";
+        if (channel.payload != voidType && typeRequiresDrop(program_, channel.payload)) {
+            out_ << '&' << channelDropName(channel.payload);
+        } else {
+            out_ << "NULL";
+        }
+        out_ << ", &" << result
+             << ".fdn_field_0, &" << result << ".fdn_field_1);\n";
         return {result, false};
     }
 
@@ -2502,6 +2574,37 @@ void emitOwnershipDefinitions(std::ostringstream &out, const FirProgram &program
     }
 }
 
+std::vector<Type> collectChannelPayloadTypes(const FirProgram &program) {
+    std::map<std::string, Type> found;
+    for (const auto &function : program.functions) {
+        for (const auto &expression : function.expressions) {
+            const auto *channel = std::get_if<FirChannelExpression>(&expression.value);
+            if (channel != nullptr && channel->payload != voidType &&
+                typeRequiresDrop(program, channel->payload)) {
+                found.emplace(cTypeTag(channel->payload), channel->payload);
+            }
+        }
+    }
+    std::vector<Type> result;
+    result.reserve(found.size());
+    for (const auto &[key, type] : found) {
+        static_cast<void>(key);
+        result.push_back(type);
+    }
+    return result;
+}
+
+void emitChannelPayloadDrops(std::ostringstream &out, const FirProgram &program,
+                             const std::vector<Type> &payloads) {
+    for (const auto &payload : payloads) {
+        out << "static FDN_MAYBE_UNUSED void " << channelDropName(payload)
+            << "(void *fdn_value) {\n";
+        out << "    " << cType(payload) << " *fdn_payload = fdn_value;\n";
+        emitDropValue(out, program, payload, "*fdn_payload", 1);
+        out << "}\n\n";
+    }
+}
+
 std::optional<std::size_t>
 typeNode(const FirProgram &program, const Type &type,
          const std::unordered_map<std::string, std::size_t> &arrayNodes) {
@@ -2957,6 +3060,7 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     collectSequenceTypes(program, arrays, slices);
     const auto functionTypes = collectFunctionTypes(program);
     const auto functionValueUses = collectFunctionValueUses(program);
+    const auto channelPayloads = collectChannelPayloadTypes(program);
     std::ostringstream out;
     out << "#include <stdbool.h>\n";
     out << "#include <stdint.h>\n";
@@ -2969,6 +3073,10 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     out << "#else\n";
     out << "#define FDN_MAYBE_UNUSED\n";
     out << "#endif\n\n";
+    out << "typedef struct fdn_channel_pair {\n";
+    out << "    fdn_channel *fdn_field_0;\n";
+    out << "    fdn_channel *fdn_field_1;\n";
+    out << "} fdn_channel_pair;\n\n";
     for (std::size_t index = 0; index < program.structs.size(); ++index) {
         out << "typedef struct fdn_struct_" << index << " fdn_struct_" << index << ";\n";
     }
@@ -3078,6 +3186,7 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
 
     emitOwnershipPrototypes(out, program, arrays);
     emitOwnershipDefinitions(out, program, arrays);
+    emitChannelPayloadDrops(out, program, channelPayloads);
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
         emitClosureDrop(out, program, index);
     }

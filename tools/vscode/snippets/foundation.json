@@ -450,6 +450,11 @@
         ],
         "description": "Spawn a task and consume its result"
     },
+    "Channel endpoints": {
+        "prefix": "channel",
+        "body": "const Channel { ${2:sender} ${3:receiver} } = channel<${1:T}>(${4:0})",
+        "description": "Open and destructure directional channel endpoints"
+    },
     "Cancellation source": {
         "prefix": "cancellation",
         "body": [

@@ -1182,6 +1182,9 @@ class Analyzer {
             if (!function.receiver.has_value() && function.name == "len") {
                 diagnostics_.error("FDN2018", "len is a reserved builtin", function.span);
             }
+            if (!function.receiver.has_value() && function.name == "channel") {
+                diagnostics_.error("FDN2018", "channel is a reserved builtin", function.span);
+            }
             signatures_.push_back({semantic.returnType, semantic.parameterTypes});
 
             if (function.receiver.has_value() || function.name != "main" ||
@@ -1458,6 +1461,66 @@ class Analyzer {
             if (source.kind == TypeKind::Own && source.arguments.size() == 1) {
                 source = source.arguments.front();
                 owned = true;
+            }
+
+            if (destructure->type.name == "Channel") {
+                if (source.kind != TypeKind::Channel || source.arguments.size() != 1) {
+                    diagnostics_.error(
+                        "FDN2130",
+                        "Channel destructuring requires a Channel value or owner",
+                        statement.span);
+                }
+                if (!destructure->type.arguments.empty()) {
+                    const auto pattern = resolveType(destructure->type);
+                    requireSame(pattern, source, statement.span, "Channel pattern");
+                }
+                std::vector<bool> bound(2);
+                std::vector<FirFieldId> fields;
+                std::vector<FirLocalId> bindings;
+                for (const auto &pattern : destructure->fields) {
+                    std::optional<FirFieldId> field;
+                    if (pattern.field == "sender") {
+                        field = 0;
+                    } else if (pattern.field == "receiver") {
+                        field = 1;
+                    }
+                    if (!field.has_value()) {
+                        diagnostics_.error("FDN2025", "unknown Channel field " + pattern.field,
+                                           pattern.span);
+                        bindings.push_back(
+                            addLocal(pattern.binding, invalidType, false, pattern.span));
+                        fields.push_back(0);
+                        continue;
+                    }
+                    if (bound[*field]) {
+                        diagnostics_.error("FDN2132",
+                                           "duplicate field pattern " + pattern.field,
+                                           pattern.span);
+                    }
+                    bound[*field] = true;
+                    const auto payload = source.kind == TypeKind::Channel &&
+                                                 source.arguments.size() == 1
+                                             ? source.arguments.front()
+                                             : invalidType;
+                    const auto endpoint = Type{*field == 0 ? TypeKind::Sender
+                                                           : TypeKind::Receiver,
+                                               0, {payload}};
+                    bindings.push_back(
+                        addLocal(pattern.binding, endpoint, false, pattern.span));
+                    fields.push_back(*field);
+                }
+                if (!bound[0]) {
+                    diagnostics_.error("FDN2133", "Channel pattern is missing field sender",
+                                       statement.span);
+                }
+                if (!bound[1]) {
+                    diagnostics_.error("FDN2133", "Channel pattern is missing field receiver",
+                                       statement.span);
+                }
+                model_.statementStructTargets[id] = StructDestructureTarget{
+                    source.kind == TypeKind::Channel ? source : invalidType, owned,
+                    std::move(fields), std::move(bindings)};
+                return false;
             }
 
             const auto found = structs_.find(destructure->type.name);
@@ -2400,7 +2463,10 @@ class Analyzer {
                 left.kind == TypeKind::Struct || right.kind == TypeKind::Struct ||
                 left.kind == TypeKind::Enum || right.kind == TypeKind::Enum ||
                 left.kind == TypeKind::Function || right.kind == TypeKind::Function ||
-                left.kind == TypeKind::Task || right.kind == TypeKind::Task) {
+                left.kind == TypeKind::Task || right.kind == TypeKind::Task ||
+                left.kind == TypeKind::Channel || right.kind == TypeKind::Channel ||
+                left.kind == TypeKind::Sender || right.kind == TypeKind::Sender ||
+                left.kind == TypeKind::Receiver || right.kind == TypeKind::Receiver) {
                 diagnostics_.error("FDN2012", "equality is not available for this type", span);
             } else {
                 requireSame(left, right, span, "equality operand");
@@ -2444,6 +2510,10 @@ class Analyzer {
         } else if (call.callee == "print" || call.callee == "panic") {
             if (!argumentExpectations.empty()) {
                 argumentExpectations.front() = stringType;
+            }
+        } else if (call.callee == "channel") {
+            if (!argumentExpectations.empty()) {
+                argumentExpectations.front() = u64Type;
             }
         } else {
             auto found = functions_.find(call.callee);
@@ -2514,6 +2584,26 @@ class Analyzer {
             target.local = *local;
             model_.callTargets[id] = std::move(target);
             return functionType.arguments.front();
+        }
+
+        if (call.callee == "channel") {
+            if (explicitTypes.size() != 1) {
+                diagnostics_.error("FDN2043", "channel expects one type argument", span);
+            }
+            if (arguments.size() != 1) {
+                diagnostics_.error("FDN2010", "channel expects one capacity argument", span);
+            } else {
+                requireSame(u64Type, arguments.front(), span, "channel capacity");
+            }
+            const auto payload = explicitTypes.size() == 1 ? explicitTypes.front() : invalidType;
+            if (containsBorrow(payload)) {
+                diagnostics_.error("FDN2165", "channel payload cannot contain a borrow", span);
+            }
+            CallTarget target;
+            target.kind = CallTargetKind::Channel;
+            target.typeArguments.push_back(payload);
+            model_.callTargets[id] = std::move(target);
+            return Type{TypeKind::Channel, 0, {payload}};
         }
 
         if (call.callee == "print") {
@@ -2938,6 +3028,34 @@ class Analyzer {
             base.arguments.size() == 1) {
             const auto value = base.arguments.front();
             base = value;
+        }
+        if (base.kind == TypeKind::Channel && base.arguments.size() == 1) {
+            for (const auto argument : member.arguments) {
+                static_cast<void>(analyzeExpression(argument));
+            }
+            if (member.invoked) {
+                diagnostics_.error("FDN2100", "unknown Channel member " + member.member, span);
+                return invalidType;
+            }
+            std::optional<FirFieldId> field;
+            if (member.member == "sender") {
+                field = 0;
+            } else if (member.member == "receiver") {
+                field = 1;
+            }
+            if (!field.has_value()) {
+                diagnostics_.error("FDN2025", "unknown Channel field " + member.member, span);
+                return invalidType;
+            }
+            model_.expressionFields[id] = *field;
+            const auto result = Type{*field == 0 ? TypeKind::Sender : TypeKind::Receiver,
+                                     0, {base.arguments.front()}};
+            if (use == ExpressionUse::Consume) {
+                diagnostics_.error("FDN2078", "Channel endpoint cannot move independently; "
+                                              "destructure the Channel",
+                                   span);
+            }
+            return result;
         }
         if (member.invoked) {
             return analyzeMethod(id, member, sourceType, base, span);
@@ -3650,6 +3768,12 @@ class Analyzer {
             base = Type{TypeKind::Function};
         } else if (syntax.name == "Task") {
             base = Type{TypeKind::Task};
+        } else if (syntax.name == "Channel") {
+            base = Type{TypeKind::Channel};
+        } else if (syntax.name == "Sender") {
+            base = Type{TypeKind::Sender};
+        } else if (syntax.name == "Receiver") {
+            base = Type{TypeKind::Receiver};
         } else if (const auto parameter = typeParameters_.find(syntax.name);
                    parameter != typeParameters_.end()) {
             base = Type{TypeKind::Parameter, parameter->second};
@@ -3695,7 +3819,9 @@ class Analyzer {
             }
         } else if (base->kind == TypeKind::Own || base->kind == TypeKind::View ||
                    base->kind == TypeKind::Edit || base->kind == TypeKind::Array ||
-                   base->kind == TypeKind::Slice || base->kind == TypeKind::Task) {
+                   base->kind == TypeKind::Slice || base->kind == TypeKind::Task ||
+                   base->kind == TypeKind::Channel || base->kind == TypeKind::Sender ||
+                   base->kind == TypeKind::Receiver) {
             expected = 1;
         }
         if (arguments.size() != expected) {
@@ -3722,6 +3848,11 @@ class Analyzer {
         } else if (base->kind == TypeKind::Task && !base->arguments.empty() &&
                    containsBorrow(base->arguments.front())) {
             diagnostics_.error("FDN2165", "Task result cannot contain a borrow", syntax.span);
+        } else if ((base->kind == TypeKind::Channel || base->kind == TypeKind::Sender ||
+                    base->kind == TypeKind::Receiver) &&
+                   !base->arguments.empty() && containsBorrow(base->arguments.front())) {
+            diagnostics_.error("FDN2165", "channel payload cannot contain a borrow",
+                               syntax.span);
         }
         return *base;
     }
@@ -3772,7 +3903,8 @@ class Analyzer {
         if ((pattern.kind == TypeKind::Struct || pattern.kind == TypeKind::Enum ||
              pattern.kind == TypeKind::Contract ||
              pattern.kind == TypeKind::Function ||
-             pattern.kind == TypeKind::Task ||
+             pattern.kind == TypeKind::Task || pattern.kind == TypeKind::Channel ||
+             pattern.kind == TypeKind::Sender || pattern.kind == TypeKind::Receiver ||
              pattern.kind == TypeKind::Array || pattern.kind == TypeKind::Slice ||
              pattern.kind == TypeKind::Own || pattern.kind == TypeKind::View ||
              pattern.kind == TypeKind::Edit) &&
@@ -3810,6 +3942,7 @@ class Analyzer {
         return name == "void" || name == "i32" || name == "u64" || name == "bool" ||
                name == "String" ||
                name == "Option" || name == "Result" || name == "Task" ||
+               name == "Channel" || name == "Sender" || name == "Receiver" ||
                name == "own" || name == "view" ||
                name == "edit";
     }
@@ -4030,7 +4163,8 @@ class Analyzer {
 
     bool requiresDrop(const Type &type, std::unordered_set<std::string> &active) const {
         if (type.kind == TypeKind::String || type.kind == TypeKind::Own ||
-            type.kind == TypeKind::Task ||
+            type.kind == TypeKind::Task || type.kind == TypeKind::Channel ||
+            type.kind == TypeKind::Sender || type.kind == TypeKind::Receiver ||
             type.kind == TypeKind::Function ||
             type.kind == TypeKind::Parameter) {
             return true;
@@ -4285,6 +4419,10 @@ class Analyzer {
         }
         if (type.kind == TypeKind::Task && type.arguments.size() == 1) {
             return "Task<" + displayType(type.arguments.front()) + '>';
+        }
+        if ((type.kind == TypeKind::Channel || type.kind == TypeKind::Sender ||
+             type.kind == TypeKind::Receiver) && type.arguments.size() == 1) {
+            return std::string(typeName(type)) + '<' + displayType(type.arguments.front()) + '>';
         }
         std::string name;
         if (type.kind == TypeKind::Struct && type.declaration < program_.structs.size()) {

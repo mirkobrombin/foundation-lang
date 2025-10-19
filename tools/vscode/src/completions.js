@@ -78,6 +78,9 @@ const staticCompletions = [
     { label: "Option", kind: "TypeParameter", detail: "primitive Option<T>" },
     { label: "Result", kind: "TypeParameter", detail: "primitive Result<T, E>" },
     { label: "Task", kind: "TypeParameter", detail: "owned concurrent result handle" },
+    { label: "Channel", kind: "TypeParameter", detail: "owned channel endpoint pair" },
+    { label: "Sender", kind: "TypeParameter", detail: "owned channel send endpoint" },
+    { label: "Receiver", kind: "TypeParameter", detail: "owned channel receive endpoint" },
     { label: "std.platform", kind: "Module", detail: "Compilation target information" },
     { label: "std.env", kind: "Module", detail: "Read-only process environment" },
     { label: "std.text", kind: "Module", detail: "UTF-8 String inspection" },
@@ -282,6 +285,12 @@ const staticCompletions = [
     { label: "Option.Some", kind: "EnumMember", insertText: "Option<${1:T}>.Some(${2:value})" },
     { label: "Result.Ok", kind: "EnumMember", insertText: "Result<${1:T}, ${2:E}>.Ok(${3:value})" },
     { label: "Result.Err", kind: "EnumMember", insertText: "Result<${1:T}, ${2:E}>.Err(${3:error})" },
+    {
+        label: "channel",
+        kind: "Function",
+        detail: "builtin fn channel<T>(capacity u64) Channel<T>",
+        insertText: "channel<${1:T}>(${2:capacity})"
+    },
     {
         label: "len",
         kind: "Function",

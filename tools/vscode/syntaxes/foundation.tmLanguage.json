@@ -615,7 +615,7 @@
             "patterns": [
                 {
                     "name": "support.type.foundation",
-                    "match": "\\b(bool|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|isize|usize|void|never|String|UUID|Option|Result|Sender|Receiver|Cancellation|Task)\\b"
+                    "match": "\\b(bool|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|isize|usize|void|never|String|UUID|Option|Result|Channel|Sender|Receiver|Cancellation|Task)\\b"
                 }
             ]
         },
@@ -639,7 +639,7 @@
             "patterns": [
                 {
                     "name": "support.function.builtin.foundation",
-                    "match": "\\b(len|print|panic)\\b"
+                    "match": "\\b(channel|len|print|panic)\\b"
                 }
             ]
         },

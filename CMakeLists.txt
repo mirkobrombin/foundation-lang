@@ -56,6 +56,7 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_RUNTIME_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c"
     FOUNDATION_RUNTIME_TASK_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c"
     FOUNDATION_RUNTIME_CANCELLATION_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c"
+    FOUNDATION_RUNTIME_CHANNEL_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c"
     FOUNDATION_STANDARD_LIBRARY="${CMAKE_CURRENT_SOURCE_DIR}/std"
 )
 
@@ -420,6 +421,31 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
     add_test(
+        NAME stage0.run.channels
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/channels.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/channels.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.channels-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/channels.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/channels.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/channels
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/channels.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
         NAME stage0.run.task-suspension
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -451,7 +477,10 @@ if(BUILD_TESTING)
             "task-borrow-parameter;FDN2165"
             "cancellation-token-reuse;FDN2065"
             "task-wait-expression;FDN2168"
-            "task-wait-ignored-result;FDN2168")
+            "task-wait-ignored-result;FDN2168"
+            "channel-borrow-payload;FDN2165"
+            "channel-missing-endpoint;FDN2133"
+            "channel-wrong-capacity;FDN2011")
         list(GET task_case 0 task_name)
         list(GET task_case 1 task_code)
         add_test(

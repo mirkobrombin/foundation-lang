@@ -103,7 +103,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.33.0");
+    assert.equal(manifest.version, "0.34.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1100,7 +1100,10 @@ test("grammar and completions track compiler keywords", () => {
         assert.ok(completionLabels.has(keyword));
     }
 
-    for (const type of ["i32", "u64", "bool", "String", "void", "Option", "Result", "Task", "len", "print", "panic"]) {
+    for (const type of [
+        "i32", "u64", "bool", "String", "void", "Option", "Result", "Task", "Channel",
+        "Sender", "Receiver", "channel", "len", "print", "panic"
+    ]) {
         assert.match(grammar, new RegExp(`\\b${type}\\b`));
         assert.ok(completionLabels.has(type));
     }
@@ -1551,6 +1554,7 @@ test("ships Result handling and panic snippets", () => {
     assert.equal(snippets.Service.prefix, "service");
     assert.equal(snippets.Task.prefix, "task");
     assert.equal(snippets["Spawn and wait"].prefix, "spawnwait");
+    assert.equal(snippets["Channel endpoints"].prefix, "channel");
     assert.equal(snippets["Cancellation source"].prefix, "cancellation");
     assert.equal(snippets["State machine"].prefix, "statemachine");
     assert.equal(snippets["Channel select"].prefix, "select");
