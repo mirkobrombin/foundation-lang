@@ -1,19 +1,7 @@
 #include "foundation/runtime.h"
+#include "task_internal.h"
 
 #include <stdlib.h>
-
-struct fdn_task {
-    struct fdn_task *next;
-    struct fdn_task *waiter;
-    struct fdn_task *waiting_on;
-    void *frame;
-    fdn_task_poll_fn poll;
-    fdn_task_move_result_fn move_result;
-    fdn_task_drop_frame_fn drop_frame;
-    bool cancellation_requested;
-    bool queued;
-    bool ready;
-};
 
 #if defined(_MSC_VER)
 #define FDN_THREAD_LOCAL __declspec(thread)
@@ -58,6 +46,14 @@ static fdn_task *fdn_task_dequeue(void) {
 static void fdn_task_request_cancellation(fdn_task *task) {
     while (task != NULL && !task->cancellation_requested) {
         task->cancellation_requested = true;
+        if (task->cancel_wait != NULL) {
+            fdn_task_cancel_wait_fn cancel_wait = task->cancel_wait;
+            void *context = task->wait_context;
+            if (task->waiting_on != NULL) {
+                fdn_panic_cstr("task has multiple wait sources");
+            }
+            cancel_wait(task, context);
+        }
         task = task->waiting_on;
     }
 }
@@ -97,7 +93,7 @@ static void fdn_task_run_one(void) {
         fdn_task_wake_waiter(task);
         return;
     }
-    if (task->waiting_on == NULL) {
+    if (task->waiting_on == NULL && task->cancel_wait == NULL) {
         fdn_task_enqueue(task);
     }
 }
@@ -109,7 +105,8 @@ static void fdn_task_run_until(fdn_task *target) {
 }
 
 static void fdn_task_release(fdn_task *task, void *result, bool move_result) {
-    if (!task->ready || task->waiter != NULL || task->waiting_on != NULL) {
+    if (!task->ready || task->waiter != NULL || task->waiting_on != NULL ||
+        task->cancel_wait != NULL || task->wait_next != NULL || task->wake_ready) {
         fdn_panic_cstr("cannot release an incomplete task");
     }
     if (move_result) {
@@ -132,11 +129,20 @@ fdn_task *fdn_task_spawn(void *frame, fdn_task_poll_fn poll,
     task->next = NULL;
     task->waiter = NULL;
     task->waiting_on = NULL;
+    task->wait_next = NULL;
+    task->wait_context = NULL;
+    task->wait_value = NULL;
+    task->cancel_wait = NULL;
+    task->wait_kind = 0;
+    task->wake_context = NULL;
+    task->wake_kind = 0;
+    task->wake_status = 0;
     task->frame = frame;
     task->poll = poll;
     task->move_result = move_result;
     task->drop_frame = drop_frame;
     task->cancellation_requested = false;
+    task->wake_ready = false;
     task->queued = false;
     task->ready = false;
     ++fdn_task_count;
@@ -157,14 +163,16 @@ bool fdn_task_poll_wait(fdn_task **task, void *result) {
         fdn_panic_cstr("task cannot wait on itself");
     }
     if (owned->ready) {
-        if (fdn_task_current->waiting_on != NULL || owned->waiter != NULL) {
+        if (fdn_task_current->waiting_on != NULL || fdn_task_current->cancel_wait != NULL ||
+            owned->waiter != NULL) {
             fdn_panic_cstr("invalid completed task waiter");
         }
         *task = NULL;
         fdn_task_release(owned, result, true);
         return true;
     }
-    if (fdn_task_current->waiting_on != NULL || owned->waiter != NULL) {
+    if (fdn_task_current->waiting_on != NULL || fdn_task_current->cancel_wait != NULL ||
+        owned->waiter != NULL) {
         fdn_panic_cstr("task already has a waiter");
     }
     if (fdn_task_current->cancellation_requested) {
@@ -220,6 +228,58 @@ void fdn_task_cancellation_leave(bool previous) {
 
 bool fdn_task_cancellation_current(void) {
     return fdn_task_current_cancellation;
+}
+
+fdn_task *fdn_task_current_get(void) { return fdn_task_current; }
+
+void fdn_task_park_current(void *context, void *value, unsigned int kind,
+                           fdn_task_cancel_wait_fn cancel_wait) {
+    if (fdn_task_current == NULL || context == NULL || cancel_wait == NULL) {
+        fdn_panic_cstr("invalid task wait registration");
+    }
+    if (fdn_task_current->waiting_on != NULL || fdn_task_current->cancel_wait != NULL ||
+        fdn_task_current->wake_ready) {
+        fdn_panic_cstr("task already has a wait source");
+    }
+    fdn_task_current->wait_context = context;
+    fdn_task_current->wait_value = value;
+    fdn_task_current->wait_kind = kind;
+    fdn_task_current->cancel_wait = cancel_wait;
+}
+
+bool fdn_task_take_wake(void *context, unsigned int kind, unsigned int *status) {
+    if (fdn_task_current == NULL || status == NULL) {
+        fdn_panic_cstr("invalid task wake read");
+    }
+    if (!fdn_task_current->wake_ready) {
+        return false;
+    }
+    if (fdn_task_current->wake_context != context || fdn_task_current->wake_kind != kind) {
+        fdn_panic_cstr("task resumed for a different wait source");
+    }
+    *status = fdn_task_current->wake_status;
+    fdn_task_current->wake_context = NULL;
+    fdn_task_current->wake_kind = 0;
+    fdn_task_current->wake_status = 0;
+    fdn_task_current->wake_ready = false;
+    return true;
+}
+
+void fdn_task_wake(fdn_task *task, unsigned int status) {
+    if (task == NULL || task->cancel_wait == NULL || task->wait_context == NULL ||
+        task->wake_ready || task->queued || task->ready) {
+        fdn_panic_cstr("invalid task wake");
+    }
+    task->wake_context = task->wait_context;
+    task->wake_kind = task->wait_kind;
+    task->wake_status = status;
+    task->wake_ready = true;
+    task->wait_context = NULL;
+    task->wait_value = NULL;
+    task->wait_kind = 0;
+    task->cancel_wait = NULL;
+    task->wait_next = NULL;
+    fdn_task_enqueue(task);
 }
 
 size_t fdn_task_live_count(void) { return fdn_task_count; }

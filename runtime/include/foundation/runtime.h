@@ -26,6 +26,7 @@ typedef struct fdn_string {
 } fdn_string;
 
 typedef struct fdn_task fdn_task;
+typedef struct fdn_channel fdn_channel;
 
 typedef enum fdn_task_poll {
     FDN_TASK_PENDING = 0,
@@ -35,6 +36,14 @@ typedef enum fdn_task_poll {
 typedef fdn_task_poll (*fdn_task_poll_fn)(void *frame, bool cancellation_requested);
 typedef void (*fdn_task_move_result_fn)(void *frame, void *result);
 typedef void (*fdn_task_drop_frame_fn)(void *frame);
+typedef void (*fdn_channel_drop_value_fn)(void *value);
+
+typedef enum fdn_channel_status {
+    FDN_CHANNEL_PENDING = 0,
+    FDN_CHANNEL_READY = 1,
+    FDN_CHANNEL_CLOSED = 2,
+    FDN_CHANNEL_CANCELLED = 3,
+} fdn_channel_status;
 
 static inline fdn_string fdn_string_static(const char *data, size_t length) {
     fdn_string value = {data, length, 0};
@@ -73,6 +82,17 @@ bool fdn_task_cancellation_enter(bool requested);
 void fdn_task_cancellation_leave(bool previous);
 bool fdn_task_cancellation_current(void);
 size_t fdn_task_live_count(void);
+
+void fdn_channel_open(size_t value_size, size_t capacity,
+                      fdn_channel_drop_value_fn drop_value, fdn_channel **sender,
+                      fdn_channel **receiver);
+fdn_channel *fdn_channel_clone_sender(fdn_channel *sender);
+fdn_channel *fdn_channel_clone_receiver(fdn_channel *receiver);
+void fdn_channel_drop_sender(fdn_channel **sender);
+void fdn_channel_drop_receiver(fdn_channel **receiver);
+fdn_channel_status fdn_channel_poll_send(fdn_channel *sender, void *value);
+fdn_channel_status fdn_channel_poll_receive(fdn_channel *receiver, void *value);
+size_t fdn_channel_live_count(void);
 #ifdef __cplusplus
 [[noreturn]] void fdn_panic(fdn_string message);
 [[noreturn]] void fdn_panic_cstr(const char *message);

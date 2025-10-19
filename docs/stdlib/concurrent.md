@@ -36,3 +36,14 @@ token; APIs do not need a second cancellation mechanism for structured shutdown.
 
 The shared request flag uses release/acquire synchronization. Its native representation is an
 opaque `u64` handle private to the standard library and is not a public package ABI.
+
+## Channels
+
+The runtime transport for `Sender<T>` and `Receiver<T>` is implemented. A zero-capacity channel
+performs a rendezvous; a positive capacity stores values in FIFO order. Sender and receiver counts
+are independent, buffered owned values use generated drop glue, and closing either direction wakes
+operations that can no longer complete. Structured task cancellation removes a parked operation
+from its channel queue before resuming it as cancelled.
+
+The Foundation endpoint facade and `select` lowering are still pending. Until they are executable,
+this transport is an internal runtime contract rather than a public `std.concurrent` API.

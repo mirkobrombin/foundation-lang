@@ -16,6 +16,7 @@ add_library(foundation_runtime STATIC
     runtime/src/runtime.c
     runtime/src/task.c
     runtime/src/cancellation.c
+    runtime/src/channel.c
 )
 target_include_directories(foundation_runtime PUBLIC runtime/include)
 
@@ -96,6 +97,7 @@ if(FOUNDATION_BUILD_FUZZERS)
     target_compile_options(foundation_compiler PRIVATE
         -fsanitize=fuzzer-no-link,address,undefined
     )
+    target_compile_options(foundation_runtime PRIVATE -fsanitize=address,undefined)
     target_link_options(foundationc PRIVATE -fsanitize=address,undefined)
     target_link_options(foundation-ls PRIVATE -fsanitize=address,undefined)
     add_executable(foundation_parser_fuzz stage0/fuzz/parser_fuzz.cpp)
@@ -157,6 +159,25 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_task_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_cancellation_test runtime/tests/cancellation_test.c)
     target_link_libraries(foundation_runtime_cancellation_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_channel_test runtime/tests/channel_test.c)
+    target_link_libraries(foundation_runtime_channel_test PRIVATE foundation_runtime)
+    if(FOUNDATION_BUILD_FUZZERS)
+        foreach(runtime_test IN ITEMS
+                foundation_runtime_panic_test
+                foundation_runtime_allocation_test
+                foundation_runtime_counter_test
+                foundation_runtime_string_test
+                foundation_runtime_u64_test
+                foundation_runtime_env_test
+                foundation_runtime_fs_test
+                foundation_runtime_time_test
+                foundation_runtime_task_test
+                foundation_runtime_cancellation_test
+                foundation_runtime_channel_test)
+            target_compile_options(${runtime_test} PRIVATE -fsanitize=address,undefined)
+            target_link_options(${runtime_test} PRIVATE -fsanitize=address,undefined)
+        endforeach()
+    endif()
     if(MSVC)
         target_compile_options(foundation_runtime_panic_test PRIVATE /W4)
         target_compile_options(foundation_runtime_allocation_test PRIVATE /W4)
@@ -168,6 +189,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_time_test PRIVATE /W4)
         target_compile_options(foundation_runtime_task_test PRIVATE /W4)
         target_compile_options(foundation_runtime_cancellation_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_channel_test PRIVATE /W4)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE /WX)
             target_compile_options(foundation_runtime_allocation_test PRIVATE /WX)
@@ -179,6 +201,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_time_test PRIVATE /WX)
             target_compile_options(foundation_runtime_task_test PRIVATE /WX)
             target_compile_options(foundation_runtime_cancellation_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_channel_test PRIVATE /WX)
         endif()
     else()
         target_compile_options(foundation_runtime_panic_test PRIVATE -Wall -Wextra -Wpedantic)
@@ -193,6 +216,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_time_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_task_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_cancellation_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_channel_test PRIVATE -Wall -Wextra -Wpedantic)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_allocation_test PRIVATE -Werror)
@@ -204,6 +228,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_time_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_task_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_cancellation_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_channel_test PRIVATE -Werror)
         endif()
     endif()
 
@@ -298,6 +323,7 @@ if(BUILD_TESTING)
     add_test(NAME runtime.time COMMAND foundation_runtime_time_test)
     add_test(NAME runtime.task COMMAND foundation_runtime_task_test)
     add_test(NAME runtime.cancellation COMMAND foundation_runtime_cancellation_test)
+    add_test(NAME runtime.channel COMMAND foundation_runtime_channel_test)
     set_tests_properties(runtime.env PROPERTIES
         ENVIRONMENT "FOUNDATION_ENV_TEST=foundation env value"
     )

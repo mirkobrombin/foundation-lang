@@ -49,6 +49,9 @@ source cancellation and structured task cancellation through one API.
 Task waits at standalone binding and void-statement positions lower to numbered C11 states. The
 runtime removes a waiting parent from the cooperative queue and wakes it when its owned child is
 ready; task locals remain in the generated frame across that suspension.
+The same internal park and wake contract backs the channel transport. Stage 0 channel queues
+support rendezvous, bounded FIFO buffering, independent endpoint closure, cancellation, and owned
+payload cleanup before the source-level endpoint facade is enabled.
 
 Stage 0 bounds parser nesting and expression complexity before semantic analysis. It records at
 most 100 specific errors, followed by FDN0000 when more input errors are suppressed. These limits
