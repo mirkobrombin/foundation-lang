@@ -1,0 +1,75 @@
+import std.concurrent
+
+task child(message String) String {
+    print("child")
+    message
+}
+
+task sibling() void {
+    print("sibling")
+}
+
+task number(value i32) i32 {
+    value
+}
+
+task parent() String {
+    print("parent-before")
+    const pending = spawn child("done")
+    const result = $pending.wait()
+    print("parent-after")
+    result
+}
+
+task observe(cancel concurrent.Cancellation) void {
+    if cancel.IsRequested() {
+        print("cancelled")
+    }
+}
+
+task cancelledParent() void {
+    const source = concurrent.NewCancellationSource()
+    const pending = spawn observe(source.Token())
+    $pending.wait()
+}
+
+task branchWait(enabled bool) i32 {
+    if enabled {
+        const pending = spawn number(20)
+        const value = $pending.wait()
+        return value + 1
+    }
+    0
+}
+
+task loopWait() i32 {
+    var current = 0
+    var total = 0
+    while current < 2 {
+        const pending = spawn number(current)
+        const value = $pending.wait()
+        total = total + value
+        current = current + 1
+    }
+    total
+}
+
+fn main() i32 {
+    const parentTask = spawn parent()
+    const siblingTask = spawn sibling()
+    const result = $parentTask.wait()
+    $siblingTask.wait()
+    print(result)
+
+    const dropped = spawn cancelledParent()
+    discard dropped
+
+    const branchTask = spawn branchWait(true)
+    const branchValue = $branchTask.wait()
+    const loopTask = spawn loopWait()
+    const loopValue = $loopTask.wait()
+    if branchValue != 21 || loopValue != 1 {
+        return 1
+    }
+    0
+}

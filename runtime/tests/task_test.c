@@ -12,6 +12,15 @@ typedef struct test_frame {
     bool *cancellation_seen;
 } test_frame;
 
+typedef struct parent_frame {
+    fdn_task *child;
+    int32_t result;
+    int *parent_polls;
+    int *child_polls;
+    bool *parent_cancellation_seen;
+    bool *child_cancellation_seen;
+} parent_frame;
+
 static fdn_task_poll poll_test(void *raw, bool cancellation_requested) {
     test_frame *frame = raw;
     ++*frame->polls;
@@ -45,6 +54,48 @@ static fdn_task *spawn_test(int32_t input, int *polls, bool yield_once,
     return fdn_task_spawn(frame, poll_test, move_test_result, drop_test_frame);
 }
 
+static fdn_task_poll poll_parent(void *raw, bool cancellation_requested) {
+    parent_frame *frame = raw;
+    int32_t child_result;
+    ++*frame->parent_polls;
+    if (frame->parent_cancellation_seen != NULL) {
+        *frame->parent_cancellation_seen = cancellation_requested;
+    }
+    if (frame->child == NULL) {
+        frame->child = spawn_test(20, frame->child_polls, true,
+                                  frame->child_cancellation_seen);
+    }
+    if (!fdn_task_poll_wait(&frame->child, &child_result)) {
+        return FDN_TASK_PENDING;
+    }
+    frame->result = child_result + 2;
+    return FDN_TASK_READY;
+}
+
+static void move_parent_result(void *raw, void *output) {
+    parent_frame *frame = raw;
+    *(int32_t *)output = frame->result;
+}
+
+static void drop_parent_frame(void *raw) {
+    parent_frame *frame = raw;
+    fdn_task_drop(&frame->child);
+    fdn_dealloc(frame);
+}
+
+static fdn_task *spawn_parent(int *parent_polls, int *child_polls,
+                              bool *parent_cancellation_seen,
+                              bool *child_cancellation_seen) {
+    parent_frame *frame = fdn_alloc(sizeof(*frame));
+    frame->child = NULL;
+    frame->result = 0;
+    frame->parent_polls = parent_polls;
+    frame->child_polls = child_polls;
+    frame->parent_cancellation_seen = parent_cancellation_seen;
+    frame->child_cancellation_seen = child_cancellation_seen;
+    return fdn_task_spawn(frame, poll_parent, move_parent_result, drop_parent_frame);
+}
+
 int main(void) {
     int polls = 0;
     int32_t result = 0;
@@ -68,6 +119,27 @@ int main(void) {
     fdn_task_drop(&cancelled);
     assert(cancelled == NULL);
     assert(cancellation_seen);
+    assert(fdn_task_live_count() == 0);
+
+    int parent_polls = 0;
+    int child_polls = 0;
+    fdn_task *parent = spawn_parent(&parent_polls, &child_polls, NULL, NULL);
+    fdn_task_wait(&parent, &result);
+    assert(parent == NULL);
+    assert(result == 42);
+    assert(parent_polls == 2);
+    assert(child_polls == 2);
+    assert(fdn_task_live_count() == 0);
+
+    bool parent_cancellation_seen = false;
+    bool child_cancellation_seen = false;
+    fdn_task *cancelled_parent = spawn_parent(&parent_polls, &child_polls,
+                                               &parent_cancellation_seen,
+                                               &child_cancellation_seen);
+    fdn_task_drop(&cancelled_parent);
+    assert(cancelled_parent == NULL);
+    assert(parent_cancellation_seen);
+    assert(child_cancellation_seen);
     assert(fdn_task_live_count() == 0);
     assert(fdn_live_allocations() == 0);
     return 0;

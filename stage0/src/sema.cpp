@@ -1326,6 +1326,8 @@ class Analyzer {
         localSpans_.clear();
         moveStates_.clear();
         loanStates_.clear();
+        taskWaitRoot_.reset();
+        taskWaitVoidStatement_ = false;
 
         const auto &function = program_.functions[index];
         setTypeParameters(function.typeParameters, function.span);
@@ -1378,10 +1380,15 @@ class Analyzer {
                 declared = resolveType(*variable->type);
             }
             const auto hasElse = variable->elseBlock.has_value();
+            const auto previousTaskWaitRoot = taskWaitRoot_;
+            if (program_.functions[currentFunction_].task && !hasElse) {
+                taskWaitRoot_ = variable->initializer;
+            }
             const auto initializer = analyzeExpression(
                 variable->initializer,
                 !hasElse && declared.kind != TypeKind::Invalid ? std::optional<Type>{declared}
                                                                : std::nullopt);
+            taskWaitRoot_ = previousTaskWaitRoot;
             if (hasElse) {
                 if (!isResult(initializer) || initializer.arguments.size() != 2) {
                     diagnostics_.error("FDN2053", "let else requires a Result initializer",
@@ -1599,7 +1606,15 @@ class Analyzer {
             return false;
         }
         if (const auto *expression = std::get_if<ExpressionStatement>(&statement.value)) {
+            const auto previousTaskWaitRoot = taskWaitRoot_;
+            const auto previousTaskWaitVoidStatement = taskWaitVoidStatement_;
+            if (program_.functions[currentFunction_].task) {
+                taskWaitRoot_ = expression->expression;
+                taskWaitVoidStatement_ = true;
+            }
             const auto type = analyzeExpression(expression->expression);
+            taskWaitRoot_ = previousTaskWaitRoot;
+            taskWaitVoidStatement_ = previousTaskWaitVoidStatement;
             if (isResult(type)) {
                 diagnostics_.error("FDN2051", "Result value must be handled or discarded",
                                    statement.span);
@@ -1900,9 +1915,24 @@ class Analyzer {
                 }
                 const auto task = analyzeExpression(*member->base, std::nullopt,
                                                     ExpressionUse::Consume);
+                if (program_.functions[currentFunction_].task &&
+                    (taskWaitRoot_ != id ||
+                     !std::holds_alternative<NameExpression>(
+                         program_.expressions[*member->base].value))) {
+                    diagnostics_.error(
+                        "FDN2168",
+                        "suspending task wait must be a standalone binding or void statement",
+                        span);
+                }
                 if (task.kind != TypeKind::Task || task.arguments.size() != 1) {
                     diagnostics_.error("FDN2166", "$value.wait() requires a Task", span);
                     return invalidType;
+                }
+                if (program_.functions[currentFunction_].task && taskWaitVoidStatement_ &&
+                    task.arguments.front() != voidType) {
+                    diagnostics_.error("FDN2168",
+                                       "standalone suspending task wait requires Task<void>",
+                                       span);
                 }
                 model_.taskWaitTargets[id] = TaskWaitTarget{*member->base};
                 return task.arguments.front();
@@ -4316,6 +4346,8 @@ class Analyzer {
     std::string_view currentPackageOverride_;
     bool transientBorrowsAllowed_{};
     std::optional<AstExpressionId> spawnCall_;
+    std::optional<AstExpressionId> taskWaitRoot_;
+    bool taskWaitVoidStatement_{};
     FirFunctionId currentFunction_{};
 };
 

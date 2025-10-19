@@ -14,11 +14,19 @@ if(NOT emit_result EQUAL 0)
     message(FATAL_ERROR "C emission failed:\n${emit_output}${emit_error}")
 endif()
 
+set(runtime_sources "${RUNTIME_SOURCE}")
+if(DEFINED RUNTIME_TASK_SOURCE)
+    list(APPEND runtime_sources "${RUNTIME_TASK_SOURCE}")
+endif()
+if(DEFINED RUNTIME_CANCELLATION_SOURCE)
+    list(APPEND runtime_sources "${RUNTIME_CANCELLATION_SOURCE}")
+endif()
+
 execute_process(
     COMMAND "${C_COMPILER}" -std=c11 -g -fno-omit-frame-pointer
             -DFOUNDATION_VERIFY_ALLOCATIONS
             -fsanitize=address,undefined -Wall -Wextra -Wpedantic -Werror
-            "${GENERATED}" "${RUNTIME_SOURCE}" -I "${RUNTIME_INCLUDE}" -o "${OUTPUT}"
+            "${GENERATED}" ${runtime_sources} -I "${RUNTIME_INCLUDE}" -o "${OUTPUT}"
     RESULT_VARIABLE build_result
     OUTPUT_VARIABLE build_output
     ERROR_VARIABLE build_error

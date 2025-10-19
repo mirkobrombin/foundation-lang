@@ -65,6 +65,7 @@ size_t fdn_live_allocations(void);
 fdn_task *fdn_task_spawn(void *frame, fdn_task_poll_fn poll,
                          fdn_task_move_result_fn move_result,
                          fdn_task_drop_frame_fn drop_frame);
+bool fdn_task_poll_wait(fdn_task **task, void *result);
 void fdn_task_wait(fdn_task **task, void *result);
 void fdn_task_drop(fdn_task **task);
 bool fdn_task_cancellation_requested(const fdn_task *task);

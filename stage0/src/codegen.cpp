@@ -846,13 +846,20 @@ void emitMoveAssignment(std::ostringstream &out, const FirProgram &program, cons
     out << indentation(depth) << target << " = " << source << ";\n";
 }
 
+std::size_t taskSuspensionCount(const FirFunction &function);
+
 class FunctionEmitter {
   public:
-    FunctionEmitter(std::ostringstream &out, const FirProgram &program, FirFunctionId functionId)
-        : out_(out), program_(program), function_(program.functions[functionId]) {}
+    FunctionEmitter(std::ostringstream &out, const FirProgram &program, FirFunctionId functionId,
+                    bool taskPoll = false)
+        : out_(out), program_(program), function_(program.functions[functionId]),
+          taskPoll_(taskPoll) {}
 
     bool emitBlock(FirBlockId id, unsigned int depth) {
         for (const auto statement : function_.blocks[id].statements) {
+            if (taskPoll_ && emitSuspendingStatement(function_.statements[statement], depth)) {
+                continue;
+            }
             if (emitStatement(function_.statements[statement], depth)) {
                 return true;
             }
@@ -964,7 +971,11 @@ class FunctionEmitter {
     EmittedExpression emitMove(FirLocalId local, unsigned int depth) {
         const auto &type = function_.locals[local].type;
         const auto source = localValue(local);
-        return emitMoveValue(type, source, depth);
+        auto result = emitMoveValue(type, source, depth);
+        if (taskPoll_ && typeRequiresDrop(program_, type)) {
+            out_ << indentation(depth) << localActive(local) << " = false;\n";
+        }
+        return result;
     }
 
     EmittedExpression emitSpawn(const FirSpawnExpression &spawn, unsigned int depth) {
@@ -993,6 +1004,17 @@ class FunctionEmitter {
                  << arguments[index] << ";\n";
         }
         out_ << indentation(depth) << frame << "->fdn_arguments_active = true;\n";
+        if (taskSuspensionCount(program_.functions[call->function]) != 0) {
+            out_ << indentation(depth) << frame << "->fdn_state = 0;\n";
+            for (std::size_t local = 0;
+                 local < program_.functions[call->function].locals.size(); ++local) {
+                if (typeRequiresDrop(program_,
+                                     program_.functions[call->function].locals[local].type)) {
+                    out_ << indentation(depth) << frame << "->fdn_local_" << local
+                         << "_active = false;\n";
+                }
+            }
+        }
         if (program_.functions[call->function].returnType != voidType) {
             out_ << indentation(depth) << frame << "->fdn_result_active = false;\n";
         }
@@ -1532,12 +1554,19 @@ class FunctionEmitter {
                 if (typeRequiresDrop(program_, function_.locals[local].type)) {
                     const auto moved = emitMoveValue(function_.locals[local].type, payload,
                                                      depth + 1);
-                    out_ << indentation(depth + 1) << cType(function_.locals[local].type) << ' '
-                         << localValue(local) << " = " << moved.value << ";\n";
+                    out_ << indentation(depth + 1);
+                    if (!taskPoll_) {
+                        out_ << cType(function_.locals[local].type) << ' ';
+                    }
+                    out_ << localValue(local) << " = " << moved.value << ";\n";
                 } else {
-                    out_ << indentation(depth + 1) << cType(function_.locals[local].type) << ' '
-                         << localValue(local) << " = " << payload << ";\n";
+                    out_ << indentation(depth + 1);
+                    if (!taskPoll_) {
+                        out_ << cType(function_.locals[local].type) << ' ';
+                    }
+                    out_ << localValue(local) << " = " << payload << ";\n";
                 }
+                activateLocal(local, depth + 1);
                 out_ << indentation(depth + 1) << "(void)" << localValue(local)
                      << ";\n";
             }
@@ -1561,14 +1590,70 @@ class FunctionEmitter {
         return {allDiverge ? std::string{} : temporary, allDiverge};
     }
 
+    bool emitSuspendingStatement(const FirStatement &statement, unsigned int depth) {
+        std::optional<FirLocalId> resultLocal;
+        FirExpressionId expression;
+        if (const auto *variable = std::get_if<FirVariableStatement>(&statement.value)) {
+            expression = variable->initializer;
+            resultLocal = variable->local;
+        } else if (const auto *value = std::get_if<FirExpressionStatement>(&statement.value)) {
+            expression = value->expression;
+        } else {
+            return false;
+        }
+        const auto *wait =
+            std::get_if<FirTaskWaitExpression>(&function_.expressions[expression].value);
+        if (wait == nullptr) {
+            return false;
+        }
+        const auto *task =
+            std::get_if<FirMoveExpression>(&function_.expressions[wait->task].value);
+        if (task == nullptr) {
+            internalError("suspending task wait does not consume a local handle");
+        }
+        if (!resultLocal.has_value() && function_.expressions[expression].type != voidType) {
+            internalError("standalone suspending task wait has a result");
+        }
+
+        const auto state = ++taskState_;
+        out_ << indentation(depth) << "fdn_frame->fdn_state = " << state << ";\n";
+        out_ << "fdn_task_state_" << state << ":\n";
+        emitLocation(function_.expressions[expression].span, depth);
+        out_ << indentation(depth) << "if (!fdn_task_poll_wait(&" << localValue(task->local)
+             << ", ";
+        if (resultLocal.has_value()) {
+            out_ << '&' << localValue(*resultLocal);
+        } else {
+            out_ << "NULL";
+        }
+        out_ << ")) {\n";
+        out_ << indentation(depth + 1)
+             << "fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
+        out_ << indentation(depth + 1) << "fdn_frame_leave(&fdn_frame_current);\n";
+        out_ << indentation(depth + 1) << "return FDN_TASK_PENDING;\n";
+        out_ << indentation(depth) << "}\n";
+        if (typeRequiresDrop(program_, function_.locals[task->local].type)) {
+            out_ << indentation(depth) << localActive(task->local) << " = false;\n";
+        }
+        if (resultLocal.has_value()) {
+            activateLocal(*resultLocal, depth);
+            out_ << indentation(depth) << "(void)" << localValue(*resultLocal) << ";\n";
+        }
+        return true;
+    }
+
     bool emitStatement(const FirStatement &statement, unsigned int depth) {
         if (const auto *variable = std::get_if<FirVariableStatement>(&statement.value)) {
             const auto initializer = emitExpression(variable->initializer, depth);
             if (initializer.diverges) {
                 return true;
             }
-            out_ << indentation(depth) << cType(function_.locals[variable->local].type) << ' '
-                 << localValue(variable->local) << " = " << initializer.value << ";\n";
+            out_ << indentation(depth);
+            if (!taskPoll_) {
+                out_ << cType(function_.locals[variable->local].type) << ' ';
+            }
+            out_ << localValue(variable->local) << " = " << initializer.value << ";\n";
+            activateLocal(variable->local, depth);
             out_ << indentation(depth) << "(void)" << localValue(variable->local)
                  << ";\n";
             return false;
@@ -1581,14 +1666,22 @@ class FunctionEmitter {
             const auto resultType = function_.expressions[binding->initializer].type;
             out_ << indentation(depth) << "if (" << initializer.value << ".fdn_tag == "
                  << enumTag(resultType.declaration, 1) << ") {\n";
-            out_ << indentation(depth + 1) << cType(function_.locals[binding->errorLocal].type)
-                 << ' ' << localValue(binding->errorLocal) << " = " << initializer.value
+            out_ << indentation(depth + 1);
+            if (!taskPoll_) {
+                out_ << cType(function_.locals[binding->errorLocal].type) << ' ';
+            }
+            out_ << localValue(binding->errorLocal) << " = " << initializer.value
                  << ".fdn_data." << payloadName(1) << ";\n";
+            activateLocal(binding->errorLocal, depth + 1);
             static_cast<void>(emitBlock(binding->elseBlock, depth + 1));
             out_ << indentation(depth) << "}\n";
-            out_ << indentation(depth) << cType(function_.locals[binding->local].type) << ' '
-                 << localValue(binding->local) << " = " << initializer.value
+            out_ << indentation(depth);
+            if (!taskPoll_) {
+                out_ << cType(function_.locals[binding->local].type) << ' ';
+            }
+            out_ << localValue(binding->local) << " = " << initializer.value
                  << ".fdn_data." << payloadName(0) << ";\n";
+            activateLocal(binding->local, depth);
             return false;
         }
         if (const auto *destructure =
@@ -1601,8 +1694,12 @@ class FunctionEmitter {
             for (const auto &binding : destructure->bindings) {
                 const auto &type = function_.locals[binding.local].type;
                 const auto moved = emitMoveValue(type, access + fieldName(binding.field), depth);
-                out_ << indentation(depth) << cType(type) << ' ' << localValue(binding.local)
-                     << " = " << moved.value << ";\n";
+                out_ << indentation(depth);
+                if (!taskPoll_) {
+                    out_ << cType(type) << ' ';
+                }
+                out_ << localValue(binding.local) << " = " << moved.value << ";\n";
+                activateLocal(binding.local, depth);
                 out_ << indentation(depth) << "(void)" << localValue(binding.local) << ";\n";
             }
             emitDropValue(out_, program_, function_.expressions[destructure->initializer].type,
@@ -1618,9 +1715,18 @@ class FunctionEmitter {
             if (target.diverges) {
                 return true;
             }
-            emitDropValue(out_, program_, function_.expressions[assignment->target].type,
-                          target.value, depth);
+            const auto *targetLocal =
+                std::get_if<FirLocalExpression>(&function_.expressions[assignment->target].value);
+            if (taskPoll_ && targetLocal != nullptr) {
+                emitLocalDrop(targetLocal->local, depth);
+            } else {
+                emitDropValue(out_, program_, function_.expressions[assignment->target].type,
+                              target.value, depth);
+            }
             out_ << indentation(depth) << target.value << " = " << value.value << ";\n";
+            if (targetLocal != nullptr) {
+                activateLocal(targetLocal->local, depth);
+            }
             return false;
         }
         if (const auto *expression = std::get_if<FirExpressionStatement>(&statement.value)) {
@@ -1660,10 +1766,27 @@ class FunctionEmitter {
                          << " = " << value.value << ";\n";
                 }
                 emitDrops(returned->drops, depth);
+                if (taskPoll_) {
+                    emitMoveAssignment(out_, program_, function_.returnType,
+                                       "fdn_frame->fdn_result", result, depth);
+                    out_ << indentation(depth) << "fdn_frame->fdn_result_active = true;\n";
+                    out_ << indentation(depth)
+                         << "fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
+                    out_ << indentation(depth) << "fdn_frame_leave(&fdn_frame_current);\n";
+                    out_ << indentation(depth) << "return FDN_TASK_READY;\n";
+                    return true;
+                }
                 out_ << indentation(depth) << "fdn_frame_leave(&fdn_frame_current);\n";
                 out_ << indentation(depth) << "return " << result << ";\n";
             } else {
                 emitDrops(returned->drops, depth);
+                if (taskPoll_) {
+                    out_ << indentation(depth)
+                         << "fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
+                    out_ << indentation(depth) << "fdn_frame_leave(&fdn_frame_current);\n";
+                    out_ << indentation(depth) << "return FDN_TASK_READY;\n";
+                    return true;
+                }
                 out_ << indentation(depth) << "fdn_frame_leave(&fdn_frame_current);\n";
                 out_ << indentation(depth) << "return;\n";
             }
@@ -1709,15 +1832,15 @@ class FunctionEmitter {
 
     void emitDrops(const std::vector<FirLocalId> &drops, unsigned int depth) {
         for (const auto local : drops) {
-            emitDropValue(out_, program_, function_.locals[local].type,
-                          localValue(local), depth);
+            emitLocalDrop(local, depth);
         }
     }
 
     std::string localValue(FirLocalId local) const {
         const auto &declaration = function_.locals[local];
         if (!declaration.capture) {
-            return localName(function_, local);
+            return taskPoll_ ? "fdn_frame->fdn_local_" + std::to_string(local)
+                             : localName(function_, local);
         }
         const auto field = "fdn_env_data->fdn_capture_" + std::to_string(local);
         if (declaration.captureMode == FirCaptureMode::View ||
@@ -1725,6 +1848,28 @@ class FunctionEmitter {
             return "(*" + field + ')';
         }
         return field;
+    }
+
+    std::string localActive(FirLocalId local) const {
+        return "fdn_frame->fdn_local_" + std::to_string(local) + "_active";
+    }
+
+    void activateLocal(FirLocalId local, unsigned int depth) {
+        if (taskPoll_ && typeRequiresDrop(program_, function_.locals[local].type)) {
+            out_ << indentation(depth) << localActive(local) << " = true;\n";
+        }
+    }
+
+    void emitLocalDrop(FirLocalId local, unsigned int depth) {
+        const auto &type = function_.locals[local].type;
+        if (!taskPoll_ || !typeRequiresDrop(program_, type)) {
+            emitDropValue(out_, program_, type, localValue(local), depth);
+            return;
+        }
+        out_ << indentation(depth) << "if (" << localActive(local) << ") {\n";
+        emitDropValue(out_, program_, type, localValue(local), depth + 1);
+        out_ << indentation(depth + 1) << localActive(local) << " = false;\n";
+        out_ << indentation(depth) << "}\n";
     }
 
     void discardValue(const EmittedExpression &expression, unsigned int depth) {
@@ -1761,6 +1906,8 @@ class FunctionEmitter {
     const FirProgram &program_;
     const FirFunction &function_;
     std::size_t temporary_{};
+    std::size_t taskState_{};
+    bool taskPoll_{};
 };
 
 void emitStructDefinition(std::ostringstream &out, const FirProgram &program, FirStructId id) {
@@ -2422,12 +2569,22 @@ void emitSignature(std::ostringstream &out, const FirProgram &program, FirFuncti
     out << ')';
 }
 
-void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunctionId id) {
+std::size_t taskSuspensionCount(const FirFunction &function) {
+    return static_cast<std::size_t>(
+        std::count_if(function.expressions.begin(), function.expressions.end(),
+                      [](const FirExpression &expression) {
+                          return std::holds_alternative<FirTaskWaitExpression>(expression.value);
+                      }));
+}
+
+void emitTaskFrameDefinition(std::ostringstream &out, const FirProgram &program,
+                             FirFunctionId id) {
     const auto &function = program.functions[id];
     if (!function.task) {
         return;
     }
     const auto frame = taskFrameName(program, id);
+    const auto suspensions = taskSuspensionCount(function);
     out << "struct " << frame << " {\n";
     for (std::size_t index = 0; index < function.parameters.size(); ++index) {
         const auto local = function.parameters[index];
@@ -2438,39 +2595,110 @@ void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunc
         out << "    bool fdn_result_active;\n";
     }
     out << "    bool fdn_arguments_active;\n";
+    if (suspensions != 0) {
+        out << "    uint32_t fdn_state;\n";
+        for (std::size_t local = 0; local < function.locals.size(); ++local) {
+            out << "    " << cType(function.locals[local].type) << " fdn_local_" << local
+                << ";\n";
+            if (typeRequiresDrop(program, function.locals[local].type)) {
+                out << "    bool fdn_local_" << local << "_active;\n";
+            }
+        }
+    }
     out << "};\n\n";
+}
 
+void emitTaskSupportPrototypes(std::ostringstream &out, const FirProgram &program,
+                               FirFunctionId id) {
+    if (!program.functions[id].task) {
+        return;
+    }
+    out << "static fdn_task_poll " << taskPollName(program, id)
+        << "(void *, bool);\n";
+    out << "static void " << taskMoveResultName(program, id) << "(void *, void *);\n";
+    out << "static void " << taskDropFrameName(program, id) << "(void *);\n";
+}
+
+void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunctionId id,
+                     std::string_view sourcePath) {
+    const auto &function = program.functions[id];
+    if (!function.task) {
+        return;
+    }
+    const auto frame = taskFrameName(program, id);
+    const auto suspensions = taskSuspensionCount(function);
     out << "static fdn_task_poll " << taskPollName(program, id)
         << "(void *fdn_raw, bool fdn_cancellation_requested) {\n";
     out << "    struct " << frame << " *fdn_frame = (struct " << frame
         << " *)fdn_raw;\n";
-    if (function.diverges) {
+    if (function.diverges && suspensions == 0) {
         out << "    (void)fdn_task_cancellation_enter(fdn_cancellation_requested);\n";
     } else {
         out << "    bool fdn_previous_cancellation = "
                "fdn_task_cancellation_enter(fdn_cancellation_requested);\n";
     }
-    out << "    fdn_frame->fdn_arguments_active = false;\n";
-    out << "    ";
-    if (!function.diverges && function.returnType != voidType) {
-        out << "fdn_frame->fdn_result = ";
-    }
-    out << functionName(program, id) << '(';
-    for (std::size_t index = 0; index < function.parameters.size(); ++index) {
-        if (index != 0) {
-            out << ", ";
+    if (suspensions == 0) {
+        out << "    fdn_frame->fdn_arguments_active = false;\n";
+        out << "    ";
+        if (!function.diverges && function.returnType != voidType) {
+            out << "fdn_frame->fdn_result = ";
         }
-        out << "fdn_frame->fdn_arg_" << index;
-    }
-    out << ");\n";
-    if (function.diverges) {
-        out << "    fdn_panic_cstr(\"unreachable task poll\");\n";
+        out << functionName(program, id) << '(';
+        for (std::size_t index = 0; index < function.parameters.size(); ++index) {
+            if (index != 0) {
+                out << ", ";
+            }
+            out << "fdn_frame->fdn_arg_" << index;
+        }
+        out << ");\n";
+        if (function.diverges) {
+            out << "    fdn_panic_cstr(\"unreachable task poll\");\n";
+        } else {
+            out << "    fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
+            if (function.returnType != voidType) {
+                out << "    fdn_frame->fdn_result_active = true;\n";
+            }
+            out << "    return FDN_TASK_READY;\n";
+        }
     } else {
-        out << "    fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
-        if (function.returnType != voidType) {
-            out << "    fdn_frame->fdn_result_active = true;\n";
+        out << "    struct fdn_frame fdn_frame_current;\n";
+        const auto traceSource = function.sourcePath.empty() ? sourcePath
+                                                             : std::string_view(function.sourcePath);
+        const auto framePackage = function.packageName.empty()
+                                      ? std::string_view("main")
+                                      : std::string_view(function.packageName);
+        out << "    fdn_frame_enter(&fdn_frame_current, " << cString(framePackage) << ", "
+            << cString(traceFunctionName(function)) << ", " << cString(traceSource) << ", "
+            << function.sourceSpan.line << ", " << function.sourceSpan.column << ");\n";
+        out << "    switch (fdn_frame->fdn_state) {\n";
+        out << "    case 0:\n";
+        for (std::size_t index = 0; index < function.parameters.size(); ++index) {
+            const auto local = function.parameters[index];
+            emitMoveAssignment(out, program, function.locals[local].type,
+                               "fdn_frame->fdn_local_" + std::to_string(local),
+                               "fdn_frame->fdn_arg_" + std::to_string(index), 2);
+            if (typeRequiresDrop(program, function.locals[local].type)) {
+                out << "        fdn_frame->fdn_local_" << local << "_active = true;\n";
+            }
         }
-        out << "    return FDN_TASK_READY;\n";
+        out << "        fdn_frame->fdn_arguments_active = false;\n";
+        out << "        break;\n";
+        for (std::size_t state = 1; state <= suspensions; ++state) {
+            out << "    case " << state << ":\n";
+            out << "        goto fdn_task_state_" << state << ";\n";
+        }
+        out << "    default:\n";
+        out << "        fdn_panic_cstr(\"invalid task state\");\n";
+        out << "    }\n";
+        FunctionEmitter emitter(out, program, id, true);
+        const auto exits = emitter.emitBlock(function.body, 1);
+        if (!exits && function.returnType == voidType) {
+            out << "    fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
+            out << "    fdn_frame_leave(&fdn_frame_current);\n";
+            out << "    return FDN_TASK_READY;\n";
+        } else if (!exits) {
+            out << "    fdn_panic_cstr(\"task completed without a result\");\n";
+        }
     }
     out << "}\n\n";
 
@@ -2502,6 +2730,18 @@ void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunc
                       "fdn_frame->fdn_arg_" + std::to_string(index), 2);
     }
     out << "    }\n";
+    if (suspensions != 0) {
+        for (std::size_t local = function.locals.size(); local-- > 0;) {
+            if (!typeRequiresDrop(program, function.locals[local].type)) {
+                continue;
+            }
+            out << "    if (fdn_frame->fdn_local_" << local << "_active) {\n";
+            emitDropValue(out, program, function.locals[local].type,
+                          "fdn_frame->fdn_local_" + std::to_string(local), 2);
+            out << "        fdn_frame->fdn_local_" << local << "_active = false;\n";
+            out << "    }\n";
+        }
+    }
     if (function.returnType != voidType) {
         out << "    if (fdn_frame->fdn_result_active) {\n";
         emitDropValue(out, program, function.returnType, "fdn_frame->fdn_result", 2);
@@ -2854,13 +3094,27 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     }
 
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
+        if (program.functions[index].task &&
+            taskSuspensionCount(program.functions[index]) != 0) {
+            continue;
+        }
         emitSignature(out, program, index);
         out << ";\n";
     }
     out << '\n';
 
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
-        emitTaskSupport(out, program, index);
+        emitTaskFrameDefinition(out, program, index);
+    }
+    for (std::size_t index = 0; index < program.functions.size(); ++index) {
+        emitTaskSupportPrototypes(out, program, index);
+    }
+    if (std::any_of(program.functions.begin(), program.functions.end(),
+                    [](const FirFunction &function) { return function.task; })) {
+        out << '\n';
+    }
+    for (std::size_t index = 0; index < program.functions.size(); ++index) {
+        emitTaskSupport(out, program, index, sourcePath);
     }
 
     for (const auto &use : contractUses) {
@@ -2872,6 +3126,9 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
 
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
         const auto &function = program.functions[index];
+        if (function.task && taskSuspensionCount(function) != 0) {
+            continue;
+        }
         if (!function.hasBody) {
             emitImportedFunction(out, program, index, sourcePath);
             if (index + 1 != program.functions.size()) {

@@ -128,6 +128,11 @@ if(FOUNDATION_BUILD_FUZZERS)
         "${FOUNDATION_FUZZ_CORPUS_DIR}/cancellation.fdn"
         COPYONLY
     )
+    configure_file(
+        tests/fuzz/corpus/task-suspension.fdn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/task-suspension.fdn"
+        COPYONLY
+    )
 endif()
 
 include(CTest)
@@ -264,6 +269,9 @@ if(BUILD_TESTING)
         stage0/tests/sha256_test.cpp
     )
     target_link_libraries(foundation_package_tests PRIVATE foundation_compiler)
+    if(FOUNDATION_BUILD_FUZZERS)
+        target_link_options(foundation_package_tests PRIVATE -fsanitize=address,undefined)
+    endif()
     if(MSVC)
         target_compile_options(foundation_package_tests PRIVATE /W4 /permissive- /EHsc)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
@@ -385,13 +393,39 @@ if(BUILD_TESTING)
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
+    add_test(
+        NAME stage0.run.task-suspension
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-suspension.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-suspension.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.task-suspension-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-suspension.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/task-suspension.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/task-suspension
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-suspension.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
     foreach(task_case IN ITEMS
             "task-direct-call;FDN2163"
             "task-wait-without-transfer;FDN2166"
             "task-double-wait;FDN2065"
             "spawn-function;FDN2163"
             "task-borrow-parameter;FDN2165"
-            "cancellation-token-reuse;FDN2065")
+            "cancellation-token-reuse;FDN2065"
+            "task-wait-expression;FDN2168"
+            "task-wait-ignored-result;FDN2168")
         list(GET task_case 0 task_name)
         list(GET task_case 1 task_code)
         add_test(
@@ -1390,6 +1424,21 @@ if(BUILD_TESTING)
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.task-suspension-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-suspension.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/task-suspension-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/task-suspension-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-suspension.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )
     endif()
     add_test(

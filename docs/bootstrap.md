@@ -46,6 +46,9 @@ UTC instants, and fixed calendar formatting in Foundation source. Native code re
 clock access, calendar conversion, byte-level String operations, and platform filesystem handles.
 `std.concurrent` supplies ref-counted cancellation sources and tokens. A token observes explicit
 source cancellation and structured task cancellation through one API.
+Task waits at standalone binding and void-statement positions lower to numbered C11 states. The
+runtime removes a waiting parent from the cooperative queue and wakes it when its owned child is
+ready; task locals remain in the generated frame across that suspension.
 
 Stage 0 bounds parser nesting and expression complexity before semantic analysis. It records at
 most 100 specific errors, followed by FDN0000 when more input errors are suppressed. These limits

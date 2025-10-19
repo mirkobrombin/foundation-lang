@@ -306,6 +306,41 @@ fn main() i32 {
            "task polls expose structured cancellation to standard tokens");
 }
 
+void taskWaitsLowerToStacklessStates() {
+    constexpr std::string_view source = R"(
+task child(value i32) i32 {
+    value
+}
+
+task parent() i32 {
+    const pending = spawn child(41)
+    const value = $pending.wait()
+    value + 1
+}
+
+fn main() i32 {
+    const pending = spawn parent()
+    $pending.wait()
+}
+)";
+    const auto first = check(source);
+    const auto second = check(source);
+    expect(!first.diagnostics.hasErrors(), "nested task wait is accepted");
+    expect(first.fir.has_value() && second.fir.has_value(),
+           "nested task wait lowers to FIR");
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        return;
+    }
+    const auto firstC = foundation::emitC(*first.fir, "task-suspension.fdn");
+    const auto secondC = foundation::emitC(*second.fir, "task-suspension.fdn");
+    expect(firstC == secondC, "stackless task C emission is deterministic");
+    expect(firstC.find("fdn_task_poll_wait") != std::string::npos,
+           "nested wait uses non-blocking runtime polling");
+    expect(firstC.find("fdn_state") != std::string::npos &&
+               firstC.find("goto fdn_task_state_1") != std::string::npos,
+           "task poll resumes from an explicit state");
+}
+
 void structValuesLowerToDeterministicC() {
     constexpr std::string_view source = R"(
 struct Point {
@@ -1641,6 +1676,7 @@ int main() {
     typedProgramLowersToDeterministicC();
     immutableBindingsAndCommentsLexDeterministically();
     tasksLowerToOwnedRuntimeHandles();
+    taskWaitsLowerToStacklessStates();
     structValuesLowerToDeterministicC();
     deepStructGraphsStayIterative();
     enumMatchesLowerToDeterministicC();

@@ -1,0 +1,13 @@
+task value() i32 {
+    41
+}
+
+task parent() i32 {
+    const pending = spawn value()
+    return $pending.wait() + 1
+}
+
+fn main() i32 {
+    const pending = spawn parent()
+    $pending.wait()
+}

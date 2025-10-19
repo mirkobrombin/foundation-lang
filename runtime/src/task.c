@@ -4,6 +4,8 @@
 
 struct fdn_task {
     struct fdn_task *next;
+    struct fdn_task *waiter;
+    struct fdn_task *waiting_on;
     void *frame;
     fdn_task_poll_fn poll;
     fdn_task_move_result_fn move_result;
@@ -23,6 +25,7 @@ static FDN_THREAD_LOCAL fdn_task *fdn_task_queue_head;
 static FDN_THREAD_LOCAL fdn_task *fdn_task_queue_tail;
 static FDN_THREAD_LOCAL size_t fdn_task_count;
 static FDN_THREAD_LOCAL bool fdn_task_current_cancellation;
+static FDN_THREAD_LOCAL fdn_task *fdn_task_current;
 
 static void fdn_task_enqueue(fdn_task *task) {
     if (task->queued || task->ready) {
@@ -52,16 +55,51 @@ static fdn_task *fdn_task_dequeue(void) {
     return task;
 }
 
+static void fdn_task_request_cancellation(fdn_task *task) {
+    while (task != NULL && !task->cancellation_requested) {
+        task->cancellation_requested = true;
+        task = task->waiting_on;
+    }
+}
+
+static void fdn_task_wake_waiter(fdn_task *task) {
+    fdn_task *waiter = task->waiter;
+    if (waiter == NULL) {
+        return;
+    }
+    if (waiter->waiting_on != task) {
+        fdn_panic_cstr("invalid task waiter");
+    }
+    task->waiter = NULL;
+    waiter->waiting_on = NULL;
+    fdn_task_enqueue(waiter);
+}
+
 static void fdn_task_run_one(void) {
     fdn_task *task = fdn_task_dequeue();
+    fdn_task *previous;
+    fdn_task_poll result;
     if (task == NULL) {
         fdn_panic_cstr("task executor made no progress");
     }
-    if (task->poll(task->frame, task->cancellation_requested) == FDN_TASK_READY) {
+    previous = fdn_task_current;
+    fdn_task_current = task;
+    result = task->poll(task->frame, task->cancellation_requested);
+    fdn_task_current = previous;
+    if (result != FDN_TASK_PENDING && result != FDN_TASK_READY) {
+        fdn_panic_cstr("invalid task poll result");
+    }
+    if (result == FDN_TASK_READY) {
+        if (task->waiting_on != NULL) {
+            fdn_panic_cstr("ready task still waits on a child");
+        }
         task->ready = true;
+        fdn_task_wake_waiter(task);
         return;
     }
-    fdn_task_enqueue(task);
+    if (task->waiting_on == NULL) {
+        fdn_task_enqueue(task);
+    }
 }
 
 static void fdn_task_run_until(fdn_task *target) {
@@ -71,6 +109,9 @@ static void fdn_task_run_until(fdn_task *target) {
 }
 
 static void fdn_task_release(fdn_task *task, void *result, bool move_result) {
+    if (!task->ready || task->waiter != NULL || task->waiting_on != NULL) {
+        fdn_panic_cstr("cannot release an incomplete task");
+    }
     if (move_result) {
         task->move_result(task->frame, result);
     }
@@ -89,6 +130,8 @@ fdn_task *fdn_task_spawn(void *frame, fdn_task_poll_fn poll,
     }
     task = fdn_alloc(sizeof(*task));
     task->next = NULL;
+    task->waiter = NULL;
+    task->waiting_on = NULL;
     task->frame = frame;
     task->poll = poll;
     task->move_result = move_result;
@@ -101,6 +144,37 @@ fdn_task *fdn_task_spawn(void *frame, fdn_task_poll_fn poll,
     return task;
 }
 
+bool fdn_task_poll_wait(fdn_task **task, void *result) {
+    fdn_task *owned;
+    if (fdn_task_current == NULL) {
+        fdn_panic_cstr("task poll wait requires an active task");
+    }
+    if (task == NULL || *task == NULL) {
+        fdn_panic_cstr("task handle was already consumed");
+    }
+    owned = *task;
+    if (owned == fdn_task_current) {
+        fdn_panic_cstr("task cannot wait on itself");
+    }
+    if (owned->ready) {
+        if (fdn_task_current->waiting_on != NULL || owned->waiter != NULL) {
+            fdn_panic_cstr("invalid completed task waiter");
+        }
+        *task = NULL;
+        fdn_task_release(owned, result, true);
+        return true;
+    }
+    if (fdn_task_current->waiting_on != NULL || owned->waiter != NULL) {
+        fdn_panic_cstr("task already has a waiter");
+    }
+    if (fdn_task_current->cancellation_requested) {
+        fdn_task_request_cancellation(owned);
+    }
+    fdn_task_current->waiting_on = owned;
+    owned->waiter = fdn_task_current;
+    return false;
+}
+
 void fdn_task_wait(fdn_task **task, void *result) {
     fdn_task *owned;
     if (task == NULL || *task == NULL) {
@@ -108,6 +182,9 @@ void fdn_task_wait(fdn_task **task, void *result) {
     }
     owned = *task;
     *task = NULL;
+    if (owned->waiter != NULL) {
+        fdn_panic_cstr("task already has a waiter");
+    }
     fdn_task_run_until(owned);
     fdn_task_release(owned, result, true);
 }
@@ -119,7 +196,10 @@ void fdn_task_drop(fdn_task **task) {
     }
     owned = *task;
     *task = NULL;
-    owned->cancellation_requested = true;
+    if (owned->waiter != NULL) {
+        fdn_panic_cstr("task already has a waiter");
+    }
+    fdn_task_request_cancellation(owned);
     fdn_task_run_until(owned);
     fdn_task_release(owned, NULL, false);
 }
