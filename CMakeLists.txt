@@ -20,6 +20,7 @@ add_library(foundation_runtime STATIC
     runtime/src/cancellation.c
     runtime/src/channel.c
     runtime/src/blocking.c
+    runtime/src/reactor.c
 )
 target_include_directories(foundation_runtime PUBLIC runtime/include)
 target_link_libraries(foundation_runtime PUBLIC Threads::Threads)
@@ -62,6 +63,7 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_RUNTIME_CANCELLATION_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c"
     FOUNDATION_RUNTIME_CHANNEL_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c"
     FOUNDATION_RUNTIME_BLOCKING_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c"
+    FOUNDATION_RUNTIME_REACTOR_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c"
     FOUNDATION_STANDARD_LIBRARY="${CMAKE_CURRENT_SOURCE_DIR}/std"
 )
 
@@ -169,6 +171,8 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_channel_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_blocking_test runtime/tests/blocking_test.c)
     target_link_libraries(foundation_runtime_blocking_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_reactor_test runtime/tests/reactor_test.c)
+    target_link_libraries(foundation_runtime_reactor_test PRIVATE foundation_runtime)
     if(FOUNDATION_BUILD_FUZZERS)
         foreach(runtime_test IN ITEMS
                 foundation_runtime_panic_test
@@ -182,7 +186,8 @@ if(BUILD_TESTING)
                 foundation_runtime_task_test
                 foundation_runtime_cancellation_test
                 foundation_runtime_channel_test
-                foundation_runtime_blocking_test)
+                foundation_runtime_blocking_test
+                foundation_runtime_reactor_test)
             target_compile_options(${runtime_test} PRIVATE -fsanitize=address,undefined)
             target_link_options(${runtime_test} PRIVATE -fsanitize=address,undefined)
         endforeach()
@@ -200,6 +205,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_cancellation_test PRIVATE /W4)
         target_compile_options(foundation_runtime_channel_test PRIVATE /W4)
         target_compile_options(foundation_runtime_blocking_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_reactor_test PRIVATE /W4)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE /WX)
             target_compile_options(foundation_runtime_allocation_test PRIVATE /WX)
@@ -213,6 +219,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_cancellation_test PRIVATE /WX)
             target_compile_options(foundation_runtime_channel_test PRIVATE /WX)
             target_compile_options(foundation_runtime_blocking_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_reactor_test PRIVATE /WX)
         endif()
     else()
         target_compile_options(foundation_runtime_panic_test PRIVATE -Wall -Wextra -Wpedantic)
@@ -229,6 +236,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_cancellation_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_channel_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_blocking_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_reactor_test PRIVATE -Wall -Wextra -Wpedantic)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_allocation_test PRIVATE -Werror)
@@ -242,6 +250,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_cancellation_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_channel_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_blocking_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_reactor_test PRIVATE -Werror)
         endif()
     endif()
 
@@ -338,6 +347,7 @@ if(BUILD_TESTING)
     add_test(NAME runtime.cancellation COMMAND foundation_runtime_cancellation_test)
     add_test(NAME runtime.channel COMMAND foundation_runtime_channel_test)
     add_test(NAME runtime.blocking COMMAND foundation_runtime_blocking_test)
+    add_test(NAME runtime.reactor COMMAND foundation_runtime_reactor_test)
     set_tests_properties(runtime.env PROPERTIES
         ENVIRONMENT "FOUNDATION_ENV_TEST=foundation env value"
     )

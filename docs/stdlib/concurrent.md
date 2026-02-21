@@ -79,3 +79,25 @@ task read(handle u64) String {
 `@blocking` is compiler-owned and has no parentheses. It applies only to a bodyless C ABI import.
 The call must be a standalone binding or `discard` inside a task. ABI-safe arguments and the result
 remain in the task frame while one generated callback runs on the bounded worker pool.
+
+## Native callback reactor
+
+Native APIs that already complete through callbacks do not consume a blocking worker. Their C ABI
+adapter receives an opaque `fdn_reactor_operation` token from the generated Foundation bridge. The
+adapter stores the token with its native request and completes it later:
+
+```c
+void package_read_finished(struct package_read_request *request, int32_t status) {
+    request->result = package_take_result(request);
+    fdn_reactor_complete(request->operation, status);
+}
+```
+
+The result must be fully published before completion, and every started operation must complete
+exactly once. This remains true after a cancellation request. The optional cancellation callback
+asks the native library to stop; it cannot release the operation token or task frame. Status values
+belong to the adapter and are converted to a typed Foundation result by the generated bridge.
+
+The token is opaque and valid only until its single completion is consumed. An adapter must not
+inspect, copy, compare, free, or complete it twice. Completion may run on a foreign thread. The
+Foundation executor drains the completion queue and resumes the owning task on its own thread.

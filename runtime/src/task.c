@@ -1,7 +1,21 @@
+#if !defined(_WIN32)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "foundation/runtime.h"
 #include "task_internal.h"
 
+#include <errno.h>
+#include <stdint.h>
 #include <stdlib.h>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <pthread.h>
+#include <time.h>
+#endif
 
 #if defined(_MSC_VER)
 #define FDN_THREAD_LOCAL __declspec(thread)
@@ -17,8 +31,162 @@ static FDN_THREAD_LOCAL fdn_task *fdn_task_current;
 static FDN_THREAD_LOCAL fdn_task_idle_wake_fn fdn_task_timer_wake;
 static FDN_THREAD_LOCAL fdn_task_idle_deadline_fn fdn_task_timer_deadline;
 static FDN_THREAD_LOCAL fdn_task_idle_sleep_fn fdn_task_timer_sleep;
-static FDN_THREAD_LOCAL fdn_task_idle_wake_fn fdn_task_external_wake;
-static FDN_THREAD_LOCAL fdn_task_idle_wait_fn fdn_task_external_wait;
+
+typedef struct fdn_task_external_hub fdn_task_external_hub;
+
+struct fdn_task_external_source {
+    struct fdn_task_external_source *next;
+    fdn_task_external_hub *hub;
+    fdn_task_external_wake_fn wake;
+    void *context;
+};
+
+struct fdn_task_external_hub {
+    fdn_task_external_source *sources;
+    bool notified;
+#if defined(_WIN32)
+    CRITICAL_SECTION lock;
+    CONDITION_VARIABLE ready;
+#else
+    pthread_mutex_t lock;
+    pthread_cond_t ready;
+#endif
+};
+
+static FDN_THREAD_LOCAL fdn_task_external_hub *fdn_task_external_current;
+
+uint64_t fdn_monotonic_nanoseconds(void) {
+#if defined(_WIN32)
+    return (uint64_t)GetTickCount64() * UINT64_C(1000000);
+#else
+    struct timespec value;
+    if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) {
+        fdn_panic_cstr("monotonic clock failed");
+    }
+    return (uint64_t)value.tv_sec * UINT64_C(1000000000) +
+           (uint64_t)value.tv_nsec;
+#endif
+}
+
+static void fdn_task_external_lock(fdn_task_external_hub *hub) {
+#if defined(_WIN32)
+    EnterCriticalSection(&hub->lock);
+#else
+    if (pthread_mutex_lock(&hub->lock) != 0) {
+        fdn_panic_cstr("task external source lock failed");
+    }
+#endif
+}
+
+static void fdn_task_external_unlock(fdn_task_external_hub *hub) {
+#if defined(_WIN32)
+    LeaveCriticalSection(&hub->lock);
+#else
+    if (pthread_mutex_unlock(&hub->lock) != 0) {
+        fdn_panic_cstr("task external source unlock failed");
+    }
+#endif
+}
+
+static fdn_task_external_hub *fdn_task_external_open_hub(void) {
+    fdn_task_external_hub *hub = fdn_alloc(sizeof(*hub));
+    hub->sources = NULL;
+    hub->notified = false;
+#if defined(_WIN32)
+    InitializeCriticalSection(&hub->lock);
+    InitializeConditionVariable(&hub->ready);
+#else
+    if (pthread_mutex_init(&hub->lock, NULL) != 0 ||
+        pthread_cond_init(&hub->ready, NULL) != 0) {
+        fdn_panic_cstr("task external source initialization failed");
+    }
+#endif
+    fdn_task_external_current = hub;
+    return hub;
+}
+
+static void fdn_task_external_destroy_hub(fdn_task_external_hub *hub) {
+#if defined(_WIN32)
+    DeleteCriticalSection(&hub->lock);
+#else
+    if (pthread_cond_destroy(&hub->ready) != 0 ||
+        pthread_mutex_destroy(&hub->lock) != 0) {
+        fdn_panic_cstr("task external source destroy failed");
+    }
+#endif
+    fdn_dealloc(hub);
+}
+
+#if !defined(_WIN32)
+static struct timespec fdn_task_external_realtime_deadline(uint64_t remaining) {
+    struct timespec deadline;
+    const uint64_t maximum_wait = UINT64_C(3600000000000);
+    if (remaining > maximum_wait) {
+        remaining = maximum_wait;
+    }
+    if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) {
+        fdn_panic_cstr("task external source clock failed");
+    }
+    deadline.tv_sec += (time_t)(remaining / UINT64_C(1000000000));
+    deadline.tv_nsec += (long)(remaining % UINT64_C(1000000000));
+    if (deadline.tv_nsec >= 1000000000L) {
+        ++deadline.tv_sec;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    return deadline;
+}
+#endif
+
+static void fdn_task_external_wait(bool has_deadline,
+                                   uint64_t deadline_nanoseconds) {
+    fdn_task_external_hub *hub = fdn_task_external_current;
+    if (hub == NULL) {
+        fdn_panic_cstr("task external wait has no source");
+    }
+    fdn_task_external_lock(hub);
+    while (!hub->notified) {
+        if (!has_deadline) {
+#if defined(_WIN32)
+            if (SleepConditionVariableCS(&hub->ready, &hub->lock, INFINITE) == 0) {
+                fdn_panic_cstr("task external source wait failed");
+            }
+#else
+            if (pthread_cond_wait(&hub->ready, &hub->lock) != 0) {
+                fdn_panic_cstr("task external source wait failed");
+            }
+#endif
+            continue;
+        }
+        const uint64_t now = fdn_monotonic_nanoseconds();
+        if (now >= deadline_nanoseconds) {
+            break;
+        }
+        const uint64_t remaining = deadline_nanoseconds - now;
+#if defined(_WIN32)
+        uint64_t milliseconds = remaining / UINT64_C(1000000);
+        if (remaining % UINT64_C(1000000) != 0) {
+            ++milliseconds;
+        }
+        if (milliseconds > UINT32_MAX - 1U) {
+            milliseconds = UINT32_MAX - 1U;
+        }
+        if (SleepConditionVariableCS(&hub->ready, &hub->lock,
+                                     (DWORD)milliseconds) == 0 &&
+            GetLastError() != ERROR_TIMEOUT) {
+            fdn_panic_cstr("task external source timed wait failed");
+        }
+#else
+        const struct timespec timeout =
+            fdn_task_external_realtime_deadline(remaining);
+        const int status = pthread_cond_timedwait(&hub->ready, &hub->lock, &timeout);
+        if (status != 0 && status != ETIMEDOUT && status != EINTR) {
+            fdn_panic_cstr("task external source timed wait failed");
+        }
+#endif
+    }
+    hub->notified = false;
+    fdn_task_external_unlock(hub);
+}
 
 static void fdn_task_enqueue(fdn_task *task) {
     if (task->queued || task->ready) {
@@ -53,8 +221,12 @@ static bool fdn_task_poll_idle_sources(void) {
     if (fdn_task_timer_wake != NULL) {
         woke = fdn_task_timer_wake();
     }
-    if (fdn_task_external_wake != NULL) {
-        woke = fdn_task_external_wake() || woke;
+    if (fdn_task_external_current != NULL) {
+        fdn_task_external_source *source = fdn_task_external_current->sources;
+        while (source != NULL) {
+            woke = source->wake(source->context) || woke;
+            source = source->next;
+        }
     }
     return woke;
 }
@@ -91,13 +263,13 @@ static void fdn_task_run_one(void) {
     fdn_task *task = fdn_task_dequeue();
     fdn_task *previous;
     fdn_task_poll result;
-    if (task == NULL) {
+    while (task == NULL) {
         uint64_t deadline = 0;
         const bool has_deadline = fdn_task_timer_deadline != NULL &&
                                   fdn_task_timer_deadline(&deadline);
         if (fdn_task_poll_idle_sources()) {
             task = fdn_task_dequeue();
-        } else if (fdn_task_external_wait != NULL) {
+        } else if (fdn_task_external_current != NULL) {
             fdn_task_external_wait(has_deadline, deadline);
             if (fdn_task_poll_idle_sources()) {
                 task = fdn_task_dequeue();
@@ -109,6 +281,9 @@ static void fdn_task_run_one(void) {
             }
         }
         if (task == NULL) {
+            if (fdn_task_external_current != NULL) {
+                continue;
+            }
             fdn_panic_cstr("task executor made no progress");
         }
     }
@@ -327,22 +502,68 @@ void fdn_task_set_timer_source(fdn_task_idle_wake_fn wake,
     fdn_task_timer_sleep = sleep;
 }
 
-void fdn_task_set_external_source(fdn_task_idle_wake_fn wake,
-                                  fdn_task_idle_wait_fn wait) {
-    if (wake == NULL || wait == NULL) {
+fdn_task_external_source *fdn_task_external_source_open(
+    fdn_task_external_wake_fn wake, void *context) {
+    fdn_task_external_source *source;
+    fdn_task_external_hub *hub;
+    if (wake == NULL || context == NULL || fdn_task_current == NULL) {
         fdn_panic_cstr("invalid task external source");
     }
-    fdn_task_external_wake = wake;
-    fdn_task_external_wait = wait;
+    hub = fdn_task_external_current;
+    if (hub == NULL) {
+        hub = fdn_task_external_open_hub();
+    }
+    source = fdn_alloc(sizeof(*source));
+    source->next = hub->sources;
+    source->hub = hub;
+    source->wake = wake;
+    source->context = context;
+    hub->sources = source;
+    return source;
 }
 
-void fdn_task_clear_external_source(fdn_task_idle_wake_fn wake,
-                                    fdn_task_idle_wait_fn wait) {
-    if (fdn_task_external_wake != wake || fdn_task_external_wait != wait) {
+void fdn_task_external_source_notify(fdn_task_external_source *source) {
+    fdn_task_external_hub *hub;
+    if (source == NULL || source->hub == NULL) {
+        fdn_panic_cstr("invalid task external source notification");
+    }
+    hub = source->hub;
+    fdn_task_external_lock(hub);
+    hub->notified = true;
+#if defined(_WIN32)
+    WakeConditionVariable(&hub->ready);
+#else
+    if (pthread_cond_signal(&hub->ready) != 0) {
+        fdn_panic_cstr("task external source signal failed");
+    }
+#endif
+    fdn_task_external_unlock(hub);
+}
+
+void fdn_task_external_source_close(fdn_task_external_source *source) {
+    fdn_task_external_hub *hub;
+    fdn_task_external_source **cursor;
+    if (source == NULL || source->hub == NULL || fdn_task_current == NULL) {
         fdn_panic_cstr("invalid task external source removal");
     }
-    fdn_task_external_wake = NULL;
-    fdn_task_external_wait = NULL;
+    hub = source->hub;
+    if (hub != fdn_task_external_current) {
+        fdn_panic_cstr("task external source belongs to a different executor");
+    }
+    cursor = &hub->sources;
+    while (*cursor != NULL && *cursor != source) {
+        cursor = &(*cursor)->next;
+    }
+    if (*cursor == NULL) {
+        fdn_panic_cstr("task external source was not registered");
+    }
+    *cursor = source->next;
+    source->hub = NULL;
+    fdn_dealloc(source);
+    if (hub->sources == NULL) {
+        fdn_task_external_current = NULL;
+        fdn_task_external_destroy_hub(hub);
+    }
 }
 
 size_t fdn_task_live_count(void) { return fdn_task_count; }

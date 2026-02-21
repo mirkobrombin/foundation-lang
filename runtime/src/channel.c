@@ -585,19 +585,6 @@ fdn_channel_status fdn_channel_poll_select(
     return FDN_CHANNEL_PENDING;
 }
 
-uint64_t fdn_monotonic_nanoseconds(void) {
-#if defined(_WIN32)
-    return (uint64_t)GetTickCount64() * UINT64_C(1000000);
-#else
-    struct timespec value;
-    if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) {
-        fdn_panic_cstr("monotonic clock failed");
-    }
-    return (uint64_t)value.tv_sec * UINT64_C(1000000000) +
-           (uint64_t)value.tv_nsec;
-#endif
-}
-
 static bool fdn_channel_select_wake_expired(void) {
     const uint64_t now = fdn_monotonic_nanoseconds();
     bool woke = false;

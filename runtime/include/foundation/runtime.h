@@ -28,6 +28,7 @@ typedef struct fdn_string {
 typedef struct fdn_task fdn_task;
 typedef struct fdn_channel fdn_channel;
 typedef struct fdn_blocking_job fdn_blocking_job;
+typedef struct fdn_reactor_operation fdn_reactor_operation;
 
 typedef enum fdn_task_poll {
     FDN_TASK_PENDING = 0,
@@ -39,6 +40,9 @@ typedef void (*fdn_task_move_result_fn)(void *frame, void *result);
 typedef void (*fdn_task_drop_frame_fn)(void *frame);
 typedef void (*fdn_channel_drop_value_fn)(void *value);
 typedef void (*fdn_blocking_work_fn)(void *context);
+typedef void (*fdn_reactor_start_fn)(void *context,
+                                     fdn_reactor_operation *operation);
+typedef void (*fdn_reactor_cancel_fn)(void *context);
 
 typedef enum fdn_channel_status {
     FDN_CHANNEL_PENDING = 0,
@@ -99,6 +103,11 @@ size_t fdn_task_live_count(void);
 bool fdn_blocking_poll(fdn_blocking_job **job, void *context,
                        fdn_blocking_work_fn work);
 size_t fdn_blocking_live_jobs(void);
+bool fdn_reactor_poll(fdn_reactor_operation **operation, void *context,
+                      fdn_reactor_start_fn start, fdn_reactor_cancel_fn cancel,
+                      int32_t *status);
+void fdn_reactor_complete(fdn_reactor_operation *operation, int32_t status);
+size_t fdn_reactor_live_operations(void);
 
 void fdn_channel_open(size_t value_size, size_t capacity,
                       fdn_channel_drop_value_fn drop_value, fdn_channel **sender,

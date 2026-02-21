@@ -5,7 +5,6 @@
 #include "foundation/runtime.h"
 #include "task_internal.h"
 
-#include <errno.h>
 #include <stdint.h>
 
 #if defined(_WIN32)
@@ -13,7 +12,6 @@
 #include <windows.h>
 #else
 #include <pthread.h>
-#include <time.h>
 #endif
 
 #if defined(_MSC_VER)
@@ -48,14 +46,13 @@ struct fdn_blocking_executor {
 #if defined(_WIN32)
     CRITICAL_SECTION lock;
     CONDITION_VARIABLE work_ready;
-    CONDITION_VARIABLE completion_ready;
     HANDLE workers[FDN_BLOCKING_WORKER_COUNT];
 #else
     pthread_mutex_t lock;
     pthread_cond_t work_ready;
-    pthread_cond_t completion_ready;
     pthread_t workers[FDN_BLOCKING_WORKER_COUNT];
 #endif
+    fdn_task_external_source *source;
     size_t worker_count;
 };
 
@@ -87,16 +84,6 @@ static void fdn_blocking_signal_work(fdn_blocking_executor *executor) {
 #else
     if (pthread_cond_signal(&executor->work_ready) != 0) {
         fdn_panic_cstr("blocking executor work signal failed");
-    }
-#endif
-}
-
-static void fdn_blocking_signal_completion(fdn_blocking_executor *executor) {
-#if defined(_WIN32)
-    WakeConditionVariable(&executor->completion_ready);
-#else
-    if (pthread_cond_signal(&executor->completion_ready) != 0) {
-        fdn_panic_cstr("blocking executor completion signal failed");
     }
 #endif
 }
@@ -170,8 +157,8 @@ static void *fdn_blocking_worker(void *context)
         job->work(job->context);
         fdn_blocking_lock(executor);
         fdn_blocking_push(&executor->complete_head, &executor->complete_tail, job);
-        fdn_blocking_signal_completion(executor);
         fdn_blocking_unlock(executor);
+        fdn_task_external_source_notify(executor->source);
     }
 #if defined(_WIN32)
     return 0;
@@ -184,8 +171,7 @@ static void fdn_blocking_destroy(fdn_blocking_executor *executor) {
 #if defined(_WIN32)
     DeleteCriticalSection(&executor->lock);
 #else
-    if (pthread_cond_destroy(&executor->completion_ready) != 0 ||
-        pthread_cond_destroy(&executor->work_ready) != 0 ||
+    if (pthread_cond_destroy(&executor->work_ready) != 0 ||
         pthread_mutex_destroy(&executor->lock) != 0) {
         fdn_panic_cstr("blocking executor destroy failed");
     }
@@ -213,11 +199,11 @@ static void fdn_blocking_stop(fdn_blocking_executor *executor) {
     fdn_blocking_destroy(executor);
 }
 
-static bool fdn_blocking_wake_completed(void) {
-    fdn_blocking_executor *executor = fdn_blocking_current;
+static bool fdn_blocking_wake_completed(void *context) {
+    fdn_blocking_executor *executor = context;
     bool woke = false;
-    if (executor == NULL) {
-        return false;
+    if (executor == NULL || executor != fdn_blocking_current) {
+        fdn_panic_cstr("blocking executor wake has no executor");
     }
     for (;;) {
         fdn_blocking_job *job;
@@ -232,76 +218,6 @@ static bool fdn_blocking_wake_completed(void) {
     }
 }
 
-#if !defined(_WIN32)
-static struct timespec fdn_blocking_realtime_deadline(uint64_t remaining) {
-    struct timespec deadline;
-    const uint64_t maximum_wait = UINT64_C(3600000000000);
-    if (remaining > maximum_wait) {
-        remaining = maximum_wait;
-    }
-    if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) {
-        fdn_panic_cstr("blocking executor clock failed");
-    }
-    deadline.tv_sec += (time_t)(remaining / UINT64_C(1000000000));
-    deadline.tv_nsec += (long)(remaining % UINT64_C(1000000000));
-    if (deadline.tv_nsec >= 1000000000L) {
-        ++deadline.tv_sec;
-        deadline.tv_nsec -= 1000000000L;
-    }
-    return deadline;
-}
-#endif
-
-static void fdn_blocking_wait(bool has_deadline, uint64_t deadline_nanoseconds) {
-    fdn_blocking_executor *executor = fdn_blocking_current;
-    if (executor == NULL) {
-        fdn_panic_cstr("blocking executor wait has no executor");
-    }
-    fdn_blocking_lock(executor);
-    while (executor->complete_head == NULL) {
-        if (!has_deadline) {
-#if defined(_WIN32)
-            if (SleepConditionVariableCS(&executor->completion_ready, &executor->lock,
-                                         INFINITE) == 0) {
-                fdn_panic_cstr("blocking executor completion wait failed");
-            }
-#else
-            if (pthread_cond_wait(&executor->completion_ready, &executor->lock) != 0) {
-                fdn_panic_cstr("blocking executor completion wait failed");
-            }
-#endif
-            continue;
-        }
-        const uint64_t now = fdn_monotonic_nanoseconds();
-        if (now >= deadline_nanoseconds) {
-            break;
-        }
-        const uint64_t remaining = deadline_nanoseconds - now;
-#if defined(_WIN32)
-        uint64_t milliseconds = remaining / UINT64_C(1000000);
-        if (remaining % UINT64_C(1000000) != 0) {
-            ++milliseconds;
-        }
-        if (milliseconds > UINT32_MAX - 1U) {
-            milliseconds = UINT32_MAX - 1U;
-        }
-        if (SleepConditionVariableCS(&executor->completion_ready, &executor->lock,
-                                     (DWORD)milliseconds) == 0 &&
-            GetLastError() != ERROR_TIMEOUT) {
-            fdn_panic_cstr("blocking executor timed wait failed");
-        }
-#else
-        const struct timespec timeout = fdn_blocking_realtime_deadline(remaining);
-        const int status = pthread_cond_timedwait(&executor->completion_ready,
-                                                  &executor->lock, &timeout);
-        if (status != 0 && status != ETIMEDOUT && status != EINTR) {
-            fdn_panic_cstr("blocking executor timed wait failed");
-        }
-#endif
-    }
-    fdn_blocking_unlock(executor);
-}
-
 static fdn_blocking_executor *fdn_blocking_open(void) {
     fdn_blocking_executor *executor = fdn_alloc(sizeof(*executor));
     executor->pending_head = NULL;
@@ -310,18 +226,19 @@ static fdn_blocking_executor *fdn_blocking_open(void) {
     executor->complete_tail = NULL;
     executor->jobs = 0;
     executor->stopping = false;
+    executor->source = NULL;
     executor->worker_count = 0;
 #if defined(_WIN32)
     InitializeCriticalSection(&executor->lock);
     InitializeConditionVariable(&executor->work_ready);
-    InitializeConditionVariable(&executor->completion_ready);
 #else
     if (pthread_mutex_init(&executor->lock, NULL) != 0 ||
-        pthread_cond_init(&executor->work_ready, NULL) != 0 ||
-        pthread_cond_init(&executor->completion_ready, NULL) != 0) {
+        pthread_cond_init(&executor->work_ready, NULL) != 0) {
         fdn_panic_cstr("blocking executor initialization failed");
     }
 #endif
+    executor->source =
+        fdn_task_external_source_open(fdn_blocking_wake_completed, executor);
     for (size_t index = 0; index < FDN_BLOCKING_WORKER_COUNT; ++index) {
 #if defined(_WIN32)
         executor->workers[index] =
@@ -338,7 +255,6 @@ static fdn_blocking_executor *fdn_blocking_open(void) {
         ++executor->worker_count;
     }
     fdn_blocking_current = executor;
-    fdn_task_set_external_source(fdn_blocking_wake_completed, fdn_blocking_wait);
     return executor;
 }
 
@@ -374,8 +290,8 @@ bool fdn_blocking_poll(fdn_blocking_job **slot, void *context,
         fdn_blocking_unlock(executor);
         fdn_dealloc(job);
         if (stop) {
-            fdn_task_clear_external_source(fdn_blocking_wake_completed,
-                                           fdn_blocking_wait);
+            fdn_task_external_source_close(executor->source);
+            executor->source = NULL;
             fdn_blocking_current = NULL;
             fdn_blocking_stop(executor);
         }

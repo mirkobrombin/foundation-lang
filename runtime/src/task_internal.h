@@ -7,8 +7,8 @@ typedef void (*fdn_task_cancel_wait_fn)(fdn_task *task, void *context);
 typedef bool (*fdn_task_idle_wake_fn)(void);
 typedef bool (*fdn_task_idle_deadline_fn)(uint64_t *deadline_nanoseconds);
 typedef void (*fdn_task_idle_sleep_fn)(uint64_t deadline_nanoseconds);
-typedef void (*fdn_task_idle_wait_fn)(bool has_deadline,
-                                      uint64_t deadline_nanoseconds);
+typedef bool (*fdn_task_external_wake_fn)(void *context);
+typedef struct fdn_task_external_source fdn_task_external_source;
 
 struct fdn_task {
     struct fdn_task *next;
@@ -40,9 +40,9 @@ void fdn_task_wake(fdn_task *task, unsigned int status);
 void fdn_task_set_timer_source(fdn_task_idle_wake_fn wake,
                                fdn_task_idle_deadline_fn deadline,
                                fdn_task_idle_sleep_fn sleep);
-void fdn_task_set_external_source(fdn_task_idle_wake_fn wake,
-                                  fdn_task_idle_wait_fn wait);
-void fdn_task_clear_external_source(fdn_task_idle_wake_fn wake,
-                                    fdn_task_idle_wait_fn wait);
+fdn_task_external_source *fdn_task_external_source_open(
+    fdn_task_external_wake_fn wake, void *context);
+void fdn_task_external_source_notify(fdn_task_external_source *source);
+void fdn_task_external_source_close(fdn_task_external_source *source);
 
 #endif
