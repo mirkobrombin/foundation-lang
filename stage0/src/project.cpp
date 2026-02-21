@@ -131,6 +131,8 @@ void remapExpression(Expression &expression, std::size_t expressionOffset,
     } else if (auto *replace = std::get_if<ReplaceExpression>(&expression.value)) {
         replace->target += expressionOffset;
         replace->value += expressionOffset;
+    } else if (auto *spawn = std::get_if<SpawnExpression>(&expression.value)) {
+        spawn->call += expressionOffset;
     } else if (auto *match = std::get_if<MatchExpression>(&expression.value)) {
         match->value += expressionOffset;
         for (auto &arm : match->arms) {
@@ -415,6 +417,9 @@ void linkExpression(Program &program, AstExpressionId id, const std::string &cur
                        typeParameters, diagnostics);
         linkExpression(program, replace->value, currentPackage, imports, symbols,
                        typeParameters, diagnostics);
+    } else if (auto *spawn = std::get_if<SpawnExpression>(&expression.value)) {
+        linkExpression(program, spawn->call, currentPackage, imports, symbols, typeParameters,
+                       diagnostics);
     } else if (auto *match = std::get_if<MatchExpression>(&expression.value)) {
         linkExpression(program, match->value, currentPackage, imports, symbols, typeParameters,
                        diagnostics);

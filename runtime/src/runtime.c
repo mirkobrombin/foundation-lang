@@ -891,17 +891,17 @@ static char *fdn_native_path(const fdn_string *path) {
 }
 #endif
 
-int32_t foundation_runtime_fs_open_lines(const fdn_string *path, uint64_t *handle) {
+static FILE *fdn_fs_open_file(const fdn_string *path, int32_t *status) {
     FILE *file;
-    if (handle == NULL) {
-        fdn_panic_cstr("file handle output is null");
+    if (status == NULL) {
+        fdn_panic_cstr("file status output is null");
     }
-    *handle = 0;
+    *status = 3;
 #if defined(_WIN32)
     {
         wchar_t *native_path = fdn_windows_path(path);
         if (native_path == NULL) {
-            return 3;
+            return NULL;
         }
         file = _wfsopen(native_path, L"rb", _SH_DENYNO);
         fdn_dealloc(native_path);
@@ -910,14 +910,30 @@ int32_t foundation_runtime_fs_open_lines(const fdn_string *path, uint64_t *handl
     {
         char *native_path = fdn_native_path(path);
         if (native_path == NULL) {
-            return 3;
+            return NULL;
         }
         file = fopen(native_path, "rb");
         fdn_dealloc(native_path);
     }
 #endif
     if (file == NULL) {
-        return fdn_fs_status(errno);
+        *status = fdn_fs_status(errno);
+        return NULL;
+    }
+    *status = 0;
+    return file;
+}
+
+int32_t foundation_runtime_fs_open_lines(const fdn_string *path, uint64_t *handle) {
+    FILE *file;
+    int32_t status;
+    if (handle == NULL) {
+        fdn_panic_cstr("file handle output is null");
+    }
+    *handle = 0;
+    file = fdn_fs_open_file(path, &status);
+    if (file == NULL) {
+        return status;
     }
     *handle = (uint64_t)(uintptr_t)file;
     ++fdn_live_file_count;
@@ -1311,6 +1327,85 @@ int32_t foundation_runtime_fs_modified(const fdn_string *path, uint64_t *unix_se
         *unix_seconds = (uint64_t)info.st_mtime;
     }
 #endif
+    return 0;
+}
+
+int32_t foundation_runtime_fs_read_text_limited(const fdn_string *path, uint64_t max_length,
+                                                fdn_string *result) {
+    char chunk[4096];
+    char *data = NULL;
+    size_t length = 0;
+    size_t capacity = 0;
+    const size_t limit = max_length > (uint64_t)SIZE_MAX ? SIZE_MAX : (size_t)max_length;
+    int32_t status;
+    FILE *file;
+    if (result == NULL) {
+        fdn_panic_cstr("file text output is null");
+    }
+    fdn_string_drop(result);
+    *result = fdn_string_static("", 0);
+    file = fdn_fs_open_file(path, &status);
+    if (file == NULL) {
+        return status;
+    }
+    for (;;) {
+        const size_t count = fread(chunk, 1, sizeof(chunk), file);
+        if (count != 0) {
+            size_t required;
+            if (count > limit - length) {
+                fdn_dealloc(data);
+                (void)fclose(file);
+                return 5;
+            }
+            required = length + count;
+            if (required > capacity) {
+                size_t next_capacity = capacity == 0 ? sizeof(chunk) : capacity;
+                char *grown;
+                if (next_capacity > limit) {
+                    next_capacity = limit;
+                }
+                while (next_capacity < required) {
+                    if (next_capacity > limit / 2) {
+                        next_capacity = limit;
+                    } else {
+                        next_capacity *= 2;
+                    }
+                }
+                grown = fdn_alloc(next_capacity);
+                if (length != 0) {
+                    (void)memcpy(grown, data, length);
+                }
+                fdn_dealloc(data);
+                data = grown;
+                capacity = next_capacity;
+            }
+            (void)memcpy(data + length, chunk, count);
+            length = required;
+        }
+        if (count != sizeof(chunk)) {
+            if (ferror(file) != 0) {
+                fdn_dealloc(data);
+                (void)fclose(file);
+                return 4;
+            }
+            break;
+        }
+    }
+    if (fclose(file) != 0) {
+        fdn_dealloc(data);
+        return 4;
+    }
+    if (!fdn_valid_utf8(data, length)) {
+        fdn_dealloc(data);
+        return 6;
+    }
+    if (length == 0) {
+        fdn_dealloc(data);
+        return 0;
+    }
+    result->data = data;
+    result->length = length;
+    result->owned = 1;
     return 0;
 }
 

@@ -1,0 +1,51 @@
+package test.filesystem_read_text
+
+import std.fs
+import std.text
+
+task ready() void {
+    print("sibling")
+}
+
+fn textOr(value Result<String, fs.Error>) String {
+    match value {
+        Ok(contents): contents
+        Err(error): ""
+    }
+}
+
+fn isTooLarge(value Result<String, fs.Error>) bool {
+    match value {
+        Ok(contents): false
+        Err(error): match error {
+            NotFound: false
+            Permission: false
+            InvalidPath: false
+            InvalidUtf8: false
+            LineTooLong: false
+            TooLarge: true
+            Closed: false
+            Io: false
+        }
+    }
+}
+
+fn main(args view [String]) i32 {
+    const reading = spawn fs.ReadText(text.Copy(view args[0]))
+    const sibling = spawn ready()
+    $sibling.wait()
+    const contents = textOr($reading.wait())
+
+    const limited = spawn fs.ReadTextLimited(text.Copy(view args[0]), 8)
+    const limitedResult = $limited.wait()
+    const first = "{\"id\":1,\"text\":\"first\"}"
+    const last = "{\"id\":3,\"text\":\"last\"}"
+    if text.ByteLen(view contents) == 72 &&
+        text.Contains(view contents, view first) &&
+        text.Contains(view contents, view last) &&
+        isTooLarge(limitedResult) {
+        print("fs read text ok")
+        return 0
+    }
+    1
+}

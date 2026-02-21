@@ -166,6 +166,18 @@ const staticCompletions = [
         insertText: "fs.OpenLines(view ${1:path})"
     },
     {
+        label: "fs.ReadText",
+        kind: "Function",
+        detail: "task ReadText(path String) Result<String, fs.Error>",
+        insertText: "fs.ReadText(${1:path})"
+    },
+    {
+        label: "fs.ReadTextLimited",
+        kind: "Function",
+        detail: "task ReadTextLimited(path String, limit u64) Result<String, fs.Error>",
+        insertText: "fs.ReadTextLimited(${1:path}, ${2:limit})"
+    },
+    {
         label: "fs.OpenDir",
         kind: "Function",
         detail: "fn OpenDir(path view String) Result<own fs.DirReader, fs.Error>",

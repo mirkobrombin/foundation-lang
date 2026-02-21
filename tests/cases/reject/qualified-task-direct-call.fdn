@@ -1,0 +1,11 @@
+package test.qualified_task_direct_call
+
+import std.fs
+
+task work(path String) void {
+    discard fs.ReadText(path)
+}
+
+fn main() i32 {
+    0
+}

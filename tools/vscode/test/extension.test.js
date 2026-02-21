@@ -126,7 +126,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.39.0");
+    assert.equal(manifest.version, "0.40.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1291,7 +1291,7 @@ test("grammar and completions track compiler keywords", () => {
         "std.text", "text.ByteLen", "text.Contains", "text.NewBuilder",
         "std.path", "path.Join",
         "std.parse", "parse.U64",
-        "std.fs", "fs.OpenLines", "fs.OpenDir", "fs.Size", "fs.Modified",
+        "std.fs", "fs.OpenLines", "fs.ReadText", "fs.ReadTextLimited", "fs.OpenDir", "fs.Size", "fs.Modified",
         "fs.LineReader.Next", "fs.LineReader.NextLimited",
         "std.format", "format.I32", "format.U64",
         "std.json", "json.Parse",
@@ -1333,6 +1333,8 @@ test("grammar and completions track compiler keywords", () => {
     assert.doesNotMatch(snippets["Read environment value"].body.join("\n"), /\blet\b|\bview\b/);
     assert.match(snippets["Join path"].body, /path\.Join\(/);
     assert.match(snippets["Open line reader"].body.join("\n"), /fs\.OpenLines\(/);
+    assert.match(snippets["Read text task"].body.join("\n"), /spawn fs\.ReadText\(/);
+    assert.match(snippets["Read text task"].body.join("\n"), /\$.*\.wait\(\)/);
     assert.match(snippets["Parse JSON value"].body.join("\n"), /json\.Parse\(/);
     assert.match(snippets["String builder"].body.join("\n"), /text\.NewBuilder/);
     assert.match(snippets["Format UTC time"].body.join("\n"), /FormatUtc/);
@@ -1368,6 +1370,10 @@ test("provides hover inventory for standard and project symbols", () => {
     assert.equal(
         findHover(source, "NextLimited").detail,
         "fn NextLimited(edit, limit u64) Result<Option<String>, fs.Error>"
+    );
+    assert.equal(
+        findHover(source, "ReadText").detail,
+        "task ReadText(path String) Result<String, fs.Error>"
     );
     assert.equal(findHover(source, "localValue").detail, "Foundation function");
     assert.equal(findHover(source, "unknown"), undefined);

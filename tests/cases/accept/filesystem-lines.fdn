@@ -21,6 +21,7 @@ fn isLineTooLong(value Result<Option<String>, fs.Error>) bool {
             InvalidPath: false
             InvalidUtf8: false
             LineTooLong: true
+            TooLarge: false
             Closed: false
             Io: false
         }

@@ -6,6 +6,7 @@ enum Error {
     InvalidPath
     InvalidUtf8
     LineTooLong
+    TooLarge
     Closed
     Io
 }
@@ -20,6 +21,9 @@ extern c fn closeDirectoryNative(handle u64) i32 as foundation_runtime_fs_close_
 extern c fn isDirectoryNative(path view String, result edit bool) i32 as foundation_runtime_fs_is_directory
 extern c fn modifiedNative(path view String, result edit u64) i32 as foundation_runtime_fs_modified
 
+@blocking
+extern c fn readTextLimitedNative(path view String, limit u64, result edit String) i32 as foundation_runtime_fs_read_text_limited
+
 fn errorFor(status i32) Error {
     if status == 1 {
         return .NotFound
@@ -31,6 +35,37 @@ fn errorFor(status i32) Error {
         return .InvalidPath
     }
     .Io
+}
+
+fn readErrorFor(status i32) Error {
+    if status == 5 {
+        return .TooLarge
+    }
+    if status == 6 {
+        return .InvalidUtf8
+    }
+    errorFor(status)
+}
+
+/// Reads one UTF-8 file without blocking the Foundation executor.
+task ReadText(path String) Result<String, Error> {
+    const defaultLimit u64 = 16777216
+    var result = ""
+    const status = readTextLimitedNative(view path, defaultLimit, edit result)
+    if status == 0 {
+        return .Ok(result)
+    }
+    .Err(readErrorFor(status))
+}
+
+/// Reads one UTF-8 file up to the caller-provided byte limit.
+task ReadTextLimited(path String, limit u64) Result<String, Error> {
+    var result = ""
+    const status = readTextLimitedNative(view path, limit, edit result)
+    if status == 0 {
+        return .Ok(result)
+    }
+    .Err(readErrorFor(status))
 }
 
 struct LineReader {

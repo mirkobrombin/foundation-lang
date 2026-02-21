@@ -184,6 +184,8 @@ int32_t foundation_runtime_fs_next_directory(uint64_t handle, fdn_string *name);
 int32_t foundation_runtime_fs_close_directory(uint64_t handle);
 int32_t foundation_runtime_fs_is_directory(const fdn_string *path, bool *result);
 int32_t foundation_runtime_fs_modified(const fdn_string *path, uint64_t *unix_seconds);
+int32_t foundation_runtime_fs_read_text_limited(const fdn_string *path, uint64_t max_length,
+                                                fdn_string *result);
 uint64_t foundation_runtime_fs_live_directories(void);
 
 #ifdef __cplusplus

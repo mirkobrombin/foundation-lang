@@ -1,0 +1,12 @@
+package test.qualified_spawn_function
+
+import std.text
+
+task work(value String) void {
+    const pending = spawn text.Copy(view value)
+    discard pending
+}
+
+fn main() i32 {
+    0
+}

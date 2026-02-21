@@ -27,6 +27,7 @@ int main(int argc, char **argv) {
     fdn_string directory_path;
     fdn_string line = fdn_string_static("", 0);
     fdn_string name = fdn_string_static("", 0);
+    fdn_string text = fdn_string_static("", 0);
     uint64_t handle = 0;
     uint64_t directory = 0;
     uint64_t size = 0;
@@ -67,6 +68,20 @@ int main(int argc, char **argv) {
     if (foundation_runtime_fs_close(handle) != 0 ||
         foundation_runtime_fs_live_handles() != 0 || fdn_live_allocations() != 0) {
         return 7;
+    }
+    if (foundation_runtime_fs_read_text_limited(&path, size, &text) != 0 ||
+        !line_is(text,
+                 "{\"id\":1,\"text\":\"first\"}\n"
+                 "{\"id\":2,\"text\":\"h\xc3\xa9llo\"}\n"
+                 "{\"id\":3,\"text\":\"last\"}\n")) {
+        fdn_string_drop(&text);
+        return 20;
+    }
+    fdn_string_drop(&text);
+    if (foundation_runtime_fs_read_text_limited(&path, UINT64_C(8), &text) != 5 ||
+        text.length != 0 || fdn_live_allocations() != 0) {
+        fdn_string_drop(&text);
+        return 21;
     }
     if (foundation_runtime_fs_open_lines(&path, &handle) != 0 ||
         foundation_runtime_fs_next_line_limited(handle, UINT64_C(8), &line) != 5) {
@@ -129,6 +144,24 @@ int main(int argc, char **argv) {
     if (foundation_runtime_fs_close(handle) != 0 || remove(argv[3]) != 0 ||
         foundation_runtime_fs_live_handles() != 0 || fdn_live_allocations() != 0) {
         return 19;
+    }
+    writer = open_file(argv[3], "wb");
+    if (writer == NULL || fputc(0xff, writer) == EOF || fclose(writer) != 0) {
+        return 22;
+    }
+    if (foundation_runtime_fs_read_text_limited(&path, UINT64_C(32), &text) != 6 ||
+        text.length != 0 || remove(argv[3]) != 0 || fdn_live_allocations() != 0) {
+        fdn_string_drop(&text);
+        return 23;
+    }
+    writer = open_file(argv[3], "wb");
+    if (writer == NULL || fclose(writer) != 0) {
+        return 24;
+    }
+    if (foundation_runtime_fs_read_text_limited(&path, UINT64_C(0), &text) != 0 ||
+        text.length != 0 || remove(argv[3]) != 0 || fdn_live_allocations() != 0) {
+        fdn_string_drop(&text);
+        return 25;
     }
     return 0;
 }

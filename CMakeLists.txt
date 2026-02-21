@@ -652,6 +652,8 @@ if(BUILD_TESTING)
             "task-wait-without-transfer;FDN2166"
             "task-double-wait;FDN2065"
             "spawn-function;FDN2163"
+            "qualified-task-direct-call;FDN2163"
+            "qualified-spawn-function;FDN2163"
             "task-borrow-parameter;FDN2165"
             "cancellation-token-reuse;FDN2065"
             "task-wait-expression;FDN2168"
@@ -986,6 +988,33 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/filesystem-lines
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-lines.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs/lines.jsonl"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.filesystem-read-text
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-read-text.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-read-text.out
+            "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs/lines.jsonl"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.filesystem-read-text-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-read-text.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/filesystem-read-text.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/filesystem-read-text
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-read-text.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs/lines.jsonl"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
@@ -1726,6 +1755,23 @@ if(BUILD_TESTING)
                 -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
                 -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.filesystem-read-text-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-read-text.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/filesystem-read-text-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/filesystem-read-text-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-read-text.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs/lines.jsonl"
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )
     endif()

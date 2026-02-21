@@ -34,6 +34,14 @@
         ],
         "description": "Open a read-only streaming line reader"
     },
+    "Read text task": {
+        "prefix": "readtext",
+        "body": [
+            "const ${1:reading} = spawn fs.ReadText(${2:path})",
+            "const ${3:result} = \\$${1:reading}.wait()"
+        ],
+        "description": "Read one UTF-8 file without blocking the Foundation executor"
+    },
     "Parse JSON value": {
         "prefix": "jsonparse",
         "body": [

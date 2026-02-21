@@ -10,6 +10,8 @@ fn Modified(path view String) Result<u64, Error>
 fn OpenLines(path view String) Result<own LineReader, Error>
 fn OpenDir(path view String) Result<own DirReader, Error>
 fn LineReader.NextLimited(edit, limit u64) Result<Option<String>, Error>
+task ReadText(path String) Result<String, Error>
+task ReadTextLimited(path String, limit u64) Result<String, Error>
 ```
 
 `LineReader.Next` returns one owned line at a time as
@@ -17,6 +19,12 @@ fn LineReader.NextLimited(edit, limit u64) Result<Option<String>, Error>
 EOF from an empty line, and caps each line at 16 MiB. `NextLimited` accepts a caller-selected byte
 limit and consumes an oversized line before returning `LineTooLong`. Neither operation loads the
 file into memory.
+
+`ReadText` is spawned like any other task and keeps regular-file access off the cooperative
+executor. It validates UTF-8 and caps input at 16 MiB. `ReadTextLimited` uses a caller-provided
+byte cap and returns `TooLarge` before the file can grow the result beyond that cap. Regular files
+use the bounded blocking executor because portable readiness APIs do not make their reads
+non-blocking. Socket and watcher packages use callback reactor adapters instead.
 
 `DirReader.Next` returns one owned entry name at a time, omits `.` and `..`, and does not promise
 native enumeration order. Callers that need deterministic output sort collected paths before
@@ -28,4 +36,4 @@ drop closes any live handle during normal scope cleanup. The bootstrap handle re
 internal `u64`; it is private to `std.fs` and is not a public FFI contract.
 
 The error enum distinguishes `NotFound`, `Permission`, `InvalidPath`, `InvalidUtf8`,
-`LineTooLong`, `Closed`, and `Io`. Allocation failure remains a fatal panic.
+`LineTooLong`, `TooLarge`, `Closed`, and `Io`. Allocation failure remains a fatal panic.

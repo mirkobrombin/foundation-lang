@@ -53,11 +53,16 @@ if(NOT build_result EQUAL 0)
     message(FATAL_ERROR "sanitized C build failed:\n${build_output}${build_error}")
 endif()
 
+set(command "${OUTPUT}")
+if(DEFINED PROGRAM_ARGS)
+    list(APPEND command ${PROGRAM_ARGS})
+endif()
+
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env
             "ASAN_OPTIONS=detect_leaks=1:allocator_may_return_null=1"
             "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1"
-            "${OUTPUT}"
+            ${command}
     RESULT_VARIABLE run_result
     OUTPUT_VARIABLE run_output
     ERROR_VARIABLE run_error
