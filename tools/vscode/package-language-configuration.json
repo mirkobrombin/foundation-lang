@@ -1,0 +1,12 @@
+{
+    "comments": {
+        "lineComment": "#"
+    },
+    "autoClosingPairs": [
+        { "open": "\"", "close": "\"", "notIn": ["string", "comment"] }
+    ],
+    "surroundingPairs": [
+        ["\"", "\""]
+    ],
+    "wordPattern": "[^\\s#]+"
+}

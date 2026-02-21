@@ -19,6 +19,10 @@ const {
     platformDirectory
 } = require("../src/languageClient");
 const {
+    compositeTypeDeclarations,
+    documentationCommentOffsets
+} = require("../src/presentation");
+const {
     extractCompositeEdits,
     renderCompositeType,
     textAtRange
@@ -33,8 +37,14 @@ function readJson(relativePath) {
 
 test("registers Foundation source files", () => {
     const manifest = readJson("package.json");
-    const language = manifest.contributes.languages[0];
-    const grammar = manifest.contributes.grammars[0];
+    const language = manifest.contributes.languages.find((value) =>
+        value.id === "foundation");
+    const packageLanguage = manifest.contributes.languages.find((value) =>
+        value.id === "foundation-package");
+    const lockLanguage = manifest.contributes.languages.find((value) =>
+        value.id === "foundation-lock");
+    const grammar = manifest.contributes.grammars.find((value) =>
+        value.language === "foundation");
 
     assert.equal(language.id, "foundation");
     assert.deepEqual(language.extensions, [".fdn"]);
@@ -42,6 +52,15 @@ test("registers Foundation source files", () => {
     assert.equal(grammar.scopeName, "source.foundation");
     assert.ok(fs.existsSync(path.join(extensionRoot, grammar.path)));
     assert.ok(fs.existsSync(path.join(extensionRoot, language.configuration)));
+    assert.deepEqual(packageLanguage.filenames, ["foundation.package"]);
+    assert.deepEqual(lockLanguage.filenames, ["foundation.lock"]);
+    for (const value of [packageLanguage, lockLanguage]) {
+        assert.ok(fs.existsSync(path.join(extensionRoot, value.configuration)));
+        const valueGrammar = manifest.contributes.grammars.find((candidate) =>
+            candidate.language === value.id);
+        assert.ok(valueGrammar);
+        assert.ok(fs.existsSync(path.join(extensionRoot, valueGrammar.path)));
+    }
 
     const vsixManifest = fs.readFileSync(
         path.join(extensionRoot, "vsix/extension.vsixmanifest"),
@@ -65,6 +84,10 @@ test("registers Foundation source files", () => {
     assert.match(packagingScript, /foundation-lang-\$version\.vsix/);
     assert.match(packagingScript, /languageClient\.js/);
     assert.match(packagingScript, /compositeType\.js/);
+    assert.match(packagingScript, /presentation\.js/);
+    assert.match(packagingScript, /foundation-package\.tmLanguage\.json/);
+    assert.match(packagingScript, /foundation-lock\.tmLanguage\.json/);
+    assert.match(packagingScript, /package-language-configuration\.json/);
     assert.match(languageClient, /registerDocumentSymbolProvider/);
     assert.match(languageClient, /registerWorkspaceSymbolProvider/);
     assert.match(languageClient, /registerCompletionItemProvider/);
@@ -103,7 +126,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.37.0");
+    assert.equal(manifest.version, "0.38.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -117,6 +140,133 @@ test("registers Foundation source files", () => {
     assert.match(extensionEntry, /languageClient\.fail\(error\)/);
     assert.match(languageClient, /Server initialized/);
     assert.match(languageClient, /IntelliSense providers registered/);
+});
+
+test("recognizes package and lock directives with dedicated scopes", () => {
+    const packageGrammar = readJson("syntaxes/foundation-package.tmLanguage.json");
+    const lockGrammar = readJson("syntaxes/foundation-lock.tmLanguage.json");
+
+    assert.equal(packageGrammar.scopeName, "source.foundation.package");
+    assert.match(packageGrammar.repository.format.patterns[0].match,
+        /foundation\\\.package/);
+    assert.match(packageGrammar.repository.dependency.patterns[0].match, /dependency/);
+    assert.equal(
+        packageGrammar.repository.dependency.patterns[0].captures[7].name,
+        "constant.language.target.foundation.package"
+    );
+    const dependency = new RegExp(
+        packageGrammar.repository.dependency.patterns[0].match
+    ).exec("dependency example.profile ^1.2.3 path ../profile target linux");
+    assert.deepEqual(dependency?.slice(1), [
+        "dependency", "example.profile", "^1.2.3", "path", "../profile",
+        "target", "linux"
+    ]);
+    assert.equal(lockGrammar.scopeName, "source.foundation.lock");
+    assert.match(lockGrammar.repository.format.patterns[0].match,
+        /foundation\\\.lock/);
+    assert.equal(
+        lockGrammar.repository.package.patterns[0].captures[4].name,
+        "constant.other.digest.foundation.lock"
+    );
+    const digest = "a".repeat(64);
+    const locked = new RegExp(lockGrammar.repository.package.patterns[0].match)
+        .exec(`package example.profile 1.2.3 sha256:${digest} registry default`);
+    assert.deepEqual(locked?.slice(1), [
+        "package", "example.profile", "1.2.3", `sha256:${digest}`,
+        "registry", "default"
+    ]);
+    assert.match(lockGrammar.repository.edge.patterns[0].match, /edge/);
+});
+
+test("separates documentation comments from ordinary trivia", () => {
+    const source = [
+        "// ordinary",
+        "/// API documentation",
+        "const fake = \"/// string\"",
+        "/* ordinary /** nested docs */ end */",
+        "/** block documentation\n * second line\n */"
+    ].join("\n");
+    const ranges = documentationCommentOffsets(source)
+        .map((value) => source.slice(value.start, value.end));
+
+    assert.deepEqual(ranges, [
+        "/// API documentation",
+        "/** block documentation\n * second line\n */"
+    ]);
+});
+
+test("finds inline composite controls on struct and methods declarations", () => {
+    const source = [
+        "/// User model.",
+        "struct User {",
+        "    label String",
+        "}",
+        "",
+        "methods User {",
+        "    fn Display(view) void {}",
+        "}",
+        "const ignored = \"struct Fake {}\"",
+        "// methods Hidden {}"
+    ].join("\n");
+    const declarations = compositeTypeDeclarations(source);
+
+    assert.deepEqual(declarations.map(({ kind, name }) => ({ kind, name })), [
+        { kind: "struct", name: "User" },
+        { kind: "methods", name: "User" }
+    ]);
+    assert.deepEqual(declarations.map((value) => source.slice(value.start, value.end)),
+        ["User", "User"]);
+});
+
+test("maps composite declarations to clickable inline hints", async () => {
+    class Position {
+        constructor(line, character) {
+            Object.assign(this, { line, character });
+        }
+    }
+    class MarkdownString {
+        constructor(value) { this.value = value; }
+    }
+    class InlayHintLabelPart {
+        constructor(value) { this.value = value; }
+    }
+    class InlayHint {
+        constructor(position, label, kind) {
+            Object.assign(this, { position, label, kind });
+        }
+    }
+    const source = "struct User {}\n\nmethods User {}\n";
+    const positionAt = (offset) => {
+        const before = source.slice(0, offset).split("\n");
+        return new Position(before.length - 1, before.at(-1).length);
+    };
+    const offsetAt = (position) => {
+        const lines = source.split("\n");
+        return lines.slice(0, position.line)
+            .reduce((sum, line) => sum + line.length + 1, 0) + position.character;
+    };
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.vscode = {
+        InlayHint,
+        InlayHintKind: { Type: 1 },
+        InlayHintLabelPart,
+        MarkdownString,
+        Position
+    };
+    client.request = async () => [];
+    const uri = { toString: () => "file:///tmp/main.fdn" };
+    const document = { uri, getText: () => source, offsetAt, positionAt };
+    const hints = await client.inlayHints(document, {
+        start: new Position(0, 0),
+        end: positionAt(source.length)
+    });
+
+    assert.equal(hints.length, 2);
+    assert.equal(hints[0].label[0].value, ">");
+    assert.equal(hints[0].label[0].command.command,
+        "foundation.openCompositeType");
+    assert.equal(hints[0].label[0].command.arguments[0], uri);
+    assert.equal(hints[1].position.line, 2);
 });
 
 test("prefers the bundled platform language server", () => {
@@ -146,7 +296,11 @@ test("shows the language server state and output command", () => {
         appendLine() {},
         dispose() {}
     };
+    class ThemeColor {
+        constructor(id) { this.id = id; }
+    }
     const vscode = {
+        ThemeColor,
         StatusBarAlignment: { Right: 2 },
         commands: {
             registerCommand(name, callback) {
@@ -159,7 +313,8 @@ test("shows the language server state and output command", () => {
         },
         window: {
             createOutputChannel: () => output,
-            createStatusBarItem: () => status
+            createStatusBarItem: () => status,
+            createTextEditorDecorationType: (options) => ({ options, dispose() {} })
         }
     };
     const client = new FoundationLanguageClient(vscode, {

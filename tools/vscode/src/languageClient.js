@@ -10,6 +10,10 @@ const {
     renderCompositeType,
     textAtRange
 } = require("./compositeType");
+const {
+    compositeTypeDeclarations,
+    documentationCommentOffsets
+} = require("./presentation");
 
 const maxMessageBytes = 16 * 1024 * 1024;
 
@@ -135,6 +139,11 @@ class FoundationLanguageClient {
         this.output = vscode.window.createOutputChannel("Foundation Language Server");
         this.diagnostics = vscode.languages.createDiagnosticCollection("foundation");
         this.status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+        this.documentationCommentDecoration =
+            vscode.window.createTextEditorDecorationType({
+                color: new vscode.ThemeColor("editorInfo.foreground"),
+                fontStyle: "italic"
+            });
         this.status.name = "Foundation IntelliSense";
         this.status.command = "foundation.showOutput";
         this.setStatus("starting");
@@ -142,6 +151,7 @@ class FoundationLanguageClient {
             this.output,
             this.diagnostics,
             this.status,
+            this.documentationCommentDecoration,
             vscode.commands.registerCommand("foundation.showOutput", () => this.output.show(true))
         );
     }
@@ -227,9 +237,20 @@ class FoundationLanguageClient {
             lockWatcher.onDidCreate(watchedFile(1)),
             lockWatcher.onDidChange(watchedFile(2)),
             lockWatcher.onDidDelete(watchedFile(3)),
-            this.vscode.workspace.onDidOpenTextDocument((document) => this.open(document)),
-            this.vscode.workspace.onDidChangeTextDocument((event) => this.change(event.document)),
+            this.vscode.workspace.onDidOpenTextDocument((document) => {
+                this.open(document);
+                this.updateDocumentationCommentPresentation(document);
+            }),
+            this.vscode.workspace.onDidChangeTextDocument((event) => {
+                this.change(event.document);
+                this.updateDocumentationCommentPresentation(event.document);
+            }),
             this.vscode.workspace.onDidCloseTextDocument((document) => this.close(document)),
+            this.vscode.window.onDidChangeActiveTextEditor((editor) => {
+                if (editor) {
+                    this.updateDocumentationCommentPresentation(editor.document);
+                }
+            }),
             this.vscode.workspace.onDidSaveTextDocument((document) =>
                 this.saveCompositeType(document)),
             this.vscode.workspace.onDidChangeWorkspaceFolders((event) => {
@@ -348,6 +369,7 @@ class FoundationLanguageClient {
         this.ready = true;
         for (const document of this.vscode.workspace.textDocuments) {
             this.open(document);
+            this.updateDocumentationCommentPresentation(document);
         }
         this.setStatus("ready", executable);
         this.output.appendLine("IntelliSense providers registered");
@@ -383,6 +405,24 @@ class FoundationLanguageClient {
         if (session) {
             this.compositeSessions.delete(key);
             fs.rmSync(session.directory, { recursive: true, force: true });
+        }
+    }
+
+    updateDocumentationCommentPresentation(document) {
+        if (document.languageId !== "foundation") {
+            return;
+        }
+        const decorations = documentationCommentOffsets(document.getText()).map((value) => ({
+            range: new this.vscode.Range(
+                document.positionAt(value.start),
+                document.positionAt(value.end)
+            ),
+            hoverMessage: "Foundation documentation comment"
+        }));
+        for (const editor of this.vscode.window.visibleTextEditors || []) {
+            if (editor.document.uri.toString() === document.uri.toString()) {
+                editor.setDecorations(this.documentationCommentDecoration, decorations);
+            }
         }
     }
 
@@ -977,7 +1017,7 @@ class FoundationLanguageClient {
                 end: { line: range.end.line, character: range.end.character }
             }
         }, token);
-        return (result || []).map((value) => {
+        const hints = (result || []).map((value) => {
             const position = new this.vscode.Position(
                 value.position.line,
                 value.position.character
@@ -987,6 +1027,32 @@ class FoundationLanguageClient {
             hint.paddingRight = value.paddingRight || false;
             return hint;
         });
+        const source = document.getText();
+        const rangeStart = document.offsetAt(range.start);
+        const rangeEnd = document.offsetAt(range.end);
+        for (const declaration of compositeTypeDeclarations(source)) {
+            if (declaration.end < rangeStart || declaration.start > rangeEnd) {
+                continue;
+            }
+            const position = document.positionAt(declaration.end);
+            const part = new this.vscode.InlayHintLabelPart(">");
+            part.tooltip = new this.vscode.MarkdownString(
+                `Open the editable composite view of ${declaration.name}`
+            );
+            part.command = {
+                title: "Open Composite Type View",
+                command: "foundation.openCompositeType",
+                arguments: [document.uri, document.positionAt(declaration.start)]
+            };
+            const hint = new this.vscode.InlayHint(
+                position,
+                [part],
+                this.vscode.InlayHintKind.Type
+            );
+            hint.paddingLeft = true;
+            hints.push(hint);
+        }
+        return hints;
     }
 
     workspaceEdit(changes) {

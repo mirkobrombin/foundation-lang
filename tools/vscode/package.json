@@ -2,7 +2,7 @@
     "name": "foundation-lang",
     "displayName": "Foundation Lang",
     "description": "Language support for Foundation Lang",
-    "version": "0.37.0",
+    "version": "0.38.0",
     "publisher": "mirkobrombin",
     "license": "MIT",
     "engines": {
@@ -32,6 +32,26 @@
                     ".fdn"
                 ],
                 "configuration": "./language-configuration.json"
+            },
+            {
+                "id": "foundation-package",
+                "aliases": [
+                    "Foundation Package"
+                ],
+                "filenames": [
+                    "foundation.package"
+                ],
+                "configuration": "./package-language-configuration.json"
+            },
+            {
+                "id": "foundation-lock",
+                "aliases": [
+                    "Foundation Lock"
+                ],
+                "filenames": [
+                    "foundation.lock"
+                ],
+                "configuration": "./package-language-configuration.json"
             }
         ],
         "grammars": [
@@ -39,6 +59,16 @@
                 "language": "foundation",
                 "scopeName": "source.foundation",
                 "path": "./syntaxes/foundation.tmLanguage.json"
+            },
+            {
+                "language": "foundation-package",
+                "scopeName": "source.foundation.package",
+                "path": "./syntaxes/foundation-package.tmLanguage.json"
+            },
+            {
+                "language": "foundation-lock",
+                "scopeName": "source.foundation.lock",
+                "path": "./syntaxes/foundation-lock.tmLanguage.json"
             }
         ],
         "snippets": [

@@ -1,0 +1,109 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Foundation Package",
+    "scopeName": "source.foundation.package",
+    "patterns": [
+        { "include": "#comments" },
+        { "include": "#format" },
+        { "include": "#dependency" },
+        { "include": "#name" },
+        { "include": "#version" },
+        { "include": "#sdk" },
+        { "include": "#source" },
+        { "include": "#strings" }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.number-sign.foundation.package",
+                    "begin": "#",
+                    "end": "$"
+                }
+            ]
+        },
+        "format": {
+            "patterns": [
+                {
+                    "match": "^\\s*(format)\\s+(foundation\\.package/v1)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.format.foundation.package" },
+                        "2": { "name": "constant.language.format.foundation.package" }
+                    }
+                }
+            ]
+        },
+        "name": {
+            "patterns": [
+                {
+                    "match": "^\\s*(name)\\s+([A-Za-z][A-Za-z0-9_.-]*)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.name.foundation.package" },
+                        "2": { "name": "entity.name.namespace.foundation.package" }
+                    }
+                }
+            ]
+        },
+        "version": {
+            "patterns": [
+                {
+                    "match": "^\\s*(version)\\s+([0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.version.foundation.package" },
+                        "2": { "name": "constant.numeric.version.foundation.package" }
+                    }
+                }
+            ]
+        },
+        "sdk": {
+            "patterns": [
+                {
+                    "match": "^\\s*(sdk)\\s+([*]|[~^]?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.sdk.foundation.package" },
+                        "2": { "name": "constant.numeric.requirement.foundation.package" }
+                    }
+                }
+            ]
+        },
+        "source": {
+            "patterns": [
+                {
+                    "match": "^\\s*(source)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.source.foundation.package" },
+                        "2": { "name": "string.unquoted.path.foundation.package" }
+                    }
+                }
+            ]
+        },
+        "dependency": {
+            "patterns": [
+                {
+                    "match": "^\\s*(dependency)\\s+([A-Za-z][A-Za-z0-9_.-]*)\\s+([*]|[~^]?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s+(path|registry)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)(?:\\s+(target)\\s+(linux|macos|windows))?\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.dependency.foundation.package" },
+                        "2": { "name": "entity.name.namespace.dependency.foundation.package" },
+                        "3": { "name": "constant.numeric.requirement.foundation.package" },
+                        "4": { "name": "storage.modifier.location.foundation.package" },
+                        "5": { "name": "string.unquoted.location.foundation.package" },
+                        "6": { "name": "keyword.other.target.foundation.package" },
+                        "7": { "name": "constant.language.target.foundation.package" }
+                    }
+                }
+            ]
+        },
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.foundation.package",
+                    "begin": "\"",
+                    "end": "\"",
+                    "patterns": [
+                        { "name": "constant.character.escape.foundation.package", "match": "\\\\[nt\"\\\\]" }
+                    ]
+                }
+            ]
+        }
+    }
+}

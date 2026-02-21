@@ -49,13 +49,20 @@ cp "$extension_root/vsix/Content_Types.xml" "$work_dir/[Content_Types].xml"
 cp "$extension_root/vsix/extension.vsixmanifest" "$work_dir/extension.vsixmanifest"
 cp "$extension_root/package.json" "$work_dir/extension/package.json"
 cp "$extension_root/language-configuration.json" "$work_dir/extension/language-configuration.json"
+cp "$extension_root/package-language-configuration.json" \
+    "$work_dir/extension/package-language-configuration.json"
 cp "$extension_root/README.md" "$work_dir/extension/README.md"
 cp "$extension_root/src/extension.js" "$work_dir/extension/src/extension.js"
 cp "$extension_root/src/languageClient.js" "$work_dir/extension/src/languageClient.js"
 cp "$extension_root/src/compositeType.js" "$work_dir/extension/src/compositeType.js"
+cp "$extension_root/src/presentation.js" "$work_dir/extension/src/presentation.js"
 cp "$extension_root/snippets/foundation.json" "$work_dir/extension/snippets/foundation.json"
 cp "$extension_root/syntaxes/foundation.tmLanguage.json" \
     "$work_dir/extension/syntaxes/foundation.tmLanguage.json"
+cp "$extension_root/syntaxes/foundation-package.tmLanguage.json" \
+    "$work_dir/extension/syntaxes/foundation-package.tmLanguage.json"
+cp "$extension_root/syntaxes/foundation-lock.tmLanguage.json" \
+    "$work_dir/extension/syntaxes/foundation-lock.tmLanguage.json"
 cp "$server" "$work_dir/extension/bin/$platform/$server_name"
 chmod 755 "$work_dir/extension/bin/$platform/$server_name"
 

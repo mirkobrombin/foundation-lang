@@ -1,0 +1,98 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Foundation Lock",
+    "scopeName": "source.foundation.lock",
+    "patterns": [
+        { "include": "#comments" },
+        { "include": "#format" },
+        { "include": "#root" },
+        { "include": "#target" },
+        { "include": "#package" },
+        { "include": "#edge" },
+        { "include": "#strings" }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.number-sign.foundation.lock",
+                    "begin": "#",
+                    "end": "$"
+                }
+            ]
+        },
+        "format": {
+            "patterns": [
+                {
+                    "match": "^\\s*(format)\\s+(foundation\\.lock/v1)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.format.foundation.lock" },
+                        "2": { "name": "constant.language.format.foundation.lock" }
+                    }
+                }
+            ]
+        },
+        "root": {
+            "patterns": [
+                {
+                    "match": "^\\s*(root)\\s+([A-Za-z][A-Za-z0-9_.-]*)\\s+([0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.root.foundation.lock" },
+                        "2": { "name": "entity.name.namespace.foundation.lock" },
+                        "3": { "name": "constant.numeric.version.foundation.lock" }
+                    }
+                }
+            ]
+        },
+        "target": {
+            "patterns": [
+                {
+                    "match": "^\\s*(target)\\s+(linux|macos|windows)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.other.target.foundation.lock" },
+                        "2": { "name": "constant.language.target.foundation.lock" }
+                    }
+                }
+            ]
+        },
+        "package": {
+            "patterns": [
+                {
+                    "match": "^\\s*(package)\\s+([A-Za-z][A-Za-z0-9_.-]*)\\s+([0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s+(sha256:[0-9a-f]{64})\\s+(path|registry)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.package.foundation.lock" },
+                        "2": { "name": "entity.name.namespace.foundation.lock" },
+                        "3": { "name": "constant.numeric.version.foundation.lock" },
+                        "4": { "name": "constant.other.digest.foundation.lock" },
+                        "5": { "name": "storage.modifier.location.foundation.lock" },
+                        "6": { "name": "string.unquoted.location.foundation.lock" }
+                    }
+                }
+            ]
+        },
+        "edge": {
+            "patterns": [
+                {
+                    "match": "^\\s*(edge)\\s+([A-Za-z][A-Za-z0-9_.-]*)\\s+([A-Za-z][A-Za-z0-9_.-]*)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.edge.foundation.lock" },
+                        "2": { "name": "entity.name.namespace.parent.foundation.lock" },
+                        "3": { "name": "entity.name.namespace.dependency.foundation.lock" }
+                    }
+                }
+            ]
+        },
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.foundation.lock",
+                    "begin": "\"",
+                    "end": "\"",
+                    "patterns": [
+                        { "name": "constant.character.escape.foundation.lock", "match": "\\\\[nt\"\\\\]" }
+                    ]
+                }
+            ]
+        }
+    }
+}
