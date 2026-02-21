@@ -27,6 +27,7 @@ typedef struct fdn_string {
 
 typedef struct fdn_task fdn_task;
 typedef struct fdn_channel fdn_channel;
+typedef struct fdn_blocking_job fdn_blocking_job;
 
 typedef enum fdn_task_poll {
     FDN_TASK_PENDING = 0,
@@ -37,6 +38,7 @@ typedef fdn_task_poll (*fdn_task_poll_fn)(void *frame, bool cancellation_request
 typedef void (*fdn_task_move_result_fn)(void *frame, void *result);
 typedef void (*fdn_task_drop_frame_fn)(void *frame);
 typedef void (*fdn_channel_drop_value_fn)(void *value);
+typedef void (*fdn_blocking_work_fn)(void *context);
 
 typedef enum fdn_channel_status {
     FDN_CHANNEL_PENDING = 0,
@@ -94,6 +96,9 @@ bool fdn_task_cancellation_enter(bool requested);
 void fdn_task_cancellation_leave(bool previous);
 bool fdn_task_cancellation_current(void);
 size_t fdn_task_live_count(void);
+bool fdn_blocking_poll(fdn_blocking_job **job, void *context,
+                       fdn_blocking_work_fn work);
+size_t fdn_blocking_live_jobs(void);
 
 void fdn_channel_open(size_t value_size, size_t capacity,
                       fdn_channel_drop_value_fn drop_value, fdn_channel **sender,

@@ -336,4 +336,13 @@ void fdn_task_set_external_source(fdn_task_idle_wake_fn wake,
     fdn_task_external_wait = wait;
 }
 
+void fdn_task_clear_external_source(fdn_task_idle_wake_fn wake,
+                                    fdn_task_idle_wait_fn wait) {
+    if (fdn_task_external_wake != wake || fdn_task_external_wait != wait) {
+        fdn_panic_cstr("invalid task external source removal");
+    }
+    fdn_task_external_wake = NULL;
+    fdn_task_external_wait = NULL;
+}
+
 size_t fdn_task_live_count(void) { return fdn_task_count; }

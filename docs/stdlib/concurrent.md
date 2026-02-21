@@ -54,3 +54,14 @@ return typed `ChannelError` failures for closure and cancellation. A failed send
 drops its payload; a successful send transfers ownership exactly once. `select` waits on multiple
 send and receive operations without blocking the executor, chooses ready branches in source order,
 and uses an explicit error branch plus a monotonic timeout branch.
+
+## Blocking native work
+
+The runtime owns a fixed worker pool for native operations that may block an operating-system
+thread. Submitting work parks only the calling Foundation task. Completed jobs enter a thread-safe
+queue and wake the originating executor; channel deadlines remain active while it waits.
+
+Structured cancellation does not free a frame still used by foreign code. A non-cancellable call
+finishes first, then the resumed task observes its cancellation flag. Adapters for cancellable APIs
+pass an explicit native token instead of assuming that a thread can be stopped safely. The
+source-level extern annotation and generated callback bridge are not implemented yet.

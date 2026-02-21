@@ -42,5 +42,7 @@ void fdn_task_set_timer_source(fdn_task_idle_wake_fn wake,
                                fdn_task_idle_sleep_fn sleep);
 void fdn_task_set_external_source(fdn_task_idle_wake_fn wake,
                                   fdn_task_idle_wait_fn wait);
+void fdn_task_clear_external_source(fdn_task_idle_wake_fn wake,
+                                    fdn_task_idle_wait_fn wait);
 
 #endif

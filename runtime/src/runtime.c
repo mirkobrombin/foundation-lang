@@ -22,6 +22,7 @@ _Static_assert(sizeof(uintptr_t) <= sizeof(uint64_t), "runtime handles require a
 #include <wchar.h>
 #else
 #include <dirent.h>
+#include <stdatomic.h>
 #endif
 
 #if defined(_MSC_VER)
@@ -31,9 +32,15 @@ _Static_assert(sizeof(uintptr_t) <= sizeof(uint64_t), "runtime handles require a
 #endif
 
 static FDN_THREAD_LOCAL fdn_frame *fdn_current_frame;
-static size_t fdn_allocation_count;
-static size_t fdn_deallocation_count;
-static size_t fdn_live_allocation_count;
+#if defined(_WIN32)
+static volatile LONG64 fdn_allocation_count;
+static volatile LONG64 fdn_deallocation_count;
+static volatile LONG64 fdn_live_allocation_count;
+#else
+static atomic_size_t fdn_allocation_count;
+static atomic_size_t fdn_deallocation_count;
+static atomic_size_t fdn_live_allocation_count;
+#endif
 static uint64_t fdn_live_file_count;
 static uint64_t fdn_live_directory_count;
 static uint64_t fdn_live_string_builder_count;
@@ -260,24 +267,64 @@ void *fdn_alloc(size_t size) {
     if (value == NULL) {
         fdn_panic_cstr("allocation failed");
     }
-    ++fdn_allocation_count;
-    ++fdn_live_allocation_count;
+#if defined(_WIN32)
+    if ((uint64_t)InterlockedIncrement64(&fdn_allocation_count) > (uint64_t)SIZE_MAX ||
+        (uint64_t)InterlockedIncrement64(&fdn_live_allocation_count) > (uint64_t)SIZE_MAX) {
+        fdn_panic_cstr("allocation counter overflow");
+    }
+#else
+    if (atomic_fetch_add_explicit(&fdn_allocation_count, 1, memory_order_relaxed) ==
+            SIZE_MAX ||
+        atomic_fetch_add_explicit(&fdn_live_allocation_count, 1, memory_order_relaxed) ==
+            SIZE_MAX) {
+        fdn_panic_cstr("allocation counter overflow");
+    }
+#endif
     return value;
 }
 
 void fdn_dealloc(void *value) {
     if (value != NULL) {
-        ++fdn_deallocation_count;
-        --fdn_live_allocation_count;
+#if defined(_WIN32)
+        if ((uint64_t)InterlockedIncrement64(&fdn_deallocation_count) > (uint64_t)SIZE_MAX ||
+            InterlockedDecrement64(&fdn_live_allocation_count) < 0) {
+            fdn_panic_cstr("allocation counter underflow");
+        }
+#else
+        if (atomic_fetch_add_explicit(&fdn_deallocation_count, 1,
+                                      memory_order_relaxed) == SIZE_MAX ||
+            atomic_fetch_sub_explicit(&fdn_live_allocation_count, 1,
+                                      memory_order_relaxed) == 0) {
+            fdn_panic_cstr("allocation counter underflow");
+        }
+#endif
     }
     free(value);
 }
 
-size_t fdn_total_allocations(void) { return fdn_allocation_count; }
+size_t fdn_total_allocations(void) {
+#if defined(_WIN32)
+    return (size_t)InterlockedCompareExchange64(&fdn_allocation_count, 0, 0);
+#else
+    return atomic_load_explicit(&fdn_allocation_count, memory_order_relaxed);
+#endif
+}
 
-size_t fdn_total_deallocations(void) { return fdn_deallocation_count; }
+size_t fdn_total_deallocations(void) {
+#if defined(_WIN32)
+    return (size_t)InterlockedCompareExchange64(&fdn_deallocation_count, 0, 0);
+#else
+    return atomic_load_explicit(&fdn_deallocation_count, memory_order_relaxed);
+#endif
+}
 
-size_t fdn_live_allocations(void) { return fdn_live_allocation_count; }
+size_t fdn_live_allocations(void) {
+#if defined(_WIN32)
+    return (size_t)InterlockedCompareExchange64(&fdn_live_allocation_count, 0, 0);
+#else
+    return atomic_load_explicit(&fdn_live_allocation_count, memory_order_relaxed);
+#endif
+}
 
 _Noreturn void fdn_invalid_enum_tag(void) {
     fdn_panic_cstr("invalid enum tag");

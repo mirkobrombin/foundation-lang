@@ -389,6 +389,7 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
                                            FOUNDATION_RUNTIME_TASK_SOURCE,
                                            FOUNDATION_RUNTIME_CANCELLATION_SOURCE,
                                            FOUNDATION_RUNTIME_CHANNEL_SOURCE,
+                                           FOUNDATION_RUNTIME_BLOCKING_SOURCE,
                                            "/I" FOUNDATION_RUNTIME_INCLUDE,
                                            "/I" + nativeInclude.string()});
         for (const auto &input : nativeInputs) {
@@ -402,8 +403,12 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
                                        generated.string(), FOUNDATION_RUNTIME_SOURCE,
                                        FOUNDATION_RUNTIME_TASK_SOURCE,
                                        FOUNDATION_RUNTIME_CANCELLATION_SOURCE,
-                                       FOUNDATION_RUNTIME_CHANNEL_SOURCE, "-I",
+                                       FOUNDATION_RUNTIME_CHANNEL_SOURCE,
+                                       FOUNDATION_RUNTIME_BLOCKING_SOURCE, "-I",
                                        FOUNDATION_RUNTIME_INCLUDE, "-I", nativeInclude.string()});
+#ifndef _WIN32
+    arguments.push_back("-pthread");
+#endif
     for (const auto &input : nativeInputs) {
         arguments.push_back(input.string());
     }
