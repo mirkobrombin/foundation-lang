@@ -1602,6 +1602,71 @@ void channelOperationsExposeEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void selectExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "task work(receiver Receiver<String>) Result<void, ChannelError> {\n"
+        "    select {\n"
+        "        const message = receiver.receive(): print(message)\n"
+        "        timeout 5.seconds: return .Err(.Timeout)\n"
+        "        else error: return .Err(error)\n"
+        "    }\n"
+        "    .Ok\n"
+        "}\n"
+        "fn main() i32 { 0 }\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(111, "hover", 2, 7)) +
+        frame(request(112, "hover", 4, 11)) + frame(request(113, "hover", 3, 52)) +
+        frame(request(114, "definition", 3, 52)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto selectHover = responseFor(transcript, 111);
+    const auto timeoutHover = responseFor(transcript, 112);
+    const auto bindingHover = responseFor(transcript, 113);
+    const auto definition = responseFor(transcript, 114);
+
+    expect(status == 0, "select language server transcript exits cleanly");
+    expect(errors.str().empty(), "select requests write no server errors");
+    expect(selectHover.find("Ready branches use source order") != std::string::npos &&
+               selectHover.find("else error") != std::string::npos,
+           "select hover explains deterministic readiness and typed errors");
+    expect(timeoutHover.find("monotonic duration") != std::string::npos &&
+               timeoutHover.find("milliseconds") != std::string::npos,
+           "timeout hover explains its clock and supported units");
+    expect(bindingHover.find("message String") != std::string::npos,
+           "select payload binding receives compiler-backed hover");
+    expect(definition.find(sourceUri) != std::string::npos &&
+               definition.find("\"character\":14") != std::string::npos,
+           "select payload usage opens its branch binding");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 } // namespace
 
 int main() {
@@ -1623,6 +1688,7 @@ int main() {
     diagnosticsStayScopedToTheirWorkspace();
     distributedMethodsExposeDocumentationAndParameters();
     channelOperationsExposeEditorDetails();
+    selectExposesEditorDetails();
 
     if (failures != 0) {
         std::cerr << failures << " language server assertions failed\n";

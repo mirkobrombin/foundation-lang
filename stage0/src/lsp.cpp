@@ -1368,6 +1368,24 @@ bool completionBlockPath(const Program &program, AstBlockId id,
             completionBlockPath(program, loop->body, sourceId, offset, delimiters, path)) {
             return true;
         }
+        if (const auto *selection = std::get_if<SelectStatement>(&value);
+            selection != nullptr) {
+            for (const auto &operation : selection->operations) {
+                if (completionBlockPath(program, operation.body, sourceId, offset,
+                                        delimiters, path)) {
+                    return true;
+                }
+            }
+            if (selection->timeout.has_value() &&
+                completionBlockPath(program, selection->timeout->body, sourceId, offset,
+                                    delimiters, path)) {
+                return true;
+            }
+            if (completionBlockPath(program, selection->errorBlock, sourceId, offset,
+                                    delimiters, path)) {
+                return true;
+            }
+        }
     }
     return true;
 }
@@ -2085,7 +2103,31 @@ class LanguageServer {
                     {{"contents",
                       Json::object({{"kind", "markdown"},
                                     {"value", "```foundation\n" + detail + "\n```"}})},
-                     {"range", lspRange(source.contents, imported->span)}});
+                         {"range", lspRange(source.contents, imported->span)}});
+            }
+            if (const auto found = wordAt(source.contents, *position, *sourceId);
+                found.has_value()) {
+                const auto keyword = source.contents.substr(found->offset, found->length);
+                std::string documentation;
+                if (keyword == "select") {
+                    documentation =
+                        "```foundation\nselect { ... }\n```\n\nSuspends the current task until a "
+                        "typed channel operation is ready. Ready branches use source order. "
+                        "Close and cancellation enter `else error`; timeout uses a monotonic "
+                        "deadline.";
+                } else if (keyword == "timeout") {
+                    documentation =
+                        "```foundation\ntimeout 5.seconds: action\n```\n\nRuns only when no "
+                        "channel operation completes before the monotonic duration. Supported "
+                        "units are `seconds`, `milliseconds`, `microseconds`, and "
+                        "`nanoseconds`.";
+                }
+                if (!documentation.empty()) {
+                    return Json::object(
+                        {{"contents",
+                          Json::object({{"kind", "markdown"}, {"value", documentation}})},
+                         {"range", lspRange(source.contents, *found)}});
+                }
             }
         }
         SourceSpan word;
@@ -3593,7 +3635,8 @@ class LanguageServer {
                 "package", "import", "as",      "extern", "struct", "enum",  "contract",
                 "attribute", "implements", "extends", "by", "methods", "fn", "task", "spawn",
                 "let",      "const",      "var",
-                "return",  "discard", "if",      "else",   "while",  "match", "capture",
+                "return",  "discard", "if",      "else",   "while",  "select", "timeout",
+                "match", "capture",
                 "replace", "with",    "own",     "view",   "edit",   "true",  "false",
             };
             for (const auto keyword : keywords) {

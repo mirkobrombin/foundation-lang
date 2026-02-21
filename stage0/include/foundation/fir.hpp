@@ -350,10 +350,35 @@ struct FirWhileStatement {
     FirBlockId body{};
 };
 
+struct FirSelectOperationArm {
+    bool send{};
+    FirLocalId endpoint{};
+    std::optional<FirExpressionId> value;
+    std::optional<FirLocalId> valueStorage;
+    FirLocalId resultStorage{};
+    std::optional<FirLocalId> binding;
+    FirBlockId body{};
+    SourceSpan span;
+};
+
+struct FirSelectTimeoutArm {
+    std::uint64_t nanoseconds{};
+    FirBlockId body{};
+};
+
+struct FirSelectStatement {
+    std::vector<FirSelectOperationArm> operations;
+    std::optional<FirSelectTimeoutArm> timeout;
+    FirLocalId errorLocal{};
+    FirBlockId errorBlock{};
+    FirLocalId deadlineStorage{};
+};
+
 using FirStatementValue =
     std::variant<FirVariableStatement, FirLetElseStatement, FirStructDestructureStatement,
                  FirAssignmentStatement, FirExpressionStatement, FirDiscardStatement,
-                 FirReturnStatement, FirIfStatement, FirWhileStatement>;
+                 FirReturnStatement, FirIfStatement, FirWhileStatement,
+                 FirSelectStatement>;
 
 struct FirStatement {
     FirStatementValue value;

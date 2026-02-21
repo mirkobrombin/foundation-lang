@@ -1,0 +1,10 @@
+task choose() Result<void, ChannelError> {
+    select {
+        print("invalid"): return .Ok
+        else error: return .Err(error)
+    }
+}
+
+fn main() i32 {
+    0
+}

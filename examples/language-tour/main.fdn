@@ -163,10 +163,10 @@ task sendChannelMessage(sender Sender<String>) void {
 }
 
 task receiveChannelMessage(receiver Receiver<String>) bool {
-    const received = receiver.receive()
-    match received {
-        Ok(message): printChannelMessage(message)
-        Err(error): rejectChannelMessage(error)
+    select {
+        const message = receiver.receive(): return printChannelMessage(message)
+        timeout 1.seconds: return false
+        else error: return rejectChannelMessage(error)
     }
 }
 

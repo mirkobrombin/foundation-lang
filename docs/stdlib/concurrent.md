@@ -51,5 +51,6 @@ from its channel queue before resuming it as cancelled.
 
 `sender.send(value)` and `receiver.receive()` are executable suspension points inside tasks. They
 return typed `ChannelError` failures for closure and cancellation. A failed send consumes and
-drops its payload; a successful send transfers ownership exactly once. `select` lowering and
-timeout timers remain pending.
+drops its payload; a successful send transfers ownership exactly once. `select` waits on multiple
+send and receive operations without blocking the executor, chooses ready branches in source order,
+and uses an explicit error branch plus a monotonic timeout branch.

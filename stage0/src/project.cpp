@@ -171,6 +171,15 @@ void remapStatement(Statement &statement, std::size_t expressionOffset,
     } else if (auto *loop = std::get_if<WhileStatement>(&statement.value)) {
         loop->condition += expressionOffset;
         loop->body += blockOffset;
+    } else if (auto *selection = std::get_if<SelectStatement>(&statement.value)) {
+        for (auto &operation : selection->operations) {
+            operation.operation += expressionOffset;
+            operation.body += blockOffset;
+        }
+        if (selection->timeout.has_value()) {
+            selection->timeout->body += blockOffset;
+        }
+        selection->errorBlock += blockOffset;
     }
 }
 
@@ -506,6 +515,19 @@ void linkBlock(Program &program, AstBlockId id, const std::string &currentPackag
                            typeParameters, diagnostics);
             linkBlock(program, loop->body, currentPackage, imports, symbols, typeParameters,
                       diagnostics);
+        } else if (auto *selection = std::get_if<SelectStatement>(&statement.value)) {
+            for (const auto &operation : selection->operations) {
+                linkExpression(program, operation.operation, currentPackage, imports, symbols,
+                               typeParameters, diagnostics);
+                linkBlock(program, operation.body, currentPackage, imports, symbols,
+                          typeParameters, diagnostics);
+            }
+            if (selection->timeout.has_value()) {
+                linkBlock(program, selection->timeout->body, currentPackage, imports, symbols,
+                          typeParameters, diagnostics);
+            }
+            linkBlock(program, selection->errorBlock, currentPackage, imports, symbols,
+                      typeParameters, diagnostics);
         }
     }
 }

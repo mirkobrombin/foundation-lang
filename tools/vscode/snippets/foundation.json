@@ -493,6 +493,7 @@
             "select {",
             "    const ${1:value} = ${2:receiver}.receive(): ${3}",
             "    timeout ${4:5.seconds}: ${5}",
+            "    else ${6:error}: ${7:return .Err(error)}",
             "}"
         ],
         "description": "Wait for a channel operation or timeout"

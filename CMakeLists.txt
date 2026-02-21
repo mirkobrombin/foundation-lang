@@ -445,7 +445,7 @@ if(BUILD_TESTING)
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
-    foreach(channel_case IN ITEMS channel-operations channel-close-cancel)
+    foreach(channel_case IN ITEMS channel-operations channel-close-cancel channel-select)
         add_test(
             NAME stage0.run.${channel_case}
             COMMAND ${CMAKE_COMMAND}
@@ -470,6 +470,29 @@ if(BUILD_TESTING)
                 -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+        )
+    endforeach()
+    foreach(select_reject IN ITEMS
+            select-outside-task
+            select-missing-error
+            select-receive-unbound
+            select-invalid-operation)
+        if(select_reject STREQUAL "select-outside-task")
+            set(select_code FDN2174)
+        elseif(select_reject STREQUAL "select-missing-error")
+            set(select_code FDN1156)
+        elseif(select_reject STREQUAL "select-receive-unbound")
+            set(select_code FDN2177)
+        else()
+            set(select_code FDN2175)
+        endif()
+        add_test(
+            NAME stage0.check.${select_reject}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${select_reject}.fdn
+                -DCODE=${select_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
     endforeach()
     add_test(

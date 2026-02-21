@@ -43,7 +43,19 @@ typedef enum fdn_channel_status {
     FDN_CHANNEL_READY = 1,
     FDN_CHANNEL_CLOSED = 2,
     FDN_CHANNEL_CANCELLED = 3,
+    FDN_CHANNEL_TIMEOUT = 4,
 } fdn_channel_status;
+
+typedef enum fdn_channel_select_kind {
+    FDN_CHANNEL_SELECT_SEND = 1,
+    FDN_CHANNEL_SELECT_RECEIVE = 2,
+} fdn_channel_select_kind;
+
+typedef struct fdn_channel_select_case {
+    fdn_channel *channel;
+    void *value;
+    fdn_channel_select_kind kind;
+} fdn_channel_select_case;
 
 static inline fdn_string fdn_string_static(const char *data, size_t length) {
     fdn_string value = {data, length, 0};
@@ -92,6 +104,10 @@ void fdn_channel_drop_sender(fdn_channel **sender);
 void fdn_channel_drop_receiver(fdn_channel **receiver);
 fdn_channel_status fdn_channel_poll_send(fdn_channel *sender, void *value);
 fdn_channel_status fdn_channel_poll_receive(fdn_channel *receiver, void *value);
+fdn_channel_status fdn_channel_poll_select(
+    void *context, const fdn_channel_select_case *cases, size_t count,
+    uint64_t deadline_nanoseconds, size_t *selected);
+uint64_t fdn_monotonic_nanoseconds(void);
 size_t fdn_channel_live_count(void);
 #ifdef __cplusplus
 [[noreturn]] void fdn_panic(fdn_string message);

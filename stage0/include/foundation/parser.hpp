@@ -66,6 +66,8 @@ class Parser {
     AstStatementId discardStatement(const Token &start);
     AstStatementId ifStatement(const Token &start);
     AstStatementId whileStatement(const Token &start);
+    AstStatementId selectStatement(const Token &start);
+    AstBlockId selectArmBlock();
     AstStatementId expressionStatement();
     AstExpressionId expression();
     AstExpressionId logicalOr();

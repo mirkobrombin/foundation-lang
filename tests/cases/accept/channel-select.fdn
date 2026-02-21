@@ -1,0 +1,136 @@
+task sendMessage(sender Sender<String>, message String) Result<void, ChannelError> {
+    const delivered = sender.send(message)
+    delivered
+}
+
+task receiveMessage(receiver Receiver<String>) Result<String, ChannelError> {
+    const received = receiver.receive()
+    received
+}
+
+task selectReceive(first Receiver<String>, second Receiver<String>) Result<String, ChannelError> {
+    select {
+        const message = first.receive(): return .Ok(message)
+        const message = second.receive(): return .Ok(message)
+        timeout 1.seconds: return .Err(.Timeout)
+        else error: return .Err(error)
+    }
+}
+
+task selectSend(first Sender<String>, second Sender<String>) Result<i32, ChannelError> {
+    select {
+        first.send("un" + "selected"): return .Ok(1)
+        second.send("second"): return .Ok(2)
+        timeout 1.seconds: return .Err(.Timeout)
+        else error: return .Err(error)
+    }
+}
+
+task selectTimeout(receiver Receiver<String>) Result<void, ChannelError> {
+    select {
+        const message = receiver.receive(): discard message
+        timeout 1.milliseconds: return .Err(.Timeout)
+        else error: return .Err(error)
+    }
+    .Ok
+}
+
+fn resultCode(result Result<String, ChannelError>, expected String) i32 {
+    match result {
+        Ok(message): messageCode(message, expected)
+        Err(error): match error {
+            Closed: 2
+            Cancelled: 3
+            Timeout: 4
+        }
+    }
+}
+
+fn messageCode(message String, expected String) i32 {
+    if message == expected {
+        return 0
+    }
+    1
+}
+
+fn branchCode(branch i32) i32 {
+    if branch == 2 {
+        return 0
+    }
+    5
+}
+
+fn main() i32 {
+    const Channel { sender as firstSender receiver as firstReceiver } = channel<String>(1)
+    const Channel { sender as secondSender receiver as secondReceiver } = channel<String>(1)
+    const firstSending = spawn sendMessage(firstSender, "first")
+    const secondSending = spawn sendMessage(secondSender, "second")
+    discard $firstSending.wait()
+    discard $secondSending.wait()
+    const choosing = spawn selectReceive(firstReceiver, secondReceiver)
+    const chosen = $choosing.wait()
+    const chosenCode = resultCode(chosen, "first")
+    if chosenCode != 0 {
+        return chosenCode
+    }
+
+    const Channel { sender as idleSender receiver as idleReceiver } = channel<String>(0)
+    const Channel { sender as readySender receiver as readyReceiver } = channel<String>(0)
+    const receiving = spawn receiveMessage(readyReceiver)
+    const selectingSend = spawn selectSend(idleSender, readySender)
+    const selectedSend = $selectingSend.wait()
+    discard idleReceiver
+    const sendCode = match selectedSend {
+        Ok(branch): branchCode(branch)
+        Err(error): match error {
+            Closed: 6
+            Cancelled: 7
+            Timeout: 8
+        }
+    }
+    if sendCode != 0 {
+        return sendCode
+    }
+    const received = $receiving.wait()
+    const receiveCode = resultCode(received, "second")
+    if receiveCode != 0 {
+        return receiveCode + 8
+    }
+
+    const Channel { sender as timeoutSender receiver as timeoutReceiver } = channel<String>(0)
+    const timingOut = spawn selectTimeout(timeoutReceiver)
+    const timedOut = $timingOut.wait()
+    discard timeoutSender
+    const timeoutCode = match timedOut {
+        Ok: 13
+        Err(error): match error {
+            Closed: 14
+            Cancelled: 15
+            Timeout: 0
+        }
+    }
+    if timeoutCode != 0 {
+        return timeoutCode
+    }
+
+    const Channel { sender as closedSender receiver as closedReceiver } = channel<String>(0)
+    const Channel { sender as pendingSender receiver as pendingReceiver } = channel<String>(0)
+    discard closedSender
+    const closing = spawn selectReceive(closedReceiver, pendingReceiver)
+    const closed = $closing.wait()
+    discard pendingSender
+    const closedCode = match closed {
+        Ok(message): 16
+        Err(error): match error {
+            Closed: 0
+            Cancelled: 17
+            Timeout: 18
+        }
+    }
+    if closedCode != 0 {
+        return closedCode
+    }
+
+    print("channel select")
+    0
+}

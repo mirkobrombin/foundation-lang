@@ -1,0 +1,9 @@
+task choose(receiver Receiver<void>) Result<void, ChannelError> {
+    select {
+        receiver.receive(): return .Ok
+    }
+}
+
+fn main() i32 {
+    0
+}

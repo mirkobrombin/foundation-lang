@@ -14,6 +14,9 @@ static FDN_THREAD_LOCAL fdn_task *fdn_task_queue_tail;
 static FDN_THREAD_LOCAL size_t fdn_task_count;
 static FDN_THREAD_LOCAL bool fdn_task_current_cancellation;
 static FDN_THREAD_LOCAL fdn_task *fdn_task_current;
+static FDN_THREAD_LOCAL fdn_task_idle_wake_fn fdn_task_idle_wake;
+static FDN_THREAD_LOCAL fdn_task_idle_deadline_fn fdn_task_idle_deadline;
+static FDN_THREAD_LOCAL fdn_task_idle_sleep_fn fdn_task_idle_sleep;
 
 static void fdn_task_enqueue(fdn_task *task) {
     if (task->queued || task->ready) {
@@ -76,7 +79,19 @@ static void fdn_task_run_one(void) {
     fdn_task *previous;
     fdn_task_poll result;
     if (task == NULL) {
-        fdn_panic_cstr("task executor made no progress");
+        uint64_t deadline;
+        if (fdn_task_idle_wake != NULL && fdn_task_idle_wake()) {
+            task = fdn_task_dequeue();
+        } else if (fdn_task_idle_deadline != NULL && fdn_task_idle_sleep != NULL &&
+                   fdn_task_idle_deadline(&deadline)) {
+            fdn_task_idle_sleep(deadline);
+            if (fdn_task_idle_wake != NULL && fdn_task_idle_wake()) {
+                task = fdn_task_dequeue();
+            }
+        }
+        if (task == NULL) {
+            fdn_panic_cstr("task executor made no progress");
+        }
     }
     previous = fdn_task_current;
     fdn_task_current = task;
@@ -280,6 +295,17 @@ void fdn_task_wake(fdn_task *task, unsigned int status) {
     task->cancel_wait = NULL;
     task->wait_next = NULL;
     fdn_task_enqueue(task);
+}
+
+void fdn_task_set_idle_hooks(fdn_task_idle_wake_fn wake,
+                             fdn_task_idle_deadline_fn deadline,
+                             fdn_task_idle_sleep_fn sleep) {
+    if (wake == NULL || deadline == NULL || sleep == NULL) {
+        fdn_panic_cstr("invalid task idle hooks");
+    }
+    fdn_task_idle_wake = wake;
+    fdn_task_idle_deadline = deadline;
+    fdn_task_idle_sleep = sleep;
 }
 
 size_t fdn_task_live_count(void) { return fdn_task_count; }

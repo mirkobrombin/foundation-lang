@@ -35,6 +35,8 @@ enum class TokenKind {
     If,
     Else,
     While,
+    Select,
+    Timeout,
     Match,
     Capture,
     Replace,

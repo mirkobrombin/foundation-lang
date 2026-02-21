@@ -31,6 +31,7 @@ const staticCompletions = [
     { label: "task", kind: "Keyword", detail: "Declare a suspendable function" },
     { label: "spawn", kind: "Keyword", detail: "Start a task on the active scheduler" },
     { label: "select", kind: "Keyword", detail: "Wait on typed channel operations" },
+    { label: "timeout", kind: "Keyword", detail: "Use a monotonic select deadline" },
     { label: "test", kind: "Keyword", detail: "Declare an executable test" },
     { label: "unsafe", kind: "Keyword", detail: "Bound raw pointer operations" },
     { label: "fn", kind: "Keyword" },

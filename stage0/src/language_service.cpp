@@ -380,6 +380,15 @@ class IndexBuilder {
         } else if (const auto *loop = std::get_if<WhileStatement>(&value)) {
             visitExpression(loop->condition, function);
             visitBlock(loop->body, function);
+        } else if (const auto *selection = std::get_if<SelectStatement>(&value)) {
+            for (const auto &operation : selection->operations) {
+                visitExpression(operation.operation, function);
+                visitBlock(operation.body, function);
+            }
+            if (selection->timeout.has_value()) {
+                visitBlock(selection->timeout->body, function);
+            }
+            visitBlock(selection->errorBlock, function);
         }
     }
 
@@ -691,6 +700,33 @@ class IndexBuilder {
                                  identifierSpan(analysis_, pattern.span, pattern.binding, start),
                                  pattern.binding != pattern.field);
                 }
+            } else if (const auto *selection =
+                           std::get_if<SelectStatement>(&sourceStatement.value)) {
+                const auto &target = semantic_->selectTargets[statement];
+                if (!target.has_value()) {
+                    continue;
+                }
+                for (std::size_t arm = 0;
+                     arm < selection->operations.size() && arm < target->bindings.size();
+                     ++arm) {
+                    if (!selection->operations[arm].binding.has_value() ||
+                        !target->bindings[arm].has_value()) {
+                        continue;
+                    }
+                    declareLocal(function, *target->bindings[arm], LanguageSymbolKind::Local,
+                                 identifierSpan(analysis_, selection->operations[arm].span,
+                                                *selection->operations[arm].binding));
+                }
+                auto errorStart = sourceStatement.span.offset;
+                if (const auto *value = source(sourceStatement.span); value != nullptr) {
+                    const auto found = value->contents.find("else", errorStart);
+                    if (found != std::string::npos) {
+                        errorStart = found + 4;
+                    }
+                }
+                declareLocal(function, target->errorLocal, LanguageSymbolKind::Local,
+                             identifierSpan(analysis_, sourceStatement.span,
+                                            selection->errorBinding, errorStart));
             }
         }
         for (std::size_t expression = 0; expression < analysis_.program.expressions.size();

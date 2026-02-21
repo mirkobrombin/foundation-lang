@@ -130,6 +130,10 @@ const char *tokenName(TokenKind kind) {
         return "else";
     case TokenKind::While:
         return "while";
+    case TokenKind::Select:
+        return "select";
+    case TokenKind::Timeout:
+        return "timeout";
     case TokenKind::Match:
         return "match";
     case TokenKind::Capture:
@@ -435,6 +439,10 @@ Token Lexer::identifier() {
         kind = TokenKind::Else;
     } else if (text == "while") {
         kind = TokenKind::While;
+    } else if (text == "select") {
+        kind = TokenKind::Select;
+    } else if (text == "timeout") {
+        kind = TokenKind::Timeout;
     } else if (text == "match") {
         kind = TokenKind::Match;
     } else if (text == "capture") {

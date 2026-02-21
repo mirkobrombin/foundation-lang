@@ -240,10 +240,30 @@ struct WhileStatement {
     AstBlockId body{};
 };
 
+struct SelectOperationArm {
+    std::optional<std::string> binding;
+    AstExpressionId operation{};
+    AstBlockId body{};
+    SourceSpan span;
+};
+
+struct SelectTimeoutArm {
+    std::uint64_t nanoseconds{};
+    AstBlockId body{};
+    SourceSpan span;
+};
+
+struct SelectStatement {
+    std::vector<SelectOperationArm> operations;
+    std::optional<SelectTimeoutArm> timeout;
+    std::string errorBinding;
+    AstBlockId errorBlock{};
+};
+
 using StatementValue =
     std::variant<VariableStatement, StructDestructureStatement, AssignmentStatement,
                  ExpressionStatement, ReturnStatement, DiscardStatement, IfStatement,
-                 WhileStatement>;
+                 WhileStatement, SelectStatement>;
 
 struct Statement {
     StatementValue value;

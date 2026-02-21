@@ -715,6 +715,34 @@ ControlFlow statementFlow(const FirProgram &program, const FirFunction &function
         return ControlFlow::Returns;
     }
 
+    if (const auto *selection = std::get_if<FirSelectStatement>(&statement.value)) {
+        for (const auto &arm : selection->operations) {
+            if (arm.value.has_value() &&
+                expressionDiverges(program, function, *arm.value)) {
+                return ControlFlow::Diverges;
+            }
+        }
+        std::vector<ControlFlow> flows;
+        flows.reserve(selection->operations.size() + 2);
+        for (const auto &arm : selection->operations) {
+            flows.push_back(blockFlow(program, function, arm.body));
+        }
+        if (selection->timeout.has_value()) {
+            flows.push_back(blockFlow(program, function, selection->timeout->body));
+        }
+        flows.push_back(blockFlow(program, function, selection->errorBlock));
+        if (std::any_of(flows.begin(), flows.end(), [](ControlFlow flow) {
+                return flow == ControlFlow::Continues;
+            })) {
+            return ControlFlow::Continues;
+        }
+        return std::all_of(flows.begin(), flows.end(), [](ControlFlow flow) {
+                   return flow == ControlFlow::Diverges;
+               })
+                   ? ControlFlow::Diverges
+                   : ControlFlow::Returns;
+    }
+
     const auto &loop = std::get<FirWhileStatement>(statement.value);
     return expressionDiverges(program, function, loop.condition) ? ControlFlow::Diverges
                                                                  : ControlFlow::Continues;
@@ -1677,6 +1705,10 @@ class FunctionEmitter {
     }
 
     bool emitSuspendingStatement(const FirStatement &statement, unsigned int depth) {
+        if (const auto *selection = std::get_if<FirSelectStatement>(&statement.value)) {
+            emitSelect(*selection, statement.span, depth);
+            return true;
+        }
         std::optional<FirLocalId> resultLocal;
         bool discarded = false;
         FirExpressionId expression;
@@ -1840,6 +1872,152 @@ class FunctionEmitter {
             internalError("channel Result is neither bound nor discarded");
         }
         return true;
+    }
+
+    void emitSelectSendCleanup(const FirSelectStatement &selection,
+                               std::optional<std::size_t> selected,
+                               unsigned int depth) {
+        for (std::size_t index = 0; index < selection.operations.size(); ++index) {
+            const auto &arm = selection.operations[index];
+            if (!arm.send || !arm.valueStorage.has_value()) {
+                continue;
+            }
+            const auto storage = *arm.valueStorage;
+            if (!typeRequiresDrop(program_, function_.locals[storage].type)) {
+                continue;
+            }
+            if (selected.has_value() && *selected == index) {
+                out_ << indentation(depth) << localActive(storage) << " = false;\n";
+            } else {
+                emitLocalDrop(storage, depth);
+            }
+        }
+    }
+
+    void emitSelect(const FirSelectStatement &selection, SourceSpan span,
+                    unsigned int depth) {
+        for (const auto &arm : selection.operations) {
+            if (!arm.send || !arm.value.has_value()) {
+                continue;
+            }
+            if (!arm.valueStorage.has_value()) {
+                internalError("select send is missing persistent value storage");
+            }
+            const auto value = emitExpression(*arm.value, depth);
+            if (!value.diverges) {
+                emitMoveAssignment(out_, program_,
+                                   function_.locals[*arm.valueStorage].type,
+                                   localValue(*arm.valueStorage), value.value, depth);
+                activateLocal(*arm.valueStorage, depth);
+            }
+        }
+
+        const auto now = nextTemporary();
+        if (selection.timeout.has_value()) {
+            out_ << indentation(depth) << "uint64_t " << now
+                 << " = fdn_monotonic_nanoseconds();\n";
+            out_ << indentation(depth) << localValue(selection.deadlineStorage) << " = ";
+            if (selection.timeout->nanoseconds == UINT64_MAX) {
+                out_ << "UINT64_MAX;\n";
+            } else {
+                out_ << "UINT64_C(" << selection.timeout->nanoseconds << ") > UINT64_MAX - "
+                     << now << " ? UINT64_MAX : " << now << " + UINT64_C("
+                     << selection.timeout->nanoseconds << ");\n";
+            }
+        } else {
+            out_ << indentation(depth) << localValue(selection.deadlineStorage)
+                 << " = UINT64_MAX;\n";
+        }
+
+        const auto state = ++taskState_;
+        out_ << indentation(depth) << "fdn_frame->fdn_state = " << state << ";\n";
+        out_ << "fdn_task_state_" << state << ":\n";
+        emitLocation(span, depth);
+        const auto cases = nextTemporary();
+        out_ << indentation(depth) << "fdn_channel_select_case " << cases << '['
+             << selection.operations.size() << "];\n";
+        for (std::size_t index = 0; index < selection.operations.size(); ++index) {
+            const auto &arm = selection.operations[index];
+            out_ << indentation(depth) << cases << '[' << index << "].channel = "
+                 << localValue(arm.endpoint) << ";\n";
+            out_ << indentation(depth) << cases << '[' << index << "].kind = "
+                 << (arm.send ? "FDN_CHANNEL_SELECT_SEND" : "FDN_CHANNEL_SELECT_RECEIVE")
+                 << ";\n";
+            out_ << indentation(depth) << cases << '[' << index << "].value = ";
+            if (arm.send) {
+                if (arm.valueStorage.has_value()) {
+                    out_ << '&' << localValue(*arm.valueStorage);
+                } else {
+                    out_ << "NULL";
+                }
+            } else {
+                const auto &resultType = function_.locals[arm.resultStorage].type;
+                if (resultType.kind == TypeKind::Enum &&
+                    resultType.declaration < program_.enums.size() &&
+                    program_.enums[resultType.declaration].variants[0].payload.has_value()) {
+                    out_ << '&' << localValue(arm.resultStorage) << ".fdn_data."
+                         << payloadName(0);
+                } else {
+                    out_ << "NULL";
+                }
+            }
+            out_ << ";\n";
+        }
+        const auto selected = nextTemporary();
+        const auto status = nextTemporary();
+        out_ << indentation(depth) << "size_t " << selected << " = SIZE_MAX;\n";
+        out_ << indentation(depth) << "fdn_channel_status " << status
+             << " = fdn_channel_poll_select(fdn_frame, " << cases << ", "
+             << selection.operations.size() << ", "
+             << localValue(selection.deadlineStorage) << ", &" << selected << ");\n";
+        out_ << indentation(depth) << "if (" << status << " == FDN_CHANNEL_PENDING) {\n";
+        out_ << indentation(depth + 1)
+             << "fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
+        out_ << indentation(depth + 1) << "fdn_frame_leave(&fdn_frame_current);\n";
+        out_ << indentation(depth + 1) << "return FDN_TASK_PENDING;\n";
+        out_ << indentation(depth) << "}\n";
+
+        out_ << indentation(depth) << "if (" << status << " == FDN_CHANNEL_TIMEOUT) {\n";
+        emitSelectSendCleanup(selection, std::nullopt, depth + 1);
+        if (selection.timeout.has_value()) {
+            static_cast<void>(emitBlock(selection.timeout->body, depth + 1));
+        } else {
+            out_ << indentation(depth + 1)
+                 << "fdn_panic_cstr(\"select reached an unavailable timeout\");\n";
+        }
+        out_ << indentation(depth) << "} else if (" << status
+             << " != FDN_CHANNEL_READY) {\n";
+        const auto &errorType = function_.locals[selection.errorLocal].type;
+        out_ << indentation(depth + 1) << localValue(selection.errorLocal)
+             << ".fdn_tag = (" << status << " == FDN_CHANNEL_CLOSED ? "
+             << enumTag(errorType.declaration, 0) << " : "
+             << enumTag(errorType.declaration, 1) << ");\n";
+        emitSelectSendCleanup(selection, std::nullopt, depth + 1);
+        static_cast<void>(emitBlock(selection.errorBlock, depth + 1));
+        out_ << indentation(depth) << "} else {\n";
+        out_ << indentation(depth + 1) << "switch (" << selected << ") {\n";
+        for (std::size_t index = 0; index < selection.operations.size(); ++index) {
+            const auto &arm = selection.operations[index];
+            out_ << indentation(depth + 1) << "case " << index << ": {\n";
+            if (arm.binding.has_value()) {
+                const auto binding = *arm.binding;
+                const auto payload = localValue(arm.resultStorage) + ".fdn_data." +
+                                     payloadName(0);
+                emitMoveAssignment(out_, program_, function_.locals[binding].type,
+                                   localValue(binding), payload, depth + 2);
+                activateLocal(binding, depth + 2);
+            }
+            emitSelectSendCleanup(selection, index, depth + 2);
+            const auto exits = emitBlock(arm.body, depth + 2);
+            if (!exits) {
+                out_ << indentation(depth + 2) << "break;\n";
+            }
+            out_ << indentation(depth + 1) << "}\n";
+        }
+        out_ << indentation(depth + 1) << "default:\n";
+        out_ << indentation(depth + 2) << "fdn_panic_cstr(\"invalid select branch\");\n";
+        out_ << indentation(depth + 1) << "}\n";
+        out_ << indentation(depth) << "}\n";
     }
 
     bool emitStatement(const FirStatement &statement, unsigned int depth) {
@@ -2801,7 +2979,7 @@ void emitSignature(std::ostringstream &out, const FirProgram &program, FirFuncti
 }
 
 std::size_t taskSuspensionCount(const FirFunction &function) {
-    return static_cast<std::size_t>(
+    const auto expressions = static_cast<std::size_t>(
         std::count_if(function.expressions.begin(), function.expressions.end(),
                       [](const FirExpression &expression) {
                           return std::holds_alternative<FirTaskWaitExpression>(expression.value) ||
@@ -2810,6 +2988,12 @@ std::size_t taskSuspensionCount(const FirFunction &function) {
                                  std::holds_alternative<FirChannelReceiveExpression>(
                                      expression.value);
                       }));
+    const auto selections = static_cast<std::size_t>(
+        std::count_if(function.statements.begin(), function.statements.end(),
+                      [](const FirStatement &statement) {
+                          return std::holds_alternative<FirSelectStatement>(statement.value);
+                      }));
+    return expressions + selections;
 }
 
 void emitTaskFrameDefinition(std::ostringstream &out, const FirProgram &program,

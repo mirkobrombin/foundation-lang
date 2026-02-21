@@ -940,6 +940,9 @@ AstStatementId Parser::statement() {
     if (match(TokenKind::While)) {
         return whileStatement(previous());
     }
+    if (match(TokenKind::Select)) {
+        return selectStatement(previous());
+    }
     return expressionStatement();
 }
 
@@ -1026,6 +1029,116 @@ AstStatementId Parser::whileStatement(const Token &start) {
     structLiteralsAllowed_ = allowed;
     const auto body = block();
     return addStatement(WhileStatement{condition, body}, start.span);
+}
+
+AstBlockId Parser::selectArmBlock() {
+    if (check(TokenKind::LeftBrace)) {
+        return block();
+    }
+    const auto span = current().span;
+    Block result{{statement()}, span};
+    program_.blocks.push_back(std::move(result));
+    return program_.blocks.size() - 1;
+}
+
+AstStatementId Parser::selectStatement(const Token &start) {
+    expect(TokenKind::LeftBrace, "FDN1140", "expected { after select");
+    std::vector<SelectOperationArm> operations;
+    std::optional<SelectTimeoutArm> timeout;
+    std::optional<std::string> errorBinding;
+    std::optional<AstBlockId> errorBlock;
+
+    while (!check(TokenKind::RightBrace) && !atEnd()) {
+        if (match(TokenKind::Timeout)) {
+            const auto timeoutToken = previous();
+            const auto amount = expect(TokenKind::Integer, "FDN1141",
+                                       "expected timeout duration");
+            expect(TokenKind::Dot, "FDN1142", "expected timeout duration unit");
+            const auto unit = expect(TokenKind::Identifier, "FDN1143",
+                                     "expected timeout duration unit");
+            std::uint64_t magnitude{};
+            const auto conversion = std::from_chars(
+                amount.text.data(), amount.text.data() + amount.text.size(), magnitude);
+            if (conversion.ec != std::errc{} ||
+                conversion.ptr != amount.text.data() + amount.text.size()) {
+                diagnostics_.error("FDN1016", "integer is outside the supported range",
+                                   amount.span);
+            }
+            std::uint64_t multiplier{};
+            if (unit.text == "seconds") {
+                multiplier = UINT64_C(1000000000);
+            } else if (unit.text == "milliseconds") {
+                multiplier = UINT64_C(1000000);
+            } else if (unit.text == "microseconds") {
+                multiplier = UINT64_C(1000);
+            } else if (unit.text == "nanoseconds") {
+                multiplier = 1;
+            } else {
+                diagnostics_.error("FDN1144", "unknown timeout duration unit " + unit.text,
+                                   unit.span);
+            }
+            std::uint64_t nanoseconds{};
+            if (multiplier != 0 && magnitude > UINT64_MAX / multiplier) {
+                diagnostics_.error("FDN1145", "timeout duration is outside the supported range",
+                                   amount.span);
+                nanoseconds = UINT64_MAX;
+            } else {
+                nanoseconds = magnitude * multiplier;
+            }
+            expect(TokenKind::Colon, "FDN1146", "expected : after timeout duration");
+            const auto body = selectArmBlock();
+            if (timeout.has_value()) {
+                diagnostics_.error("FDN1147", "select accepts one timeout branch",
+                                   timeoutToken.span);
+            } else {
+                timeout = SelectTimeoutArm{nanoseconds, body, timeoutToken.span};
+            }
+            continue;
+        }
+        if (match(TokenKind::Else)) {
+            const auto elseToken = previous();
+            const auto binding = expect(TokenKind::Identifier, "FDN1148",
+                                        "expected error binding after else");
+            expect(TokenKind::Colon, "FDN1149", "expected : after select error binding");
+            const auto body = selectArmBlock();
+            if (errorBlock.has_value()) {
+                diagnostics_.error("FDN1150", "select accepts one error branch",
+                                   elseToken.span);
+            } else {
+                errorBinding = binding.text;
+                errorBlock = body;
+            }
+            continue;
+        }
+
+        std::optional<std::string> binding;
+        auto armSpan = current().span;
+        if (match(TokenKind::Const)) {
+            armSpan = previous().span;
+            binding = expect(TokenKind::Identifier, "FDN1151",
+                             "expected select binding name").text;
+            expect(TokenKind::Equal, "FDN1152", "expected = before select operation");
+        }
+        const auto operation = expression();
+        expect(TokenKind::Colon, "FDN1153", "expected : after select operation");
+        operations.push_back(
+            {std::move(binding), operation, selectArmBlock(), armSpan});
+    }
+    expect(TokenKind::RightBrace, "FDN1154", "expected } after select");
+    if (operations.empty()) {
+        diagnostics_.error("FDN1155", "select requires at least one channel operation",
+                           start.span);
+    }
+    if (!errorBlock.has_value()) {
+        diagnostics_.error("FDN1156", "select requires an else error branch", start.span);
+        Block empty{{}, start.span};
+        program_.blocks.push_back(std::move(empty));
+        errorBlock = program_.blocks.size() - 1;
+        errorBinding = "$selectError";
+    }
+    return addStatement(SelectStatement{std::move(operations), std::move(timeout),
+                                        std::move(*errorBinding), *errorBlock},
+                        start.span);
 }
 
 AstStatementId Parser::expressionStatement() {

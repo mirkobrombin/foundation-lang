@@ -296,6 +296,36 @@ class Lowerer {
                 elseBlock = lowerBlock(*branch->elseBlock);
             }
             value = FirIfStatement{condition, thenBlock, elseBlock};
+        } else if (const auto *selection = std::get_if<SelectStatement>(&source.value)) {
+            const auto &target = required(model_.selectTargets[id]);
+            std::vector<FirSelectOperationArm> operations;
+            operations.reserve(selection->operations.size());
+            for (std::size_t index = 0; index < selection->operations.size(); ++index) {
+                const auto &arm = selection->operations[index];
+                const auto &operation = required(
+                    model_.channelOperationTargets[arm.operation]);
+                std::optional<FirExpressionId> argument;
+                if (operation.value.has_value()) {
+                    argument = lowerExpression(*operation.value);
+                }
+                operations.push_back(
+                    {operation.kind == ChannelOperationKind::Send,
+                     operation.endpoint,
+                     argument,
+                     operation.valueStorage,
+                     operation.resultStorage,
+                     target.bindings[index],
+                     lowerBlock(arm.body),
+                     arm.span});
+            }
+            std::optional<FirSelectTimeoutArm> timeout;
+            if (selection->timeout.has_value()) {
+                timeout = FirSelectTimeoutArm{selection->timeout->nanoseconds,
+                                              lowerBlock(selection->timeout->body)};
+            }
+            value = FirSelectStatement{std::move(operations), std::move(timeout),
+                                       target.errorLocal, lowerBlock(selection->errorBlock),
+                                       target.deadlineStorage};
         } else {
             const auto &loop = std::get<WhileStatement>(source.value);
             value = FirWhileStatement{lowerExpression(loop.condition), lowerBlock(loop.body)};

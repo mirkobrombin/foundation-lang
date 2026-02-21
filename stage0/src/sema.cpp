@@ -151,6 +151,7 @@ class Analyzer {
         model_.closureTargets.resize(program.expressions.size());
         model_.taskWaitTargets.resize(program.expressions.size());
         model_.channelOperationTargets.resize(program.expressions.size());
+        model_.selectTargets.resize(program.statements.size());
         model_.expressionBorrowedClosures.resize(program.expressions.size());
         model_.expressionMoves.resize(program.expressions.size());
         model_.statementLocals.resize(program.statements.size());
@@ -1780,6 +1781,138 @@ class Analyzer {
             restoreLoans(
                 mergeLoans(loansBefore, thenLoans, elseLoans, thenReturns, elseReturns));
             return thenReturns && elseReturns;
+        }
+
+        if (const auto *selection = std::get_if<SelectStatement>(&statement.value)) {
+            if (!program_.functions[currentFunction_].task) {
+                diagnostics_.error("FDN2174", "select is only available inside a task",
+                                   statement.span);
+            }
+
+            std::vector<Type> payloads;
+            std::vector<std::optional<FirLocalId>> bindings(selection->operations.size());
+            payloads.reserve(selection->operations.size());
+            for (const auto &arm : selection->operations) {
+                const auto previousTaskWaitRoot = taskWaitRoot_;
+                taskWaitRoot_ = arm.operation;
+                const auto result = analyzeExpression(arm.operation);
+                taskWaitRoot_ = previousTaskWaitRoot;
+                if (!isResult(result) || result.arguments.size() != 2) {
+                    diagnostics_.error("FDN2175",
+                                       "select operation must be Sender.send or Receiver.receive",
+                                       arm.span);
+                    payloads.push_back(invalidType);
+                    continue;
+                }
+                payloads.push_back(result.arguments[0]);
+                if (!model_.channelOperationTargets[arm.operation].has_value()) {
+                    diagnostics_.error("FDN2175",
+                                       "select operation must be Sender.send or Receiver.receive",
+                                       arm.span);
+                }
+            }
+
+            const auto baselineOutstanding = resultOutstanding_;
+            const auto baselineMoves = moveStates_;
+            const auto baselineLoans = loanStates_;
+            const auto baselineCount = baselineMoves.size();
+            std::vector<std::vector<bool>> branchOutstanding;
+            std::vector<std::vector<MoveState>> branchMoves;
+            std::vector<std::vector<LoanState>> branchLoans;
+            std::vector<bool> branchReturns;
+
+            const auto analyzeArm = [&](AstBlockId body,
+                                        std::optional<std::pair<std::string, Type>> binding,
+                                        std::optional<FirLocalId *> target) {
+                restoreOutstanding(baselineOutstanding);
+                restoreMoves(baselineMoves);
+                restoreLoans(baselineLoans);
+                scopes_.emplace_back();
+                if (binding.has_value()) {
+                    const auto local = addLocal(binding->first, binding->second, false,
+                                                program_.blocks[body].span);
+                    if (target.has_value()) {
+                        **target = local;
+                    }
+                }
+                const auto returns = analyzeBlock(body, false);
+                reportScope(scopes_.back());
+                scopes_.pop_back();
+                branchOutstanding.push_back(outstandingPrefix(baselineOutstanding.size()));
+                branchMoves.push_back(movePrefix(baselineCount));
+                branchLoans.push_back(loanPrefix(baselineLoans.size()));
+                branchReturns.push_back(returns);
+            };
+
+            for (std::size_t index = 0; index < selection->operations.size(); ++index) {
+                const auto &arm = selection->operations[index];
+                const auto payload = index < payloads.size() ? payloads[index] : invalidType;
+                const auto &operation = model_.channelOperationTargets[arm.operation];
+                const auto send = operation.has_value() &&
+                                  operation->kind == ChannelOperationKind::Send;
+                if (arm.binding.has_value() && (send || payload == voidType)) {
+                    diagnostics_.error("FDN2176",
+                                       "select binding requires a receive payload", arm.span);
+                }
+                if (!arm.binding.has_value() && !send && payload != voidType &&
+                    payload.kind != TypeKind::Invalid) {
+                    diagnostics_.error("FDN2177",
+                                       "select receive payload requires a const binding",
+                                       arm.span);
+                }
+                std::optional<std::pair<std::string, Type>> binding;
+                std::optional<FirLocalId *> target;
+                if (arm.binding.has_value() && !send && payload != voidType) {
+                    binding = std::pair{*arm.binding, payload};
+                    target = &bindings[index].emplace();
+                }
+                analyzeArm(arm.body, std::move(binding), target);
+            }
+            if (selection->timeout.has_value()) {
+                analyzeArm(selection->timeout->body, std::nullopt, std::nullopt);
+            }
+
+            const auto errorType = Type{TypeKind::Enum, enums_.at("ChannelError"), {}};
+            std::optional<FirLocalId> errorLocal;
+            analyzeArm(selection->errorBlock,
+                       std::pair{selection->errorBinding, errorType},
+                       &errorLocal.emplace());
+            const auto deadlineStorage = addLocal(
+                "$selectDeadline" + std::to_string(channelStorage_++), u64Type, false,
+                statement.span);
+            model_.selectTargets[id] =
+                SelectTarget{std::move(bindings), *errorLocal, deadlineStorage};
+
+            std::vector<bool> mergedOutstanding(baselineOutstanding.size(), false);
+            auto mergedMoves = baselineMoves;
+            auto mergedLoans = baselineLoans;
+            auto hasContinuingBranch = false;
+            for (std::size_t branch = 0; branch < branchReturns.size(); ++branch) {
+                if (branchReturns[branch]) {
+                    continue;
+                }
+                if (!hasContinuingBranch) {
+                    mergedOutstanding = branchOutstanding[branch];
+                    mergedMoves = branchMoves[branch];
+                    mergedLoans = branchLoans[branch];
+                    hasContinuingBranch = true;
+                    continue;
+                }
+                for (std::size_t local = 0; local < mergedOutstanding.size(); ++local) {
+                    mergedOutstanding[local] =
+                        mergedOutstanding[local] || branchOutstanding[branch][local];
+                    if (mergedMoves[local] != branchMoves[branch][local]) {
+                        mergedMoves[local] = MoveState::MaybeMoved;
+                    }
+                    mergedLoans[local] =
+                        mergeLoan(mergedLoans[local], branchLoans[branch][local]);
+                }
+            }
+            restoreOutstanding(hasContinuingBranch ? mergedOutstanding
+                                                   : baselineOutstanding);
+            restoreMoves(hasContinuingBranch ? mergedMoves : baselineMoves);
+            restoreLoans(hasContinuingBranch ? mergedLoans : baselineLoans);
+            return !hasContinuingBranch;
         }
 
         const auto &loop = std::get<WhileStatement>(statement.value);

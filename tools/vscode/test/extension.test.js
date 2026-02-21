@@ -103,7 +103,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.35.0");
+    assert.equal(manifest.version, "0.36.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1085,6 +1085,8 @@ test("grammar and completions track compiler keywords", () => {
         "if",
         "else",
         "while",
+        "select",
+        "timeout",
         "match",
         "capture",
         "replace",
