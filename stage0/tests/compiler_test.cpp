@@ -1577,6 +1577,52 @@ fn main() i32 {
            "C import does not leak into the public header");
 }
 
+void blockingImportsLowerToTaskSuspension() {
+    constexpr std::string_view source = R"(
+@blocking
+extern c fn nativeRead(value i32) String as foundation_native_read
+
+task read(value i32) String {
+    const result = nativeRead(value)
+    result
+}
+
+fn main() i32 {
+    const pending = spawn read(42)
+    discard $pending.wait()
+    0
+}
+)";
+    const auto first = check(source);
+    const auto second = check(source);
+    expect(!first.diagnostics.hasErrors(), "blocking C import has no diagnostics");
+    expect(!second.diagnostics.hasErrors(), "repeated blocking C import has no diagnostics");
+    expect(!first.program.functions.empty() && first.program.functions.front().blocking,
+           "blocking C import is retained in the AST");
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        expect(false, "blocking C import lowers to FIR");
+        return;
+    }
+
+    bool foundBlockingCall{};
+    for (const auto &function : first.fir->functions) {
+        for (const auto &expression : function.expressions) {
+            foundBlockingCall =
+                foundBlockingCall ||
+                std::holds_alternative<foundation::FirBlockingCallExpression>(expression.value);
+        }
+    }
+    expect(foundBlockingCall, "blocking C call remains an explicit FIR suspension point");
+
+    const auto firstC = foundation::emitC(*first.fir, "blocking.fdn");
+    const auto secondC = foundation::emitC(*second.fir, "blocking.fdn");
+    expect(firstC == secondC, "blocking C emission is deterministic");
+    expect(firstC.find("fdn_blocking_poll") != std::string::npos &&
+               firstC.find("fdn_blocking_job_") != std::string::npos &&
+               firstC.find("_blocking_") != std::string::npos,
+           "blocking C call emits a job slot, worker callback, and task poll");
+}
+
 void closuresLowerToDeterministicFunctionValues() {
     constexpr std::string_view source = R"(
 fn double(value i32) i32 { value * 2 }
@@ -1698,6 +1744,7 @@ int main() {
     diagnosticsBoundLongSourceExcerpts();
     packageHeadersAndSourceDiagnosticsStayStable();
     cAbiFunctionsLowerToDeterministicBoundaries();
+    blockingImportsLowerToTaskSuspension();
     closuresLowerToDeterministicFunctionValues();
     projectDiagnosticsRetainTheirSource();
     standardLibrarySourceIsLoadedOnce();

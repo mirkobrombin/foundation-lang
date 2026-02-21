@@ -54,6 +54,14 @@
                         "4": { "name": "constant.language.target.foundation" },
                         "5": { "name": "punctuation.section.arguments.end.foundation" }
                     }
+                },
+                {
+                    "name": "meta.attribute.compiler.foundation",
+                    "match": "(@)(blocking)\\b",
+                    "captures": {
+                        "1": { "name": "punctuation.definition.annotation.foundation" },
+                        "2": { "name": "support.type.attribute.foundation" }
+                    }
                 }
             ]
         },

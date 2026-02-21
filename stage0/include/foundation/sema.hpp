@@ -154,6 +154,12 @@ struct TaskWaitTarget {
     AstExpressionId task{};
 };
 
+struct BlockingCallTarget {
+    FirFunctionId function{};
+    std::vector<FirLocalId> argumentStorages;
+    std::optional<FirLocalId> resultStorage;
+};
+
 enum class ChannelOperationKind {
     Send,
     Receive,
@@ -186,6 +192,7 @@ struct SemanticModel {
     std::vector<std::optional<FunctionValueTarget>> functionValueTargets;
     std::vector<std::optional<ClosureTarget>> closureTargets;
     std::vector<std::optional<TaskWaitTarget>> taskWaitTargets;
+    std::vector<std::optional<BlockingCallTarget>> blockingCallTargets;
     std::vector<std::optional<ChannelOperationTarget>> channelOperationTargets;
     std::vector<std::optional<SelectTarget>> selectTargets;
     std::vector<bool> expressionBorrowedClosures;

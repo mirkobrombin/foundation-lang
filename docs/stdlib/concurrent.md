@@ -64,4 +64,18 @@ queue and wake the originating executor; channel deadlines remain active while i
 Structured cancellation does not free a frame still used by foreign code. A non-cancellable call
 finishes first, then the resumed task observes its cancellation flag. Adapters for cancellable APIs
 pass an explicit native token instead of assuming that a thread can be stopped safely. The
-source-level extern annotation and generated callback bridge are not implemented yet.
+source declaration is explicit:
+
+```foundation
+@blocking
+extern c fn nativeRead(handle u64) String as package_native_read
+
+task read(handle u64) String {
+    const value = nativeRead(handle)
+    value
+}
+```
+
+`@blocking` is compiler-owned and has no parentheses. It applies only to a bodyless C ABI import.
+The call must be a standalone binding or `discard` inside a task. ABI-safe arguments and the result
+remain in the task frame while one generated callback runs on the bounded worker pool.

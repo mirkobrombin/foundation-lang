@@ -1,0 +1,5 @@
+attribute blocking() targets(fn)
+
+fn main() i32 {
+    0
+}

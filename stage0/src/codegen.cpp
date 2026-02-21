@@ -250,6 +250,15 @@ std::string taskDropFrameName(const FirProgram &program, FirFunctionId id) {
     return functionName(program, id) + "_task_drop_frame";
 }
 
+std::string blockingWorkName(const FirProgram &program, FirFunctionId function,
+                             FirExpressionId expression) {
+    return functionName(program, function) + "_blocking_" + std::to_string(expression);
+}
+
+std::string blockingJobName(FirExpressionId expression) {
+    return "fdn_blocking_job_" + std::to_string(expression);
+}
+
 std::string closureEnvironmentName(const FirProgram &program, FirFunctionId id) {
     return functionName(program, id) + "_environment";
 }
@@ -489,6 +498,9 @@ class Monomorphizer {
                 functionCall->function =
                     instantiateFunction(functionCall->function, callArguments);
                 functionCall->typeArguments.clear();
+            } else if (auto *blocking =
+                           std::get_if<FirBlockingCallExpression>(&expression.value)) {
+                blocking->function = instantiateFunction(blocking->function, {});
             } else if (auto *contractCall =
                            std::get_if<FirCallExpression>(&expression.value);
                        contractCall != nullptr &&
@@ -588,6 +600,12 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
     }
     if (const auto *wait = std::get_if<FirTaskWaitExpression>(&expression.value)) {
         return expressionDiverges(program, function, wait->task);
+    }
+    if (const auto *blocking = std::get_if<FirBlockingCallExpression>(&expression.value)) {
+        return std::any_of(blocking->arguments.begin(), blocking->arguments.end(),
+                           [&](const auto argument) {
+                               return expressionDiverges(program, function, argument);
+                           });
     }
     if (const auto *channel = std::get_if<FirChannelExpression>(&expression.value)) {
         return expressionDiverges(program, function, channel->capacity);
@@ -936,7 +954,7 @@ class FunctionEmitter {
     FunctionEmitter(std::ostringstream &out, const FirProgram &program, FirFunctionId functionId,
                     bool taskPoll = false)
         : out_(out), program_(program), function_(program.functions[functionId]),
-          taskPoll_(taskPoll) {}
+          functionId_(functionId), taskPoll_(taskPoll) {}
 
     bool emitBlock(FirBlockId id, unsigned int depth) {
         for (const auto statement : function_.blocks[id].statements) {
@@ -1028,6 +1046,9 @@ class FunctionEmitter {
         if (const auto *wait = std::get_if<FirTaskWaitExpression>(&expression.value)) {
             return emitTaskWait(*wait, expression.type, depth);
         }
+        if (std::holds_alternative<FirBlockingCallExpression>(expression.value)) {
+            internalError("suspending blocking call reached expression emission");
+        }
         if (const auto *contract = std::get_if<FirContractExpression>(&expression.value)) {
             return emitContract(*contract, expression.type, depth);
         }
@@ -1102,6 +1123,15 @@ class FunctionEmitter {
                                      program_.functions[call->function].locals[local].type)) {
                     out_ << indentation(depth) << frame << "->fdn_local_" << local
                          << "_active = false;\n";
+                }
+            }
+            for (std::size_t expression = 0;
+                 expression < program_.functions[call->function].expressions.size();
+                 ++expression) {
+                if (std::holds_alternative<FirBlockingCallExpression>(
+                        program_.functions[call->function].expressions[expression].value)) {
+                    out_ << indentation(depth) << frame << "->"
+                         << blockingJobName(expression) << " = NULL;\n";
                 }
             }
         }
@@ -1723,6 +1753,57 @@ class FunctionEmitter {
         } else {
             return false;
         }
+        const auto *blocking =
+            std::get_if<FirBlockingCallExpression>(&function_.expressions[expression].value);
+        if (blocking != nullptr) {
+            if (blocking->arguments.size() != blocking->argumentStorages.size()) {
+                internalError("blocking call has invalid argument storage");
+            }
+            for (std::size_t index = 0; index < blocking->arguments.size(); ++index) {
+                const auto argument = emitExpression(blocking->arguments[index], depth);
+                if (argument.diverges) {
+                    return true;
+                }
+                out_ << indentation(depth) << localValue(blocking->argumentStorages[index])
+                     << " = " << argument.value << ";\n";
+            }
+
+            const auto state = ++taskState_;
+            out_ << indentation(depth) << "fdn_frame->fdn_state = " << state << ";\n";
+            out_ << "fdn_task_state_" << state << ":\n";
+            emitLocation(function_.expressions[expression].span, depth);
+            out_ << indentation(depth) << "if (!fdn_blocking_poll(&fdn_frame->"
+                 << blockingJobName(expression) << ", fdn_frame, &"
+                 << blockingWorkName(program_, functionId_, expression) << ")) {\n";
+            out_ << indentation(depth + 1)
+                 << "fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
+            out_ << indentation(depth + 1) << "fdn_frame_leave(&fdn_frame_current);\n";
+            out_ << indentation(depth + 1) << "return FDN_TASK_PENDING;\n";
+            out_ << indentation(depth) << "}\n";
+
+            if (blocking->resultStorage.has_value()) {
+                const auto storage = *blocking->resultStorage;
+                const auto &type = function_.locals[storage].type;
+                if (resultLocal.has_value()) {
+                    emitMoveAssignment(out_, program_, type, localValue(*resultLocal),
+                                       localValue(storage), depth);
+                    if (typeRequiresDrop(program_, type)) {
+                        out_ << indentation(depth) << localActive(storage) << " = false;\n";
+                    }
+                    activateLocal(*resultLocal, depth);
+                    out_ << indentation(depth) << "(void)" << localValue(*resultLocal)
+                         << ";\n";
+                } else if (discarded) {
+                    emitDropValue(out_, program_, type, localValue(storage), depth);
+                    if (typeRequiresDrop(program_, type)) {
+                        out_ << indentation(depth) << localActive(storage) << " = false;\n";
+                    }
+                } else {
+                    out_ << indentation(depth) << "(void)" << localValue(storage) << ";\n";
+                }
+            }
+            return true;
+        }
         const auto *wait =
             std::get_if<FirTaskWaitExpression>(&function_.expressions[expression].value);
         if (wait != nullptr) {
@@ -2283,6 +2364,7 @@ class FunctionEmitter {
     std::ostringstream &out_;
     const FirProgram &program_;
     const FirFunction &function_;
+    FirFunctionId functionId_{};
     std::size_t temporary_{};
     std::size_t taskState_{};
     bool taskPoll_{};
@@ -2983,6 +3065,8 @@ std::size_t taskSuspensionCount(const FirFunction &function) {
         std::count_if(function.expressions.begin(), function.expressions.end(),
                       [](const FirExpression &expression) {
                           return std::holds_alternative<FirTaskWaitExpression>(expression.value) ||
+                                 std::holds_alternative<FirBlockingCallExpression>(
+                                     expression.value) ||
                                  std::holds_alternative<FirChannelSendExpression>(
                                      expression.value) ||
                                  std::holds_alternative<FirChannelReceiveExpression>(
@@ -3023,8 +3107,74 @@ void emitTaskFrameDefinition(std::ostringstream &out, const FirProgram &program,
                 out << "    bool fdn_local_" << local << "_active;\n";
             }
         }
+        for (std::size_t expression = 0; expression < function.expressions.size();
+             ++expression) {
+            if (std::holds_alternative<FirBlockingCallExpression>(
+                    function.expressions[expression].value)) {
+                out << "    fdn_blocking_job *" << blockingJobName(expression) << ";\n";
+            }
+        }
     }
     out << "};\n\n";
+}
+
+void emitBlockingWorkDefinitions(std::ostringstream &out, const FirProgram &program,
+                                 FirFunctionId id, std::string_view sourcePath) {
+    const auto &function = program.functions[id];
+    if (!function.task) {
+        return;
+    }
+    for (std::size_t expressionId = 0; expressionId < function.expressions.size();
+         ++expressionId) {
+        const auto *blocking = std::get_if<FirBlockingCallExpression>(
+            &function.expressions[expressionId].value);
+        if (blocking == nullptr) {
+            continue;
+        }
+        if (blocking->function >= program.functions.size() ||
+            !program.functions[blocking->function].blocking) {
+            internalError("blocking call has an invalid target");
+        }
+        const auto &target = program.functions[blocking->function];
+        if (blocking->arguments.size() != blocking->argumentStorages.size() ||
+            blocking->argumentStorages.size() != target.parameters.size()) {
+            internalError("blocking call has invalid argument storage");
+        }
+        out << "static void " << blockingWorkName(program, id, expressionId)
+            << "(void *fdn_raw) {\n";
+        out << "    struct " << taskFrameName(program, id) << " *fdn_frame = (struct "
+            << taskFrameName(program, id) << " *)fdn_raw;\n";
+        out << "    struct fdn_frame fdn_frame_current;\n";
+        const auto traceSource = function.sourcePath.empty()
+                                     ? sourcePath
+                                     : std::string_view(function.sourcePath);
+        const auto framePackage = function.packageName.empty()
+                                      ? std::string_view("main")
+                                      : std::string_view(function.packageName);
+        const auto &expression = function.expressions[expressionId];
+        out << "    fdn_frame_enter(&fdn_frame_current, " << cString(framePackage) << ", "
+            << cString(traceFunctionName(function)) << ", " << cString(traceSource) << ", "
+            << expression.span.line << ", " << expression.span.column << ");\n";
+        out << "    ";
+        if (blocking->resultStorage.has_value()) {
+            out << "fdn_frame->fdn_local_" << *blocking->resultStorage << " = ";
+        }
+        out << functionName(program, blocking->function) << '(';
+        for (std::size_t index = 0; index < blocking->argumentStorages.size(); ++index) {
+            if (index != 0) {
+                out << ", ";
+            }
+            out << "fdn_frame->fdn_local_" << blocking->argumentStorages[index];
+        }
+        out << ");\n";
+        if (blocking->resultStorage.has_value() &&
+            typeRequiresDrop(program, function.locals[*blocking->resultStorage].type)) {
+            out << "    fdn_frame->fdn_local_" << *blocking->resultStorage
+                << "_active = true;\n";
+        }
+        out << "    fdn_frame_leave(&fdn_frame_current);\n";
+        out << "}\n\n";
+    }
 }
 
 void emitTaskSupportPrototypes(std::ostringstream &out, const FirProgram &program,
@@ -3150,6 +3300,17 @@ void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunc
     }
     out << "    }\n";
     if (suspensions != 0) {
+        for (std::size_t expression = 0; expression < function.expressions.size();
+             ++expression) {
+            if (!std::holds_alternative<FirBlockingCallExpression>(
+                    function.expressions[expression].value)) {
+                continue;
+            }
+            out << "    if (fdn_frame->" << blockingJobName(expression)
+                << " != NULL) {\n";
+            out << "        fdn_panic_cstr(\"task frame still has blocking work\");\n";
+            out << "    }\n";
+        }
         for (std::size_t local = function.locals.size(); local-- > 0;) {
             if (!typeRequiresDrop(program, function.locals[local].type)) {
                 continue;
@@ -3537,6 +3698,9 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     if (std::any_of(program.functions.begin(), program.functions.end(),
                     [](const FirFunction &function) { return function.task; })) {
         out << '\n';
+    }
+    for (std::size_t index = 0; index < program.functions.size(); ++index) {
+        emitBlockingWorkDefinitions(out, program, index, sourcePath);
     }
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
         emitTaskSupport(out, program, index, sourcePath);

@@ -213,6 +213,7 @@ class Lowerer {
         function.closure = source.closure;
         function.method = source.receiver.has_value();
         function.task = source.task;
+        function.blocking = source.blocking;
         function.attributes = semantic.attributes;
         function.parameterAttributes = semantic.parameterAttributes;
         function.returnType = semantic.returnType;
@@ -403,7 +404,12 @@ class Lowerer {
                 }
                 arguments.push_back(argument);
             }
-            if (target.kind == CallTargetKind::Channel) {
+            if (model_.blockingCallTargets[id].has_value()) {
+                const auto &blocking = *model_.blockingCallTargets[id];
+                value = FirBlockingCallExpression{blocking.function, std::move(arguments),
+                                                  blocking.argumentStorages,
+                                                  blocking.resultStorage};
+            } else if (target.kind == CallTargetKind::Channel) {
                 value = FirChannelExpression{
                     target.typeArguments.empty() ? invalidType : target.typeArguments.front(),
                     arguments.empty() ? 0 : arguments.front()};

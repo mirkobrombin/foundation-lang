@@ -15,6 +15,12 @@ const staticCompletions = [
         detail: "Select a declaration for one compilation target",
         insertText: "@target(${1|linux,macos,windows|})"
     },
+    {
+        label: "@blocking",
+        kind: "Keyword",
+        detail: "Run a bodyless C ABI import on the blocking executor",
+        insertText: "@blocking"
+    },
     { label: "struct", kind: "Keyword" },
     { label: "enum", kind: "Keyword" },
     { label: "contract", kind: "Keyword" },

@@ -431,6 +431,13 @@ void linkAttributes(Program &program, std::vector<AttributeApplication> &attribu
                     const std::unordered_set<std::string> &typeParameters,
                     Diagnostics &diagnostics) {
     for (auto &attribute : attributes) {
+        if (attribute.name == "blocking") {
+            for (const auto &argument : attribute.arguments) {
+                linkExpression(program, argument.value, currentPackage, imports, symbols,
+                               typeParameters, diagnostics);
+            }
+            continue;
+        }
         const auto separator = attribute.name.find('.');
         if (separator == std::string::npos) {
             if (const auto *declaration =

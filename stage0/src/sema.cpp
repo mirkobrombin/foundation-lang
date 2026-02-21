@@ -150,6 +150,7 @@ class Analyzer {
         model_.functionValueTargets.resize(program.expressions.size());
         model_.closureTargets.resize(program.expressions.size());
         model_.taskWaitTargets.resize(program.expressions.size());
+        model_.blockingCallTargets.resize(program.expressions.size());
         model_.channelOperationTargets.resize(program.expressions.size());
         model_.selectTargets.resize(program.statements.size());
         model_.expressionBorrowedClosures.resize(program.expressions.size());
@@ -245,8 +246,8 @@ class Analyzer {
             const auto separator = declaration.name.rfind('.');
             const auto sourceName = declaration.name.substr(
                 separator == std::string::npos ? 0 : separator + 1);
-            if (sourceName == "target") {
-                diagnostics_.error("FDN2150", "target is reserved for the compiler",
+            if (sourceName == "target" || sourceName == "blocking") {
+                diagnostics_.error("FDN2150", sourceName + " is reserved for the compiler",
                                    declaration.span);
             }
             if (!attributes_.emplace(declaration.name, index).second) {
@@ -901,6 +902,13 @@ class Analyzer {
         currentPackageOverride_ = packageName;
         setTypeParameters({}, {});
         for (const auto &application : applications) {
+            if (application.name == "blocking") {
+                if (target != FirAttributeTarget::Function) {
+                    diagnostics_.error("FDN2178", "@blocking can only target a function",
+                                       application.span);
+                }
+                continue;
+            }
             const auto found = attributes_.find(application.name);
             if (found == attributes_.end()) {
                 diagnostics_.error("FDN2152", "unknown attribute @" + application.name,
@@ -1073,6 +1081,33 @@ class Analyzer {
             setTypeParameters(function.typeParameters, function.span);
             semantic.typeParameterCount = function.typeParameters.size();
             semantic.returnType = resolveType(function.returnType);
+            if (function.blocking) {
+                const auto count = static_cast<std::size_t>(std::count_if(
+                    function.attributes.begin(), function.attributes.end(),
+                    [](const auto &attribute) { return attribute.name == "blocking"; }));
+                if (count > 1) {
+                    diagnostics_.error("FDN2179", "function has more than one @blocking",
+                                       function.span);
+                }
+                for (const auto &attribute : function.attributes) {
+                    if (attribute.name != "blocking") {
+                        continue;
+                    }
+                    if (attribute.parenthesized || !attribute.arguments.empty()) {
+                        diagnostics_.error(
+                            "FDN2179",
+                            "@blocking does not accept parentheses or arguments",
+                            attribute.span);
+                    }
+                }
+                if (!function.cSymbol.has_value() || function.hasBody || function.task ||
+                    function.receiver.has_value() || function.closure) {
+                    diagnostics_.error(
+                        "FDN2178",
+                        "@blocking requires a bodyless extern c function declaration",
+                        function.span);
+                }
+            }
             if (function.task && function.cSymbol.has_value()) {
                 diagnostics_.error("FDN2163", "task cannot use an external ABI declaration",
                                    function.span);
@@ -1338,6 +1373,7 @@ class Analyzer {
         taskWaitRoot_.reset();
         taskWaitVoidStatement_ = false;
         channelStorage_ = 0;
+        blockingStorage_ = 0;
 
         const auto &function = program_.functions[index];
         setTypeParameters(function.typeParameters, function.span);
@@ -2043,6 +2079,11 @@ class Analyzer {
                 }
                 if (program_.functions[functionId].task) {
                     diagnostics_.error("FDN2163", "task cannot be used as a function value",
+                                       expression.span);
+                }
+                if (program_.functions[functionId].blocking) {
+                    diagnostics_.error("FDN2178",
+                                       "blocking function cannot be used as a function value",
                                        expression.span);
                 }
                 const auto &signature = signatures_[functionId];
@@ -2872,11 +2913,39 @@ class Analyzer {
         target.typeArguments = typeArguments;
         target.argumentConversions = std::move(conversions);
         model_.callTargets[id] = std::move(target);
+        const auto returnType = substitute(signature.returnType, typeArguments);
+        if (program_.functions[function].blocking) {
+            if (!program_.functions[currentFunction_].task) {
+                diagnostics_.error("FDN2180",
+                                   "blocking call is only available inside a task", span);
+            } else if (taskWaitRoot_ != id) {
+                diagnostics_.error(
+                    "FDN2168",
+                    "blocking call must be a standalone task binding or discard", span);
+            } else {
+                std::vector<FirLocalId> storages;
+                storages.reserve(count);
+                for (std::size_t index = 0; index < count; ++index) {
+                    storages.push_back(addLocal(
+                        "$blockingArgument" + std::to_string(blockingStorage_++),
+                        substitute(signature.parameters[index], typeArguments), false, span));
+                }
+                std::optional<FirLocalId> resultStorage;
+                if (returnType != voidType) {
+                    resultStorage = addLocal(
+                        "$blockingResult" + std::to_string(blockingStorage_++),
+                        returnType, false, span);
+                    resultOutstanding_[*resultStorage] = false;
+                }
+                model_.blockingCallTargets[id] =
+                    BlockingCallTarget{function, std::move(storages), resultStorage};
+            }
+        }
         if (!program_.functions[currentFunction_].typeParameters.empty() &&
             !program_.functions[function].typeParameters.empty()) {
             genericCalls_.push_back({currentFunction_, function, typeArguments, span});
         }
-        return substitute(signature.returnType, typeArguments);
+        return returnType;
     }
 
     void rejectPolymorphicRecursion() {
@@ -4731,6 +4800,7 @@ class Analyzer {
     std::optional<AstExpressionId> taskWaitRoot_;
     bool taskWaitVoidStatement_{};
     std::size_t channelStorage_{};
+    std::size_t blockingStorage_{};
     FirFunctionId currentFunction_{};
 };
 

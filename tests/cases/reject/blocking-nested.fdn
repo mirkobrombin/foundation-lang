@@ -1,0 +1,16 @@
+@blocking
+extern c fn nativeValue() i32 as foundation_native_value
+
+fn identity(value i32) i32 {
+    value
+}
+
+task work() i32 {
+    const value = identity(nativeValue())
+    value
+}
+
+fn main() i32 {
+    const pending = spawn work()
+    $pending.wait()
+}

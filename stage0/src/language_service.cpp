@@ -204,8 +204,13 @@ std::string typeParameterSuffix(const std::vector<std::string> &parameters) {
 }
 
 std::string functionDetail(const Function &function) {
-    std::string result = std::string(function.task ? "task " : "fn ") +
-                         shortName(function.name) +
+    auto prefix = function.task ? std::string("task ")
+                                : function.cSymbol.has_value() ? std::string("extern c fn ")
+                                                               : std::string("fn ");
+    if (function.blocking) {
+        prefix = "@blocking " + prefix;
+    }
+    std::string result = prefix + shortName(function.name) +
                          typeParameterSuffix(function.typeParameters) + '(';
     for (std::size_t index = 0; index < function.parameters.size(); ++index) {
         if (index != 0) {

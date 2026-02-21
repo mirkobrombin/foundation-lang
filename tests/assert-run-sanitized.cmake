@@ -21,12 +21,27 @@ endif()
 if(DEFINED RUNTIME_CANCELLATION_SOURCE)
     list(APPEND runtime_sources "${RUNTIME_CANCELLATION_SOURCE}")
 endif()
+if(DEFINED RUNTIME_CHANNEL_SOURCE)
+    list(APPEND runtime_sources "${RUNTIME_CHANNEL_SOURCE}")
+endif()
+if(DEFINED RUNTIME_BLOCKING_SOURCE)
+    list(APPEND runtime_sources "${RUNTIME_BLOCKING_SOURCE}")
+endif()
+if(DEFINED NATIVE)
+    list(APPEND runtime_sources "${NATIVE}")
+endif()
+
+set(thread_arguments)
+if(DEFINED RUNTIME_BLOCKING_SOURCE)
+    list(APPEND thread_arguments -pthread)
+endif()
 
 execute_process(
     COMMAND "${C_COMPILER}" -std=c11 -g -fno-omit-frame-pointer
             -DFOUNDATION_VERIFY_ALLOCATIONS
             -fsanitize=address,undefined -Wall -Wextra -Wpedantic -Werror
-            "${GENERATED}" ${runtime_sources} -I "${RUNTIME_INCLUDE}" -o "${OUTPUT}"
+            "${GENERATED}" ${runtime_sources} -I "${RUNTIME_INCLUDE}"
+            ${thread_arguments} -o "${OUTPUT}"
     RESULT_VARIABLE build_result
     OUTPUT_VARIABLE build_output
     ERROR_VARIABLE build_error

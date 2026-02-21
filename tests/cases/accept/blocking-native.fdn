@@ -1,0 +1,57 @@
+@blocking
+extern c fn nativeSleepDouble(value i32, delay u64) i32 as foundation_native_sleep_double
+
+@blocking
+extern c fn nativeDelayedText(delay u64) String as foundation_native_delayed_text
+
+task doubleLater(value i32, delay u64) i32 {
+    const result = nativeSleepDouble(value, delay)
+    result
+}
+
+task textLater(delay u64) String {
+    const result = nativeDelayedText(delay)
+    result
+}
+
+task ready() void {
+    print("sibling")
+}
+
+task waitDeadline(receiver Receiver<String>) i32 {
+    select {
+        const message = receiver.receive(): discard message
+        timeout 5.milliseconds: return 0
+        else error: return 1
+    }
+    2
+}
+
+fn main() i32 {
+    const slow = spawn doubleLater(21, 40)
+    const sibling = spawn ready()
+    const Channel { sender receiver } = channel<String>(0)
+    const timing = spawn waitDeadline(receiver)
+
+    $sibling.wait()
+    const timeoutCode = $timing.wait()
+    discard sender
+    if timeoutCode != 0 {
+        return 1
+    }
+
+    const value = $slow.wait()
+    if value != 42 {
+        return 2
+    }
+
+    const textTask = spawn textLater(5)
+    const text = $textTask.wait()
+    print(text)
+    print("blocking done")
+
+    const cancelled = spawn textLater(10)
+    discard cancelled
+    print("cancelled joined")
+    0
+}

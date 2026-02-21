@@ -45,6 +45,7 @@ struct AttributeApplication {
     std::string name;
     std::vector<AttributeArgument> arguments;
     SourceSpan span;
+    bool parenthesized{true};
 };
 
 enum class UnaryOperator {
@@ -306,6 +307,7 @@ struct Function {
     std::vector<Capture> captures;
     std::vector<AttributeApplication> attributes;
     bool task{};
+    bool blocking{};
 };
 
 struct StructField {

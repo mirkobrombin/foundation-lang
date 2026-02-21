@@ -1,5 +1,6 @@
 #include "foundation/parser.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <system_error>
@@ -14,6 +15,12 @@ constexpr std::size_t maxExpressionDepth = 256;
 constexpr std::size_t maxExpressionNodes = 1024;
 constexpr std::size_t maxTypeDepth = 128;
 constexpr std::size_t maxGenericLookaheadTokens = 4096;
+
+bool hasBlockingAttribute(const std::vector<AttributeApplication> &attributes) {
+    return std::any_of(attributes.begin(), attributes.end(), [](const auto &attribute) {
+        return attribute.name == "blocking";
+    });
+}
 
 class TypeLookahead {
   public:
@@ -220,6 +227,7 @@ Program Parser::parse() {
         if (check(TokenKind::Fn)) {
             auto declaration = function();
             declaration.attributes = std::move(parsedAttributes.applications);
+            declaration.blocking = hasBlockingAttribute(declaration.attributes);
             if (parsedAttributes.selected) {
                 program_.functions.push_back(std::move(declaration));
             } else {
@@ -230,6 +238,7 @@ Program Parser::parse() {
         if (check(TokenKind::Task)) {
             auto declaration = function(false, true);
             declaration.attributes = std::move(parsedAttributes.applications);
+            declaration.blocking = hasBlockingAttribute(declaration.attributes);
             if (parsedAttributes.selected) {
                 program_.functions.push_back(std::move(declaration));
             } else {
@@ -240,6 +249,7 @@ Program Parser::parse() {
         if (check(TokenKind::Extern)) {
             auto declaration = function(true);
             declaration.attributes = std::move(parsedAttributes.applications);
+            declaration.blocking = hasBlockingAttribute(declaration.attributes);
             if (parsedAttributes.selected) {
                 program_.functions.push_back(std::move(declaration));
             } else {
@@ -260,6 +270,10 @@ Parser::ParsedAttributes Parser::attributes(bool allowTarget) {
     while (match(TokenKind::At)) {
         const auto [name, span] =
             qualifiedName("FDN1140", "expected attribute name after @");
+        if (name == "blocking" && !check(TokenKind::LeftParen)) {
+            result.applications.push_back({name, {}, span, false});
+            continue;
+        }
         expect(TokenKind::LeftParen, "FDN1141", "expected ( after attribute name");
         if (name == "target") {
             const auto argument = expect(TokenKind::Identifier, "FDN1142",

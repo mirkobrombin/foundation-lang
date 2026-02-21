@@ -2121,6 +2121,13 @@ class LanguageServer {
                         "channel operation completes before the monotonic duration. Supported "
                         "units are `seconds`, `milliseconds`, `microseconds`, and "
                         "`nanoseconds`.";
+                } else if (keyword == "blocking" && found->offset != 0 &&
+                           source.contents[found->offset - 1] == '@') {
+                    documentation =
+                        "```foundation\n@blocking\nextern c fn read() i32 as native_read\n```\n\n"
+                        "Runs a bodyless C ABI import on the bounded native worker pool. The "
+                        "call is a suspension point and is valid only as a standalone binding "
+                        "or discard inside a task.";
                 }
                 if (!documentation.empty()) {
                     return Json::object(
@@ -3693,6 +3700,11 @@ class LanguageServer {
                           symbol == nullptr ? "typed Foundation attribute" : symbol->detail,
                           callSnippet(application, declaration.parameters),
                           symbol == nullptr ? std::string{} : symbol->documentation);
+        }
+        if (attributeContext) {
+            addCompletion(items, "@blocking", 10,
+                          "Run a bodyless C ABI import on the blocking executor",
+                          "@blocking");
         }
         if (!attributeContext) {
             for (std::size_t functionIndex = 0;

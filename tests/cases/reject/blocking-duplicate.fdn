@@ -1,0 +1,7 @@
+@blocking
+@blocking
+extern c fn nativeValue() i32 as foundation_native_value
+
+fn main() i32 {
+    0
+}

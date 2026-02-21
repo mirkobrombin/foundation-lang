@@ -69,6 +69,14 @@
         "body": "extern c fn ${1:nativeCall}(${2}) ${3:i32} as ${4:foundation_native_call}",
         "description": "Import a C function through the stable ABI"
     },
+    "Blocking C ABI import": {
+        "prefix": "externblocking",
+        "body": [
+            "@blocking",
+            "extern c fn ${1:nativeCall}(${2}) ${3:i32} as ${4:foundation_native_call}"
+        ],
+        "description": "Import a blocking C function through the native worker pool"
+    },
     "C ABI export": {
         "prefix": "externexport",
         "body": [

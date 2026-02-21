@@ -1667,6 +1667,68 @@ void selectExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void blockingImportsExposeEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "@blocking\n"
+        "extern c fn nativeRead() i32 as sample_native_read\n"
+        "task read() i32 {\n"
+        "    const value = nativeRead()\n"
+        "    value\n"
+        "}\n"
+        "fn main() i32 {\n"
+        "    const pending = spawn read()\n"
+        "    $pending.wait()\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(121, "completion", 1, 1)) +
+        frame(request(122, "hover", 1, 5)) + frame(request(123, "hover", 2, 15)) +
+        frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto completion = responseFor(transcript, 121);
+    const auto attributeHover = responseFor(transcript, 122);
+    const auto functionHover = responseFor(transcript, 123);
+
+    expect(status == 0, "blocking import language server transcript exits cleanly");
+    expect(errors.str().empty(), "blocking import requests write no server errors");
+    expect(completion.find("\"label\":\"@blocking\"") != std::string::npos,
+           "attribute completion offers the compiler-owned blocking marker");
+    expect(attributeHover.find("bounded native worker pool") != std::string::npos &&
+               attributeHover.find("standalone binding or discard") != std::string::npos,
+           "blocking attribute hover explains suspension and placement");
+    expect(functionHover.find("@blocking extern c fn nativeRead() i32") !=
+               std::string::npos,
+           "blocking import hover preserves its compiler-owned modifier");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 } // namespace
 
 int main() {
@@ -1689,6 +1751,7 @@ int main() {
     distributedMethodsExposeDocumentationAndParameters();
     channelOperationsExposeEditorDetails();
     selectExposesEditorDetails();
+    blockingImportsExposeEditorDetails();
 
     if (failures != 0) {
         std::cerr << failures << " language server assertions failed\n";

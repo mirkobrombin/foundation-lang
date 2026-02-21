@@ -14,6 +14,12 @@ endif()
 if(DEFINED RUNTIME_CHANNEL_SOURCE)
     list(APPEND runtime_sources "${RUNTIME_CHANNEL_SOURCE}")
 endif()
+if(DEFINED RUNTIME_BLOCKING_SOURCE)
+    list(APPEND runtime_sources "${RUNTIME_BLOCKING_SOURCE}")
+endif()
+if(DEFINED NATIVE)
+    list(APPEND runtime_sources "${NATIVE}")
+endif()
 
 execute_process(
     COMMAND "${COMPILER}" emit-c "${SOURCE}" -o "${GENERATED}"
@@ -37,10 +43,14 @@ if(C_COMPILER_ID STREQUAL "MSVC")
         ERROR_VARIABLE build_error
     )
 else()
+    set(thread_arguments)
+    if(DEFINED RUNTIME_BLOCKING_SOURCE)
+        list(APPEND thread_arguments -pthread)
+    endif()
     execute_process(
         COMMAND "${C_COMPILER}" -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror
                 -DFOUNDATION_VERIFY_ALLOCATIONS "${GENERATED}" ${runtime_sources}
-                -I "${RUNTIME_INCLUDE}" -o "${executable}"
+                -I "${RUNTIME_INCLUDE}" ${thread_arguments} -o "${executable}"
         RESULT_VARIABLE build_result
         OUTPUT_VARIABLE build_output
         ERROR_VARIABLE build_error

@@ -103,7 +103,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.36.0");
+    assert.equal(manifest.version, "0.37.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1126,6 +1126,7 @@ test("grammar and completions track compiler keywords", () => {
     }
     assert.ok(completionLabels.has("c"));
     assert.ok(completionLabels.has("@target(...)"));
+    assert.ok(completionLabels.has("@blocking"));
     assert.ok(completionLabels.has("targets(...)"));
     assert.ok(completionLabels.has("repeatable"));
     for (const standard of [
@@ -1149,6 +1150,8 @@ test("grammar and completions track compiler keywords", () => {
     const targetAttribute = parsedGrammar.repository.compilerAttributes.patterns[0];
     assert.match(targetAttribute.match, /target/);
     assert.match(targetAttribute.captures[4].name, /target/);
+    const blockingAttribute = parsedGrammar.repository.compilerAttributes.patterns[1];
+    assert.match(blockingAttribute.match, /blocking/);
     assert.match(parsedGrammar.repository.attributeDefinitions.patterns[0].begin, /attribute/);
     assert.match(parsedGrammar.repository.attributeApplications.patterns[0].begin, /@/);
     const cAbiDeclaration = parsedGrammar.repository.cAbiDeclarations.patterns[0];
@@ -1163,6 +1166,7 @@ test("grammar and completions track compiler keywords", () => {
     assert.ok(completionLabels.has("fn(...) R"));
     const snippets = readJson("snippets/foundation.json");
     assert.match(snippets["Target declaration"].body.join("\n"), /@target/);
+    assert.match(snippets["Blocking C ABI import"].body.join("\n"), /@blocking/);
     assert.match(snippets["Typed attribute declaration"].body, /targets/);
     assert.match(snippets["Typed attribute application"].body, /@/);
     assert.match(snippets["Read environment value"].body.join("\n"), /env\.Get\(/);
