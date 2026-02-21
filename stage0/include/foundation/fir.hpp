@@ -251,6 +251,13 @@ struct FirBlockingCallExpression {
     std::optional<FirLocalId> resultStorage;
 };
 
+struct FirCallbackCallExpression {
+    FirFunctionId function{};
+    std::vector<FirExpressionId> arguments;
+    std::vector<FirLocalId> argumentStorages;
+    FirLocalId resultStorage{};
+};
+
 struct FirChannelExpression {
     Type payload{invalidType};
     FirExpressionId capacity{};
@@ -295,6 +302,7 @@ using FirExpressionValue =
                  FirContractExpression, FirStructExpression, FirFieldExpression,
                  FirIndexExpression, FirReplaceExpression, FirEnumExpression,
                  FirSpawnExpression, FirTaskWaitExpression, FirBlockingCallExpression,
+                 FirCallbackCallExpression,
                  FirChannelExpression,
                  FirChannelSendExpression, FirChannelReceiveExpression,
                  FirMatchExpression>;
@@ -432,6 +440,8 @@ struct FirFunction {
     std::vector<std::vector<FirAttributeUse>> parameterAttributes;
     bool task{};
     bool blocking{};
+    bool callback{};
+    std::optional<std::string> callbackCancelSymbol;
 };
 
 struct FirStructField {

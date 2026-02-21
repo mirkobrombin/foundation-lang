@@ -22,6 +22,12 @@ bool hasBlockingAttribute(const std::vector<AttributeApplication> &attributes) {
     });
 }
 
+bool hasCallbackAttribute(const std::vector<AttributeApplication> &attributes) {
+    return std::any_of(attributes.begin(), attributes.end(), [](const auto &attribute) {
+        return attribute.name == "callback";
+    });
+}
+
 class TypeLookahead {
   public:
     TypeLookahead(const std::vector<Token> &tokens, std::size_t start)
@@ -228,6 +234,7 @@ Program Parser::parse() {
             auto declaration = function();
             declaration.attributes = std::move(parsedAttributes.applications);
             declaration.blocking = hasBlockingAttribute(declaration.attributes);
+            declaration.callback = hasCallbackAttribute(declaration.attributes);
             if (parsedAttributes.selected) {
                 program_.functions.push_back(std::move(declaration));
             } else {
@@ -239,6 +246,7 @@ Program Parser::parse() {
             auto declaration = function(false, true);
             declaration.attributes = std::move(parsedAttributes.applications);
             declaration.blocking = hasBlockingAttribute(declaration.attributes);
+            declaration.callback = hasCallbackAttribute(declaration.attributes);
             if (parsedAttributes.selected) {
                 program_.functions.push_back(std::move(declaration));
             } else {
@@ -250,6 +258,7 @@ Program Parser::parse() {
             auto declaration = function(true);
             declaration.attributes = std::move(parsedAttributes.applications);
             declaration.blocking = hasBlockingAttribute(declaration.attributes);
+            declaration.callback = hasCallbackAttribute(declaration.attributes);
             if (parsedAttributes.selected) {
                 program_.functions.push_back(std::move(declaration));
             } else {
@@ -270,7 +279,8 @@ Parser::ParsedAttributes Parser::attributes(bool allowTarget) {
     while (match(TokenKind::At)) {
         const auto [name, span] =
             qualifiedName("FDN1140", "expected attribute name after @");
-        if (name == "blocking" && !check(TokenKind::LeftParen)) {
+        if ((name == "blocking" || name == "callback") &&
+            !check(TokenKind::LeftParen)) {
             result.applications.push_back({name, {}, span, false});
             continue;
         }

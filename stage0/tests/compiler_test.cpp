@@ -1623,6 +1623,66 @@ fn main() i32 {
            "blocking C call emits a job slot, worker callback, and task poll");
 }
 
+void callbackImportsLowerToReactorSuspension() {
+    constexpr std::string_view source = R"(
+@callback(cancel = foundation_native_cancel)
+extern c fn nativeRead(value u64, result edit i32) i32 as foundation_native_read
+
+task read(value u64) i32 {
+    var result = 0
+    const status = nativeRead(value, edit result)
+    status + result
+}
+
+fn main() i32 {
+    const pending = spawn read(21)
+    $pending.wait()
+}
+)";
+    const auto first = check(source);
+    const auto second = check(source);
+    expect(!first.diagnostics.hasErrors(), "callback C import has no diagnostics");
+    expect(!second.diagnostics.hasErrors(), "repeated callback C import has no diagnostics");
+    expect(!first.program.functions.empty() && first.program.functions.front().callback,
+           "callback C import is retained in the AST");
+    expect(first.semantic.has_value() &&
+               first.semantic->functions.front().callbackCancelSymbol ==
+                   "foundation_native_cancel",
+           "callback cancellation symbol is retained by semantic analysis");
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        expect(false, "callback C import lowers to FIR");
+        return;
+    }
+
+    bool foundCallbackCall{};
+    for (const auto &function : first.fir->functions) {
+        for (const auto &expression : function.expressions) {
+            foundCallbackCall =
+                foundCallbackCall ||
+                std::holds_alternative<foundation::FirCallbackCallExpression>(expression.value);
+        }
+    }
+    expect(foundCallbackCall, "callback C call remains an explicit FIR suspension point");
+
+    const auto firstC = foundation::emitC(*first.fir, "callback.fdn");
+    const auto secondC = foundation::emitC(*second.fir, "callback.fdn");
+    expect(firstC == secondC, "callback C emission is deterministic");
+    expect(firstC.find(
+               "void foundation_native_read(uint64_t, int32_t *, fdn_reactor_operation *);") !=
+               std::string::npos,
+           "callback start symbol receives ABI-safe arguments and an operation token");
+    expect(firstC.find("void foundation_native_cancel(fdn_reactor_operation *);") !=
+               std::string::npos,
+           "callback cancellation symbol receives the active operation token");
+    expect(firstC.find("fdn_reactor_poll") != std::string::npos &&
+               firstC.find("_callback_start_") != std::string::npos &&
+               firstC.find("_callback_cancel_") != std::string::npos &&
+               firstC.find("fdn_callback_operation_") != std::string::npos,
+           "callback C call emits an operation slot, native adapters, and task poll");
+    expect(firstC.find("int32_t foundation_native_read(") == std::string::npos,
+           "callback start symbol is not emitted as a synchronous import");
+}
+
 void closuresLowerToDeterministicFunctionValues() {
     constexpr std::string_view source = R"(
 fn double(value i32) i32 { value * 2 }
@@ -1745,6 +1805,7 @@ int main() {
     packageHeadersAndSourceDiagnosticsStayStable();
     cAbiFunctionsLowerToDeterministicBoundaries();
     blockingImportsLowerToTaskSuspension();
+    callbackImportsLowerToReactorSuspension();
     closuresLowerToDeterministicFunctionValues();
     projectDiagnosticsRetainTheirSource();
     standardLibrarySourceIsLoadedOnce();

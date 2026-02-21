@@ -1,0 +1,8 @@
+@callback
+extern c fn nativeValue() i32 as foundation_native_value
+
+fn main() i32 {
+    const value fn() i32 = nativeValue
+    discard value
+    0
+}

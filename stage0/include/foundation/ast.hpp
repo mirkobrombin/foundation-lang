@@ -308,6 +308,7 @@ struct Function {
     std::vector<AttributeApplication> attributes;
     bool task{};
     bool blocking{};
+    bool callback{};
 };
 
 struct StructField {

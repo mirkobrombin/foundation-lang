@@ -62,6 +62,19 @@
                         "1": { "name": "punctuation.definition.annotation.foundation" },
                         "2": { "name": "support.type.attribute.foundation" }
                     }
+                },
+                {
+                    "name": "meta.attribute.compiler.foundation",
+                    "match": "(@)(callback)\\b(?:\\s*(\\()\\s*(cancel)\\s*(=)\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(\\)))?",
+                    "captures": {
+                        "1": { "name": "punctuation.definition.annotation.foundation" },
+                        "2": { "name": "support.type.attribute.foundation" },
+                        "3": { "name": "punctuation.section.arguments.begin.foundation" },
+                        "4": { "name": "variable.parameter.attribute.foundation" },
+                        "5": { "name": "keyword.operator.assignment.foundation" },
+                        "6": { "name": "entity.name.function.external.foundation" },
+                        "7": { "name": "punctuation.section.arguments.end.foundation" }
+                    }
                 }
             ]
         },

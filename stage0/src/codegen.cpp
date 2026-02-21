@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -259,6 +260,22 @@ std::string blockingJobName(FirExpressionId expression) {
     return "fdn_blocking_job_" + std::to_string(expression);
 }
 
+std::string callbackStartName(const FirProgram &program, FirFunctionId function,
+                              FirExpressionId expression) {
+    return functionName(program, function) + "_callback_start_" +
+           std::to_string(expression);
+}
+
+std::string callbackCancelName(const FirProgram &program, FirFunctionId function,
+                               FirExpressionId expression) {
+    return functionName(program, function) + "_callback_cancel_" +
+           std::to_string(expression);
+}
+
+std::string callbackOperationName(FirExpressionId expression) {
+    return "fdn_callback_operation_" + std::to_string(expression);
+}
+
 std::string closureEnvironmentName(const FirProgram &program, FirFunctionId id) {
     return functionName(program, id) + "_environment";
 }
@@ -501,6 +518,9 @@ class Monomorphizer {
             } else if (auto *blocking =
                            std::get_if<FirBlockingCallExpression>(&expression.value)) {
                 blocking->function = instantiateFunction(blocking->function, {});
+            } else if (auto *callback =
+                           std::get_if<FirCallbackCallExpression>(&expression.value)) {
+                callback->function = instantiateFunction(callback->function, {});
             } else if (auto *contractCall =
                            std::get_if<FirCallExpression>(&expression.value);
                        contractCall != nullptr &&
@@ -603,6 +623,12 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
     }
     if (const auto *blocking = std::get_if<FirBlockingCallExpression>(&expression.value)) {
         return std::any_of(blocking->arguments.begin(), blocking->arguments.end(),
+                           [&](const auto argument) {
+                               return expressionDiverges(program, function, argument);
+                           });
+    }
+    if (const auto *callback = std::get_if<FirCallbackCallExpression>(&expression.value)) {
+        return std::any_of(callback->arguments.begin(), callback->arguments.end(),
                            [&](const auto argument) {
                                return expressionDiverges(program, function, argument);
                            });
@@ -1049,6 +1075,9 @@ class FunctionEmitter {
         if (std::holds_alternative<FirBlockingCallExpression>(expression.value)) {
             internalError("suspending blocking call reached expression emission");
         }
+        if (std::holds_alternative<FirCallbackCallExpression>(expression.value)) {
+            internalError("suspending callback call reached expression emission");
+        }
         if (const auto *contract = std::get_if<FirContractExpression>(&expression.value)) {
             return emitContract(*contract, expression.type, depth);
         }
@@ -1132,6 +1161,11 @@ class FunctionEmitter {
                         program_.functions[call->function].expressions[expression].value)) {
                     out_ << indentation(depth) << frame << "->"
                          << blockingJobName(expression) << " = NULL;\n";
+                }
+                if (std::holds_alternative<FirCallbackCallExpression>(
+                        program_.functions[call->function].expressions[expression].value)) {
+                    out_ << indentation(depth) << frame << "->"
+                         << callbackOperationName(expression) << " = NULL;\n";
                 }
             }
         }
@@ -1766,6 +1800,7 @@ class FunctionEmitter {
                 }
                 out_ << indentation(depth) << localValue(blocking->argumentStorages[index])
                      << " = " << argument.value << ";\n";
+                activateLocal(blocking->argumentStorages[index], depth);
             }
 
             const auto state = ++taskState_;
@@ -1801,6 +1836,52 @@ class FunctionEmitter {
                 } else {
                     out_ << indentation(depth) << "(void)" << localValue(storage) << ";\n";
                 }
+            }
+            return true;
+        }
+        const auto *callback =
+            std::get_if<FirCallbackCallExpression>(&function_.expressions[expression].value);
+        if (callback != nullptr) {
+            if (callback->arguments.size() != callback->argumentStorages.size()) {
+                internalError("callback call has invalid argument storage");
+            }
+            for (std::size_t index = 0; index < callback->arguments.size(); ++index) {
+                const auto argument = emitExpression(callback->arguments[index], depth);
+                if (argument.diverges) {
+                    return true;
+                }
+                out_ << indentation(depth) << localValue(callback->argumentStorages[index])
+                     << " = " << argument.value << ";\n";
+                activateLocal(callback->argumentStorages[index], depth);
+            }
+
+            const auto state = ++taskState_;
+            out_ << indentation(depth) << "fdn_frame->fdn_state = " << state << ";\n";
+            out_ << "fdn_task_state_" << state << ":\n";
+            emitLocation(function_.expressions[expression].span, depth);
+            out_ << indentation(depth) << "if (!fdn_reactor_poll(&fdn_frame->"
+                 << callbackOperationName(expression) << ", fdn_frame, &"
+                 << callbackStartName(program_, functionId_, expression) << ", ";
+            const auto &target = program_.functions[callback->function];
+            if (target.callbackCancelSymbol.has_value()) {
+                out_ << '&' << callbackCancelName(program_, functionId_, expression);
+            } else {
+                out_ << "NULL";
+            }
+            out_ << ", &" << localValue(callback->resultStorage) << ")) {\n";
+            out_ << indentation(depth + 1)
+                 << "fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
+            out_ << indentation(depth + 1) << "fdn_frame_leave(&fdn_frame_current);\n";
+            out_ << indentation(depth + 1) << "return FDN_TASK_PENDING;\n";
+            out_ << indentation(depth) << "}\n";
+
+            if (resultLocal.has_value()) {
+                emitMoveAssignment(out_, program_, i32Type, localValue(*resultLocal),
+                                   localValue(callback->resultStorage), depth);
+                out_ << indentation(depth) << "(void)" << localValue(*resultLocal) << ";\n";
+            } else {
+                out_ << indentation(depth) << "(void)"
+                     << localValue(callback->resultStorage) << ";\n";
             }
             return true;
         }
@@ -3067,6 +3148,8 @@ std::size_t taskSuspensionCount(const FirFunction &function) {
                           return std::holds_alternative<FirTaskWaitExpression>(expression.value) ||
                                  std::holds_alternative<FirBlockingCallExpression>(
                                      expression.value) ||
+                                 std::holds_alternative<FirCallbackCallExpression>(
+                                     expression.value) ||
                                  std::holds_alternative<FirChannelSendExpression>(
                                      expression.value) ||
                                  std::holds_alternative<FirChannelReceiveExpression>(
@@ -3112,6 +3195,11 @@ void emitTaskFrameDefinition(std::ostringstream &out, const FirProgram &program,
             if (std::holds_alternative<FirBlockingCallExpression>(
                     function.expressions[expression].value)) {
                 out << "    fdn_blocking_job *" << blockingJobName(expression) << ";\n";
+            }
+            if (std::holds_alternative<FirCallbackCallExpression>(
+                    function.expressions[expression].value)) {
+                out << "    fdn_reactor_operation *" << callbackOperationName(expression)
+                    << ";\n";
             }
         }
     }
@@ -3172,6 +3260,116 @@ void emitBlockingWorkDefinitions(std::ostringstream &out, const FirProgram &prog
             out << "    fdn_frame->fdn_local_" << *blocking->resultStorage
                 << "_active = true;\n";
         }
+        out << "    fdn_frame_leave(&fdn_frame_current);\n";
+        out << "}\n\n";
+    }
+}
+
+void emitCallbackStartParameters(std::ostringstream &out, const FirFunction &function,
+                                 bool includeNames) {
+    for (std::size_t index = 0; index < function.parameters.size(); ++index) {
+        if (index != 0) {
+            out << ", ";
+        }
+        const auto local = function.parameters[index];
+        out << cType(function.locals[local].type);
+        if (includeNames) {
+            out << " fdn_arg_" << index;
+        }
+    }
+    if (!function.parameters.empty()) {
+        out << ", ";
+    }
+    out << "fdn_reactor_operation *";
+    if (includeNames) {
+        out << "fdn_operation";
+    }
+}
+
+void emitCallbackStartSignature(std::ostringstream &out, const FirFunction &function,
+                                bool includeNames) {
+    out << "void " << *function.cSymbol << '(';
+    emitCallbackStartParameters(out, function, includeNames);
+    out << ')';
+}
+
+void emitCallbackCancelSignature(std::ostringstream &out, std::string_view symbol,
+                                 bool includeNames) {
+    out << "void " << symbol << "(fdn_reactor_operation *";
+    if (includeNames) {
+        out << "fdn_operation";
+    }
+    out << ')';
+}
+
+void emitCallbackWorkDefinitions(std::ostringstream &out, const FirProgram &program,
+                                 FirFunctionId id, std::string_view sourcePath) {
+    const auto &function = program.functions[id];
+    if (!function.task) {
+        return;
+    }
+    for (std::size_t expressionId = 0; expressionId < function.expressions.size();
+         ++expressionId) {
+        const auto *callback = std::get_if<FirCallbackCallExpression>(
+            &function.expressions[expressionId].value);
+        if (callback == nullptr) {
+            continue;
+        }
+        if (callback->function >= program.functions.size() ||
+            !program.functions[callback->function].callback) {
+            internalError("callback call has an invalid target");
+        }
+        const auto &target = program.functions[callback->function];
+        if (!target.cSymbol.has_value() ||
+            callback->arguments.size() != callback->argumentStorages.size() ||
+            callback->argumentStorages.size() != target.parameters.size()) {
+            internalError("callback call has invalid argument storage");
+        }
+        const auto frame = taskFrameName(program, id);
+        const auto &expression = function.expressions[expressionId];
+        const auto traceSource = function.sourcePath.empty()
+                                     ? sourcePath
+                                     : std::string_view(function.sourcePath);
+
+        out << "static void " << callbackStartName(program, id, expressionId)
+            << "(void *fdn_raw, fdn_reactor_operation *fdn_operation) {\n";
+        out << "    struct " << frame << " *fdn_frame = (struct " << frame
+            << " *)fdn_raw;\n";
+        out << "    struct fdn_frame fdn_frame_current;\n";
+        out << "    fdn_frame_enter_native(&fdn_frame_current, "
+            << cString(*target.cSymbol) << ", " << cString(traceSource) << ", "
+            << expression.span.line << ", " << expression.span.column << ");\n";
+        out << "    " << *target.cSymbol << '(';
+        for (std::size_t index = 0; index < callback->argumentStorages.size(); ++index) {
+            if (index != 0) {
+                out << ", ";
+            }
+            out << "fdn_frame->fdn_local_" << callback->argumentStorages[index];
+        }
+        if (!callback->argumentStorages.empty()) {
+            out << ", ";
+        }
+        out << "fdn_operation);\n";
+        out << "    fdn_frame_leave(&fdn_frame_current);\n";
+        out << "}\n\n";
+
+        if (!target.callbackCancelSymbol.has_value()) {
+            continue;
+        }
+        out << "static void " << callbackCancelName(program, id, expressionId)
+            << "(void *fdn_raw) {\n";
+        out << "    struct " << frame << " *fdn_frame = (struct " << frame
+            << " *)fdn_raw;\n";
+        out << "    if (fdn_frame->" << callbackOperationName(expressionId)
+            << " == NULL) {\n";
+        out << "        fdn_panic_cstr(\"callback cancellation has no operation\");\n";
+        out << "    }\n";
+        out << "    struct fdn_frame fdn_frame_current;\n";
+        out << "    fdn_frame_enter_native(&fdn_frame_current, "
+            << cString(*target.callbackCancelSymbol) << ", " << cString(traceSource) << ", "
+            << expression.span.line << ", " << expression.span.column << ");\n";
+        out << "    " << *target.callbackCancelSymbol << "(fdn_frame->"
+            << callbackOperationName(expressionId) << ");\n";
         out << "    fdn_frame_leave(&fdn_frame_current);\n";
         out << "}\n\n";
     }
@@ -3309,6 +3507,17 @@ void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunc
             out << "    if (fdn_frame->" << blockingJobName(expression)
                 << " != NULL) {\n";
             out << "        fdn_panic_cstr(\"task frame still has blocking work\");\n";
+            out << "    }\n";
+        }
+        for (std::size_t expression = 0; expression < function.expressions.size();
+             ++expression) {
+            if (!std::holds_alternative<FirCallbackCallExpression>(
+                    function.expressions[expression].value)) {
+                continue;
+            }
+            out << "    if (fdn_frame->" << callbackOperationName(expression)
+                << " != NULL) {\n";
+            out << "        fdn_panic_cstr(\"task frame still has callback work\");\n";
             out << "    }\n";
         }
         for (std::size_t local = function.locals.size(); local-- > 0;) {
@@ -3668,10 +3877,20 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
         emitClosureDrop(out, program, index);
     }
 
+    std::unordered_set<std::string> callbackCancelPrototypes;
     for (const auto &function : program.functions) {
         if (function.cSymbol.has_value()) {
-            emitCAbiSignature(out, function, false);
+            if (function.callback) {
+                emitCallbackStartSignature(out, function, false);
+            } else {
+                emitCAbiSignature(out, function, false);
+            }
             out << ";\n";
+            if (function.callbackCancelSymbol.has_value() &&
+                callbackCancelPrototypes.emplace(*function.callbackCancelSymbol).second) {
+                emitCallbackCancelSignature(out, *function.callbackCancelSymbol, false);
+                out << ";\n";
+            }
         }
     }
     if (std::any_of(program.functions.begin(), program.functions.end(),
@@ -3680,6 +3899,9 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     }
 
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
+        if (program.functions[index].callback) {
+            continue;
+        }
         if (program.functions[index].task &&
             taskSuspensionCount(program.functions[index]) != 0) {
             continue;
@@ -3703,6 +3925,9 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
         emitBlockingWorkDefinitions(out, program, index, sourcePath);
     }
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
+        emitCallbackWorkDefinitions(out, program, index, sourcePath);
+    }
+    for (std::size_t index = 0; index < program.functions.size(); ++index) {
         emitTaskSupport(out, program, index, sourcePath);
     }
 
@@ -3716,6 +3941,9 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
         const auto &function = program.functions[index];
         if (function.task && taskSuspensionCount(function) != 0) {
+            continue;
+        }
+        if (function.callback) {
             continue;
         }
         if (!function.hasBody) {

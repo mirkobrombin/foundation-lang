@@ -1,0 +1,8 @@
+@callback(cancel = foundation_native_conflict)
+extern c fn nativeValue() i32 as foundation_native_value
+
+extern c fn conflicting() i32 as foundation_native_conflict
+
+fn main() i32 {
+    0
+}

@@ -1729,6 +1729,70 @@ void blockingImportsExposeEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void callbackImportsExposeEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "@callback(cancel = sample_native_cancel)\n"
+        "extern c fn nativeRead(result edit i32) i32 as sample_native_read\n"
+        "task read() i32 {\n"
+        "    var result = 0\n"
+        "    const status = nativeRead(edit result)\n"
+        "    status + result\n"
+        "}\n"
+        "fn main() i32 {\n"
+        "    const pending = spawn read()\n"
+        "    $pending.wait()\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(131, "completion", 1, 1)) +
+        frame(request(132, "hover", 1, 5)) + frame(request(133, "hover", 2, 15)) +
+        frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto completion = responseFor(transcript, 131);
+    const auto attributeHover = responseFor(transcript, 132);
+    const auto functionHover = responseFor(transcript, 133);
+
+    expect(status == 0, "callback import language server transcript exits cleanly");
+    expect(errors.str().empty(), "callback import requests write no server errors");
+    expect(completion.find("\"label\":\"@callback\"") != std::string::npos,
+           "attribute completion offers the compiler-owned callback marker");
+    expect(attributeHover.find("native completion reactor") != std::string::npos &&
+               attributeHover.find("exactly once") != std::string::npos &&
+               attributeHover.find("standalone binding or discard") != std::string::npos,
+           "callback attribute hover explains ABI completion and placement");
+    expect(functionHover.find("@callback extern c fn nativeRead(result edit i32) i32") !=
+               std::string::npos,
+           "callback import hover preserves its compiler-owned modifier");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 } // namespace
 
 int main() {
@@ -1752,6 +1816,7 @@ int main() {
     channelOperationsExposeEditorDetails();
     selectExposesEditorDetails();
     blockingImportsExposeEditorDetails();
+    callbackImportsExposeEditorDetails();
 
     if (failures != 0) {
         std::cerr << failures << " language server assertions failed\n";

@@ -77,6 +77,14 @@
         ],
         "description": "Import a blocking C function through the native worker pool"
     },
+    "Callback C ABI import": {
+        "prefix": "externcallback",
+        "body": [
+            "@callback(cancel = ${1:foundation_native_cancel})",
+            "extern c fn ${2:nativeCall}(${3:result edit i32}) i32 as ${4:foundation_native_start}"
+        ],
+        "description": "Import a native callback operation through the completion reactor"
+    },
     "C ABI export": {
         "prefix": "externexport",
         "body": [

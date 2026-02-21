@@ -81,6 +81,7 @@ struct SemanticFunction {
     std::vector<SemanticLocal> locals;
     std::vector<FirAttributeUse> attributes;
     std::vector<std::vector<FirAttributeUse>> parameterAttributes;
+    std::optional<std::string> callbackCancelSymbol;
 };
 
 struct SemanticStruct {
@@ -160,6 +161,12 @@ struct BlockingCallTarget {
     std::optional<FirLocalId> resultStorage;
 };
 
+struct CallbackCallTarget {
+    FirFunctionId function{};
+    std::vector<FirLocalId> argumentStorages;
+    FirLocalId resultStorage{};
+};
+
 enum class ChannelOperationKind {
     Send,
     Receive,
@@ -193,6 +200,7 @@ struct SemanticModel {
     std::vector<std::optional<ClosureTarget>> closureTargets;
     std::vector<std::optional<TaskWaitTarget>> taskWaitTargets;
     std::vector<std::optional<BlockingCallTarget>> blockingCallTargets;
+    std::vector<std::optional<CallbackCallTarget>> callbackCallTargets;
     std::vector<std::optional<ChannelOperationTarget>> channelOperationTargets;
     std::vector<std::optional<SelectTarget>> selectTargets;
     std::vector<bool> expressionBorrowedClosures;

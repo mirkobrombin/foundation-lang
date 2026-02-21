@@ -209,6 +209,8 @@ std::string functionDetail(const Function &function) {
                                                                : std::string("fn ");
     if (function.blocking) {
         prefix = "@blocking " + prefix;
+    } else if (function.callback) {
+        prefix = "@callback " + prefix;
     }
     std::string result = prefix + shortName(function.name) +
                          typeParameterSuffix(function.typeParameters) + '(';

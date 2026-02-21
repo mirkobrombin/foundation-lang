@@ -84,7 +84,28 @@ remain in the task frame while one generated callback runs on the bounded worker
 
 Native APIs that already complete through callbacks do not consume a blocking worker. Their C ABI
 adapter receives an opaque `fdn_reactor_operation` token from the generated Foundation bridge. The
-adapter stores the token with its native request and completes it later:
+source declaration names the native start symbol and may name its cancellation symbol:
+
+```foundation
+@callback(cancel = package_read_cancel)
+extern c fn nativeRead(handle u64, result edit String) i32 as package_read_start
+
+task read(handle u64) Result<String, ReadError> {
+    var result = ""
+    const status = nativeRead(handle, edit result)
+    // The package converts status and result to its public typed error contract.
+}
+```
+
+The generated C start signature returns `void` and appends the operation token:
+
+```c
+void package_read_start(uint64_t handle, fdn_string *result,
+                        fdn_reactor_operation *operation);
+void package_read_cancel(fdn_reactor_operation *operation);
+```
+
+The adapter stores the token with its native request and completes it later:
 
 ```c
 void package_read_finished(struct package_read_request *request, int32_t status) {
@@ -101,3 +122,8 @@ belong to the adapter and are converted to a typed Foundation result by the gene
 The token is opaque and valid only until its single completion is consumed. An adapter must not
 inspect, copy, compare, free, or complete it twice. Completion may run on a foreign thread. The
 Foundation executor drains the completion queue and resumes the owning task on its own thread.
+
+`@callback` applies only to a bodyless C ABI import with an `i32` Foundation result. A call is a
+suspension point and must be a standalone binding or `discard` inside a task. It cannot be combined
+with `@blocking` or used as a function value. The public package should keep raw status codes and
+reactor details private and expose typed `Result` values instead.

@@ -1,0 +1,6 @@
+@callback
+extern c fn nativeValue() String as foundation_native_value
+
+fn main() i32 {
+    0
+}

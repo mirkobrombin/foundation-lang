@@ -32,6 +32,11 @@ fn expectedPlatform() String {
 @blocking
 extern c fn nativeProbe() i32 as foundation_native_probe
 
+// A callback bodyless C ABI declaration imports an asynchronous start symbol and optional cancel
+// symbol. It also remains unused so the tour does not require a native input.
+@callback(cancel = foundation_native_probe_cancel)
+extern c fn nativeCallbackProbe(result edit i32) i32 as foundation_native_probe_start
+
 // A C ABI declaration with a body exports its Foundation implementation.
 extern c fn FoundationProbe(value i32) i32 as foundation_tour_probe {
     value

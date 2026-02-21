@@ -881,7 +881,15 @@ std::string typeParametersSuffix(const std::vector<std::string> &parameters) {
 }
 
 std::string functionDetail(const Function &function) {
-    std::string result = "fn " + shortName(function.name) +
+    auto prefix = function.task ? std::string("task ")
+                                : function.cSymbol.has_value() ? std::string("extern c fn ")
+                                                               : std::string("fn ");
+    if (function.blocking) {
+        prefix = "@blocking " + prefix;
+    } else if (function.callback) {
+        prefix = "@callback " + prefix;
+    }
+    std::string result = prefix + shortName(function.name) +
                          typeParametersSuffix(function.typeParameters) + '(';
     for (std::size_t index = 0; index < function.parameters.size(); ++index) {
         if (index != 0) {
@@ -2128,6 +2136,16 @@ class LanguageServer {
                         "Runs a bodyless C ABI import on the bounded native worker pool. The "
                         "call is a suspension point and is valid only as a standalone binding "
                         "or discard inside a task.";
+                } else if (keyword == "callback" && found->offset != 0 &&
+                           source.contents[found->offset - 1] == '@') {
+                    documentation =
+                        "```foundation\n@callback(cancel = native_cancel)\nextern c fn "
+                        "read(result edit i32) i32 as native_read_start\n```\n\nRegisters "
+                        "a bodyless C ABI import with the native completion reactor. The start "
+                        "symbol receives an operation token after its declared arguments and "
+                        "completes it exactly once with an `i32` status. The optional cancel "
+                        "symbol receives the same token. Calls are valid only as a standalone "
+                        "binding or discard inside a task.";
                 }
                 if (!documentation.empty()) {
                     return Json::object(
@@ -3705,6 +3723,9 @@ class LanguageServer {
             addCompletion(items, "@blocking", 10,
                           "Run a bodyless C ABI import on the blocking executor",
                           "@blocking");
+            addCompletion(items, "@callback", 10,
+                          "Suspend a task on a native callback operation",
+                          "@callback");
         }
         if (!attributeContext) {
             for (std::size_t functionIndex = 0;

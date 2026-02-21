@@ -1,0 +1,13 @@
+@callback(cancel = foundation_native_cancel)
+extern c fn nativeRead(result edit i32) i32 as foundation_native_read
+
+task read() i32 {
+    var result = 0
+    const status = nativeRead(edit result)
+    status + result
+}
+
+fn main() i32 {
+    const pending = spawn read()
+    $pending.wait()
+}

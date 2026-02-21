@@ -143,6 +143,11 @@ if(FOUNDATION_BUILD_FUZZERS)
         "${FOUNDATION_FUZZ_CORPUS_DIR}/task-suspension.fdn"
         COPYONLY
     )
+    configure_file(
+        tests/fuzz/corpus/callback.fdn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/callback.fdn"
+        COPYONLY
+    )
 endif()
 
 include(CTest)
@@ -523,6 +528,34 @@ if(BUILD_TESTING)
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
+    add_test(
+        NAME stage0.run.callback-native
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.fdn
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/callback_native.c
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
+    )
+    add_test(
+        NAME stage0.run.callback-native-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/callback-native.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/callback-native
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.out
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/callback_native.c
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
     foreach(blocking_case IN ITEMS
             "blocking-outside-task;FDN2180"
             "blocking-nested;FDN2168"
@@ -540,6 +573,30 @@ if(BUILD_TESTING)
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${blocking_name}.fdn
                 -DCODE=${blocking_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
+    foreach(callback_case IN ITEMS
+            "callback-outside-task;FDN2183"
+            "callback-nested;FDN2168"
+            "callback-body;FDN2178"
+            "callback-return;FDN2182"
+            "callback-parentheses;FDN2181"
+            "callback-duplicate;FDN2181"
+            "callback-blocking;FDN2181"
+            "callback-function-value;FDN2178"
+            "callback-wrong-target;FDN2178"
+            "callback-reserved-name;FDN2150"
+            "callback-cancel-invalid;FDN2181"
+            "callback-cancel-conflict;FDN2181")
+        list(GET callback_case 0 callback_name)
+        list(GET callback_case 1 callback_code)
+        add_test(
+            NAME stage0.check.${callback_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${callback_name}.fdn
+                -DCODE=${callback_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
     endforeach()
@@ -1650,6 +1707,24 @@ if(BUILD_TESTING)
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
                 -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
                 -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.callback-native-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/callback-native-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/callback-native-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.out
+                -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/callback_native.c
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )

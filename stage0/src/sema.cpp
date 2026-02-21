@@ -151,6 +151,7 @@ class Analyzer {
         model_.closureTargets.resize(program.expressions.size());
         model_.taskWaitTargets.resize(program.expressions.size());
         model_.blockingCallTargets.resize(program.expressions.size());
+        model_.callbackCallTargets.resize(program.expressions.size());
         model_.channelOperationTargets.resize(program.expressions.size());
         model_.selectTargets.resize(program.statements.size());
         model_.expressionBorrowedClosures.resize(program.expressions.size());
@@ -246,7 +247,8 @@ class Analyzer {
             const auto separator = declaration.name.rfind('.');
             const auto sourceName = declaration.name.substr(
                 separator == std::string::npos ? 0 : separator + 1);
-            if (sourceName == "target" || sourceName == "blocking") {
+            if (sourceName == "target" || sourceName == "blocking" ||
+                sourceName == "callback") {
                 diagnostics_.error("FDN2150", sourceName + " is reserved for the compiler",
                                    declaration.span);
             }
@@ -902,10 +904,11 @@ class Analyzer {
         currentPackageOverride_ = packageName;
         setTypeParameters({}, {});
         for (const auto &application : applications) {
-            if (application.name == "blocking") {
+            if (application.name == "blocking" || application.name == "callback") {
                 if (target != FirAttributeTarget::Function) {
-                    diagnostics_.error("FDN2178", "@blocking can only target a function",
-                                       application.span);
+                    diagnostics_.error(
+                        "FDN2178", "@" + application.name + " can only target a function",
+                        application.span);
                 }
                 continue;
             }
@@ -1074,6 +1077,7 @@ class Analyzer {
     void declareFunctions() {
         bool foundMain = false;
         std::unordered_set<std::string> cSymbols;
+        std::unordered_set<std::string> callbackCancelSymbols;
         methods_.resize(program_.structs.size());
         for (std::size_t index = 0; index < program_.functions.size(); ++index) {
             const auto &function = program_.functions[index];
@@ -1106,6 +1110,63 @@ class Analyzer {
                         "FDN2178",
                         "@blocking requires a bodyless extern c function declaration",
                         function.span);
+                }
+            }
+            if (function.callback) {
+                const auto count = static_cast<std::size_t>(std::count_if(
+                    function.attributes.begin(), function.attributes.end(),
+                    [](const auto &attribute) { return attribute.name == "callback"; }));
+                if (count > 1) {
+                    diagnostics_.error("FDN2181", "function has more than one @callback",
+                                       function.span);
+                }
+                if (function.blocking) {
+                    diagnostics_.error(
+                        "FDN2181", "function cannot be both @blocking and @callback",
+                        function.span);
+                }
+                for (const auto &attribute : function.attributes) {
+                    if (attribute.name != "callback" || !attribute.parenthesized) {
+                        continue;
+                    }
+                    if (attribute.arguments.size() != 1 ||
+                        attribute.arguments.front().name != "cancel") {
+                        diagnostics_.error(
+                            "FDN2181",
+                            "@callback accepts only the named cancel symbol",
+                            attribute.span);
+                        continue;
+                    }
+                    const auto expression = attribute.arguments.front().value;
+                    const auto *name = std::get_if<NameExpression>(
+                        &program_.expressions[expression].value);
+                    if (name == nullptr || !name->typeArguments.empty() ||
+                        !isCIdentifier(name->name) || isReservedCSymbol(name->name)) {
+                        diagnostics_.error(
+                            "FDN2181", "@callback cancel must be a plain C ABI symbol",
+                            attribute.arguments.front().span);
+                        continue;
+                    }
+                    semantic.callbackCancelSymbol = name->name;
+                    if (cSymbols.contains(name->name)) {
+                        diagnostics_.error(
+                            "FDN2181",
+                            "callback cancel symbol conflicts with C symbol " + name->name,
+                            attribute.arguments.front().span);
+                    }
+                    callbackCancelSymbols.emplace(name->name);
+                }
+                if (!function.cSymbol.has_value() || function.hasBody || function.task ||
+                    function.receiver.has_value() || function.closure) {
+                    diagnostics_.error(
+                        "FDN2178",
+                        "@callback requires a bodyless extern c function declaration",
+                        function.span);
+                }
+                if (semantic.returnType != i32Type) {
+                    diagnostics_.error(
+                        "FDN2182", "@callback return type must be i32 completion status",
+                        function.returnType.span);
                 }
             }
             if (function.task && function.cSymbol.has_value()) {
@@ -1156,6 +1217,11 @@ class Analyzer {
                 } else if (!cSymbols.emplace(*function.cSymbol).second) {
                     diagnostics_.error("FDN2111", "duplicate C symbol " + *function.cSymbol,
                                        function.span);
+                } else if (callbackCancelSymbols.contains(*function.cSymbol)) {
+                    diagnostics_.error(
+                        "FDN2181", "C symbol conflicts with callback cancel symbol " +
+                                       *function.cSymbol,
+                        function.span);
                 }
                 if (!function.typeParameters.empty()) {
                     diagnostics_.error("FDN2112", "C ABI function cannot be generic",
@@ -1374,6 +1440,7 @@ class Analyzer {
         taskWaitVoidStatement_ = false;
         channelStorage_ = 0;
         blockingStorage_ = 0;
+        callbackStorage_ = 0;
 
         const auto &function = program_.functions[index];
         setTypeParameters(function.typeParameters, function.span);
@@ -2084,6 +2151,11 @@ class Analyzer {
                 if (program_.functions[functionId].blocking) {
                     diagnostics_.error("FDN2178",
                                        "blocking function cannot be used as a function value",
+                                       expression.span);
+                }
+                if (program_.functions[functionId].callback) {
+                    diagnostics_.error("FDN2178",
+                                       "callback function cannot be used as a function value",
                                        expression.span);
                 }
                 const auto &signature = signatures_[functionId];
@@ -2939,6 +3011,30 @@ class Analyzer {
                 }
                 model_.blockingCallTargets[id] =
                     BlockingCallTarget{function, std::move(storages), resultStorage};
+            }
+        }
+        if (program_.functions[function].callback &&
+            !program_.functions[function].blocking) {
+            if (!program_.functions[currentFunction_].task) {
+                diagnostics_.error("FDN2183",
+                                   "callback call is only available inside a task", span);
+            } else if (taskWaitRoot_ != id) {
+                diagnostics_.error(
+                    "FDN2168",
+                    "callback call must be a standalone task binding or discard", span);
+            } else {
+                std::vector<FirLocalId> storages;
+                storages.reserve(count);
+                for (std::size_t index = 0; index < count; ++index) {
+                    storages.push_back(addLocal(
+                        "$callbackArgument" + std::to_string(callbackStorage_++),
+                        substitute(signature.parameters[index], typeArguments), false, span));
+                }
+                const auto resultStorage = addLocal(
+                    "$callbackResult" + std::to_string(callbackStorage_++), i32Type,
+                    false, span);
+                model_.callbackCallTargets[id] =
+                    CallbackCallTarget{function, std::move(storages), resultStorage};
             }
         }
         if (!program_.functions[currentFunction_].typeParameters.empty() &&
@@ -4801,6 +4897,7 @@ class Analyzer {
     bool taskWaitVoidStatement_{};
     std::size_t channelStorage_{};
     std::size_t blockingStorage_{};
+    std::size_t callbackStorage_{};
     FirFunctionId currentFunction_{};
 };
 

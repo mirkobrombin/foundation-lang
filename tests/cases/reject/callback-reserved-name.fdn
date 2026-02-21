@@ -1,0 +1,5 @@
+attribute callback() targets(fn)
+
+fn main() i32 {
+    0
+}

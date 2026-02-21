@@ -214,6 +214,8 @@ class Lowerer {
         function.method = source.receiver.has_value();
         function.task = source.task;
         function.blocking = source.blocking;
+        function.callback = source.callback;
+        function.callbackCancelSymbol = semantic.callbackCancelSymbol;
         function.attributes = semantic.attributes;
         function.parameterAttributes = semantic.parameterAttributes;
         function.returnType = semantic.returnType;
@@ -409,6 +411,11 @@ class Lowerer {
                 value = FirBlockingCallExpression{blocking.function, std::move(arguments),
                                                   blocking.argumentStorages,
                                                   blocking.resultStorage};
+            } else if (model_.callbackCallTargets[id].has_value()) {
+                const auto &callback = *model_.callbackCallTargets[id];
+                value = FirCallbackCallExpression{callback.function, std::move(arguments),
+                                                  callback.argumentStorages,
+                                                  callback.resultStorage};
             } else if (target.kind == CallTargetKind::Channel) {
                 value = FirChannelExpression{
                     target.typeArguments.empty() ? invalidType : target.typeArguments.front(),

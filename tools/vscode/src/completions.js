@@ -21,6 +21,12 @@ const staticCompletions = [
         detail: "Run a bodyless C ABI import on the blocking executor",
         insertText: "@blocking"
     },
+    {
+        label: "@callback",
+        kind: "Keyword",
+        detail: "Suspend a task on a native callback operation",
+        insertText: "@callback"
+    },
     { label: "struct", kind: "Keyword" },
     { label: "enum", kind: "Keyword" },
     { label: "contract", kind: "Keyword" },
