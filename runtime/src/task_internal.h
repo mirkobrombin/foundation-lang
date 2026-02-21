@@ -7,6 +7,8 @@ typedef void (*fdn_task_cancel_wait_fn)(fdn_task *task, void *context);
 typedef bool (*fdn_task_idle_wake_fn)(void);
 typedef bool (*fdn_task_idle_deadline_fn)(uint64_t *deadline_nanoseconds);
 typedef void (*fdn_task_idle_sleep_fn)(uint64_t deadline_nanoseconds);
+typedef void (*fdn_task_idle_wait_fn)(bool has_deadline,
+                                      uint64_t deadline_nanoseconds);
 
 struct fdn_task {
     struct fdn_task *next;
@@ -35,8 +37,10 @@ void fdn_task_park_current(void *context, void *value, unsigned int kind,
                            fdn_task_cancel_wait_fn cancel_wait);
 bool fdn_task_take_wake(void *context, unsigned int kind, unsigned int *status);
 void fdn_task_wake(fdn_task *task, unsigned int status);
-void fdn_task_set_idle_hooks(fdn_task_idle_wake_fn wake,
-                             fdn_task_idle_deadline_fn deadline,
-                             fdn_task_idle_sleep_fn sleep);
+void fdn_task_set_timer_source(fdn_task_idle_wake_fn wake,
+                               fdn_task_idle_deadline_fn deadline,
+                               fdn_task_idle_sleep_fn sleep);
+void fdn_task_set_external_source(fdn_task_idle_wake_fn wake,
+                                  fdn_task_idle_wait_fn wait);
 
 #endif

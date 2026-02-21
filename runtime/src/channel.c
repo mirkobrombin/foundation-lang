@@ -525,9 +525,9 @@ fdn_channel_status fdn_channel_poll_select(
         selected == NULL) {
         fdn_panic_cstr("invalid channel select");
     }
-    fdn_task_set_idle_hooks(fdn_channel_select_wake_expired,
-                            fdn_channel_select_next_deadline,
-                            fdn_channel_select_sleep_until);
+    fdn_task_set_timer_source(fdn_channel_select_wake_expired,
+                              fdn_channel_select_next_deadline,
+                              fdn_channel_select_sleep_until);
     if (count >= (size_t)(UINT_MAX >> 8)) {
         fdn_panic_cstr("channel select has too many cases");
     }

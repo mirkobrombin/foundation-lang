@@ -14,9 +14,11 @@ static FDN_THREAD_LOCAL fdn_task *fdn_task_queue_tail;
 static FDN_THREAD_LOCAL size_t fdn_task_count;
 static FDN_THREAD_LOCAL bool fdn_task_current_cancellation;
 static FDN_THREAD_LOCAL fdn_task *fdn_task_current;
-static FDN_THREAD_LOCAL fdn_task_idle_wake_fn fdn_task_idle_wake;
-static FDN_THREAD_LOCAL fdn_task_idle_deadline_fn fdn_task_idle_deadline;
-static FDN_THREAD_LOCAL fdn_task_idle_sleep_fn fdn_task_idle_sleep;
+static FDN_THREAD_LOCAL fdn_task_idle_wake_fn fdn_task_timer_wake;
+static FDN_THREAD_LOCAL fdn_task_idle_deadline_fn fdn_task_timer_deadline;
+static FDN_THREAD_LOCAL fdn_task_idle_sleep_fn fdn_task_timer_sleep;
+static FDN_THREAD_LOCAL fdn_task_idle_wake_fn fdn_task_external_wake;
+static FDN_THREAD_LOCAL fdn_task_idle_wait_fn fdn_task_external_wait;
 
 static void fdn_task_enqueue(fdn_task *task) {
     if (task->queued || task->ready) {
@@ -44,6 +46,17 @@ static fdn_task *fdn_task_dequeue(void) {
     task->next = NULL;
     task->queued = false;
     return task;
+}
+
+static bool fdn_task_poll_idle_sources(void) {
+    bool woke = false;
+    if (fdn_task_timer_wake != NULL) {
+        woke = fdn_task_timer_wake();
+    }
+    if (fdn_task_external_wake != NULL) {
+        woke = fdn_task_external_wake() || woke;
+    }
+    return woke;
 }
 
 static void fdn_task_request_cancellation(fdn_task *task) {
@@ -79,13 +92,19 @@ static void fdn_task_run_one(void) {
     fdn_task *previous;
     fdn_task_poll result;
     if (task == NULL) {
-        uint64_t deadline;
-        if (fdn_task_idle_wake != NULL && fdn_task_idle_wake()) {
+        uint64_t deadline = 0;
+        const bool has_deadline = fdn_task_timer_deadline != NULL &&
+                                  fdn_task_timer_deadline(&deadline);
+        if (fdn_task_poll_idle_sources()) {
             task = fdn_task_dequeue();
-        } else if (fdn_task_idle_deadline != NULL && fdn_task_idle_sleep != NULL &&
-                   fdn_task_idle_deadline(&deadline)) {
-            fdn_task_idle_sleep(deadline);
-            if (fdn_task_idle_wake != NULL && fdn_task_idle_wake()) {
+        } else if (fdn_task_external_wait != NULL) {
+            fdn_task_external_wait(has_deadline, deadline);
+            if (fdn_task_poll_idle_sources()) {
+                task = fdn_task_dequeue();
+            }
+        } else if (has_deadline && fdn_task_timer_sleep != NULL) {
+            fdn_task_timer_sleep(deadline);
+            if (fdn_task_poll_idle_sources()) {
                 task = fdn_task_dequeue();
             }
         }
@@ -297,15 +316,24 @@ void fdn_task_wake(fdn_task *task, unsigned int status) {
     fdn_task_enqueue(task);
 }
 
-void fdn_task_set_idle_hooks(fdn_task_idle_wake_fn wake,
-                             fdn_task_idle_deadline_fn deadline,
-                             fdn_task_idle_sleep_fn sleep) {
+void fdn_task_set_timer_source(fdn_task_idle_wake_fn wake,
+                               fdn_task_idle_deadline_fn deadline,
+                               fdn_task_idle_sleep_fn sleep) {
     if (wake == NULL || deadline == NULL || sleep == NULL) {
         fdn_panic_cstr("invalid task idle hooks");
     }
-    fdn_task_idle_wake = wake;
-    fdn_task_idle_deadline = deadline;
-    fdn_task_idle_sleep = sleep;
+    fdn_task_timer_wake = wake;
+    fdn_task_timer_deadline = deadline;
+    fdn_task_timer_sleep = sleep;
+}
+
+void fdn_task_set_external_source(fdn_task_idle_wake_fn wake,
+                                  fdn_task_idle_wait_fn wait) {
+    if (wake == NULL || wait == NULL) {
+        fdn_panic_cstr("invalid task external source");
+    }
+    fdn_task_external_wake = wake;
+    fdn_task_external_wait = wait;
 }
 
 size_t fdn_task_live_count(void) { return fdn_task_count; }
