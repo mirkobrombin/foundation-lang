@@ -1,0 +1,113 @@
+task sendMessage(sender Sender<String>) Result<void, ChannelError> {
+    const delivered = sender.send("hello")
+    delivered
+}
+
+task receiveMessage(receiver Receiver<String>) Result<String, ChannelError> {
+    const received = receiver.receive()
+    received
+}
+
+task sendSignal(sender Sender<void>) Result<void, ChannelError> {
+    const delivered = sender.send()
+    delivered
+}
+
+task receiveSignal(receiver Receiver<void>) Result<void, ChannelError> {
+    const received = receiver.receive()
+    received
+}
+
+fn messageCode(message String) i32 {
+    if message == "hello" {
+        return 0
+    }
+    4
+}
+
+fn main() i32 {
+    const Channel { sender receiver } = channel<String>(0)
+    const sending = spawn sendMessage(sender)
+    const receiving = spawn receiveMessage(receiver)
+    const sent = $sending.wait()
+    const received = $receiving.wait()
+
+    const sendCode = match sent {
+        Ok: 0
+        Err(error): match error {
+            Closed: 1
+            Cancelled: 2
+            Timeout: 3
+        }
+    }
+    const receiveCode = match received {
+        Ok(message): messageCode(message)
+        Err(error): match error {
+            Closed: 5
+            Cancelled: 6
+            Timeout: 7
+        }
+    }
+
+    const Channel { sender as bufferedSender receiver as bufferedReceiver } =
+        channel<String>(1)
+    const bufferedSending = spawn sendMessage(bufferedSender)
+    const bufferedSent = $bufferedSending.wait()
+    const bufferedReceiving = spawn receiveMessage(bufferedReceiver)
+    const bufferedReceived = $bufferedReceiving.wait()
+    const bufferedSendCode = match bufferedSent {
+        Ok: 0
+        Err(error): match error {
+            Closed: 8
+            Cancelled: 9
+            Timeout: 10
+        }
+    }
+    const bufferedReceiveCode = match bufferedReceived {
+        Ok(message): messageCode(message)
+        Err(error): match error {
+            Closed: 11
+            Cancelled: 12
+            Timeout: 13
+        }
+    }
+
+    const Channel { sender as signalSender receiver as signalReceiver } = channel<void>(0)
+    const signalSending = spawn sendSignal(signalSender)
+    const signalReceiving = spawn receiveSignal(signalReceiver)
+    const signalSent = $signalSending.wait()
+    const signalReceived = $signalReceiving.wait()
+    const signalSendCode = match signalSent {
+        Ok: 0
+        Err(error): match error {
+            Closed: 14
+            Cancelled: 15
+            Timeout: 16
+        }
+    }
+    const signalReceiveCode = match signalReceived {
+        Ok: 0
+        Err(error): match error {
+            Closed: 17
+            Cancelled: 18
+            Timeout: 19
+        }
+    }
+    if sendCode != 0 {
+        return sendCode
+    }
+    if receiveCode != 0 {
+        return receiveCode
+    }
+    if bufferedSendCode != 0 {
+        return bufferedSendCode
+    }
+    if bufferedReceiveCode != 0 {
+        return bufferedReceiveCode
+    }
+    if signalSendCode != 0 {
+        return signalSendCode
+    }
+    print("channel operations")
+    signalReceiveCode
+}

@@ -249,6 +249,18 @@ struct FirChannelExpression {
     FirExpressionId capacity{};
 };
 
+struct FirChannelSendExpression {
+    FirLocalId sender{};
+    std::optional<FirExpressionId> value;
+    std::optional<FirLocalId> valueStorage;
+    FirLocalId resultStorage{};
+};
+
+struct FirChannelReceiveExpression {
+    FirLocalId receiver{};
+    FirLocalId resultStorage{};
+};
+
 struct FirEnumExpression {
     Type type{invalidType};
     FirVariantId variant{};
@@ -276,6 +288,7 @@ using FirExpressionValue =
                  FirContractExpression, FirStructExpression, FirFieldExpression,
                  FirIndexExpression, FirReplaceExpression, FirEnumExpression,
                  FirSpawnExpression, FirTaskWaitExpression, FirChannelExpression,
+                 FirChannelSendExpression, FirChannelReceiveExpression,
                  FirMatchExpression>;
 
 struct FirExpression {

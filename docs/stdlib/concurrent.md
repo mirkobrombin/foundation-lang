@@ -49,5 +49,7 @@ are independent, buffered owned values use generated drop glue, and closing eith
 operations that can no longer complete. Structured task cancellation removes a parked operation
 from its channel queue before resuming it as cancelled.
 
-Send, receive, and `select` lowering remain pending. Endpoint creation and deterministic close are
-already executable language behavior.
+`sender.send(value)` and `receiver.receive()` are executable suspension points inside tasks. They
+return typed `ChannelError` failures for closure and cancellation. A failed send consumes and
+drops its payload; a successful send transfers ownership exactly once. `select` lowering and
+timeout timers remain pending.

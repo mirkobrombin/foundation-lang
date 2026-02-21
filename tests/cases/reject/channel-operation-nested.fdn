@@ -1,0 +1,14 @@
+task nested(sender Sender<i32>) void {
+    print(match sender.send(1) {
+        Ok: "sent"
+        Err(error): "failed"
+    })
+}
+
+fn main() i32 {
+    const Channel { sender receiver } = channel<i32>(1)
+    const pending = spawn nested(sender)
+    discard receiver
+    $pending.wait()
+    0
+}

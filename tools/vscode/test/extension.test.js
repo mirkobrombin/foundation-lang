@@ -103,7 +103,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.34.0");
+    assert.equal(manifest.version, "0.35.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1101,8 +1101,9 @@ test("grammar and completions track compiler keywords", () => {
     }
 
     for (const type of [
-        "i32", "u64", "bool", "String", "void", "Option", "Result", "Task", "Channel",
-        "Sender", "Receiver", "channel", "len", "print", "panic"
+        "i32", "u64", "bool", "String", "void", "Option", "Result", "ChannelError",
+        "Task", "Channel", "Sender", "Receiver", "channel", "send", "receive", "len",
+        "print", "panic"
     ]) {
         assert.match(grammar, new RegExp(`\\b${type}\\b`));
         assert.ok(completionLabels.has(type));

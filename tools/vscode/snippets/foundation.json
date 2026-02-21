@@ -455,6 +455,16 @@
         "body": "const Channel { ${2:sender} ${3:receiver} } = channel<${1:T}>(${4:0})",
         "description": "Open and destructure directional channel endpoints"
     },
+    "Channel send": {
+        "prefix": "channelsend",
+        "body": "const ${2:delivered} = ${1:sender}.send(${3:value})",
+        "description": "Suspend until a channel value transfers or returns ChannelError"
+    },
+    "Channel receive": {
+        "prefix": "channelreceive",
+        "body": "const ${2:received} = ${1:receiver}.receive()",
+        "description": "Suspend until a channel value arrives or returns ChannelError"
+    },
     "Cancellation source": {
         "prefix": "cancellation",
         "body": [

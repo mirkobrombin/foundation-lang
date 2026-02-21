@@ -445,6 +445,33 @@ if(BUILD_TESTING)
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
+    foreach(channel_case IN ITEMS channel-operations channel-close-cancel)
+        add_test(
+            NAME stage0.run.${channel_case}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${channel_case}.fdn
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${channel_case}.out
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+        )
+        add_test(
+            NAME stage0.run.${channel_case}-allocations
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${channel_case}.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/${channel_case}.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${channel_case}
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${channel_case}.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+        )
+    endforeach()
     add_test(
         NAME stage0.run.task-suspension
         COMMAND ${CMAKE_COMMAND}
@@ -480,7 +507,9 @@ if(BUILD_TESTING)
             "task-wait-ignored-result;FDN2168"
             "channel-borrow-payload;FDN2165"
             "channel-missing-endpoint;FDN2133"
-            "channel-wrong-capacity;FDN2011")
+            "channel-wrong-capacity;FDN2011"
+            "channel-operation-outside-task;FDN2168"
+            "channel-operation-nested;FDN2168")
         list(GET task_case 0 task_name)
         list(GET task_case 1 task_code)
         add_test(

@@ -51,7 +51,8 @@ runtime removes a waiting parent from the cooperative queue and wakes it when it
 ready; task locals remain in the generated frame across that suspension.
 The same internal park and wake contract backs the channel transport. Stage 0 channel queues
 support rendezvous, bounded FIFO buffering, independent endpoint closure, cancellation, and owned
-payload cleanup before the source-level endpoint facade is enabled.
+payload cleanup. Source-level `send` and `receive` operations lower to numbered task states and
+keep pending payload storage in the generated task frame.
 
 Stage 0 bounds parser nesting and expression complexity before semantic analysis. It records at
 most 100 specific errors, followed by FDN0000 when more input errors are suppressed. These limits

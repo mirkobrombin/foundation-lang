@@ -154,6 +154,19 @@ struct TaskWaitTarget {
     AstExpressionId task{};
 };
 
+enum class ChannelOperationKind {
+    Send,
+    Receive,
+};
+
+struct ChannelOperationTarget {
+    ChannelOperationKind kind{ChannelOperationKind::Send};
+    FirLocalId endpoint{};
+    std::optional<AstExpressionId> value;
+    std::optional<FirLocalId> valueStorage;
+    FirLocalId resultStorage{};
+};
+
 struct SemanticModel {
     std::vector<Type> expressionTypes;
     std::vector<std::optional<CallTarget::ContractConversion>> expressionContractConversions;
@@ -167,6 +180,7 @@ struct SemanticModel {
     std::vector<std::optional<FunctionValueTarget>> functionValueTargets;
     std::vector<std::optional<ClosureTarget>> closureTargets;
     std::vector<std::optional<TaskWaitTarget>> taskWaitTargets;
+    std::vector<std::optional<ChannelOperationTarget>> channelOperationTargets;
     std::vector<bool> expressionBorrowedClosures;
     std::vector<bool> expressionMoves;
     std::vector<std::optional<FirLocalId>> statementLocals;

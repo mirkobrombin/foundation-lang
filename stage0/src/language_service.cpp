@@ -1215,8 +1215,8 @@ bool reservedIdentifier(std::string_view name) {
         "attribute", "implements", "extends", "by", "fn", "let", "var", "return",
         "discard", "if", "else", "while", "match", "capture", "replace", "with",
         "own", "view", "edit", "true", "false", "print", "panic", "len", "i32",
-        "u64", "bool", "String", "void", "Option", "Result", "Task", "Channel",
-        "Sender", "Receiver", "channel"};
+        "u64", "bool", "String", "void", "Option", "Result", "ChannelError", "Task",
+        "Channel", "Sender", "Receiver", "channel"};
     return reserved.contains(name);
 }
 

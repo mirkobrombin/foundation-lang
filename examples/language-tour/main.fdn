@@ -148,6 +148,28 @@ task nestedBackgroundIdentity(value i32) i32 {
     result
 }
 
+fn printChannelMessage(message String) bool {
+    print(message)
+    true
+}
+
+fn rejectChannelMessage(error ChannelError) bool {
+    discard error
+    false
+}
+
+task sendChannelMessage(sender Sender<String>) void {
+    discard sender.send("channel message")
+}
+
+task receiveChannelMessage(receiver Receiver<String>) bool {
+    const received = receiver.receive()
+    match received {
+        Ok(message): printChannelMessage(message)
+        Err(error): rejectChannelMessage(error)
+    }
+}
+
 fn apply<T>(value T, operation view fn(T) T) T {
     operation(value)
 }
@@ -327,14 +349,16 @@ fn main(args view [String]) i32 {
     cancellation.Cancel()
     const afterCancellationPending = spawn observeCancellation(cancellation.Token())
     const afterCancellation = $afterCancellationPending.wait()
-    const Channel { sender receiver } = channel<String>(1)
-    discard sender
-    discard receiver
+    const Channel { sender receiver } = channel<String>(0)
+    const sendingMessage = spawn sendChannelMessage(sender)
+    const receivingMessage = spawn receiveChannelMessage(receiver)
+    $sendingMessage.wait()
+    const channelMatches = $receivingMessage.wait()
     if (inRange(current, 5, 5) || false) && nextByteCount == 11925602364 &&
         platformMatches && pathMatches && jsonMatches && timeMatches && argumentCount == 0 &&
         proxyCounterValue == 2 && dynamicCounterValue == 1 && backgroundValue == 42 &&
         nestedBackgroundValue == 42 &&
-        !beforeCancellation && afterCancellation {
+        !beforeCancellation && afterCancellation && channelMatches {
         return match state {
             Running: resultOr(verified, 0) + counterValue + directCounterValue + sequenceValue + callbackValue - 20
             Done(done): resultOr(verified, done.code) + counterValue + directCounterValue + sequenceValue + callbackValue - 21

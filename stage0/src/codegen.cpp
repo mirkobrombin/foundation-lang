@@ -434,7 +434,10 @@ class Monomorphizer {
         for (const auto &variant : declaration.variants) {
             std::optional<Type> payload;
             if (variant.payload.has_value()) {
-                payload = instantiateType(substitute(*variant.payload, source.arguments));
+                const auto substituted = substitute(*variant.payload, source.arguments);
+                if (!(declaration.builtin && substituted == voidType)) {
+                    payload = instantiateType(substituted);
+                }
             }
             instance.variants.push_back(
                 {variant.name, std::move(payload), variant.exported, {}});
@@ -588,6 +591,13 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
     }
     if (const auto *channel = std::get_if<FirChannelExpression>(&expression.value)) {
         return expressionDiverges(program, function, channel->capacity);
+    }
+    if (const auto *send = std::get_if<FirChannelSendExpression>(&expression.value)) {
+        return send->value.has_value() &&
+               expressionDiverges(program, function, *send->value);
+    }
+    if (std::holds_alternative<FirChannelReceiveExpression>(expression.value)) {
+        return false;
     }
     if (const auto *index = std::get_if<FirIndexExpression>(&expression.value)) {
         return expressionDiverges(program, function, index->base) ||
@@ -979,6 +989,10 @@ class FunctionEmitter {
         }
         if (const auto *channel = std::get_if<FirChannelExpression>(&expression.value)) {
             return emitChannel(*channel, depth);
+        }
+        if (std::holds_alternative<FirChannelSendExpression>(expression.value) ||
+            std::holds_alternative<FirChannelReceiveExpression>(expression.value)) {
+            internalError("suspending channel operation reached expression emission");
         }
         if (const auto *spawn = std::get_if<FirSpawnExpression>(&expression.value)) {
             return emitSpawn(*spawn, depth);
@@ -1664,52 +1678,166 @@ class FunctionEmitter {
 
     bool emitSuspendingStatement(const FirStatement &statement, unsigned int depth) {
         std::optional<FirLocalId> resultLocal;
+        bool discarded = false;
         FirExpressionId expression;
         if (const auto *variable = std::get_if<FirVariableStatement>(&statement.value)) {
             expression = variable->initializer;
             resultLocal = variable->local;
         } else if (const auto *value = std::get_if<FirExpressionStatement>(&statement.value)) {
             expression = value->expression;
+        } else if (const auto *value = std::get_if<FirDiscardStatement>(&statement.value)) {
+            expression = value->expression;
+            discarded = true;
         } else {
             return false;
         }
         const auto *wait =
             std::get_if<FirTaskWaitExpression>(&function_.expressions[expression].value);
-        if (wait == nullptr) {
+        if (wait != nullptr) {
+            const auto *task =
+                std::get_if<FirMoveExpression>(&function_.expressions[wait->task].value);
+            if (task == nullptr) {
+                internalError("suspending task wait does not consume a local handle");
+            }
+            if (!resultLocal.has_value() && function_.expressions[expression].type != voidType) {
+                internalError("standalone suspending task wait has a result");
+            }
+
+            const auto state = ++taskState_;
+            out_ << indentation(depth) << "fdn_frame->fdn_state = " << state << ";\n";
+            out_ << "fdn_task_state_" << state << ":\n";
+            emitLocation(function_.expressions[expression].span, depth);
+            out_ << indentation(depth) << "if (!fdn_task_poll_wait(&"
+                 << localValue(task->local) << ", ";
+            if (resultLocal.has_value()) {
+                out_ << '&' << localValue(*resultLocal);
+            } else {
+                out_ << "NULL";
+            }
+            out_ << ")) {\n";
+            out_ << indentation(depth + 1)
+                 << "fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
+            out_ << indentation(depth + 1) << "fdn_frame_leave(&fdn_frame_current);\n";
+            out_ << indentation(depth + 1) << "return FDN_TASK_PENDING;\n";
+            out_ << indentation(depth) << "}\n";
+            if (typeRequiresDrop(program_, function_.locals[task->local].type)) {
+                out_ << indentation(depth) << localActive(task->local) << " = false;\n";
+            }
+            if (resultLocal.has_value()) {
+                activateLocal(*resultLocal, depth);
+                out_ << indentation(depth) << "(void)" << localValue(*resultLocal) << ";\n";
+            }
+            static_cast<void>(discarded);
+            return true;
+        }
+
+        const auto *send =
+            std::get_if<FirChannelSendExpression>(&function_.expressions[expression].value);
+        const auto *receive =
+            std::get_if<FirChannelReceiveExpression>(&function_.expressions[expression].value);
+        if (send == nullptr && receive == nullptr) {
             return false;
         }
-        const auto *task =
-            std::get_if<FirMoveExpression>(&function_.expressions[wait->task].value);
-        if (task == nullptr) {
-            internalError("suspending task wait does not consume a local handle");
+
+        const auto resultStorage =
+            send != nullptr ? send->resultStorage : receive->resultStorage;
+        const auto &resultType = function_.locals[resultStorage].type;
+        if (resultType.kind != TypeKind::Enum || resultType.declaration >= program_.enums.size() ||
+            program_.enums[resultType.declaration].variants.size() != 2 ||
+            !program_.enums[resultType.declaration].variants[1].payload.has_value()) {
+            internalError("channel operation has an invalid Result type");
         }
-        if (!resultLocal.has_value() && function_.expressions[expression].type != voidType) {
-            internalError("standalone suspending task wait has a result");
+        const auto errorType =
+            *program_.enums[resultType.declaration].variants[1].payload;
+        if (errorType.kind != TypeKind::Enum || errorType.declaration >= program_.enums.size() ||
+            program_.enums[errorType.declaration].variants.size() < 2) {
+            internalError("channel operation has an invalid ChannelError type");
+        }
+
+        if (send != nullptr && send->value.has_value()) {
+            if (!send->valueStorage.has_value()) {
+                internalError("channel send is missing persistent value storage");
+            }
+            const auto value = emitExpression(*send->value, depth);
+            if (!value.diverges) {
+                emitMoveAssignment(out_, program_,
+                                   function_.locals[*send->valueStorage].type,
+                                   localValue(*send->valueStorage), value.value, depth);
+                activateLocal(*send->valueStorage, depth);
+            }
         }
 
         const auto state = ++taskState_;
         out_ << indentation(depth) << "fdn_frame->fdn_state = " << state << ";\n";
         out_ << "fdn_task_state_" << state << ":\n";
         emitLocation(function_.expressions[expression].span, depth);
-        out_ << indentation(depth) << "if (!fdn_task_poll_wait(&" << localValue(task->local)
-             << ", ";
-        if (resultLocal.has_value()) {
-            out_ << '&' << localValue(*resultLocal);
+        const auto status = nextTemporary();
+        out_ << indentation(depth) << "fdn_channel_status " << status << " = ";
+        if (send != nullptr) {
+            out_ << "fdn_channel_poll_send(" << localValue(send->sender) << ", ";
+            if (send->valueStorage.has_value()) {
+                out_ << '&' << localValue(*send->valueStorage);
+            } else {
+                out_ << "NULL";
+            }
         } else {
-            out_ << "NULL";
+            out_ << "fdn_channel_poll_receive(" << localValue(receive->receiver) << ", ";
+            if (program_.enums[resultType.declaration].variants[0].payload.has_value()) {
+                out_ << '&' << localValue(resultStorage) << ".fdn_data."
+                     << payloadName(0);
+            } else {
+                out_ << "NULL";
+            }
         }
-        out_ << ")) {\n";
+        out_ << ");\n";
+        out_ << indentation(depth) << "if (" << status << " == FDN_CHANNEL_PENDING) {\n";
         out_ << indentation(depth + 1)
              << "fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
         out_ << indentation(depth + 1) << "fdn_frame_leave(&fdn_frame_current);\n";
         out_ << indentation(depth + 1) << "return FDN_TASK_PENDING;\n";
         out_ << indentation(depth) << "}\n";
-        if (typeRequiresDrop(program_, function_.locals[task->local].type)) {
-            out_ << indentation(depth) << localActive(task->local) << " = false;\n";
+
+        if (send != nullptr && send->valueStorage.has_value()) {
+            const auto storage = *send->valueStorage;
+            if (typeRequiresDrop(program_, function_.locals[storage].type)) {
+                out_ << indentation(depth) << "if (" << status
+                     << " == FDN_CHANNEL_READY) {\n";
+                out_ << indentation(depth + 1) << localActive(storage) << " = false;\n";
+                out_ << indentation(depth) << "} else {\n";
+                emitLocalDrop(storage, depth + 1);
+                out_ << indentation(depth) << "}\n";
+            }
         }
+
+        out_ << indentation(depth) << "if (" << status << " == FDN_CHANNEL_READY) {\n";
+        out_ << indentation(depth + 1) << localValue(resultStorage) << ".fdn_tag = "
+             << enumTag(resultType.declaration, 0) << ";\n";
+        out_ << indentation(depth) << "} else {\n";
+        out_ << indentation(depth + 1) << localValue(resultStorage) << ".fdn_data."
+             << payloadName(1) << ".fdn_tag = (" << status
+             << " == FDN_CHANNEL_CLOSED ? " << enumTag(errorType.declaration, 0) << " : "
+             << enumTag(errorType.declaration, 1) << ");\n";
+        out_ << indentation(depth + 1) << localValue(resultStorage) << ".fdn_tag = "
+             << enumTag(resultType.declaration, 1) << ";\n";
+        out_ << indentation(depth) << "}\n";
+        activateLocal(resultStorage, depth);
+
         if (resultLocal.has_value()) {
+            emitMoveAssignment(out_, program_, resultType, localValue(*resultLocal),
+                               localValue(resultStorage), depth);
+            if (typeRequiresDrop(program_, resultType)) {
+                out_ << indentation(depth) << localActive(resultStorage) << " = false;\n";
+            }
             activateLocal(*resultLocal, depth);
             out_ << indentation(depth) << "(void)" << localValue(*resultLocal) << ";\n";
+        } else if (discarded) {
+            if (typeRequiresDrop(program_, resultType)) {
+                emitLocalDrop(resultStorage, depth);
+            } else {
+                out_ << indentation(depth) << "(void)" << localValue(resultStorage) << ";\n";
+            }
+        } else {
+            internalError("channel Result is neither bound nor discarded");
         }
         return true;
     }
@@ -2676,7 +2804,11 @@ std::size_t taskSuspensionCount(const FirFunction &function) {
     return static_cast<std::size_t>(
         std::count_if(function.expressions.begin(), function.expressions.end(),
                       [](const FirExpression &expression) {
-                          return std::holds_alternative<FirTaskWaitExpression>(expression.value);
+                          return std::holds_alternative<FirTaskWaitExpression>(expression.value) ||
+                                 std::holds_alternative<FirChannelSendExpression>(
+                                     expression.value) ||
+                                 std::holds_alternative<FirChannelReceiveExpression>(
+                                     expression.value);
                       }));
 }
 

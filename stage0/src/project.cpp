@@ -91,7 +91,9 @@ std::string internalName(std::string_view packageName, std::string_view name) {
 bool intrinsicType(std::string_view name) {
     return name == "void" || name == "i32" || name == "u64" || name == "bool" ||
            name == "String" ||
-           name == "Option" || name == "Result" || name == "[array]" || name == "[slice]" ||
+           name == "Option" || name == "Result" || name == "ChannelError" ||
+           name == "Task" || name == "Channel" || name == "Sender" ||
+           name == "Receiver" || name == "[array]" || name == "[slice]" ||
            name == "[function]" || name == "own" || name == "view" || name == "edit";
 }
 

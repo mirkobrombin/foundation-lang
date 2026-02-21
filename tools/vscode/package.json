@@ -2,7 +2,7 @@
     "name": "foundation-lang",
     "displayName": "Foundation Lang",
     "description": "Language support for Foundation Lang",
-    "version": "0.34.0",
+    "version": "0.35.0",
     "publisher": "mirkobrombin",
     "license": "MIT",
     "engines": {

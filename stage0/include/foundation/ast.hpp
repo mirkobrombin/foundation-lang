@@ -347,6 +347,7 @@ enum class BuiltinEnumKind {
     None,
     Option,
     Result,
+    ChannelError,
 };
 
 struct EnumDeclaration {

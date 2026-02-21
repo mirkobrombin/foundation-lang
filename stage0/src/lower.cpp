@@ -415,7 +415,21 @@ class Lowerer {
         } else if (const auto *spawn = std::get_if<SpawnExpression>(&source.value)) {
             value = FirSpawnExpression{lowerExpression(spawn->call)};
         } else if (const auto *member = std::get_if<MemberExpression>(&source.value)) {
-            if (model_.enumTargets[id].has_value()) {
+            if (model_.channelOperationTargets[id].has_value()) {
+                const auto &target = *model_.channelOperationTargets[id];
+                if (target.kind == ChannelOperationKind::Send) {
+                    std::optional<FirExpressionId> argument;
+                    if (target.value.has_value()) {
+                        argument = lowerExpression(*target.value);
+                    }
+                    value = FirChannelSendExpression{target.endpoint, argument,
+                                                     target.valueStorage,
+                                                     target.resultStorage};
+                } else {
+                    value = FirChannelReceiveExpression{target.endpoint,
+                                                        target.resultStorage};
+                }
+            } else if (model_.enumTargets[id].has_value()) {
                 const auto &target = *model_.enumTargets[id];
                 std::optional<FirExpressionId> payload;
                 if (!member->arguments.empty()) {

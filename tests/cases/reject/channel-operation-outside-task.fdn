@@ -1,0 +1,6 @@
+fn main() i32 {
+    const Channel { sender receiver } = channel<i32>(1)
+    discard sender.send(1)
+    discard receiver
+    0
+}

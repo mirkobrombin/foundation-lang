@@ -787,6 +787,84 @@ std::string displayTypeSyntax(const TypeSyntax &type) {
     return result;
 }
 
+std::string displaySemanticType(const ProjectAnalysis &analysis, const Type &type) {
+    if (type.kind == TypeKind::Parameter) {
+        return "T" + std::to_string(type.declaration);
+    }
+    if ((type.kind == TypeKind::Own || type.kind == TypeKind::View ||
+         type.kind == TypeKind::Edit) && type.arguments.size() == 1) {
+        return std::string(typeName(type)) + ' ' +
+               displaySemanticType(analysis, type.arguments.front());
+    }
+    if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
+        return '[' + std::to_string(type.declaration) + ']' +
+               displaySemanticType(analysis, type.arguments.front());
+    }
+    if (type.kind == TypeKind::Slice && type.arguments.size() == 1) {
+        return '[' + displaySemanticType(analysis, type.arguments.front()) + ']';
+    }
+    if (type.kind == TypeKind::Function && !type.arguments.empty()) {
+        std::string result = "fn(";
+        for (std::size_t index = 1; index < type.arguments.size(); ++index) {
+            if (index != 1) {
+                result += ", ";
+            }
+            result += displaySemanticType(analysis, type.arguments[index]);
+        }
+        result += ") " + displaySemanticType(analysis, type.arguments.front());
+        return result;
+    }
+    std::string result;
+    if (type.kind == TypeKind::Struct && type.declaration < analysis.program.structs.size()) {
+        result = shortName(analysis.program.structs[type.declaration].name);
+    } else if (type.kind == TypeKind::Enum &&
+               type.declaration < analysis.program.enums.size()) {
+        result = shortName(analysis.program.enums[type.declaration].name);
+    } else if (type.kind == TypeKind::Contract &&
+               type.declaration < analysis.program.contracts.size()) {
+        result = shortName(analysis.program.contracts[type.declaration].name);
+    } else {
+        result = typeName(type);
+    }
+    if (!type.arguments.empty()) {
+        result += '<';
+        for (std::size_t index = 0; index < type.arguments.size(); ++index) {
+            if (index != 0) {
+                result += ", ";
+            }
+            result += displaySemanticType(analysis, type.arguments[index]);
+        }
+        result += '>';
+    }
+    return result;
+}
+
+std::optional<std::pair<AstExpressionId, SourceSpan>>
+channelOperationAt(const ProjectAnalysis &analysis, std::size_t sourceId, std::size_t offset) {
+    if (!analysis.semantic.has_value() || sourceId >= analysis.sources.size()) {
+        return std::nullopt;
+    }
+    for (AstExpressionId id = 0;
+         id < analysis.program.expressions.size() &&
+         id < analysis.semantic->channelOperationTargets.size();
+         ++id) {
+        if (!analysis.semantic->channelOperationTargets[id].has_value()) {
+            continue;
+        }
+        const auto &expression = analysis.program.expressions[id];
+        const auto *member = std::get_if<MemberExpression>(&expression.value);
+        if (member == nullptr || expression.span.source != sourceId) {
+            continue;
+        }
+        const auto span = nameSpan(analysis.sources[sourceId].contents, expression.span,
+                                   member->member);
+        if (offset >= span.offset && offset <= span.offset + span.length) {
+            return std::pair{id, span};
+        }
+    }
+    return std::nullopt;
+}
+
 std::string typeParametersSuffix(const std::vector<std::string> &parameters) {
     if (parameters.empty()) {
         return {};
@@ -2015,6 +2093,48 @@ class LanguageServer {
         const auto symbolId = semanticSymbolAt(*analysis, *uri, params, word, index);
         const auto *symbol = symbolId.has_value() ? index.symbol(*symbolId) : nullptr;
         if (symbol == nullptr) {
+            if (sourceId.has_value() && position.has_value() &&
+                analysis->semantic.has_value()) {
+                const auto &source = analysis->sources[*sourceId].contents;
+                const auto offset = offsetAt(source, *position);
+                const auto operation = offset.has_value()
+                                           ? channelOperationAt(*analysis, *sourceId, *offset)
+                                           : std::nullopt;
+                if (operation.has_value()) {
+                    const auto id = operation->first;
+                    const auto &target =
+                        *analysis->semantic->channelOperationTargets[id];
+                    const auto &expression = analysis->program.expressions[id];
+                    const auto &member = std::get<MemberExpression>(expression.value);
+                    const auto endpointType =
+                        member.base.has_value()
+                            ? analysis->semantic->expressionTypes[*member.base]
+                            : invalidType;
+                    const auto resultType = analysis->semantic->expressionTypes[id];
+                    auto detail = std::string("fn ") + member.member + '(';
+                    if (target.kind == ChannelOperationKind::Send &&
+                        endpointType.arguments.size() == 1 &&
+                        endpointType.arguments.front() != voidType) {
+                        detail += "value " +
+                                  displaySemanticType(*analysis,
+                                                      endpointType.arguments.front());
+                    }
+                    detail += ") " + displaySemanticType(*analysis, resultType);
+                    const auto documentation =
+                        target.kind == ChannelOperationKind::Send
+                            ? "Suspends this task until ownership transfers. A closed or "
+                              "cancelled operation returns `ChannelError`; a failed send drops "
+                              "the value."
+                            : "Suspends this task until a value arrives. Channel close and "
+                              "structured cancellation return a typed `ChannelError`.";
+                    return Json::object(
+                        {{"contents",
+                          Json::object({{"kind", "markdown"},
+                                        {"value", "```foundation\n" + detail +
+                                                      "\n```\n\n" + documentation}})},
+                         {"range", lspRange(source, operation->second)}});
+                }
+            }
             return Json(nullptr);
         }
         if (!sourceId.has_value()) {
@@ -3142,6 +3262,28 @@ class LanguageServer {
             addCompletion(items, "receiver", 5, "Receiver endpoint");
             return;
         }
+        if (type.kind == TypeKind::Sender && type.arguments.size() == 1) {
+            const auto payload = displaySemanticType(analysis, type.arguments.front());
+            const auto snippet =
+                type.arguments.front() == voidType ? "send()" : "send(${1:value})";
+            const auto detail = type.arguments.front() == voidType
+                                    ? std::string("fn send() Result<void, ChannelError>")
+                                    : "fn send(value " + payload +
+                                          ") Result<void, ChannelError>";
+            addCompletion(items, "send", 2, detail, snippet,
+                          "Suspends the current task until ownership of the value transfers or "
+                          "the operation reports a typed channel error.");
+            return;
+        }
+        if (type.kind == TypeKind::Receiver && type.arguments.size() == 1) {
+            const auto payload = displaySemanticType(analysis, type.arguments.front());
+            addCompletion(items, "receive", 2,
+                          "fn receive() Result<" + payload + ", ChannelError>",
+                          "receive()",
+                          "Suspends the current task until a value arrives or the operation "
+                          "reports a typed channel error.");
+            return;
+        }
         if (type.kind == TypeKind::Struct && type.declaration < analysis.program.structs.size()) {
             const auto &declaration = analysis.program.structs[type.declaration];
             for (std::size_t fieldIndex = 0; fieldIndex < declaration.fields.size();
@@ -3406,6 +3548,13 @@ class LanguageServer {
                 if (document == documents_.end()) {
                     return Json(Json::Array{});
                 }
+                if (const auto type =
+                        completionReceiverType(*analysis, *sourceId, access->receiverEnd);
+                    type.has_value()) {
+                    addValueMemberCompletions(items, *analysis, *type,
+                                              analysis->sources[*sourceId].packageName);
+                    return completionResult(std::move(items));
+                }
                 const auto completion = analyzeCompletion(document->second, *access);
                 const auto completionSource = sourceIdForUri(completion, *uri);
                 if (!completionSource.has_value()) {
@@ -3451,7 +3600,8 @@ class LanguageServer {
                 addCompletion(items, std::string(keyword), 14);
             }
             for (const auto type : {"i32", "u64", "bool", "String", "void", "Option",
-                                    "Result", "Task", "Channel", "Sender", "Receiver"}) {
+                                    "Result", "ChannelError", "Task", "Channel", "Sender",
+                                    "Receiver"}) {
                 addCompletion(items, type, 25);
             }
             for (const auto builtin : {"print", "panic", "len"}) {
@@ -3625,6 +3775,37 @@ class LanguageServer {
         const auto *occurrence = index.occurrenceAt(*sourceId, start);
         const auto *symbol = occurrence == nullptr ? nullptr : index.symbol(occurrence->symbol);
         if (symbol == nullptr) {
+            const auto operation = channelOperationAt(*analysis, *sourceId, start);
+            if (operation.has_value() && analysis->semantic.has_value()) {
+                const auto id = operation->first;
+                const auto &target = *analysis->semantic->channelOperationTargets[id];
+                const auto &member =
+                    std::get<MemberExpression>(analysis->program.expressions[id].value);
+                const auto endpoint = member.base.has_value()
+                                          ? analysis->semantic->expressionTypes[*member.base]
+                                          : invalidType;
+                auto label = std::string("fn ") + member.member + '(';
+                Json::Array parameters;
+                if (target.kind == ChannelOperationKind::Send &&
+                    endpoint.arguments.size() == 1 && endpoint.arguments.front() != voidType) {
+                    const auto parameter =
+                        "value " + displaySemanticType(*analysis, endpoint.arguments.front());
+                    label += parameter;
+                    parameters.push_back(Json::object({{"label", parameter},
+                                                       {"documentation",
+                                                        "Value ownership transfers only when "
+                                                        "the send succeeds."}}));
+                }
+                label += ") " + displaySemanticType(
+                                     *analysis, analysis->semantic->expressionTypes[id]);
+                Json::Object signature{{"label", label}};
+                if (!parameters.empty()) {
+                    signature.emplace("parameters", Json(std::move(parameters)));
+                }
+                return Json::object(
+                    {{"signatures", Json::array({Json(std::move(signature))})},
+                     {"activeSignature", 0}, {"activeParameter", 0}});
+            }
             return Json(nullptr);
         }
         std::size_t activeParameter{};
@@ -3821,11 +4002,16 @@ class LanguageServer {
         }
         Json::Array result;
         for (std::size_t id = 0; id < analysis->program.expressions.size(); ++id) {
-            if (!analysis->semantic->callTargets[id].has_value()) {
+            std::vector<std::string> names;
+            if (analysis->semantic->callTargets[id].has_value()) {
+                names = parameterNames(*analysis, *analysis->semantic->callTargets[id]);
+            } else if (analysis->semantic->channelOperationTargets[id].has_value() &&
+                       analysis->semantic->channelOperationTargets[id]->kind ==
+                           ChannelOperationKind::Send) {
+                names.push_back("value");
+            } else {
                 continue;
             }
-            const auto &target = *analysis->semantic->callTargets[id];
-            const auto names = parameterNames(*analysis, target);
             const std::vector<AstExpressionId> *arguments{};
             const auto &value = analysis->program.expressions[id].value;
             if (const auto *call = std::get_if<CallExpression>(&value)) {

@@ -1482,6 +1482,19 @@ void Parser::installBuiltins() {
         {},
         {},
     });
+
+    program_.enums.push_back({
+        "ChannelError",
+        {},
+        {{"Closed", std::nullopt, true, span, {}},
+         {"Cancelled", std::nullopt, true, span, {}},
+         {"Timeout", std::nullopt, true, span, {}}},
+        true,
+        BuiltinEnumKind::ChannelError,
+        span,
+        {},
+        {},
+    });
 }
 
 } // namespace foundation

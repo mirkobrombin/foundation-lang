@@ -150,6 +150,7 @@ class Analyzer {
         model_.functionValueTargets.resize(program.expressions.size());
         model_.closureTargets.resize(program.expressions.size());
         model_.taskWaitTargets.resize(program.expressions.size());
+        model_.channelOperationTargets.resize(program.expressions.size());
         model_.expressionBorrowedClosures.resize(program.expressions.size());
         model_.expressionMoves.resize(program.expressions.size());
         model_.statementLocals.resize(program.statements.size());
@@ -721,6 +722,10 @@ class Analyzer {
             for (std::size_t index = 0; index < variants.size(); ++index) {
                 if (variants[index].has_value()) {
                     auto child = substitute(*variants[index], type.arguments);
+                    if (child == voidType &&
+                        program_.enums[type.declaration].builtin == BuiltinEnumKind::Result) {
+                        continue;
+                    }
                     while (child.kind == TypeKind::Array && child.arguments.size() == 1) {
                         const auto element = child.arguments.front();
                         child = element;
@@ -1331,6 +1336,7 @@ class Analyzer {
         loanStates_.clear();
         taskWaitRoot_.reset();
         taskWaitVoidStatement_ = false;
+        channelStorage_ = 0;
 
         const auto &function = program_.functions[index];
         setTypeParameters(function.typeParameters, function.span);
@@ -1726,7 +1732,15 @@ class Analyzer {
             return true;
         }
         if (const auto *discarded = std::get_if<DiscardStatement>(&statement.value)) {
+            const auto previousTaskWaitRoot = taskWaitRoot_;
+            const auto previousTaskWaitVoidStatement = taskWaitVoidStatement_;
+            if (program_.functions[currentFunction_].task) {
+                taskWaitRoot_ = discarded->value;
+                taskWaitVoidStatement_ = true;
+            }
             static_cast<void>(analyzeExpression(discarded->value));
+            taskWaitRoot_ = previousTaskWaitRoot;
+            taskWaitVoidStatement_ = previousTaskWaitVoidStatement;
             return false;
         }
         if (const auto *branch = std::get_if<IfStatement>(&statement.value)) {
@@ -3010,6 +3024,85 @@ class Analyzer {
         if (sourceType.kind == TypeKind::Invalid) {
             return invalidType;
         }
+        if ((sourceType.kind == TypeKind::Sender || sourceType.kind == TypeKind::Receiver) &&
+            sourceType.arguments.size() == 1) {
+            const auto send = sourceType.kind == TypeKind::Sender && member.member == "send";
+            const auto receive =
+                sourceType.kind == TypeKind::Receiver && member.member == "receive";
+            if (!member.invoked || (!send && !receive)) {
+                for (const auto argument : member.arguments) {
+                    static_cast<void>(analyzeExpression(argument));
+                }
+                diagnostics_.error("FDN2100",
+                                   "unknown " + std::string(typeName(sourceType)) +
+                                       " member " + member.member,
+                                   span);
+                return invalidType;
+            }
+            if (!member.typeArguments.empty()) {
+                diagnostics_.error("FDN2043", "channel operation does not accept type arguments",
+                                   span);
+            }
+            if (!program_.functions[currentFunction_].task || taskWaitRoot_ != id) {
+                diagnostics_.error(
+                    "FDN2168",
+                    "suspending channel operation must be a standalone task binding or discard",
+                    span);
+            }
+            const auto *endpointName = std::get_if<NameExpression>(&baseExpression.value);
+            const auto endpoint = model_.expressionLocals[*member.base];
+            if (endpointName == nullptr || !endpoint.has_value()) {
+                diagnostics_.error("FDN2173", "channel operation requires a local endpoint",
+                                   span);
+                for (const auto argument : member.arguments) {
+                    static_cast<void>(analyzeExpression(argument));
+                }
+                return invalidType;
+            }
+
+            const auto payload = sourceType.arguments.front();
+            const auto error = Type{TypeKind::Enum, enums_.at("ChannelError"), {}};
+            const auto resultPayload = send ? voidType : payload;
+            const auto result =
+                Type{TypeKind::Enum, enums_.at("Result"), {resultPayload, error}};
+            std::optional<AstExpressionId> value;
+            std::optional<FirLocalId> valueStorage;
+            if (send) {
+                const auto expectedArguments = payload == voidType ? 0U : 1U;
+                if (member.arguments.size() != expectedArguments) {
+                    diagnostics_.error("FDN2010", "wrong argument count for Sender.send", span);
+                    for (const auto argument : member.arguments) {
+                        static_cast<void>(analyzeExpression(argument));
+                    }
+                } else if (payload != voidType) {
+                    value = member.arguments.front();
+                    const auto actual = analyzeExpression(*value, payload, ExpressionUse::Consume);
+                    requireSame(payload, actual, span, "channel payload");
+                    if (model_.expressionBorrowedClosures[*value]) {
+                        diagnostics_.error("FDN2127", "borrowed closure cannot enter a channel",
+                                           span);
+                    }
+                    valueStorage = addLocal("$channelValue" +
+                                                std::to_string(channelStorage_++),
+                                            payload, false, span);
+                }
+            } else {
+                if (!member.arguments.empty()) {
+                    diagnostics_.error("FDN2010", "Receiver.receive does not accept arguments",
+                                       span);
+                    for (const auto argument : member.arguments) {
+                        static_cast<void>(analyzeExpression(argument));
+                    }
+                }
+            }
+            const auto resultStorage = addLocal(
+                "$channelResult" + std::to_string(channelStorage_++), result, false, span);
+            resultOutstanding_[resultStorage] = false;
+            model_.channelOperationTargets[id] = ChannelOperationTarget{
+                send ? ChannelOperationKind::Send : ChannelOperationKind::Receive,
+                *endpoint, value, valueStorage, resultStorage};
+            return result;
+        }
         auto base = sourceType;
         if (base.kind == TypeKind::Task) {
             for (const auto argument : member.arguments) {
@@ -3545,7 +3638,20 @@ class Analyzer {
                 inferred[index] = contextualType->arguments[index];
             }
         }
-        const auto payloadPattern = model_.enums[*enumType].payloadTypes[*variant];
+        auto payloadPattern = model_.enums[*enumType].payloadTypes[*variant];
+        if (payloadPattern.has_value()) {
+            std::vector<Type> knownArguments;
+            knownArguments.reserve(inferred.size());
+            auto complete = true;
+            for (const auto &argument : inferred) {
+                complete = complete && argument.has_value();
+                knownArguments.push_back(argument.value_or(invalidType));
+            }
+            if (complete && substitute(*payloadPattern, knownArguments) == voidType &&
+                declaration.builtin == BuiltinEnumKind::Result) {
+                payloadPattern.reset();
+            }
+        }
         std::optional<Type> payloadType;
         if (payloadPattern.has_value() && constructor.arguments.empty()) {
             diagnostics_.error("FDN2036", "variant requires a payload", span);
@@ -3642,6 +3748,10 @@ class Analyzer {
                 auto payload = model_.enums[enumType].payloadTypes[*variant];
                 if (payload.has_value()) {
                     payload = substitute(*payload, value.arguments);
+                    if (*payload == voidType &&
+                        declaration.builtin == BuiltinEnumKind::Result) {
+                        payload.reset();
+                    }
                 }
                 if (payload.has_value() && !arm.binding.has_value()) {
                     diagnostics_.error("FDN2041", "payload pattern requires a binding", arm.span);
@@ -3941,7 +4051,8 @@ class Analyzer {
     bool isBuiltinType(std::string_view name) const {
         return name == "void" || name == "i32" || name == "u64" || name == "bool" ||
                name == "String" ||
-               name == "Option" || name == "Result" || name == "Task" ||
+               name == "Option" || name == "Result" || name == "ChannelError" ||
+               name == "Task" ||
                name == "Channel" || name == "Sender" || name == "Receiver" ||
                name == "own" || name == "view" ||
                name == "edit";
@@ -4486,6 +4597,7 @@ class Analyzer {
     std::optional<AstExpressionId> spawnCall_;
     std::optional<AstExpressionId> taskWaitRoot_;
     bool taskWaitVoidStatement_{};
+    std::size_t channelStorage_{};
     FirFunctionId currentFunction_{};
 };
 

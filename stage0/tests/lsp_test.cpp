@@ -549,6 +549,10 @@ void completionsRespectScopesAndMemberAccess() {
         "fn finalBinding() void {\n"
         "    let finalLocal = 1\n"
         "    \n"
+        "}\n"
+        "task channelMembers(sender Sender<String>, receiver Receiver<String>) void {\n"
+        "    discard sender.send(\"hello\")\n"
+        "    discard receiver.receive()\n"
         "}\n";
     const auto incomplete =
         "package sample\n"
@@ -584,6 +588,8 @@ void completionsRespectScopesAndMemberAccess() {
     const auto valueMembers = completion(77, 6, 22);
     const auto enumMembers = completion(79, 15, 11);
     const auto finalLocal = completion(80, 19, 4);
+    const auto senderMembers = completion(81, 22, 19);
+    const auto receiverMembers = completion(82, 23, 21);
     const auto change =
         "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
         "\"textDocument\":{\"uri\":\"" +
@@ -596,8 +602,9 @@ void completionsRespectScopesAndMemberAccess() {
 
     std::istringstream input(frame(initialize) + frame(open) + frame(scoped) +
                              frame(packageMembers) + frame(valueMembers) + frame(enumMembers) +
-                             frame(finalLocal) + frame(change) + frame(incompleteMembers) +
-                             frame(shutdown) + frame(exit));
+                             frame(finalLocal) + frame(senderMembers) +
+                             frame(receiverMembers) + frame(change) +
+                             frame(incompleteMembers) + frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
@@ -607,6 +614,8 @@ void completionsRespectScopesAndMemberAccess() {
     const auto valueResponse = responseFor(transcript, 77);
     const auto enumResponse = responseFor(transcript, 79);
     const auto finalLocalResponse = responseFor(transcript, 80);
+    const auto senderResponse = responseFor(transcript, 81);
+    const auto receiverResponse = responseFor(transcript, 82);
     const auto incompleteResponse = responseFor(transcript, 78);
 
     expect(status == 0, "completion transcript exits cleanly");
@@ -634,6 +643,12 @@ void completionsRespectScopesAndMemberAccess() {
            "enum member completions stay on the selected enum type");
     expect(finalLocalResponse.find("\"label\":\"finalLocal\"") != std::string::npos,
            "the last local declaration in a block becomes visible after its initializer");
+    expect(senderResponse.find("\"label\":\"send\"") != std::string::npos &&
+               senderResponse.find("Result<void, ChannelError>") != std::string::npos,
+           "Sender completion exposes the typed suspending send operation");
+    expect(receiverResponse.find("\"label\":\"receive\"") != std::string::npos &&
+               receiverResponse.find("Result<String, ChannelError>") != std::string::npos,
+           "Receiver completion exposes the typed suspending receive operation");
     expect(incompleteResponse.find("\"label\":\"Visible\"") != std::string::npos &&
                incompleteResponse.find("\"label\":\"Read\"") != std::string::npos,
            "member completions survive an unfinished dot expression");
@@ -1524,6 +1539,69 @@ void distributedMethodsExposeDocumentationAndParameters() {
     std::filesystem::remove_all(root, error);
 }
 
+void channelOperationsExposeEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "task work(sender Sender<String>) void {\n"
+        "    discard sender.send(\"hello\")\n"
+        "}\n"
+        "fn main() i32 { 0 }\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":2,\"character\":" +
+               std::to_string(character) + "}}}";
+    };
+    const auto inlay =
+        "{\"jsonrpc\":\"2.0\",\"id\":103,\"method\":\"textDocument/inlayHint\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri +
+        "\"},\"range\":{\"start\":{\"line\":0,\"character\":0},"
+        "\"end\":{\"line\":4,\"character\":20}}}}";
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(frame(initialize) + frame(open) +
+                             frame(request(101, "hover", 20)) +
+                             frame(request(102, "signatureHelp", 25)) + frame(inlay) +
+                             frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto hover = responseFor(transcript, 101);
+    const auto signature = responseFor(transcript, 102);
+    const auto hints = responseFor(transcript, 103);
+
+    expect(status == 0, "channel operation language server transcript exits cleanly");
+    expect(errors.str().empty(), "channel operation requests write no server errors");
+    expect(hover.find("fn send(value String) Result<void, ChannelError>") !=
+                   std::string::npos &&
+               hover.find("ownership transfers") != std::string::npos,
+           "channel operation hover explains its typed ownership contract");
+    expect(signature.find("fn send(value String) Result<void, ChannelError>") !=
+                   std::string::npos &&
+               signature.find("Value ownership transfers only") != std::string::npos,
+           "channel operation signature help exposes its parameter contract");
+    expect(hints.find("value:") != std::string::npos,
+           "channel send contributes a parameter inlay hint");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 } // namespace
 
 int main() {
@@ -1544,6 +1622,7 @@ int main() {
     workspaceFoldersAreIndependentAndDynamic();
     diagnosticsStayScopedToTheirWorkspace();
     distributedMethodsExposeDocumentationAndParameters();
+    channelOperationsExposeEditorDetails();
 
     if (failures != 0) {
         std::cerr << failures << " language server assertions failed\n";

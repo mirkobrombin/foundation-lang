@@ -988,8 +988,8 @@ fn main() i32 {
     expect(result.program.structs.size() == 1 && result.program.structs[0].fields[0].exported &&
                !result.program.structs[0].fields[1].exported,
            "field visibility follows the initial letter");
-    expect(result.program.enums.size() == 3 && result.program.enums[2].variants[0].exported &&
-               !result.program.enums[2].variants[2].exported,
+    expect(result.program.enums.size() == 4 && result.program.enums[3].variants[0].exported &&
+               !result.program.enums[3].variants[2].exported,
            "variant visibility follows the initial letter");
     expect(result.program.functions.size() == 2 && result.program.functions[0].exported &&
                !result.program.functions[1].exported,
