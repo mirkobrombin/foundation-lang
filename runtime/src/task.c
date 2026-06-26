@@ -54,6 +54,13 @@ struct fdn_task_external_hub {
 };
 
 static FDN_THREAD_LOCAL fdn_task_external_hub *fdn_task_external_current;
+static FDN_THREAD_LOCAL size_t fdn_supervisor_count;
+
+typedef struct fdn_supervisor {
+    fdn_task *head;
+    fdn_task *tail;
+    bool closed;
+} fdn_supervisor;
 
 uint64_t fdn_monotonic_nanoseconds(void) {
 #if defined(_WIN32)
@@ -315,7 +322,8 @@ static void fdn_task_run_until(fdn_task *target) {
 
 static void fdn_task_release(fdn_task *task, void *result, bool move_result) {
     if (!task->ready || task->waiter != NULL || task->waiting_on != NULL ||
-        task->cancel_wait != NULL || task->wait_next != NULL || task->wake_ready) {
+        task->cancel_wait != NULL || task->wait_next != NULL || task->wake_ready ||
+        task->supervisor != NULL || task->supervisor_next != NULL) {
         fdn_panic_cstr("cannot release an incomplete task");
     }
     if (move_result) {
@@ -336,6 +344,8 @@ fdn_task *fdn_task_spawn(void *frame, fdn_task_poll_fn poll,
     }
     task = fdn_alloc(sizeof(*task));
     task->next = NULL;
+    task->supervisor_next = NULL;
+    task->supervisor = NULL;
     task->waiter = NULL;
     task->waiting_on = NULL;
     task->wait_next = NULL;
@@ -567,3 +577,88 @@ void fdn_task_external_source_close(fdn_task_external_source *source) {
 }
 
 size_t fdn_task_live_count(void) { return fdn_task_count; }
+
+static fdn_supervisor *fdn_supervisor_from_handle(uint64_t handle) {
+    fdn_supervisor *supervisor = (fdn_supervisor *)(uintptr_t)handle;
+    if (supervisor == NULL) {
+        fdn_panic_cstr("supervisor handle is closed");
+    }
+    return supervisor;
+}
+
+static void fdn_supervisor_join(fdn_supervisor *supervisor, bool cancel) {
+    fdn_task *task;
+    if (supervisor->closed) {
+        if (supervisor->head != NULL || supervisor->tail != NULL) {
+            fdn_panic_cstr("closed supervisor still owns tasks");
+        }
+        return;
+    }
+    supervisor->closed = true;
+    if (cancel) {
+        task = supervisor->head;
+        while (task != NULL) {
+            fdn_task_request_cancellation(task);
+            task = task->supervisor_next;
+        }
+    }
+    while (supervisor->head != NULL) {
+        task = supervisor->head;
+        fdn_task_run_until(task);
+        supervisor->head = task->supervisor_next;
+        if (supervisor->head == NULL) {
+            supervisor->tail = NULL;
+        }
+        task->supervisor_next = NULL;
+        task->supervisor = NULL;
+        fdn_task_release(task, NULL, false);
+    }
+}
+
+uint64_t foundation_runtime_supervisor_open(void) {
+    fdn_supervisor *supervisor = fdn_alloc(sizeof(*supervisor));
+    supervisor->head = NULL;
+    supervisor->tail = NULL;
+    supervisor->closed = false;
+    ++fdn_supervisor_count;
+    return (uint64_t)(uintptr_t)supervisor;
+}
+
+void foundation_runtime_supervisor_adopt(uint64_t handle, fdn_task *task) {
+    fdn_supervisor *supervisor = fdn_supervisor_from_handle(handle);
+    if (supervisor->closed) {
+        fdn_panic_cstr("supervisor is closed");
+    }
+    if (task == NULL || task->supervisor != NULL || task->supervisor_next != NULL ||
+        task->waiter != NULL) {
+        fdn_panic_cstr("invalid supervised task");
+    }
+    task->supervisor = supervisor;
+    if (supervisor->tail == NULL) {
+        supervisor->head = task;
+    } else {
+        supervisor->tail->supervisor_next = task;
+    }
+    supervisor->tail = task;
+}
+
+void foundation_runtime_supervisor_wait(uint64_t handle) {
+    fdn_supervisor_join(fdn_supervisor_from_handle(handle), false);
+}
+
+void foundation_runtime_supervisor_cancel(uint64_t handle) {
+    fdn_supervisor_join(fdn_supervisor_from_handle(handle), true);
+}
+
+void foundation_runtime_supervisor_release(uint64_t handle) {
+    fdn_supervisor *supervisor = fdn_supervisor_from_handle(handle);
+    if (!supervisor->closed || supervisor->head != NULL || supervisor->tail != NULL) {
+        fdn_panic_cstr("supervisor must join before release");
+    }
+    --fdn_supervisor_count;
+    fdn_dealloc(supervisor);
+}
+
+uint64_t foundation_runtime_supervisor_live_count(void) {
+    return (uint64_t)fdn_supervisor_count;
+}

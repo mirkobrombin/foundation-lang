@@ -1,0 +1,25 @@
+import foundation.worker
+import std.concurrent
+
+task finish(message String) void {
+    print(message)
+}
+
+task observe(cancel concurrent.Cancellation) void {
+    if cancel.IsRequested() {
+        print("cancelled")
+    }
+}
+
+fn main() i32 {
+    const supervisor = worker.NewSupervisor()
+    supervisor.Start(spawn finish("first"))
+    supervisor.Start(spawn finish("second"))
+    supervisor.Shutdown()
+
+    const source = concurrent.NewCancellationSource()
+    const cancelled = worker.NewSupervisor()
+    cancelled.Start(spawn observe(source.Token()))
+    cancelled.Cancel()
+    0
+}

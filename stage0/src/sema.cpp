@@ -118,13 +118,18 @@ bool isReservedCSymbol(std::string_view value) {
     return value == "main" || value.starts_with("fdn_") || value.starts_with('_');
 }
 
-bool isCParameterType(const Type &type) {
+bool isCParameterType(const Type &type, std::string_view symbol,
+                      std::string_view packageName) {
     return type == i32Type || type == u64Type || type == boolType ||
            (type.kind == TypeKind::View && type.arguments.size() == 1 &&
             type.arguments.front() == stringType) ||
            (type.kind == TypeKind::Edit && type.arguments.size() == 1 &&
             (type.arguments.front() == i32Type || type.arguments.front() == u64Type ||
-             type.arguments.front() == boolType || type.arguments.front() == stringType));
+             type.arguments.front() == boolType || type.arguments.front() == stringType)) ||
+           (packageName == "foundation.worker" &&
+            symbol == "foundation_runtime_supervisor_adopt" &&
+            type.kind == TypeKind::Task && type.arguments.size() == 1 &&
+            type.arguments.front() == voidType);
 }
 
 bool isCReturnType(const Type &type) {
@@ -1233,7 +1238,10 @@ class Analyzer {
                 }
                 for (std::size_t parameter = 0;
                      parameter < semantic.parameterTypes.size(); ++parameter) {
-                    if (!isCParameterType(semantic.parameterTypes[parameter])) {
+                    if (!isCParameterType(semantic.parameterTypes[parameter],
+                                          function.hasBody ? std::string_view{}
+                                                           : std::string_view{*function.cSymbol},
+                                          function.packageName)) {
                         diagnostics_.error("FDN2114", "parameter type is not C ABI safe",
                                            function.parameters[parameter].span);
                     }

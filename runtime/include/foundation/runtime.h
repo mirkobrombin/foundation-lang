@@ -100,6 +100,12 @@ bool fdn_task_cancellation_enter(bool requested);
 void fdn_task_cancellation_leave(bool previous);
 bool fdn_task_cancellation_current(void);
 size_t fdn_task_live_count(void);
+uint64_t foundation_runtime_supervisor_open(void);
+void foundation_runtime_supervisor_adopt(uint64_t handle, fdn_task *task);
+void foundation_runtime_supervisor_wait(uint64_t handle);
+void foundation_runtime_supervisor_cancel(uint64_t handle);
+void foundation_runtime_supervisor_release(uint64_t handle);
+uint64_t foundation_runtime_supervisor_live_count(void);
 bool fdn_utf8_valid(const char *value, size_t length);
 bool fdn_blocking_poll(fdn_blocking_job **job, void *context,
                        fdn_blocking_work_fn work);

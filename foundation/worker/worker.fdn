@@ -1,0 +1,39 @@
+package foundation.worker
+
+extern c fn openNative() u64 as foundation_runtime_supervisor_open
+extern c fn adoptNative(handle u64, pending Task<void>) void as foundation_runtime_supervisor_adopt
+extern c fn waitNative(handle u64) void as foundation_runtime_supervisor_wait
+extern c fn cancelNative(handle u64) void as foundation_runtime_supervisor_cancel
+extern c fn releaseNative(handle u64) void as foundation_runtime_supervisor_release
+
+// Owns detached tasks until an explicit shutdown policy joins them.
+struct Supervisor {
+    handle u64
+
+    // Transfers a task whose failure policy has already been handled by its body.
+    fn Start(view, pending Task<void>) void {
+        adoptNative(self.handle, pending)
+    }
+
+    // Stops accepting work and waits for every supervised task to finish.
+    fn Shutdown(own) void {
+        waitNative(self.handle)
+    }
+
+    // Requests cancellation and then waits for every supervised task to finish.
+    fn Cancel(own) void {
+        cancelNative(self.handle)
+    }
+
+    fn drop(edit) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            cancelNative(handle)
+            releaseNative(handle)
+        }
+    }
+}
+
+fn NewSupervisor() own Supervisor {
+    own Supervisor { handle = openNative() }
+}

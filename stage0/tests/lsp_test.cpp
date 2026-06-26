@@ -1792,6 +1792,71 @@ void callbackImportsExposeEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void supervisorPackageExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "import foundation.worker\n"
+        "task finish() void {\n"
+        "    return\n"
+        "}\n"
+        "fn main() i32 {\n"
+        "    const supervisor = worker.NewSupervisor()\n"
+        "    supervisor.Start(spawn finish())\n"
+        "    supervisor.Shutdown()\n"
+        "    0\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(141, "hover", 1, 12)) +
+        frame(request(142, "hover", 6, 32)) + frame(request(143, "hover", 7, 17)) +
+        frame(request(144, "definition", 6, 32)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto packageHover = responseFor(transcript, 141);
+    const auto constructorHover = responseFor(transcript, 142);
+    const auto startHover = responseFor(transcript, 143);
+    const auto definition = responseFor(transcript, 144);
+
+    expect(status == 0, "supervisor language server transcript exits cleanly");
+    expect(errors.str().empty(), "supervisor requests write no server errors");
+    expect(packageHover.find("foundation.worker") != std::string::npos,
+           "framework package import receives hover");
+    expect(constructorHover.find("NewSupervisor") != std::string::npos &&
+               constructorHover.find("own Supervisor") != std::string::npos,
+           "supervisor constructor receives compiler-backed hover");
+    expect(startHover.find("Start") != std::string::npos &&
+               startHover.find("Task<void>") != std::string::npos,
+           "supervisor start hover exposes the detached task contract");
+    expect(definition.find("foundation/worker/worker.fdn") != std::string::npos,
+           "supervisor constructor navigates to framework source");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 } // namespace
 
 int main() {
@@ -1816,6 +1881,7 @@ int main() {
     selectExposesEditorDetails();
     blockingImportsExposeEditorDetails();
     callbackImportsExposeEditorDetails();
+    supervisorPackageExposesEditorDetails();
 
     if (failures != 0) {
         std::cerr << failures << " language server assertions failed\n";

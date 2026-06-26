@@ -1,0 +1,12 @@
+import foundation.worker
+
+task refresh() void {
+    print("refresh")
+}
+
+fn main() i32 {
+    const background = worker.NewSupervisor()
+    background.Start(spawn refresh())
+    background.Shutdown()
+    0
+}

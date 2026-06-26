@@ -1,0 +1,5 @@
+extern c fn detach(pending Task<void>) void as sample_detach
+
+fn main() i32 {
+    0
+}

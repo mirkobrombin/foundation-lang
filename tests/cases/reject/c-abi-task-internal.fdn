@@ -1,0 +1,7 @@
+package sample
+
+extern c fn detach(pending Task<void>) void as foundation_runtime_supervisor_adopt
+
+fn main() i32 {
+    0
+}

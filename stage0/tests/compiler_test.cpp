@@ -1785,6 +1785,13 @@ void standardLibrarySourceIsLoadedOnce() {
             ++sourceCount;
         }
     }
+    const auto frameworkRoot =
+        std::filesystem::path(FOUNDATION_TEST_SOURCE_DIR) / "foundation";
+    for (const auto &entry : std::filesystem::recursive_directory_iterator(frameworkRoot)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".fdn") {
+            ++sourceCount;
+        }
+    }
 
     const auto source = std::filesystem::relative(
         standardRoot / "collections/list.fdn", std::filesystem::current_path());

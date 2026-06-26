@@ -1,0 +1,12 @@
+import foundation.worker
+
+task fail() Result<void, bool> {
+    .Err(true)
+}
+
+fn main() i32 {
+    const supervisor = worker.NewSupervisor()
+    supervisor.Start(spawn fail())
+    supervisor.Shutdown()
+    0
+}

@@ -22,6 +22,10 @@
 #define FOUNDATION_STANDARD_LIBRARY ""
 #endif
 
+#ifndef FOUNDATION_FRAMEWORK_LIBRARY
+#define FOUNDATION_FRAMEWORK_LIBRARY ""
+#endif
+
 namespace foundation {
 
 namespace {
@@ -957,59 +961,69 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
         paths.push_back(input);
     }
 
-    const std::filesystem::path standardRoot{FOUNDATION_STANDARD_LIBRARY};
-    const auto standardIdentity = sourceIdentity(standardRoot);
-    if (!standardRoot.empty() && std::filesystem::is_directory(standardRoot, error) && !error) {
-        std::vector<std::filesystem::path> standardPaths;
-        std::filesystem::recursive_directory_iterator iterator(standardRoot, error);
+    std::unordered_map<std::string, std::string> libraryDisplayPaths;
+    std::unordered_set<std::string> seen;
+    for (const auto &path : paths) {
+        seen.insert(sourceIdentity(path).generic_string());
+    }
+    const auto appendLibrary = [&](const std::filesystem::path &root,
+                                   const std::filesystem::path &prefix,
+                                   std::string_view description) {
+        error.clear();
+        if (root.empty() || !std::filesystem::is_directory(root, error) || error) {
+            error.clear();
+            return true;
+        }
+        std::vector<std::filesystem::path> libraryPaths;
+        std::filesystem::recursive_directory_iterator iterator(root, error);
         const std::filesystem::recursive_directory_iterator end;
         while (!error && iterator != end) {
             if (iterator->is_regular_file(error) && !error &&
                 iterator->path().extension() == ".fdn") {
-                standardPaths.push_back(iterator->path());
+                libraryPaths.push_back(iterator->path());
             }
             iterator.increment(error);
         }
         if (error) {
-            diagnostics.error("FDN3001", "cannot discover standard library sources",
+            diagnostics.error("FDN3001", "cannot discover " + std::string(description) +
+                                               " sources",
                               {0, 0, 1, 1});
-            return std::nullopt;
+            return false;
         }
-        std::sort(standardPaths.begin(), standardPaths.end(),
-                  [&standardRoot](const auto &left, const auto &right) {
-                      return left.lexically_relative(standardRoot).generic_string() <
-                             right.lexically_relative(standardRoot).generic_string();
+        std::sort(libraryPaths.begin(), libraryPaths.end(),
+                  [&root](const auto &left, const auto &right) {
+                      return left.lexically_relative(root).generic_string() <
+                             right.lexically_relative(root).generic_string();
                   });
-        std::unordered_set<std::string> seen;
-        for (const auto &path : paths) {
-            seen.insert(sourceIdentity(path).generic_string());
-        }
-        for (const auto &path : standardPaths) {
-            if (seen.insert(sourceIdentity(path).generic_string()).second) {
+        for (const auto &path : libraryPaths) {
+            const auto identity = sourceIdentity(path).generic_string();
+            libraryDisplayPaths.emplace(
+                identity, (prefix / path.lexically_relative(root)).generic_string());
+            if (seen.insert(identity).second) {
                 paths.push_back(path);
             }
         }
-    } else {
-        error.clear();
+        return true;
+    };
+    if (!appendLibrary(std::filesystem::path{FOUNDATION_STANDARD_LIBRARY}, "std",
+                       "standard library") ||
+        !appendLibrary(std::filesystem::path{FOUNDATION_FRAMEWORK_LIBRARY}, "foundation",
+                       "Foundation framework")) {
+        return std::nullopt;
     }
 
     LoadedProject loaded;
     std::vector<ParsedFile> files;
     for (std::size_t index = 0; index < paths.size(); ++index) {
         const auto contents = readFile(paths[index], overlayContents);
-        const auto standardRelative =
-            standardRoot.empty() ? std::filesystem::path{}
-                                 : sourceIdentity(paths[index]).lexically_relative(
-                                       standardIdentity);
-        const auto standardSource =
-            !standardRelative.empty() && *standardRelative.begin() != "..";
-        const auto packageDisplay =
-            packageDisplayPaths.find(sourceIdentity(paths[index]).generic_string());
+        const auto identity = sourceIdentity(paths[index]).generic_string();
+        const auto packageDisplay = packageDisplayPaths.find(identity);
+        const auto libraryDisplay = libraryDisplayPaths.find(identity);
         const auto displayPath =
             packageDisplay != packageDisplayPaths.end()
                 ? packageDisplay->second
-                : standardSource
-                      ? (std::filesystem::path{"std"} / standardRelative).generic_string()
+                : libraryDisplay != libraryDisplayPaths.end()
+                      ? libraryDisplay->second
                   : directoryInput
                       ? paths[index].lexically_relative(projectRoot).generic_string()
                       : paths[index].generic_string();

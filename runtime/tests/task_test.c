@@ -141,6 +141,30 @@ int main(void) {
     assert(parent_cancellation_seen);
     assert(child_cancellation_seen);
     assert(fdn_task_live_count() == 0);
+
+    int supervised_polls = 0;
+    uint64_t supervisor = foundation_runtime_supervisor_open();
+    fdn_task *supervised_first = spawn_test(3, &supervised_polls, true, NULL);
+    fdn_task *supervised_second = spawn_test(4, &supervised_polls, false, NULL);
+    foundation_runtime_supervisor_adopt(supervisor, supervised_first);
+    foundation_runtime_supervisor_adopt(supervisor, supervised_second);
+    assert(foundation_runtime_supervisor_live_count() == 1);
+    foundation_runtime_supervisor_wait(supervisor);
+    foundation_runtime_supervisor_release(supervisor);
+    assert(supervised_polls == 3);
+    assert(foundation_runtime_supervisor_live_count() == 0);
+    assert(fdn_task_live_count() == 0);
+
+    bool supervised_cancellation_seen = false;
+    supervisor = foundation_runtime_supervisor_open();
+    fdn_task *supervised_cancelled =
+        spawn_test(5, &supervised_polls, true, &supervised_cancellation_seen);
+    foundation_runtime_supervisor_adopt(supervisor, supervised_cancelled);
+    foundation_runtime_supervisor_cancel(supervisor);
+    foundation_runtime_supervisor_release(supervisor);
+    assert(supervised_cancellation_seen);
+    assert(foundation_runtime_supervisor_live_count() == 0);
+    assert(fdn_task_live_count() == 0);
     assert(fdn_live_allocations() == 0);
     return 0;
 }

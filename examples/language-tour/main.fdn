@@ -2,6 +2,7 @@
 
 package tour
 
+import foundation.worker
 import std.collections
 import std.concurrent
 import std.env
@@ -177,6 +178,10 @@ task receiveChannelMessage(receiver Receiver<String>) bool {
         timeout 1.seconds: return false
         else error: return rejectChannelMessage(error)
     }
+}
+
+task supervisedMessage() void {
+    print("supervised task")
 }
 
 fn apply<T>(value T, operation view fn(T) T) T {
@@ -363,6 +368,9 @@ fn main(args view [String]) i32 {
     const receivingMessage = spawn receiveChannelMessage(receiver)
     $sendingMessage.wait()
     const channelMatches = $receivingMessage.wait()
+    const background = worker.NewSupervisor()
+    background.Start(spawn supervisedMessage())
+    background.Shutdown()
     if (inRange(current, 5, 5) || false) && nextByteCount == 11925602364 &&
         platformMatches && pathMatches && jsonMatches && timeMatches && argumentCount == 0 &&
         proxyCounterValue == 2 && dynamicCounterValue == 1 && backgroundValue == 42 &&

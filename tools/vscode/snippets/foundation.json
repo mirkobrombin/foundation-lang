@@ -513,6 +513,15 @@
         ],
         "description": "Spawn work with explicit structured cancellation"
     },
+    "Task supervisor": {
+        "prefix": "supervisor",
+        "body": [
+            "const ${1:background} = worker.NewSupervisor()",
+            "${1:background}.Start(spawn ${2:work}(${3}))",
+            "${1:background}.Shutdown()"
+        ],
+        "description": "Detach Task<void> under an explicit join policy"
+    },
     "State machine": {
         "prefix": "statemachine",
         "body": [

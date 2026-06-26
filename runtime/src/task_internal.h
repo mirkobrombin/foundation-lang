@@ -12,6 +12,8 @@ typedef struct fdn_task_external_source fdn_task_external_source;
 
 struct fdn_task {
     struct fdn_task *next;
+    struct fdn_task *supervisor_next;
+    void *supervisor;
     struct fdn_task *waiter;
     struct fdn_task *waiting_on;
     struct fdn_task *wait_next;

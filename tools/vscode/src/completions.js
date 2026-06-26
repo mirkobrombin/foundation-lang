@@ -109,6 +109,8 @@ const staticCompletions = [
     { label: "std.json", kind: "Module", detail: "Owned JSON values and parsing" },
     { label: "std.time", kind: "Module", detail: "Unix time values" },
     { label: "std.concurrent", kind: "Module", detail: "Structured cancellation values" },
+    { label: "foundation.worker", kind: "Module", detail: "Supervised application tasks" },
+    { label: "worker.Supervisor", kind: "Struct", detail: "owned supervised task lifetime" },
     {
         label: "platform.Current",
         kind: "Function",
@@ -300,6 +302,30 @@ const staticCompletions = [
         kind: "Method",
         detail: "fn IsRequested(view) bool",
         insertText: "IsRequested()"
+    },
+    {
+        label: "worker.NewSupervisor",
+        kind: "Function",
+        detail: "fn NewSupervisor() own worker.Supervisor",
+        insertText: "worker.NewSupervisor()"
+    },
+    {
+        label: "worker.Supervisor.Start",
+        kind: "Method",
+        detail: "fn Start(view, pending Task<void>) void",
+        insertText: "Start(${1:pending})"
+    },
+    {
+        label: "worker.Supervisor.Shutdown",
+        kind: "Method",
+        detail: "fn Shutdown(own) void",
+        insertText: "Shutdown()"
+    },
+    {
+        label: "worker.Supervisor.Cancel",
+        kind: "Method",
+        detail: "fn Cancel(own) void",
+        insertText: "Cancel()"
     },
     {
         label: "fn(...) R",
