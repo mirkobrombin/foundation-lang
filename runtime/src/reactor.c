@@ -246,8 +246,8 @@ void fdn_reactor_complete(fdn_reactor_operation *operation, int32_t status) {
     operation->status = status;
     operation->completed = true;
     fdn_reactor_push_complete(reactor, operation);
-    fdn_reactor_unlock(reactor);
     fdn_task_external_source_notify(reactor->source);
+    fdn_reactor_unlock(reactor);
 }
 
 size_t fdn_reactor_live_operations(void) {

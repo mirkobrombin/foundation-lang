@@ -21,9 +21,13 @@ add_library(foundation_runtime STATIC
     runtime/src/channel.c
     runtime/src/blocking.c
     runtime/src/reactor.c
+    runtime/src/net.c
 )
 target_include_directories(foundation_runtime PUBLIC runtime/include)
 target_link_libraries(foundation_runtime PUBLIC Threads::Threads)
+if(WIN32)
+    target_link_libraries(foundation_runtime PUBLIC ws2_32)
+endif()
 
 add_library(foundation_compiler STATIC
     stage0/src/codegen.cpp
@@ -64,6 +68,7 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_RUNTIME_CHANNEL_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c"
     FOUNDATION_RUNTIME_BLOCKING_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c"
     FOUNDATION_RUNTIME_REACTOR_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c"
+    FOUNDATION_RUNTIME_NET_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c"
     FOUNDATION_STANDARD_LIBRARY="${CMAKE_CURRENT_SOURCE_DIR}/std"
 )
 
@@ -148,6 +153,11 @@ if(FOUNDATION_BUILD_FUZZERS)
         "${FOUNDATION_FUZZ_CORPUS_DIR}/callback.fdn"
         COPYONLY
     )
+    configure_file(
+        tests/fuzz/corpus/network.fdn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/network.fdn"
+        COPYONLY
+    )
 endif()
 
 include(CTest)
@@ -178,6 +188,8 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_blocking_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_reactor_test runtime/tests/reactor_test.c)
     target_link_libraries(foundation_runtime_reactor_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_net_test runtime/tests/net_test.c)
+    target_link_libraries(foundation_runtime_net_test PRIVATE foundation_runtime)
     if(FOUNDATION_BUILD_FUZZERS)
         foreach(runtime_test IN ITEMS
                 foundation_runtime_panic_test
@@ -192,7 +204,8 @@ if(BUILD_TESTING)
                 foundation_runtime_cancellation_test
                 foundation_runtime_channel_test
                 foundation_runtime_blocking_test
-                foundation_runtime_reactor_test)
+                foundation_runtime_reactor_test
+                foundation_runtime_net_test)
             target_compile_options(${runtime_test} PRIVATE -fsanitize=address,undefined)
             target_link_options(${runtime_test} PRIVATE -fsanitize=address,undefined)
         endforeach()
@@ -211,6 +224,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_channel_test PRIVATE /W4)
         target_compile_options(foundation_runtime_blocking_test PRIVATE /W4)
         target_compile_options(foundation_runtime_reactor_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_net_test PRIVATE /W4)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE /WX)
             target_compile_options(foundation_runtime_allocation_test PRIVATE /WX)
@@ -225,6 +239,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_channel_test PRIVATE /WX)
             target_compile_options(foundation_runtime_blocking_test PRIVATE /WX)
             target_compile_options(foundation_runtime_reactor_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_net_test PRIVATE /WX)
         endif()
     else()
         target_compile_options(foundation_runtime_panic_test PRIVATE -Wall -Wextra -Wpedantic)
@@ -242,6 +257,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_channel_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_blocking_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_reactor_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_net_test PRIVATE -Wall -Wextra -Wpedantic)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_allocation_test PRIVATE -Werror)
@@ -256,6 +272,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_channel_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_blocking_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_reactor_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_net_test PRIVATE -Werror)
         endif()
     endif()
 
@@ -353,6 +370,7 @@ if(BUILD_TESTING)
     add_test(NAME runtime.channel COMMAND foundation_runtime_channel_test)
     add_test(NAME runtime.blocking COMMAND foundation_runtime_blocking_test)
     add_test(NAME runtime.reactor COMMAND foundation_runtime_reactor_test)
+    add_test(NAME runtime.net COMMAND foundation_runtime_net_test)
     set_tests_properties(runtime.env PROPERTIES
         ENVIRONMENT "FOUNDATION_ENV_TEST=foundation env value"
     )
@@ -1017,6 +1035,35 @@ if(BUILD_TESTING)
             -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs/lines.jsonl"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.network-tcp
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.fdn
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/net_server.c
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
+    )
+    add_test(
+        NAME stage0.run.network-tcp-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/network-tcp.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/network-tcp
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/net_server.c
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+            -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+            -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
     add_test(
@@ -1772,6 +1819,25 @@ if(BUILD_TESTING)
                 -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs/lines.jsonl"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.network-tcp-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/network-tcp-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/network-tcp-sanitized
+                -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/net_server.c
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )
     endif()

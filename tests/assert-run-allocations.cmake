@@ -20,6 +20,9 @@ endif()
 if(DEFINED RUNTIME_REACTOR_SOURCE)
     list(APPEND runtime_sources "${RUNTIME_REACTOR_SOURCE}")
 endif()
+if(DEFINED RUNTIME_NET_SOURCE)
+    list(APPEND runtime_sources "${RUNTIME_NET_SOURCE}")
+endif()
 if(DEFINED NATIVE)
     list(APPEND runtime_sources "${NATIVE}")
 endif()
@@ -37,23 +40,33 @@ endif()
 set(executable "${OUTPUT}")
 if(C_COMPILER_ID STREQUAL "MSVC")
     set(executable "${OUTPUT}.exe")
+    set(platform_libraries)
+    if(DEFINED RUNTIME_NET_SOURCE)
+        list(APPEND platform_libraries ws2_32.lib)
+    endif()
     execute_process(
         COMMAND "${C_COMPILER}" /nologo /std:c11 /W4 /WX
                 /DFOUNDATION_VERIFY_ALLOCATIONS "${GENERATED}" ${runtime_sources}
-                "/I${RUNTIME_INCLUDE}" "/Fe:${executable}"
+                "/I${RUNTIME_INCLUDE}" ${platform_libraries} "/Fe:${executable}"
         RESULT_VARIABLE build_result
         OUTPUT_VARIABLE build_output
         ERROR_VARIABLE build_error
     )
 else()
     set(thread_arguments)
-    if(DEFINED RUNTIME_BLOCKING_SOURCE OR DEFINED RUNTIME_REACTOR_SOURCE)
+    if(DEFINED RUNTIME_BLOCKING_SOURCE OR DEFINED RUNTIME_REACTOR_SOURCE OR
+       DEFINED RUNTIME_NET_SOURCE)
         list(APPEND thread_arguments -pthread)
+    endif()
+    set(platform_libraries)
+    if(WIN32 AND DEFINED RUNTIME_NET_SOURCE)
+        list(APPEND platform_libraries -lws2_32)
     endif()
     execute_process(
         COMMAND "${C_COMPILER}" -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror
                 -DFOUNDATION_VERIFY_ALLOCATIONS "${GENERATED}" ${runtime_sources}
-                -I "${RUNTIME_INCLUDE}" ${thread_arguments} -o "${executable}"
+                -I "${RUNTIME_INCLUDE}" ${thread_arguments} ${platform_libraries}
+                -o "${executable}"
         RESULT_VARIABLE build_result
         OUTPUT_VARIABLE build_output
         ERROR_VARIABLE build_error

@@ -23,7 +23,7 @@ enum class TokenKind {
     Attribute,
     Implements,
     Extends,
-    By,
+    Delegate,
     Fn,
     Task,
     Spawn,

@@ -989,8 +989,9 @@ void contractImplementationsIncludeInheritedAndDelegatedTypes() {
         "struct Admin implements Tagged {\n"
         "    fn name(view) String { \"admin\" }\n"
         "}\n"
-        "struct Wrapper implements Named by identity {\n"
+        "struct Wrapper implements Named {\n"
         "    identity Identity\n"
+        "    delegate identity as Named\n"
         "}\n"
         "fn make() Identity { Identity {} }\n"
         "fn use() Identity {\n"
@@ -1034,8 +1035,8 @@ void contractImplementationsIncludeInheritedAndDelegatedTypes() {
                ",\"character\":" + std::to_string(character) + "}}}";
     };
     const auto fieldTypeDefinition = typeDefinitionRequest(24, 12, 6);
-    const auto callableTypeDefinition = typeDefinitionRequest(25, 14, 4);
-    const auto localTypeDefinition = typeDefinitionRequest(26, 17, 6);
+    const auto callableTypeDefinition = typeDefinitionRequest(25, 15, 4);
+    const auto localTypeDefinition = typeDefinitionRequest(26, 18, 6);
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
@@ -1416,20 +1417,18 @@ void distributedMethodsExposeDocumentationAndParameters() {
     const auto rename = root / "profile" / "rename.fdn";
     writeFile(user,
               "package sample.profile\n"
-              "/// A profile edited across source files.\n"
+              "// A profile edited across source files.\n"
               "struct User {\n"
-              "    /// The name shown to people.\n"
+              "    // The name shown to people.\n"
               "    Name String\n"
               "}\n");
     writeFile(rename,
               "package sample.profile\n"
               "methods User {\n"
-              "    /**\n"
-              "     * Replaces the displayed profile name.\n"
-              "     */\n"
+              "    // Replaces the displayed profile name.\n"
               "    fn Rename(\n"
               "        edit,\n"
-              "        /// The new user-facing name.\n"
+              "        // The new user-facing name.\n"
               "        name String\n"
               "    ) void { self.Name = name }\n"
               "}\n");
@@ -1526,9 +1525,9 @@ void distributedMethodsExposeDocumentationAndParameters() {
                compositeType.find("\"methodCount\":1") != std::string::npos &&
                compositeType.find("\"fileCount\":2") != std::string::npos &&
                compositeType.find("\"kind\":\"method\"") != std::string::npos &&
-               compositeType.find("/**") != std::string::npos &&
+               compositeType.find("// Replaces the displayed profile name.") != std::string::npos &&
                compositeType.find(renameUri) != std::string::npos,
-           "composite type request preserves documented editable fragments across files");
+           "composite type request preserves documented source locations across files");
     expect(userHover.find("1 field, 1 method across 2 files") != std::string::npos &&
                userHover.find("**Fields**") != std::string::npos &&
                userHover.find("The name shown to people.") != std::string::npos &&

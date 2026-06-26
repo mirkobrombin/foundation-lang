@@ -32,9 +32,8 @@ const staticCompletions = [
     { label: "contract", kind: "Keyword" },
     { label: "implements", kind: "Keyword" },
     { label: "extends", kind: "Keyword", detail: "Inherit contract requirements" },
-    { label: "by", kind: "Keyword", detail: "Delegate a contract to a field" },
+    { label: "delegate", kind: "Keyword", detail: "Delegate a contract through a field" },
     { label: "methods", kind: "Keyword", detail: "Add methods to a package-owned type" },
-    { label: "forward", kind: "Keyword", detail: "Forward a contract to a field" },
     { label: "service", kind: "Keyword", detail: "Declare a Foundation service" },
     { label: "action", kind: "Keyword", detail: "Declare a typed action handler" },
     { label: "state_machine", kind: "Keyword", detail: "Declare a typed state machine" },
@@ -95,12 +94,17 @@ const staticCompletions = [
     { label: "Channel", kind: "TypeParameter", detail: "owned channel endpoint pair" },
     { label: "Sender", kind: "TypeParameter", detail: "owned channel send endpoint" },
     { label: "Receiver", kind: "TypeParameter", detail: "owned channel receive endpoint" },
+    { label: "TcpConnection", kind: "Struct", detail: "owned TCP connection" },
+    { label: "TcpReader", kind: "Struct", detail: "owned TCP read half" },
+    { label: "TcpWriter", kind: "Struct", detail: "owned TCP write half" },
+    { label: "StreamPair", kind: "Struct", detail: "owned TCP read and write halves" },
     { label: "std.platform", kind: "Module", detail: "Compilation target information" },
     { label: "std.env", kind: "Module", detail: "Read-only process environment" },
     { label: "std.text", kind: "Module", detail: "UTF-8 String inspection" },
     { label: "std.path", kind: "Module", detail: "Portable path operations" },
     { label: "std.parse", kind: "Module", detail: "Primitive value parsing" },
     { label: "std.fs", kind: "Module", detail: "Read-only filesystem operations" },
+    { label: "std.net", kind: "Module", detail: "Portable TCP client operations" },
     { label: "std.format", kind: "Module", detail: "Primitive value formatting" },
     { label: "std.json", kind: "Module", detail: "Owned JSON values and parsing" },
     { label: "std.time", kind: "Module", detail: "Unix time values" },
@@ -206,6 +210,36 @@ const staticCompletions = [
         kind: "Method",
         detail: "fn NextLimited(edit, limit u64) Result<Option<String>, fs.Error>",
         insertText: "NextLimited(${1:limit})"
+    },
+    {
+        label: "net.Connect",
+        kind: "Function",
+        detail: "task Connect(host String, port u64) Result<own net.TcpConnection, net.Error>",
+        insertText: "net.Connect(${1:host}, ${2:port})"
+    },
+    {
+        label: "net.TcpConnection.Split",
+        kind: "Method",
+        detail: "fn Split(own) Result<net.StreamPair, net.Error>",
+        insertText: "Split()"
+    },
+    {
+        label: "net.ReadLine",
+        kind: "Function",
+        detail: "task ReadLine(reader own net.TcpReader) net.ReadLineOutcome",
+        insertText: "net.ReadLine(${1:reader})"
+    },
+    {
+        label: "net.ReadLineLimited",
+        kind: "Function",
+        detail: "task ReadLineLimited(reader own net.TcpReader, limit u64) net.ReadLineOutcome",
+        insertText: "net.ReadLineLimited(${1:reader}, ${2:limit})"
+    },
+    {
+        label: "net.WriteAll",
+        kind: "Function",
+        detail: "task WriteAll(writer own net.TcpWriter, text String) net.WriteOutcome",
+        insertText: "net.WriteAll(${1:writer}, ${2:text})"
     },
     {
         label: "format.I32",
@@ -818,11 +852,17 @@ function collectCompletions(source, projectSources = []) {
         const name = declaration.name;
         const typeParameters = declaration.typeParameters;
         const fields = collectStructFields(declaration.body);
+        const delegates = [...declaration.body.matchAll(
+            /\bdelegate\s+([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*<[^{}()\n]+>)?)/g
+        )];
+        const delegation = delegates.length === 0
+            ? ""
+            : `; delegates ${delegates.map((entry) => `${entry[2]} to ${entry[1]}`).join(", ")}`;
         completions.push({
             label: name,
             kind: "Struct",
             detail: declaration.implementations
-                ? `Foundation struct implements ${declaration.implementations.trim()}`
+                ? `Foundation struct implements ${declaration.implementations.trim()}${delegation}`
                 : typeParameters.length === 0
                 ? "Foundation struct"
                 : `Foundation struct<${typeParameters.join(", ")}>`,

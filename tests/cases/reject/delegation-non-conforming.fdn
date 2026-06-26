@@ -6,8 +6,10 @@ struct Identity {
     value i32
 }
 
-struct Invalid implements Named by identity {
+struct Invalid implements Named {
     identity Identity
+
+    delegate identity as Named
 }
 
 fn main() i32 { 0 }

@@ -55,14 +55,22 @@ std::string documentationBefore(std::string_view source, std::size_t offset) {
     }
     const auto newline = offset == 0 ? std::string_view::npos : source.rfind('\n', offset - 1);
     auto cursor = newline == std::string_view::npos ? 0 : newline + 1;
+    while (cursor != 0) {
+        const auto [start, end] = previousLine(source, cursor);
+        const auto line = trimWhitespace(source.substr(start, end - start));
+        if (!line.starts_with('@')) {
+            break;
+        }
+        cursor = start;
+    }
     std::vector<std::string> lines;
     while (cursor != 0) {
         const auto [start, end] = previousLine(source, cursor);
         const auto line = trimWhitespace(source.substr(start, end - start));
-        if (!line.starts_with("///")) {
+        if (!line.starts_with("//")) {
             break;
         }
-        auto text = line.substr(3);
+        auto text = line.substr(2);
         if (!text.empty() && text.front() == ' ') {
             text.remove_prefix(1);
         }
@@ -80,43 +88,7 @@ std::string documentationBefore(std::string_view source, std::size_t offset) {
         }
         return result;
     }
-    if (cursor == 0) {
-        return {};
-    }
-    const auto [start, end] = previousLine(source, cursor);
-    const auto line = trimWhitespace(source.substr(start, end - start));
-    if (!line.ends_with("*/")) {
-        return {};
-    }
-    const auto close = source.rfind("*/", end);
-    const auto open = close == std::string_view::npos ? std::string_view::npos
-                                                       : source.rfind("/**", close);
-    if (open == std::string_view::npos || close < open + 3) {
-        return {};
-    }
-    std::string result;
-    auto body = source.substr(open + 3, close - open - 3);
-    while (!body.empty()) {
-        const auto next = body.find('\n');
-        auto part = trimWhitespace(body.substr(0, next));
-        if (part.starts_with("*")) {
-            part.remove_prefix(1);
-            if (!part.empty() && part.front() == ' ') {
-                part.remove_prefix(1);
-            }
-        }
-        if (!part.empty()) {
-            if (!result.empty()) {
-                result += '\n';
-            }
-            result += part;
-        }
-        if (next == std::string_view::npos) {
-            break;
-        }
-        body.remove_prefix(next + 1);
-    }
-    return result;
+    return {};
 }
 
 std::string shortName(std::string_view name) {
@@ -1255,7 +1227,7 @@ bool validIdentifier(std::string_view name) {
 bool reservedIdentifier(std::string_view name) {
     static const std::set<std::string_view> reserved{
         "package", "import", "as",      "extern", "struct", "enum",  "contract",
-        "attribute", "implements", "extends", "by", "fn", "let", "var", "return",
+        "attribute", "implements", "extends", "delegate", "fn", "let", "var", "return",
         "discard", "if", "else", "while", "match", "capture", "replace", "with",
         "own", "view", "edit", "true", "false", "print", "panic", "len", "i32",
         "u64", "bool", "String", "void", "Option", "Result", "ChannelError", "Task",

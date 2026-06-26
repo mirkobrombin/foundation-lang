@@ -47,7 +47,7 @@ fn readErrorFor(status i32) Error {
     errorFor(status)
 }
 
-/// Reads one UTF-8 file without blocking the Foundation executor.
+// Reads one UTF-8 file without blocking the Foundation executor.
 task ReadText(path String) Result<String, Error> {
     const defaultLimit u64 = 16777216
     var result = ""
@@ -58,7 +58,7 @@ task ReadText(path String) Result<String, Error> {
     .Err(readErrorFor(status))
 }
 
-/// Reads one UTF-8 file up to the caller-provided byte limit.
+// Reads one UTF-8 file up to the caller-provided byte limit.
 task ReadTextLimited(path String, limit u64) Result<String, Error> {
     var result = ""
     const status = readTextLimitedNative(view path, limit, edit result)

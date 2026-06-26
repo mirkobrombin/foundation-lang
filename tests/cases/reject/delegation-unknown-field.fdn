@@ -2,8 +2,10 @@ contract Named {
     fn value(view) i32
 }
 
-struct Invalid implements Named by missing {
+struct Invalid implements Named {
     value i32
+
+    delegate missing as Named
 }
 
 fn main() i32 { 0 }

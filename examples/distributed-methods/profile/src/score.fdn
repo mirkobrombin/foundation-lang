@@ -1,10 +1,10 @@
 package example.profile
 
 methods User {
-    /// Adds an amount to the current score.
+    // Adds an amount to the current score.
     fn AddScore(
         edit,
-        /// The amount added to the score.
+        // The amount added to the score.
         amount i32
     ) void {
         self.Score = self.Score + amount

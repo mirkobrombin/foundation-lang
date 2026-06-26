@@ -106,8 +106,8 @@ const char *tokenName(TokenKind kind) {
         return "implements";
     case TokenKind::Extends:
         return "extends";
-    case TokenKind::By:
-        return "by";
+    case TokenKind::Delegate:
+        return "delegate";
     case TokenKind::Fn:
         return "fn";
     case TokenKind::Task:
@@ -415,8 +415,8 @@ Token Lexer::identifier() {
         kind = TokenKind::Implements;
     } else if (text == "extends") {
         kind = TokenKind::Extends;
-    } else if (text == "by") {
-        kind = TokenKind::By;
+    } else if (text == "delegate") {
+        kind = TokenKind::Delegate;
     } else if (text == "fn") {
         kind = TokenKind::Fn;
     } else if (text == "task") {

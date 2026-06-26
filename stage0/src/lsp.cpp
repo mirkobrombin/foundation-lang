@@ -1218,30 +1218,11 @@ std::optional<SourceSpan> declarationExtent(std::string_view source,
         while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
             line.remove_prefix(1);
         }
-        if (line.starts_with("///") || line.starts_with('@')) {
+        if (line.starts_with("//") || line.starts_with('@')) {
             start = lineStart;
             continue;
         }
-        if (!line.ends_with("*/")) {
-            break;
-        }
-        auto documentationStart = lineStart;
-        auto foundStart = line.find("/**") != std::string_view::npos;
-        while (!foundStart && documentationStart != 0) {
-            const auto documentationEnd = documentationStart - 1;
-            const auto precedingBreak = source.rfind(
-                '\n', documentationEnd == 0 ? 0 : documentationEnd - 1);
-            const auto precedingStart =
-                precedingBreak == std::string_view::npos ? 0 : precedingBreak + 1;
-            const auto precedingLine =
-                source.substr(precedingStart, documentationEnd - precedingStart);
-            documentationStart = precedingStart;
-            foundStart = precedingLine.find("/**") != std::string_view::npos;
-        }
-        if (!foundStart) {
-            break;
-        }
-        start = documentationStart;
+        break;
     }
     const auto end = body->span.offset + body->span.length;
     const auto position = positionAt(source, start);
@@ -2697,7 +2678,7 @@ class LanguageServer {
                     {{"range", lspRange(requestedSource.contents, symbol->definition)},
                      {"command",
                       Json::object(
-                          {{"title", "Open Composite Type View"},
+                          {{"title", "Peek Composite Type"},
                            {"command", "foundation.openCompositeType"},
                            {"arguments", Json::array({*uri, lspPosition(position)})}})}}));
             }
@@ -3658,7 +3639,7 @@ class LanguageServer {
         if (!attributeContext) {
             constexpr std::string_view keywords[] = {
                 "package", "import", "as",      "extern", "struct", "enum",  "contract",
-                "attribute", "implements", "extends", "by", "methods", "fn", "task", "spawn",
+                "attribute", "implements", "extends", "delegate", "methods", "fn", "task", "spawn",
                 "let",      "const",      "var",
                 "return",  "discard", "if",      "else",   "while",  "select", "timeout",
                 "match", "capture",

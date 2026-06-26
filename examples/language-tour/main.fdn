@@ -109,8 +109,10 @@ struct TourCounter implements Counter {
     }
 }
 
-struct TourCounterProxy implements Counter by counter {
+struct TourCounterProxy implements Counter {
     counter TourCounter
+
+    delegate counter as Counter
 }
 
 fn readCounter(@TourLabel("counter") counter view Counter) i32 {

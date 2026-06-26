@@ -53,8 +53,10 @@ struct Counter implements CounterValue {
     }
 }
 
-struct CounterWrapper implements CounterValue by counter {
+struct CounterWrapper implements CounterValue {
     counter Counter
+
+    delegate counter as CounterValue
 }
 
 struct Packet {

@@ -235,11 +235,10 @@ fn main() i32 {
 
 void immutableBindingsAndCommentsLexDeterministically() {
     constexpr std::string_view source = R"(
-/** Public entry point.
- /* Nested documentation detail. */
-*/
+// Public entry point.
+// Nested documentation detail.
 fn main() i32 {
-    /// The immutable answer.
+    // The immutable answer.
     const answer = 21
     // The implementation remains ordinary source.
     /* A nested block /* keeps its contents. */ */
@@ -248,7 +247,7 @@ fn main() i32 {
 )";
     auto first = check(source);
     auto second = check(source);
-    expect(!first.diagnostics.hasErrors(), "const and all comment forms are accepted");
+    expect(!first.diagnostics.hasErrors(), "const and both comment forms are accepted");
     expect(first.fir.has_value() && second.fir.has_value(),
            "const source lowers to FIR repeatedly");
     if (first.fir.has_value() && second.fir.has_value()) {
@@ -936,7 +935,10 @@ fn main() i32 { let value = Number {} read(view value) - 3 }
     const auto unknownDelegate = check(R"delegate(
 contract Named { fn value(view) i32 }
 struct Identity implements Named { fn value(view) i32 { 1 } }
-struct Invalid implements Named by missing { identity Identity }
+struct Invalid implements Named {
+    identity Identity
+    delegate missing as Named
+}
 fn main() i32 { 0 }
 )delegate");
     expect(hasCode(unknownDelegate.diagnostics, "FDN2146"),
@@ -945,11 +947,39 @@ fn main() i32 { 0 }
     const auto invalidDelegate = check(R"delegate(
 contract Named { fn value(view) i32 }
 struct Identity { value i32 }
-struct Invalid implements Named by identity { identity Identity }
+struct Invalid implements Named {
+    identity Identity
+    delegate identity as Named
+}
 fn main() i32 { 0 }
 )delegate");
     expect(hasCode(invalidDelegate.diagnostics, "FDN2147"),
            "non-conforming delegation field reports FDN2147");
+
+    const auto undeclaredDelegation = check(R"delegate(
+contract Named { fn value(view) i32 }
+struct Identity implements Named { fn value(view) i32 { 1 } }
+struct Invalid {
+    identity Identity
+    delegate identity as Named
+}
+fn main() i32 { 0 }
+)delegate");
+    expect(hasCode(undeclaredDelegation.diagnostics, "FDN1171"),
+           "delegation requires the contract in the implements list");
+
+    const auto duplicateDelegation = check(R"delegate(
+contract Named { fn value(view) i32 }
+struct Identity implements Named { fn value(view) i32 { 1 } }
+struct Invalid implements Named {
+    identity Identity
+    delegate identity as Named
+    delegate identity as Named
+}
+fn main() i32 { 0 }
+)delegate");
+    expect(hasCode(duplicateDelegation.diagnostics, "FDN1172"),
+           "a contract accepts one explicit delegate");
 }
 
 void lightweightSyntaxCarriesVisibilityAndContext() {

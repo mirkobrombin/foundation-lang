@@ -100,6 +100,7 @@ bool fdn_task_cancellation_enter(bool requested);
 void fdn_task_cancellation_leave(bool previous);
 bool fdn_task_cancellation_current(void);
 size_t fdn_task_live_count(void);
+bool fdn_utf8_valid(const char *value, size_t length);
 bool fdn_blocking_poll(fdn_blocking_job **job, void *context,
                        fdn_blocking_work_fn work);
 size_t fdn_blocking_live_jobs(void);
@@ -187,6 +188,28 @@ int32_t foundation_runtime_fs_modified(const fdn_string *path, uint64_t *unix_se
 int32_t foundation_runtime_fs_read_text_limited(const fdn_string *path, uint64_t max_length,
                                                 fdn_string *result);
 uint64_t foundation_runtime_fs_live_directories(void);
+int32_t foundation_runtime_net_resolve(const fdn_string *host, uint64_t port,
+                                       uint64_t *addresses);
+void foundation_runtime_net_addresses_close(uint64_t addresses);
+void foundation_runtime_net_connect_start(uint64_t addresses, uint64_t *connection,
+                                          fdn_reactor_operation *operation);
+void foundation_runtime_net_connect_cancel(fdn_reactor_operation *operation);
+int32_t foundation_runtime_net_split(uint64_t connection, uint64_t *reader,
+                                     uint64_t *writer);
+void foundation_runtime_net_connection_close(uint64_t connection);
+void foundation_runtime_net_reader_close(uint64_t reader);
+void foundation_runtime_net_writer_close(uint64_t writer);
+void foundation_runtime_net_read_line_start(uint64_t reader, uint64_t limit,
+                                            fdn_string *line,
+                                            fdn_reactor_operation *operation);
+void foundation_runtime_net_read_line_cancel(fdn_reactor_operation *operation);
+void foundation_runtime_net_write_all_start(uint64_t writer, const fdn_string *text,
+                                            fdn_reactor_operation *operation);
+void foundation_runtime_net_write_all_cancel(fdn_reactor_operation *operation);
+uint64_t foundation_runtime_net_live_addresses(void);
+uint64_t foundation_runtime_net_live_connections(void);
+uint64_t foundation_runtime_net_live_requests(void);
+uint64_t foundation_runtime_net_live_services(void);
 
 #ifdef __cplusplus
 }

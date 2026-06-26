@@ -167,26 +167,13 @@
         "comments": {
             "patterns": [
                 {
-                    "name": "comment.line.documentation.foundation",
-                    "begin": "///",
-                    "end": "$"
-                },
-                {
                     "name": "comment.line.double-slash.foundation",
-                    "begin": "//(?!/)",
+                    "begin": "//",
                     "end": "$"
-                },
-                {
-                    "name": "comment.block.documentation.foundation",
-                    "begin": "/\\*\\*",
-                    "end": "\\*/",
-                    "patterns": [
-                        { "include": "#nestedBlockComments" }
-                    ]
                 },
                 {
                     "name": "comment.block.foundation",
-                    "begin": "/\\*(?!\\*)",
+                    "begin": "/\\*",
                     "end": "\\*/",
                     "patterns": [
                         { "include": "#nestedBlockComments" }
@@ -196,14 +183,6 @@
         },
         "nestedBlockComments": {
             "patterns": [
-                {
-                    "name": "comment.block.documentation.foundation",
-                    "begin": "/\\*\\*",
-                    "end": "\\*/",
-                    "patterns": [
-                        { "include": "#nestedBlockComments" }
-                    ]
-                },
                 {
                     "name": "comment.block.foundation",
                     "begin": "/\\*(?!\\*)",
@@ -288,12 +267,12 @@
                     }
                 },
                 {
-                    "match": "\\b(forward)\\s+([A-Z][A-Za-z0-9_]*(?:\\s*<[^{}()\\n]+>)?)\\s+(as)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "match": "\\b(delegate)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+(as)\\s+([A-Z][A-Za-z0-9_]*(?:\\s*<[^{}()\\n]+>)?)",
                     "captures": {
                         "1": { "name": "keyword.declaration.delegation.foundation" },
-                        "2": { "name": "entity.name.type.interface.foundation" },
+                        "2": { "name": "variable.other.member.delegate.foundation" },
                         "3": { "name": "keyword.control.import.as.foundation" },
-                        "4": { "name": "variable.other.member.delegate.foundation" }
+                        "4": { "name": "entity.name.type.interface.foundation" }
                     }
                 },
                 {
@@ -320,13 +299,6 @@
                         "7": {
                             "name": "meta.contract.implementation.foundation",
                             "patterns": [
-                                {
-                                    "match": "\\b(by)\\s+([A-Za-z_][A-Za-z0-9_]*)",
-                                    "captures": {
-                                        "1": { "name": "keyword.declaration.delegation.foundation" },
-                                        "2": { "name": "variable.other.member.delegate.foundation" }
-                                    }
-                                },
                                 { "include": "#genericTypeApplications" },
                                 { "include": "#nominalTypes" },
                                 { "include": "#punctuation" }
@@ -600,7 +572,7 @@
             "patterns": [
                 {
                     "name": "keyword.declaration.foundation",
-                    "match": "\\b(attribute|extern|struct|enum|contract|implements|extends|by|fn|methods|service|action|state_machine|pipeline|saga|task|test)\\b"
+                    "match": "\\b(attribute|extern|struct|enum|contract|implements|extends|delegate|fn|methods|service|action|state_machine|pipeline|saga|task|test)\\b"
                 },
                 {
                     "name": "keyword.declaration.attribute.foundation",
@@ -612,7 +584,7 @@
                 },
                 {
                     "name": "keyword.control.foundation",
-                    "match": "\\b(return|discard|if|else|while|for|in|break|continue|match|capture|replace|with|new|spawn|select|timeout|unsafe|state|on|from|to|step|using|retry|compensate|forward)\\b"
+                    "match": "\\b(return|discard|if|else|while|for|in|break|continue|match|capture|replace|with|new|spawn|select|timeout|unsafe|state|on|from|to|step|using|retry|compensate)\\b"
                 },
                 {
                     "name": "constant.language.boolean.foundation",
@@ -636,7 +608,7 @@
             "patterns": [
                 {
                     "name": "support.type.foundation",
-                    "match": "\\b(bool|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|isize|usize|void|never|String|UUID|Option|Result|ChannelError|Channel|Sender|Receiver|Cancellation|Task)\\b"
+                    "match": "\\b(bool|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|isize|usize|void|never|String|UUID|Option|Result|ChannelError|Channel|Sender|Receiver|Cancellation|Task|TcpConnection|TcpReader|TcpWriter|StreamPair)\\b"
                 }
             ]
         },

@@ -42,6 +42,20 @@
         ],
         "description": "Read one UTF-8 file without blocking the Foundation executor"
     },
+    "TCP client tasks": {
+        "prefix": "tcpclient",
+        "body": [
+            "const ${1:connecting} = spawn net.Connect(${2:host}, ${3:port})",
+            "const ${4:connection} = \\$${1:connecting}.wait() else ${5:error} {",
+            "    ${6:return 1}",
+            "}",
+            "const ${7:pair} = ${4:connection}.Split() else ${8:error} {",
+            "    ${9:return 1}",
+            "}",
+            "const net.StreamPair { Reader as ${10:reader} Writer as ${11:writer} } = ${7:pair}"
+        ],
+        "description": "Connect and split an owned TCP stream"
+    },
     "Parse JSON value": {
         "prefix": "jsonparse",
         "body": [
@@ -198,8 +212,8 @@
         "description": "Declare a contract that inherits requirements"
     },
     "Delegated contract implementation": {
-        "prefix": "implementsby",
-        "body": "struct ${1:Name} implements ${2:Contract} {\n    ${3:field} ${4:Implementation}\n\n    forward ${2:Contract} as ${3:field}\n    ${5}\n}",
+        "prefix": "delegate",
+        "body": "struct ${1:Name} implements ${2:Contract} {\n    ${3:field} ${4:Implementation}\n\n    delegate ${3:field} as ${2:Contract}\n    ${5}\n}",
         "description": "Delegate a contract implementation to a field"
     },
     "Contract default method": {

@@ -49,7 +49,7 @@ static const char *fdn_trace_value(const char *value) {
     return value != NULL ? value : "<unknown>";
 }
 
-static int fdn_valid_utf8(const char *value, size_t length) {
+bool fdn_utf8_valid(const char *value, size_t length) {
     size_t offset = 0;
     while (offset < length) {
         const unsigned char first = (unsigned char)value[offset];
@@ -399,7 +399,7 @@ int32_t foundation_runtime_env_read(const fdn_string *name, fdn_string *value) {
     }
     fdn_string_drop(value);
     *value = fdn_string_static("", 0);
-    if (!fdn_valid_env_name(name) || !fdn_valid_utf8(name->data, name->length)) {
+    if (!fdn_valid_env_name(name) || !fdn_utf8_valid(name->data, name->length)) {
         return 2;
     }
 
@@ -479,7 +479,7 @@ int32_t foundation_runtime_env_read(const fdn_string *name, fdn_string *value) {
             return 0;
         }
         length = strlen(native_value);
-        if (!fdn_valid_utf8(native_value, length)) {
+        if (!fdn_utf8_valid(native_value, length)) {
             return 3;
         }
         *value = fdn_string_copy(native_value, length);
@@ -732,7 +732,7 @@ bool foundation_runtime_string_builder_append_code_point(uint64_t handle, uint64
 fdn_string foundation_runtime_string_builder_finish(uint64_t handle) {
     fdn_string_builder *builder = fdn_builder(handle);
     fdn_string result;
-    if (!fdn_valid_utf8(builder->data, builder->length)) {
+    if (!fdn_utf8_valid(builder->data, builder->length)) {
         fdn_panic_cstr("string builder produced invalid UTF-8");
     }
     if (builder->length == 0) {
@@ -846,7 +846,7 @@ static int32_t fdn_fs_status(int error) {
 static int fdn_valid_path(const fdn_string *path) {
     size_t offset;
     if (path == NULL || path->data == NULL || path->length == 0 ||
-        !fdn_valid_utf8(path->data, path->length)) {
+        !fdn_utf8_valid(path->data, path->length)) {
         return 0;
     }
     for (offset = 0; offset < path->length; ++offset) {
@@ -994,7 +994,7 @@ int32_t foundation_runtime_fs_next_line_limited(uint64_t handle, uint64_t max_le
     if (length != 0 && data[length - 1] == '\r') {
         --length;
     }
-    if (!fdn_valid_utf8(data, length)) {
+    if (!fdn_utf8_valid(data, length)) {
         fdn_dealloc(data);
         return 3;
     }
@@ -1222,7 +1222,7 @@ int32_t foundation_runtime_fs_next_directory(uint64_t handle, fdn_string *name) 
             continue;
         }
         length = strlen(entry->d_name);
-        if (!fdn_valid_utf8(entry->d_name, length)) {
+        if (!fdn_utf8_valid(entry->d_name, length)) {
             return 2;
         }
         *name = fdn_string_copy(entry->d_name, length);
@@ -1395,7 +1395,7 @@ int32_t foundation_runtime_fs_read_text_limited(const fdn_string *path, uint64_t
         fdn_dealloc(data);
         return 4;
     }
-    if (!fdn_valid_utf8(data, length)) {
+    if (!fdn_utf8_valid(data, length)) {
         fdn_dealloc(data);
         return 6;
     }

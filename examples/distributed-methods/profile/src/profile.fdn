@@ -1,0 +1,8 @@
+package example.profile
+
+// Operations supported by a mutable user profile.
+contract Profile {
+    fn Display(view) void
+    fn Rename(edit, name String) void
+    fn AddScore(edit, amount i32) void
+}

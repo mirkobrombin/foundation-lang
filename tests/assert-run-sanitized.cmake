@@ -30,12 +30,16 @@ endif()
 if(DEFINED RUNTIME_REACTOR_SOURCE)
     list(APPEND runtime_sources "${RUNTIME_REACTOR_SOURCE}")
 endif()
+if(DEFINED RUNTIME_NET_SOURCE)
+    list(APPEND runtime_sources "${RUNTIME_NET_SOURCE}")
+endif()
 if(DEFINED NATIVE)
     list(APPEND runtime_sources "${NATIVE}")
 endif()
 
 set(thread_arguments)
-if(DEFINED RUNTIME_BLOCKING_SOURCE OR DEFINED RUNTIME_REACTOR_SOURCE)
+if(DEFINED RUNTIME_BLOCKING_SOURCE OR DEFINED RUNTIME_REACTOR_SOURCE OR
+   DEFINED RUNTIME_NET_SOURCE)
     list(APPEND thread_arguments -pthread)
 endif()
 

@@ -85,16 +85,22 @@ struct Identity implements Named<i32> {
     fn value(view) i32 { self.stored }
 }
 
-struct DelegatedEntry implements Named<i32> by identity {
+struct DelegatedEntry implements Named<i32> {
     identity Identity
+
+    delegate identity as Named<i32>
 }
 
-struct NestedEntry implements Named<i32> by entry {
+struct NestedEntry implements Named<i32> {
     entry DelegatedEntry
+
+    delegate entry as Named<i32>
 }
 
-struct OverriddenEntry implements Named<i32> by identity {
+struct OverriddenEntry implements Named<i32> {
     identity Identity
+
+    delegate identity as Named<i32>
 
     fn value(view) i32 { self.identity.stored + 2 }
 }
@@ -112,8 +118,10 @@ struct CustomMetric implements Scored {
     fn doubled(view) i32 { self.stored + 2 }
 }
 
-struct MetricWrapper implements Scored by inner {
+struct MetricWrapper implements Scored {
     inner Metric
+
+    delegate inner as Scored
 }
 
 struct Number implements Echo<i32> {
@@ -129,8 +137,10 @@ struct CombinedNumber implements CombinedValue {
     fn right(view) i32 { 41 }
 }
 
-struct CombinedWrapper implements CombinedValue by inner {
+struct CombinedWrapper implements CombinedValue {
     inner CombinedNumber
+
+    delegate inner as CombinedValue
 }
 
 struct Counter implements Accumulator {

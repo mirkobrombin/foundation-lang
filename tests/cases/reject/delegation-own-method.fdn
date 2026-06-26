@@ -8,8 +8,10 @@ struct Inner implements Consumer {
     fn take(own) i32 { self.value }
 }
 
-struct Invalid implements Consumer by inner {
+struct Invalid implements Consumer {
     inner Inner
+
+    delegate inner as Consumer
 }
 
 fn main() i32 { 0 }

@@ -1,0 +1,208 @@
+package test.network_tcp
+
+import std.net
+
+extern c fn startServer(port edit u64) u64 as foundation_test_net_server_start
+extern c fn joinServer(server u64) i32 as foundation_test_net_server_join
+extern c fn liveAddresses() u64 as foundation_runtime_net_live_addresses
+extern c fn liveConnections() u64 as foundation_runtime_net_live_connections
+extern c fn liveRequests() u64 as foundation_runtime_net_live_requests
+extern c fn liveServices() u64 as foundation_runtime_net_live_services
+
+fn errorName(error net.Error) String {
+    match error {
+        InvalidAddress: "TCP address is invalid"
+        ResolveFailed: "TCP resolution failed"
+        Refused: "TCP connection was refused"
+        Closed: "TCP connection was closed"
+        Cancelled: "TCP connection was cancelled"
+        InvalidUtf8: "TCP connection returned invalid UTF-8"
+        LineTooLong: "TCP connection returned a long line"
+        Io: "TCP connection I/O failed"
+    }
+}
+
+fn connectionOr(value Result<own net.TcpConnection, net.Error>) own net.TcpConnection {
+    const connection = value else error {
+        panic(errorName(error))
+    }
+    connection
+}
+
+fn pairOr(value Result<net.StreamPair, net.Error>) net.StreamPair {
+    const pair = value else error {
+        discard error
+        panic("TCP split failed")
+    }
+    pair
+}
+
+fn lineOr(value Result<Option<String>, net.Error>) String {
+    match value {
+        Ok(optional): match optional {
+            None: ""
+            Some(line): line
+        }
+        Err(error): ""
+    }
+}
+
+fn isEof(value Result<Option<String>, net.Error>) bool {
+    match value {
+        Ok(optional): match optional {
+            None: true
+            Some(line): false
+        }
+        Err(error): false
+    }
+}
+
+fn writeSucceeded(value Result<void, net.Error>) bool {
+    match value {
+        Ok: true
+        Err(error): false
+    }
+}
+
+fn isInvalidUtf8(value Result<Option<String>, net.Error>) bool {
+    match value {
+        Ok(optional): false
+        Err(error): match error {
+            InvalidAddress: false
+            ResolveFailed: false
+            Refused: false
+            Closed: false
+            Cancelled: false
+            InvalidUtf8: true
+            LineTooLong: false
+            Io: false
+        }
+    }
+}
+
+fn isLineTooLong(value Result<Option<String>, net.Error>) bool {
+    match value {
+        Ok(optional): false
+        Err(error): match error {
+            InvalidAddress: false
+            ResolveFailed: false
+            Refused: false
+            Closed: false
+            Cancelled: false
+            InvalidUtf8: false
+            LineTooLong: true
+            Io: false
+        }
+    }
+}
+
+fn isRefused(value Result<own net.TcpConnection, net.Error>) bool {
+    match value {
+        Ok(connection): false
+        Err(error): match error {
+            InvalidAddress: false
+            ResolveFailed: false
+            Refused: true
+            Closed: false
+            Cancelled: false
+            InvalidUtf8: false
+            LineTooLong: false
+            Io: false
+        }
+    }
+}
+
+fn isInvalidAddress(value Result<own net.TcpConnection, net.Error>) bool {
+    match value {
+        Ok(connection): false
+        Err(error): match error {
+            InvalidAddress: true
+            ResolveFailed: false
+            Refused: false
+            Closed: false
+            Cancelled: false
+            InvalidUtf8: false
+            LineTooLong: false
+            Io: false
+        }
+    }
+}
+
+fn main() i32 {
+    var port u64 = 0
+    const server = startServer(edit port)
+    if server == 0 || port == 0 || port > 65535 {
+        return 1
+    }
+    const invalidAddress = spawn net.Connect("", port)
+    if !isInvalidAddress($invalidAddress.wait()) {
+        return 8
+    }
+
+    const connecting = spawn net.Connect("localhost", port)
+    const connection = connectionOr($connecting.wait())
+    const pair = pairOr(connection.Split())
+    const net.StreamPair { Reader as reader Writer as writer } = pair
+
+    const writing = spawn net.WriteAll(writer, "ping\n")
+    const reading = spawn net.ReadLine(reader)
+    const net.WriteOutcome { Writer as writerAfter Value as writeResult } = $writing.wait()
+    const net.ReadLineOutcome { Reader as readerAfter Value as firstResult } = $reading.wait()
+    const first = lineOr(firstResult)
+
+    const secondReading = spawn net.ReadLineLimited(readerAfter, 3)
+    const net.ReadLineOutcome { Reader as readerSecond Value as secondResult } = $secondReading.wait()
+    const second = lineOr(secondResult)
+
+    const eofReading = spawn net.ReadLine(readerSecond)
+    const net.ReadLineOutcome { Reader as readerEof Value as eofResult } = $eofReading.wait()
+    if first != "pong" || second != "abc" || !writeSucceeded(writeResult) ||
+        !isEof(eofResult) {
+        return 2
+    }
+    discard readerEof
+    discard writerAfter
+
+    const cancellingConnection = connectionOr($(spawn net.Connect("127.0.0.1", port)).wait())
+    const cancellingPair = pairOr(cancellingConnection.Split())
+    const net.StreamPair { Reader as cancellingReader Writer as cancellingWriter } = cancellingPair
+    const cancelledRead = spawn net.ReadLine(cancellingReader)
+    discard cancelledRead
+    discard cancellingWriter
+
+    const invalidConnection = connectionOr($(spawn net.Connect("127.0.0.1", port)).wait())
+    const invalidPair = pairOr(invalidConnection.Split())
+    const net.StreamPair { Reader as invalidReader Writer as invalidWriter } = invalidPair
+    discard invalidWriter
+    const invalidReading = spawn net.ReadLine(invalidReader)
+    const net.ReadLineOutcome { Reader as invalidReaderAfter Value as invalidResult } = $invalidReading.wait()
+    if !isInvalidUtf8(invalidResult) {
+        return 3
+    }
+    discard invalidReaderAfter
+
+    const longConnection = connectionOr($(spawn net.Connect("127.0.0.1", port)).wait())
+    const longPair = pairOr(longConnection.Split())
+    const net.StreamPair { Reader as longReader Writer as longWriter } = longPair
+    discard longWriter
+    const longReading = spawn net.ReadLineLimited(longReader, 3)
+    const net.ReadLineOutcome { Reader as longReaderAfter Value as longResult } = $longReading.wait()
+    if !isLineTooLong(longResult) {
+        return 4
+    }
+    discard longReaderAfter
+
+    if joinServer(server) != 0 {
+        return 5
+    }
+    const refused = spawn net.Connect("127.0.0.1", port)
+    if !isRefused($refused.wait()) {
+        return 6
+    }
+    if liveAddresses() != 0 || liveConnections() != 0 ||
+        liveRequests() != 0 || liveServices() != 0 {
+        return 7
+    }
+    print("tcp ok")
+    0
+}

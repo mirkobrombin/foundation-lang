@@ -1,10 +1,10 @@
 package example.profile
 
-/// Creates a profile with a display name and starting score.
+// Creates a profile with a display name and starting score.
 fn NewUser(
-    /// The name shown to people.
+    // The name shown to people.
     name String,
-    /// The score assigned before any updates.
+    // The score assigned before any updates.
     initialScore i32
 ) User {
     User { Name = name Score = initialScore }

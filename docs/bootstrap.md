@@ -1,12 +1,12 @@
 # Bootstrap
 
-Foundation uses three compiler stages.
+Foundation currently uses one C++20 compiler implementation.
 
 ## Stage 0
 
 Stage 0 is written in C++20 and builds with GCC, Clang, or MSVC. It has no third-party library
-dependency. Its job is to implement enough of the language to compile the next compiler. Stage 0
-remains available as a recovery compiler after self-hosting.
+dependency. It is the product compiler, package tool, and compiler service shared with the
+language server. The name records its bootstrap origin; it does not imply a required later stage.
 
 The current executable subset includes typed and generic functions, local bindings, calls,
 primitive expressions, generic nominal value structs and enums, exhaustive match expressions,
@@ -41,6 +41,9 @@ platform paths in Foundation source using those operations.
 structs own opaque runtime handles and close them through custom drop. Line reads accept explicit
 limits, consume oversized lines without retaining them, and distinguish invalid UTF-8 from an
 oversized input.
+`std.net` adds TCP connect, split read and write ownership, bounded UTF-8 line reads, and complete
+writes. DNS runs on the blocking executor; socket progress and cancellation use the callback
+reactor without exposing native handles to applications.
 `std.format`, `std.parse`, `std.json`, and `std.time` supply integer conversion, owned JSON values,
 UTC instants, and fixed calendar formatting in Foundation source. Native code remains limited to
 clock access, calendar conversion, byte-level String operations, and platform filesystem handles.
@@ -63,19 +66,11 @@ console output can be implemented through the runtime ABI, ordinary programs wil
 standard-library `io.println` operation. Interactive tools may provide a short `print` convenience.
 Fatal `panic` remains a language operation because it defines control flow and trace semantics.
 
-## Stage 1
+## Future implementation work
 
-Stage 1 is the compiler written in Foundation Lang and compiled by stage 0. It must pass the same
-conformance suite and emit the same canonical Foundation IR for the bootstrap corpus.
-
-## Stage 2
-
-Stage 2 is stage 1 compiled by stage 1. Bootstrap is accepted only when stage 1 and stage 2 produce
-matching normalized artifacts on three consecutive clean builds.
-
-The comparison includes compiler behavior, diagnostics, package metadata, and generated C. Binary
-identity is required only after platform paths, timestamps, and native toolchain metadata have been
-removed or fixed by specification.
+The compiler may be reimplemented in Foundation after the language and tooling are complete. That
+would be a separate compatibility project, not a release gate. It must reuse the conformance suite
+and preserve compiler behavior, diagnostics, package metadata, and generated C contracts.
 
 ## Package boundary
 
@@ -85,7 +80,7 @@ builtins for operations that cannot yet be expressed, but every builtin must hav
 - a specification entry;
 - a stable runtime ABI operation when runtime support is needed;
 - a tracked removal or permanent-intrinsic decision;
-- conformance tests shared by stage 0 and the self-hosted compiler.
+- conformance tests shared by every supported compiler implementation.
 
 The bootstrap binary currently receives the standard-library source root at its own build time and
 adds every sorted `.fdn` file to a project. This makes official packages available without copying

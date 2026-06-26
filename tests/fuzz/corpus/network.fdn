@@ -1,0 +1,19 @@
+package fuzz.network
+
+import std.net
+
+task exchange(host String, port u64) Result<void, net.Error> {
+    const connecting = spawn net.Connect(host, port)
+    const connection = $connecting.wait() else error {
+        return .Err(error)
+    }
+    const pair = connection.Split() else error {
+        return .Err(error)
+    }
+    const net.StreamPair { Reader as reader Writer as writer } = pair
+    const writing = spawn net.WriteAll(writer, "ping\n")
+    const reading = spawn net.ReadLineLimited(reader, 64)
+    discard $writing.wait()
+    discard $reading.wait()
+    .Ok
+}

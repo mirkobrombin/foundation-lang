@@ -216,7 +216,7 @@ std::vector<bool> genericDelimiters(const std::vector<Token> &tokens) {
                               next.kind == TokenKind::RightParen ||
                               next.kind == TokenKind::RightBracket ||
                               next.kind == TokenKind::RightBrace ||
-                              next.kind == TokenKind::Equal || next.kind == TokenKind::By ||
+                              next.kind == TokenKind::Equal ||
                               next.kind == TokenKind::Implements ||
                               next.kind == TokenKind::Extends;
         if (accepted) {

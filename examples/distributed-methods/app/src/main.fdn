@@ -2,7 +2,7 @@ package example.app
 
 import example.profile
 
-/// Runs the distributed-method example.
+// Runs the distributed-method example.
 fn main() i32 {
     var user = profile.NewUser("Ada", 40)
     user.Rename("Ada Lovelace")

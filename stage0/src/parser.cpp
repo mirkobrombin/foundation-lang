@@ -28,6 +28,15 @@ bool hasCallbackAttribute(const std::vector<AttributeApplication> &attributes) {
     });
 }
 
+bool sameTypeSyntax(const TypeSyntax &left, const TypeSyntax &right) {
+    if (left.name != right.name || left.arrayLength != right.arrayLength ||
+        left.arguments.size() != right.arguments.size()) {
+        return false;
+    }
+    return std::equal(left.arguments.begin(), left.arguments.end(), right.arguments.begin(),
+                      sameTypeSyntax);
+}
+
 class TypeLookahead {
   public:
     TypeLookahead(const std::vector<Token> &tokens, std::size_t start)
@@ -566,20 +575,36 @@ StructDeclaration Parser::structDeclaration() {
     if (match(TokenKind::Implements)) {
         do {
             auto contract = typeSyntax("FDN1094", "expected contract after implements");
-            std::optional<std::string> delegate;
-            if (match(TokenKind::By)) {
-                delegate = expect(TokenKind::Identifier, "FDN1145",
-                                  "expected field after by")
-                               .text;
-            }
             const auto span = contract.span;
-            implementations.push_back({std::move(contract), std::move(delegate), span});
+            implementations.push_back({std::move(contract), std::nullopt, span});
         } while (match(TokenKind::Comma));
     }
     expect(TokenKind::LeftBrace, "FDN1033", "expected { after struct name");
 
     std::vector<StructField> fields;
     while (!check(TokenKind::RightBrace) && !atEnd()) {
+        if (match(TokenKind::Delegate)) {
+            const auto declaration = previous();
+            const auto field = expect(TokenKind::Identifier, "FDN1168",
+                                      "expected field after delegate");
+            expect(TokenKind::As, "FDN1169", "expected as after delegated field");
+            auto contract = typeSyntax("FDN1170", "expected contract after as");
+            const auto implementation = std::find_if(
+                implementations.begin(), implementations.end(), [&](const auto &candidate) {
+                    return sameTypeSyntax(candidate.contract, contract);
+                });
+            if (implementation == implementations.end()) {
+                diagnostics_.error("FDN1171",
+                                   "delegated contract must appear after implements",
+                                   contract.span);
+            } else if (implementation->delegate.has_value()) {
+                diagnostics_.error("FDN1172", "contract already has a delegate",
+                                   declaration.span);
+            } else {
+                implementation->delegate = field.text;
+            }
+            continue;
+        }
         auto parsedAttributes = attributes(false);
         if (check(TokenKind::Extern)) {
             diagnostics_.error("FDN2117", "C ABI function cannot be a method", current().span);

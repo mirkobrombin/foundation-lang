@@ -112,33 +112,33 @@ void preservesLineSensitiveSyntax() {
            "line-sensitive source remains idempotent");
 }
 
-void preservesDocumentationAndNestedComments() {
+void preservesLineAndNestedBlockComments() {
     constexpr std::string_view source =
-        "/** Long documentation.\r\n"
+        "/* Long comment.\r\n"
         "No leading stars are required.\r\n"
         "/* Nested detail. */\r\n"
         "*/\r\n"
         "fn main()i32{\r\n"
-        "/// Immutable answer.   \r\n"
+        "// Immutable answer.   \r\n"
         "const answer=21 /* keep this prose */\r\n"
         "// implementation note   \r\n"
         "answer*2-42\r\n"
         "}\r\n";
     constexpr std::string_view expected =
-        "/** Long documentation.\n"
+        "/* Long comment.\n"
         "No leading stars are required.\n"
         "/* Nested detail. */\n"
         "*/\n"
         "fn main() i32 {\n"
-        "    /// Immutable answer.\n"
+        "    // Immutable answer.\n"
         "    const answer = 21 /* keep this prose */\n"
         "    // implementation note\n"
         "    answer * 2 - 42\n"
         "}\n";
     const auto formatted = foundation::formatSource(source);
-    expect(!formatted.diagnostics.hasErrors(), "documentation comments format without errors");
+    expect(!formatted.diagnostics.hasErrors(), "line and nested block comments format without errors");
     expect(formatted.contents == expected,
-           "formatter distinguishes comments while preserving block prose");
+           "formatter preserves line comments and nested block prose");
     expect(foundation::formatSource(formatted.contents).contents == formatted.contents,
            "comment formatting is idempotent");
 }
@@ -229,7 +229,7 @@ void formatsRepositorySources() {
 int main() {
     formatsFoundationSource();
     preservesLineSensitiveSyntax();
-    preservesDocumentationAndNestedComments();
+    preservesLineAndNestedBlockComments();
     keepsTaskOwnershipCompact();
     rejectsInvalidSourceWithoutChangingIt();
     preservesEstablishedFoundationStyle();

@@ -119,9 +119,14 @@ exactly once. This remains true after a cancellation request. The optional cance
 asks the native library to stop; it cannot release the operation token or task frame. Status values
 belong to the adapter and are converted to a typed Foundation result by the generated bridge.
 
-The token is opaque and valid only until its single completion is consumed. An adapter must not
-inspect, copy, compare, free, or complete it twice. Completion may run on a foreign thread. The
-Foundation executor drains the completion queue and resumes the owning task on its own thread.
+The token is opaque and valid only until its single completion is consumed. An adapter may store
+and compare its pointer value only to identify the native request that owns it. It must not
+dereference, order, perform pointer arithmetic on, free, or complete the token twice. Completion
+may run on a foreign thread. The Foundation executor drains the completion queue and resumes the
+owning task on its own thread.
+
+`std.net` uses this contract for TCP connect, line reads, and complete writes. DNS resolution runs
+on the blocking executor, while socket progress and cancellation remain reactor operations.
 
 `@callback` applies only to a bodyless C ABI import with an `i32` Foundation result. A call is a
 suspension point and must be a standalone binding or `discard` inside a task. It cannot be combined

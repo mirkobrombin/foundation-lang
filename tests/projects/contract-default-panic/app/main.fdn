@@ -10,8 +10,10 @@ struct PrincipalImpl implements Principal {
     }
 }
 
-struct Wrapped implements Principal by inner {
+struct Wrapped implements Principal {
     inner PrincipalImpl
+
+    delegate inner as Principal
 }
 
 fn run(value view defaults.Failure) void {
