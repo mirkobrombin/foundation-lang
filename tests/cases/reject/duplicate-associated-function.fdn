@@ -1,0 +1,15 @@
+struct Value {}
+
+methods Value {
+    fn New() Value {
+        Value {}
+    }
+
+    fn New(value i32) Value {
+        Value {}
+    }
+}
+
+fn main() i32 {
+    0
+}

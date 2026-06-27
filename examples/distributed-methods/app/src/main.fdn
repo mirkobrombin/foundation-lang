@@ -4,7 +4,7 @@ import example.profile
 
 // Runs the distributed-method example.
 fn main() i32 {
-    var user = profile.NewUser("Ada", 40)
+    var user = profile.User.New("Ada", 40)
     user.Rename("Ada Lovelace")
     user.AddScore(2)
     user.Display()

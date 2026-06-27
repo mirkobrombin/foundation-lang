@@ -816,23 +816,27 @@ Function Parser::method(const std::string &owner,
     const auto start = expect(TokenKind::Fn, "FDN1100", "expected fn");
     const auto name = expect(TokenKind::Identifier, "FDN1101", "expected method name");
     expect(TokenKind::LeftParen, "FDN1102", "expected ( after method name");
-    const auto receiverStart = current();
-    const auto access = receiver("FDN1103", "expected view, edit, or own receiver");
-
-    std::vector<TypeSyntax> ownerArguments;
-    ownerArguments.reserve(typeParameters.size());
-    for (const auto &parameterName : typeParameters) {
-        ownerArguments.push_back({parameterName, {}, receiverStart.span});
-    }
-    TypeSyntax ownerType{owner, std::move(ownerArguments), receiverStart.span};
-    const auto qualifier = access == ReceiverKind::View ? "view"
-                           : access == ReceiverKind::Edit ? "edit"
-                                                         : "own";
     std::vector<Parameter> parameters;
-    parameters.push_back(
-        {"self", TypeSyntax{qualifier, {std::move(ownerType)}, receiverStart.span},
-         receiverStart.span, {}});
-    if (match(TokenKind::Comma)) {
+    std::optional<ReceiverKind> access;
+    auto parseParameters = true;
+    if (check(TokenKind::View) || check(TokenKind::Edit) || check(TokenKind::Own)) {
+        const auto receiverStart = current();
+        access = receiver("FDN1103", "expected view, edit, or own receiver");
+        std::vector<TypeSyntax> ownerArguments;
+        ownerArguments.reserve(typeParameters.size());
+        for (const auto &parameterName : typeParameters) {
+            ownerArguments.push_back({parameterName, {}, receiverStart.span});
+        }
+        TypeSyntax ownerType{owner, std::move(ownerArguments), receiverStart.span};
+        const auto qualifier = access == ReceiverKind::View ? "view"
+                               : access == ReceiverKind::Edit ? "edit"
+                                                              : "own";
+        parameters.push_back(
+            {"self", TypeSyntax{qualifier, {std::move(ownerType)}, receiverStart.span},
+             receiverStart.span, {}});
+        parseParameters = match(TokenKind::Comma);
+    }
+    if (parseParameters && !check(TokenKind::RightParen)) {
         do {
             parameters.push_back(parameter());
         } while (match(TokenKind::Comma));

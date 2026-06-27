@@ -1,5 +1,5 @@
 format foundation.lock/v1
 root example.app 1.0.0
 target linux
-package example.profile 1.0.0 sha256:0bea065c3d247b8e9a02011b363d4e158d1f2044572c7ae319d37129ea4d7501 path ../profile
+package example.profile 1.0.0 sha256:f6cf8027a2432fc8f2524ec7530a6628b23888e1798f24c28cbe43f142443ec3 path ../profile
 edge example.app example.profile

@@ -1,0 +1,8 @@
+package example.app
+
+import example.lib
+
+fn main() i32 {
+    discard lib.Value.new()
+    0
+}

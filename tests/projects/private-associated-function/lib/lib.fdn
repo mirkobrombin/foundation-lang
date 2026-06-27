@@ -1,0 +1,9 @@
+package example.lib
+
+struct Value {}
+
+methods Value {
+    fn new() Value {
+        Value {}
+    }
+}

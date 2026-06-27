@@ -572,13 +572,13 @@ class IndexBuilder {
             if (function.closure || (function.receiver.has_value() && contractOwner(function.ownerType))) {
                 continue;
             }
-            const auto kind = function.receiver.has_value() ? LanguageSymbolKind::Method
-                                                            : LanguageSymbolKind::Function;
+            const auto typeMember = !function.ownerType.empty();
+            const auto kind = typeMember ? LanguageSymbolKind::Method
+                                         : LanguageSymbolKind::Function;
             const LanguageSymbolId symbol{kind, id, 0};
             functionSymbols_[id] = symbol;
-            auto scope = function.receiver.has_value()
-                             ? "method:" + function.ownerType
-                             : "function:" + function.packageName;
+            auto scope = typeMember ? "method:" + function.ownerType
+                                    : "function:" + function.packageName;
             const auto name = shortName(function.name);
             addSymbol({symbol, name, functionDetail(function), std::move(scope),
                        identifierSpan(analysis_, function.span, name),
@@ -1135,7 +1135,19 @@ class IndexBuilder {
                     addTypeReference(argument);
                 }
                 if (semantic_->callTargets[id].has_value()) {
-                    addCallReference(id, *semantic_->callTargets[id], expression.span);
+                    const auto &target = *semantic_->callTargets[id];
+                    addCallReference(id, target, expression.span);
+                    if (target.kind == CallTargetKind::Function &&
+                        target.function < analysis_.program.functions.size() &&
+                        member->base.has_value()) {
+                        const auto &function = analysis_.program.functions[target.function];
+                        const auto owner = typeSymbols_.find(function.ownerType);
+                        if (!function.ownerType.empty() && owner != typeSymbols_.end()) {
+                            addNamedOccurrence(
+                                owner->second,
+                                analysis_.program.expressions[*member->base].span);
+                        }
+                    }
                 } else if (semantic_->enumTargets[id].has_value()) {
                     const auto &target = *semantic_->enumTargets[id];
                     addNamedOccurrence({LanguageSymbolKind::EnumVariant,

@@ -25,7 +25,8 @@ void formatsFoundationSource() {
     constexpr std::string_view source =
         "package   sample\r\n"
         "// pair values   \r\n"
-        "struct Pair<T>{\r\n"
+        "contract Stored<T>{fn read(view)T}\r\n"
+        "struct Pair<T>implements Stored<T>{\r\n"
         "left   T // first   \r\n"
         "right T\r\n"
         "}\r\n"
@@ -45,7 +46,8 @@ void formatsFoundationSource() {
     constexpr std::string_view expected =
         "package sample\n"
         "// pair values\n"
-        "struct Pair<T> {\n"
+        "contract Stored<T> { fn read(view) T }\n"
+        "struct Pair<T> implements Stored<T> {\n"
         "    left T // first\n"
         "    right T\n"
         "}\n"
@@ -65,6 +67,9 @@ void formatsFoundationSource() {
 
     const auto formatted = foundation::formatSource(source);
     expect(!formatted.diagnostics.hasErrors(), "valid source formats without diagnostics");
+    if (formatted.contents != expected) {
+        std::cerr << formatted.contents;
+    }
     expect(formatted.contents == expected,
            "formatter applies canonical whitespace and indentation");
     const auto repeated = foundation::formatSource(formatted.contents);

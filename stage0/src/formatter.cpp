@@ -174,9 +174,8 @@ bool spaceBetween(const std::vector<Token> &tokens, std::size_t index,
         return true;
     }
     if (comparisonDelimiter(previous)) {
-        if (previous == TokenKind::Greater && genericDelimiters[index - 1] &&
-            current == TokenKind::Equal) {
-            return true;
+        if (previous == TokenKind::Greater && genericDelimiters[index - 1]) {
+            return current != TokenKind::Greater || !genericDelimiters[index];
         }
         return !genericDelimiters[index - 1];
     }

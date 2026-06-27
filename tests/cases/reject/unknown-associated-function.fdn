@@ -1,0 +1,6 @@
+struct Value {}
+
+fn main() i32 {
+    discard Value.Missing()
+    0
+}

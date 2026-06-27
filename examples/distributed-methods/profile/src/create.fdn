@@ -1,6 +1,8 @@
 package example.profile
 
-// Creates a profile with a display name and starting score.
-fn NewUser(name String, initialScore i32) User {
-    User { Name = name Score = initialScore }
+methods User {
+    // Creates a profile with a display name and starting score.
+    fn New(name String, initialScore i32) User {
+        User { Name = name Score = initialScore }
+    }
 }

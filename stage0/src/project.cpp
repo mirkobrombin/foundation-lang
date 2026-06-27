@@ -652,7 +652,7 @@ void collectSymbols(const std::vector<ParsedFile> &files, SymbolTable &symbols) 
                                 declaration.exported});
         }
         for (const auto &declaration : file.program.functions) {
-            if (declaration.receiver.has_value() || declaration.closure) {
+            if (!declaration.ownerType.empty() || declaration.closure) {
                 continue;
             }
             package.functions.emplace(
@@ -824,7 +824,7 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
                   diagnostics);
         if (function.closure) {
             function.name = internalName(packageName, function.name);
-        } else if (function.receiver.has_value()) {
+        } else if (!function.ownerType.empty()) {
             function.ownerType = internalName(packageName, function.ownerType);
             function.name = function.ownerType + '.' + function.name;
         } else if (function.name == "main") {

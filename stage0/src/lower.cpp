@@ -481,6 +481,32 @@ class Lowerer {
                 value = FirEnumExpression{target.type, target.variant, payload};
             } else if (model_.callTargets[id].has_value()) {
                 const auto &target = *model_.callTargets[id];
+                if (target.kind == CallTargetKind::Function && !target.receiver.has_value()) {
+                    std::vector<FirExpressionId> arguments;
+                    arguments.reserve(member->arguments.size());
+                    for (std::size_t index = 0; index < member->arguments.size(); ++index) {
+                        auto argument = lowerExpression(member->arguments[index]);
+                        if (index < target.argumentConversions.size() &&
+                            target.argumentConversions[index].has_value()) {
+                            const auto &conversion = *target.argumentConversions[index];
+                            const auto converted = current_->expressions.size();
+                            current_->expressions.push_back(
+                                {FirContractExpression{
+                                     argument, conversion.concreteType, conversion.contractType,
+                                     lowerContractMethods(conversion.methods)},
+                                 conversion.targetType, source.span});
+                            argument = converted;
+                        }
+                        arguments.push_back(argument);
+                    }
+                    value = FirCallExpression{FirCallKind::Function, target.function,
+                                              target.typeArguments, std::move(arguments),
+                                              target.argumentDrops, 0, 0};
+                    current_->expressions.push_back(
+                        {std::move(value), model_.expressionTypes[id], source.span});
+                    expressionMap_[id] = current_->expressions.size() - 1;
+                    return *expressionMap_[id];
+                }
                 auto receiver = lowerExpression(required(target.receiver));
                 if (target.receiverConversion.has_value()) {
                     const auto &conversion = *target.receiverConversion;

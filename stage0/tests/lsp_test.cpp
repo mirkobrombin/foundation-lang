@@ -1496,6 +1496,7 @@ void distributedMethodsExposeDocumentationAndParameters() {
     const auto root = temporaryRoot();
     const auto app = root / "app" / "main.fdn";
     const auto user = root / "profile" / "user.fdn";
+    const auto create = root / "profile" / "create.fdn";
     const auto rename = root / "profile" / "rename.fdn";
     const std::string userContents =
         "package sample.profile\n"
@@ -1505,6 +1506,12 @@ void distributedMethodsExposeDocumentationAndParameters() {
         "    Name String\n"
         "}\n";
     writeFile(user, userContents);
+    writeFile(create,
+              "package sample.profile\n"
+              "methods User {\n"
+              "    // Creates a user with the supplied display name.\n"
+              "    fn New(name String) User { User { Name = name } }\n"
+              "}\n");
     writeFile(rename,
               "package sample.profile\n"
               "methods User {\n"
@@ -1519,7 +1526,7 @@ void distributedMethodsExposeDocumentationAndParameters() {
         "package sample.app\n"
         "import sample.profile\n"
         "fn main() i32 {\n"
-        "    var user = profile.User { Name = \"Ada\" }\n"
+        "    var user = profile.User.New(\"Ada\")\n"
         "    user.Rename(\"Grace\")\n"
         "    0\n"
         "}\n";
@@ -1555,6 +1562,19 @@ void distributedMethodsExposeDocumentationAndParameters() {
         "\"textDocument\":{\"uri\":\"" + appUri +
         "\",\"version\":2},\"contentChanges\":[{\"text\":\"" +
         jsonEscape(completionContents) + "\"}]}}";
+    const std::string associatedCompletionContents =
+        "package sample.app\n"
+        "import sample.profile\n"
+        "fn main() i32 {\n"
+        "    let unused = 0\n"
+        "    profile.User.\n"
+        "    0\n"
+        "}\n";
+    const auto changeForAssociatedCompletion =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" + appUri +
+        "\",\"version\":3},\"contentChanges\":[{\"text\":\"" +
+        jsonEscape(associatedCompletionContents) + "\"}]}}";
     const auto request = [&appUri](int id, std::string_view method, int character) {
         return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
                ",\"method\":\"textDocument/" + std::string(method) +
@@ -1583,7 +1603,9 @@ void distributedMethodsExposeDocumentationAndParameters() {
                              frame(request(93, "definition", 10)) +
                              frame(codeLens) +
                              frame(changeForCompletion) +
-                             frame(request(91, "completion", 9)) + frame(shutdown) +
+                             frame(request(91, "completion", 9)) +
+                             frame(changeForAssociatedCompletion) +
+                             frame(request(97, "completion", 17)) + frame(shutdown) +
                              frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
@@ -1596,6 +1618,7 @@ void distributedMethodsExposeDocumentationAndParameters() {
     const auto compositeType = responseFor(transcript, 94);
     const auto userHover = responseFor(transcript, 95);
     const auto codeLenses = responseFor(transcript, 96);
+    const auto associatedCompletion = responseFor(transcript, 97);
 
     expect(status == 0, "distributed-method language server transcript exits cleanly");
     expect(errors.str().empty(), "distributed-method requests write no server errors");
@@ -1609,6 +1632,11 @@ void distributedMethodsExposeDocumentationAndParameters() {
                completion.find("Rename(${1:name})$0") != std::string::npos &&
                completion.find("editor.action.triggerParameterHints") != std::string::npos,
            "member completion carries documentation, parameter placeholders, and signature trigger");
+    expect(associatedCompletion.find("\"label\":\"New\"") != std::string::npos &&
+               associatedCompletion.find("Creates a user with the supplied display name.") !=
+                   std::string::npos &&
+               associatedCompletion.find("New(${1:name})$0") != std::string::npos,
+           "type completion exposes associated functions without instance members");
     expect(signature.find("\"label\":\"name String\"") != std::string::npos &&
                signature.find("The new user-facing name.") != std::string::npos &&
                signature.find("Replaces the displayed profile name.") != std::string::npos,
@@ -1616,13 +1644,13 @@ void distributedMethodsExposeDocumentationAndParameters() {
     expect(definition.find(renameUri) != std::string::npos,
            "method definition navigates to its distributed source file");
     expect(compositeType.find("\"typeName\":\"User\"") != std::string::npos &&
-               compositeType.find("\"methodCount\":1") != std::string::npos &&
-               compositeType.find("\"fileCount\":2") != std::string::npos &&
+               compositeType.find("\"methodCount\":2") != std::string::npos &&
+               compositeType.find("\"fileCount\":3") != std::string::npos &&
                compositeType.find("\"kind\":\"method\"") != std::string::npos &&
                compositeType.find("// Replaces the displayed profile name.") != std::string::npos &&
                compositeType.find(renameUri) != std::string::npos,
            "composite type request preserves documented source locations across files");
-    expect(userHover.find("1 field, 1 method across 2 files") != std::string::npos &&
+    expect(userHover.find("1 field, 2 methods across 3 files") != std::string::npos &&
                userHover.find("**Fields**") != std::string::npos &&
                userHover.find("The name shown to people.") != std::string::npos &&
                userHover.find("foundationComposite") != std::string::npos,

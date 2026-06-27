@@ -979,8 +979,7 @@ std::vector<SymbolItem> documentSymbols(const ProjectAnalysis &analysis,
                 {field.name, field.name + ' ' + displayTypeSyntax(field.type), 8, field.span, {}});
         }
         for (const auto &function : analysis.program.functions) {
-            if (!function.receiver.has_value() || function.ownerType.empty() ||
-                function.ownerType != owner.name) {
+            if (function.ownerType.empty() || function.ownerType != owner.name) {
                 continue;
             }
             owner.children.push_back(
@@ -1047,7 +1046,7 @@ std::vector<SymbolItem> documentSymbols(const ProjectAnalysis &analysis,
         }
     }
     for (const auto &function : analysis.program.functions) {
-        if (function.span.source != sourceId || function.receiver.has_value() ||
+        if (function.span.source != sourceId || !function.ownerType.empty() ||
             function.closure) {
             continue;
         }
@@ -2381,8 +2380,7 @@ class LanguageServer {
             auto methodCount = std::size_t{};
             std::set<std::size_t> sourceFiles{declaration.span.source};
             for (const auto &function : analysis->program.functions) {
-                if (!function.receiver.has_value() ||
-                    function.ownerType != declaration.name) {
+                if (function.ownerType != declaration.name) {
                     continue;
                 }
                 ++methodCount;
@@ -2660,7 +2658,7 @@ class LanguageServer {
         auto methodCount = std::size_t{};
         std::set<std::size_t> sourceFiles{declaration->span.source};
         for (const auto &function : analysis->program.functions) {
-            if (!function.receiver.has_value() || function.ownerType != declaration->name ||
+            if (function.ownerType != declaration->name ||
                 function.span.source >= analysis->sources.size()) {
                 continue;
             }
@@ -3509,6 +3507,22 @@ class LanguageServer {
         }
     }
 
+    void addAssociatedFunctionCompletions(std::map<std::string, Json> &items,
+                                          const ProjectAnalysis &analysis,
+                                          const StructDeclaration &declaration,
+                                          std::string_view currentPackage) const {
+        for (const auto &function : analysis.program.functions) {
+            if (function.receiver.has_value() || function.ownerType != declaration.name ||
+                !accessible(function.packageName, function.exported, currentPackage)) {
+                continue;
+            }
+            const auto name = shortName(function.name);
+            addCompletion(items, name, 2, functionDetail(function),
+                          functionCallSnippet(function, name),
+                          languageDocumentation(analysis, function.span));
+        }
+    }
+
     bool addPackageMemberCompletions(std::map<std::string, Json> &items,
                                      const ProjectAnalysis &analysis,
                                      std::size_t sourceId,
@@ -3552,7 +3566,7 @@ class LanguageServer {
              functionIndex < analysis.program.functions.size(); ++functionIndex) {
             const auto &function = analysis.program.functions[functionIndex];
             if (function.packageName != *packageName || !function.exported ||
-                function.receiver.has_value() || function.closure) {
+                !function.ownerType.empty() || function.closure) {
                 continue;
             }
             const auto name = shortName(function.name);
@@ -3744,6 +3758,33 @@ class LanguageServer {
                         receiver->first, receiver->second - receiver->first);
                     const auto currentPackage =
                         completion.sources[*completionSource].packageName;
+                    auto receiverPackage = currentPackage;
+                    if (receiver->first > 0 &&
+                        source.contents[receiver->first - 1] == '.') {
+                        const auto package = identifierBefore(source.contents,
+                                                              receiver->first - 1);
+                        if (package.has_value()) {
+                            const auto alias = source.contents.substr(
+                                package->first, package->second - package->first);
+                            for (const auto &imported : completion.program.imports) {
+                                const auto importedAlias = imported.alias.empty()
+                                                               ? packageAlias(imported.packageName)
+                                                               : imported.alias;
+                                if (imported.span.source == *completionSource &&
+                                    importedAlias == alias) {
+                                    receiverPackage = imported.packageName;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    for (const auto &candidate : completion.program.structs) {
+                        if (shortName(candidate.name) == name &&
+                            candidate.packageName == receiverPackage) {
+                            addAssociatedFunctionCompletions(
+                                items, completion, candidate, currentPackage);
+                        }
+                    }
                     for (std::size_t declaration = 0;
                          declaration < completion.program.enums.size(); ++declaration) {
                         const auto &candidate = completion.program.enums[declaration];
@@ -3835,7 +3876,7 @@ class LanguageServer {
             for (std::size_t functionIndex = 0;
                  functionIndex < analysis->program.functions.size(); ++functionIndex) {
                 const auto &function = analysis->program.functions[functionIndex];
-                if (function.receiver.has_value() || function.closure) {
+                if (!function.ownerType.empty() || function.closure) {
                     continue;
                 }
                 const auto label = qualified(function.packageName, shortName(function.name),

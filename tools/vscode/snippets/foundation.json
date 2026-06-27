@@ -434,6 +434,15 @@
         ],
         "description": "Add methods to a package-owned type"
     },
+    "Associated function": {
+        "prefix": "associated",
+        "body": [
+            "fn ${1:New}(${2}) ${3:Type} {",
+            "    ${4}",
+            "}"
+        ],
+        "description": "Declare an associated function inside a methods block"
+    },
     "Short guard": {
         "prefix": "guard",
         "body": "if ${1:condition} return ${2:value}",

@@ -32,11 +32,23 @@ struct Counter implements Readable {
     }
 }
 
+methods Counter {
+    fn New(value i32) Counter {
+        Counter { value = value }
+    }
+}
+
 struct Box<T> implements Boxed<T> {
     value T
 
     fn set(edit, value T) void {
         self.value = value
+    }
+}
+
+methods Box<T> {
+    fn New(value T) Box<T> {
+        Box<T> { value = value }
     }
 }
 
@@ -81,14 +93,14 @@ fn format(value view Formatter, pinger view EmptyPinger) i32 {
 }
 
 fn main() i32 {
-    var counter = Counter { value = 40 }
+    var counter = Counter.New(40)
     addConcrete(edit counter, 1)
     addContract(edit counter, 1)
     let current = readContract(view counter)
     let concrete = readConcrete(view counter)
     let owned = own Counter { value = current }
     let taken = owned.take()
-    var box = Box { value = 0 }
+    var box = Box<i32>.New(0)
     setAny(edit box, 42)
     let boxed = box.value
     let pinger = EmptyPinger {}

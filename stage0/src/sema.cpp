@@ -1360,28 +1360,39 @@ class Analyzer {
                 signatures_.push_back({semantic.returnType, semantic.parameterTypes});
                 continue;
             }
-            if (function.receiver.has_value()) {
+            if (!function.ownerType.empty()) {
                 const auto owner = structs_.find(function.ownerType);
                 if (owner != structs_.end()) {
                     const auto prefix = function.ownerType + '.';
                     const auto methodName = function.name.starts_with(prefix)
                                                 ? function.name.substr(prefix.size())
                                                 : function.name;
-                    if (!methods_[owner->second].emplace(methodName, index).second) {
-                        diagnostics_.error("FDN2095", "duplicate method " + methodName,
+                    if (function.receiver.has_value()) {
+                        if (!methods_[owner->second].emplace(methodName, index).second) {
+                            diagnostics_.error("FDN2095", "duplicate method " + methodName,
+                                               function.span);
+                        }
+                        if (methodName == "drop" &&
+                            (function.receiver != ReceiverKind::Edit ||
+                             semantic.parameterTypes.size() != 1 ||
+                             semantic.returnType != voidType)) {
+                            diagnostics_.error(
+                                "FDN2137",
+                                "drop must have signature fn drop(edit) void", function.span);
+                        }
+                    } else if (!functions_.emplace(function.name, index).second) {
+                        diagnostics_.error("FDN2001", "duplicate associated function " +
+                                                               methodName,
                                            function.span);
                     }
-                    if (methodName == "drop" &&
-                        (function.receiver != ReceiverKind::Edit ||
-                         semantic.parameterTypes.size() != 1 ||
-                         semantic.returnType != voidType)) {
-                        diagnostics_.error(
-                            "FDN2137",
-                            "drop must have signature fn drop(edit) void", function.span);
-                    }
-                } else if (!contracts_.contains(function.ownerType)) {
-                    diagnostics_.error("FDN2094", "method owner is not a struct or contract",
-                                       function.span);
+                } else if (!function.receiver.has_value() ||
+                           !contracts_.contains(function.ownerType)) {
+                    diagnostics_.error(
+                        "FDN2094",
+                        function.receiver.has_value()
+                            ? "method owner is not a struct or contract"
+                            : "associated function owner is not a struct",
+                        function.span);
                 }
             } else if (!functions_.emplace(function.name, index).second) {
                 diagnostics_.error("FDN2001", "duplicate function " + function.name,
@@ -3411,6 +3422,44 @@ class Analyzer {
         const auto &baseExpression = program_.expressions[*member.base];
         if (const auto *name = std::get_if<NameExpression>(&baseExpression.value);
             name != nullptr && !lookupLocal(name->name).has_value()) {
+            auto structName = name->name;
+            if (!structs_.contains(structName) && structName.find('.') == std::string::npos &&
+                !currentPackage().empty()) {
+                structName = std::string(currentPackage()) + '.' + structName;
+            }
+            if (structs_.contains(structName)) {
+                if (!member.invoked) {
+                    diagnostics_.error("FDN2190", "associated function must be called", span);
+                    return invalidType;
+                }
+                if (!member.typeArguments.empty()) {
+                    diagnostics_.error(
+                        "FDN2043",
+                        "associated function type arguments belong on the owner type", span);
+                }
+                const auto associatedName = structName + '.' + member.member;
+                const auto found = functions_.find(associatedName);
+                if (found == functions_.end() ||
+                    program_.functions[found->second].receiver.has_value() ||
+                    program_.functions[found->second].ownerType.empty()) {
+                    for (const auto argument : member.arguments) {
+                        static_cast<void>(analyzeExpression(argument));
+                    }
+                    diagnostics_.error("FDN2190",
+                                       "unknown associated function " + member.member, span);
+                    return invalidType;
+                }
+                const auto &declaration = program_.functions[found->second];
+                if (declaration.packageName != currentPackage() && !declaration.exported) {
+                    diagnostics_.error("FDN3008",
+                                       "associated function " + member.member +
+                                           " is not exported",
+                                       span);
+                }
+                return analyzeCall(
+                    id,
+                    CallExpression{associatedName, name->typeArguments, member.arguments}, span);
+            }
             auto enumName = name->name;
             if (!enums_.contains(enumName) && enumName.find('.') == std::string::npos &&
                 !currentPackage().empty()) {
