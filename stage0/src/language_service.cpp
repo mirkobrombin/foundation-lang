@@ -91,6 +91,41 @@ std::string documentationBefore(std::string_view source, std::size_t offset) {
     return {};
 }
 
+std::string parameterDocumentation(const ProjectAnalysis &analysis,
+                                   const Parameter &parameter) {
+    if (parameter.span.source >= analysis.sources.size()) {
+        return {};
+    }
+    const auto &source = analysis.sources[parameter.span.source].contents;
+    const auto atLineStart = [&source](std::size_t offset) {
+        if (offset > source.size()) {
+            return false;
+        }
+        const auto newline =
+            offset == 0 ? std::string_view::npos : source.rfind('\n', offset - 1);
+        const auto lineStart = newline == std::string_view::npos ? 0 : newline + 1;
+        return trimWhitespace(
+                   std::string_view(source).substr(lineStart, offset - lineStart))
+            .empty();
+    };
+    if (atLineStart(parameter.span.offset)) {
+        const auto documentation = documentationBefore(source, parameter.span.offset);
+        if (!documentation.empty()) {
+            return documentation;
+        }
+    }
+    if (parameter.attributes.empty()) {
+        return {};
+    }
+    auto attributeOffset = parameter.attributes.front().span.offset;
+    if (attributeOffset <= source.size() && attributeOffset != 0 &&
+        source[attributeOffset - 1] == '@') {
+        --attributeOffset;
+    }
+    return atLineStart(attributeOffset) ? documentationBefore(source, attributeOffset)
+                                        : std::string{};
+}
+
 std::string shortName(std::string_view name) {
     const auto separator = name.rfind('.');
     return std::string(name.substr(separator == std::string_view::npos ? 0 : separator + 1));
@@ -175,6 +210,23 @@ std::string typeParameterSuffix(const std::vector<std::string> &parameters) {
     return result;
 }
 
+std::string attributeDetail(const AttributeApplication &attribute) {
+    auto result = '@' + shortName(attribute.name);
+    if (attribute.parenthesized) {
+        result += attribute.arguments.empty() ? "()" : "(...)";
+    }
+    return result;
+}
+
+std::string parameterDetail(const Parameter &parameter) {
+    std::string result;
+    for (const auto &attribute : parameter.attributes) {
+        result += attributeDetail(attribute) + ' ';
+    }
+    result += parameter.name + ' ' + displayTypeSyntax(parameter.type);
+    return result;
+}
+
 std::string functionDetail(const Function &function) {
     auto prefix = function.task ? std::string("task ")
                                 : function.cSymbol.has_value() ? std::string("extern c fn ")
@@ -183,6 +235,12 @@ std::string functionDetail(const Function &function) {
         prefix = "@blocking " + prefix;
     } else if (function.callback) {
         prefix = "@callback " + prefix;
+    }
+    for (auto attribute = function.attributes.rbegin();
+         attribute != function.attributes.rend(); ++attribute) {
+        if (attribute->name != "blocking" && attribute->name != "callback") {
+            prefix = attributeDetail(*attribute) + ' ' + prefix;
+        }
     }
     std::string result = prefix + shortName(function.name) +
                          typeParameterSuffix(function.typeParameters) + '(';
@@ -196,7 +254,7 @@ std::string functionDetail(const Function &function) {
                       : *function.receiver == ReceiverKind::Edit ? "edit"
                                                                   : "own";
         } else {
-            result += parameter.name + ' ' + displayTypeSyntax(parameter.type);
+            result += parameterDetail(parameter);
         }
     }
     result += ") " + displayTypeSyntax(function.returnType);
@@ -209,7 +267,7 @@ std::string contractMethodDetail(const ContractMethod &method) {
               : method.receiver == ReceiverKind::Edit ? "edit"
                                                        : "own";
     for (const auto &parameter : method.parameters) {
-        result += ", " + parameter.name + ' ' + displayTypeSyntax(parameter.type);
+        result += ", " + parameterDetail(parameter);
     }
     result += ") " + displayTypeSyntax(method.returnType);
     return result;
@@ -272,11 +330,12 @@ class IndexBuilder {
         return value != nullptr && (value->path == "std" || value->path.starts_with("std/"));
     }
 
-    void addSymbol(LanguageSymbol symbol, bool addDefinition = true) {
+    void addSymbol(LanguageSymbol symbol, bool addDefinition = true,
+                   bool inferDocumentation = true) {
         if (symbol.definition.source >= analysis_.sources.size()) {
             return;
         }
-        if (symbol.documentation.empty()) {
+        if (inferDocumentation && symbol.documentation.empty()) {
             symbol.documentation = documentationBefore(
                 analysis_.sources[symbol.definition.source].contents,
                 symbol.definition.offset);
@@ -598,7 +657,7 @@ class IndexBuilder {
 
     void declareLocal(std::size_t function, FirLocalId local, LanguageSymbolKind kind,
                       SourceSpan span, bool renameable = true,
-                      bool addDefinition = true) {
+                      bool addDefinition = true, std::string documentation = {}) {
         if (function >= localSymbols_.size() || local >= localSymbols_[function].size() ||
             function >= analysis_.program.functions.size()) {
             return;
@@ -611,8 +670,8 @@ class IndexBuilder {
                    declaration.name + ' ' +
                        displayType(declaration.type, analysis_.program.functions[function]),
                    "local:" + std::to_string(function), span,
-                   renameable && !standardSource(span)},
-                  addDefinition);
+                   renameable && !standardSource(span), std::move(documentation)},
+                  addDefinition, false);
     }
 
     void addLocalDeclarations() {
@@ -634,7 +693,10 @@ class IndexBuilder {
                 }
                 declareLocal(function, semanticFunction.parameters[parameter],
                              LanguageSymbolKind::Parameter, span, renameable,
-                             value.name != "self");
+                             value.name != "self",
+                             value.name == "self"
+                                 ? std::string{}
+                                 : parameterDocumentation(analysis_, value));
             }
         }
         for (std::size_t statement = 0; statement < analysis_.program.statements.size();
@@ -1334,6 +1396,11 @@ std::string languageDocumentation(const ProjectAnalysis &analysis,
                ? documentationBefore(analysis.sources[definition.source].contents,
                                      definition.offset)
                : std::string{};
+}
+
+std::string languageParameterDocumentation(const ProjectAnalysis &analysis,
+                                            const Parameter &parameter) {
+    return parameterDocumentation(analysis, parameter);
 }
 
 } // namespace foundation

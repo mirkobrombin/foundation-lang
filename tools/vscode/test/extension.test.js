@@ -115,10 +115,12 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.45.0");
+    assert.equal(manifest.version, "0.46.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
+        "foundation.openTypeDefinition");
+    assert.equal(manifest.contributes.commands[2].command,
         "foundation.showOutput");
     assert.equal(
         manifest.contributes.configuration.properties["foundation.languageServer.path"].default,
@@ -336,6 +338,10 @@ test("maps documented completions and parameter signature help", async () => {
         constructor(value) {
             this.value = value;
         }
+
+        appendMarkdown(value) {
+            this.value += value;
+        }
     }
     class CompletionItem {
         constructor(label, kind) {
@@ -392,12 +398,22 @@ test("maps documented completions and parameter signature help", async () => {
                     kind: "markdown",
                     value: "Replaces the displayed profile name."
                 },
+                foundationTypes: [{
+                    label: "User",
+                    uri: "file:///tmp/user.fdn",
+                    position: { line: 1, character: 7 }
+                }],
                 parameters: [{
                     label: "name String",
                     documentation: {
                         kind: "markdown",
                         value: "The new user-facing name."
-                    }
+                    },
+                    foundationTypes: [{
+                        label: "StringBox",
+                        uri: "file:///tmp/string_box.fdn",
+                        position: { line: 2, character: 7 }
+                    }]
                 }]
             }],
             activeSignature: 0,
@@ -416,10 +432,132 @@ test("maps documented completions and parameter signature help", async () => {
     assert.equal(completions[0].command.command,
         "editor.action.triggerParameterHints");
     assert.equal(signature.signatures[0].documentation.value,
-        "Replaces the displayed profile name.");
+        "Replaces the displayed profile name.\n\n**Types**: " +
+        "[User](command:foundation.openTypeDefinition?" +
+        "%5B%22file%3A%2F%2F%2Ftmp%2Fuser.fdn%22%2C%7B%22line%22%3A1%2C" +
+        "%22character%22%3A7%7D%5D)");
+    assert.deepEqual(signature.signatures[0].documentation.isTrusted, {
+        enabledCommands: ["foundation.openTypeDefinition"]
+    });
     assert.equal(signature.signatures[0].parameters[0].label, "name String");
-    assert.equal(signature.signatures[0].parameters[0].documentation.value,
-        "The new user-facing name.");
+    assert.match(signature.signatures[0].parameters[0].documentation.value,
+        /\*\*Types\*\*: \[StringBox\]\(command:foundation\.openTypeDefinition/);
+});
+
+test("combines textual hover docs with semantic type actions", async () => {
+    class MarkdownString {
+        constructor(value) {
+            this.value = value;
+        }
+
+        appendMarkdown(value) {
+            this.value += value;
+        }
+    }
+    class Range {
+        constructor(startLine, startCharacter, endLine, endCharacter) {
+            this.start = { line: startLine, character: startCharacter };
+            this.end = { line: endLine, character: endCharacter };
+        }
+    }
+    class Hover {
+        constructor(contents, range) {
+            Object.assign(this, { contents, range });
+        }
+    }
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.vscode = { Hover, MarkdownString, Range };
+    client.request = async () => ({
+        contents: {
+            kind: "markdown",
+            value: "Resolves `missingSymbol` as ordinary prose."
+        },
+        range: {
+            start: { line: 3, character: 4 },
+            end: { line: 3, character: 11 }
+        },
+        foundationTypes: [{
+            label: "User",
+            uri: "file:///tmp/user.fdn",
+            position: { line: 1, character: 7 }
+        }],
+        foundationComposite: {
+            uri: "file:///tmp/user.fdn",
+            position: { line: 1, character: 7 }
+        }
+    });
+
+    const hover = await client.hover(
+        { uri: { toString: () => "file:///tmp/main.fdn" } },
+        { line: 3, character: 5 }
+    );
+
+    assert.match(hover.contents.value, /`missingSymbol` as ordinary prose/);
+    assert.match(hover.contents.value,
+        /\[User\]\(command:foundation\.openTypeDefinition/);
+    assert.doesNotMatch(hover.contents.value, /Peek Composite Type/);
+    assert.deepEqual(hover.contents.isTrusted, {
+        enabledCommands: ["foundation.openTypeDefinition"]
+    });
+});
+
+test("opens compiler-resolved nominal types", async () => {
+    class Position {
+        constructor(line, character) {
+            Object.assign(this, { line, character });
+        }
+    }
+    class Range {
+        constructor(start, end) {
+            Object.assign(this, { start, end });
+        }
+    }
+    class Selection {
+        constructor(anchor, active) {
+            Object.assign(this, { anchor, active });
+        }
+    }
+    const revealed = [];
+    const target = { uri: "file:///project/profile/user.fdn" };
+    const editor = {
+        revealRange(range) {
+            revealed.push(range);
+        }
+    };
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.vscode = {
+        Position,
+        Range,
+        Selection,
+        TextEditorRevealType: { InCenterIfOutsideViewport: 2 },
+        Uri: { parse: (value) => ({ value }) },
+        workspace: {
+            openTextDocument: async (uri) => {
+                target.opened = uri;
+                return target;
+            }
+        },
+        window: {
+            showTextDocument: async (document) => {
+                target.shown = document;
+                return editor;
+            }
+        }
+    };
+
+    await client.openTypeDefinition(
+        "file:///project/profile/user.fdn",
+        { line: 4, character: 7 }
+    );
+
+    assert.equal(target.opened.value, target.uri);
+    assert.equal(target.shown, target);
+    assert.deepEqual(editor.selection, new Selection(
+        new Position(4, 7),
+        new Position(4, 7)
+    ));
+    assert.equal(revealed.length, 1);
+    assert.equal(revealed[0].start.line, 4);
 });
 
 test("maps structural folding and selection ranges", async () => {

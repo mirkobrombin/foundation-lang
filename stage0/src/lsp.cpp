@@ -25,6 +25,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -880,6 +881,23 @@ std::string typeParametersSuffix(const std::vector<std::string> &parameters) {
     return result;
 }
 
+std::string attributeDetail(const AttributeApplication &attribute) {
+    auto result = '@' + shortName(attribute.name);
+    if (attribute.parenthesized) {
+        result += attribute.arguments.empty() ? "()" : "(...)";
+    }
+    return result;
+}
+
+std::string parameterDetail(const Parameter &parameter) {
+    std::string result;
+    for (const auto &attribute : parameter.attributes) {
+        result += attributeDetail(attribute) + ' ';
+    }
+    result += parameter.name + ' ' + displayTypeSyntax(parameter.type);
+    return result;
+}
+
 std::string functionDetail(const Function &function) {
     auto prefix = function.task ? std::string("task ")
                                 : function.cSymbol.has_value() ? std::string("extern c fn ")
@@ -888,6 +906,12 @@ std::string functionDetail(const Function &function) {
         prefix = "@blocking " + prefix;
     } else if (function.callback) {
         prefix = "@callback " + prefix;
+    }
+    for (auto attribute = function.attributes.rbegin();
+         attribute != function.attributes.rend(); ++attribute) {
+        if (attribute->name != "blocking" && attribute->name != "callback") {
+            prefix = attributeDetail(*attribute) + ' ' + prefix;
+        }
     }
     std::string result = prefix + shortName(function.name) +
                          typeParametersSuffix(function.typeParameters) + '(';
@@ -901,7 +925,7 @@ std::string functionDetail(const Function &function) {
                       : function.receiver == ReceiverKind::Edit ? "edit"
                                                                 : "own";
         } else {
-            result += parameter.name + ' ' + displayTypeSyntax(parameter.type);
+            result += parameterDetail(parameter);
         }
     }
     result += ") " + displayTypeSyntax(function.returnType);
@@ -939,7 +963,7 @@ std::string contractMethodDetail(const ContractMethod &method) {
               : method.receiver == ReceiverKind::Edit ? "edit"
                                                       : "own";
     for (const auto &parameter : method.parameters) {
-        result += ", " + parameter.name + ' ' + displayTypeSyntax(parameter.type);
+        result += ", " + parameterDetail(parameter);
     }
     result += ") " + displayTypeSyntax(method.returnType);
     return result;
@@ -2070,6 +2094,88 @@ class LanguageServer {
         return Json(std::move(result));
     }
 
+    static bool nominalTypeSymbol(LanguageSymbolKind kind) {
+        return kind == LanguageSymbolKind::Struct || kind == LanguageSymbolKind::Enum ||
+               kind == LanguageSymbolKind::Contract;
+    }
+
+    void appendTypeTarget(const ProjectAnalysis &analysis,
+                          const LanguageSymbol *symbol,
+                          std::set<std::tuple<int, std::size_t, std::size_t>> &seen,
+                          Json::Array &result) const {
+        if (symbol == nullptr || !nominalTypeSymbol(symbol->id.kind) ||
+            symbol->definition.source >= analysis.sources.size()) {
+            return;
+        }
+        const auto key = std::tuple{static_cast<int>(symbol->id.kind), symbol->id.owner,
+                                    symbol->id.member};
+        if (!seen.insert(key).second) {
+            return;
+        }
+        const auto &source = analysis.sources[symbol->definition.source];
+        result.push_back(Json::object(
+            {{"label", symbol->name},
+             {"uri", sourceUri(source.identity)},
+             {"position", lspPosition(positionAt(source.contents,
+                                                   symbol->definition.offset))}}));
+    }
+
+    void appendTypeTargets(const ProjectAnalysis &analysis,
+                           const LanguageIndex &index, const TypeSyntax &type,
+                           std::set<std::tuple<int, std::size_t, std::size_t>> &seen,
+                           Json::Array &result) const {
+        const auto *occurrence = index.occurrenceAt(type.span.source, type.span.offset);
+        appendTypeTarget(analysis,
+                         occurrence == nullptr ? nullptr : index.symbol(occurrence->symbol),
+                         seen, result);
+        for (const auto &argument : type.arguments) {
+            appendTypeTargets(analysis, index, argument, seen, result);
+        }
+    }
+
+    [[nodiscard]] Json::Array typeTargets(const ProjectAnalysis &analysis,
+                                          const LanguageIndex &index,
+                                          const TypeSyntax &type) const {
+        Json::Array result;
+        std::set<std::tuple<int, std::size_t, std::size_t>> seen;
+        appendTypeTargets(analysis, index, type, seen, result);
+        return result;
+    }
+
+    [[nodiscard]] Json::Array typeTargets(const ProjectAnalysis &analysis,
+                                          const LanguageIndex &index,
+                                          const LanguageSymbol &symbol) const {
+        Json::Array result;
+        std::set<std::tuple<int, std::size_t, std::size_t>> seen;
+        const auto appendParameters = [&](const std::vector<Parameter> &parameters,
+                                          std::size_t first = 0) {
+            for (auto parameter = first; parameter < parameters.size(); ++parameter) {
+                appendTypeTargets(analysis, index, parameters[parameter].type, seen, result);
+            }
+        };
+        if ((symbol.id.kind == LanguageSymbolKind::Function ||
+             symbol.id.kind == LanguageSymbolKind::Method) &&
+            symbol.id.owner < analysis.program.functions.size()) {
+            const auto &function = analysis.program.functions[symbol.id.owner];
+            appendParameters(function.parameters, function.receiver.has_value() ? 1U : 0U);
+            appendTypeTargets(analysis, index, function.returnType, seen, result);
+        } else if (symbol.id.kind == LanguageSymbolKind::ContractMethod &&
+                   symbol.id.owner < analysis.program.contracts.size() &&
+                   symbol.id.member <
+                       analysis.program.contracts[symbol.id.owner].methods.size()) {
+            const auto &method =
+                analysis.program.contracts[symbol.id.owner].methods[symbol.id.member];
+            appendParameters(method.parameters);
+            appendTypeTargets(analysis, index, method.returnType, seen, result);
+        } else if (symbol.id.kind == LanguageSymbolKind::Attribute &&
+                   symbol.id.owner < analysis.program.attributeDeclarations.size()) {
+            appendParameters(analysis.program.attributeDeclarations[symbol.id.owner].parameters);
+        } else {
+            appendTypeTarget(analysis, index.typeDefinition(symbol.id), seen, result);
+        }
+        return result;
+    }
+
     [[nodiscard]] Json provideHover(const Json *params) const {
         const auto *textDocument = params == nullptr ? nullptr : params->find("textDocument");
         const auto uri = stringField(textDocument, "uri");
@@ -2226,7 +2332,7 @@ class LanguageServer {
                 const auto &declaration = function.parameters[parameter];
                 appendDocumentedMember(
                     "Parameters", declaration.name,
-                    languageDocumentation(*analysis, declaration.span));
+                    languageParameterDocumentation(*analysis, declaration));
             }
         } else if (symbol->id.kind == LanguageSymbolKind::ContractMethod &&
                    symbol->id.owner < analysis->program.contracts.size() &&
@@ -2237,7 +2343,7 @@ class LanguageServer {
             for (const auto &parameter : method.parameters) {
                 appendDocumentedMember(
                     "Parameters", parameter.name,
-                    languageDocumentation(*analysis, parameter.span));
+                    languageParameterDocumentation(*analysis, parameter));
             }
         } else if (symbol->id.kind == LanguageSymbolKind::Attribute &&
                    symbol->id.owner < analysis->program.attributeDeclarations.size()) {
@@ -2245,7 +2351,7 @@ class LanguageServer {
                  analysis->program.attributeDeclarations[symbol->id.owner].parameters) {
                 appendDocumentedMember(
                     "Parameters", parameter.name,
-                    languageDocumentation(*analysis, parameter.span));
+                    languageParameterDocumentation(*analysis, parameter));
             }
         } else if (symbol->id.kind == LanguageSymbolKind::Struct &&
                    symbol->id.owner < analysis->program.structs.size()) {
@@ -2296,6 +2402,10 @@ class LanguageServer {
                               {"position", lspPosition(positionAt(
                                                source.contents,
                                                declaration.span.offset))}}));
+        }
+        auto types = typeTargets(*analysis, index, *symbol);
+        if (!types.empty()) {
+            result.emplace("foundationTypes", Json(std::move(types)));
         }
         result.emplace("contents", Json::object({{"kind", "markdown"},
                                                    {"value", std::move(value)}}));
@@ -3897,20 +4007,27 @@ class LanguageServer {
                               Json::object({{"kind", "markdown"},
                                             {"value", symbol->documentation}}));
         }
+        auto signatureTypes = typeTargets(*analysis, index, *symbol);
+        if (!signatureTypes.empty()) {
+            signature.emplace("foundationTypes", Json(std::move(signatureTypes)));
+        }
         Json::Array parameters;
-        const auto appendParameters = [&parameters, &analysis](
+        const auto appendParameters = [this, &parameters, &analysis, &index](
                                           const std::vector<Parameter> &declarations,
                                           std::size_t first = 0) {
             for (auto parameter = first; parameter < declarations.size(); ++parameter) {
                 const auto &declaration = declarations[parameter];
-                Json::Object item{{"label", declaration.name + ' ' +
-                                               displayTypeSyntax(declaration.type)}};
+                Json::Object item{{"label", parameterDetail(declaration)}};
                 const auto documentation =
-                    languageDocumentation(*analysis, declaration.span);
+                    languageParameterDocumentation(*analysis, declaration);
                 if (!documentation.empty()) {
                     item.emplace("documentation",
                                  Json::object({{"kind", "markdown"},
                                                {"value", documentation}}));
+                }
+                auto types = typeTargets(*analysis, index, declaration.type);
+                if (!types.empty()) {
+                    item.emplace("foundationTypes", Json(std::move(types)));
                 }
                 parameters.push_back(Json(std::move(item)));
             }

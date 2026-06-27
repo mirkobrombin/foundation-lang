@@ -2,11 +2,7 @@ package example.profile
 
 methods User {
     // Replaces the name shown by the application.
-    fn Rename(
-        edit,
-        // The new user-facing name.
-        name String
-    ) void {
+    fn Rename(edit, name String) void {
         self.Name = name
     }
 }

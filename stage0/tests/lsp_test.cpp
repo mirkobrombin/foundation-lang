@@ -1410,6 +1410,88 @@ void diagnosticsStayScopedToTheirWorkspace() {
     std::filesystem::remove_all(root, error);
 }
 
+void semanticIntelliSenseKeepsDocumentationTextual() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "attribute Source() targets(parameter)\n"
+        "struct User {}\n"
+        "enum ResolveError { Missing }\n"
+        "// Resolves `user` while `missingSymbol` remains ordinary Markdown.\n"
+        "fn Resolve(@Source() user User) Result<User, ResolveError> {\n"
+        "    .Ok(user)\n"
+        "}\n"
+        "fn main() i32 {\n"
+        "    const user = User {}\n"
+        "    discard Resolve(user)\n"
+        "    0\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{"
+        "\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(80, "hover", 10, 14)) +
+        frame(request(81, "signatureHelp", 10, 23)) +
+        frame(request(82, "definition", 4, 30)) +
+        frame(request(83, "hover", 5, 22)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto hover = responseFor(transcript, 80);
+    const auto signature = responseFor(transcript, 81);
+    const auto documentationDefinition = responseFor(transcript, 82);
+    const auto parameterHover = responseFor(transcript, 83);
+    const auto documentation = std::string("`missingSymbol` remains ordinary Markdown");
+
+    expect(status == 0, "semantic documentation transcript exits cleanly");
+    expect(errors.str().empty(), "semantic documentation requests write no server errors");
+    expect(hover.find("fn Resolve(@Source() user User) Result<User, ResolveError>") !=
+                   std::string::npos &&
+               hover.find(documentation) != std::string::npos &&
+               hover.find("**Parameters**") == std::string::npos,
+           "hover combines compiler signature facts with unchanged Markdown prose");
+    expect(hover.find("\"foundationTypes\":[") != std::string::npos &&
+               hover.find("\"label\":\"User\"") != std::string::npos &&
+               hover.find("\"label\":\"ResolveError\"") != std::string::npos,
+           "hover publishes compiler-resolved nominal type targets");
+    expect(signature.find("fn Resolve(@Source() user User) Result<User, ResolveError>") !=
+                   std::string::npos &&
+               signature.find("\"foundationTypes\":[") != std::string::npos &&
+               signature.find("\"label\":\"@Source() user User\"") !=
+                   std::string::npos &&
+               signature.find(documentation) != std::string::npos &&
+               signature.find(documentation, signature.find(documentation) + 1) ==
+                   std::string::npos,
+           "signature help publishes decorators, callable facts, and nominal type targets");
+    expect(documentationDefinition.find("\"result\":null") != std::string::npos,
+           "documentation names do not participate in semantic navigation");
+    expect(parameterHover.find(documentation) == std::string::npos,
+           "inline parameters do not inherit the callable documentation block");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void distributedMethodsExposeDocumentationAndParameters() {
     const auto root = temporaryRoot();
     const auto app = root / "app" / "main.fdn";
@@ -1956,6 +2038,7 @@ int main() {
     lockedPackageWorkspaceLoadsCachedDependencies();
     workspaceFoldersAreIndependentAndDynamic();
     diagnosticsStayScopedToTheirWorkspace();
+    semanticIntelliSenseKeepsDocumentationTextual();
     distributedMethodsExposeDocumentationAndParameters();
     channelOperationsExposeEditorDetails();
     selectExposesEditorDetails();

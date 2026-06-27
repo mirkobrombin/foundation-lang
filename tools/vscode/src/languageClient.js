@@ -334,6 +334,10 @@ class FoundationLanguageClient {
             this.vscode.commands.registerCommand(
                 "foundation.openCompositeType",
                 (uri, position) => this.openCompositeType(uri, position)
+            ),
+            this.vscode.commands.registerCommand(
+                "foundation.openTypeDefinition",
+                (uri, position) => this.openTypeDefinition(uri, position)
             )
         );
         this.ready = true;
@@ -458,6 +462,37 @@ class FoundationLanguageClient {
         });
     }
 
+    trustMarkdown(contents, command) {
+        const enabled = contents.isTrusted?.enabledCommands || [];
+        contents.isTrusted = {
+            enabledCommands: [...new Set([...enabled, command])]
+        };
+    }
+
+    markdown(value, typeTargets = []) {
+        const contents = new this.vscode.MarkdownString(value || "");
+        if (typeTargets.length === 0) {
+            return contents;
+        }
+        const links = typeTargets.map((target) => {
+            const argumentsValue = encodeURIComponent(JSON.stringify([
+                target.uri,
+                target.position
+            ]));
+            return `[${target.label}]` +
+                `(command:foundation.openTypeDefinition?${argumentsValue})`;
+        });
+        const separator = contents.value ? "\n\n" : "";
+        const markdown = `${separator}**Types**: ${links.join(", ")}`;
+        if (typeof contents.appendMarkdown === "function") {
+            contents.appendMarkdown(markdown);
+        } else {
+            contents.value += markdown;
+        }
+        this.trustMarkdown(contents, "foundation.openTypeDefinition");
+        return contents;
+    }
+
     async hover(document, position, token) {
         const result = await this.request("textDocument/hover", {
             textDocument: { uri: document.uri.toString() },
@@ -466,21 +501,10 @@ class FoundationLanguageClient {
         if (!result) {
             return undefined;
         }
-        const contents = new this.vscode.MarkdownString(result.contents?.value || "");
-        if (result.foundationComposite) {
-            const argumentsValue = encodeURIComponent(JSON.stringify([
-                result.foundationComposite.uri,
-                result.foundationComposite.position
-            ]));
-            const link = `\n\n[$(symbol-structure) Peek Composite Type]` +
-                `(command:foundation.openCompositeType?${argumentsValue})`;
-            if (typeof contents.appendMarkdown === "function") {
-                contents.appendMarkdown(link);
-            } else {
-                contents.value += link;
-            }
-            contents.isTrusted = { enabledCommands: ["foundation.openCompositeType"] };
-        }
+        const contents = this.markdown(
+            result.contents?.value || "",
+            result.foundationTypes || []
+        );
         return new this.vscode.Hover(contents, this.range(result.range));
     }
 
@@ -608,6 +632,23 @@ class FoundationLanguageClient {
             this.vscode.Uri.parse(sourceUri),
             new this.vscode.Position(position.line, position.character),
             locations
+        );
+    }
+
+    async openTypeDefinition(uriValue, positionValue) {
+        const uri = this.vscode.Uri.parse(
+            typeof uriValue === "string" ? uriValue : uriValue.toString()
+        );
+        const position = new this.vscode.Position(
+            positionValue.line,
+            positionValue.character
+        );
+        const document = await this.vscode.workspace.openTextDocument(uri);
+        const editor = await this.vscode.window.showTextDocument(document);
+        editor.selection = new this.vscode.Selection(position, position);
+        editor.revealRange(
+            new this.vscode.Range(position, position),
+            this.vscode.TextEditorRevealType.InCenterIfOutsideViewport
         );
     }
 
@@ -769,18 +810,21 @@ class FoundationLanguageClient {
         help.signatures = (result.signatures || []).map((value) => {
             const signature = new this.vscode.SignatureInformation(
                 value.label,
-                value.documentation
-                    ? new this.vscode.MarkdownString(
-                        value.documentation.value || value.documentation
+                value.documentation || value.foundationTypes?.length
+                    ? this.markdown(
+                        value.documentation?.value || value.documentation || "",
+                        value.foundationTypes || []
                     )
                     : undefined
             );
             signature.parameters = (value.parameters || []).map((parameter) =>
                 new this.vscode.ParameterInformation(
                     parameter.label,
-                    parameter.documentation
-                        ? new this.vscode.MarkdownString(
-                            parameter.documentation.value || parameter.documentation
+                    parameter.documentation || parameter.foundationTypes?.length
+                        ? this.markdown(
+                            parameter.documentation?.value ||
+                                parameter.documentation || "",
+                            parameter.foundationTypes || []
                         )
                         : undefined
                 )

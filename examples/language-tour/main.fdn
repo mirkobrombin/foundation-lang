@@ -53,7 +53,12 @@ struct TourMetadata {
     codes [2]i32
 }
 
-attribute TourRoute(command TourCommand, path String, metadata TourMetadata, fallback Option<String>) targets(fn)
+attribute TourRoute(
+    command TourCommand,
+    path String,
+    metadata TourMetadata,
+    fallback Option<String>
+) targets(fn)
 attribute TourLabel(value String) targets(struct, field, variant, method, parameter) repeatable
 
 @TourLabel("result")
@@ -385,8 +390,10 @@ fn main(args view [String]) i32 {
         nestedBackgroundValue == 42 &&
         !beforeCancellation && afterCancellation && channelMatches {
         return match state {
-            Running: resultOr(verified, 0) + counterValue + directCounterValue + sequenceValue + callbackValue - 20
-            Done(done): resultOr(verified, done.code) + counterValue + directCounterValue + sequenceValue + callbackValue - 21
+            Running: resultOr(verified, 0) + counterValue + directCounterValue +
+                sequenceValue + callbackValue - 20
+            Done(done): resultOr(verified, done.code) + counterValue + directCounterValue +
+                sequenceValue + callbackValue - 21
         }
     } else {
         discard verified
