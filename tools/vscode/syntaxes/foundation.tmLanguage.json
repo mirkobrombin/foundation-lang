@@ -98,6 +98,7 @@
                         "6": { "name": "storage.modifier.attribute.repeatable.foundation" }
                     },
                     "patterns": [
+                        { "include": "#comments" },
                         {
                             "name": "variable.parameter.foundation",
                             "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+(?:\\[[^,()\\n]+\\]|[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?)\\s*(?:,|\\)))"
@@ -125,6 +126,7 @@
                         "0": { "name": "punctuation.section.arguments.end.foundation" }
                     },
                     "patterns": [
+                        { "include": "#comments" },
                         { "include": "#strings" },
                         { "include": "#attributeArgumentParens" },
                         { "include": "#blocks" },
@@ -153,6 +155,7 @@
                         "0": { "name": "punctuation.section.arguments.end.foundation" }
                     },
                     "patterns": [
+                        { "include": "#comments" },
                         { "include": "#strings" },
                         { "include": "#attributeArgumentParens" },
                         { "include": "#blocks" },
@@ -225,6 +228,7 @@
                         "0": { "name": "punctuation.section.block.end.foundation" }
                     },
                     "patterns": [
+                        { "include": "#comments" },
                         { "include": "$self" }
                     ]
                 }
@@ -311,6 +315,7 @@
                         "0": { "name": "punctuation.section.block.end.foundation" }
                     },
                     "patterns": [
+                        { "include": "#comments" },
                         { "include": "#attributeApplications" },
                         { "include": "#functionDefinitions" },
                         { "include": "#blocks" },
@@ -342,6 +347,7 @@
                     },
                     "end": "$",
                     "patterns": [
+                        { "include": "#comments" },
                         { "include": "#attributeApplications" },
                         { "include": "#functionDefinitions" },
                         {
@@ -389,6 +395,7 @@
                         "0": { "name": "punctuation.section.block.end.foundation" }
                     },
                     "patterns": [
+                        { "include": "#comments" },
                         { "include": "#functionDefinitions" },
                         { "include": "#genericTypeApplications" },
                         { "include": "#ownership" },
@@ -418,6 +425,7 @@
                         "0": { "name": "punctuation.section.block.end.foundation" }
                     },
                     "patterns": [
+                        { "include": "#comments" },
                         { "include": "#attributeApplications" },
                         {
                             "match": "^\\s*([A-Za-z_][A-Za-z0-9_]*)",
@@ -460,6 +468,7 @@
                         "0": { "name": "punctuation.section.parens.end.foundation" }
                     },
                     "patterns": [
+                        { "include": "#comments" },
                         { "include": "#attributeApplications" },
                         {
                             "name": "variable.parameter.foundation",
@@ -489,6 +498,7 @@
                         "0": { "name": "punctuation.section.parens.end.foundation" }
                     },
                     "patterns": [
+                        { "include": "#comments" },
                         {
                             "name": "variable.parameter.foundation",
                             "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+(?:(?:own|view|edit)\\s+)?(?:fn\\s*\\(|\\[[^,()\\n]+\\]|[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?)\\s*(?:,|\\)))"
@@ -514,6 +524,7 @@
                     },
                     "end": "(?=\\{)",
                     "patterns": [
+                        { "include": "#comments" },
                         { "include": "#ownership" },
                         {
                             "name": "variable.other.capture.foundation",
@@ -556,6 +567,7 @@
                         "0": { "name": "punctuation.section.block.end.foundation" }
                     },
                     "patterns": [
+                        { "include": "#comments" },
                         {
                             "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(?:\\s+(as)\\s+([A-Za-z_][A-Za-z0-9_]*))?",
                             "captures": {
@@ -705,6 +717,7 @@
                         "0": { "name": "punctuation.definition.type-arguments.end.foundation" }
                     },
                     "patterns": [
+                        { "include": "#comments" },
                         { "include": "#genericTypeApplications" },
                         { "include": "#ownership" },
                         { "include": "#types" },
@@ -729,6 +742,7 @@
                         "0": { "name": "punctuation.definition.type-arguments.end.foundation" }
                     },
                     "patterns": [
+                        { "include": "#comments" },
                         { "include": "#genericTypeApplications" },
                         { "include": "#ownership" },
                         { "include": "#functionTypes" },

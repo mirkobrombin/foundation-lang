@@ -115,7 +115,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.43.0");
+    assert.equal(manifest.version, "0.44.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1063,6 +1063,28 @@ test("grammar and completions track compiler keywords", () => {
     assert.ok(parsedGrammar.repository.nestedBlockComments.patterns.every((pattern) =>
         pattern.name.startsWith("comment.block.")
     ));
+    const commentAwareContexts = [
+        "attributeDefinitions",
+        "attributeApplications",
+        "attributeArgumentParens",
+        "blocks",
+        "structDefinitions",
+        "cAbiDeclarations",
+        "contractDefinitions",
+        "enumDefinitions",
+        "functionDefinitions",
+        "functionTypes",
+        "captureClauses",
+        "structPatterns",
+        "genericTypeApplications",
+        "genericFunctionApplications"
+    ];
+    for (const name of commentAwareContexts) {
+        const context = parsedGrammar.repository[name].patterns.find((pattern) =>
+            pattern.begin && Array.isArray(pattern.patterns)
+        );
+        assert.equal(context.patterns[0].include, "#comments", name);
+    }
     assert.match(grammar, /\\\\\[0nrt/);
     assert.equal(
         parsedGrammar.repository.punctuation.patterns[1].match,
@@ -1150,7 +1172,9 @@ test("tracks function values and explicit closure captures", () => {
     assert.match(grammar.repository.functionTypes.patterns[0].begin, /fn/);
     assert.match(grammar.repository.captureClauses.patterns[0].begin, /capture/);
     assert.match(grammar.repository.captureClauses.patterns[0].beginCaptures[1].name, /keyword/);
-    assert.match(grammar.repository.captureClauses.patterns[0].patterns[1].name, /capture/);
+    assert.match(grammar.repository.captureClauses.patterns[0].patterns.find((pattern) =>
+        pattern.name === "variable.other.capture.foundation"
+    ).name, /capture/);
     assert.equal(snippets["Function value type"].prefix, "fntype");
     assert.equal(snippets.Closure.prefix, "closure");
     assert.equal(snippets["Owning closure"].prefix, "closureown");
@@ -1310,8 +1334,10 @@ test("tracks owned place operations and struct patterns", () => {
     assert.equal(byLabel.get("count").detail, "Destructured field binding");
     assert.equal(byLabel.has("Pair"), true);
     assert.match(grammar.repository.structPatterns.patterns[0].begin, /let/);
-    assert.match(grammar.repository.structPatterns.patterns[0].patterns[0].captures[2].name,
-        /keyword/);
+    const fieldPattern = grammar.repository.structPatterns.patterns[0].patterns.find(
+        (pattern) => pattern.captures?.[2]
+    );
+    assert.match(fieldPattern.captures[2].name, /keyword/);
     assert.equal(snippets["Replace place"].prefix, "replace");
     assert.equal(snippets["Struct destructuring"].prefix, "destructure");
     assert.equal(snippets["Deterministic drop"].prefix, "drop");
@@ -1351,7 +1377,9 @@ test("collects contracts, implementations, and receiver methods", () => {
     assert.ok(grammar.repository.structDefinitions.patterns[0].patterns.some(
         (pattern) => pattern.include === "#blocks"
     ));
-    assert.equal(grammar.repository.blocks.patterns[0].patterns[0].include, "$self");
+    assert.ok(grammar.repository.blocks.patterns[0].patterns.some(
+        (pattern) => pattern.include === "$self"
+    ));
 });
 
 test("collects contract inheritance, defaults, and delegation", () => {

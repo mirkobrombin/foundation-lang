@@ -1415,13 +1415,14 @@ void distributedMethodsExposeDocumentationAndParameters() {
     const auto app = root / "app" / "main.fdn";
     const auto user = root / "profile" / "user.fdn";
     const auto rename = root / "profile" / "rename.fdn";
-    writeFile(user,
-              "package sample.profile\n"
-              "// A profile edited across source files.\n"
-              "struct User {\n"
-              "    // The name shown to people.\n"
-              "    Name String\n"
-              "}\n");
+    const std::string userContents =
+        "package sample.profile\n"
+        "// A profile edited across source files.\n"
+        "struct User {\n"
+        "    // The name shown to people.\n"
+        "    Name String\n"
+        "}\n";
+    writeFile(user, userContents);
     writeFile(rename,
               "package sample.profile\n"
               "methods User {\n"
@@ -1444,6 +1445,7 @@ void distributedMethodsExposeDocumentationAndParameters() {
 
     const auto rootUri = fileUri(root);
     const auto appUri = fileUri(app);
+    const auto userUri = fileUri(user);
     const auto renameUri = fileUri(rename);
     const auto initialize =
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
@@ -1453,6 +1455,11 @@ void distributedMethodsExposeDocumentationAndParameters() {
         "\"textDocument\":{\"uri\":\"" + appUri +
         "\",\"languageId\":\"foundation\",\"version\":1,\"text\":\"" +
         jsonEscape(appContents) + "\"}}}";
+    const auto openUser =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" + userUri +
+        "\",\"languageId\":\"foundation\",\"version\":1,\"text\":\"" +
+        jsonEscape(userContents) + "\"}}}";
     const std::string completionContents =
         "package sample.app\n"
         "import sample.profile\n"
@@ -1481,14 +1488,18 @@ void distributedMethodsExposeDocumentationAndParameters() {
         "{\"jsonrpc\":\"2.0\",\"id\":94,\"method\":\"foundation/compositeType\","
         "\"params\":{\"textDocument\":{\"uri\":\"" + appUri +
         "\"},\"position\":{\"line\":3,\"character\":24}}}";
+    const auto codeLens =
+        "{\"jsonrpc\":\"2.0\",\"id\":96,\"method\":\"textDocument/codeLens\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" + userUri + "\"}}}";
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
-    std::istringstream input(frame(initialize) + frame(open) +
+    std::istringstream input(frame(initialize) + frame(open) + frame(openUser) +
                              frame(request(90, "hover", 10)) +
                              frame(typeHover) + frame(composite) +
                              frame(request(92, "signatureHelp", 22)) +
                              frame(request(93, "definition", 10)) +
+                             frame(codeLens) +
                              frame(changeForCompletion) +
                              frame(request(91, "completion", 9)) + frame(shutdown) +
                              frame(exit));
@@ -1502,6 +1513,7 @@ void distributedMethodsExposeDocumentationAndParameters() {
     const auto definition = responseFor(transcript, 93);
     const auto compositeType = responseFor(transcript, 94);
     const auto userHover = responseFor(transcript, 95);
+    const auto codeLenses = responseFor(transcript, 96);
 
     expect(status == 0, "distributed-method language server transcript exits cleanly");
     expect(errors.str().empty(), "distributed-method requests write no server errors");
@@ -1533,6 +1545,11 @@ void distributedMethodsExposeDocumentationAndParameters() {
                userHover.find("The name shown to people.") != std::string::npos &&
                userHover.find("foundationComposite") != std::string::npos,
            "struct hover documents fields, summarizes its shape, and exposes the composite action");
+    expect(codeLenses.find("\"end\":{\"character\":1,\"line\":1}") !=
+               std::string::npos &&
+               codeLenses.find("\"end\":{\"character\":1,\"line\":3}") !=
+                   std::string::npos,
+           "code lenses stay above attached documentation blocks");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);

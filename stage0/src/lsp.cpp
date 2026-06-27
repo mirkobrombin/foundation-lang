@@ -1191,23 +1191,8 @@ std::vector<DelimiterRange> delimiterRanges(std::string_view source,
     return result;
 }
 
-std::optional<SourceSpan> declarationExtent(std::string_view source,
-                                            SourceSpan declaration) {
-    const auto delimiters = delimiterRanges(source, declaration.source);
-    const DelimiterRange *body = nullptr;
-    for (const auto &candidate : delimiters) {
-        if (candidate.opening != TokenKind::LeftBrace ||
-            candidate.span.offset < declaration.offset) {
-            continue;
-        }
-        if (body == nullptr || candidate.span.offset < body->span.offset) {
-            body = &candidate;
-        }
-    }
-    if (body == nullptr) {
-        return std::nullopt;
-    }
-    auto start = source.rfind('\n', declaration.offset == 0 ? 0 : declaration.offset - 1);
+std::size_t declarationPrefixStart(std::string_view source, std::size_t offset) {
+    auto start = source.rfind('\n', offset == 0 ? 0 : offset - 1);
     start = start == std::string_view::npos ? 0 : start + 1;
     while (start != 0) {
         const auto previousEnd = start - 1;
@@ -1224,6 +1209,32 @@ std::optional<SourceSpan> declarationExtent(std::string_view source,
         }
         break;
     }
+    return start;
+}
+
+SourceSpan codeLensAnchor(std::string_view source, SourceSpan declaration) {
+    const auto start = declarationPrefixStart(source, declaration.offset);
+    const auto position = positionAt(source, start);
+    return {start, 0, position.line + 1, position.character + 1, declaration.source};
+}
+
+std::optional<SourceSpan> declarationExtent(std::string_view source,
+                                            SourceSpan declaration) {
+    const auto delimiters = delimiterRanges(source, declaration.source);
+    const DelimiterRange *body = nullptr;
+    for (const auto &candidate : delimiters) {
+        if (candidate.opening != TokenKind::LeftBrace ||
+            candidate.span.offset < declaration.offset) {
+            continue;
+        }
+        if (body == nullptr || candidate.span.offset < body->span.offset) {
+            body = &candidate;
+        }
+    }
+    if (body == nullptr) {
+        return std::nullopt;
+    }
+    const auto start = declarationPrefixStart(source, declaration.offset);
     const auto end = body->span.offset + body->span.length;
     const auto position = positionAt(source, start);
     return SourceSpan{start, end - start, position.line + 1, position.character + 1,
@@ -2671,11 +2682,13 @@ class LanguageServer {
         Json::Array result;
         const auto &requestedSource = analysis->sources[*sourceId];
         for (const auto *symbol : symbols) {
+            const auto lensAnchor =
+                codeLensAnchor(requestedSource.contents, symbol->definition);
             if (symbol->id.kind == LanguageSymbolKind::Struct) {
                 const auto position = positionAt(requestedSource.contents,
                                                  symbol->definition.offset);
                 result.push_back(Json::object(
-                    {{"range", lspRange(requestedSource.contents, symbol->definition)},
+                    {{"range", lspRange(requestedSource.contents, lensAnchor)},
                      {"command",
                       Json::object(
                           {{"title", "Peek Composite Type"},
@@ -2698,7 +2711,7 @@ class LanguageServer {
             const auto position = positionAt(requestedSource.contents,
                                              symbol->definition.offset);
             result.push_back(Json::object(
-                {{"range", lspRange(requestedSource.contents, symbol->definition)},
+                {{"range", lspRange(requestedSource.contents, lensAnchor)},
                  {"command",
                   Json::object(
                       {{"title", title},
