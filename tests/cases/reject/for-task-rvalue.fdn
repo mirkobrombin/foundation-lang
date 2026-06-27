@@ -1,0 +1,9 @@
+task scan() void {
+    for value in [1, 2] {
+        discard value
+    }
+}
+
+fn main() i32 {
+    0
+}

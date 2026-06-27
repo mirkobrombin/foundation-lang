@@ -1,0 +1,6 @@
+fn main() i32 {
+    for value in 42 {
+        discard value
+    }
+    0
+}

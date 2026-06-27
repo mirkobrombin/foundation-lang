@@ -1,0 +1,68 @@
+import foundation.plugin
+import std.format
+
+fn main(args [String]) i32 {
+    if len(args) != 2 return 1
+
+    const first = plugin.LoadNative(args[0]) else error {
+        print(error.Detail)
+        return 2
+    }
+    const second = plugin.LoadNative(args[1]) else error {
+        print(error.Detail)
+        return 3
+    }
+    var registry = plugin.NewRegistry()
+    const firstRegistered = registry.Register($first) else failure {
+        discard failure
+        return 4
+    }
+    discard firstRegistered
+    const secondRegistered = registry.Register($second) else failure {
+        discard failure
+        return 5
+    }
+    discard secondRegistered
+
+    var names = registry.Names()
+    const firstName = takeName(names.PopFront(), 6) else code {
+        discard code
+        return 6
+    }
+    const secondName = takeName(names.PopFront(), 7) else code {
+        discard code
+        return 7
+    }
+    print(firstName)
+    print(secondName)
+
+    const started = registry.StartAll()
+    const startStatus = match started {
+        Ok(changed): unexpectedSuccess(changed)
+        Err(failure): reportFailure($failure)
+    }
+    if startStatus != 0 return startStatus
+
+    const stopped = registry.StopAll()
+    print(format.I32(stopped.Len()))
+    0
+}
+
+fn unexpectedSuccess(changed bool) i32 {
+    discard changed
+    8
+}
+
+fn reportFailure($failure own plugin.StartFailure) i32 {
+    print(failure.Plugin)
+    print(failure.Error.Detail)
+    print(format.I32(failure.Cleanup.Len()))
+    0
+}
+
+fn takeName($value Option<String>, code i32) Result<String, i32> {
+    match value {
+        None: .Err(code)
+        Some(name): .Ok(name)
+    }
+}

@@ -1,19 +1,19 @@
-task sendMessage(sender Sender<String>) Result<void, ChannelError> {
+task sendMessage($sender Sender<String>) Result<void, ChannelError> {
     const delivered = sender.send("hello")
     delivered
 }
 
-task receiveMessage(receiver Receiver<String>) Result<String, ChannelError> {
+task receiveMessage($receiver Receiver<String>) Result<String, ChannelError> {
     const received = receiver.receive()
     received
 }
 
-task sendSignal(sender Sender<void>) Result<void, ChannelError> {
+task sendSignal($sender Sender<void>) Result<void, ChannelError> {
     const delivered = sender.send()
     delivered
 }
 
-task receiveSignal(receiver Receiver<void>) Result<void, ChannelError> {
+task receiveSignal($receiver Receiver<void>) Result<void, ChannelError> {
     const received = receiver.receive()
     received
 }
@@ -27,8 +27,8 @@ fn messageCode(message String) i32 {
 
 fn main() i32 {
     const Channel { sender receiver } = channel<String>(0)
-    const sending = spawn sendMessage(sender)
-    const receiving = spawn receiveMessage(receiver)
+    const sending = spawn sendMessage($sender)
+    const receiving = spawn receiveMessage($receiver)
     const sent = $sending.wait()
     const received = $receiving.wait()
 
@@ -51,9 +51,9 @@ fn main() i32 {
 
     const Channel { sender as bufferedSender receiver as bufferedReceiver } =
         channel<String>(1)
-    const bufferedSending = spawn sendMessage(bufferedSender)
+    const bufferedSending = spawn sendMessage($bufferedSender)
     const bufferedSent = $bufferedSending.wait()
-    const bufferedReceiving = spawn receiveMessage(bufferedReceiver)
+    const bufferedReceiving = spawn receiveMessage($bufferedReceiver)
     const bufferedReceived = $bufferedReceiving.wait()
     const bufferedSendCode = match bufferedSent {
         Ok: 0
@@ -73,8 +73,8 @@ fn main() i32 {
     }
 
     const Channel { sender as signalSender receiver as signalReceiver } = channel<void>(0)
-    const signalSending = spawn sendSignal(signalSender)
-    const signalReceiving = spawn receiveSignal(signalReceiver)
+    const signalSending = spawn sendSignal($signalSender)
+    const signalReceiving = spawn receiveSignal($signalReceiver)
     const signalSent = $signalSending.wait()
     const signalReceived = $signalReceiving.wait()
     const signalSendCode = match signalSent {

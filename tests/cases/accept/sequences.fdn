@@ -1,17 +1,17 @@
-fn sum(values view [i32]) i32 {
+fn sum(values [i32]) i32 {
     values[0] + values[1] + values[2]
 }
 
-fn clearFirst(values edit [i32]) void {
+fn clearFirst(&values [i32]) void {
     values[0] = 0
 }
 
-fn printFirst(values view [String]) void {
+fn printFirst(values [String]) void {
     print(values[0])
 }
 
 fn earlyReturn(flag bool) i32 {
-    let values = own ["early " + "return"]
+    const values = own ["early " + "return"]
     if flag {
         return 1
     }
@@ -21,28 +21,28 @@ fn earlyReturn(flag bool) i32 {
 
 fn main() i32 {
     var numbers = [2, 3, 4]
-    clearFirst(edit numbers)
-    let total = sum(view numbers)
+    clearFirst(&numbers)
+    const total = sum(numbers)
 
     var words = ["Foundation", " Lang"]
-    let message = words[0] + words[1]
+    const message = words[0] + words[1]
     if message != "Foundation Lang" {
         panic("String equality failed")
     }
     print(message)
     print("temporary " + "String" + "")
     words[1] = "!"
-    printFirst(view words)
+    printFirst(words)
 
-    let moved = words
-    printFirst(view moved)
+    const moved = words
+    printFirst(moved)
     discard moved
 
-    let heapWords = own ["owned array"]
-    printFirst(view heapWords)
+    const heapWords = own ["owned array"]
+    printFirst(heapWords)
     discard heapWords
 
-    let empty [0]i32 = []
+    const empty [0]i32 = []
     discard empty
     total + earlyReturn(true) - 8
 }

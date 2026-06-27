@@ -1,0 +1,9 @@
+enum Command {
+    Stop(i32)
+}
+
+fn main() i32 {
+    const command = Command.Stop(value = 1)
+    discard command
+    0
+}

@@ -1,12 +1,14 @@
 struct User {
-    id i32
+    id String
 }
 
-fn compare(left view User, right edit User) i32 {
-    left.id - right.id
+fn compare(left User, &right User) void {
+    print(left.id)
+    print(right.id)
 }
 
 fn main() i32 {
-    var user = own User { id = 7 }
-    compare(view user, edit user)
+    var user = new User { id = "seven" }
+    compare(user, &user)
+    0
 }

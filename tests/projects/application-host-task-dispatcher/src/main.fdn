@@ -1,0 +1,76 @@
+package test.host.taskdispatcher
+
+import foundation.actions
+import foundation.di
+import std.concurrent
+
+enum WorkError {
+    Cancelled
+}
+
+task calculate($cancel concurrent.Cancellation, value i32) Result<i32, WorkError> {
+    if cancel.IsRequested() return .Err(.Cancelled)
+    .Ok(value + 1)
+}
+
+@di.Scope(.Singleton)
+service Worker {
+    @di.Inject()
+    fn New() Worker {
+        Worker {}
+    }
+
+    @actions.Name("begin")
+    action Begin(
+        self,
+        $cancel concurrent.Cancellation,
+        value i32
+    ) Task<Result<i32, WorkError>> {
+        spawn calculate($cancel, value)
+    }
+}
+
+fn taskValue($pending Task<Result<i32, WorkError>>) i32 {
+    const completed = $pending.wait()
+    match completed {
+        Ok(value): value
+        Err(error): -1
+    }
+}
+
+fn dispatchValue(
+    $dispatched Result<FoundationActionResult, FoundationDispatchError>
+) i32 {
+    match dispatched {
+        Ok(result): match result {
+            Begin(pending): taskValue($pending)
+        }
+        Err(error): -2
+    }
+}
+
+fn main() i32 {
+    const application = BuildFoundationApplication()
+
+    const activeSource = concurrent.NewCancellationSource()
+    const active = application.Dispatch(
+        .Begin(FoundationBeginAction {
+            cancel = activeSource.Token()
+            value = 41
+        })
+    )
+    if dispatchValue($active) != 42 return 1
+
+    const cancelledSource = concurrent.NewCancellationSource()
+    cancelledSource.Cancel()
+    const cancelled = application.Dispatch(
+        .Begin(FoundationBeginAction {
+            cancel = cancelledSource.Token()
+            value = 41
+        })
+    )
+    if dispatchValue($cancelled) != -1 return 2
+
+    print("task dispatch")
+    0
+}

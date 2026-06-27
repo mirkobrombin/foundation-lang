@@ -1,0 +1,39 @@
+import std.format as format
+
+enum Command {
+    Start
+    Stop(code i32)
+    Rename(name String)
+}
+
+enum Toggle {
+    Ready(active bool)
+}
+
+fn score($command Command) i32 {
+    match command {
+        Start: 0
+        Stop(0): 10
+        Stop(code): code
+        Rename("foundation"): 20
+        Rename(name): 1
+    }
+}
+
+fn toggleScore($toggle Toggle) i32 {
+    match toggle {
+        Ready(true): 30
+        Ready(false): 40
+    }
+}
+
+fn main() i32 {
+    const zero = score(Command.Stop(code = 0))
+    const stopped = score(Command.Stop(code = 41))
+    const named = score(Command.Rename(name = "foundation"))
+    const other = score(Command.Rename(name = "other"))
+    const ready = toggleScore(Toggle.Ready(active = true))
+    const idle = toggleScore(Toggle.Ready(active = false))
+    print(format.I32(zero + stopped + named + other + ready + idle))
+    0
+}

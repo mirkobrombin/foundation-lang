@@ -4,14 +4,14 @@
 runtime converts them to the native representation and never exposes native path pointers.
 
 ```foundation
-fn Size(path view String) Result<u64, Error>
-fn IsDirectory(path view String) Result<bool, Error>
-fn Modified(path view String) Result<u64, Error>
-fn OpenLines(path view String) Result<own LineReader, Error>
-fn OpenDir(path view String) Result<own DirReader, Error>
-fn LineReader.NextLimited(edit, limit u64) Result<Option<String>, Error>
-task ReadText(path String) Result<String, Error>
-task ReadTextLimited(path String, limit u64) Result<String, Error>
+fn Size(path String) Result<u64, Error>
+fn IsDirectory(path String) Result<bool, Error>
+fn Modified(path String) Result<u64, Error>
+fn OpenLines(path String) Result<own LineReader, Error>
+fn OpenDir(path String) Result<own DirReader, Error>
+fn LineReader.NextLimited(&self, limit u64) Result<Option<String>, Error>
+task ReadText($path String) Result<String, Error>
+task ReadTextLimited($path String, limit u64) Result<String, Error>
 ```
 
 `LineReader.Next` returns one owned line at a time as

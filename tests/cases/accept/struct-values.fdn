@@ -30,10 +30,10 @@ fn sum(pair Pair) i32 {
 }
 
 fn main() i32 {
-    let pair = makePair()
+    const pair = makePair()
     var copy Pair = pair
     copy = Pair { left = copy.left right = copy.right }
-    let labeled = LabeledPair { label = "pair" pair = copy }
+    const labeled = LabeledPair { label = "pair" pair = copy }
     print(labeled.label)
     sum(labeled.pair) - 3
 }

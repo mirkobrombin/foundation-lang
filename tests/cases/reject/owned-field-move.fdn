@@ -6,12 +6,12 @@ struct Box {
     user own User
 }
 
-fn consume(user own User) void {
+fn consume($user own User) void {
     return
 }
 
 fn main() i32 {
-    let box = Box { user = own User { id = 7 } }
+    const box = Box { user = own User { id = 7 } }
     consume(box.user)
     0
 }

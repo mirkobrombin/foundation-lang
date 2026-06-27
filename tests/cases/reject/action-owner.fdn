@@ -1,0 +1,11 @@
+struct Counter {
+    value i32
+
+    action Add(&self, amount i32) i32 {
+        self.value + amount
+    }
+}
+
+fn main() i32 {
+    0
+}

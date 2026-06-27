@@ -3,7 +3,7 @@ struct User {
 }
 
 fn main() i32 {
-    let user = own User { id = 7 }
+    const user = own User { id = 7 }
     user.id = 8
     0
 }

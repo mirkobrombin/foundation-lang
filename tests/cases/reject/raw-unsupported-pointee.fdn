@@ -1,0 +1,9 @@
+struct Value {
+    number i32
+}
+
+extern c fn nativeValue() *Value as foundation_raw_value
+
+fn main() i32 {
+    0
+}

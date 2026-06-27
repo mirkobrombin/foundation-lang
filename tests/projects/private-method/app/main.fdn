@@ -3,6 +3,6 @@ package example.app
 import example.lib
 
 fn main() i32 {
-    let value = lib.Value { Number = 1 }
+    const value = lib.Value { Number = 1 }
     value.read()
 }

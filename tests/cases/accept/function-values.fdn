@@ -15,11 +15,11 @@ fn double(value i32) i32 {
     value * 2
 }
 
-fn identity<T>(value T) T {
+fn identity<T>($value T) T {
     value
 }
 
-fn apply<T>(value T, operation view fn(T) T) T {
+fn apply<T>($value T, operation fn(T) T) T {
     operation(value)
 }
 
@@ -27,18 +27,46 @@ fn increment(value Value) Value {
     Value { count = value.count + 1 }
 }
 
+fn isReady(value String) bool {
+    value == "ready"
+}
+
+fn editValue(&value Value) void {
+    value.count = value.count + 1
+}
+
+fn consumeText($value String) i32 {
+    if value == "owned" {
+        return 1
+    }
+    0
+}
+
 fn main() i32 {
-    let operation fn(i32) i32 = double
-    let generic fn(i32) i32 = identity
-    let box = OperationBox { operation = identity }
-    let movedBox = box
+    const operation fn(i32) i32 = double
+    const generic fn(i32) i32 = identity
+    const box = OperationBox { operation = identity }
+    const movedBox = box
     discard movedBox
-    let selected = Operation.Apply(double)
-    let transform fn(Value) Value = increment
-    let transformed = transform(Value { count = 41 })
-    let result = match selected {
+    const selected = Operation.Apply(double)
+    const transform fn(Value) Value = increment
+    const transformed = transform(Value { count = 41 })
+    const readOperation fn(String) bool = isReady
+    const label = "ready"
+    if !readOperation(label) {
+        return 1
+    }
+    const editOperation fn(&Value) void = editValue
+    var editable = Value { count = 41 }
+    editOperation(&editable)
+    const transferOperation fn($String) i32 = consumeText
+    const owned = "owned"
+    if transferOperation($owned) != 1 || editable.count != 42 {
+        return 1
+    }
+    const result = match selected {
         Missing: 1
         Apply(call): call(generic(21))
     }
-    apply(result, view operation) - 84 + transformed.count - 42
+    apply(result, operation) - 84 + transformed.count - 42
 }

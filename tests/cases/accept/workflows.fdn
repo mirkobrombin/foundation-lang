@@ -1,0 +1,128 @@
+fn double(value i32) Result<i32, bool> {
+    .Ok(value * 2)
+}
+
+fn addOne(value i32) Result<i32, bool> {
+    .Ok(value + 1)
+}
+
+pipeline Transform(input i32) Result<i32, bool> {
+    step double using double retry exponential(max = 2)
+    step add using addOne
+}
+
+fn measure<T>(value T) Result<i32, bool> {
+    .Ok(1)
+}
+
+pipeline Measure<T>(input T) Result<i32, bool> {
+    step measure using measure
+}
+
+fn appendMark(value String) Result<String, String> {
+    .Ok(value + "!")
+}
+
+fn rejectText(value String) Result<String, String> {
+    if !value {
+        return .Err("empty" + " input")
+    }
+    .Err("retry" + " failed")
+}
+
+pipeline Text(input String) Result<String, String> {
+    step first using appendMark
+    step second using appendMark
+}
+
+pipeline TextFailure(input String) Result<String, String> {
+    step reject using rejectText retry exponential(max = 2)
+}
+
+struct CheckoutInput {
+    FailCharge bool
+    FailRelease bool
+}
+
+fn reserve(input CheckoutInput) Result<void, bool> {
+    discard input
+    .Ok
+}
+
+fn release(input CheckoutInput) Result<void, bool> {
+    if input.FailRelease {
+        return .Err(true)
+    }
+    .Ok
+}
+
+fn charge(input CheckoutInput) Result<void, bool> {
+    if input.FailCharge {
+        return .Err(false)
+    }
+    .Ok
+}
+
+fn confirm(input CheckoutInput) Result<i32, bool> {
+    discard input
+    .Ok(42)
+}
+
+saga Checkout(input CheckoutInput) Result<i32, bool> {
+    step reserve using reserve
+        compensate release
+    step charge using charge
+    step confirm using confirm
+}
+
+fn sagaCode(input CheckoutInput) i32 {
+    const result = Checkout(input)
+    match result {
+        Ok(receipt): receipt
+        Err(failure): match failure {
+            Step(error): 1 if error else 2
+            Compensation(details): 1 if details.CompensationCount == 1 else 9
+        }
+    }
+}
+
+fn textFailureHandled() bool {
+    const unexpected = TextFailure("value") else error {
+        print(error)
+        return true
+    }
+    discard unexpected
+    false
+}
+
+fn main() i32 {
+    const transformed = Transform(20) else error {
+        discard error
+        return 1
+    }
+    print("pipeline")
+    if transformed != 41 return 2
+    const measured = Measure(42) else error {
+        discard error
+        return 8
+    }
+    if measured != 1 return 9
+
+    const text = Text("go") else error {
+        print(error)
+        return 6
+    }
+    print(text)
+    if !textFailureHandled() return 7
+
+    const success = sagaCode(CheckoutInput { FailCharge = false FailRelease = false })
+    if success != 42 return 3
+    const stepFailure = sagaCode(CheckoutInput { FailCharge = true FailRelease = false })
+    if stepFailure != 2 return 4
+    const compensationFailure = sagaCode(
+        CheckoutInput { FailCharge = true FailRelease = true }
+    )
+    if compensationFailure != 1 return 5
+    print("saga")
+    0
+}

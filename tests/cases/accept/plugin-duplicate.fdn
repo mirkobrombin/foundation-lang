@@ -1,0 +1,37 @@
+import foundation.plugin
+
+fn main(args [String]) i32 {
+    if len(args) != 1 return 1
+
+    const first = plugin.LoadNative(args[0]) else error {
+        discard error
+        return 2
+    }
+    const second = plugin.LoadNative(args[0]) else error {
+        discard error
+        return 3
+    }
+    var registry = plugin.NewRegistry()
+    const registered = registry.Register($first) else failure {
+        discard failure
+        return 4
+    }
+    discard registered
+
+    const duplicate = registry.Register($second)
+    match duplicate {
+        Ok(changed): unexpectedDuplicate(changed)
+        Err(failure): reportDuplicate($failure)
+    }
+}
+
+fn unexpectedDuplicate(changed bool) i32 {
+    discard changed
+    5
+}
+
+fn reportDuplicate($failure own plugin.RegistrationFailure) i32 {
+    print(failure.Name)
+    print(failure.Plugin.Name())
+    0
+}

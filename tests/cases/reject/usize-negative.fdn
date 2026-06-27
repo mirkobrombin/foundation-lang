@@ -1,0 +1,4 @@
+fn main() i32 {
+    const value usize = -1
+    value
+}

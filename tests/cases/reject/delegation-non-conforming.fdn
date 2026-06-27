@@ -1,5 +1,5 @@
 contract Named {
-    fn value(view) i32
+    fn value(self) i32
 }
 
 struct Identity {

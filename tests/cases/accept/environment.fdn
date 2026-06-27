@@ -2,26 +2,26 @@ package test.environment
 
 import std.env
 
-fn optionValue(value Option<String>) String {
+fn optionValue($value Option<String>) String {
     match value {
         None: ""
         Some(item): item
     }
 }
 
-fn unexpectedString(value String) i32 {
+fn unexpectedString($value String) i32 {
     discard value
     5
 }
 
-fn missingCode(value Option<String>) i32 {
+fn missingCode($value Option<String>) i32 {
     match value {
         None: 0
-        Some(item): unexpectedString(item)
+        Some(item): unexpectedString($item)
     }
 }
 
-fn unexpectedOption(value Option<String>) i32 {
+fn unexpectedOption($value Option<String>) i32 {
     discard value
     6
 }
@@ -34,37 +34,37 @@ fn errorCode(error env.Error) i32 {
     }
 }
 
-fn invalidCode(value Result<Option<String>, env.Error>) i32 {
+fn invalidCode($value Result<Option<String>, env.Error>) i32 {
     match value {
-        Ok(item): unexpectedOption(item)
+        Ok(item): unexpectedOption($item)
         Err(error): errorCode(error)
     }
 }
 
 fn main() i32 {
-    let foundName = "FOUNDATION_ENV_TEST"
-    let found = env.Get(view foundName) else error {
+    const foundName = "FOUNDATION_ENV_TEST"
+    const found = env.Get(foundName) else error {
         discard error
         return 1
     }
-    let value = optionValue(found)
+    const value = optionValue($found)
     if value != "foundation env value" {
         return 3
     }
 
-    let missingName = "FOUNDATION_ENV_TEST_MISSING_71C0"
-    let missing = env.Get(view missingName) else error {
+    const missingName = "FOUNDATION_ENV_TEST_MISSING_71C0"
+    const missing = env.Get(missingName) else error {
         discard error
         return 4
     }
-    let missingStatus = missingCode(missing)
+    const missingStatus = missingCode($missing)
     if missingStatus != 0 {
         return missingStatus
     }
 
-    let invalidName = "INVALID=NAME"
-    let invalid = env.Get(view invalidName)
-    let invalidStatus = invalidCode(invalid)
+    const invalidName = "INVALID=NAME"
+    const invalid = env.Get(invalidName)
+    const invalidStatus = invalidCode($invalid)
     if invalidStatus != 0 {
         return invalidStatus
     }

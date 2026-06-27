@@ -1,0 +1,13 @@
+enum Exit {
+    Stop(code i32)
+}
+
+fn score($exit Exit) i32 {
+    match exit {
+        Stop(0): 0
+    }
+}
+
+fn main() i32 {
+    score(Exit.Stop(code = 0))
+}

@@ -1,11 +1,11 @@
 contract Writer {
-    fn write(edit, value i32) void
+    fn write(&self, value i32) void
 }
 
 struct Value implements Writer {
     value i32
 
-    fn write(view, next i32) void {
+    fn write(self, next i32) void {
         print("unused")
     }
 }

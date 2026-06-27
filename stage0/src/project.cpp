@@ -3,6 +3,7 @@
 #include "foundation/lexer.hpp"
 #include "foundation/package.hpp"
 #include "foundation/parser.hpp"
+#include "foundation/sdk.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -93,16 +94,21 @@ std::string internalName(std::string_view packageName, std::string_view name) {
 }
 
 bool intrinsicType(std::string_view name) {
-    return name == "void" || name == "i32" || name == "u64" || name == "bool" ||
+    return name == "void" || name == "never" || name == "i8" || name == "i16" ||
+           name == "i32" || name == "i64" || name == "u8" || name == "u16" ||
+           name == "u32" || name == "u64" || name == "isize" || name == "usize" ||
+           name == "f32" || name == "f64" || name == "bool" ||
            name == "String" ||
            name == "Option" || name == "Result" || name == "ChannelError" ||
+           name == "NumberError" ||
            name == "Task" || name == "Channel" || name == "Sender" ||
            name == "Receiver" || name == "[array]" || name == "[slice]" ||
-           name == "[function]" || name == "own" || name == "view" || name == "edit";
+           name == "[function]" || name == "[raw]" || name == "[raw-const]" ||
+           name == "own" || name == "view" || name == "edit";
 }
 
 void remapExpression(Expression &expression, std::size_t expressionOffset,
-                     std::size_t functionOffset) {
+                     std::size_t blockOffset, std::size_t functionOffset) {
     if (auto *array = std::get_if<ArrayExpression>(&expression.value)) {
         for (auto &element : array->elements) {
             element += expressionOffset;
@@ -140,8 +146,18 @@ void remapExpression(Expression &expression, std::size_t expressionOffset,
     } else if (auto *match = std::get_if<MatchExpression>(&expression.value)) {
         match->value += expressionOffset;
         for (auto &arm : match->arms) {
+            if (arm.pattern.has_value()) {
+                *arm.pattern += expressionOffset;
+            }
             arm.expression += expressionOffset;
         }
+    } else if (auto *conditional =
+                   std::get_if<ConditionalExpression>(&expression.value)) {
+        conditional->condition += expressionOffset;
+        conditional->thenBlock += blockOffset;
+        conditional->thenValue += expressionOffset;
+        conditional->elseBlock += blockOffset;
+        conditional->elseValue += expressionOffset;
     } else if (auto *function = std::get_if<FunctionExpression>(&expression.value)) {
         function->function += functionOffset;
     }
@@ -162,6 +178,9 @@ void remapStatement(Statement &statement, std::size_t expressionOffset,
         assignment->value += expressionOffset;
     } else if (auto *expression = std::get_if<ExpressionStatement>(&statement.value)) {
         expression->expression += expressionOffset;
+    } else if (auto *resultElse = std::get_if<ResultElseStatement>(&statement.value)) {
+        resultElse->expression += expressionOffset;
+        resultElse->elseBlock += blockOffset;
     } else if (auto *returned = std::get_if<ReturnStatement>(&statement.value)) {
         if (returned->value.has_value()) {
             *returned->value += expressionOffset;
@@ -177,6 +196,9 @@ void remapStatement(Statement &statement, std::size_t expressionOffset,
     } else if (auto *loop = std::get_if<WhileStatement>(&statement.value)) {
         loop->condition += expressionOffset;
         loop->body += blockOffset;
+    } else if (auto *loop = std::get_if<ForStatement>(&statement.value)) {
+        loop->sequence += expressionOffset;
+        loop->body += blockOffset;
     } else if (auto *selection = std::get_if<SelectStatement>(&statement.value)) {
         for (auto &operation : selection->operations) {
             operation.operation += expressionOffset;
@@ -186,6 +208,8 @@ void remapStatement(Statement &statement, std::size_t expressionOffset,
             selection->timeout->body += blockOffset;
         }
         selection->errorBlock += blockOffset;
+    } else if (auto *unsafe = std::get_if<UnsafeStatement>(&statement.value)) {
+        unsafe->body += blockOffset;
     }
 }
 
@@ -204,7 +228,7 @@ void appendProgram(Program &target, Program source) {
     const auto blockOffset = target.blocks.size();
     const auto functionOffset = target.functions.size();
     for (auto &expression : source.expressions) {
-        remapExpression(expression, expressionOffset, functionOffset);
+        remapExpression(expression, expressionOffset, blockOffset, functionOffset);
         target.expressions.push_back(std::move(expression));
     }
     for (auto &statement : source.statements) {
@@ -224,6 +248,9 @@ void appendProgram(Program &target, Program source) {
         remapAttributes(declaration.attributes, expressionOffset);
         for (auto &field : declaration.fields) {
             remapAttributes(field.attributes, expressionOffset);
+            if (field.defaultFunction.has_value()) {
+                *field.defaultFunction += functionOffset;
+            }
         }
         target.structs.push_back(std::move(declaration));
     }
@@ -301,6 +328,10 @@ void linkType(TypeSyntax &type, const std::string &currentPackage, const ImportA
     if (separator == std::string::npos) {
         if (const auto *declaration = findDeclaration(symbols, currentPackage, type.name, false)) {
             type.name = declaration->internalName;
+        } else if (const auto *declaration =
+                       findDeclaration(symbols, "std.prelude", type.name, false);
+                   declaration != nullptr && declaration->exported) {
+            type.name = declaration->internalName;
         }
         return;
     }
@@ -321,6 +352,11 @@ void linkType(TypeSyntax &type, const std::string &currentPackage, const ImportA
     }
     type.name = declaration->internalName;
 }
+
+void linkBlock(Program &program, AstBlockId id, const std::string &currentPackage,
+               const ImportAliases &imports, const SymbolTable &symbols,
+               const std::unordered_set<std::string> &typeParameters,
+               Diagnostics &diagnostics);
 
 void linkExpression(Program &program, AstExpressionId id, const std::string &currentPackage,
                     const ImportAliases &imports, const SymbolTable &symbols,
@@ -374,6 +410,13 @@ void linkExpression(Program &program, AstExpressionId id, const std::string &cur
                            typeParameters, diagnostics);
             auto &base = program.expressions[*member->base];
             if (auto *baseName = std::get_if<NameExpression>(&base.value)) {
+                if (findDeclaration(symbols, currentPackage, baseName->name, false) == nullptr) {
+                    if (const auto *declaration =
+                            findDeclaration(symbols, "std.prelude", baseName->name, false);
+                        declaration != nullptr && declaration->exported) {
+                        baseName->name = declaration->internalName;
+                    }
+                }
                 if (const auto imported = imports.find(baseName->name); imported != imports.end()) {
                     if (const auto *function =
                             findDeclaration(symbols, imported->second, member->member, true);
@@ -385,7 +428,9 @@ void linkExpression(Program &program, AstExpressionId id, const std::string &cur
                         if (member->invoked) {
                             expression.value = CallExpression{function->internalName,
                                                               std::move(member->typeArguments),
-                                                              std::move(member->arguments)};
+                                                              std::move(member->arguments),
+                                                              std::move(member->argumentNames),
+                                                              std::move(member->argumentNameSpans)};
                         } else {
                             expression.value = NameExpression{function->internalName,
                                                               std::move(member->typeArguments)};
@@ -428,9 +473,25 @@ void linkExpression(Program &program, AstExpressionId id, const std::string &cur
         linkExpression(program, match->value, currentPackage, imports, symbols, typeParameters,
                        diagnostics);
         for (auto &arm : match->arms) {
+            if (arm.pattern.has_value()) {
+                linkExpression(program, *arm.pattern, currentPackage, imports, symbols,
+                               typeParameters, diagnostics);
+            }
             linkExpression(program, arm.expression, currentPackage, imports, symbols,
                            typeParameters, diagnostics);
         }
+    } else if (auto *conditional =
+                   std::get_if<ConditionalExpression>(&expression.value)) {
+        linkExpression(program, conditional->condition, currentPackage, imports, symbols,
+                       typeParameters, diagnostics);
+        linkBlock(program, conditional->thenBlock, currentPackage, imports, symbols,
+                  typeParameters, diagnostics);
+        linkExpression(program, conditional->thenValue, currentPackage, imports, symbols,
+                       typeParameters, diagnostics);
+        linkBlock(program, conditional->elseBlock, currentPackage, imports, symbols,
+                  typeParameters, diagnostics);
+        linkExpression(program, conditional->elseValue, currentPackage, imports, symbols,
+                       typeParameters, diagnostics);
     }
 }
 
@@ -478,6 +539,44 @@ void linkAttributes(Program &program, std::vector<AttributeApplication> &attribu
     }
 }
 
+void linkWorkflowFunction(std::string &name, SourceSpan span,
+                          const std::string &currentPackage,
+                          const ImportAliases &imports, const SymbolTable &symbols,
+                          Diagnostics &diagnostics) {
+    const auto separator = name.find('.');
+    if (separator == std::string::npos) {
+        if (const auto *declaration =
+                findDeclaration(symbols, currentPackage, name, true)) {
+            name = declaration->internalName;
+        } else if (const auto *declaration =
+                       findDeclaration(symbols, "std.prelude", name, true);
+                   declaration != nullptr && declaration->exported) {
+            name = declaration->internalName;
+        } else {
+            diagnostics.error("FDN3009", "unknown workflow function " + name, span);
+        }
+        return;
+    }
+
+    const auto alias = name.substr(0, separator);
+    const auto member = name.substr(separator + 1);
+    const auto imported = imports.find(alias);
+    if (imported == imports.end()) {
+        diagnostics.error("FDN3009", "unknown import alias " + alias, span);
+        return;
+    }
+    const auto *declaration = findDeclaration(symbols, imported->second, member, true);
+    if (declaration == nullptr) {
+        diagnostics.error("FDN3009",
+                          "unknown function " + imported->second + '.' + member, span);
+        return;
+    }
+    if (!declaration->exported) {
+        reportPrivate(diagnostics, imported->second, member, span);
+    }
+    name = declaration->internalName;
+}
+
 void linkBlock(Program &program, AstBlockId id, const std::string &currentPackage,
                const ImportAliases &imports, const SymbolTable &symbols,
                const std::unordered_set<std::string> &typeParameters,
@@ -509,6 +608,12 @@ void linkBlock(Program &program, AstBlockId id, const std::string &currentPackag
         } else if (auto *expression = std::get_if<ExpressionStatement>(&statement.value)) {
             linkExpression(program, expression->expression, currentPackage, imports, symbols,
                            typeParameters, diagnostics);
+        } else if (auto *resultElse =
+                       std::get_if<ResultElseStatement>(&statement.value)) {
+            linkExpression(program, resultElse->expression, currentPackage, imports, symbols,
+                           typeParameters, diagnostics);
+            linkBlock(program, resultElse->elseBlock, currentPackage, imports, symbols,
+                      typeParameters, diagnostics);
         } else if (auto *returned = std::get_if<ReturnStatement>(&statement.value)) {
             if (returned->value.has_value()) {
                 linkExpression(program, *returned->value, currentPackage, imports, symbols,
@@ -531,6 +636,11 @@ void linkBlock(Program &program, AstBlockId id, const std::string &currentPackag
                            typeParameters, diagnostics);
             linkBlock(program, loop->body, currentPackage, imports, symbols, typeParameters,
                       diagnostics);
+        } else if (auto *loop = std::get_if<ForStatement>(&statement.value)) {
+            linkExpression(program, loop->sequence, currentPackage, imports, symbols,
+                           typeParameters, diagnostics);
+            linkBlock(program, loop->body, currentPackage, imports, symbols, typeParameters,
+                      diagnostics);
         } else if (auto *selection = std::get_if<SelectStatement>(&statement.value)) {
             for (const auto &operation : selection->operations) {
                 linkExpression(program, operation.operation, currentPackage, imports, symbols,
@@ -544,6 +654,9 @@ void linkBlock(Program &program, AstBlockId id, const std::string &currentPackag
             }
             linkBlock(program, selection->errorBlock, currentPackage, imports, symbols,
                       typeParameters, diagnostics);
+        } else if (auto *unsafe = std::get_if<UnsafeStatement>(&statement.value)) {
+            linkBlock(program, unsafe->body, currentPackage, imports, symbols, typeParameters,
+                      diagnostics);
         }
     }
 }
@@ -652,7 +765,9 @@ void collectSymbols(const std::vector<ParsedFile> &files, SymbolTable &symbols) 
                                 declaration.exported});
         }
         for (const auto &declaration : file.program.functions) {
-            if (!declaration.ownerType.empty() || declaration.closure) {
+            if (!declaration.ownerType.empty() || declaration.closure ||
+                declaration.name.starts_with("$field_default.") ||
+                declaration.testName.has_value()) {
                 continue;
             }
             package.functions.emplace(
@@ -752,6 +867,7 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
 
     for (auto &declaration : file.program.structs) {
         declaration.packageName = packageName;
+        declaration.sourcePath = sourcePath;
         const std::unordered_set<std::string> parameters(declaration.typeParameters.begin(),
                                                          declaration.typeParameters.end());
         for (auto &field : declaration.fields) {
@@ -818,11 +934,36 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
                            parameters, diagnostics);
         }
         linkType(function.returnType, packageName, aliases, symbols, parameters, diagnostics);
+        if (function.workflow.has_value()) {
+            auto &workflow = *function.workflow;
+            linkType(workflow.successType, packageName, aliases, symbols, parameters,
+                     diagnostics);
+            linkType(workflow.errorType, packageName, aliases, symbols, parameters,
+                     diagnostics);
+            for (auto &step : workflow.steps) {
+                linkWorkflowFunction(step.function, step.functionSpan, packageName, aliases,
+                                     symbols, diagnostics);
+                if (step.compensation.has_value() && step.compensationSpan.has_value()) {
+                    linkWorkflowFunction(*step.compensation, *step.compensationSpan, packageName,
+                                         aliases, symbols, diagnostics);
+                }
+            }
+            if (workflow.failureStruct.has_value()) {
+                *workflow.failureStruct = internalName(packageName, *workflow.failureStruct);
+            }
+            if (workflow.failureEnum.has_value()) {
+                *workflow.failureEnum = internalName(packageName, *workflow.failureEnum);
+            }
+        }
         linkAttributes(file.program, function.attributes, packageName, aliases, symbols,
                        parameters, diagnostics);
         linkBlock(file.program, function.body, packageName, aliases, symbols, parameters,
                   diagnostics);
-        if (function.closure) {
+        if (function.testName.has_value()) {
+            function.name = internalName(packageName,
+                                         "$test." + std::to_string(function.span.source) + "." +
+                                             std::to_string(function.span.offset));
+        } else if (function.closure) {
             function.name = internalName(packageName, function.name);
         } else if (!function.ownerType.empty()) {
             function.ownerType = internalName(packageName, function.ownerType);
@@ -1005,9 +1146,11 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
         }
         return true;
     };
-    if (!appendLibrary(std::filesystem::path{FOUNDATION_STANDARD_LIBRARY}, "std",
+    if (!appendLibrary(sdkAsset("std", std::filesystem::path{FOUNDATION_STANDARD_LIBRARY}), "std",
                        "standard library") ||
-        !appendLibrary(std::filesystem::path{FOUNDATION_FRAMEWORK_LIBRARY}, "foundation",
+        !appendLibrary(sdkAsset("foundation",
+                                std::filesystem::path{FOUNDATION_FRAMEWORK_LIBRARY}),
+                       "foundation",
                        "Foundation framework")) {
         return std::nullopt;
     }

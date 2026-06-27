@@ -5,10 +5,14 @@
 
 int main(void) {
     const uint64_t now = foundation_runtime_time_unix_seconds();
+    const uint64_t monotonic = foundation_runtime_time_monotonic_nanoseconds();
     fdn_string epoch = fdn_string_static("", 0);
     fdn_string leap = fdn_string_static("", 0);
     if (now < UINT64_C(1700000000)) {
         return 1;
+    }
+    if (monotonic == 0) {
+        return 5;
     }
     if (foundation_runtime_time_format_utc(UINT64_C(0), &epoch) != 0 ||
         epoch.length != 20 || memcmp(epoch.data, "1970-01-01T00:00:00Z", 20) != 0) {

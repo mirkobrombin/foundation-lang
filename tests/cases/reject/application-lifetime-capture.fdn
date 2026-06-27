@@ -1,0 +1,23 @@
+import foundation.di
+
+@di.Scope(.Transient)
+service RequestState {
+    @di.Inject()
+    fn New() RequestState {
+        RequestState {}
+    }
+}
+
+@di.Scope(.Singleton)
+service Application {
+    state RequestState
+
+    @di.Inject()
+    fn New($state RequestState) Application {
+        Application { state = state }
+    }
+}
+
+fn main() i32 {
+    0
+}

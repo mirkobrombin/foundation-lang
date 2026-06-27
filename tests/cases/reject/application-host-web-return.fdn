@@ -1,0 +1,12 @@
+package test.web.reject
+
+import foundation.web
+
+@web.Route(.GET, "/items")
+fn GetItems() i32 {
+    200
+}
+
+fn main() i32 {
+    0
+}

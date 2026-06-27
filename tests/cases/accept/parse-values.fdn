@@ -15,14 +15,60 @@ fn failed(value Result<u64, parse.IntegerError>) bool {
 }
 
 fn main() i32 {
-    let maximum = "18446744073709551615"
-    let overflow = "18446744073709551616"
-    let invalid = "12x"
-    let empty = ""
-    if valueOr(parse.U64(view maximum)) != 18446744073709551615 ||
-        !failed(parse.U64(view overflow)) || !failed(parse.U64(view invalid)) ||
-        !failed(parse.U64(view empty)) {
+    const maximum = "18446744073709551615"
+    const overflow = "18446744073709551616"
+    const invalid = "12x"
+    const empty = ""
+    if valueOr(parse.U64(maximum)) != 18446744073709551615 ||
+        !failed(parse.U64(overflow)) || !failed(parse.U64(invalid)) ||
+        !failed(parse.U64(empty)) {
         return 1
+    }
+    const minimum = parse.I64("-9223372036854775808") else error {
+        discard error
+        return 2
+    }
+    if minimum != -9223372036854775807 - 1 {
+        return 3
+    }
+    const signed8 = parse.I8("-128") else error {
+        discard error
+        return 4
+    }
+    if signed8 != -128 {
+        return 5
+    }
+    const unsigned32 = parse.U32("4294967295") else error {
+        discard error
+        return 6
+    }
+    if unsigned32 != 4294967295 {
+        return 7
+    }
+    const signedSize = parse.Isize("-1") else error {
+        discard error
+        return 8
+    }
+    const unsignedSize = parse.Usize("42") else error {
+        discard error
+        return 9
+    }
+    if signedSize != -1 || unsignedSize != 42 {
+        return 10
+    }
+    const tooSmall = parse.I8("-129")
+    const tooLarge = parse.U16("65536")
+    const unsignedSign = parse.U64("-1")
+    const tooSmallFailed = match tooSmall {
+        Ok(value): false
+        Err(error): true
+    }
+    const tooLargeFailed = match tooLarge {
+        Ok(value): false
+        Err(error): true
+    }
+    if !tooSmallFailed || !tooLargeFailed || !failed(unsignedSign) {
+        return 11
     }
     print("parse ok")
     0

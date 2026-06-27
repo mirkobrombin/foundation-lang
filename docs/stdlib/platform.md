@@ -6,7 +6,7 @@ preprocessor conditions into application source.
 ```foundation
 import std.platform
 
-let current = platform.Current()
+const current = platform.Current()
 print(platform.Name(current))
 ```
 

@@ -25,7 +25,7 @@ void formatsFoundationSource() {
     constexpr std::string_view source =
         "package   sample\r\n"
         "// pair values   \r\n"
-        "contract Stored<T>{fn read(view)T}\r\n"
+        "contract Stored<T>{fn read(self)T}\r\n"
         "struct Pair<T>implements Stored<T>{\r\n"
         "left   T // first   \r\n"
         "right T\r\n"
@@ -40,13 +40,13 @@ void formatsFoundationSource() {
         "}\r\n"
         "\r\n"
         "fn main()i32{\r\n"
-        "let result=choose<i32> (1,2)\r\n"
+        "const result=choose<i32> (1,2)\r\n"
         "return result\r\n"
         "}\r\n";
     constexpr std::string_view expected =
         "package sample\n"
         "// pair values\n"
-        "contract Stored<T> { fn read(view) T }\n"
+        "contract Stored<T> { fn read(self) T }\n"
         "struct Pair<T> implements Stored<T> {\n"
         "    left T // first\n"
         "    right T\n"
@@ -61,7 +61,7 @@ void formatsFoundationSource() {
         "}\n"
         "\n"
         "fn main() i32 {\n"
-        "    let result = choose<i32>(1, 2)\n"
+        "    const result = choose<i32>(1, 2)\n"
         "    return result\n"
         "}\n";
 
@@ -83,15 +83,15 @@ void preservesLineSensitiveSyntax() {
         "value\n"
         "}\n"
         "fn main() i32 {\n"
-        "let typed fn(i32) i32 = identity < i32 >\n"
-        "let low = 1\n"
-        "let high = 2\n"
-        "let values=[1,2]\n"
-        "let first=values [0]\n"
-        "let fixed[2]i32=[1,2]\n"
-        "let ordered = low<high\n"
-        "let chained = low<high>low\n"
-        "let continued = low<\n"
+        "const typed fn(i32) i32 = identity < i32 >\n"
+        "const low = 1\n"
+        "const high = 2\n"
+        "const values=[1,2]\n"
+        "const first=values [0]\n"
+        "const fixed[2]i32=[1,2]\n"
+        "const ordered = low<high\n"
+        "const chained = low<high>low\n"
+        "const continued = low<\n"
         "high\n"
         "if ordered && continued {\n"
         "typed(4)\n"
@@ -150,18 +150,60 @@ void preservesLineAndNestedBlockComments() {
 
 void keepsTaskOwnershipCompact() {
     constexpr std::string_view source =
+        "struct Session{label String}\n"
+        "fn rename(&session Session,$label String)void{session.label=label}\n"
         "task double(value i32)i32{value*2}\n"
         "fn main()i32{\n"
+        "var session=new Session{label=\"draft\"}\n"
+        "const label=\"ready\"\n"
+        "rename(& session,$ label)\n"
         "const pending=spawn double(21)\n"
         "const result=$ pending.wait()\n"
         "result-42\n"
         "}\n";
     const auto formatted = foundation::formatSource(source);
     expect(!formatted.diagnostics.hasErrors(), "task ownership source formats");
+    expect(formatted.contents.find("fn rename(&session Session, $label String) void") !=
+               std::string::npos,
+           "parameter ownership markers stay attached to names");
+    expect(formatted.contents.find("var session = new Session { label = \"draft\" }") !=
+               std::string::npos,
+           "new construction keeps canonical spacing");
+    expect(formatted.contents.find("rename(&session, $label)") != std::string::npos,
+           "call ownership markers stay attached to arguments");
     expect(formatted.contents.find("const result = $pending.wait()") != std::string::npos,
            "task transfer marker stays attached to its handle");
     expect(foundation::formatSource(formatted.contents).contents == formatted.contents,
            "task formatting is idempotent");
+}
+
+void formatsWorkflowCompensation() {
+    constexpr std::string_view source =
+        "fn reserve(value i32)Result<void,bool>{\n"
+        "discard value\n"
+        ".Ok\n"
+        "}\n"
+        "fn release(value i32)Result<void,bool>{\n"
+        "discard value\n"
+        ".Ok\n"
+        "}\n"
+        "fn finish(value i32)Result<i32,bool>{\n"
+        ".Ok(value)\n"
+        "}\n"
+        "saga Checkout(input i32)Result<i32,bool>{\n"
+        "step reserve using reserve retry exponential(max=2)\n"
+        "compensate release\n"
+        "step finish using finish\n"
+        "}\n";
+    const auto formatted = foundation::formatSource(source);
+    expect(!formatted.diagnostics.hasErrors(), "workflow source formats");
+    expect(formatted.contents.find(
+               "    step reserve using reserve retry exponential(max = 2)\n"
+               "        compensate release\n"
+               "    step finish using finish") != std::string::npos,
+           "workflow steps and compensations use canonical indentation");
+    expect(foundation::formatSource(formatted.contents).contents == formatted.contents,
+           "workflow formatting is idempotent");
 }
 
 void rejectsInvalidSourceWithoutChangingIt() {
@@ -179,6 +221,8 @@ void preservesEstablishedFoundationStyle() {
         root / "tests/cases/accept/primitive-values.fdn",
         root / "tests/cases/accept/sequences.fdn",
         root / "tests/cases/accept/typed-attributes.fdn",
+        root / "tests/cases/accept/raw-pointers.fdn",
+        root / "tests/cases/accept/service-actions.fdn",
         root / "tests/cases/accept/text-path.fdn",
     };
     for (const auto &source : sources) {
@@ -198,7 +242,8 @@ void preservesEstablishedFoundationStyle() {
 void formatsRepositorySources() {
     const auto root = std::filesystem::path(FOUNDATION_TEST_SOURCE_DIR);
     const std::vector<std::filesystem::path> sourceRoots{
-        root / "examples", root / "std", root / "tests/cases/accept", root / "tests/projects"};
+        root / "examples", root / "foundation", root / "std", root / "tests/cases/accept",
+        root / "tests/projects"};
     std::vector<std::filesystem::path> sources;
     for (const auto &sourceRoot : sourceRoots) {
         for (const auto &entry : std::filesystem::recursive_directory_iterator(sourceRoot)) {
@@ -236,6 +281,7 @@ int main() {
     preservesLineSensitiveSyntax();
     preservesLineAndNestedBlockComments();
     keepsTaskOwnershipCompact();
+    formatsWorkflowCompensation();
     rejectsInvalidSourceWithoutChangingIt();
     preservesEstablishedFoundationStyle();
     formatsRepositorySources();

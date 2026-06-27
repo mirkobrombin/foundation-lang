@@ -1,0 +1,66 @@
+import foundation.plugin
+import std.format
+import std.time
+
+fn main(args [String]) i32 {
+    if len(args) != 1 return 1
+
+    const created = plugin.NewExecSandbox(args[0]) else error {
+        print(error.Detail)
+        return 2
+    }
+    var sandbox = created
+    const mode = sandbox.Argument("serve") else error {
+        print(error.Detail)
+        return 3
+    }
+    discard mode
+    const spaced = sandbox.Argument("hello world") else error {
+        print(error.Detail)
+        return 4
+    }
+    discard spaced
+    const empty = sandbox.Argument("") else error {
+        print(error.Detail)
+        return 5
+    }
+    discard empty
+
+    const starting = spawn plugin.StartSandbox($sandbox, time.Seconds(2))
+    const plugin.SandboxStartOutcome {
+        Sandbox as started
+        Value as startResult
+    } = $starting.wait()
+    const startedOk = match startResult {
+        Ok(changed): changed
+        Err(error): startFailed(error)
+    }
+    print(format.Bool(startedOk))
+    print(format.Bool(started.IsRunning()))
+
+    const stopping = spawn plugin.StopSandbox($started, time.Seconds(2))
+    const plugin.SandboxStopOutcome {
+        Sandbox as stoppedValue
+        Value as stopResult
+    } = $stopping.wait()
+    var stopped = stoppedValue
+    const exitCode = match stopResult {
+        Ok(code): code
+        Err(error): stopFailed(error)
+    }
+    print(format.I32(exitCode))
+    print(format.Bool(stopped.IsRunning()))
+    print(format.Bool(stopped.Close()))
+    print(format.Bool(stopped.Close()))
+    0
+}
+
+fn startFailed(error plugin.SandboxError) bool {
+    print(error.Detail)
+    false
+}
+
+fn stopFailed(error plugin.SandboxError) i32 {
+    print(error.Detail)
+    -1
+}

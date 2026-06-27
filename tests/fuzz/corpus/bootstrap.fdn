@@ -29,13 +29,13 @@ enum Maybe<T> {
 }
 
 contract Readable {
-    fn read(view) i32
+    fn read(self) i32
 }
 
 contract CounterValue extends Readable {
-    fn increment(edit) void
+    fn increment(&self) void
 
-    fn incrementTwice(edit) void {
+    fn incrementTwice(&self) void {
         self.increment()
         self.increment()
     }
@@ -44,11 +44,11 @@ contract CounterValue extends Readable {
 struct Counter implements CounterValue {
     value i32
 
-    fn read(view) i32 {
+    fn read(self) i32 {
         self.value
     }
 
-    fn increment(edit) void {
+    fn increment(&self) void {
         self.value = self.value + 1
     }
 }
@@ -67,7 +67,7 @@ struct Packet {
 struct Resource {
     value String
 
-    fn drop(edit) void {
+    fn drop(&self) void {
         self.value = "released"
     }
 }
@@ -76,7 +76,7 @@ fn identity<T>(value T) T {
     value
 }
 
-fn first(values view [String]) void {
+fn first(values [String]) void {
     print(values[0])
 }
 
@@ -84,27 +84,27 @@ fn makeReadable(value i32) own Readable {
     own Counter { value = value }
 }
 
-fn main(args view [String]) i32 {
+fn main(args [String]) i32 {
     print("fuzz seed")
     print(selectedTarget())
-    let bytes u64 = 11925602363
+    const bytes u64 = 11925602363
     discard bytes
-    let values = ["array", "slice"]
-    first(view values)
+    const values = ["array", "slice"]
+    first(values)
     var counter = CounterWrapper { counter = Counter { value = 40 } }
     counter.incrementTwice()
     print(counter.read())
-    let dynamic = makeReadable(42)
+    const dynamic = makeReadable(42)
     print(dynamic.read())
     discard dynamic
     var message = "before"
-    let previous = replace message with "after"
+    const previous = replace message with "after"
     discard previous
-    let Packet { value count as itemCount } = Packet { value = message count = 1 }
+    const Packet { value count as itemCount } = Packet { value = message count = 1 }
     discard value
     discard itemCount
     discard Resource { value = "live" }
-    let value = Maybe.Some(identity(0))
+    const value = Maybe.Some(identity(0))
     match value {
         None: 1
         Some(number): number

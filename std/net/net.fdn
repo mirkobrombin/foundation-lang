@@ -8,27 +8,44 @@ enum Error {
     Cancelled
     InvalidUtf8
     LineTooLong
+    AddressInUse
     Io
 }
 
 @blocking
-extern c fn resolveNative(host view String, port u64, addresses edit u64) i32 as foundation_runtime_net_resolve
+extern c fn resolveNative(host String, port u64, &addresses u64) i32 as foundation_runtime_net_resolve
 
 extern c fn closeAddressesNative(addresses u64) void as foundation_runtime_net_addresses_close
 
-@callback(cancel = foundation_runtime_net_connect_cancel)
-extern c fn connectNative(addresses u64, connection edit u64) i32 as foundation_runtime_net_connect_start
+extern c fn listenNative(
+    address String,
+    port u64,
+    backlog u64,
+    &listener u64,
+    &boundPort u64
+) i32 as foundation_runtime_net_listen
 
-extern c fn splitNative(connection u64, reader edit u64, writer edit u64) i32 as foundation_runtime_net_split
+extern c fn closeListenerNative(listener u64) void as foundation_runtime_net_listener_close
+
+@callback(cancel = foundation_runtime_net_accept_cancel)
+extern c fn acceptNative(listener u64, &connection u64) i32 as foundation_runtime_net_accept_start
+
+@callback(cancel = foundation_runtime_net_connect_cancel)
+extern c fn connectNative(addresses u64, &connection u64) i32 as foundation_runtime_net_connect_start
+
+extern c fn splitNative(connection u64, &reader u64, &writer u64) i32 as foundation_runtime_net_split
 extern c fn closeConnectionNative(connection u64) void as foundation_runtime_net_connection_close
 extern c fn closeReaderNative(reader u64) void as foundation_runtime_net_reader_close
 extern c fn closeWriterNative(writer u64) void as foundation_runtime_net_writer_close
 
 @callback(cancel = foundation_runtime_net_read_line_cancel)
-extern c fn readLineNative(reader u64, limit u64, line edit String) i32 as foundation_runtime_net_read_line_start
+extern c fn readLineNative(reader u64, limit u64, &line String) i32 as foundation_runtime_net_read_line_start
+
+@callback(cancel = foundation_runtime_net_read_exact_cancel)
+extern c fn readExactNative(reader u64, length u64, &text String) i32 as foundation_runtime_net_read_exact_start
 
 @callback(cancel = foundation_runtime_net_write_all_cancel)
-extern c fn writeAllNative(writer u64, text view String) i32 as foundation_runtime_net_write_all_start
+extern c fn writeAllNative(writer u64, text String) i32 as foundation_runtime_net_write_all_start
 
 fn errorFor(status i32) Error {
     if status == 1 {
@@ -52,17 +69,35 @@ fn errorFor(status i32) Error {
     if status == 7 {
         return .LineTooLong
     }
+    if status == 9 {
+        return .Closed
+    }
+    if status == 10 {
+        return .AddressInUse
+    }
     .Io
+}
+
+struct TcpListener {
+    handle u64
+    Port u64
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            closeListenerNative(handle)
+        }
+    }
 }
 
 struct TcpConnection {
     handle u64
 
     // Consumes the connection and produces independently owned read and write halves.
-    fn Split(own) Result<StreamPair, Error> {
+    fn Split($self) Result<StreamPair, Error> {
         var reader u64 = 0
         var writer u64 = 0
-        const status = splitNative(self.handle, edit reader, edit writer)
+        const status = splitNative(self.handle, &reader, &writer)
         if status == 0 {
             return .Ok(StreamPair {
                 Reader = own TcpReader { handle = reader }
@@ -72,7 +107,7 @@ struct TcpConnection {
         .Err(errorFor(status))
     }
 
-    fn drop(edit) void {
+    fn drop(&self) void {
         const handle = replace self.handle with 0
         if handle != 0 {
             closeConnectionNative(handle)
@@ -83,7 +118,7 @@ struct TcpConnection {
 struct TcpReader {
     handle u64
 
-    fn drop(edit) void {
+    fn drop(&self) void {
         const handle = replace self.handle with 0
         if handle != 0 {
             closeReaderNative(handle)
@@ -94,7 +129,7 @@ struct TcpReader {
 struct TcpWriter {
     handle u64
 
-    fn drop(edit) void {
+    fn drop(&self) void {
         const handle = replace self.handle with 0
         if handle != 0 {
             closeWriterNative(handle)
@@ -107,9 +142,19 @@ struct StreamPair {
     Writer own TcpWriter
 }
 
+struct AcceptOutcome {
+    Listener own TcpListener
+    Value Result<own TcpConnection, Error>
+}
+
 struct ReadLineOutcome {
     Reader own TcpReader
     Value Result<Option<String>, Error>
+}
+
+struct ReadOutcome {
+    Reader own TcpReader
+    Value Result<String, Error>
 }
 
 struct WriteOutcome {
@@ -117,16 +162,47 @@ struct WriteOutcome {
     Value Result<void, Error>
 }
 
+// Binds a TCP listener to one local IP address. Port zero asks the OS to choose.
+fn Listen($address String, port u64) Result<own TcpListener, Error> {
+    const defaultBacklog u64 = 128
+    var listener u64 = 0
+    var boundPort u64 = 0
+    const status = listenNative(
+        address,
+        port,
+        defaultBacklog,
+        &listener,
+        &boundPort
+    )
+    if status == 0 {
+        return .Ok(own TcpListener { handle = listener Port = boundPort })
+    }
+    .Err(errorFor(status))
+}
+
+// Accepts one connection and returns ownership of the listener for the next call.
+task Accept($listener own TcpListener) AcceptOutcome {
+    var connection u64 = 0
+    const status = acceptNative(listener.handle, &connection)
+    if status == 0 {
+        return AcceptOutcome {
+            Listener = listener
+            Value = .Ok(own TcpConnection { handle = connection })
+        }
+    }
+    AcceptOutcome { Listener = listener Value = .Err(errorFor(status)) }
+}
+
 // Resolves and opens one TCP connection without blocking the Foundation executor.
-task Connect(host String, port u64) Result<own TcpConnection, Error> {
+task Connect($host String, port u64) Result<own TcpConnection, Error> {
     var addresses u64 = 0
-    const resolveStatus = resolveNative(view host, port, edit addresses)
+    const resolveStatus = resolveNative(host, port, &addresses)
     if resolveStatus != 0 {
         return .Err(errorFor(resolveStatus))
     }
 
     var connection u64 = 0
-    const connectStatus = connectNative(addresses, edit connection)
+    const connectStatus = connectNative(addresses, &connection)
     closeAddressesNative(addresses)
     if connectStatus == 0 {
         return .Ok(own TcpConnection { handle = connection })
@@ -135,10 +211,10 @@ task Connect(host String, port u64) Result<own TcpConnection, Error> {
 }
 
 // Reads one UTF-8 line and returns ownership of the reader with the result.
-task ReadLine(reader own TcpReader) ReadLineOutcome {
+task ReadLine($reader own TcpReader) ReadLineOutcome {
     const defaultLimit u64 = 16777216
     var line = ""
-    const status = readLineNative(reader.handle, defaultLimit, edit line)
+    const status = readLineNative(reader.handle, defaultLimit, &line)
     if status == 0 {
         return ReadLineOutcome { Reader = reader Value = .Ok(.Some(line)) }
     }
@@ -149,9 +225,9 @@ task ReadLine(reader own TcpReader) ReadLineOutcome {
 }
 
 // Reads one UTF-8 line up to the caller-provided byte limit.
-task ReadLineLimited(reader own TcpReader, limit u64) ReadLineOutcome {
+task ReadLineLimited($reader own TcpReader, limit u64) ReadLineOutcome {
     var line = ""
-    const status = readLineNative(reader.handle, limit, edit line)
+    const status = readLineNative(reader.handle, limit, &line)
     if status == 0 {
         return ReadLineOutcome { Reader = reader Value = .Ok(.Some(line)) }
     }
@@ -161,9 +237,19 @@ task ReadLineLimited(reader own TcpReader, limit u64) ReadLineOutcome {
     ReadLineOutcome { Reader = reader Value = .Err(errorFor(status)) }
 }
 
+// Reads exactly length UTF-8 bytes and returns ownership of the reader.
+task ReadExact($reader own TcpReader, length u64) ReadOutcome {
+    var text = ""
+    const status = readExactNative(reader.handle, length, &text)
+    if status == 0 {
+        return ReadOutcome { Reader = reader Value = .Ok(text) }
+    }
+    ReadOutcome { Reader = reader Value = .Err(errorFor(status)) }
+}
+
 // Writes the complete UTF-8 string and returns ownership of the writer.
-task WriteAll(writer own TcpWriter, text String) WriteOutcome {
-    const status = writeAllNative(writer.handle, view text)
+task WriteAll($writer own TcpWriter, $text String) WriteOutcome {
+    const status = writeAllNative(writer.handle, text)
     if status == 0 {
         return WriteOutcome { Writer = writer Value = .Ok }
     }

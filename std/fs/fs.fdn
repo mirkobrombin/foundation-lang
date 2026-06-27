@@ -11,18 +11,18 @@ enum Error {
     Io
 }
 
-extern c fn openLinesNative(path view String, handle edit u64) i32 as foundation_runtime_fs_open_lines
-extern c fn nextLineLimitedNative(handle u64, limit u64, line edit String) i32 as foundation_runtime_fs_next_line_limited
+extern c fn openLinesNative(path String, &handle u64) i32 as foundation_runtime_fs_open_lines
+extern c fn nextLineLimitedNative(handle u64, limit u64, &line String) i32 as foundation_runtime_fs_next_line_limited
 extern c fn closeNative(handle u64) i32 as foundation_runtime_fs_close
-extern c fn sizeNative(path view String, size edit u64) i32 as foundation_runtime_fs_size
-extern c fn openDirectoryNative(path view String, handle edit u64) i32 as foundation_runtime_fs_open_directory
-extern c fn nextDirectoryNative(handle u64, name edit String) i32 as foundation_runtime_fs_next_directory
+extern c fn sizeNative(path String, &size u64) i32 as foundation_runtime_fs_size
+extern c fn openDirectoryNative(path String, &handle u64) i32 as foundation_runtime_fs_open_directory
+extern c fn nextDirectoryNative(handle u64, &name String) i32 as foundation_runtime_fs_next_directory
 extern c fn closeDirectoryNative(handle u64) i32 as foundation_runtime_fs_close_directory
-extern c fn isDirectoryNative(path view String, result edit bool) i32 as foundation_runtime_fs_is_directory
-extern c fn modifiedNative(path view String, result edit u64) i32 as foundation_runtime_fs_modified
+extern c fn isDirectoryNative(path String, &result bool) i32 as foundation_runtime_fs_is_directory
+extern c fn modifiedNative(path String, &result u64) i32 as foundation_runtime_fs_modified
 
 @blocking
-extern c fn readTextLimitedNative(path view String, limit u64, result edit String) i32 as foundation_runtime_fs_read_text_limited
+extern c fn readTextLimitedNative(path String, limit u64, &result String) i32 as foundation_runtime_fs_read_text_limited
 
 fn errorFor(status i32) Error {
     if status == 1 {
@@ -48,10 +48,10 @@ fn readErrorFor(status i32) Error {
 }
 
 // Reads one UTF-8 file without blocking the Foundation executor.
-task ReadText(path String) Result<String, Error> {
+task ReadText($path String) Result<String, Error> {
     const defaultLimit u64 = 16777216
     var result = ""
-    const status = readTextLimitedNative(view path, defaultLimit, edit result)
+    const status = readTextLimitedNative(path, defaultLimit, &result)
     if status == 0 {
         return .Ok(result)
     }
@@ -59,9 +59,9 @@ task ReadText(path String) Result<String, Error> {
 }
 
 // Reads one UTF-8 file up to the caller-provided byte limit.
-task ReadTextLimited(path String, limit u64) Result<String, Error> {
+task ReadTextLimited($path String, limit u64) Result<String, Error> {
     var result = ""
-    const status = readTextLimitedNative(view path, limit, edit result)
+    const status = readTextLimitedNative(path, limit, &result)
     if status == 0 {
         return .Ok(result)
     }
@@ -71,17 +71,17 @@ task ReadTextLimited(path String, limit u64) Result<String, Error> {
 struct LineReader {
     handle u64
 
-    fn Next(edit) Result<Option<String>, Error> {
-        let defaultLimit u64 = 16777216
+    fn Next(&self) Result<Option<String>, Error> {
+        const defaultLimit u64 = 16777216
         self.NextLimited(defaultLimit)
     }
 
-    fn NextLimited(edit, limit u64) Result<Option<String>, Error> {
+    fn NextLimited(&self, limit u64) Result<Option<String>, Error> {
         if self.handle == 0 {
             return .Err(.Closed)
         }
         var line = ""
-        let status = nextLineLimitedNative(self.handle, limit, edit line)
+        const status = nextLineLimitedNative(self.handle, limit, &line)
         if status == 0 {
             return .Ok(.None)
         }
@@ -97,8 +97,8 @@ struct LineReader {
         .Err(.Io)
     }
 
-    fn Close(edit) Result<bool, Error> {
-        let handle = replace self.handle with 0
+    fn Close(&self) Result<bool, Error> {
+        const handle = replace self.handle with 0
         if handle == 0 {
             return .Ok(false)
         }
@@ -108,8 +108,8 @@ struct LineReader {
         .Err(.Io)
     }
 
-    fn drop(edit) void {
-        let handle = replace self.handle with 0
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
         if handle != 0 {
             discard closeNative(handle)
         }
@@ -119,12 +119,12 @@ struct LineReader {
 struct DirReader {
     handle u64
 
-    fn Next(edit) Result<Option<String>, Error> {
+    fn Next(&self) Result<Option<String>, Error> {
         if self.handle == 0 {
             return .Err(.Closed)
         }
         var name = ""
-        let status = nextDirectoryNative(self.handle, edit name)
+        const status = nextDirectoryNative(self.handle, &name)
         if status == 0 {
             return .Ok(.None)
         }
@@ -137,8 +137,8 @@ struct DirReader {
         .Err(.Io)
     }
 
-    fn Close(edit) Result<bool, Error> {
-        let handle = replace self.handle with 0
+    fn Close(&self) Result<bool, Error> {
+        const handle = replace self.handle with 0
         if handle == 0 {
             return .Ok(false)
         }
@@ -148,53 +148,53 @@ struct DirReader {
         .Err(.Io)
     }
 
-    fn drop(edit) void {
-        let handle = replace self.handle with 0
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
         if handle != 0 {
             discard closeDirectoryNative(handle)
         }
     }
 }
 
-fn OpenLines(path view String) Result<own LineReader, Error> {
+fn OpenLines(path String) Result<own LineReader, Error> {
     var handle u64 = 0
-    let status = openLinesNative(path, edit handle)
+    const status = openLinesNative(path, &handle)
     if status == 0 {
         return .Ok(own LineReader { handle = handle })
     }
     .Err(errorFor(status))
 }
 
-fn Size(path view String) Result<u64, Error> {
+fn Size(path String) Result<u64, Error> {
     var size u64 = 0
-    let status = sizeNative(path, edit size)
+    const status = sizeNative(path, &size)
     if status == 0 {
         return .Ok(size)
     }
     .Err(errorFor(status))
 }
 
-fn OpenDir(path view String) Result<own DirReader, Error> {
+fn OpenDir(path String) Result<own DirReader, Error> {
     var handle u64 = 0
-    let status = openDirectoryNative(path, edit handle)
+    const status = openDirectoryNative(path, &handle)
     if status == 0 {
         return .Ok(own DirReader { handle = handle })
     }
     .Err(errorFor(status))
 }
 
-fn IsDirectory(path view String) Result<bool, Error> {
+fn IsDirectory(path String) Result<bool, Error> {
     var result = false
-    let status = isDirectoryNative(path, edit result)
+    const status = isDirectoryNative(path, &result)
     if status == 0 {
         return .Ok(result)
     }
     .Err(errorFor(status))
 }
 
-fn Modified(path view String) Result<u64, Error> {
+fn Modified(path String) Result<u64, Error> {
     var result u64 = 0
-    let status = modifiedNative(path, edit result)
+    const status = modifiedNative(path, &result)
     if status == 0 {
         return .Ok(result)
     }

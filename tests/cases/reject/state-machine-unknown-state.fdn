@@ -1,0 +1,9 @@
+state_machine Door {
+    state Closed
+
+    on Open from Missing to Closed
+}
+
+fn main() i32 {
+    0
+}

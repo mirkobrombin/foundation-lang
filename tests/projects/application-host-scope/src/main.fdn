@@ -1,0 +1,128 @@
+package test.host.scope
+
+import foundation.actions
+import foundation.di
+
+enum ScopeError {
+    Invalid
+}
+
+@di.Scope(.Singleton)
+service Seed {
+    label String
+
+    @di.Inject()
+    fn New(@di.Input() $label String) Seed {
+        Seed { label = label }
+    }
+
+    fn drop(&self) void {
+        print("drop singleton")
+    }
+}
+
+@di.Scope(.Scoped)
+service Repository {
+    label String
+
+    @di.Inject()
+    fn New(seed Seed, @di.Input() suffix String) Result<Repository, ScopeError> {
+        if suffix == "" return .Err(.Invalid)
+        .Ok(Repository { label = seed.label + suffix })
+    }
+
+    fn drop(&self) void {
+        print("drop repository")
+    }
+}
+
+@di.Scope(.Scoped)
+service Handler {
+    label String
+    calls i32
+
+    @di.Inject()
+    fn New(repository Repository) Handler {
+        Handler { label = repository.label + "" calls = 0 }
+    }
+
+    @actions.Name("run")
+    action Run(&self) i32 {
+        self.calls = self.calls + 1
+        self.calls
+    }
+
+    fn drop(&self) void {
+        print("drop handler")
+    }
+}
+
+service Reader {
+    @di.Inject()
+    fn New(handler Handler) Reader {
+        discard handler
+        Reader {}
+    }
+
+    @actions.Name("read")
+    action Read(self) i32 {
+        7
+    }
+}
+
+fn unexpectedScope($scope FoundationScope) bool {
+    discard scope
+    false
+}
+
+fn expectedScope(error ScopeError) bool {
+    discard error
+    true
+}
+
+fn scopeRejected($result Result<FoundationScope, ScopeError>) bool {
+    match result {
+        Ok(scope): unexpectedScope($scope)
+        Err(error): expectedScope(error)
+    }
+}
+
+fn dispatchedValue(
+    $result Result<FoundationActionResult, FoundationDispatchError>
+) i32 {
+    match result {
+        Ok(value): match value {
+            Read(number): number
+            Run(number): number
+        }
+        Err(error): -1
+    }
+}
+
+fn main() i32 {
+    const application = BuildFoundationApplication("scope")
+    const rejected = application.NewScope("")
+    if !scopeRejected($rejected) return 1
+
+    const builtFirst = application.NewScope("!") else error {
+        discard error
+        return 2
+    }
+    var first = $builtFirst
+    if application.Run(&first) != 1 return 3
+    if application.Run(&first) != 2 return 4
+    const dispatchedRun = application.DispatchScoped(&first, .Run)
+    if dispatchedValue($dispatchedRun) != 3 return 5
+
+    const builtSecond = application.NewScope("?") else error {
+        discard error
+        return 6
+    }
+    var second = $builtSecond
+    if application.Run(&second) != 1 return 7
+    if application.Read(second) != 7 return 8
+    const dispatchedRead = application.DispatchNameScoped(&second, "read", .Read)
+    if dispatchedValue($dispatchedRead) != 7 return 9
+    print("scope")
+    0
+}

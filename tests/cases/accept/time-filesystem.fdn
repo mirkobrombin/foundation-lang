@@ -1,23 +1,23 @@
 import std.fs
 import std.time
 
-fn main(args view [String]) i32 {
+fn main(args [String]) i32 {
     if len(args) != 1 {
         return 1
     }
-    let modified = fs.Modified(view args[0]) else error {
+    const modified = fs.Modified(args[0]) else error {
         discard error
         return 2
     }
-    let now = time.Now()
+    const now = time.Now()
     if now.Unix() < 1700000000 || modified < 1700000000 {
         return 3
     }
-    let fileTime = time.FromUnix(modified)
-    if now.Before(view fileTime) {
+    const fileTime = time.FromUnix(modified)
+    if now.Before(fileTime) {
         return 4
     }
-    let elapsed = now.Since(view fileTime) else error {
+    const elapsed = now.Since(fileTime) else error {
         discard error
         return 5
     }

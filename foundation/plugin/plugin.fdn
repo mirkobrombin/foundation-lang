@@ -1,0 +1,764 @@
+package foundation.plugin
+
+import std.collections
+import std.json
+import std.text
+import std.time
+
+// Classifies a native plugin load or lifecycle failure.
+enum ErrorKind {
+    InvalidPath
+    LoadFailed
+    MissingQuery
+    QueryFailed
+    AbiMismatch
+    SdkMismatch
+    TargetMismatch
+    ContractMismatch
+    InvalidDescriptor
+    CreateFailed
+    LifecycleFailed
+    Closed
+}
+
+// Classifies a plugin factory lookup or registration failure.
+enum FactoryErrorKind {
+    EmptyName
+    AlreadyRegistered
+    NotFound
+}
+
+// Classifies an external plugin process failure.
+enum SandboxErrorKind {
+    InvalidPath
+    InvalidArgument
+    AlreadyStarted
+    NotStarted
+    SpawnFailed
+    ReadyTimeout
+    ReadyTooLarge
+    ReadyIo
+    UnexpectedReady
+    StopWriteFailed
+    StopTimeout
+    ExitFailed
+    Closed
+}
+
+// Preserves the stable failure kind and the detail copied from the plugin boundary.
+struct Error {
+    Kind ErrorKind
+    Detail String
+}
+
+// Associates a lifecycle failure with the plugin that produced it.
+struct NamedError {
+    Plugin String
+    Error Error
+}
+
+// Returns a rejected plugin to the caller instead of dropping it.
+struct RegistrationFailure {
+    Plugin own Plugin
+    Name String
+}
+
+// Returns a rejected factory to the caller instead of dropping it.
+struct FactoryRegistrationFailure {
+    Name String
+    Factory fn() own Plugin
+    Kind FactoryErrorKind
+}
+
+// Preserves the startup failure and every reverse-order rollback failure.
+struct StartFailure {
+    Plugin String
+    Error Error
+    Cleanup own collections.List<NamedError>
+}
+
+// Preserves one sandbox failure and an exit code when the process supplied one.
+struct SandboxError {
+    Kind SandboxErrorKind
+    Detail String
+    ExitCode Option<i32>
+}
+
+// Returns sandbox ownership after an asynchronous start attempt.
+struct SandboxStartOutcome {
+    Sandbox own ExecSandbox
+    Value Result<bool, SandboxError>
+}
+
+// Returns sandbox ownership and the successful process exit code after stop.
+struct SandboxStopOutcome {
+    Sandbox own ExecSandbox
+    Value Result<i32, SandboxError>
+}
+
+// Defines the lifecycle shared by Foundation and native plugins.
+contract Plugin {
+    fn Name(self) String
+    fn Start(&self) Result<bool, Error>
+    fn Stop(&self) Result<bool, Error>
+}
+
+extern c fn openNative(
+    path String,
+    &handle u64,
+    &name String,
+    &detail String
+) i32 as foundation_runtime_plugin_open
+
+extern c fn startNative(
+    handle u64,
+    &detail String
+) i32 as foundation_runtime_plugin_start
+
+extern c fn stopNative(
+    handle u64,
+    &detail String
+) i32 as foundation_runtime_plugin_stop
+
+extern c fn closeNative(
+    &handle u64,
+    &detail String
+) i32 as foundation_runtime_plugin_close
+
+extern c fn openSandboxNative(
+    path String,
+    &handle u64,
+    &detail String
+) i32 as foundation_runtime_plugin_sandbox_open
+
+extern c fn addSandboxArgumentNative(
+    handle u64,
+    argument String,
+    &detail String
+) i32 as foundation_runtime_plugin_sandbox_add_argument
+
+@blocking
+extern c fn startSandboxNative(
+    handle u64,
+    timeoutNanoseconds u64,
+    &ready String,
+    &detail String
+) i32 as foundation_runtime_plugin_sandbox_start
+
+@blocking
+extern c fn stopSandboxNative(
+    handle u64,
+    timeoutNanoseconds u64,
+    &exitCode i32,
+    &detail String
+) i32 as foundation_runtime_plugin_sandbox_stop
+
+extern c fn abortSandboxNative(
+    handle u64
+) void as foundation_runtime_plugin_sandbox_abort
+
+extern c fn closeSandboxNative(
+    &handle u64
+) void as foundation_runtime_plugin_sandbox_close
+
+// Owns one validated dynamic library and its lifecycle instance.
+struct NativePlugin implements Plugin {
+    handle u64
+    name String
+    running bool
+
+    fn Name(self) String {
+        text.Copy(self.name)
+    }
+
+    fn Start(&self) Result<bool, Error> {
+        if self.running return .Ok(false)
+        if self.handle == 0 return .Err(closedError())
+        var detail = ""
+        const status = startNative(self.handle, &detail)
+        if status != 0 return .Err(errorFor(status, $detail))
+        discard detail
+        self.running = true
+        .Ok(true)
+    }
+
+    fn Stop(&self) Result<bool, Error> {
+        if !self.running return .Ok(false)
+        if self.handle == 0 return .Err(closedError())
+        var detail = ""
+        const status = stopNative(self.handle, &detail)
+        if status != 0 return .Err(errorFor(status, $detail))
+        discard detail
+        self.running = false
+        .Ok(true)
+    }
+
+    fn Close(&self) Result<bool, Error> {
+        if self.handle == 0 return .Ok(false)
+        var detail = ""
+        const status = closeNative(&self.handle, &detail)
+        self.running = false
+        if status != 0 return .Err(errorFor(status, $detail))
+        discard detail
+        .Ok(true)
+    }
+
+    fn IsRunning(self) bool {
+        self.running
+    }
+
+    fn drop(&self) void {
+        var detail = ""
+        discard closeNative(&self.handle, &detail)
+        discard detail
+        self.running = false
+    }
+}
+
+// Owns one external plugin process and its bounded JSONL control channel.
+struct ExecSandbox {
+    handle u64
+    running bool
+
+    // Adds one literal process argument before the sandbox starts.
+    fn Argument(&self, argument String) Result<bool, SandboxError> {
+        if self.handle == 0 return .Err(closedSandboxError())
+        var detail = ""
+        const status = addSandboxArgumentNative(self.handle, argument, &detail)
+        if status != 0 return .Err(sandboxErrorFor(status, $detail, .None))
+        discard detail
+        .Ok(true)
+    }
+
+    fn IsRunning(self) bool {
+        self.running
+    }
+
+    // Terminates a running process and releases the sandbox handle immediately.
+    fn Close(&self) bool {
+        if self.handle == 0 return false
+        closeSandboxNative(&self.handle)
+        self.running = false
+        true
+    }
+
+    fn drop(&self) void {
+        closeSandboxNative(&self.handle)
+        self.running = false
+    }
+}
+
+struct entry {
+    name String
+    plugin own Plugin
+    running bool
+}
+
+struct factoryEntry {
+    name String
+    factory fn() own Plugin
+}
+
+// Owns named plugin factories and creates a fresh plugin for each lookup.
+struct FactoryRegistry {
+    entries own collections.List<own factoryEntry>
+
+    fn Register(
+        &self,
+        name String,
+        $factory fn() own Plugin
+    ) Result<bool, own FactoryRegistrationFailure> {
+        if name == "" {
+            return .Err(own FactoryRegistrationFailure {
+                Name = text.Copy(name)
+                Factory = factory
+                Kind = .EmptyName
+            })
+        }
+        if containsFactory(&self, name) {
+            return .Err(own FactoryRegistrationFailure {
+                Name = text.Copy(name)
+                Factory = factory
+                Kind = .AlreadyRegistered
+            })
+        }
+        self.entries.PushFront(own factoryEntry {
+            name = text.Copy(name)
+            factory = factory
+        })
+        .Ok(true)
+    }
+
+    fn Create(&self, expected String) Result<own Plugin, FactoryErrorKind> {
+        var source = replace self.entries with newFactories()
+        var restored = newFactories()
+        var created Option<own Plugin> = .None
+        while !source.IsEmpty() {
+            const current = factoryValue(source.PopFront())
+            const factoryEntry { name factory } = current
+            if name == expected {
+                const make fn() own Plugin = factory
+                created = .Some(make())
+                restored.PushFront(own factoryEntry {
+                    name = name
+                    factory = make
+                })
+            } else {
+                restored.PushFront(own factoryEntry {
+                    name = name
+                    factory = factory
+                })
+            }
+        }
+        self.entries = reverseFactories($restored)
+        match created {
+            None: .Err(.NotFound)
+            Some(plugin): .Ok(plugin)
+        }
+    }
+}
+
+// Owns plugins and applies deterministic startup and reverse shutdown.
+struct Registry {
+    entries own collections.List<own entry>
+
+    fn Register(
+        &self,
+        $plugin own Plugin
+    ) Result<bool, own RegistrationFailure> {
+        const name = plugin.Name()
+        if name == "" || containsName(&self, name) {
+            return .Err(own RegistrationFailure { Plugin = plugin Name = name })
+        }
+        const storedName = text.Copy(name)
+        self.entries.PushFront(own entry {
+            name = storedName
+            plugin = plugin
+            running = false
+        })
+        discard name
+        .Ok(true)
+    }
+
+    fn StartAll(&self) Result<bool, own StartFailure> {
+        var pending = reverseEntries(replace self.entries with newEntries())
+        var processed = newEntries()
+        while !pending.IsEmpty() {
+            var current = entryValue(pending.PopFront())
+            const started = current.plugin.Start() else error {
+                const failedName = text.Copy(current.name)
+                processed.PushFront($current)
+                const cleanup = restoreAfterFailure(&self, $processed, $pending)
+                return .Err(own StartFailure {
+                    Plugin = failedName
+                    Error = error
+                    Cleanup = cleanup
+                })
+            }
+            discard started
+            current.running = true
+            processed.PushFront($current)
+        }
+        self.entries = processed
+        .Ok(true)
+    }
+
+    fn StopAll(&self) own collections.List<NamedError> {
+        var source = replace self.entries with newEntries()
+        var restored = newEntries()
+        var failures = collections.NewList<NamedError>()
+        while !source.IsEmpty() {
+            var current = entryValue(source.PopFront())
+            if current.running {
+                const failure = stopEntry(&current)
+                match failure {
+                    None: noFailure()
+                    Some(error): failures.PushFront($error)
+                }
+            }
+            restored.PushFront($current)
+        }
+        self.entries = reverseEntries($restored)
+        reverseErrors($failures)
+    }
+
+    fn Names(&self) own collections.List<String> {
+        var source = replace self.entries with newEntries()
+        var restored = newEntries()
+        var names = collections.NewList<String>()
+        while !source.IsEmpty() {
+            const current = entryValue(source.PopFront())
+            names.PushFront(text.Copy(current.name))
+            restored.PushFront($current)
+        }
+        self.entries = reverseEntries($restored)
+        names
+    }
+
+    fn drop(&self) void {
+        discard self.StopAll()
+    }
+}
+
+// Loads and validates one native plugin without starting it.
+fn LoadNative(path String) Result<own NativePlugin, Error> {
+    var handle u64 = 0
+    var name = ""
+    var detail = ""
+    const status = openNative(path, &handle, &name, &detail)
+    if status != 0 {
+        discard name
+        return .Err(errorFor(status, $detail))
+    }
+    discard detail
+    .Ok(own NativePlugin { handle = handle name = name running = false })
+}
+
+// Creates an empty deterministic plugin registry.
+fn NewRegistry() own Registry {
+    own Registry { entries = newEntries() }
+}
+
+// Creates an empty registry for reusable named plugin factories.
+fn NewFactoryRegistry() own FactoryRegistry {
+    own FactoryRegistry { entries = newFactories() }
+}
+
+// Creates a sandbox configuration without starting the external process.
+fn NewExecSandbox(path String) Result<own ExecSandbox, SandboxError> {
+    var handle u64 = 0
+    var detail = ""
+    const status = openSandboxNative(path, &handle, &detail)
+    if status != 0 return .Err(sandboxErrorFor(status, $detail, .None))
+    discard detail
+    .Ok(own ExecSandbox { handle = handle running = false })
+}
+
+// Starts the process on the blocking executor and validates `{"ready": true}`.
+task StartSandbox(
+    $sandbox own ExecSandbox,
+    deadline time.Duration
+) SandboxStartOutcome {
+    var active = sandbox
+    var ready = ""
+    var detail = ""
+    const status = startSandboxNative(
+        active.handle,
+        deadline.Nanoseconds(),
+        &ready,
+        &detail
+    )
+    if status != 0 {
+        discard ready
+        active.running = false
+        return SandboxStartOutcome {
+            Sandbox = active
+            Value = .Err(sandboxErrorFor(status, $detail, .None))
+        }
+    }
+    discard detail
+    if !validReadyMessage($ready) {
+        abortSandboxNative(active.handle)
+        active.running = false
+        return SandboxStartOutcome {
+            Sandbox = active
+            Value = .Err(SandboxError {
+                Kind = .UnexpectedReady
+                Detail = "sandbox returned an unexpected ready message"
+                ExitCode = .None
+            })
+        }
+    }
+    active.running = true
+    SandboxStartOutcome { Sandbox = active Value = .Ok(true) }
+}
+
+// Sends the JSONL stop command and enforces the supplied shutdown deadline.
+task StopSandbox(
+    $sandbox own ExecSandbox,
+    deadline time.Duration
+) SandboxStopOutcome {
+    var active = sandbox
+    var detail = ""
+    var exitCode i32 = 0
+    const status = stopSandboxNative(
+        active.handle,
+        deadline.Nanoseconds(),
+        &exitCode,
+        &detail
+    )
+    active.running = false
+    if status != 0 {
+        return SandboxStopOutcome {
+            Sandbox = active
+            Value = .Err(sandboxErrorFor(
+                status,
+                $detail,
+                sandboxExitCode(status, exitCode)
+            ))
+        }
+    }
+    discard detail
+    SandboxStopOutcome { Sandbox = active Value = .Ok(exitCode) }
+}
+
+fn errorFor(status i32, $detail String) Error {
+    Error { Kind = errorKindFor(status) Detail = detail }
+}
+
+fn errorKindFor(status i32) ErrorKind {
+    if status == 1 return .InvalidPath
+    if status == 2 return .LoadFailed
+    if status == 3 return .MissingQuery
+    if status == 4 return .QueryFailed
+    if status == 5 return .AbiMismatch
+    if status == 6 return .SdkMismatch
+    if status == 7 return .TargetMismatch
+    if status == 8 return .ContractMismatch
+    if status == 9 return .InvalidDescriptor
+    if status == 10 return .CreateFailed
+    if status == 12 return .Closed
+    .LifecycleFailed
+}
+
+fn closedError() Error {
+    Error { Kind = .Closed Detail = "plugin is closed" }
+}
+
+fn sandboxErrorFor(
+    status i32,
+    $detail String,
+    exitCode Option<i32>
+) SandboxError {
+    SandboxError {
+        Kind = sandboxErrorKindFor(status)
+        Detail = detail
+        ExitCode = exitCode
+    }
+}
+
+fn sandboxErrorKindFor(status i32) SandboxErrorKind {
+    if status == 1 return .InvalidPath
+    if status == 2 return .InvalidArgument
+    if status == 3 return .AlreadyStarted
+    if status == 4 return .NotStarted
+    if status == 5 return .SpawnFailed
+    if status == 6 return .ReadyTimeout
+    if status == 7 return .ReadyTooLarge
+    if status == 8 return .ReadyIo
+    if status == 9 return .StopWriteFailed
+    if status == 10 return .StopTimeout
+    if status == 11 return .ExitFailed
+    .Closed
+}
+
+fn sandboxExitCode(status i32, exitCode i32) Option<i32> {
+    if status == 11 return .Some(exitCode)
+    .None
+}
+
+fn closedSandboxError() SandboxError {
+    SandboxError {
+        Kind = .Closed
+        Detail = "sandbox is closed"
+        ExitCode = .None
+    }
+}
+
+fn validReadyMessage($source String) bool {
+    const parsed = json.Parse(source)
+    match parsed {
+        Ok(value): readyRoot($value)
+        Err(error): invalidReadyJson(error)
+    }
+}
+
+fn invalidReadyJson(error json.Error) bool {
+    discard error
+    false
+}
+
+fn readyRoot($value json.Value) bool {
+    match value {
+        Object(fields): readyObject($fields)
+        Null: false
+        Bool(flag): false
+        Number(number): false
+        Text(content): false
+        Array(items): false
+    }
+}
+
+fn readyObject($fields own json.Object) bool {
+    var value = fields
+    readyField(value.Take("ready"))
+}
+
+fn readyField($value Option<json.Value>) bool {
+    match value {
+        None: false
+        Some(actual): match actual {
+            Bool(flag): flag
+            Null: false
+            Number(number): false
+            Text(content): false
+            Array(items): false
+            Object(fields): false
+        }
+    }
+}
+
+fn containsName(&registry Registry, expected String) bool {
+    var source = replace registry.entries with newEntries()
+    var restored = newEntries()
+    var found = false
+    while !source.IsEmpty() {
+        const current = entryValue(source.PopFront())
+        if current.name == expected {
+            found = true
+        }
+        restored.PushFront($current)
+    }
+    registry.entries = reverseEntries($restored)
+    found
+}
+
+fn restoreAfterFailure(
+    &registry Registry,
+    $processed own collections.List<own entry>,
+    $pending own collections.List<own entry>
+) own collections.List<NamedError> {
+    var started = processed
+    var waiting = pending
+    var oldestFirst = newEntries()
+    var failures = collections.NewList<NamedError>()
+    while !started.IsEmpty() {
+        var current = entryValue(started.PopFront())
+        if current.running {
+            const failure = stopEntry(&current)
+            match failure {
+                None: noFailure()
+                Some(error): failures.PushFront($error)
+            }
+        }
+        oldestFirst.PushFront($current)
+    }
+    var restored = reverseEntries($oldestFirst)
+    while !waiting.IsEmpty() {
+        const current = entryValue(waiting.PopFront())
+        restored.PushFront($current)
+    }
+    registry.entries = restored
+    reverseErrors($failures)
+}
+
+fn reverseEntries(
+    $values own collections.List<own entry>
+) own collections.List<own entry> {
+    var source = values
+    var result = newEntries()
+    while !source.IsEmpty() {
+        const current = entryValue(source.PopFront())
+        result.PushFront($current)
+    }
+    result
+}
+
+fn stopEntry(&current entry) Option<NamedError> {
+    const stopped = current.plugin.Stop()
+    match stopped {
+        Ok(changed): markStopped(&current, changed)
+        Err(error): .Some(NamedError {
+            Plugin = text.Copy(current.name)
+            Error = error
+        })
+    }
+}
+
+fn markStopped(&current entry, changed bool) Option<NamedError> {
+    discard changed
+    current.running = false
+    .None
+}
+
+fn reverseErrors(
+    $values own collections.List<NamedError>
+) own collections.List<NamedError> {
+    var source = values
+    var result = collections.NewList<NamedError>()
+    while !source.IsEmpty() {
+        const current = namedErrorValue(source.PopFront())
+        result.PushFront($current)
+    }
+    result
+}
+
+fn newEntries() own collections.List<own entry> {
+    collections.NewList<own entry>()
+}
+
+fn entryValue($value Option<own entry>) own entry {
+    match value {
+        None: missingEntry()
+        Some(current): current
+    }
+}
+
+fn missingEntry() own entry {
+    panic("plugin registry entry invariant failed")
+}
+
+fn namedErrorValue($value Option<NamedError>) NamedError {
+    match value {
+        None: missingNamedError()
+        Some(current): current
+    }
+}
+
+fn missingNamedError() NamedError {
+    panic("plugin lifecycle error invariant failed")
+}
+
+fn noFailure() void {}
+
+fn containsFactory(&registry FactoryRegistry, expected String) bool {
+    var source = replace registry.entries with newFactories()
+    var restored = newFactories()
+    var found = false
+    while !source.IsEmpty() {
+        const current = factoryValue(source.PopFront())
+        if current.name == expected {
+            found = true
+        }
+        restored.PushFront($current)
+    }
+    registry.entries = reverseFactories($restored)
+    found
+}
+
+fn reverseFactories(
+    $values own collections.List<own factoryEntry>
+) own collections.List<own factoryEntry> {
+    var source = values
+    var result = newFactories()
+    while !source.IsEmpty() {
+        const current = factoryValue(source.PopFront())
+        result.PushFront($current)
+    }
+    result
+}
+
+fn newFactories() own collections.List<own factoryEntry> {
+    collections.NewList<own factoryEntry>()
+}
+
+fn factoryValue($value Option<own factoryEntry>) own factoryEntry {
+    match value {
+        None: missingFactory()
+        Some(current): current
+    }
+}
+
+fn missingFactory() own factoryEntry {
+    panic("plugin factory registry invariant failed")
+}

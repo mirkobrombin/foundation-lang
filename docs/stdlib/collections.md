@@ -5,11 +5,11 @@ the singly linked `List<T>`:
 
 ```foundation
 fn NewList<T>() own List<T>
-fn Len(view) i32
-fn IsEmpty(view) bool
-fn PushFront(edit, value T) void
-fn PopFront(edit) Option<T>
-fn Clear(edit) void
+fn Len(self) i32
+fn IsEmpty(self) bool
+fn PushFront(&self, $value T) void
+fn PopFront(&self) Option<T>
+fn Clear(&self) void
 ```
 
 `PushFront` and `PopFront` are constant time. `Clear` is linear in the number of elements. The list

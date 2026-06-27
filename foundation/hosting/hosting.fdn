@@ -1,0 +1,597 @@
+package foundation.hosting
+
+import std.collections
+import std.concurrent
+import foundation.worker
+
+// Describes the one-shot lifecycle of an application host.
+enum State {
+    Ready
+    Starting
+    Running
+    Stopping
+    Stopped
+}
+
+// Reports a service or hook registered after startup began.
+enum RegistrationError {
+    Started
+}
+
+// Preserves a startup error and every rollback failure in stop order.
+struct StartupFailure<E> {
+    Error E
+    Cleanup own collections.List<E>
+}
+
+// Distinguishes a repeated start from a service startup failure.
+enum StartError<E> {
+    AlreadyStarted
+    Failed(failure own StartupFailure<E>)
+}
+
+// Explains why a running host began shutdown.
+enum RunReason<E> {
+    StopRequested
+    BackgroundCompleted
+    BackgroundFailed(error E)
+    ControlFailed(error worker.GroupError)
+}
+
+// Preserves the run reason and every shutdown failure.
+struct RunReport<E> {
+    Reason RunReason<E>
+    Cleanup own collections.List<E>
+}
+
+// Defines one owned service managed by a Host.
+contract HostedService<E> {
+    fn Start(&self) Result<void, E>
+    fn Stop(&self) Result<void, E>
+}
+
+// Creates one owned background task controlled by the host cancellation source.
+contract BackgroundService<E> {
+    fn Execute(
+        $self,
+        $cancel concurrent.Cancellation
+    ) Task<Result<void, E>>
+}
+
+// Owns registered and running services for one application lifecycle.
+struct Host<E> {
+    pending own collections.List<own HostedService<E>>
+    running own collections.List<own HostedService<E>>
+    backgroundPending own collections.List<own BackgroundService<E>>
+    backgroundGroup Option<own worker.Group<Result<void, E>>>
+    startHooks own collections.List<fn() void>
+    stopHooks own collections.List<fn() void>
+    cancellation concurrent.CancellationSource
+    state State
+
+    // Transfers a service into the host before startup begins.
+    fn Add(
+        &self,
+        $hosted own HostedService<E>
+    ) Result<void, RegistrationError> {
+        if !isReady(self.state) return .Err(.Started)
+        self.pending.PushFront($hosted)
+        .Ok
+    }
+
+    // Transfers a task-producing service into the host before startup begins.
+    fn AddBackground(
+        &self,
+        $background own BackgroundService<E>
+    ) Result<void, RegistrationError> {
+        if !isReady(self.state) return .Err(.Started)
+        self.backgroundPending.PushFront($background)
+        .Ok
+    }
+
+    // Transfers the host into a task that observes the next background completion.
+    fn NextBackground($self) Task<own BackgroundNext<E>> {
+        nextBackground($self)
+    }
+
+    // Transfers a hook invoked in registration order before services start.
+    fn OnStart(
+        &self,
+        $hook fn() void
+    ) Result<void, RegistrationError> {
+        if !isReady(self.state) return .Err(.Started)
+        self.startHooks.PushFront($hook)
+        .Ok
+    }
+
+    // Transfers a hook invoked after every started service has stopped.
+    fn OnStop(
+        &self,
+        $hook fn() void
+    ) Result<void, RegistrationError> {
+        if !isReady(self.state) return .Err(.Started)
+        self.stopHooks.PushFront($hook)
+        .Ok
+    }
+
+    // Starts services in registration order and rolls back started services on failure.
+    fn Start(&self) Result<void, StartError<E>> {
+        if !isReady(self.state) return .Err(.AlreadyStarted)
+        self.state = .Starting
+        runHooks(replace self.startHooks with newHookList())
+        var ready = reverseServices(replace self.pending with newServiceList<E>())
+
+        while !ready.IsEmpty() {
+            const hosted = serviceValue(ready.PopFront())
+            const accepted = startOne(&self, $hosted) else error {
+                return startupFailed(&self, $error)
+            }
+            discard accepted
+        }
+
+
+        startBackground(&self)
+
+        self.state = .Running
+        .Ok
+    }
+
+    // Stops running services in reverse startup order and returns failures in stop order.
+    fn Shutdown(&self) own collections.List<E> {
+        if isStopped(self.state) return collections.NewList<E>()
+        if isReady(self.state) {
+            self.state = .Stopped
+            return collections.NewList<E>()
+        }
+        self.state = .Stopping
+        self.cancellation.Cancel()
+        const backgroundFailures = waitBackground(&self)
+        const serviceFailures = stopRunning(&self)
+        const failures = mergeErrors($backgroundFailures, $serviceFailures)
+        runHooks(replace self.stopHooks with newHookList())
+        self.state = .Stopped
+        failures
+    }
+
+    fn State(self) State {
+        self.state
+    }
+
+    fn IsRunning(self) bool {
+        isRunning(self.state)
+    }
+
+    fn IsStopped(self) bool {
+        isStopped(self.state)
+    }
+
+    fn drop(&self) void {
+        discard self.Shutdown()
+    }
+}
+
+// Returns one background completion together with the still-owned host.
+struct BackgroundNext<E> {
+    Host own Host<E>
+    Value Result<Result<void, E>, worker.GroupError>
+}
+
+// Creates an empty one-shot host.
+fn NewHost<E>() own Host<E> {
+    own Host<E> {
+        pending = newServiceList<E>()
+        running = newServiceList<E>()
+        backgroundPending = newBackgroundList<E>()
+        backgroundGroup = .None
+        startHooks = newHookList()
+        stopHooks = newHookList()
+        cancellation = concurrent.NewCancellationSource()
+        state = .Ready
+    }
+}
+
+// Starts an owned host and waits for a stop signal or the first background completion.
+fn Run<E>(
+    $host own Host<E>,
+    $stop Receiver<void>
+) Task<Result<own RunReport<E>, StartError<E>>> {
+    var active = host
+    const started = active.Start()
+    match started {
+        Ok: runStarted($active, $stop)
+        Err(error): spawn completeRunFailure($error)
+    }
+}
+
+fn runStarted<E>(
+    $host own Host<E>,
+    $stop Receiver<void>
+) Task<Result<own RunReport<E>, StartError<E>>> {
+    var active = host
+    const current = replace active.backgroundGroup with .None
+    match current {
+        None: spawn waitForStop($active, $stop)
+        Some(group): spawn waitForBackgroundOrStop($active, $group, $stop)
+    }
+}
+
+task completeRunFailure<E>(
+    $error StartError<E>
+) Result<own RunReport<E>, StartError<E>> {
+    .Err(error)
+}
+
+task waitForStop<E>(
+    $host own Host<E>,
+    $stop Receiver<void>
+) Result<own RunReport<E>, StartError<E>> {
+    var active = host
+    const stopped = stop.receive()
+    const reason RunReason<E> = match stopped {
+        Ok: .StopRequested
+        Err(error): .ControlFailed(error = mapControlError(error))
+    }
+    finishRun($active, $reason)
+}
+
+task waitForBackgroundOrStop<E>(
+    $host own Host<E>,
+    $group own worker.Group<Result<void, E>>,
+    $stop Receiver<void>
+) Result<own RunReport<E>, StartError<E>> {
+    var active = host
+    const waiting = $group.WaitOrStop($stop)
+    const outcome = $waiting.wait()
+    const worker.GroupWait { Group Wake } = outcome
+    active.backgroundGroup = .Some(Group)
+    match Wake {
+        Completed(completed): finishBackgroundRun($active, $completed)
+        Stopped: finishRun($active, .StopRequested)
+        Failed(error): finishRun($active, .ControlFailed(error = error))
+    }
+}
+
+fn finishBackgroundRun<E>(
+    $host own Host<E>,
+    $completed Result<void, E>
+) Result<own RunReport<E>, StartError<E>> {
+    match completed {
+        Ok: finishRun($host, .BackgroundCompleted)
+        Err(error): finishRun($host, .BackgroundFailed(error = error))
+    }
+}
+
+fn finishRun<E>(
+    $host own Host<E>,
+    $reason RunReason<E>
+) Result<own RunReport<E>, StartError<E>> {
+    var active = host
+    const cleanup = active.Shutdown()
+    .Ok(own RunReport<E> { Reason = reason Cleanup = cleanup })
+}
+
+fn mapControlError(error ChannelError) worker.GroupError {
+    match error {
+        Closed: .Closed
+        Cancelled: .Cancelled
+        Timeout: .Timeout
+    }
+}
+
+fn newServiceList<E>() own collections.List<own HostedService<E>> {
+    collections.NewList<own HostedService<E>>()
+}
+
+fn newHookList() own collections.List<fn() void> {
+    collections.NewList<fn() void>()
+}
+
+fn newBackgroundList<E>() own collections.List<own BackgroundService<E>> {
+    collections.NewList<own BackgroundService<E>>()
+}
+
+fn serviceValue<E>(
+    $value Option<own HostedService<E>>
+) own HostedService<E> {
+    match value {
+        None: missingService<E>()
+        Some(hosted): hosted
+    }
+}
+
+fn missingService<E>() own HostedService<E> {
+    panic("hosting service invariant failed")
+}
+
+fn backgroundValue<E>(
+    $value Option<own BackgroundService<E>>
+) own BackgroundService<E> {
+    match value {
+        None: missingBackground<E>()
+        Some(background): background
+    }
+}
+
+fn missingBackground<E>() own BackgroundService<E> {
+    panic("hosting background invariant failed")
+}
+
+fn reverseServices<E>(
+    $values own collections.List<own HostedService<E>>
+) own collections.List<own HostedService<E>> {
+    var source = values
+    var result = newServiceList<E>()
+    while !source.IsEmpty() {
+        const hosted = serviceValue(source.PopFront())
+        result.PushFront($hosted)
+    }
+    result
+}
+
+fn stopRunning<E>(
+    &host Host<E>
+) own collections.List<E> {
+    var failures = collections.NewList<E>()
+    while !host.running.IsEmpty() {
+        var hosted = serviceValue(host.running.PopFront())
+        const stopped = hosted.Stop()
+        match stopped {
+            Ok: stoppedSuccessfully()
+            Err(error): failures.PushFront($error)
+        }
+    }
+    reverseErrors($failures)
+}
+
+fn startBackground<E>(&host Host<E>) void {
+    const count = host.backgroundPending.Len()
+    if count == 0 return
+    const capacity = u64.From(count) else error {
+        discard error
+        panic("hosting background count invariant failed")
+    }
+    var group = worker.NewGroup<Result<void, E>>(capacity)
+    var ready = reverseBackground(
+        replace host.backgroundPending with newBackgroundList<E>()
+    )
+    while !ready.IsEmpty() {
+        const background = backgroundValue(ready.PopFront())
+        const pending = $background.Execute(host.cancellation.Token())
+        const added = group.Add($pending)
+        if !groupAdded($added) {
+            panic("hosting background admission invariant failed")
+        }
+    }
+    host.backgroundGroup = .Some(group)
+}
+
+fn groupAdded($result Result<void, worker.GroupError>) bool {
+    match result {
+        Ok: true
+        Err(error): groupAdmissionFailed(error)
+    }
+}
+
+fn groupAdmissionFailed(error worker.GroupError) bool {
+    discard error
+    false
+}
+
+fn reverseBackground<E>(
+    $values own collections.List<own BackgroundService<E>>
+) own collections.List<own BackgroundService<E>> {
+    var source = values
+    var result = newBackgroundList<E>()
+    while !source.IsEmpty() {
+        const background = backgroundValue(source.PopFront())
+        result.PushFront($background)
+    }
+    result
+}
+
+fn waitBackground<E>(&host Host<E>) own collections.List<E> {
+    const current = replace host.backgroundGroup with .None
+    match current {
+        None: collections.NewList<E>()
+        Some(group): waitBackgroundGroup($group)
+    }
+}
+
+fn waitBackgroundGroup<E>(
+    $group own worker.Group<Result<void, E>>
+) own collections.List<E> {
+    var active = group
+    var failures = collections.NewList<E>()
+    while active.Count() > 0 {
+        const waiting = $active.Next()
+        const worker.GroupNext { Group Value } = $waiting.wait()
+        active = Group
+        collectBackgroundResult($Value, &failures)
+    }
+    active.Shutdown()
+    reverseErrors($failures)
+}
+
+fn collectBackgroundResult<E>(
+    $result Result<Result<void, E>, worker.GroupError>,
+    &failures collections.List<E>
+) void {
+    match result {
+        Ok(completed): collectBackgroundCompletion($completed, &failures)
+        Err(error): backgroundGroupFailed(error)
+    }
+}
+
+fn collectBackgroundCompletion<E>(
+    $result Result<void, E>,
+    &failures collections.List<E>
+) void {
+    match result {
+        Ok: stoppedSuccessfully()
+        Err(error): failures.PushFront($error)
+    }
+}
+
+fn backgroundGroupFailed(error worker.GroupError) void {
+    discard error
+    panic("hosting background group invariant failed")
+}
+
+fn mergeErrors<E>(
+    $first own collections.List<E>,
+    $second own collections.List<E>
+) own collections.List<E> {
+    var left = first
+    var right = second
+    var reversed = collections.NewList<E>()
+    while !left.IsEmpty() {
+        const error = errorValue(left.PopFront())
+        reversed.PushFront($error)
+    }
+    while !right.IsEmpty() {
+        const error = errorValue(right.PopFront())
+        reversed.PushFront($error)
+    }
+    reverseErrors($reversed)
+}
+
+fn startOne<E>(
+    &host Host<E>,
+    $hosted own HostedService<E>
+) Result<bool, E> {
+    var active = hosted
+    const started = active.Start()
+    match started {
+        Ok: acceptStarted(&host, $active)
+        Err(error): .Err(error)
+    }
+}
+
+fn acceptStarted<E>(
+    &host Host<E>,
+    $hosted own HostedService<E>
+) Result<bool, E> {
+    host.running.PushFront($hosted)
+    .Ok(true)
+}
+
+fn reverseErrors<E>(
+    $values own collections.List<E>
+) own collections.List<E> {
+    var source = values
+    var result = collections.NewList<E>()
+    while !source.IsEmpty() {
+        const error = errorValue(source.PopFront())
+        result.PushFront($error)
+    }
+    result
+}
+
+fn errorValue<E>($value Option<E>) E {
+    match value {
+        None: missingError<E>()
+        Some(error): error
+    }
+}
+
+fn missingError<E>() E {
+    panic("hosting error invariant failed")
+}
+
+fn startupFailed<E>(
+    &host Host<E>,
+    $error E
+) Result<void, StartError<E>> {
+    const cleanup = stopRunning(&host)
+    runHooks(replace host.stopHooks with newHookList())
+    host.state = .Stopped
+    .Err(.Failed(failure = own StartupFailure<E> {
+        Error = error
+        Cleanup = cleanup
+    }))
+}
+
+fn stoppedSuccessfully() void {}
+
+fn runHooks($hooks own collections.List<fn() void>) void {
+    var pending = hooks
+    var ordered = newHookList()
+    while !pending.IsEmpty() {
+        const hook = hookValue(pending.PopFront())
+        ordered.PushFront($hook)
+    }
+    while !ordered.IsEmpty() {
+        const hook = hookValue(ordered.PopFront())
+        hook()
+    }
+}
+
+fn hookValue($value Option<fn() void>) fn() void {
+    match value {
+        None: missingHook()
+        Some(hook): hook
+    }
+}
+
+fn missingHook() fn() void {
+    panic("hosting hook invariant failed")
+}
+
+fn nextBackground<E>($host own Host<E>) Task<own BackgroundNext<E>> {
+    var active = host
+    const current = replace active.backgroundGroup with .None
+    match current {
+        None: spawn completeEmptyBackground($active)
+        Some(group): spawn waitNextBackground($active, $group)
+    }
+}
+
+task completeEmptyBackground<E>($host own Host<E>) own BackgroundNext<E> {
+    emptyBackgroundNext($host)
+}
+
+fn emptyBackgroundNext<E>($host own Host<E>) own BackgroundNext<E> {
+    own BackgroundNext<E> { Host = host Value = .Err(.Empty) }
+}
+
+task waitNextBackground<E>(
+    $host own Host<E>,
+    $group own worker.Group<Result<void, E>>
+) own BackgroundNext<E> {
+    var active = host
+    const waiting = $group.Next()
+    const outcome = $waiting.wait()
+    const worker.GroupNext { Group Value } = outcome
+    active.backgroundGroup = .Some(Group)
+    own BackgroundNext<E> { Host = active Value = Value }
+}
+
+fn isReady(state State) bool {
+    match state {
+        Ready: true
+        Starting: false
+        Running: false
+        Stopping: false
+        Stopped: false
+    }
+}
+
+fn isRunning(state State) bool {
+    match state {
+        Ready: false
+        Starting: false
+        Running: true
+        Stopping: false
+        Stopped: false
+    }
+}
+
+fn isStopped(state State) bool {
+    match state {
+        Ready: false
+        Starting: false
+        Running: false
+        Stopping: false
+        Stopped: true
+    }
+}

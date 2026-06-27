@@ -1,0 +1,23 @@
+package test.host
+
+import foundation.di
+
+@di.Scope(.Scoped)
+service First {
+    @di.Inject()
+    fn New() Result<First, bool> {
+        .Ok(First {})
+    }
+}
+
+@di.Scope(.Scoped)
+service Second {
+    @di.Inject()
+    fn New() Result<Second, String> {
+        .Ok(Second {})
+    }
+}
+
+fn main() i32 {
+    0
+}

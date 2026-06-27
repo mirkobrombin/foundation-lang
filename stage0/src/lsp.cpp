@@ -758,6 +758,11 @@ std::string displayTypeSyntax(const TypeSyntax &type) {
     if (type.name == "[slice]" && type.arguments.size() == 1) {
         return '[' + displayTypeSyntax(type.arguments[0]) + ']';
     }
+    if ((type.name == "[raw]" || type.name == "[raw-const]") &&
+        type.arguments.size() == 1) {
+        return std::string(type.name == "[raw]" ? "*" : "*const ") +
+               displayTypeSyntax(type.arguments[0]);
+    }
     if (type.name == "[function]" && !type.arguments.empty()) {
         std::string result = "fn(";
         for (std::size_t index = 1; index < type.arguments.size(); ++index) {
@@ -788,6 +793,19 @@ std::string displayTypeSyntax(const TypeSyntax &type) {
     return result;
 }
 
+std::string enumVariantDetail(const EnumVariant &variant) {
+    auto result = variant.name;
+    if (!variant.payloadType.has_value()) {
+        return result;
+    }
+    result += '(';
+    if (variant.payloadName.has_value()) {
+        result += *variant.payloadName + ' ';
+    }
+    result += displayTypeSyntax(*variant.payloadType) + ')';
+    return result;
+}
+
 std::string displaySemanticType(const ProjectAnalysis &analysis, const Type &type) {
     if (type.kind == TypeKind::Parameter) {
         return "T" + std::to_string(type.declaration);
@@ -795,6 +813,11 @@ std::string displaySemanticType(const ProjectAnalysis &analysis, const Type &typ
     if ((type.kind == TypeKind::Own || type.kind == TypeKind::View ||
          type.kind == TypeKind::Edit) && type.arguments.size() == 1) {
         return std::string(typeName(type)) + ' ' +
+               displaySemanticType(analysis, type.arguments.front());
+    }
+    if ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) &&
+        type.arguments.size() == 1) {
+        return std::string(type.kind == TypeKind::Raw ? "*" : "*const ") +
                displaySemanticType(analysis, type.arguments.front());
     }
     if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
@@ -840,6 +863,12 @@ std::string displaySemanticType(const ProjectAnalysis &analysis, const Type &typ
     return result;
 }
 
+bool machineScalarName(std::string_view name) {
+    return name == "i8" || name == "i16" || name == "i32" || name == "i64" ||
+           name == "u8" || name == "u16" || name == "u32" || name == "u64" ||
+           name == "isize" || name == "usize" || name == "f32" || name == "f64";
+}
+
 std::optional<std::pair<AstExpressionId, SourceSpan>>
 channelOperationAt(const ProjectAnalysis &analysis, std::size_t sourceId, std::size_t offset) {
     if (!analysis.semantic.has_value() || sourceId >= analysis.sources.size()) {
@@ -859,6 +888,85 @@ channelOperationAt(const ProjectAnalysis &analysis, std::size_t sourceId, std::s
         }
         const auto span = nameSpan(analysis.sources[sourceId].contents, expression.span,
                                    member->member);
+        if (offset >= span.offset && offset <= span.offset + span.length) {
+            return std::pair{id, span};
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::pair<AstExpressionId, SourceSpan>>
+channelSenderCloneAt(const ProjectAnalysis &analysis, std::size_t sourceId,
+                     std::size_t offset) {
+    if (!analysis.semantic.has_value() || sourceId >= analysis.sources.size()) {
+        return std::nullopt;
+    }
+    for (AstExpressionId id = 0;
+         id < analysis.program.expressions.size() &&
+         id < analysis.semantic->channelSenderClones.size();
+         ++id) {
+        if (!analysis.semantic->channelSenderClones[id]) {
+            continue;
+        }
+        const auto &expression = analysis.program.expressions[id];
+        const auto *member = std::get_if<MemberExpression>(&expression.value);
+        if (member == nullptr || expression.span.source != sourceId) {
+            continue;
+        }
+        const auto span = nameSpan(analysis.sources[sourceId].contents, expression.span,
+                                   member->member);
+        if (offset >= span.offset && offset <= span.offset + span.length) {
+            return std::pair{id, span};
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::pair<AstExpressionId, SourceSpan>>
+numericConversionAt(const ProjectAnalysis &analysis, std::size_t sourceId,
+                    std::size_t offset) {
+    if (!analysis.semantic.has_value() || sourceId >= analysis.sources.size()) {
+        return std::nullopt;
+    }
+    for (AstExpressionId id = 0;
+         id < analysis.program.expressions.size() && id < analysis.semantic->callTargets.size();
+         ++id) {
+        if (!analysis.semantic->callTargets[id].has_value() ||
+            analysis.semantic->callTargets[id]->kind != CallTargetKind::NumericConversion) {
+            continue;
+        }
+        const auto &expression = analysis.program.expressions[id];
+        const auto *member = std::get_if<MemberExpression>(&expression.value);
+        if (member == nullptr || expression.span.source != sourceId) {
+            continue;
+        }
+        const auto span = nameSpan(analysis.sources[sourceId].contents, expression.span,
+                                   member->member);
+        if (offset >= span.offset && offset <= span.offset + span.length) {
+            return std::pair{id, span};
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::pair<AstExpressionId, SourceSpan>>
+emptyTestAt(const ProjectAnalysis &analysis, std::size_t sourceId, std::size_t offset) {
+    if (!analysis.semantic.has_value() || sourceId >= analysis.sources.size()) {
+        return std::nullopt;
+    }
+    for (AstExpressionId id = 0;
+         id < analysis.program.expressions.size() &&
+         id < analysis.semantic->emptyTests.size(); ++id) {
+        if (!analysis.semantic->emptyTests[id]) {
+            continue;
+        }
+        const auto &expression = analysis.program.expressions[id];
+        const auto *unary = std::get_if<UnaryExpression>(&expression.value);
+        if (unary == nullptr || unary->operation != UnaryOperator::Not ||
+            expression.span.source != sourceId) {
+            continue;
+        }
+        const SourceSpan span{sourceId, expression.span.offset, 1};
         if (offset >= span.offset && offset <= span.offset + span.length) {
             return std::pair{id, span};
         }
@@ -894,8 +1002,19 @@ std::string parameterDetail(const Parameter &parameter) {
     for (const auto &attribute : parameter.attributes) {
         result += attributeDetail(attribute) + ' ';
     }
+    if (parameter.mode == ParameterMode::Edit) {
+        result += '&';
+    } else if (parameter.mode == ParameterMode::Transfer) {
+        result += '$';
+    }
     result += parameter.name + ' ' + displayTypeSyntax(parameter.type);
     return result;
+}
+
+std::string receiverDetail(ReceiverKind receiver) {
+    return receiver == ReceiverKind::View ? "self"
+           : receiver == ReceiverKind::Edit ? "&self"
+                                             : "$self";
 }
 
 std::string functionDetail(const Function &function) {
@@ -921,9 +1040,7 @@ std::string functionDetail(const Function &function) {
         }
         const auto &parameter = function.parameters[index];
         if (function.receiver.has_value() && index == 0) {
-            result += function.receiver == ReceiverKind::View ? "view"
-                      : function.receiver == ReceiverKind::Edit ? "edit"
-                                                                : "own";
+            result += receiverDetail(*function.receiver);
         } else {
             result += parameterDetail(parameter);
         }
@@ -942,8 +1059,12 @@ std::string callSnippet(std::string_view name, const std::vector<Parameter> &par
             result += ", ";
         }
         const auto &parameter = parameters[index];
-        if ((parameter.type.name == "own" || parameter.type.name == "view" ||
-             parameter.type.name == "edit") &&
+        if (parameter.mode == ParameterMode::Edit) {
+            result += '&';
+        } else if (parameter.mode == ParameterMode::Transfer) {
+            result += '$';
+        } else if ((parameter.type.name == "own" || parameter.type.name == "view" ||
+                    parameter.type.name == "edit") &&
             parameter.type.arguments.size() == 1) {
             result += parameter.type.name + ' ';
         }
@@ -959,9 +1080,7 @@ std::string functionCallSnippet(const Function &function, std::string_view name)
 
 std::string contractMethodDetail(const ContractMethod &method) {
     std::string result = "fn " + method.name + '(';
-    result += method.receiver == ReceiverKind::View ? "view"
-              : method.receiver == ReceiverKind::Edit ? "edit"
-                                                      : "own";
+    result += receiverDetail(method.receiver);
     for (const auto &parameter : method.parameters) {
         result += ", " + parameterDetail(parameter);
     }
@@ -1008,11 +1127,8 @@ std::vector<SymbolItem> documentSymbols(const ProjectAnalysis &analysis,
                             typeParametersSuffix(declaration.typeParameters),
                         10, declaration.span, {}};
         for (const auto &variant : declaration.variants) {
-            auto detail = variant.name;
-            if (variant.payloadType.has_value()) {
-                detail += '(' + displayTypeSyntax(*variant.payloadType) + ')';
-            }
-            item.children.push_back({variant.name, std::move(detail), 22, variant.span, {}});
+            item.children.push_back(
+                {variant.name, enumVariantDetail(variant), 22, variant.span, {}});
         }
         result.push_back(std::move(item));
     }
@@ -1048,6 +1164,11 @@ std::vector<SymbolItem> documentSymbols(const ProjectAnalysis &analysis,
     for (const auto &function : analysis.program.functions) {
         if (function.span.source != sourceId || !function.ownerType.empty() ||
             function.closure) {
+            continue;
+        }
+        if (function.testName.has_value()) {
+            result.push_back({*function.testName, "test \"" + *function.testName + "\"", 6,
+                              function.testNameSpan.value_or(function.span), {}});
             continue;
         }
         result.push_back(
@@ -1377,6 +1498,12 @@ bool completionBlockPath(const Program &program, AstBlockId id,
                                 delimiters, path)) {
             return true;
         }
+        if (const auto *resultElse = std::get_if<ResultElseStatement>(&value);
+            resultElse != nullptr &&
+            completionBlockPath(program, resultElse->elseBlock, sourceId, offset,
+                                delimiters, path)) {
+            return true;
+        }
         if (const auto *branch = std::get_if<IfStatement>(&value); branch != nullptr) {
             if (completionBlockPath(program, branch->thenBlock, sourceId, offset,
                                     delimiters, path) ||
@@ -1387,6 +1514,11 @@ bool completionBlockPath(const Program &program, AstBlockId id,
             }
         }
         if (const auto *loop = std::get_if<WhileStatement>(&value);
+            loop != nullptr &&
+            completionBlockPath(program, loop->body, sourceId, offset, delimiters, path)) {
+            return true;
+        }
+        if (const auto *loop = std::get_if<ForStatement>(&value);
             loop != nullptr &&
             completionBlockPath(program, loop->body, sourceId, offset, delimiters, path)) {
             return true;
@@ -1462,6 +1594,18 @@ std::size_t completionExpressionEnd(
                 include(value.value);
                 for (const auto &arm : value.arms) {
                     include(arm.expression);
+                }
+            } else if constexpr (std::is_same_v<Value, ConditionalExpression>) {
+                include(value.condition);
+                include(value.thenValue);
+                include(value.elseValue);
+                if (const auto *range = completionBlockRange(
+                        program, value.thenBlock, delimiters)) {
+                    end = std::max(end, range->span.offset + range->span.length);
+                }
+                if (const auto *range = completionBlockRange(
+                        program, value.elseBlock, delimiters)) {
+                    end = std::max(end, range->span.offset + range->span.length);
                 }
             } else if constexpr (std::is_same_v<Value, FunctionExpression>) {
                 if (value.function < program.functions.size()) {
@@ -2237,12 +2381,47 @@ class LanguageServer {
                            source.contents[found->offset - 1] == '@') {
                     documentation =
                         "```foundation\n@callback(cancel = native_cancel)\nextern c fn "
-                        "read(result edit i32) i32 as native_read_start\n```\n\nRegisters "
+                        "read(&result i32) i32 as native_read_start\n```\n\nRegisters "
                         "a bodyless C ABI import with the native completion reactor. The start "
                         "symbol receives an operation token after its declared arguments and "
                         "completes it exactly once with an `i32` status. The optional cancel "
                         "symbol receives the same token. Calls are valid only as a standalone "
                         "binding or discard inside a task.";
+                } else if (keyword == "unsafe") {
+                    documentation =
+                        "```foundation\n// SAFETY: proof\nunsafe { ... }\n```\n\nBounds raw "
+                        "pointer construction, arithmetic, dereference, slice storage access, "
+                        "and C ABI calls whose signature contains a raw pointer. Type checking "
+                        "and ownership rules remain active.";
+                } else if (keyword == "null") {
+                    documentation =
+                        "```foundation\nfn null<P>() P\n```\n\nConstructs a null raw pointer "
+                        "of the explicit pointer type, for example `null<*void>()`. This is "
+                        "available only inside `unsafe`.";
+                } else if (keyword == "isNull") {
+                    documentation =
+                        "```foundation\nfn isNull(pointer P) bool\n```\n\nChecks a raw pointer "
+                        "without dereferencing it and is safe outside `unsafe`.";
+                } else if (keyword == "print") {
+                    documentation =
+                        "```foundation\nfn print(value String) void\n```\n\nWrites one UTF-8 "
+                        "String followed by a newline. The call reads its argument without "
+                        "consuming an owned String.";
+                } else if (keyword == "panic") {
+                    documentation =
+                        "```foundation\nfn panic(message String) never\n```\n\nTerminates the "
+                        "program with a complete Foundation source trace. Panic does not unwind "
+                        "or run drop glue; recoverable failures use `Result<T, E>`.";
+                } else if (keyword == "len") {
+                    documentation =
+                        "```foundation\nfn len(value String | [N]T | [T]) usize\n```\n\nReturns "
+                        "the encoded byte length of a String or the element count of an array or "
+                        "slice. The call reads its argument without consuming it.";
+                } else if (keyword == "channel") {
+                    documentation =
+                        "```foundation\nfn channel<T>(capacity u64) Channel<T>\n```\n\nCreates "
+                        "owned directional sender and receiver endpoints. Capacity zero creates "
+                        "a rendezvous channel; a positive capacity creates a bounded FIFO.";
                 }
                 if (!documentation.empty()) {
                     return Json::object(
@@ -2261,6 +2440,68 @@ class LanguageServer {
                 analysis->semantic.has_value()) {
                 const auto &source = analysis->sources[*sourceId].contents;
                 const auto offset = offsetAt(source, *position);
+                const auto emptyTest = offset.has_value()
+                                           ? emptyTestAt(*analysis, *sourceId, *offset)
+                                           : std::nullopt;
+                if (emptyTest.has_value()) {
+                    const auto id = emptyTest->first;
+                    const auto &unary =
+                        std::get<UnaryExpression>(analysis->program.expressions[id].value);
+                    const auto operandType =
+                        analysis->semantic->expressionTypes[unary.operand];
+                    return Json::object(
+                        {{"contents",
+                          Json::object(
+                              {{"kind", "markdown"},
+                               {"value", "```foundation\n!" +
+                                             displaySemanticType(*analysis, operandType) +
+                                             " bool\n```\n\nTests whether the value is empty. "
+                                             "It does not test absence or truthiness."}})},
+                         {"range", lspRange(source, emptyTest->second)}});
+                }
+                const auto conversion = offset.has_value()
+                                            ? numericConversionAt(*analysis, *sourceId, *offset)
+                                            : std::nullopt;
+                if (conversion.has_value()) {
+                    const auto id = conversion->first;
+                    const auto &target = *analysis->semantic->callTargets[id];
+                    if (target.typeArguments.size() == 2) {
+                        const auto detail =
+                            "fn From(value " +
+                            displaySemanticType(*analysis, target.typeArguments[0]) + ") " +
+                            displaySemanticType(*analysis,
+                                                analysis->semantic->expressionTypes[id]);
+                        return Json::object(
+                            {{"contents",
+                              Json::object(
+                                  {{"kind", "markdown"},
+                                   {"value", "```foundation\n" + detail +
+                                                 "\n```\n\nPerforms an explicit numeric "
+                                                 "conversion. A conversion that can lose "
+                                                 "information returns `Result<T, "
+                                                 "NumberError>`."}})},
+                             {"range", lspRange(source, conversion->second)}});
+                    }
+                }
+                const auto senderClone =
+                    offset.has_value()
+                        ? channelSenderCloneAt(*analysis, *sourceId, *offset)
+                        : std::nullopt;
+                if (senderClone.has_value()) {
+                    const auto id = senderClone->first;
+                    const auto detail =
+                        "fn clone() " + displaySemanticType(
+                                            *analysis,
+                                            analysis->semantic->expressionTypes[id]);
+                    return Json::object(
+                        {{"contents",
+                          Json::object(
+                              {{"kind", "markdown"},
+                               {"value", "```foundation\n" + detail +
+                                             "\n```\n\nCreates another owned sender handle "
+                                             "for the same channel."}})},
+                         {"range", lspRange(source, senderClone->second)}});
+                }
                 const auto operation = offset.has_value()
                                            ? channelOperationAt(*analysis, *sourceId, *offset)
                                            : std::nullopt;
@@ -2716,7 +2957,10 @@ class LanguageServer {
         const auto suffixPosition = positionAt(structSource.contents, suffixOffset);
         const SourceSpan suffix{suffixOffset, 1, suffixPosition.line + 1,
                                 suffixPosition.character + 1, structExtent->source};
-        fragments.push_back(fragment("struct-prefix", "struct", shortName(declaration->name),
+        const auto declarationKind =
+            declaration->kind == StructKind::Service ? "service" : "struct";
+        fragments.push_back(fragment("struct-prefix", declarationKind,
+                                     shortName(declaration->name),
                                      prefix, 0));
         for (const auto &method : externalMethods) {
             const auto &source = analysis->sources[method.extent.source];
@@ -2726,7 +2970,8 @@ class LanguageServer {
             fragments.push_back(fragment(key, "method", shortName(method.function->name),
                                          method.extent, 4));
         }
-        fragments.push_back(fragment("struct-suffix", "struct", shortName(declaration->name),
+        fragments.push_back(fragment("struct-suffix", declarationKind,
+                                     shortName(declaration->name),
                                      suffix, 0));
 
         std::set<std::string> imports;
@@ -2780,6 +3025,7 @@ class LanguageServer {
         for (const auto &symbol : index.symbols()) {
             if (symbol.definition.source == *sourceId &&
                 symbol.id.kind != LanguageSymbolKind::Parameter &&
+                symbol.id.kind != LanguageSymbolKind::EnumPayload &&
                 symbol.id.kind != LanguageSymbolKind::Local) {
                 symbols.push_back(&symbol);
             }
@@ -3366,8 +3612,26 @@ class LanguageServer {
             }
         }
         return selected.has_value()
-                   ? std::optional<Type>{completionValueType(
-                         analysis.semantic->expressionTypes[*selected])}
+                   ? std::optional<Type>{analysis.semantic->expressionTypes[*selected]}
+                   : std::nullopt;
+    }
+
+    static std::optional<Type> completionReceiverSymbolType(
+        const ProjectAnalysis &analysis, const LanguageIndex &index, std::size_t sourceId,
+        std::size_t receiverStart) {
+        if (!analysis.semantic.has_value()) {
+            return std::nullopt;
+        }
+        const auto *occurrence = index.occurrenceAt(sourceId, receiverStart);
+        if (occurrence == nullptr ||
+            (occurrence->symbol.kind != LanguageSymbolKind::Parameter &&
+             occurrence->symbol.kind != LanguageSymbolKind::Local) ||
+            occurrence->symbol.owner >= analysis.semantic->functions.size()) {
+            return std::nullopt;
+        }
+        const auto &function = analysis.semantic->functions[occurrence->symbol.owner];
+        return occurrence->symbol.member < function.locals.size()
+                   ? std::optional<Type>{function.locals[occurrence->symbol.member].type}
                    : std::nullopt;
     }
 
@@ -3425,7 +3689,17 @@ class LanguageServer {
     void addValueMemberCompletions(std::map<std::string, Json> &items,
                                    const ProjectAnalysis &analysis,
                                    Type type, std::string_view currentPackage) const {
+        const auto sourceType = type;
         type = completionValueType(std::move(type));
+        if (type.kind == TypeKind::Slice && type.arguments.size() == 1) {
+            const auto editable = sourceType.kind == TypeKind::Edit;
+            addCompletion(items, "pointer", 5,
+                          std::string(editable ? "*" : "*const ") +
+                              displaySemanticType(analysis, type.arguments.front()),
+                          std::nullopt,
+                          "Exposes the slice storage inside a documented unsafe block.");
+            return;
+        }
         if (type.kind == TypeKind::Channel && type.arguments.size() == 1) {
             addCompletion(items, "sender", 5, "Sender endpoint");
             addCompletion(items, "receiver", 5, "Receiver endpoint");
@@ -3433,6 +3707,9 @@ class LanguageServer {
         }
         if (type.kind == TypeKind::Sender && type.arguments.size() == 1) {
             const auto payload = displaySemanticType(analysis, type.arguments.front());
+            addCompletion(items, "clone", 2,
+                          "fn clone() Sender<" + payload + ">", "clone()",
+                          "Creates another owned sender handle for the same channel.");
             const auto snippet =
                 type.arguments.front() == voidType ? "send()" : "send(${1:value})";
             const auto detail = type.arguments.front() == voidType
@@ -3499,10 +3776,26 @@ class LanguageServer {
             const auto &declaration = analysis.program.enums[type.declaration];
             for (const auto &variant : declaration.variants) {
                 if (accessible(declaration.packageName, variant.exported, currentPackage)) {
-                    addCompletion(items, variant.name, 20, "Foundation enum variant",
-                                  std::nullopt,
+                    std::optional<std::string> snippet;
+                    if (variant.payloadType.has_value()) {
+                        snippet = variant.name + "(${1:" +
+                                  variant.payloadName.value_or("value") + "})$0";
+                    }
+                    addCompletion(items, variant.name, 20, enumVariantDetail(variant), snippet,
                                   languageDocumentation(analysis, variant.span));
                 }
+            }
+            for (const auto &function : analysis.program.functions) {
+                if (!function.receiver.has_value() ||
+                    function.packageName != declaration.packageName ||
+                    shortName(function.ownerType) != shortName(declaration.name) ||
+                    !accessible(function.packageName, function.exported, currentPackage)) {
+                    continue;
+                }
+                const auto name = shortName(function.name);
+                addCompletion(items, name, 2, functionDetail(function),
+                              functionCallSnippet(function, name),
+                              languageDocumentation(analysis, function.span));
             }
         }
     }
@@ -3671,6 +3964,13 @@ class LanguageServer {
                         setCompletion(items, *variable->elseBinding, 6,
                                       "Foundation error binding");
                     }
+                } else if (const auto *resultElse =
+                               std::get_if<ResultElseStatement>(&statement.value)) {
+                    if (std::find(path.begin(), path.end(), resultElse->elseBlock) !=
+                        path.end()) {
+                        setCompletion(items, resultElse->errorBinding, 6,
+                                      "Foundation error binding");
+                    }
                 } else if (const auto *destructure =
                                std::get_if<StructDestructureStatement>(&statement.value)) {
                     if (completionExpressionEnd(analysis.program, destructure->initializer,
@@ -3679,6 +3979,17 @@ class LanguageServer {
                             setCompletion(items, field.binding, 6,
                                           "Foundation local binding");
                         }
+                    }
+                } else if (const auto *loop =
+                               std::get_if<ForStatement>(&statement.value)) {
+                    if (std::find(path.begin(), path.end(), loop->body) != path.end()) {
+                        if (loop->indexBinding.has_value()) {
+                            setCompletion(items, *loop->indexBinding, 6,
+                                          "Foundation loop index");
+                        }
+                        setCompletion(items, loop->valueBinding, 6,
+                                      loop->editable ? "Foundation editable loop binding"
+                                                     : "Foundation loop binding");
                     }
                 }
             }
@@ -3740,6 +4051,15 @@ class LanguageServer {
                                               analysis->sources[*sourceId].packageName);
                     return completionResult(std::move(items));
                 }
+                if (receiver.has_value()) {
+                    if (const auto type = completionReceiverSymbolType(
+                            *analysis, index, *sourceId, receiver->first);
+                        type.has_value()) {
+                        addValueMemberCompletions(items, *analysis, *type,
+                                                  analysis->sources[*sourceId].packageName);
+                        return completionResult(std::move(items));
+                    }
+                }
                 const auto completion = analyzeCompletion(document->second, *access);
                 const auto completionSource = sourceIdForUri(completion, *uri);
                 if (!completionSource.has_value()) {
@@ -3756,6 +4076,16 @@ class LanguageServer {
                 if (receiver.has_value()) {
                     const auto name = source.contents.substr(
                         receiver->first, receiver->second - receiver->first);
+                    if (machineScalarName(name)) {
+                        addCompletion(
+                            items, "From", 2,
+                            "fn From(value numeric) " + std::string(name) +
+                                " or Result<" + std::string(name) + ", NumberError>",
+                            "From(${1:value})",
+                            "Performs an explicit numeric conversion. Conversions that can "
+                            "lose information return a typed Result.");
+                        return completionResult(std::move(items));
+                    }
                     const auto currentPackage =
                         completion.sources[*completionSource].packageName;
                     auto receiverPackage = currentPackage;
@@ -3780,7 +4110,9 @@ class LanguageServer {
                     }
                     for (const auto &candidate : completion.program.structs) {
                         if (shortName(candidate.name) == name &&
-                            candidate.packageName == receiverPackage) {
+                            (candidate.packageName == receiverPackage ||
+                             (receiverPackage == currentPackage &&
+                              candidate.packageName == "std.prelude"))) {
                             addAssociatedFunctionCompletions(
                                 items, completion, candidate, currentPackage);
                         }
@@ -3790,7 +4122,8 @@ class LanguageServer {
                         const auto &candidate = completion.program.enums[declaration];
                         if (shortName(candidate.name) == name &&
                             (candidate.builtin != BuiltinEnumKind::None ||
-                             candidate.packageName == currentPackage)) {
+                             candidate.packageName == currentPackage ||
+                             candidate.packageName == "std.prelude")) {
                             addValueMemberCompletions(
                                 items, completion,
                                 Type{TypeKind::Enum, declaration}, currentPackage);
@@ -3802,27 +4135,53 @@ class LanguageServer {
         }
         if (!attributeContext) {
             constexpr std::string_view keywords[] = {
-                "package", "import", "as",      "extern", "struct", "enum",  "contract",
-                "attribute", "implements", "extends", "delegate", "methods", "fn", "task", "spawn",
-                "let",      "const",      "var",
-                "return",  "discard", "if",      "else",   "while",  "select", "timeout",
-                "match", "capture",
+                "package", "import", "as",      "extern", "struct", "service", "enum",  "contract",
+                "attribute", "implements", "extends", "delegate", "methods", "fn", "action", "task", "test",
+                "spawn", "unsafe",
+                "const",    "var",
+                "return",  "discard", "if",      "else",   "while", "for", "in", "break",
+                "continue", "select", "timeout", "match", "capture",
                 "replace", "with",    "own",     "view",   "edit",   "true",  "false",
             };
             for (const auto keyword : keywords) {
                 addCompletion(items, std::string(keyword), 14);
             }
-            for (const auto type : {"i32", "u64", "bool", "String", "void", "Option",
-                                    "Result", "ChannelError", "Task", "Channel", "Sender",
-                                    "Receiver"}) {
+            for (const auto type : {"i8", "i16", "i32", "i64", "u8", "u16", "u32",
+                                    "u64", "isize", "usize", "f32", "f64", "bool", "String",
+                                    "void", "never", "Option", "Result", "ChannelError",
+                                    "NumberError", "Task", "Channel", "Sender", "Receiver"}) {
                 addCompletion(items, type, 25);
             }
-            for (const auto builtin : {"print", "panic", "len"}) {
-                addCompletion(items, builtin, 3, "Foundation builtin",
-                              std::string(builtin) + "(${1:value})");
-            }
-            addCompletion(items, "channel", 3, "Open directional channel endpoints",
-                          "channel<${1:T}>(${2:capacity})");
+            addCompletion(items, "print", 3, "fn print(value String) void",
+                          "print(${1:value})",
+                          "Writes one String followed by a newline without consuming it.");
+            addCompletion(items, "panic", 3, "fn panic(message String) never",
+                          "panic(${1:message})",
+                          "Terminates with a complete Foundation source trace.");
+            addCompletion(items, "len", 3,
+                          "fn len(value String | [N]T | [T]) usize",
+                          "len(${1:value})",
+                          "Returns a String byte length or an array or slice element count.");
+            addCompletion(items, "null", 3, "fn null<P>() P",
+                          "null<${1:*void}>()",
+                          "Constructs an explicitly typed null raw pointer inside unsafe.");
+            addCompletion(items, "isNull", 3, "fn isNull(pointer P) bool",
+                          "isNull(${1:pointer})",
+                          "Checks a raw pointer without dereferencing it.");
+            addCompletion(items, "channel", 3,
+                          "fn channel<T>(capacity u64) Channel<T>",
+                          "channel<${1:T}>(${2:capacity})",
+                          "Creates owned directional channel endpoints.");
+            addCompletion(items, "range", 3,
+                          "fn range(start i32, stop i32, step i32) Range",
+                          "range(${1:start}, ${2:stop}, step = ${3:1})");
+            addCompletion(items, "test", 14, "Declare an isolated Foundation test",
+                          "test \"${1:behavior}\" {\n    ${2}\n}");
+            addCompletion(items, "expect", 3, "fn expect(condition bool) void",
+                          "expect(${1:condition})");
+            addCompletion(items, "fail", 3, "fn fail<T>(value T) never",
+                          "fail(${1:value})");
+            addCompletion(items, "pass", 3, "fn pass() void", "pass()");
         }
 
         std::map<std::string, std::string> aliases;
@@ -3837,6 +4196,9 @@ class LanguageServer {
                                                    std::string_view name, bool exported)
             -> std::optional<std::string> {
             if (packageName == source.packageName) {
+                return std::string(name);
+            }
+            if (packageName == "std.prelude" && exported) {
                 return std::string(name);
             }
             const auto alias = aliases.find(std::string(packageName));
@@ -3876,7 +4238,8 @@ class LanguageServer {
             for (std::size_t functionIndex = 0;
                  functionIndex < analysis->program.functions.size(); ++functionIndex) {
                 const auto &function = analysis->program.functions[functionIndex];
-                if (!function.ownerType.empty() || function.closure) {
+                if (!function.ownerType.empty() || function.closure ||
+                    function.testName.has_value()) {
                     continue;
                 }
                 const auto label = qualified(function.packageName, shortName(function.name),
@@ -3980,23 +4343,154 @@ class LanguageServer {
         if (open == 0 && (source.empty() || source[open] != '(')) {
             return Json(nullptr);
         }
-        auto end = open;
-        while (end != 0 && (source[end - 1] == ' ' || source[end - 1] == '\t' ||
-                            source[end - 1] == '\r' || source[end - 1] == '\n')) {
-            --end;
+        auto nameEnd = open;
+        while (nameEnd != 0 && (source[nameEnd - 1] == ' ' || source[nameEnd - 1] == '\t' ||
+                                source[nameEnd - 1] == '\r' || source[nameEnd - 1] == '\n')) {
+            --nameEnd;
         }
-        auto start = end;
+        if (nameEnd != 0 && source[nameEnd - 1] == '>') {
+            auto cursor = nameEnd;
+            std::size_t angleDepth{};
+            while (cursor != 0) {
+                --cursor;
+                if (source[cursor] == '>') {
+                    ++angleDepth;
+                } else if (source[cursor] == '<') {
+                    if (angleDepth == 1) {
+                        nameEnd = cursor;
+                        break;
+                    }
+                    if (angleDepth != 0) {
+                        --angleDepth;
+                    }
+                }
+            }
+        }
+        auto start = nameEnd;
         while (start != 0 && identifierByte(static_cast<unsigned char>(source[start - 1]))) {
             --start;
         }
-        if (start == end) {
+        if (start == nameEnd) {
             return Json(nullptr);
+        }
+        const auto name = source.substr(start, nameEnd - start);
+        const auto builtinSignature = [](std::string label, std::string documentation,
+                                         std::string parameter) {
+            Json::Object signature{
+                {"label", std::move(label)},
+                {"documentation",
+                 Json::object({{"kind", "markdown"},
+                               {"value", std::move(documentation)}})}};
+            if (!parameter.empty()) {
+                signature.emplace(
+                    "parameters",
+                    Json::array({Json::object({{"label", std::move(parameter)}})}));
+            }
+            return Json::object(
+                {{"signatures", Json::array({Json(std::move(signature))})},
+                 {"activeSignature", 0},
+                 {"activeParameter", 0}});
+        };
+        if (name == "print") {
+            return builtinSignature(
+                "fn print(value String) void",
+                "Writes one String followed by a newline without consuming it.",
+                "value String");
+        }
+        if (name == "panic") {
+            return builtinSignature(
+                "fn panic(message String) never",
+                "Terminates with a complete Foundation source trace. Recoverable failures use "
+                "`Result<T, E>`.",
+                "message String");
+        }
+        if (name == "len") {
+            return builtinSignature(
+                "fn len(value String | [N]T | [T]) usize",
+                "Returns a String byte length or an array or slice element count without "
+                "consuming the value.",
+                "value String | [N]T | [T]");
+        }
+        if (name == "channel") {
+            return builtinSignature(
+                "fn channel<T>(capacity u64) Channel<T>",
+                "Creates owned directional channel endpoints.", "capacity u64");
+        }
+        if (name == "null") {
+            return Json::object(
+                {{"signatures",
+                  Json::array({Json::object(
+                      {{"label", "fn null<P>() P"},
+                       {"documentation",
+                        Json::object({{"kind", "markdown"},
+                                      {"value", "Constructs an explicitly typed null raw "
+                                                "pointer inside `unsafe`."}})}})})},
+                 {"activeSignature", 0}, {"activeParameter", 0}});
+        }
+        if (name == "isNull") {
+            return Json::object(
+                {{"signatures",
+                  Json::array({Json::object(
+                      {{"label", "fn isNull(pointer P) bool"},
+                       {"documentation",
+                        Json::object({{"kind", "markdown"},
+                                      {"value", "Checks a raw pointer without dereferencing "
+                                                "it."}})},
+                       {"parameters",
+                        Json::array({Json::object({{"label", "pointer P"}})})}})})},
+                 {"activeSignature", 0}, {"activeParameter", 0}});
         }
         const auto &index = languageIndex(*analysis);
         const auto *occurrence = index.occurrenceAt(*sourceId, start);
         const auto *symbol = occurrence == nullptr ? nullptr : index.symbol(occurrence->symbol);
         if (symbol == nullptr) {
+            const auto conversion = numericConversionAt(*analysis, *sourceId, start);
+            if (conversion.has_value() && analysis->semantic.has_value()) {
+                const auto id = conversion->first;
+                const auto &target = *analysis->semantic->callTargets[id];
+                if (target.typeArguments.size() == 2) {
+                    const auto parameter =
+                        "value " + displaySemanticType(*analysis, target.typeArguments[0]);
+                    const auto label =
+                        "fn From(" + parameter + ") " +
+                        displaySemanticType(*analysis,
+                                            analysis->semantic->expressionTypes[id]);
+                    return Json::object(
+                        {{"signatures",
+                          Json::array({Json::object(
+                              {{"label", label},
+                               {"documentation",
+                                Json::object(
+                                    {{"kind", "markdown"},
+                                     {"value",
+                                      "Explicit checked numeric conversion."}})},
+                               {"parameters",
+                                Json::array({Json::object({{"label", parameter}})})}})})},
+                         {"activeSignature", 0},
+                         {"activeParameter", 0}});
+                }
+            }
             const auto operation = channelOperationAt(*analysis, *sourceId, start);
+            const auto senderClone = channelSenderCloneAt(*analysis, *sourceId, start);
+            if (senderClone.has_value() && analysis->semantic.has_value()) {
+                const auto id = senderClone->first;
+                const auto label =
+                    "fn clone() " + displaySemanticType(
+                                         *analysis,
+                                         analysis->semantic->expressionTypes[id]);
+                Json::Object signature{
+                    {"label", label},
+                    {"documentation",
+                     Json::object(
+                         {{"kind", "markdown"},
+                          {"value", "Creates another owned sender handle for the same "
+                                    "channel."}})}};
+                return Json::object(
+                    {{"signatures",
+                      Json::array({Json(std::move(signature))})},
+                     {"activeSignature", 0},
+                     {"activeParameter", 0}});
+            }
             if (operation.has_value() && analysis->semantic.has_value()) {
                 const auto id = operation->first;
                 const auto &target = *analysis->semantic->channelOperationTargets[id];
@@ -4030,6 +4524,7 @@ class LanguageServer {
             return Json(nullptr);
         }
         std::size_t activeParameter{};
+        auto argumentStart = open + 1;
         depth = 0;
         for (auto offset = open + 1; offset < *requested; ++offset) {
             if (source[offset] == '(' || source[offset] == '[' || source[offset] == '{') {
@@ -4040,6 +4535,7 @@ class LanguageServer {
                 }
             } else if (source[offset] == ',' && depth == 0) {
                 ++activeParameter;
+                argumentStart = offset + 1;
             }
         }
         Json::Object signature{{"label", symbol->detail}};
@@ -4053,7 +4549,8 @@ class LanguageServer {
             signature.emplace("foundationTypes", Json(std::move(signatureTypes)));
         }
         Json::Array parameters;
-        const auto appendParameters = [this, &parameters, &analysis, &index](
+        std::vector<std::string> parameterNames;
+        const auto appendParameters = [this, &parameters, &parameterNames, &analysis, &index](
                                           const std::vector<Parameter> &declarations,
                                           std::size_t first = 0) {
             for (auto parameter = first; parameter < declarations.size(); ++parameter) {
@@ -4070,6 +4567,7 @@ class LanguageServer {
                 if (!types.empty()) {
                     item.emplace("foundationTypes", Json(std::move(types)));
                 }
+                parameterNames.push_back(declaration.name);
                 parameters.push_back(Json(std::move(item)));
             }
         };
@@ -4090,9 +4588,43 @@ class LanguageServer {
                    symbol->id.owner < analysis->program.attributeDeclarations.size()) {
             appendParameters(
                 analysis->program.attributeDeclarations[symbol->id.owner].parameters);
+        } else if (symbol->id.kind == LanguageSymbolKind::EnumVariant &&
+                   symbol->id.owner < analysis->program.enums.size() &&
+                   symbol->id.member <
+                       analysis->program.enums[symbol->id.owner].variants.size()) {
+            const auto &variant =
+                analysis->program.enums[symbol->id.owner].variants[symbol->id.member];
+            if (variant.payloadType.has_value()) {
+                const auto name = variant.payloadName.value_or("value");
+                parameters.push_back(Json::object(
+                    {{"label", name + ' ' + displayTypeSyntax(*variant.payloadType)}}));
+                parameterNames.push_back(name);
+            }
         }
         if (!parameters.empty()) {
             signature.emplace("parameters", Json(std::move(parameters)));
+        }
+        while (argumentStart < *requested &&
+               std::isspace(static_cast<unsigned char>(source[argumentStart])) != 0) {
+            ++argumentStart;
+        }
+        auto argumentNameEnd = argumentStart;
+        while (argumentNameEnd < *requested &&
+               identifierByte(static_cast<unsigned char>(source[argumentNameEnd]))) {
+            ++argumentNameEnd;
+        }
+        auto equals = argumentNameEnd;
+        while (equals < *requested &&
+               std::isspace(static_cast<unsigned char>(source[equals])) != 0) {
+            ++equals;
+        }
+        if (argumentNameEnd != argumentStart && equals < *requested && source[equals] == '=' &&
+            (equals + 1 >= source.size() || source[equals + 1] != '=')) {
+            const auto name = source.substr(argumentStart, argumentNameEnd - argumentStart);
+            const auto found = std::find(parameterNames.begin(), parameterNames.end(), name);
+            if (found != parameterNames.end()) {
+                activeParameter = static_cast<std::size_t>(found - parameterNames.begin());
+            }
         }
         return Json::object(
             {{"signatures", Json::array({Json(std::move(signature))})},
@@ -4115,6 +4647,8 @@ class LanguageServer {
             return 4;
         case LanguageSymbolKind::EnumVariant:
             return 5;
+        case LanguageSymbolKind::EnumPayload:
+            return 8;
         case LanguageSymbolKind::Contract:
             return 6;
         case LanguageSymbolKind::Attribute:
@@ -4229,6 +4763,26 @@ class LanguageServer {
             return Json(Json::Array{});
         }
         Json::Array result;
+        for (AstExpressionId id = 0;
+             id < analysis->program.expressions.size() &&
+             id < analysis->semantic->emptyTests.size(); ++id) {
+            if (!analysis->semantic->emptyTests[id]) {
+                continue;
+            }
+            const auto &expression = analysis->program.expressions[id];
+            if (expression.span.source != *sourceId || expression.span.offset < *start ||
+                expression.span.offset >= *end) {
+                continue;
+            }
+            result.push_back(Json::object(
+                {{"position",
+                  lspPosition(positionAt(source,
+                                         expression.span.offset + expression.span.length))},
+                 {"label", "is empty"},
+                 {"kind", 1},
+                 {"foundationKind", "emptyTest"},
+                 {"paddingLeft", true}}));
+        }
         for (std::size_t id = 0; id < analysis->program.expressions.size(); ++id) {
             std::vector<std::string> names;
             if (analysis->semantic->callTargets[id].has_value()) {

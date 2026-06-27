@@ -1,0 +1,17 @@
+package test.web.reject
+
+import foundation.web
+
+@web.Route(.GET, "/items")
+fn GetItems() web.Response {
+    web.Text(200, "items")
+}
+
+@web.Route(.GET, "/items")
+fn GetOtherItems() web.Response {
+    web.Text(200, "other")
+}
+
+fn main() i32 {
+    0
+}

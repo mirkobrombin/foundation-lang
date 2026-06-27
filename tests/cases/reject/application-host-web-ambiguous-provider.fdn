@@ -1,0 +1,43 @@
+package test.web.reject
+
+import foundation.di
+import foundation.web
+
+contract Store {
+    fn Name(self) String
+}
+
+@di.Name("first")
+@di.Scope(.Singleton)
+service FirstStore implements Store {
+    @di.Inject()
+    fn New() FirstStore {
+        FirstStore {}
+    }
+
+    fn Name(self) String {
+        "first"
+    }
+}
+
+@di.Name("second")
+@di.Scope(.Singleton)
+service SecondStore implements Store {
+    @di.Inject()
+    fn New() SecondStore {
+        SecondStore {}
+    }
+
+    fn Name(self) String {
+        "second"
+    }
+}
+
+@web.Route(.GET, "/items")
+fn GetItems(@web.Inject() store Store) web.Response {
+    web.Text(200, "items")
+}
+
+fn main() i32 {
+    0
+}

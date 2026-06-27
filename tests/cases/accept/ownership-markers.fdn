@@ -1,0 +1,72 @@
+struct Session {
+    label String
+}
+
+contract Readable {
+    fn Read(self) i32
+}
+
+struct Counter implements Readable {
+    value i32
+
+    fn Read(self) i32 {
+        self.value
+    }
+}
+
+fn Inspect(session Session) void {
+    print(session.label)
+}
+
+fn Rename(&session Session, $label String) void {
+    session.label = label
+}
+
+fn Archive($session Session) void {
+    print(session.label)
+}
+
+fn Ready(label String) bool {
+    label == "ready"
+}
+
+fn Observe<T>(value T) i32 {
+    1
+}
+
+fn ReadContract(value Readable) i32 {
+    value.Read()
+}
+
+fn Sum(values [i32]) i32 {
+    values[0] + values[1]
+}
+
+fn ForwardRead(value Readable) i32 {
+    ReadContract(value)
+}
+
+fn ForwardSum(values [i32]) i32 {
+    Sum(values)
+}
+
+fn main() i32 {
+    var session = new Session { label = "draft" }
+    Inspect(session)
+    Rename(&session, "ready")
+    if !Ready(session.label) {
+        return 1
+    }
+    const genericLabel = "generic"
+    if Observe<i32>(42) + Observe<String>(genericLabel) != 2 {
+        return 1
+    }
+    const counter = Counter { value = 40 }
+    const values = [1, 1]
+    if ForwardRead(counter) + ForwardSum(values) != 42 {
+        return 1
+    }
+    print(genericLabel)
+    Archive($session)
+    0
+}

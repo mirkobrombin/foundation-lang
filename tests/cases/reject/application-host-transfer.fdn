@@ -1,0 +1,24 @@
+package test.host
+
+import foundation.di
+
+@di.Scope(.Singleton)
+service Source {
+    @di.Inject()
+    fn New() Source {
+        Source {}
+    }
+}
+
+@di.Scope(.Singleton)
+service Sink {
+    @di.Inject()
+    fn New($source Source) Sink {
+        discard source
+        Sink {}
+    }
+}
+
+fn main() i32 {
+    0
+}

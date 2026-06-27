@@ -4,11 +4,11 @@ fn identity(value i32) i32 {
 
 fn main() i32 {
     var total = 0
-    var operation = fn(value i32) i32 capture edit total {
+    var operation = fn(value i32) i32 capture &total {
         total = total + value
         total
     }
-    let previous = replace operation with identity
+    const previous = replace operation with identity
     discard previous
     0
 }

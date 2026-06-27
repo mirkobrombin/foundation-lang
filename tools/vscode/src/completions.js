@@ -1,11 +1,34 @@
 "use strict";
 
+const parseIntegerCompletions = [
+    ["I8", "i8"], ["I16", "i16"], ["I32", "i32"], ["I64", "i64"],
+    ["Isize", "isize"], ["U8", "u8"], ["U16", "u16"], ["U32", "u32"],
+    ["U64", "u64"], ["Usize", "usize"]
+].map(([name, type]) => ({
+    label: `parse.${name}`,
+    kind: "Function",
+    detail: `fn ${name}(value String) Result<${type}, parse.IntegerError>`,
+    insertText: `parse.${name}(\${1:value})`
+}));
+
+const formatScalarCompletions = [
+    ["Bool", "bool"], ["I8", "i8"], ["I16", "i16"], ["I32", "i32"],
+    ["I64", "i64"], ["Isize", "isize"], ["U8", "u8"], ["U16", "u16"],
+    ["U32", "u32"], ["U64", "u64"], ["Usize", "usize"], ["F32", "f32"],
+    ["F64", "f64"]
+].map(([name, type]) => ({
+    label: `format.${name}`,
+    kind: "Function",
+    detail: `fn ${name}(value ${type}) String`,
+    insertText: `format.${name}(\${1:value})`
+}));
+
 const staticCompletions = [
     { label: "package", kind: "Keyword" },
     { label: "import", kind: "Keyword" },
     { label: "as", kind: "Keyword" },
     { label: "attribute", kind: "Keyword", detail: "Declare typed compile-time metadata" },
-    { label: "targets(...)", kind: "Keyword", insertText: "targets(${1|fn,struct,enum,contract,method,field,variant,parameter|})" },
+    { label: "targets(...)", kind: "Keyword", insertText: "targets(${1|fn,struct,service,enum,contract,method,action,field,variant,parameter|})" },
     { label: "repeatable", kind: "Keyword", detail: "Allow repeated applications of an attribute" },
     { label: "extern", kind: "Keyword", detail: "Declare a C ABI import or export" },
     { label: "c", kind: "Value", detail: "C application binary interface" },
@@ -39,6 +62,12 @@ const staticCompletions = [
     { label: "state_machine", kind: "Keyword", detail: "Declare a typed state machine" },
     { label: "pipeline", kind: "Keyword", detail: "Declare a typed pipeline" },
     { label: "saga", kind: "Keyword", detail: "Declare a compensated workflow" },
+    { label: "step", kind: "Keyword", detail: "Declare an ordered workflow step" },
+    { label: "using", kind: "Keyword", detail: "Select a workflow function" },
+    { label: "retry", kind: "Keyword", detail: "Apply a bounded workflow retry policy" },
+    { label: "exponential", kind: "Keyword", detail: "Use deterministic exponential waiting" },
+    { label: "max", kind: "Keyword", detail: "Set the total workflow attempt count" },
+    { label: "compensate", kind: "Keyword", detail: "Compensate a completed saga step" },
     { label: "task", kind: "Keyword", detail: "Declare a suspendable function" },
     { label: "spawn", kind: "Keyword", detail: "Start a task on the active scheduler" },
     { label: "select", kind: "Keyword", detail: "Wait on typed channel operations" },
@@ -47,7 +76,6 @@ const staticCompletions = [
     { label: "unsafe", kind: "Keyword", detail: "Bound raw pointer operations" },
     { label: "fn", kind: "Keyword" },
     { label: "const", kind: "Keyword", detail: "Declare an immutable binding" },
-    { label: "let", kind: "Keyword", detail: "Bootstrap immutable binding" },
     { label: "var", kind: "Keyword" },
     { label: "return", kind: "Keyword" },
     { label: "discard", kind: "Keyword" },
@@ -90,11 +118,13 @@ const staticCompletions = [
     { label: "Option", kind: "TypeParameter", detail: "primitive Option<T>" },
     { label: "Result", kind: "TypeParameter", detail: "primitive Result<T, E>" },
     { label: "ChannelError", kind: "Enum", detail: "typed channel operation failure" },
+    { label: "NumberError", kind: "Enum", detail: "checked numeric conversion failure" },
     { label: "Task", kind: "TypeParameter", detail: "owned concurrent result handle" },
     { label: "Channel", kind: "TypeParameter", detail: "owned channel endpoint pair" },
     { label: "Sender", kind: "TypeParameter", detail: "owned channel send endpoint" },
     { label: "Receiver", kind: "TypeParameter", detail: "owned channel receive endpoint" },
     { label: "TcpConnection", kind: "Struct", detail: "owned TCP connection" },
+    { label: "TcpListener", kind: "Struct", detail: "owned TCP listener" },
     { label: "TcpReader", kind: "Struct", detail: "owned TCP read half" },
     { label: "TcpWriter", kind: "Struct", detail: "owned TCP write half" },
     { label: "StreamPair", kind: "Struct", detail: "owned TCP read and write halves" },
@@ -104,14 +134,79 @@ const staticCompletions = [
     { label: "std.path", kind: "Module", detail: "Portable path operations" },
     { label: "std.parse", kind: "Module", detail: "Primitive value parsing" },
     { label: "std.fs", kind: "Module", detail: "Read-only filesystem operations" },
-    { label: "std.net", kind: "Module", detail: "Portable TCP client operations" },
+    { label: "std.net", kind: "Module", detail: "Portable TCP client and server operations" },
     { label: "std.format", kind: "Module", detail: "Primitive value formatting" },
     { label: "std.json", kind: "Module", detail: "Owned JSON values and parsing" },
     { label: "std.time", kind: "Module", detail: "Unix time values" },
     { label: "std.concurrent", kind: "Module", detail: "Structured cancellation values" },
     { label: "foundation.worker", kind: "Module", detail: "Supervised application tasks" },
+    { label: "foundation.hosting", kind: "Module", detail: "Owned application lifecycle" },
+    { label: "foundation.health", kind: "Module", detail: "Typed deterministic health checks" },
+    { label: "foundation.plugin", kind: "Module", detail: "Validated native plugin lifecycle" },
+    { label: "foundation.web", kind: "Module", detail: "Typed HTTP routing and serving" },
+    { label: "foundation.di", kind: "Module", detail: "Static dependency graph metadata" },
+    { label: "foundation.actions", kind: "Module", detail: "Typed action dispatch metadata" },
+    { label: "@di.Inject()", kind: "Keyword", detail: "Select a service constructor", insertText: "@di.Inject()" },
+    { label: "@di.Scope(...)", kind: "Keyword", detail: "Set a service lifetime", insertText: "@di.Scope(${1|.Transient,.Scoped,.Singleton|})" },
+    { label: "@di.Input()", kind: "Keyword", detail: "Supply an application boundary value", insertText: "@di.Input()" },
+    { label: "@di.Name(...)", kind: "Keyword", detail: "Name a service provider", insertText: "@di.Name(\"${1:name}\")" },
+    { label: "@di.From(...)", kind: "Keyword", detail: "Select a named provider", insertText: "@di.From(\"${1:name}\")" },
+    { label: "@actions.Name(...)", kind: "Keyword", detail: "Set an action dispatch name", insertText: "@actions.Name(\"${1:name}\")" },
+    { label: "@actions.Key(...)", kind: "Keyword", detail: "Attach an action key binding", insertText: "@actions.Key(\"${1:key}\")" },
+    { label: "@actions.Policy(...)", kind: "Keyword", detail: "Require an action policy", insertText: "@actions.Policy(\"${1:policy}\")" },
+    { label: "@web.Route(...)", kind: "Keyword", detail: "Declare a typed HTTP endpoint", insertText: "@web.Route(${1|.GET,.POST,.PUT,.PATCH,.DELETE,.HEAD,.OPTIONS|}, \"${2:/path}\")" },
+    { label: "@web.Path(...)", kind: "Keyword", detail: "Bind a route parameter", insertText: "@web.Path(\"${1:name}\")" },
+    { label: "@web.Query(...)", kind: "Keyword", detail: "Bind a query value", insertText: "@web.Query(\"${1:name}\")" },
+    { label: "@web.Header(...)", kind: "Keyword", detail: "Bind a request header", insertText: "@web.Header(\"${1:name}\")" },
+    { label: "@web.Form(...)", kind: "Keyword", detail: "Bind a form value", insertText: "@web.Form(\"${1:name}\")" },
+    { label: "@web.Body()", kind: "Keyword", detail: "Bind the request body", insertText: "@web.Body()" },
+    { label: "@web.Inject()", kind: "Keyword", detail: "Resolve the unique singleton service for a parameter type", insertText: "@web.Inject()" },
     { label: "worker.Supervisor", kind: "Struct", detail: "owned supervised task lifetime" },
+    { label: "worker.Group", kind: "Struct", detail: "bounded typed task completion group" },
+    { label: "worker.GroupNext", kind: "Struct", detail: "completed value and still-owned task group" },
+    { label: "worker.GroupWait", kind: "Struct", detail: "task completion or stop wake with still-owned group" },
+    { label: "worker.GroupWake", kind: "Enum", detail: "typed completion or explicit stop reason" },
+    { label: "worker.GroupError", kind: "Enum", detail: "task group admission or completion failure" },
     { label: "worker.Pool", kind: "Struct", detail: "bounded parallel task executor" },
+    { label: "hosting.Host", kind: "Struct", detail: "owned one-shot application host" },
+    { label: "hosting.HostedService", kind: "Interface", detail: "typed Start and Stop lifecycle contract" },
+    { label: "hosting.BackgroundService", kind: "Interface", detail: "typed background task lifecycle contract" },
+    { label: "hosting.RunReport", kind: "Struct", detail: "typed host stop reason and cleanup failures" },
+    { label: "hosting.RunReason", kind: "Enum", detail: "host run completion reason" },
+    { label: "hosting.State", kind: "Enum", detail: "host lifecycle state" },
+    { label: "health.Registry", kind: "Struct", detail: "owned deterministic health checker registry" },
+    { label: "health.Checker", kind: "Interface", detail: "typed health check contract" },
+    { label: "health.Report", kind: "Struct", detail: "typed health status, duration, and details" },
+    { label: "health.NamedReport", kind: "Struct", detail: "registered checker name and report" },
+    { label: "health.Status", kind: "Enum", detail: "healthy, degraded, or unhealthy status" },
+    { label: "plugin.Plugin", kind: "Interface", detail: "typed plugin lifecycle contract" },
+    { label: "plugin.NativePlugin", kind: "Struct", detail: "owned validated native plugin" },
+    { label: "plugin.Registry", kind: "Struct", detail: "owned deterministic plugin registry" },
+    { label: "plugin.FactoryRegistry", kind: "Struct", detail: "owned named plugin factories" },
+    { label: "plugin.ExecSandbox", kind: "Struct", detail: "owned external plugin process" },
+    { label: "plugin.ErrorKind", kind: "Enum", detail: "stable native plugin failure kind" },
+    { label: "plugin.Error", kind: "Struct", detail: "native plugin failure and copied detail" },
+    { label: "plugin.NamedError", kind: "Struct", detail: "plugin name and lifecycle failure" },
+    { label: "plugin.RegistrationFailure", kind: "Struct", detail: "rejected plugin and name" },
+    { label: "plugin.StartFailure", kind: "Struct", detail: "startup error and rollback failures" },
+    { label: "plugin.FactoryErrorKind", kind: "Enum", detail: "plugin factory lookup or registration failure" },
+    { label: "plugin.FactoryRegistrationFailure", kind: "Struct", detail: "rejected named plugin factory" },
+    { label: "plugin.SandboxErrorKind", kind: "Enum", detail: "external plugin process failure kind" },
+    { label: "plugin.SandboxError", kind: "Struct", detail: "external plugin process failure" },
+    { label: "plugin.SandboxStartOutcome", kind: "Struct", detail: "started process and still-owned sandbox" },
+    { label: "plugin.SandboxStopOutcome", kind: "Struct", detail: "process exit and still-owned sandbox" },
+    { label: "web.Server", kind: "Struct", detail: "owned typed HTTP server" },
+    { label: "web.Router", kind: "Struct", detail: "owned deterministic HTTP router" },
+    { label: "web.RouteTable", kind: "Struct", detail: "validated handler-free route metadata" },
+    { label: "web.RouteMatch", kind: "Struct", detail: "matched route ID and owned path parameters" },
+    { label: "web.Handler", kind: "Interface", detail: "typed HTTP handler contract" },
+    { label: "web.Application", kind: "Interface", detail: "shared typed request dispatch graph" },
+    { label: "web.Request", kind: "Struct", detail: "owned parsed HTTP request" },
+    { label: "web.Response", kind: "Struct", detail: "owned HTTP response" },
+    { label: "web.Method", kind: "Enum", detail: "supported HTTP request method" },
+    { label: "web.MatchError", kind: "Enum", detail: "not found or method not allowed route result" },
+    { label: "web.DispatchError", kind: "Enum", detail: "transport or typed handler dispatch failure" },
+    { label: "web.ServeOutcome", kind: "Struct", detail: "served request and reusable server" },
     {
         label: "platform.Current",
         kind: "Function",
@@ -127,7 +222,7 @@ const staticCompletions = [
     {
         label: "env.Get",
         kind: "Function",
-        detail: "fn Get(name view String) Result<Option<String>, env.Error>",
+        detail: "fn Get(name String) Result<Option<String>, env.Error>",
         insertText: "env.Get(view ${1:name})"
     },
     {
@@ -139,13 +234,13 @@ const staticCompletions = [
     {
         label: "text.ByteLen",
         kind: "Function",
-        detail: "fn ByteLen(value view String) u64",
+        detail: "fn ByteLen(value String) u64",
         insertText: "text.ByteLen(view ${1:value})"
     },
     {
         label: "text.Contains",
         kind: "Function",
-        detail: "fn Contains(value view String, part view String) bool",
+        detail: "fn Contains(value String, part String) bool",
         insertText: "text.Contains(view ${1:value}, view ${2:part})"
     },
     {
@@ -157,19 +252,14 @@ const staticCompletions = [
     {
         label: "path.Join",
         kind: "Function",
-        detail: "fn Join(left view String, right view String) String",
+        detail: "fn Join(left String, right String) String",
         insertText: "path.Join(view ${1:left}, view ${2:right})"
     },
-    {
-        label: "parse.U64",
-        kind: "Function",
-        detail: "fn U64(value view String) Result<u64, parse.IntegerError>",
-        insertText: "parse.U64(view ${1:value})"
-    },
+    ...parseIntegerCompletions,
     {
         label: "fs.OpenLines",
         kind: "Function",
-        detail: "fn OpenLines(path view String) Result<own fs.LineReader, fs.Error>",
+        detail: "fn OpenLines(path String) Result<own fs.LineReader, fs.Error>",
         insertText: "fs.OpenLines(view ${1:path})"
     },
     {
@@ -187,32 +277,44 @@ const staticCompletions = [
     {
         label: "fs.OpenDir",
         kind: "Function",
-        detail: "fn OpenDir(path view String) Result<own fs.DirReader, fs.Error>",
+        detail: "fn OpenDir(path String) Result<own fs.DirReader, fs.Error>",
         insertText: "fs.OpenDir(view ${1:path})"
     },
     {
         label: "fs.Size",
         kind: "Function",
-        detail: "fn Size(path view String) Result<u64, fs.Error>",
+        detail: "fn Size(path String) Result<u64, fs.Error>",
         insertText: "fs.Size(view ${1:path})"
     },
     {
         label: "fs.Modified",
         kind: "Function",
-        detail: "fn Modified(path view String) Result<u64, fs.Error>",
+        detail: "fn Modified(path String) Result<u64, fs.Error>",
         insertText: "fs.Modified(view ${1:path})"
     },
     {
         label: "fs.LineReader.Next",
         kind: "Method",
-        detail: "fn Next(edit) Result<Option<String>, fs.Error>",
+        detail: "fn Next(&self) Result<Option<String>, fs.Error>",
         insertText: "Next()"
     },
     {
         label: "fs.LineReader.NextLimited",
         kind: "Method",
-        detail: "fn NextLimited(edit, limit u64) Result<Option<String>, fs.Error>",
+        detail: "fn NextLimited(&self, limit u64) Result<Option<String>, fs.Error>",
         insertText: "NextLimited(${1:limit})"
+    },
+    {
+        label: "net.Listen",
+        kind: "Function",
+        detail: "fn Listen(address String, port u64) Result<own net.TcpListener, net.Error>",
+        insertText: "net.Listen(${1:address}, ${2:port})"
+    },
+    {
+        label: "net.Accept",
+        kind: "Function",
+        detail: "task Accept(listener own net.TcpListener) net.AcceptOutcome",
+        insertText: "net.Accept(${1:listener})"
     },
     {
         label: "net.Connect",
@@ -223,7 +325,7 @@ const staticCompletions = [
     {
         label: "net.TcpConnection.Split",
         kind: "Method",
-        detail: "fn Split(own) Result<net.StreamPair, net.Error>",
+        detail: "fn Split($self) Result<net.StreamPair, net.Error>",
         insertText: "Split()"
     },
     {
@@ -239,27 +341,100 @@ const staticCompletions = [
         insertText: "net.ReadLineLimited(${1:reader}, ${2:limit})"
     },
     {
+        label: "net.ReadExact",
+        kind: "Function",
+        detail: "task ReadExact(reader own net.TcpReader, length u64) net.ReadOutcome",
+        insertText: "net.ReadExact(${1:reader}, ${2:length})"
+    },
+    {
         label: "net.WriteAll",
         kind: "Function",
         detail: "task WriteAll(writer own net.TcpWriter, text String) net.WriteOutcome",
         insertText: "net.WriteAll(${1:writer}, ${2:text})"
     },
     {
-        label: "format.I32",
+        label: "web.NewServer",
         kind: "Function",
-        detail: "fn I32(value i32) String",
-        insertText: "format.I32(${1:value})"
+        detail: "fn NewServer<E>($address String, port u64, $application own web.Application<E>) Result<own web.Server<E>, net.Error>",
+        insertText: "web.NewServer<${1:Error}>(\$${2:address}, ${3:port}, \$${4:application})"
     },
     {
-        label: "format.U64",
+        label: "web.NewRouter",
         kind: "Function",
-        detail: "fn U64(value u64) String",
-        insertText: "format.U64(${1:value})"
+        detail: "fn NewRouter<E>() own web.Router<E>",
+        insertText: "web.NewRouter<${1:Error}>()"
     },
+    {
+        label: "web.NewRouteTable",
+        kind: "Function",
+        detail: "fn NewRouteTable() own web.RouteTable",
+        insertText: "web.NewRouteTable()"
+    },
+    {
+        label: "web.Text",
+        kind: "Function",
+        detail: "fn Text(status i32, body String) web.Response",
+        insertText: "web.Text(${1:200}, ${2:body})"
+    },
+    {
+        label: "web.Json",
+        kind: "Function",
+        detail: "fn Json(status i32, body String) web.Response",
+        insertText: "web.Json(${1:200}, ${2:body})"
+    },
+    {
+        label: "web.Router.Map",
+        kind: "Method",
+        detail: "fn Map(&self, method web.Method, path String, $handler own web.Handler<E>) Result<void, web.RegistrationError>",
+        insertText: "Map(${1:.GET}, ${2:path}, ${3:handler})"
+    },
+    {
+        label: "web.RouteTable.Add",
+        kind: "Method",
+        detail: "fn Add(&self, id u64, method web.Method, path String) Result<void, web.RegistrationError>",
+        insertText: "Add(${1:id}, ${2:.GET}, ${3:path})"
+    },
+    {
+        label: "web.RouteTable.Match",
+        kind: "Method",
+        detail: "fn Match(&self, method web.Method, path String) Result<web.RouteMatch, web.MatchError>",
+        insertText: "Match(${1:.GET}, ${2:path})"
+    },
+    {
+        label: "web.Request.Param",
+        kind: "Method",
+        detail: "fn Param(&self, name String) Option<String>",
+        insertText: "Param(${1:name})"
+    },
+    {
+        label: "web.Request.Query",
+        kind: "Method",
+        detail: "fn Query(name String) Option<String>",
+        insertText: "Query(${1:name})"
+    },
+    {
+        label: "web.Request.Header",
+        kind: "Method",
+        detail: "fn Header(&self, name String) Option<String>",
+        insertText: "Header(${1:name})"
+    },
+    {
+        label: "web.Request.Form",
+        kind: "Method",
+        detail: "fn Form(name String) Option<String>",
+        insertText: "Form(${1:name})"
+    },
+    {
+        label: "web.Server.ServeOne",
+        kind: "Method",
+        detail: "fn ServeOne($self) Task<own web.ServeOutcome<E>>",
+        insertText: "ServeOne()"
+    },
+    ...formatScalarCompletions,
     {
         label: "json.Parse",
         kind: "Function",
-        detail: "fn Parse(source view String) Result<json.Value, json.Error>",
+        detail: "fn Parse(source String) Result<json.Value, json.Error>",
         insertText: "json.Parse(view ${1:source})"
     },
     {
@@ -275,9 +450,39 @@ const staticCompletions = [
         insertText: "time.FromUnix(${1:seconds})"
     },
     {
+        label: "time.MonotonicNow",
+        kind: "Function",
+        detail: "fn MonotonicNow() time.MonotonicInstant",
+        insertText: "time.MonotonicNow()"
+    },
+    {
+        label: "time.Nanoseconds",
+        kind: "Function",
+        detail: "fn Nanoseconds(value u64) time.Duration",
+        insertText: "time.Nanoseconds(${1:value})"
+    },
+    {
+        label: "time.Milliseconds",
+        kind: "Function",
+        detail: "fn Milliseconds(value u64) time.Duration",
+        insertText: "time.Milliseconds(${1:value})"
+    },
+    {
+        label: "time.Seconds",
+        kind: "Function",
+        detail: "fn Seconds(value u64) time.Duration",
+        insertText: "time.Seconds(${1:value})"
+    },
+    {
+        label: "time.Duration.Nanoseconds",
+        kind: "Method",
+        detail: "fn Nanoseconds(self) u64",
+        insertText: "Nanoseconds()"
+    },
+    {
         label: "time.Instant.FormatUtc",
         kind: "Method",
-        detail: "fn FormatUtc(view) Result<String, time.Error>",
+        detail: "fn FormatUtc(self) Result<String, time.Error>",
         insertText: "FormatUtc()"
     },
     {
@@ -289,19 +494,19 @@ const staticCompletions = [
     {
         label: "concurrent.CancellationSource.Token",
         kind: "Method",
-        detail: "fn Token(view) concurrent.Cancellation",
+        detail: "fn Token(self) concurrent.Cancellation",
         insertText: "Token()"
     },
     {
         label: "concurrent.CancellationSource.Cancel",
         kind: "Method",
-        detail: "fn Cancel(view) void",
+        detail: "fn Cancel(self) void",
         insertText: "Cancel()"
     },
     {
         label: "concurrent.Cancellation.IsRequested",
         kind: "Method",
-        detail: "fn IsRequested(view) bool",
+        detail: "fn IsRequested(self) bool",
         insertText: "IsRequested()"
     },
     {
@@ -311,21 +516,261 @@ const staticCompletions = [
         insertText: "worker.NewSupervisor()"
     },
     {
+        label: "hosting.NewHost",
+        kind: "Function",
+        detail: "fn NewHost<E>() own hosting.Host<E>",
+        insertText: "hosting.NewHost<${1:E}>()"
+    },
+    {
+        label: "hosting.Host.Add",
+        kind: "Method",
+        detail: "fn Add(&self, $hosted own HostedService<E>) Result<void, RegistrationError>",
+        insertText: "Add(\$${1:hosted})"
+    },
+    {
+        label: "hosting.Host.Start",
+        kind: "Method",
+        detail: "fn Start(&self) Result<void, StartError<E>>",
+        insertText: "Start()"
+    },
+    {
+        label: "hosting.Host.AddBackground",
+        kind: "Method",
+        detail: "fn AddBackground(&self, $background own BackgroundService<E>) Result<void, RegistrationError>",
+        insertText: "AddBackground(\$${1:background})"
+    },
+    {
+        label: "hosting.Host.OnStart",
+        kind: "Method",
+        detail: "fn OnStart(&self, $hook fn() void) Result<void, RegistrationError>",
+        insertText: "OnStart(\$${1:hook})"
+    },
+    {
+        label: "hosting.Host.OnStop",
+        kind: "Method",
+        detail: "fn OnStop(&self, $hook fn() void) Result<void, RegistrationError>",
+        insertText: "OnStop(\$${1:hook})"
+    },
+    {
+        label: "hosting.Host.Shutdown",
+        kind: "Method",
+        detail: "fn Shutdown(&self) own collections.List<E>",
+        insertText: "Shutdown()"
+    },
+    {
+        label: "hosting.Host.NextBackground",
+        kind: "Method",
+        detail: "fn NextBackground($self) Task<own BackgroundNext<E>>",
+        insertText: "NextBackground()"
+    },
+    {
+        label: "hosting.Run",
+        kind: "Function",
+        detail: "fn Run<E>($host own Host<E>, $stop Receiver<void>) Task<Result<own RunReport<E>, StartError<E>>>",
+        insertText: "hosting.Run(\$${1:host}, \$${2:stop})"
+    },
+    {
+        label: "health.NewRegistry",
+        kind: "Function",
+        detail: "fn NewRegistry<D>() own health.Registry<D>",
+        insertText: "health.NewRegistry<${1:D}>()"
+    },
+    {
+        label: "health.NewReport",
+        kind: "Function",
+        detail: "fn NewReport<D>(status health.Status, $details D) health.Report<D>",
+        insertText: "health.NewReport(${1:status}, \$${2:details})"
+    },
+    {
+        label: "health.StatusText",
+        kind: "Function",
+        detail: "fn StatusText(status health.Status) String",
+        insertText: "health.StatusText(${1:status})"
+    },
+    {
+        label: "health.Registry.Register",
+        kind: "Method",
+        detail: "fn Register(&self, $name String, $checker own Checker<D>) Result<void, RegistrationError>",
+        insertText: "Register(\$${1:name}, \$${2:checker})"
+    },
+    {
+        label: "health.Registry.CheckAll",
+        kind: "Method",
+        detail: "fn CheckAll(&self, cancellation Cancellation) Result<own collections.List<NamedReport<D>>, CheckError>",
+        insertText: "CheckAll(${1:cancellation})"
+    },
+    {
+        label: "plugin.LoadNative",
+        kind: "Function",
+        detail: "fn LoadNative(path String) Result<own plugin.NativePlugin, plugin.Error>",
+        insertText: "plugin.LoadNative(${1:path})"
+    },
+    {
+        label: "plugin.NewRegistry",
+        kind: "Function",
+        detail: "fn NewRegistry() own plugin.Registry",
+        insertText: "plugin.NewRegistry()"
+    },
+    {
+        label: "plugin.NewFactoryRegistry",
+        kind: "Function",
+        detail: "fn NewFactoryRegistry() own plugin.FactoryRegistry",
+        insertText: "plugin.NewFactoryRegistry()"
+    },
+    {
+        label: "plugin.NewExecSandbox",
+        kind: "Function",
+        detail: "fn NewExecSandbox(path String) Result<own plugin.ExecSandbox, plugin.SandboxError>",
+        insertText: "plugin.NewExecSandbox(${1:path})"
+    },
+    {
+        label: "plugin.StartSandbox",
+        kind: "Function",
+        detail: "task StartSandbox($sandbox own plugin.ExecSandbox, deadline time.Duration) plugin.SandboxStartOutcome",
+        insertText: "plugin.StartSandbox(\$${1:sandbox}, ${2:deadline})"
+    },
+    {
+        label: "plugin.StopSandbox",
+        kind: "Function",
+        detail: "task StopSandbox($sandbox own plugin.ExecSandbox, deadline time.Duration) plugin.SandboxStopOutcome",
+        insertText: "plugin.StopSandbox(\$${1:sandbox}, ${2:deadline})"
+    },
+    {
+        label: "plugin.FactoryRegistry.Register",
+        kind: "Method",
+        detail: "fn Register(&self, name String, $factory fn() own plugin.Plugin) Result<bool, own plugin.FactoryRegistrationFailure>",
+        insertText: "Register(${1:name}, \$${2:factory})"
+    },
+    {
+        label: "plugin.FactoryRegistry.Create",
+        kind: "Method",
+        detail: "fn Create(&self, name String) Result<own plugin.Plugin, plugin.FactoryErrorKind>",
+        insertText: "Create(${1:name})"
+    },
+    {
+        label: "plugin.ExecSandbox.Argument",
+        kind: "Method",
+        detail: "fn Argument(&self, argument String) Result<bool, plugin.SandboxError>",
+        insertText: "Argument(${1:argument})"
+    },
+    {
+        label: "plugin.ExecSandbox.IsRunning",
+        kind: "Method",
+        detail: "fn IsRunning(self) bool",
+        insertText: "IsRunning()"
+    },
+    {
+        label: "plugin.ExecSandbox.Close",
+        kind: "Method",
+        detail: "fn Close(&self) bool",
+        insertText: "Close()"
+    },
+    {
+        label: "plugin.NativePlugin.Name",
+        kind: "Method",
+        detail: "fn Name(self) String",
+        insertText: "Name()"
+    },
+    {
+        label: "plugin.NativePlugin.Start",
+        kind: "Method",
+        detail: "fn Start(&self) Result<bool, plugin.Error>",
+        insertText: "Start()"
+    },
+    {
+        label: "plugin.NativePlugin.Stop",
+        kind: "Method",
+        detail: "fn Stop(&self) Result<bool, plugin.Error>",
+        insertText: "Stop()"
+    },
+    {
+        label: "plugin.NativePlugin.Close",
+        kind: "Method",
+        detail: "fn Close(&self) Result<bool, plugin.Error>",
+        insertText: "Close()"
+    },
+    {
+        label: "plugin.NativePlugin.IsRunning",
+        kind: "Method",
+        detail: "fn IsRunning(self) bool",
+        insertText: "IsRunning()"
+    },
+    {
+        label: "plugin.Registry.Register",
+        kind: "Method",
+        detail: "fn Register(&self, $plugin own plugin.Plugin) Result<bool, own plugin.RegistrationFailure>",
+        insertText: "Register(\$${1:plugin})"
+    },
+    {
+        label: "plugin.Registry.StartAll",
+        kind: "Method",
+        detail: "fn StartAll(&self) Result<bool, own plugin.StartFailure>",
+        insertText: "StartAll()"
+    },
+    {
+        label: "plugin.Registry.StopAll",
+        kind: "Method",
+        detail: "fn StopAll(&self) own collections.List<plugin.NamedError>",
+        insertText: "StopAll()"
+    },
+    {
+        label: "plugin.Registry.Names",
+        kind: "Method",
+        detail: "fn Names(&self) own collections.List<String>",
+        insertText: "Names()"
+    },
+    {
         label: "worker.Supervisor.Start",
         kind: "Method",
-        detail: "fn Start(view, pending Task<void>) void",
+        detail: "fn Start(self, pending Task<void>) void",
         insertText: "Start(${1:pending})"
     },
     {
         label: "worker.Supervisor.Shutdown",
         kind: "Method",
-        detail: "fn Shutdown(own) void",
+        detail: "fn Shutdown($self) void",
         insertText: "Shutdown()"
     },
     {
         label: "worker.Supervisor.Cancel",
         kind: "Method",
-        detail: "fn Cancel(own) void",
+        detail: "fn Cancel($self) void",
+        insertText: "Cancel()"
+    },
+    {
+        label: "worker.NewGroup",
+        kind: "Function",
+        detail: "fn NewGroup<T>(capacity u64) own worker.Group<T>",
+        insertText: "worker.NewGroup<${1:T}>(${2:capacity})"
+    },
+    {
+        label: "worker.Group.Add",
+        kind: "Method",
+        detail: "fn Add(&self, $pending Task<T>) Result<void, GroupError>",
+        insertText: "Add(\$${1:pending})"
+    },
+    {
+        label: "worker.Group.Next",
+        kind: "Method",
+        detail: "fn Next($self) Task<own GroupNext<T>>",
+        insertText: "Next()"
+    },
+    {
+        label: "worker.Group.WaitOrStop",
+        kind: "Method",
+        detail: "fn WaitOrStop($self, $stop Receiver<void>) Task<own GroupWait<T>>",
+        insertText: "WaitOrStop(\$${1:stop})"
+    },
+    {
+        label: "worker.Group.Shutdown",
+        kind: "Method",
+        detail: "fn Shutdown($self) void",
+        insertText: "Shutdown()"
+    },
+    {
+        label: "worker.Group.Cancel",
+        kind: "Method",
+        detail: "fn Cancel($self) void",
         insertText: "Cancel()"
     },
     {
@@ -337,19 +782,19 @@ const staticCompletions = [
     {
         label: "worker.Pool.Start",
         kind: "Method",
-        detail: "fn Start(view, pending Task<void>) void",
+        detail: "fn Start(self, pending Task<void>) void",
         insertText: "Start(spawn ${1:work}(${2}))"
     },
     {
         label: "worker.Pool.Shutdown",
         kind: "Method",
-        detail: "fn Shutdown(own) void",
+        detail: "fn Shutdown($self) void",
         insertText: "Shutdown()"
     },
     {
         label: "worker.Pool.Cancel",
         kind: "Method",
-        detail: "fn Cancel(own) void",
+        detail: "fn Cancel($self) void",
         insertText: "Cancel()"
     },
     {
@@ -399,6 +844,9 @@ const staticCompletions = [
     { label: "ChannelError.Closed", kind: "EnumMember", insertText: "ChannelError.Closed" },
     { label: "ChannelError.Cancelled", kind: "EnumMember", insertText: "ChannelError.Cancelled" },
     { label: "ChannelError.Timeout", kind: "EnumMember", insertText: "ChannelError.Timeout" },
+    { label: "NumberError.OutOfRange", kind: "EnumMember", insertText: "NumberError.OutOfRange" },
+    { label: "NumberError.NonFinite", kind: "EnumMember", insertText: "NumberError.NonFinite" },
+    { label: "NumberError.PrecisionLoss", kind: "EnumMember", insertText: "NumberError.PrecisionLoss" },
     {
         label: "channel",
         kind: "Function",
@@ -418,10 +866,52 @@ const staticCompletions = [
         insertText: "receive()"
     },
     {
+        label: "clone",
+        kind: "Method",
+        detail: "fn clone() Sender<T>",
+        insertText: "clone()"
+    },
+    {
         label: "len",
         kind: "Function",
-        detail: "builtin fn len(value String | array | slice) u64",
+        detail: "builtin fn len(value String | array | slice) usize",
         insertText: "len(${1:value})"
+    },
+    {
+        label: "null",
+        kind: "Function",
+        detail: "builtin fn null<P>() P",
+        insertText: "null<${1:*void}>()"
+    },
+    {
+        label: "isNull",
+        kind: "Function",
+        detail: "builtin fn isNull(pointer P) bool",
+        insertText: "isNull(${1:pointer})"
+    },
+    {
+        label: "range",
+        kind: "Function",
+        detail: "fn range(start i32, stop i32, step i32) Range",
+        insertText: "range(${1:start}, ${2:stop}, step = ${3:1})"
+    },
+    {
+        label: "expect",
+        kind: "Function",
+        detail: "fn expect(condition bool) void",
+        insertText: "expect(${1:condition})"
+    },
+    {
+        label: "fail",
+        kind: "Function",
+        detail: "fn fail<T>(value T) never",
+        insertText: "fail(${1:value})"
+    },
+    {
+        label: "pass",
+        kind: "Function",
+        detail: "fn pass() void",
+        insertText: "pass()"
     },
     {
         label: "print",
@@ -432,7 +922,7 @@ const staticCompletions = [
     {
         label: "panic",
         kind: "Function",
-        detail: "builtin fn panic(value String) void",
+        detail: "builtin fn panic(value String) never",
         insertText: "panic(${1:message})"
     }
 ];
@@ -732,6 +1222,17 @@ function collectStructFields(source) {
     return fields;
 }
 
+function enumPayloadName(payload) {
+    if (!payload) {
+        return null;
+    }
+    const match = payload.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)\s+(.+)$/);
+    if (!match || ["edit", "fn", "own", "view"].includes(match[1])) {
+        return "value";
+    }
+    return match[1];
+}
+
 function collectPackageDeclarations(source) {
     const lexical = maskTrivia(source);
     const masked = maskAttributeApplications(lexical);
@@ -768,7 +1269,11 @@ function collectPackageDeclarations(source) {
         typeParameters: declaration.typeParameters,
         variants: [...declaration.body.matchAll(
             /(?:^|\s)([A-Z][A-Za-z0-9_]*)(?:\s*\(\s*([^)]*)\))?/g
-        )].map((variant) => ({ name: variant[1], payload: Boolean(variant[2]) }))
+        )].map((variant) => ({
+            name: variant[1],
+            payload: Boolean(variant[2]),
+            payloadName: enumPayloadName(variant[2])
+        }))
     }));
     const contracts = collectBracedDeclarations(masked, "contract")
         .filter((declaration) => /^[A-Z]/.test(declaration.name))
@@ -864,7 +1369,7 @@ function importedCompletions(source, projectSources) {
                         kind: "EnumMember",
                         detail: `Exported variant from ${imported.packageName}`,
                         insertText: variant.payload
-                            ? `${qualified}.${variant.name}(\${${declaration.typeParameters.length + 1}:value})`
+                            ? `${qualified}.${variant.name}(\${${declaration.typeParameters.length + 1}:${variant.payloadName}})`
                             : `${qualified}.${variant.name}`
                     });
                 }
@@ -885,8 +1390,9 @@ function collectCompletions(source, projectSources = []) {
     const enums = collectBracedDeclarations(masked, "enum");
     const contracts = collectBracedDeclarations(masked, "contract");
     const attributes = collectAttributeDeclarations(lexical);
-    const bindings = /\b(?:let|const|var)\s+([A-Za-z_][A-Za-z0-9_]*)/g;
-    const structPatterns = /\b(?:let|const)\s+[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\{([^}]*)\}\s*=/g;
+    const bindings = /\b(?:const|var)\s+([A-Za-z_][A-Za-z0-9_]*)/g;
+    const loopBindings = /\bfor\s+&?\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*&?\s*([A-Za-z_][A-Za-z0-9_]*))?\s+in\b/g;
+    const structPatterns = /\bconst\s+[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\{([^}]*)\}\s*=/g;
     let match;
 
     for (const declaration of attributes) {
@@ -971,12 +1477,13 @@ function collectCompletions(source, projectSources = []) {
             completions.push({ label: parameter, kind: "TypeParameter", detail: `Type parameter of ${name}` });
         }
         for (const variant of variants) {
+            const payloadName = enumPayloadName(variant[2]);
             completions.push({
                 label: `${name}.${variant[1]}`,
                 kind: "EnumMember",
                 detail: `Variant of ${name}`,
                 insertText: variant[2]
-                    ? `${qualifier}.${variant[1]}(\${${typeParameters.length + 1}:value})`
+                    ? `${qualifier}.${variant[1]}(\${${typeParameters.length + 1}:${payloadName}})`
                     : `${qualifier}.${variant[1]}`
             });
         }
@@ -1056,6 +1563,17 @@ function collectCompletions(source, projectSources = []) {
             kind: "Variable",
             detail: "Local binding"
         });
+    }
+
+    while ((match = loopBindings.exec(masked)) !== null) {
+        const names = match[2] === undefined ? [match[1]] : [match[1], match[2]];
+        for (const name of names) {
+            completions.push({
+                label: name,
+                kind: "Variable",
+                detail: "Loop binding"
+            });
+        }
     }
 
     while ((match = structPatterns.exec(masked)) !== null) {

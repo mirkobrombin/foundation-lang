@@ -1,4 +1,4 @@
-fn leak(values view [i32]) view [i32] {
+fn leak(values [i32]) view [i32] {
     values
 }
 

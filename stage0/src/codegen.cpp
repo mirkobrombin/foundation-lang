@@ -4,7 +4,9 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -65,14 +67,42 @@ std::string cTypeTag(const Type &type) {
     switch (type.kind) {
     case TypeKind::Void:
         return "void";
+    case TypeKind::Never:
+        return "never";
+    case TypeKind::I8:
+        return "i8";
+    case TypeKind::I16:
+        return "i16";
     case TypeKind::I32:
         return "i32";
+    case TypeKind::I64:
+        return "i64";
+    case TypeKind::U8:
+        return "u8";
+    case TypeKind::U16:
+        return "u16";
+    case TypeKind::U32:
+        return "u32";
     case TypeKind::U64:
         return "u64";
+    case TypeKind::Isize:
+        return "isize";
+    case TypeKind::Usize:
+        return "usize";
+    case TypeKind::F32:
+        return "f32";
+    case TypeKind::F64:
+        return "f64";
     case TypeKind::Bool:
         return "bool";
     case TypeKind::String:
         return "string";
+    case TypeKind::Raw:
+        return "raw_" +
+               (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
+    case TypeKind::RawConst:
+        return "raw_const_" +
+               (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
     case TypeKind::Array:
         return "array_" + std::to_string(type.declaration) + '_' +
                (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
@@ -83,6 +113,10 @@ std::string cTypeTag(const Type &type) {
         return "own_" +
                (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
     case TypeKind::View:
+        if (type.declaration == 1) {
+            return "read_" +
+                   (type.arguments.size() == 1 ? cTypeTag(type.arguments.front()) : "invalid");
+        }
         if (type.arguments.size() == 1 &&
             type.arguments.front().kind == TypeKind::Contract) {
             return "contract_" + std::to_string(type.arguments.front().declaration);
@@ -139,15 +173,47 @@ std::string channelDropName(const Type &type) {
 std::string cType(const Type &type) {
     switch (type.kind) {
     case TypeKind::Void:
+    case TypeKind::Never:
         return "void";
+    case TypeKind::I8:
+        return "int8_t";
+    case TypeKind::I16:
+        return "int16_t";
     case TypeKind::I32:
         return "int32_t";
+    case TypeKind::I64:
+        return "int64_t";
+    case TypeKind::U8:
+        return "uint8_t";
+    case TypeKind::U16:
+        return "uint16_t";
+    case TypeKind::U32:
+        return "uint32_t";
     case TypeKind::U64:
         return "uint64_t";
+    case TypeKind::Isize:
+        return "intptr_t";
+    case TypeKind::Usize:
+        return "size_t";
+    case TypeKind::F32:
+        return "float";
+    case TypeKind::F64:
+        return "double";
     case TypeKind::Bool:
         return "bool";
     case TypeKind::String:
         return "fdn_string";
+    case TypeKind::Raw:
+        return type.arguments.size() == 1 ? cType(type.arguments.front()) + " *" : "void *";
+    case TypeKind::RawConst:
+        if (type.arguments.size() != 1) {
+            return "const void *";
+        }
+        if (type.arguments.front().kind == TypeKind::Raw ||
+            type.arguments.front().kind == TypeKind::RawConst) {
+            return cType(type.arguments.front()) + " const *";
+        }
+        return "const " + cType(type.arguments.front()) + " *";
     case TypeKind::Array:
         return arrayName(type);
     case TypeKind::Slice:
@@ -211,12 +277,20 @@ std::string_view unqualifiedName(std::string_view name) {
     return name.substr(separator == std::string_view::npos ? 0 : separator + 1);
 }
 
-std::string_view traceFunctionName(const FirFunction &function) {
+std::string traceFunctionName(const FirFunction &function) {
+    if (function.testName.has_value()) {
+        return "test \"" + *function.testName + '"';
+    }
+    constexpr std::string_view fieldDefault{"$field_default."};
+    if (const auto marker = function.name.find(fieldDefault);
+        marker != std::string::npos) {
+        return function.name.substr(marker + fieldDefault.size()) + " default";
+    }
     if (!function.packageName.empty() &&
         function.name.starts_with(function.packageName + '.')) {
-        return std::string_view(function.name).substr(function.packageName.size() + 1);
+        return function.name.substr(function.packageName.size() + 1);
     }
-    return unqualifiedName(function.name);
+    return std::string(unqualifiedName(function.name));
 }
 
 std::string functionName(const FirProgram &program, FirFunctionId id) {
@@ -305,16 +379,121 @@ std::string vtableName(const Type &contract, const Type &concrete) {
 
 std::string indentation(unsigned int depth) { return std::string(depth * 4, ' '); }
 
-std::string i32Constant(const FirIntegerExpression &value) {
-    if (value.negative && value.magnitude == UINT64_C(2147483648)) {
-        return "(-INT32_C(2147483647) - INT32_C(1))";
+std::vector<std::string> orderArguments(const std::vector<std::string> &arguments,
+                                        const std::vector<std::size_t> &parameters) {
+    if (parameters.empty()) {
+        return arguments;
     }
-    const auto magnitude = "INT32_C(" + std::to_string(value.magnitude) + ")";
-    return value.negative ? "(-" + magnitude + ')' : magnitude;
+    if (parameters.size() != arguments.size()) {
+        internalError("call argument mapping has the wrong size");
+    }
+    std::vector<std::string> ordered(arguments.size());
+    std::vector<bool> assigned(arguments.size());
+    for (std::size_t source = 0; source < arguments.size(); ++source) {
+        const auto parameter = parameters[source];
+        if (parameter >= ordered.size() || assigned[parameter]) {
+            internalError("call argument mapping is invalid");
+        }
+        ordered[parameter] = arguments[source];
+        assigned[parameter] = true;
+    }
+    return ordered;
 }
 
-std::string u64Constant(const FirIntegerExpression &value) {
-    return "UINT64_C(" + std::to_string(value.magnitude) + ")";
+std::string integerConstant(const FirIntegerExpression &value, Type type) {
+    const auto magnitude = std::to_string(value.magnitude);
+    if (isUnsignedInteger(type)) {
+        const auto macro = type == u8Type    ? "UINT8_C"
+                           : type == u16Type ? "UINT16_C"
+                           : type == u32Type ? "UINT32_C"
+                                             : "UINT64_C";
+        const auto constant = std::string(macro) + '(' + magnitude + ')';
+        if (type == usizeType) {
+            return "((size_t)" + constant + ')';
+        }
+        return constant;
+    }
+
+    if (type == isizeType) {
+        if (value.negative &&
+            value.magnitude ==
+                static_cast<std::uint64_t>(std::numeric_limits<std::intptr_t>::max()) + 1) {
+            return "(-INTPTR_MAX - 1)";
+        }
+        const auto constant = "INT64_C(" + magnitude + ')';
+        return value.negative ? "((intptr_t)-" + constant + ')'
+                              : "((intptr_t)" + constant + ')';
+    }
+
+    const auto macro = type == i8Type    ? "INT8_C"
+                       : type == i16Type ? "INT16_C"
+                       : type == i32Type ? "INT32_C"
+                                         : "INT64_C";
+    const auto maximum = type == i8Type    ? UINT64_C(127)
+                         : type == i16Type ? UINT64_C(32767)
+                         : type == i32Type ? UINT64_C(2147483647)
+                                           : UINT64_C(9223372036854775807);
+    if (value.negative && value.magnitude == maximum + 1) {
+        const auto maximumConstant = std::string(macro) + '(' + std::to_string(maximum) + ')';
+        return "(-" + maximumConstant + " - " + std::string(macro) + "(1))";
+    }
+    const auto constant = std::string(macro) + '(' + magnitude + ')';
+    return value.negative ? "(-" + constant + ')' : constant;
+}
+
+std::string cMinimum(Type type) {
+    switch (type.kind) {
+    case TypeKind::I8:
+        return "INT8_MIN";
+    case TypeKind::I16:
+        return "INT16_MIN";
+    case TypeKind::I32:
+        return "INT32_MIN";
+    case TypeKind::I64:
+        return "INT64_MIN";
+    case TypeKind::Isize:
+        return "INTPTR_MIN";
+    default:
+        return "0";
+    }
+}
+
+std::string cMaximum(Type type) {
+    switch (type.kind) {
+    case TypeKind::I8:
+        return "INT8_MAX";
+    case TypeKind::I16:
+        return "INT16_MAX";
+    case TypeKind::I32:
+        return "INT32_MAX";
+    case TypeKind::I64:
+        return "INT64_MAX";
+    case TypeKind::Isize:
+        return "INTPTR_MAX";
+    case TypeKind::U8:
+        return "UINT8_MAX";
+    case TypeKind::U16:
+        return "UINT16_MAX";
+    case TypeKind::U32:
+        return "UINT32_MAX";
+    case TypeKind::U64:
+        return "UINT64_MAX";
+    case TypeKind::Usize:
+        return "SIZE_MAX";
+    default:
+        return "0";
+    }
+}
+
+std::string integerRangeCondition(Type type, std::string_view value) {
+    if (isSignedInteger(type)) {
+        return "((long double)(" + std::string(value) + ") >= (long double)" +
+               cMinimum(type) + " && (long double)(" + std::string(value) +
+               ") < ((long double)" + cMaximum(type) + " + 1.0L))";
+    }
+    return "((long double)(" + std::string(value) +
+           ") >= 0.0L && (long double)(" + std::string(value) +
+           ") < ((long double)" + cMaximum(type) + " + 1.0L))";
 }
 
 Type substitute(const Type &type, const std::vector<Type> &arguments) {
@@ -348,6 +527,35 @@ std::string functionKey(FirFunctionId function, const std::vector<Type> &argumen
     }
     result += '>';
     return result;
+}
+
+bool isCopyParameterType(const FirProgram &program, const Type &type) {
+    if (isMachineScalar(type) && type != voidType && type != neverType) {
+        return true;
+    }
+    if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) {
+        return type.arguments.size() == 1;
+    }
+    if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
+        return isCopyParameterType(program, type.arguments.front());
+    }
+    if (type.kind == TypeKind::Struct && type.declaration < program.structs.size()) {
+        const auto &declaration = program.structs[type.declaration];
+        return !declaration.dropFunction.has_value() &&
+               std::all_of(declaration.fields.begin(), declaration.fields.end(),
+                           [&](const FirStructField &field) {
+                               return isCopyParameterType(program, field.type);
+                           });
+    }
+    if (type.kind == TypeKind::Enum && type.declaration < program.enums.size()) {
+        return std::all_of(program.enums[type.declaration].variants.begin(),
+                           program.enums[type.declaration].variants.end(),
+                           [&](const FirEnumVariant &variant) {
+                               return !variant.payload.has_value() ||
+                                      isCopyParameterType(program, *variant.payload);
+                           });
+    }
+    return false;
 }
 
 class Monomorphizer {
@@ -384,8 +592,12 @@ class Monomorphizer {
             if (source.arguments.size() != 1) {
                 internalError("invalid wrapper type reached monomorphization");
             }
-            return Type{source.kind, source.declaration,
-                        {instantiateType(source.arguments.front())}};
+            auto target = instantiateType(source.arguments.front());
+            if (source.kind == TypeKind::View && source.declaration == 1 &&
+                isCopyParameterType(result_, target)) {
+                return target;
+            }
+            return Type{source.kind, source.declaration, {std::move(target)}};
         }
         if (source.kind == TypeKind::Contract) {
             const auto key = typeKey(source);
@@ -406,10 +618,17 @@ class Monomorphizer {
                 target.returnType =
                     instantiateType(substitute(method.returnType, source.arguments));
                 target.parameterNames = method.parameterNames;
+                target.readParameters = method.readParameters;
                 target.exported = method.exported;
-                for (const auto &parameter : method.parameters) {
-                    target.parameters.push_back(
-                        instantiateType(substitute(parameter, source.arguments)));
+                for (std::size_t index = 0; index < method.parameters.size(); ++index) {
+                    auto parameter =
+                        instantiateType(substitute(method.parameters[index], source.arguments));
+                    if (index < method.readParameters.size() && method.readParameters[index] &&
+                        parameter.kind == TypeKind::View && parameter.arguments.size() == 1 &&
+                        isCopyParameterType(result_, parameter.arguments.front())) {
+                        parameter = parameter.arguments.front();
+                    }
+                    target.parameters.push_back(parameter);
                 }
                 instance.methods.push_back(std::move(target));
             }
@@ -491,9 +710,61 @@ class Monomorphizer {
         for (auto &local : function.locals) {
             local.type = instantiateType(substitute(local.type, arguments));
         }
-        for (auto &expression : function.expressions) {
-            expression.type = instantiateType(substitute(expression.type, arguments));
-            if (auto *functionValue =
+        std::vector<bool> unwrappedReads(function.locals.size());
+        for (std::size_t index = 0;
+             index < function.parameters.size() && index < function.readParameters.size();
+             ++index) {
+            const auto local = function.parameters[index];
+            if (!function.readParameters[index] || local >= function.locals.size()) {
+                continue;
+            }
+            auto &type = function.locals[local].type;
+            if (type.kind == TypeKind::View && type.arguments.size() == 1 &&
+                isCopyParameterType(result_, type.arguments.front())) {
+                type = type.arguments.front();
+                unwrappedReads[local] = true;
+            }
+        }
+        std::vector<bool> contractOperands(function.expressions.size());
+        for (const auto &expression : function.expressions) {
+            if (const auto *contract =
+                    std::get_if<FirContractExpression>(&expression.value);
+                contract != nullptr && contract->value < contractOperands.size()) {
+                contractOperands[contract->value] = true;
+            }
+        }
+        for (std::size_t expressionIndex = 0;
+             expressionIndex < function.expressions.size(); ++expressionIndex) {
+            auto &expression = function.expressions[expressionIndex];
+            const auto sourceType = expression.type;
+            const auto substitutedType = substitute(sourceType, arguments);
+            if (const auto *ownership =
+                    std::get_if<FirOwnershipExpression>(&expression.value);
+                ownership != nullptr && ownership->implicitRead &&
+                !contractOperands[expressionIndex] &&
+                substitutedType.kind == TypeKind::View &&
+                substitutedType.arguments.size() == 1 &&
+                isCopyParameterType(result_,
+                                    instantiateType(substitutedType.arguments.front()))) {
+                expression.type =
+                    instantiateType(substitutedType.arguments.front());
+                if (ownership->operand < function.expressions.size()) {
+                    auto &operand = function.expressions[ownership->operand].value;
+                    if (const auto *read = std::get_if<FirReadExpression>(&operand)) {
+                        operand = FirLocalExpression{read->local};
+                    }
+                }
+            } else {
+                expression.type = instantiateType(substitutedType);
+            }
+            if (auto *channel = std::get_if<FirChannelExpression>(&expression.value)) {
+                channel->payload =
+                    instantiateType(substitute(channel->payload, arguments));
+            } else if (const auto *read = std::get_if<FirReadExpression>(&expression.value);
+                read != nullptr && read->local < unwrappedReads.size() &&
+                unwrappedReads[read->local]) {
+                expression.value = FirLocalExpression{read->local};
+            } else if (auto *functionValue =
                     std::get_if<FirFunctionValueExpression>(&expression.value)) {
                 std::vector<Type> valueArguments;
                 valueArguments.reserve(functionValue->typeArguments.size());
@@ -568,6 +839,38 @@ class Monomorphizer {
                     instantiateType(substitute(destructure->type, arguments));
             }
         }
+        if (function.workflow.has_value()) {
+            auto &workflow = *function.workflow;
+            workflow.inputType = instantiateType(substitute(workflow.inputType, arguments));
+            workflow.successType =
+                instantiateType(substitute(workflow.successType, arguments));
+            workflow.errorType = instantiateType(substitute(workflow.errorType, arguments));
+            workflow.failureType =
+                instantiateType(substitute(workflow.failureType, arguments));
+            if (workflow.kind == FirWorkflowKind::Saga) {
+                workflow.failureDetailsType =
+                    instantiateType(substitute(workflow.failureDetailsType, arguments));
+            }
+            for (auto &step : workflow.steps) {
+                std::vector<Type> stepArguments;
+                stepArguments.reserve(step.typeArguments.size());
+                for (const auto &argument : step.typeArguments) {
+                    stepArguments.push_back(substitute(argument, arguments));
+                }
+                step.function = instantiateFunction(step.function, stepArguments);
+                step.typeArguments.clear();
+                if (step.compensation.has_value()) {
+                    std::vector<Type> compensationArguments;
+                    compensationArguments.reserve(step.compensationTypeArguments.size());
+                    for (const auto &argument : step.compensationTypeArguments) {
+                        compensationArguments.push_back(substitute(argument, arguments));
+                    }
+                    step.compensation =
+                        instantiateFunction(*step.compensation, compensationArguments);
+                    step.compensationTypeArguments.clear();
+                }
+            }
+        }
         result_.functions[id] = std::move(function);
         return id;
     }
@@ -584,7 +887,10 @@ enum class ControlFlow {
     Continues,
     Returns,
     Diverges,
+    LoopJump,
 };
+
+ControlFlow blockFlow(const FirProgram &program, const FirFunction &function, FirBlockId id);
 
 bool expressionDiverges(const FirProgram &program, const FirFunction &function,
                         FirExpressionId id) {
@@ -594,7 +900,8 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
             return expressionDiverges(program, function, element);
         });
     }
-    if (std::holds_alternative<FirMoveExpression>(expression.value)) {
+    if (std::holds_alternative<FirMoveExpression>(expression.value) ||
+        std::holds_alternative<FirReadExpression>(expression.value)) {
         return false;
     }
     if (std::holds_alternative<FirFunctionValueExpression>(expression.value) ||
@@ -636,6 +943,10 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
     if (const auto *channel = std::get_if<FirChannelExpression>(&expression.value)) {
         return expressionDiverges(program, function, channel->capacity);
     }
+    if (const auto *clone =
+            std::get_if<FirChannelSenderCloneExpression>(&expression.value)) {
+        return expressionDiverges(program, function, clone->sender);
+    }
     if (const auto *send = std::get_if<FirChannelSendExpression>(&expression.value)) {
         return send->value.has_value() &&
                expressionDiverges(program, function, *send->value);
@@ -646,6 +957,9 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
     if (const auto *index = std::get_if<FirIndexExpression>(&expression.value)) {
         return expressionDiverges(program, function, index->base) ||
                expressionDiverges(program, function, index->index);
+    }
+    if (const auto *pointer = std::get_if<FirRawPointerExpression>(&expression.value)) {
+        return expressionDiverges(program, function, pointer->base);
     }
     if (const auto *replace = std::get_if<FirReplaceExpression>(&expression.value)) {
         return expressionDiverges(program, function, replace->value) ||
@@ -689,16 +1003,34 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
         if (expressionDiverges(program, function, match->value)) {
             return true;
         }
+        if (std::any_of(match->arms.begin(), match->arms.end(),
+                        [&](const FirMatchArm &arm) {
+                            return arm.pattern.has_value() &&
+                                   expressionDiverges(program, function, *arm.pattern);
+                        })) {
+            return true;
+        }
         return !match->arms.empty() &&
                std::all_of(match->arms.begin(), match->arms.end(),
                            [&](const FirMatchArm &arm) {
                                return expressionDiverges(program, function, arm.expression);
                            });
     }
+    if (const auto *conditional =
+            std::get_if<FirConditionalExpression>(&expression.value)) {
+        if (expressionDiverges(program, function, conditional->condition)) {
+            return true;
+        }
+        const auto thenDiverges =
+            blockFlow(program, function, conditional->thenBlock) != ControlFlow::Continues ||
+            expressionDiverges(program, function, conditional->thenValue);
+        const auto elseDiverges =
+            blockFlow(program, function, conditional->elseBlock) != ControlFlow::Continues ||
+            expressionDiverges(program, function, conditional->elseValue);
+        return thenDiverges && elseDiverges;
+    }
     return false;
 }
-
-ControlFlow blockFlow(const FirProgram &program, const FirFunction &function, FirBlockId id);
 
 ControlFlow statementFlow(const FirProgram &program, const FirFunction &function,
                           const FirStatement &statement) {
@@ -709,6 +1041,11 @@ ControlFlow statementFlow(const FirProgram &program, const FirFunction &function
     }
     if (const auto *binding = std::get_if<FirLetElseStatement>(&statement.value)) {
         return expressionDiverges(program, function, binding->initializer)
+                   ? ControlFlow::Diverges
+                   : ControlFlow::Continues;
+    }
+    if (const auto *binding = std::get_if<FirResultElseStatement>(&statement.value)) {
+        return expressionDiverges(program, function, binding->expression)
                    ? ControlFlow::Diverges
                    : ControlFlow::Continues;
     }
@@ -741,6 +1078,10 @@ ControlFlow statementFlow(const FirProgram &program, const FirFunction &function
         }
         return ControlFlow::Returns;
     }
+    if (std::holds_alternative<FirBreakStatement>(statement.value) ||
+        std::holds_alternative<FirContinueStatement>(statement.value)) {
+        return ControlFlow::LoopJump;
+    }
     if (const auto *branch = std::get_if<FirIfStatement>(&statement.value)) {
         if (expressionDiverges(program, function, branch->condition)) {
             return ControlFlow::Diverges;
@@ -755,6 +1096,9 @@ ControlFlow statementFlow(const FirProgram &program, const FirFunction &function
         }
         if (thenFlow == ControlFlow::Diverges && elseFlow == ControlFlow::Diverges) {
             return ControlFlow::Diverges;
+        }
+        if (thenFlow == ControlFlow::LoopJump && elseFlow == ControlFlow::LoopJump) {
+            return ControlFlow::LoopJump;
         }
         return ControlFlow::Returns;
     }
@@ -786,7 +1130,17 @@ ControlFlow statementFlow(const FirProgram &program, const FirFunction &function
                    ? ControlFlow::Diverges
                    : ControlFlow::Returns;
     }
+    if (const auto *unsafe = std::get_if<FirUnsafeStatement>(&statement.value)) {
+        return blockFlow(program, function, unsafe->body);
+    }
 
+    if (const auto *loop = std::get_if<FirForStatement>(&statement.value)) {
+        return expressionDiverges(program, function, loop->sequence) ||
+                       (loop->next.has_value() &&
+                        expressionDiverges(program, function, *loop->next))
+                   ? ControlFlow::Diverges
+                   : ControlFlow::Continues;
+    }
     const auto &loop = std::get<FirWhileStatement>(statement.value);
     return expressionDiverges(program, function, loop.condition) ? ControlFlow::Diverges
                                                                  : ControlFlow::Continues;
@@ -807,7 +1161,9 @@ void markDivergingFunctions(FirProgram &program) {
     do {
         changed = false;
         for (auto &function : program.functions) {
-            if (function.hasBody && !function.diverges &&
+            if (function.hasBody && !function.stateTransition.has_value() &&
+                !function.workflow.has_value() &&
+                !function.diverges &&
                 blockFlow(program, function, function.body) == ControlFlow::Diverges) {
                 function.diverges = true;
                 changed = true;
@@ -996,16 +1352,29 @@ class FunctionEmitter {
     }
 
   private:
+    struct EmittedCleanup {
+        Type type;
+        std::string value;
+    };
+
     struct EmittedExpression {
         std::string value;
         bool diverges{};
+        std::vector<EmittedCleanup> cleanups;
+
+        EmittedExpression(std::string value, bool diverges,
+                          std::vector<EmittedCleanup> cleanups = {})
+            : value(std::move(value)), diverges(diverges), cleanups(std::move(cleanups)) {}
     };
 
     EmittedExpression emitExpression(FirExpressionId id, unsigned int depth) {
         const auto &expression = function_.expressions[id];
         if (const auto *integer = std::get_if<FirIntegerExpression>(&expression.value)) {
-            return {expression.type == u64Type ? u64Constant(*integer)
-                                               : i32Constant(*integer),
+            return {integerConstant(*integer, expression.type), false};
+        }
+        if (const auto *floating =
+                std::get_if<FirFloatingExpression>(&expression.value)) {
+            return {expression.type == f32Type ? floating->text + 'f' : floating->text,
                     false};
         }
         if (const auto *boolean = std::get_if<FirBooleanExpression>(&expression.value)) {
@@ -1023,6 +1392,15 @@ class FunctionEmitter {
         if (const auto *local = std::get_if<FirLocalExpression>(&expression.value)) {
             return {localValue(local->local), false};
         }
+        if (const auto *read = std::get_if<FirReadExpression>(&expression.value)) {
+            const auto &localType = function_.locals[read->local].type;
+            if (localType.kind == TypeKind::View && localType.arguments.size() == 1 &&
+                (localType.arguments.front().kind == TypeKind::Slice ||
+                 localType.arguments.front().kind == TypeKind::Contract)) {
+                return {localValue(read->local), false};
+            }
+            return {"(*" + localValue(read->local) + ')', false};
+        }
         if (const auto *moved = std::get_if<FirMoveExpression>(&expression.value)) {
             return emitMove(moved->local, depth);
         }
@@ -1038,15 +1416,42 @@ class FunctionEmitter {
             if (operand.diverges) {
                 return operand;
             }
+            if (unary->operation == FirUnaryOperator::Dereference) {
+                return {"*(" + operand.value + ')', false};
+            }
             const auto temporary = nextTemporary();
             if (unary->operation == FirUnaryOperator::Negate) {
                 emitLocation(expression.span, depth);
             }
             out_ << indentation(depth) << cType(expression.type) << ' ' << temporary << " = ";
             if (unary->operation == FirUnaryOperator::Negate) {
-                out_ << "fdn_i32_negate(" << operand.value << ");\n";
-            } else {
+                if (isFloating(expression.type)) {
+                    out_ << '-' << operand.value << ";\n";
+                } else {
+                    out_ << "fdn_" << cTypeTag(expression.type) << "_negate("
+                         << operand.value << ");\n";
+                }
+            } else if (unary->operation == FirUnaryOperator::Not) {
                 out_ << '!' << operand.value << ";\n";
+            } else if (unary->operation == FirUnaryOperator::Empty) {
+                auto type = function_.expressions[unary->operand].type;
+                auto member = std::string{"."};
+                if ((type.kind == TypeKind::View || type.kind == TypeKind::Edit) &&
+                    type.arguments.size() == 1) {
+                    if (type.arguments.front().kind != TypeKind::Slice) {
+                        member = "->";
+                    }
+                    type = type.arguments.front();
+                }
+                if (type.kind == TypeKind::Array) {
+                    out_ << type.declaration << " == 0;\n";
+                } else if (type.kind == TypeKind::Slice) {
+                    out_ << operand.value << member << "fdn_length == 0;\n";
+                } else if (type.kind == TypeKind::String) {
+                    out_ << operand.value << member << "length == 0;\n";
+                } else {
+                    internalError("empty test has an unsupported argument");
+                }
             }
             return {temporary, false};
         }
@@ -1061,6 +1466,17 @@ class FunctionEmitter {
         }
         if (const auto *channel = std::get_if<FirChannelExpression>(&expression.value)) {
             return emitChannel(*channel, depth);
+        }
+        if (const auto *clone =
+                std::get_if<FirChannelSenderCloneExpression>(&expression.value)) {
+            auto sender = emitExpression(clone->sender, depth);
+            if (sender.diverges) {
+                return sender;
+            }
+            const auto result = nextTemporary();
+            out_ << indentation(depth) << cType(expression.type) << ' ' << result
+                 << " = fdn_channel_clone_sender(" << sender.value << ");\n";
+            return {result, false};
         }
         if (std::holds_alternative<FirChannelSendExpression>(expression.value) ||
             std::holds_alternative<FirChannelReceiveExpression>(expression.value)) {
@@ -1098,11 +1514,22 @@ class FunctionEmitter {
         if (const auto *index = std::get_if<FirIndexExpression>(&expression.value)) {
             return emitIndex(*index, expression.span, depth);
         }
+        if (const auto *pointer = std::get_if<FirRawPointerExpression>(&expression.value)) {
+            auto base = emitExpression(pointer->base, depth);
+            if (!base.diverges) {
+                base.value += ".fdn_data";
+            }
+            return base;
+        }
         if (const auto *replace = std::get_if<FirReplaceExpression>(&expression.value)) {
             return emitReplace(*replace, expression.type, depth);
         }
         if (const auto *constructor = std::get_if<FirEnumExpression>(&expression.value)) {
             return emitEnum(*constructor, depth);
+        }
+        if (const auto *conditional =
+                std::get_if<FirConditionalExpression>(&expression.value)) {
+            return emitConditional(*conditional, expression.type, depth);
         }
         return emitMatch(std::get<FirMatchExpression>(expression.value), expression.type,
                          expression.span, depth);
@@ -1135,13 +1562,14 @@ class FunctionEmitter {
             }
             arguments.push_back(std::move(value.value));
         }
+        const auto orderedArguments = orderArguments(arguments, call->argumentParameters);
         const auto frame = nextTemporary();
         const auto task = nextTemporary();
         out_ << indentation(depth) << "struct " << taskFrameName(program_, call->function)
              << " *" << frame << " = fdn_alloc(sizeof(*" << frame << "));\n";
-        for (std::size_t index = 0; index < arguments.size(); ++index) {
+        for (std::size_t index = 0; index < orderedArguments.size(); ++index) {
             out_ << indentation(depth) << frame << "->fdn_arg_" << index << " = "
-                 << arguments[index] << ";\n";
+                 << orderedArguments[index] << ";\n";
         }
         out_ << indentation(depth) << frame << "->fdn_arguments_active = true;\n";
         if (taskSuspensionCount(program_.functions[call->function]) != 0) {
@@ -1287,7 +1715,7 @@ class FunctionEmitter {
 
     EmittedExpression emitOwnership(const FirOwnershipExpression &ownership, const Type &type,
                                     SourceSpan span, unsigned int depth) {
-        const auto operand = emitExpression(ownership.operand, depth);
+        auto operand = emitExpression(ownership.operand, depth);
         if (operand.diverges) {
             return operand;
         }
@@ -1300,8 +1728,21 @@ class FunctionEmitter {
             return {temporary, false};
         }
 
+        if (ownership.operation == FirOwnershipOperator::View &&
+            type.kind != TypeKind::View) {
+            return operand;
+        }
+
         const auto operandType = function_.expressions[ownership.operand].type;
+        if (ownership.operation == FirOwnershipOperator::View &&
+            !isPlaceExpression(ownership.operand) &&
+            typeRequiresDrop(program_, operandType)) {
+            operand.cleanups.push_back({operandType, operand.value});
+        }
         if (type.arguments.size() == 1 && type.arguments.front().kind == TypeKind::Slice) {
+            if (operandType.kind == TypeKind::Slice) {
+                return operand;
+            }
             if ((operandType.kind == TypeKind::View || operandType.kind == TypeKind::Edit) &&
                 operandType.arguments.size() == 1 &&
                 operandType.arguments.front().kind == TypeKind::Slice) {
@@ -1320,17 +1761,17 @@ class FunctionEmitter {
                  << (pointer ? "->fdn_data;\n" : ".fdn_data;\n");
             out_ << indentation(depth) << temporary << ".fdn_length = " << arrayType.declaration
                  << ";\n";
-            return {temporary, false};
+            return {temporary, false, std::move(operand.cleanups)};
         }
         if (operandType.kind == TypeKind::Own || operandType.kind == TypeKind::View ||
             operandType.kind == TypeKind::Edit) {
             if (operandType.kind == TypeKind::Own && operandType.arguments.size() == 1 &&
                 operandType.arguments.front().kind == TypeKind::Contract) {
-                return {"*" + operand.value, false};
+                return {"*" + operand.value, false, std::move(operand.cleanups)};
             }
             return operand;
         }
-        return {"&" + operand.value, false};
+        return {"&" + operand.value, false, std::move(operand.cleanups)};
     }
 
     EmittedExpression emitArray(const FirArrayExpression &array, const Type &type,
@@ -1440,34 +1881,53 @@ class FunctionEmitter {
             binary.operation == FirBinaryOperator::Multiply ||
             binary.operation == FirBinaryOperator::Divide ||
             binary.operation == FirBinaryOperator::Remainder) {
-            emitLocation(span, depth);
+            if (type.kind != TypeKind::Raw && type.kind != TypeKind::RawConst) {
+                emitLocation(span, depth);
+            }
         }
         out_ << indentation(depth) << cType(type) << ' ' << temporary << " = ";
         switch (binary.operation) {
         case FirBinaryOperator::Add:
             if (type == stringType) {
                 out_ << "fdn_string_concat(" << left.value << ", " << right.value << ')';
-            } else if (type == u64Type) {
-                out_ << "fdn_u64_add(" << left.value << ", " << right.value << ')';
+            } else if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) {
+                out_ << left.value << " + " << right.value;
+            } else if (isFloating(type)) {
+                out_ << left.value << " + " << right.value;
             } else {
-                out_ << "fdn_i32_add(" << left.value << ", " << right.value << ')';
+                out_ << "fdn_" << cTypeTag(type) << "_add(" << left.value << ", "
+                     << right.value << ')';
             }
             break;
         case FirBinaryOperator::Subtract:
-            out_ << (type == u64Type ? "fdn_u64_subtract(" : "fdn_i32_subtract(")
-                 << left.value << ", " << right.value << ')';
+            if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) {
+                out_ << left.value << " - " << right.value;
+            } else if (isFloating(type)) {
+                out_ << left.value << " - " << right.value;
+            } else {
+                out_ << "fdn_" << cTypeTag(type) << "_subtract(" << left.value << ", "
+                     << right.value << ')';
+            }
             break;
         case FirBinaryOperator::Multiply:
-            out_ << (type == u64Type ? "fdn_u64_multiply(" : "fdn_i32_multiply(")
-                 << left.value << ", " << right.value << ')';
+            if (isFloating(type)) {
+                out_ << left.value << " * " << right.value;
+            } else {
+                out_ << "fdn_" << cTypeTag(type) << "_multiply(" << left.value << ", "
+                     << right.value << ')';
+            }
             break;
         case FirBinaryOperator::Divide:
-            out_ << (type == u64Type ? "fdn_u64_divide(" : "fdn_i32_divide(")
-                 << left.value << ", " << right.value << ')';
+            if (isFloating(type)) {
+                out_ << left.value << " / " << right.value;
+            } else {
+                out_ << "fdn_" << cTypeTag(type) << "_divide(" << left.value << ", "
+                     << right.value << ')';
+            }
             break;
         case FirBinaryOperator::Remainder:
-            out_ << (type == u64Type ? "fdn_u64_remainder(" : "fdn_i32_remainder(")
-                 << left.value << ", " << right.value << ')';
+            out_ << "fdn_" << cTypeTag(type) << "_remainder(" << left.value << ", "
+                 << right.value << ')';
             break;
         case FirBinaryOperator::Equal:
             if (function_.expressions[binary.left].type == stringType) {
@@ -1505,14 +1965,144 @@ class FunctionEmitter {
         return {temporary, false};
     }
 
+    EmittedExpression emitNumericConversion(const FirCallExpression &call, const Type &type,
+                                            std::string_view argument, unsigned int depth) {
+        if (call.typeArguments.size() != 2) {
+            internalError("numeric conversion has invalid type metadata");
+        }
+        const auto source = call.typeArguments[0];
+        const auto target = call.typeArguments[1];
+        if (type == target) {
+            const auto temporary = nextTemporary();
+            out_ << indentation(depth) << cType(target) << ' ' << temporary << " = ("
+                 << cType(target) << ")(" << argument << ");\n";
+            return {temporary, false};
+        }
+        if (type.kind != TypeKind::Enum || type.declaration >= program_.enums.size() ||
+            program_.enums[type.declaration].name != "Result" ||
+            program_.enums[type.declaration].variants.size() != 2 ||
+            !program_.enums[type.declaration].variants[0].payload.has_value() ||
+            !program_.enums[type.declaration].variants[1].payload.has_value()) {
+            internalError("fallible numeric conversion has invalid Result type");
+        }
+        const auto errorType = *program_.enums[type.declaration].variants[1].payload;
+        if (errorType.kind != TypeKind::Enum || errorType.declaration >= program_.enums.size() ||
+            program_.enums[errorType.declaration].name != "NumberError" ||
+            program_.enums[errorType.declaration].variants.size() != 3) {
+            internalError("fallible numeric conversion has invalid NumberError type");
+        }
+
+        const auto result = nextTemporary();
+        const auto converted = nextTemporary();
+        out_ << indentation(depth) << cType(type) << ' ' << result << " = {0};\n";
+        out_ << indentation(depth) << cType(target) << ' ' << converted << " = {0};\n";
+
+        const auto emitSuccess = [&] {
+            out_ << indentation(depth + 1) << result << ".fdn_data."
+                 << payloadName(0) << " = " << converted << ";\n";
+            out_ << indentation(depth + 1) << result << ".fdn_tag = "
+                 << enumTag(type.declaration, 0) << ";\n";
+        };
+        const auto emitFailure = [&](std::size_t variant, unsigned int failureDepth) {
+            const auto error = nextTemporary();
+            out_ << indentation(failureDepth) << cType(errorType) << ' ' << error
+                 << " = {0};\n";
+            out_ << indentation(failureDepth) << error << ".fdn_tag = "
+                 << enumTag(errorType.declaration, variant) << ";\n";
+            out_ << indentation(failureDepth) << result << ".fdn_data."
+                 << payloadName(1) << " = " << error << ";\n";
+            out_ << indentation(failureDepth) << result << ".fdn_tag = "
+                 << enumTag(type.declaration, 1) << ";\n";
+        };
+
+        if (isInteger(source) && isInteger(target)) {
+            std::string condition;
+            if (isSignedInteger(source) && isSignedInteger(target)) {
+                condition = "((intmax_t)(" + std::string(argument) + ") >= (intmax_t)" +
+                            cMinimum(target) + " && (intmax_t)(" + std::string(argument) +
+                            ") <= (intmax_t)" + cMaximum(target) + ')';
+            } else if (isSignedInteger(source)) {
+                condition = "((intmax_t)(" + std::string(argument) +
+                            ") >= 0 && (uintmax_t)(" + std::string(argument) +
+                            ") <= (uintmax_t)" + cMaximum(target) + ')';
+            } else {
+                condition = "((uintmax_t)(" + std::string(argument) +
+                            ") <= (uintmax_t)" + cMaximum(target) + ')';
+            }
+            out_ << indentation(depth) << "if (" << condition << ") {\n";
+            out_ << indentation(depth + 1) << converted << " = (" << cType(target)
+                 << ")(" << argument << ");\n";
+            emitSuccess();
+            out_ << indentation(depth) << "} else {\n";
+            emitFailure(0, depth + 1);
+            out_ << indentation(depth) << "}\n";
+            return {result, false};
+        }
+
+        if (isFloating(source) && isInteger(target)) {
+            out_ << indentation(depth) << "if (!isfinite(" << argument << ")) {\n";
+            emitFailure(1, depth + 1);
+            out_ << indentation(depth) << "} else if (!"
+                 << integerRangeCondition(target, argument) << ") {\n";
+            emitFailure(0, depth + 1);
+            out_ << indentation(depth) << "} else {\n";
+            out_ << indentation(depth + 1) << converted << " = (" << cType(target)
+                 << ")(" << argument << ");\n";
+            out_ << indentation(depth + 1) << "if ((" << cType(source) << ")"
+                 << converted << " == " << argument << ") {\n";
+            emitSuccess();
+            out_ << indentation(depth + 1) << "} else {\n";
+            emitFailure(2, depth + 2);
+            out_ << indentation(depth + 1) << "}\n";
+            out_ << indentation(depth) << "}\n";
+            return {result, false};
+        }
+
+        out_ << indentation(depth) << "if (";
+        if (isFloating(source)) {
+            out_ << "!isfinite(" << argument << ")";
+        } else {
+            out_ << "false";
+        }
+        out_ << ") {\n";
+        emitFailure(1, depth + 1);
+        out_ << indentation(depth) << "} else {\n";
+        out_ << indentation(depth + 1) << converted << " = (" << cType(target)
+             << ")(" << argument << ");\n";
+        if (isFloating(target)) {
+            out_ << indentation(depth + 1) << "if (!isfinite(" << converted << ")) {\n";
+            emitFailure(0, depth + 2);
+            out_ << indentation(depth + 1) << "} else if (";
+        } else {
+            out_ << indentation(depth + 1) << "if (";
+        }
+        if (isInteger(source)) {
+            out_ << integerRangeCondition(source, converted) << " && (" << cType(source)
+                 << ")" << converted << " == " << argument;
+        } else {
+            out_ << '(' << cType(source) << ')' << converted << " == " << argument;
+        }
+        out_ << ") {\n";
+        emitSuccess();
+        out_ << indentation(depth + 1) << "} else {\n";
+        emitFailure(2, depth + 2);
+        out_ << indentation(depth + 1) << "}\n";
+        out_ << indentation(depth) << "}\n";
+        return {result, false};
+    }
+
     EmittedExpression emitCall(const FirCallExpression &call, const Type &type, SourceSpan span,
                                unsigned int depth) {
+        std::vector<EmittedExpression> emittedArguments;
         std::vector<std::string> arguments;
+        emittedArguments.reserve(call.arguments.size());
         arguments.reserve(call.arguments.size());
         for (const auto argument : call.arguments) {
             if (expressionDiverges(program_, function_, argument)) {
-                for (const auto &value : arguments) {
-                    discardValue({value, false}, depth);
+                for (auto current = emittedArguments.rbegin();
+                     current != emittedArguments.rend(); ++current) {
+                    emitCleanups(*current, depth);
+                    discardValue(*current, depth);
                 }
                 return emitExpression(argument, depth);
             }
@@ -1520,22 +2110,49 @@ class FunctionEmitter {
             if (emitted.diverges) {
                 return emitted;
             }
-            arguments.push_back(std::move(emitted.value));
+            arguments.push_back(emitted.value);
+            emittedArguments.push_back(std::move(emitted));
+        }
+        const auto orderedArguments = orderArguments(arguments, call.argumentParameters);
+
+        if (call.kind == FirCallKind::Null) {
+            if (!orderedArguments.empty()) {
+                internalError("null has value arguments");
+            }
+            const auto temporary = nextTemporary();
+            out_ << indentation(depth) << cType(type) << ' ' << temporary << " = NULL;\n";
+            return {temporary, false};
+        }
+        if (call.kind == FirCallKind::IsNull) {
+            if (orderedArguments.size() != 1) {
+                internalError("isNull does not have one argument");
+            }
+            const auto temporary = nextTemporary();
+            out_ << indentation(depth) << "bool " << temporary << " = "
+                 << orderedArguments.front() << " == NULL;\n";
+            return {temporary, false};
+        }
+        if (call.kind == FirCallKind::NumericConversion) {
+            if (orderedArguments.size() != 1) {
+                internalError("numeric conversion does not have one argument");
+            }
+            return emitNumericConversion(call, type, orderedArguments.front(), depth);
         }
 
         emitLocation(span, depth);
         std::ostringstream invocation;
         if (call.kind == FirCallKind::Contract) {
-            if (arguments.empty()) {
+            if (orderedArguments.empty()) {
                 internalError("contract call has no receiver");
             }
             const auto receiverType = function_.expressions[call.arguments.front()].type;
             const auto member = receiverType.kind == TypeKind::Own ? "->" : ".";
-            invocation << arguments.front() << member << "fdn_vtable->fdn_method_" << call.method
+            invocation << orderedArguments.front() << member << "fdn_vtable->fdn_method_"
+                       << call.method
                        << '(';
-            invocation << arguments.front() << member << "fdn_data";
-            for (std::size_t index = 1; index < arguments.size(); ++index) {
-                invocation << ", " << arguments[index];
+            invocation << orderedArguments.front() << member << "fdn_data";
+            for (std::size_t index = 1; index < orderedArguments.size(); ++index) {
+                invocation << ", " << orderedArguments[index];
             }
             invocation << ')';
         } else if (call.kind == FirCallKind::FunctionValue) {
@@ -1546,7 +2163,7 @@ class FunctionEmitter {
             const auto member = pointer ? "->" : ".";
             invocation << callable << member << "fdn_call(" << callable << member
                        << "fdn_env";
-            for (const auto &argument : arguments) {
+            for (const auto &argument : orderedArguments) {
                 invocation << ", " << argument;
             }
             invocation << ')';
@@ -1555,7 +2172,7 @@ class FunctionEmitter {
         } else if (call.kind == FirCallKind::Panic) {
             invocation << "fdn_panic";
         } else if (call.kind == FirCallKind::Len) {
-            if (arguments.size() != 1) {
+            if (orderedArguments.size() != 1) {
                 internalError("len call does not have one argument");
             }
             auto sequence = function_.expressions[call.arguments.front()].type;
@@ -1568,11 +2185,11 @@ class FunctionEmitter {
                 sequence = sequence.arguments.front();
             }
             if (sequence.kind == TypeKind::Array) {
-                invocation << "UINT64_C(" << sequence.declaration << ')';
+                invocation << "((size_t)" << sequence.declaration << ')';
             } else if (sequence.kind == TypeKind::Slice) {
-                invocation << "(uint64_t)" << arguments.front() << member << "fdn_length";
+                invocation << orderedArguments.front() << member << "fdn_length";
             } else if (sequence.kind == TypeKind::String) {
-                invocation << "(uint64_t)" << arguments.front() << member << "length";
+                invocation << orderedArguments.front() << member << "length";
             } else {
                 internalError("len call has an unsupported argument");
             }
@@ -1582,11 +2199,11 @@ class FunctionEmitter {
         if (call.kind != FirCallKind::Contract &&
             call.kind != FirCallKind::FunctionValue && call.kind != FirCallKind::Len) {
             invocation << '(';
-            for (std::size_t index = 0; index < arguments.size(); ++index) {
+            for (std::size_t index = 0; index < orderedArguments.size(); ++index) {
                 if (index != 0) {
                     invocation << ", ";
                 }
-                invocation << arguments[index];
+                invocation << orderedArguments[index];
             }
             invocation << ')';
         }
@@ -1602,6 +2219,10 @@ class FunctionEmitter {
             if (contractCallConsumesReceiver(call)) {
                 out_ << indentation(depth) << "fdn_dealloc(" << arguments.front() << ");\n";
                 out_ << indentation(depth) << arguments.front() << " = NULL;\n";
+            }
+            for (auto current = emittedArguments.rbegin();
+                 current != emittedArguments.rend(); ++current) {
+                emitCleanups(*current, depth);
             }
             for (std::size_t index = 0;
                  index < call.arguments.size() && index < call.argumentDrops.size(); ++index) {
@@ -1619,6 +2240,10 @@ class FunctionEmitter {
             out_ << indentation(depth) << "fdn_dealloc(" << arguments.front() << ");\n";
             out_ << indentation(depth) << arguments.front() << " = NULL;\n";
         }
+        for (auto current = emittedArguments.rbegin(); current != emittedArguments.rend();
+             ++current) {
+            emitCleanups(*current, depth);
+        }
         return {temporary, false};
     }
 
@@ -1631,7 +2256,7 @@ class FunctionEmitter {
 
     EmittedExpression emitContract(const FirContractExpression &contract, const Type &type,
                                    unsigned int depth) {
-        const auto value = emitExpression(contract.value, depth);
+        auto value = emitExpression(contract.value, depth);
         if (value.diverges) {
             return value;
         }
@@ -1650,7 +2275,7 @@ class FunctionEmitter {
             out_ << indentation(depth) << temporary << ".fdn_vtable = &"
                  << vtableName(contract.contractType, contract.concreteType) << ";\n";
         }
-        return {temporary, false};
+        return {temporary, false, std::move(value.cleanups)};
     }
 
     EmittedExpression emitStruct(const FirStructExpression &literal, unsigned int depth) {
@@ -1722,13 +2347,35 @@ class FunctionEmitter {
             temporary = nextTemporary();
             out_ << indentation(depth) << cType(type) << ' ' << temporary << ";\n";
         }
-        out_ << indentation(depth) << "switch (" << value.value << ".fdn_tag) {\n";
+
+        std::vector<std::optional<EmittedExpression>> patterns;
+        patterns.reserve(match.arms.size());
         for (const auto &arm : match.arms) {
-            out_ << indentation(depth) << "case "
-                 << enumTag(match.type.declaration, arm.variant) << ": {\n";
+            patterns.push_back(arm.pattern.has_value()
+                                   ? std::optional<EmittedExpression>{
+                                         emitExpression(*arm.pattern, depth)}
+                                   : std::nullopt);
+        }
+
+        for (std::size_t index = 0; index < match.arms.size(); ++index) {
+            const auto &arm = match.arms[index];
+            const auto payload = value.value + ".fdn_data." + payloadName(arm.variant);
+            out_ << indentation(depth) << (index == 0 ? "if (" : "else if (")
+                 << value.value << ".fdn_tag == "
+                 << enumTag(match.type.declaration, arm.variant);
+            if (patterns[index].has_value()) {
+                const auto patternType = function_.expressions[*arm.pattern].type;
+                out_ << " && ";
+                if (patternType == stringType) {
+                    out_ << "fdn_string_equal(" << payload << ", "
+                         << patterns[index]->value << ')';
+                } else {
+                    out_ << payload << " == " << patterns[index]->value;
+                }
+            }
+            out_ << ") {\n";
             if (arm.binding.has_value()) {
                 const auto local = *arm.binding;
-                const auto payload = value.value + ".fdn_data." + payloadName(arm.variant);
                 if (typeRequiresDrop(program_, function_.locals[local].type)) {
                     const auto moved = emitMoveValue(function_.locals[local].type, payload,
                                                      depth + 1);
@@ -1757,15 +2404,62 @@ class FunctionEmitter {
                 emitDrops(arm.drops, depth + 1);
                 emitDropValue(out_, program_, function_.expressions[match.value].type, value.value,
                               depth + 1);
-                out_ << indentation(depth + 1) << "break;\n";
             }
             out_ << indentation(depth) << "}\n";
         }
-        out_ << indentation(depth) << "default:\n";
+        out_ << indentation(depth) << "else {\n";
         emitLocation(span, depth + 1);
         out_ << indentation(depth + 1) << "fdn_invalid_enum_tag();\n";
         out_ << indentation(depth) << "}\n";
         return {allDiverge ? std::string{} : temporary, allDiverge};
+    }
+
+    EmittedExpression emitConditional(const FirConditionalExpression &conditional,
+                                      const Type &type, unsigned int depth) {
+        const auto condition = emitExpression(conditional.condition, depth);
+        if (condition.diverges) {
+            return condition;
+        }
+
+        const auto temporary = type == voidType ? std::string{} : nextTemporary();
+        if (!temporary.empty()) {
+            out_ << indentation(depth) << cType(type) << ' ' << temporary << ";\n";
+        }
+        const auto emitBranch = [&](FirBlockId block, FirExpressionId value,
+                                    unsigned int branchDepth) {
+            for (const auto statement : function_.blocks[block].statements) {
+                if (taskPoll_ &&
+                    emitSuspendingStatement(function_.statements[statement], branchDepth)) {
+                    continue;
+                }
+                if (emitStatement(function_.statements[statement], branchDepth)) {
+                    return true;
+                }
+            }
+            const auto result = emitExpression(value, branchDepth);
+            if (result.diverges) {
+                return true;
+            }
+            if (!temporary.empty()) {
+                out_ << indentation(branchDepth) << temporary << " = " << result.value
+                     << ";\n";
+            } else {
+                discardValue(result, branchDepth);
+            }
+            emitCleanups(result, branchDepth);
+            emitDrops(function_.blocks[block].drops, branchDepth);
+            return false;
+        };
+
+        out_ << indentation(depth) << "if (" << condition.value << ") {\n";
+        const auto thenExits =
+            emitBranch(conditional.thenBlock, conditional.thenValue, depth + 1);
+        out_ << indentation(depth) << "} else {\n";
+        const auto elseExits =
+            emitBranch(conditional.elseBlock, conditional.elseValue, depth + 1);
+        out_ << indentation(depth) << "}\n";
+        return {thenExits && elseExits ? std::string{} : temporary,
+                thenExits && elseExits};
     }
 
     bool emitSuspendingStatement(const FirStatement &statement, unsigned int depth) {
@@ -1798,9 +2492,15 @@ class FunctionEmitter {
                 if (argument.diverges) {
                     return true;
                 }
-                out_ << indentation(depth) << localValue(blocking->argumentStorages[index])
+                const auto parameter = blocking->argumentParameters.empty()
+                                           ? index
+                                           : blocking->argumentParameters[index];
+                if (parameter >= blocking->argumentStorages.size()) {
+                    internalError("blocking call argument mapping is invalid");
+                }
+                out_ << indentation(depth) << localValue(blocking->argumentStorages[parameter])
                      << " = " << argument.value << ";\n";
-                activateLocal(blocking->argumentStorages[index], depth);
+                activateLocal(blocking->argumentStorages[parameter], depth);
             }
 
             const auto state = ++taskState_;
@@ -1850,9 +2550,15 @@ class FunctionEmitter {
                 if (argument.diverges) {
                     return true;
                 }
-                out_ << indentation(depth) << localValue(callback->argumentStorages[index])
+                const auto parameter = callback->argumentParameters.empty()
+                                           ? index
+                                           : callback->argumentParameters[index];
+                if (parameter >= callback->argumentStorages.size()) {
+                    internalError("callback call argument mapping is invalid");
+                }
+                out_ << indentation(depth) << localValue(callback->argumentStorages[parameter])
                      << " = " << argument.value << ";\n";
-                activateLocal(callback->argumentStorages[index], depth);
+                activateLocal(callback->argumentStorages[parameter], depth);
             }
 
             const auto state = ++taskState_;
@@ -2224,6 +2930,25 @@ class FunctionEmitter {
             activateLocal(binding->local, depth);
             return false;
         }
+        if (const auto *binding = std::get_if<FirResultElseStatement>(&statement.value)) {
+            const auto initializer = emitExpression(binding->expression, depth);
+            if (initializer.diverges) {
+                return true;
+            }
+            const auto resultType = function_.expressions[binding->expression].type;
+            out_ << indentation(depth) << "if (" << initializer.value << ".fdn_tag == "
+                 << enumTag(resultType.declaration, 1) << ") {\n";
+            out_ << indentation(depth + 1);
+            if (!taskPoll_) {
+                out_ << cType(function_.locals[binding->errorLocal].type) << ' ';
+            }
+            out_ << localValue(binding->errorLocal) << " = " << initializer.value
+                 << ".fdn_data." << payloadName(1) << ";\n";
+            activateLocal(binding->errorLocal, depth + 1);
+            static_cast<void>(emitBlock(binding->elseBlock, depth + 1));
+            out_ << indentation(depth) << "}\n";
+            return false;
+        }
         if (const auto *destructure =
                 std::get_if<FirStructDestructureStatement>(&statement.value)) {
             const auto initializer = emitExpression(destructure->initializer, depth);
@@ -2332,6 +3057,16 @@ class FunctionEmitter {
             }
             return true;
         }
+        if (const auto *jump = std::get_if<FirBreakStatement>(&statement.value)) {
+            emitDrops(jump->drops, depth);
+            out_ << indentation(depth) << "break;\n";
+            return true;
+        }
+        if (const auto *jump = std::get_if<FirContinueStatement>(&statement.value)) {
+            emitDrops(jump->drops, depth);
+            out_ << indentation(depth) << "continue;\n";
+            return true;
+        }
         if (const auto *branch = std::get_if<FirIfStatement>(&statement.value)) {
             const auto condition = emitExpression(branch->condition, depth);
             if (condition.diverges) {
@@ -2348,6 +3083,99 @@ class FunctionEmitter {
             }
             out_ << '\n';
             return branch->elseBlock.has_value() && thenExits && elseExits;
+        }
+        if (const auto *unsafe = std::get_if<FirUnsafeStatement>(&statement.value)) {
+            out_ << indentation(depth) << "{\n";
+            const auto exits = emitBlock(unsafe->body, depth + 1);
+            out_ << indentation(depth) << "}\n";
+            return exits;
+        }
+
+        if (const auto *loop = std::get_if<FirForStatement>(&statement.value)) {
+            const auto sequence = emitExpression(loop->sequence, depth);
+            if (sequence.diverges) {
+                return true;
+            }
+            const auto &sequenceType = function_.locals[loop->sequenceStorage].type;
+            out_ << indentation(depth);
+            if (!taskPoll_) {
+                out_ << cType(sequenceType) << ' ';
+            }
+            out_ << localValue(loop->sequenceStorage) << " = " << sequence.value << ";\n";
+            activateLocal(loop->sequenceStorage, depth);
+
+            if (!taskPoll_) {
+                out_ << indentation(depth) << "size_t " << localValue(loop->index)
+                     << ";\n";
+            }
+            if (loop->next.has_value()) {
+                out_ << indentation(depth) << "for (" << localValue(loop->index)
+                     << " = (size_t)0; ; " << localValue(loop->index)
+                     << " = fdn_usize_add(" << localValue(loop->index)
+                     << ", (size_t)1)) {\n";
+                const auto next = emitExpression(*loop->next, depth + 1);
+                if (next.diverges) {
+                    out_ << indentation(depth) << "}\n";
+                    return true;
+                }
+                const auto &optionType = function_.expressions[*loop->next].type;
+                out_ << indentation(depth + 1) << "if (" << next.value << ".fdn_tag == "
+                     << enumTag(optionType.declaration, 0) << ") {\n";
+                emitDropValue(out_, program_, optionType, next.value, depth + 2);
+                out_ << indentation(depth + 2) << "break;\n";
+                out_ << indentation(depth + 1) << "}\n";
+                out_ << indentation(depth + 1) << "if (" << next.value << ".fdn_tag != "
+                     << enumTag(optionType.declaration, 1) << ") {\n";
+                emitLocation(statement.span, depth + 2);
+                out_ << indentation(depth + 2) << "fdn_invalid_enum_tag();\n";
+                out_ << indentation(depth + 1) << "}\n";
+
+                const auto &valueType = function_.locals[loop->value].type;
+                const auto payload =
+                    next.value + ".fdn_data." + payloadName(1);
+                auto assignedValue = payload;
+                if (typeRequiresDrop(program_, valueType)) {
+                    assignedValue = emitMoveValue(valueType, payload, depth + 1).value;
+                }
+                out_ << indentation(depth + 1);
+                if (!taskPoll_) {
+                    out_ << cType(valueType) << ' ';
+                }
+                out_ << localValue(loop->value) << " = " << assignedValue << ";\n";
+                activateLocal(loop->value, depth + 1);
+                emitDropValue(out_, program_, optionType, next.value, depth + 1);
+                out_ << indentation(depth + 1) << "(void)" << localValue(loop->value)
+                     << ";\n";
+                static_cast<void>(emitBlock(loop->body, depth + 1));
+                out_ << indentation(depth) << "}\n";
+                if (loop->ownsSequence) {
+                    emitLocalDrop(loop->sequenceStorage, depth);
+                }
+                emitCleanups(sequence, depth);
+                return false;
+            }
+            out_ << indentation(depth) << "for (" << localValue(loop->index)
+                 << " = (size_t)0; " << localValue(loop->index) << " < "
+                 << localValue(loop->sequenceStorage) << ".fdn_length; "
+                 << localValue(loop->index) << " = fdn_usize_add("
+                 << localValue(loop->index) << ", (size_t)1)) {\n";
+
+            const auto &valueType = function_.locals[loop->value].type;
+            out_ << indentation(depth + 1);
+            if (!taskPoll_) {
+                out_ << cType(valueType) << ' ';
+            }
+            out_ << localValue(loop->value) << " = ";
+            if (valueType.kind == TypeKind::View || valueType.kind == TypeKind::Edit) {
+                out_ << '&';
+            }
+            out_ << localValue(loop->sequenceStorage) << ".fdn_data["
+                 << localValue(loop->index) << "];\n";
+            out_ << indentation(depth + 1) << "(void)" << localValue(loop->value) << ";\n";
+            static_cast<void>(emitBlock(loop->body, depth + 1));
+            out_ << indentation(depth) << "}\n";
+            emitCleanups(sequence, depth);
+            return false;
         }
 
         const auto &loop = std::get<FirWhileStatement>(statement.value);
@@ -2418,9 +3246,17 @@ class FunctionEmitter {
         }
     }
 
+    void emitCleanups(const EmittedExpression &expression, unsigned int depth) {
+        for (auto cleanup = expression.cleanups.rbegin();
+             cleanup != expression.cleanups.rend(); ++cleanup) {
+            emitDropValue(out_, program_, cleanup->type, cleanup->value, depth);
+        }
+    }
+
     bool isPlaceExpression(FirExpressionId id) const {
         const auto &expression = function_.expressions[id].value;
-        if (std::holds_alternative<FirLocalExpression>(expression)) {
+        if (std::holds_alternative<FirLocalExpression>(expression) ||
+            std::holds_alternative<FirReadExpression>(expression)) {
             return true;
         }
         if (const auto *field = std::get_if<FirFieldExpression>(&expression)) {
@@ -2434,6 +3270,7 @@ class FunctionEmitter {
 
     void dropInspectedTemporary(FirExpressionId id, const EmittedExpression &expression,
                                 unsigned int depth) {
+        emitCleanups(expression, depth);
         const auto &type = function_.expressions[id].type;
         if (!isPlaceExpression(id) && typeRequiresDrop(program_, type)) {
             emitDropValue(out_, program_, type, expression.value, depth);
@@ -3092,7 +3929,7 @@ typeNode(const FirProgram &program, const Type &type,
 
 void emitSignature(std::ostringstream &out, const FirProgram &program, FirFunctionId id) {
     const auto &function = program.functions[id];
-    if (id == program.main) {
+    if (id == program.main && !function.testName.has_value()) {
         out << "static int32_t " << functionName(program, id) << '(';
         if (function.parameters.empty()) {
             out << "void";
@@ -3595,6 +4432,19 @@ void emitMainWrapper(std::ostringstream &out, const FirProgram &program) {
     out << "}\n";
 }
 
+void emitTestMainWrapper(std::ostringstream &out, const FirProgram &program,
+                         FirFunctionId test) {
+    out << "\nint main(void) {\n";
+    out << "    " << functionName(program, test) << "();\n";
+    out << "#if defined(FOUNDATION_VERIFY_ALLOCATIONS)\n";
+    out << "    if (fdn_live_allocations() != 0) {\n";
+    out << "        fdn_panic_cstr(\"live allocations after test\");\n";
+    out << "    }\n";
+    out << "#endif\n";
+    out << "    return 0;\n";
+    out << "}\n";
+}
+
 std::vector<FirFunctionId> collectFunctionValueUses(const FirProgram &program) {
     std::vector<FirFunctionId> result;
     for (const auto &function : program.functions) {
@@ -3736,8 +4586,319 @@ void emitExportedWrapper(std::ostringstream &out, const FirProgram &program,
 
 } // namespace
 
-std::string emitC(const FirProgram &source, std::string_view sourcePath) {
-    Monomorphizer monomorphizer(source);
+void emitStateTransitionBody(std::ostringstream &out, const FirProgram &program,
+                             const FirFunction &function) {
+    if (!function.stateTransition.has_value() || function.parameters.empty() ||
+        function.returnType.kind != TypeKind::Enum ||
+        function.returnType.declaration >= program.enums.size() ||
+        program.enums[function.returnType.declaration].variants.size() < 2 ||
+        !program.enums[function.returnType.declaration].variants[1].payload.has_value()) {
+        internalError("invalid state transition function");
+    }
+    const auto &transition = *function.stateTransition;
+    const auto receiverLocal = function.parameters.front();
+    const auto &receiverType = function.locals[receiverLocal].type;
+    if (receiverType.kind != TypeKind::Edit || receiverType.arguments.size() != 1 ||
+        receiverType.arguments.front().kind != TypeKind::Enum) {
+        internalError("invalid state transition receiver");
+    }
+    const auto machineType = receiverType.arguments.front();
+    const auto receiver = localName(function, receiverLocal);
+    const auto result = "fdn_transition_result";
+    out << "    " << cType(function.returnType) << ' ' << result << " = {0};\n";
+    out << "    if (";
+    for (std::size_t index = 0; index < transition.sourceVariants.size(); ++index) {
+        if (index != 0) {
+            out << " || ";
+        }
+        out << receiver << "->fdn_tag == "
+            << enumTag(machineType.declaration, transition.sourceVariants[index]);
+    }
+    if (transition.sourceVariants.empty()) {
+        out << "false";
+    }
+    out << ") {\n";
+    emitDropValue(out, program, machineType, "*" + receiver, 2);
+    out << "        " << receiver << "->fdn_tag = "
+        << enumTag(machineType.declaration, transition.destinationVariant) << ";\n";
+    if (transition.destinationParameter.has_value()) {
+        const auto parameter = *transition.destinationParameter;
+        const auto &payload = program.enums[machineType.declaration]
+                                  .variants[transition.destinationVariant]
+                                  .payload;
+        if (!payload.has_value()) {
+            internalError("state transition payload is missing");
+        }
+        emitMoveAssignment(out, program, *payload,
+                           receiver + "->fdn_data." +
+                               payloadName(transition.destinationVariant),
+                           localName(function, parameter), 2);
+    }
+    for (std::size_t index = 1; index < function.parameters.size(); ++index) {
+        const auto parameter = function.parameters[index];
+        if (transition.destinationParameter == parameter ||
+            (index < function.readParameters.size() && function.readParameters[index])) {
+            continue;
+        }
+        const auto &type = function.locals[parameter].type;
+        if (type.kind != TypeKind::View && type.kind != TypeKind::Edit) {
+            emitDropValue(out, program, type, localName(function, parameter), 2);
+        }
+    }
+    out << "        " << result << ".fdn_tag = "
+        << enumTag(function.returnType.declaration, 0) << ";\n";
+    out << "    } else {\n";
+    for (std::size_t index = 1; index < function.parameters.size(); ++index) {
+        const auto parameter = function.parameters[index];
+        if (index < function.readParameters.size() && function.readParameters[index]) {
+            continue;
+        }
+        const auto &type = function.locals[parameter].type;
+        if (type.kind != TypeKind::View && type.kind != TypeKind::Edit) {
+            emitDropValue(out, program, type, localName(function, parameter), 2);
+        }
+    }
+    const auto &errorType =
+        *program.enums[function.returnType.declaration].variants[1].payload;
+    out << "        " << cType(errorType) << " fdn_transition_error = {0};\n";
+    out << "        fdn_transition_error.fdn_tag = "
+        << enumTag(errorType.declaration, 0) << ";\n";
+    out << "        " << result << ".fdn_data." << payloadName(1)
+        << " = fdn_transition_error;\n";
+    out << "        " << result << ".fdn_tag = "
+        << enumTag(function.returnType.declaration, 1) << ";\n";
+    out << "    }\n";
+    out << "    fdn_frame_leave(&fdn_frame_current);\n";
+    out << "    return " << result << ";\n";
+}
+
+std::string workflowArgument(const FirProgram &program, FirFunctionId target,
+                             const std::string &value, bool borrowed) {
+    const auto &function = program.functions[target];
+    if (function.parameters.size() != 1) {
+        internalError("workflow target has an invalid parameter count");
+    }
+    const auto parameter = function.parameters.front();
+    if (parameter >= function.locals.size()) {
+        internalError("workflow target parameter is invalid");
+    }
+    const auto &type = function.locals[parameter].type;
+    if (type.kind == TypeKind::View) {
+        return borrowed ? value : "&" + value;
+    }
+    return value;
+}
+
+void emitWorkflowCall(std::ostringstream &out, const FirProgram &program,
+                      const FirWorkflowStep &step, const std::string &argument,
+                      bool borrowed, const std::string &result, unsigned int depth,
+                      bool compensation = false) {
+    const auto target = compensation ? *step.compensation : step.function;
+    const auto &function = program.functions[target];
+    const auto attempts = compensation ? 1 : step.attempts;
+    out << indentation(depth) << cType(function.returnType) << ' ' << result << " = {0};\n";
+    out << indentation(depth) << "for (uint32_t fdn_attempt = 0;; ++fdn_attempt) {\n";
+    out << indentation(depth + 1) << result << " = " << functionName(program, target) << '('
+        << workflowArgument(program, target, argument, borrowed) << ");\n";
+    out << indentation(depth + 1) << "if (" << result << ".fdn_tag == "
+        << enumTag(function.returnType.declaration, 0) << " || fdn_attempt + 1 >= UINT32_C("
+        << attempts << ")) {\n";
+    out << indentation(depth + 2) << "break;\n";
+    out << indentation(depth + 1) << "}\n";
+    emitDropValue(out, program, function.returnType, result, depth + 1);
+    out << indentation(depth + 1) << "fdn_retry_wait(fdn_attempt);\n";
+    out << indentation(depth) << "}\n";
+}
+
+void emitWorkflowReturnError(std::ostringstream &out, const FirProgram &program,
+                             const FirFunction &function, const std::string &stepValue,
+                             unsigned int depth) {
+    const auto &targetError =
+        *program.enums[function.returnType.declaration].variants[1].payload;
+    const std::string result = "fdn_workflow_return";
+    out << indentation(depth) << cType(function.returnType) << ' ' << result << " = {0};\n";
+    emitMoveAssignment(out, program, targetError,
+                       result + ".fdn_data." + payloadName(1),
+                       stepValue + ".fdn_data." + payloadName(1), depth);
+    out << indentation(depth) << result << ".fdn_tag = "
+        << enumTag(function.returnType.declaration, 1) << ";\n";
+    out << indentation(depth) << "fdn_frame_leave(&fdn_frame_current);\n";
+    out << indentation(depth) << "return " << result << ";\n";
+}
+
+void emitPipelineBody(std::ostringstream &out, const FirProgram &program,
+                      const FirFunction &function) {
+    const auto &workflow = *function.workflow;
+    if (function.parameters.size() != 1 || workflow.steps.empty()) {
+        internalError("invalid pipeline function");
+    }
+    const auto input = function.parameters.front();
+    auto current = localName(function, input);
+    auto borrowed = function.locals[input].type.kind == TypeKind::View;
+    std::optional<Type> currentOwnedType;
+
+    for (std::size_t index = 0; index < workflow.steps.size(); ++index) {
+        const auto &step = workflow.steps[index];
+        const auto &target = program.functions[step.function];
+        const auto result = "fdn_pipeline_result_" + std::to_string(index);
+        emitWorkflowCall(out, program, step, current, borrowed, result, 1);
+        if (currentOwnedType.has_value()) {
+            emitDropValue(out, program, *currentOwnedType, current, 1);
+        }
+        out << "    if (" << result << ".fdn_tag == "
+            << enumTag(target.returnType.declaration, 1) << ") {\n";
+        emitWorkflowReturnError(out, program, function, result, 2);
+        out << "    }\n";
+
+        const auto &success = program.enums[target.returnType.declaration].variants[0].payload;
+        const auto last = index + 1 == workflow.steps.size();
+        if (last) {
+            const std::string output = "fdn_pipeline_return";
+            out << "    " << cType(function.returnType) << ' ' << output << " = {0};\n";
+            if (success.has_value()) {
+                const auto &targetOutput =
+                    *program.enums[function.returnType.declaration].variants[0].payload;
+                emitMoveAssignment(out, program, targetOutput,
+                                   output + ".fdn_data." + payloadName(0),
+                                   result + ".fdn_data." + payloadName(0), 1);
+            }
+            out << "    " << output << ".fdn_tag = "
+                << enumTag(function.returnType.declaration, 0) << ";\n";
+            out << "    fdn_frame_leave(&fdn_frame_current);\n";
+            out << "    return " << output << ";\n";
+            return;
+        }
+        if (!success.has_value()) {
+            internalError("non-final pipeline step has no output");
+        }
+        current = "fdn_pipeline_value_" + std::to_string(index);
+        out << "    " << cType(*success) << ' ' << current << " = {0};\n";
+        emitMoveAssignment(out, program, *success, current,
+                           result + ".fdn_data." + payloadName(0), 1);
+        borrowed = false;
+        currentOwnedType = *success;
+    }
+}
+
+void emitSagaFailure(std::ostringstream &out, const FirProgram &program,
+                     const FirFunction &function, std::size_t failed,
+                     const std::string &failedResult) {
+    const auto &workflow = *function.workflow;
+    const auto &failedFunction = program.functions[workflow.steps[failed].function];
+    const auto &originalType =
+        *program.enums[failedFunction.returnType.declaration].variants[1].payload;
+    const std::string original = "fdn_saga_original_error";
+    out << "        " << cType(originalType) << ' ' << original << " = {0};\n";
+    emitMoveAssignment(out, program, originalType, original,
+                       failedResult + ".fdn_data." + payloadName(1), 2);
+    const std::string details = "fdn_saga_compensation_failure";
+    out << "        " << cType(workflow.failureDetailsType) << ' ' << details << " = {0};\n";
+    out << "        size_t fdn_saga_compensation_count = 0;\n";
+    const auto input = function.parameters.front();
+    const auto argument = localName(function, input);
+    const auto borrowed = function.locals[input].type.kind == TypeKind::View;
+    for (std::size_t current = failed; current > 0; --current) {
+        const auto &completed = workflow.steps[current - 1];
+        if (!completed.compensation.has_value()) {
+            continue;
+        }
+        const auto result = "fdn_saga_compensation_" + std::to_string(current - 1);
+        emitWorkflowCall(out, program, completed, argument, borrowed, result, 2, true);
+        const auto &compensation = program.functions[*completed.compensation];
+        out << "        if (" << result << ".fdn_tag == "
+            << enumTag(compensation.returnType.declaration, 1) << ") {\n";
+        const auto destination = details + "." + fieldName(2) +
+                                 ".fdn_data[fdn_saga_compensation_count]";
+        const auto source = result + ".fdn_data." + payloadName(1);
+        emitMoveAssignment(out, program, originalType, destination, source, 3);
+        out << "            ++fdn_saga_compensation_count;\n";
+        out << "        }\n";
+    }
+
+    const std::string failure = "fdn_saga_failure";
+    out << "        " << cType(workflow.failureType) << ' ' << failure << " = {0};\n";
+    out << "        if (fdn_saga_compensation_count == 0) {\n";
+    emitMoveAssignment(out, program, originalType,
+                       failure + ".fdn_data." + payloadName(0), original, 3);
+    out << "            " << failure << ".fdn_tag = "
+        << enumTag(workflow.failureType.declaration, 0) << ";\n";
+    out << "        } else {\n";
+    emitMoveAssignment(out, program, originalType, details + "." + fieldName(0), original, 3);
+    out << "            " << details << "." << fieldName(1)
+        << " = fdn_saga_compensation_count;\n";
+    emitMoveAssignment(out, program, workflow.failureDetailsType,
+                       failure + ".fdn_data." + payloadName(1), details, 3);
+    out << "            " << failure << ".fdn_tag = "
+        << enumTag(workflow.failureType.declaration, 1) << ";\n";
+    out << "        }\n";
+
+    const std::string result = "fdn_saga_return";
+    out << "        " << cType(function.returnType) << ' ' << result << " = {0};\n";
+    emitMoveAssignment(out, program, workflow.failureType,
+                       result + ".fdn_data." + payloadName(1), failure, 2);
+    out << "        " << result << ".fdn_tag = "
+        << enumTag(function.returnType.declaration, 1) << ";\n";
+    out << "        fdn_frame_leave(&fdn_frame_current);\n";
+    out << "        return " << result << ";\n";
+}
+
+void emitSagaBody(std::ostringstream &out, const FirProgram &program,
+                  const FirFunction &function) {
+    const auto &workflow = *function.workflow;
+    if (function.parameters.size() != 1 || workflow.steps.empty()) {
+        internalError("invalid saga function");
+    }
+    const auto input = function.parameters.front();
+    const auto argument = localName(function, input);
+    const auto borrowed = function.locals[input].type.kind == TypeKind::View;
+    for (std::size_t index = 0; index < workflow.steps.size(); ++index) {
+        const auto &step = workflow.steps[index];
+        const auto &target = program.functions[step.function];
+        const auto result = "fdn_saga_step_" + std::to_string(index);
+        emitWorkflowCall(out, program, step, argument, borrowed, result, 1);
+        out << "    if (" << result << ".fdn_tag == "
+            << enumTag(target.returnType.declaration, 1) << ") {\n";
+        emitSagaFailure(out, program, function, index, result);
+        out << "    }\n";
+        if (index + 1 != workflow.steps.size()) {
+            continue;
+        }
+        const std::string output = "fdn_saga_success";
+        out << "    " << cType(function.returnType) << ' ' << output << " = {0};\n";
+        const auto &success = program.enums[target.returnType.declaration].variants[0].payload;
+        if (success.has_value()) {
+            const auto &targetOutput =
+                *program.enums[function.returnType.declaration].variants[0].payload;
+            emitMoveAssignment(out, program, targetOutput,
+                               output + ".fdn_data." + payloadName(0),
+                               result + ".fdn_data." + payloadName(0), 1);
+        }
+        out << "    " << output << ".fdn_tag = "
+            << enumTag(function.returnType.declaration, 0) << ";\n";
+        out << "    fdn_frame_leave(&fdn_frame_current);\n";
+        out << "    return " << output << ";\n";
+    }
+}
+
+void emitWorkflowBody(std::ostringstream &out, const FirProgram &program,
+                      const FirFunction &function) {
+    if (!function.workflow.has_value()) {
+        internalError("missing workflow metadata");
+    }
+    if (function.workflow->kind == FirWorkflowKind::Pipeline) {
+        emitPipelineBody(out, program, function);
+    } else {
+        emitSagaBody(out, program, function);
+    }
+}
+
+std::string emitCImpl(const FirProgram &source, std::string_view sourcePath,
+                      std::optional<FirFunctionId> testEntry) {
+    auto input = source;
+    if (testEntry.has_value()) {
+        input.main = *testEntry;
+    }
+    Monomorphizer monomorphizer(input);
     auto program = monomorphizer.run();
     markDivergingFunctions(program);
     const auto contractUses = collectContractUses(program);
@@ -3750,7 +4911,8 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     std::ostringstream out;
     out << "#include <stdbool.h>\n";
     out << "#include <stdint.h>\n";
-    if (!program.functions[program.main].parameters.empty()) {
+    out << "#include <math.h>\n";
+    if (!testEntry.has_value() && !program.functions[program.main].parameters.empty()) {
         out << "#include <string.h>\n";
     }
     out << "#include \"foundation/runtime.h\"\n\n";
@@ -3979,8 +5141,24 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
         for (const auto parameter : function.parameters) {
             out << "    (void)" << localName(function, parameter) << ";\n";
         }
+        if (function.stateTransition.has_value()) {
+            emitStateTransitionBody(out, program, function);
+            out << "}\n";
+            if (index + 1 != program.functions.size()) {
+                out << '\n';
+            }
+            continue;
+        }
+        if (function.workflow.has_value()) {
+            emitWorkflowBody(out, program, function);
+            out << "}\n";
+            if (index + 1 != program.functions.size()) {
+                out << '\n';
+            }
+            continue;
+        }
         bool exits;
-        if (index == program.main && function.diverges) {
+        if (!testEntry.has_value() && index == program.main && function.diverges) {
             out << "    for (;;) {\n";
             exits = emitter.emitBlock(function.body, 2);
             out << "    }\n";
@@ -4004,8 +5182,24 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
         out << '\n';
         emitExportedWrapper(out, program, index, sourcePath);
     }
-    emitMainWrapper(out, program);
+    if (testEntry.has_value()) {
+        emitTestMainWrapper(out, program, program.main);
+    } else {
+        emitMainWrapper(out, program);
+    }
     return out.str();
+}
+
+std::string emitC(const FirProgram &source, std::string_view sourcePath) {
+    return emitCImpl(source, sourcePath, std::nullopt);
+}
+
+std::string emitTestC(const FirProgram &source, FirFunctionId test,
+                      std::string_view sourcePath) {
+    if (test >= source.functions.size() || !source.functions[test].testName.has_value()) {
+        internalError("test entry is not a test declaration");
+    }
+    return emitCImpl(source, sourcePath, test);
 }
 
 std::string emitCHeader(const FirProgram &source) {

@@ -2,7 +2,7 @@ package example.profile
 
 // Operations supported by a mutable user profile.
 contract Profile {
-    fn Display(view) void
-    fn Rename(edit, name String) void
-    fn AddScore(edit, amount i32) void
+    fn Display(self) void
+    fn Rename(&self, $name String) void
+    fn AddScore(&self, amount i32) void
 }

@@ -1,0 +1,29 @@
+import foundation.di
+
+contract Store {
+    fn Value(self) i32
+}
+
+@di.Name("store")
+service MemoryStore implements Store {
+    @di.Inject()
+    fn New() MemoryStore {
+        MemoryStore {}
+    }
+
+    fn Value(self) i32 {
+        1
+    }
+}
+
+service Reader {
+    @di.Inject()
+    fn New(@di.From("") store Store) Reader {
+        discard store
+        Reader {}
+    }
+}
+
+fn main() i32 {
+    0
+}

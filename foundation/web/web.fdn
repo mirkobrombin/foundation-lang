@@ -1,0 +1,1685 @@
+package foundation.web
+
+import std.collections
+import std.format
+import std.net
+import std.parse
+import std.text
+
+// Declares one statically discoverable HTTP endpoint.
+attribute Route(method Method, path String) targets(fn, method)
+
+// Binds one route parameter to a handler parameter.
+attribute Path(name String) targets(parameter)
+
+// Binds one query value to a handler parameter.
+attribute Query(name String) targets(parameter)
+
+// Binds one request header to a handler parameter.
+attribute Header(name String) targets(parameter)
+
+// Binds the request body to a handler parameter.
+attribute Body() targets(parameter)
+
+// Binds one form value to a handler parameter.
+attribute Form(name String) targets(parameter)
+
+// Resolves one application service for a handler parameter.
+attribute Inject() targets(parameter)
+
+enum Method {
+    GET
+    POST
+    PUT
+    PATCH
+    DELETE
+    HEAD
+    OPTIONS
+}
+
+struct HeaderValue {
+    Name String
+    Value String
+}
+
+struct Parameter {
+    Name String
+    Value String
+}
+
+struct Request {
+    Method Method
+    Target String
+    Path String
+    Version String
+    Body String = ""
+    ContentLength u64 = 0
+    hasContentLength bool = false
+    Headers own collections.List<HeaderValue>
+    Params own collections.List<Parameter>
+
+    fn Param(&self, name String) Option<String> {
+        var active = replace self.Params with collections.NewList<Parameter>()
+        var reversed = collections.NewList<Parameter>()
+        var result Option<String> = .None
+        while !active.IsEmpty() {
+            const parameter = parameterValue(active.PopFront())
+            if parameter.Name == name {
+                result = .Some(text.Copy(parameter.Value))
+            }
+            reversed.PushFront($parameter)
+        }
+        self.Params = reverseParameters($reversed)
+        result
+    }
+
+    fn Query(self, name String) Option<String> {
+        queryValue(self.Target, name)
+    }
+
+    fn Form(self, name String) Option<String> {
+        queryValueAfter(self.Body, name, 0)
+    }
+
+    fn Header(&self, name String) Option<String> {
+        var active = replace self.Headers with collections.NewList<HeaderValue>()
+        var reversed = collections.NewList<HeaderValue>()
+        var result Option<String> = .None
+        var found = false
+        while !active.IsEmpty() {
+            const header = headerValue(active.PopFront())
+            if !found && equalFoldAscii(header.Name, name) {
+                result = .Some(text.Copy(header.Value))
+                found = true
+            }
+            reversed.PushFront($header)
+        }
+        self.Headers = reverseHeaders($reversed)
+        result
+    }
+}
+
+struct Response {
+    Status i32
+    Headers own collections.List<HeaderValue>
+    Body String
+}
+
+enum RegistrationError {
+    EmptyPath
+    InvalidPath
+    MalformedSegment
+    InvalidParameter
+    DuplicateParameter
+    UnknownConstraint
+    UnsupportedConstraint
+    CatchAllNotLast
+    AmbiguousRoute
+    DuplicateRoute
+    DuplicateId
+}
+
+enum ProtocolError {
+    Closed
+    RequestLineTooLong
+    HeaderLineTooLong
+    TooManyHeaders
+    MalformedRequestLine
+    UnsupportedMethod
+    UnsupportedVersion
+    MalformedHeader
+    InvalidContentLength
+    BodyTooLarge
+    BodyTruncated
+    BodyUnsupported
+}
+
+enum ReadError {
+    Network(error net.Error)
+    Protocol(error ProtocolError)
+}
+
+enum DispatchError<E> {
+    NotFound
+    MethodNotAllowed
+    Handler(error E)
+}
+
+enum MatchError {
+    NotFound
+    MethodNotAllowed
+}
+
+enum ServeError<E> {
+    Network(error net.Error)
+    Protocol(error ProtocolError)
+    Handler(error E)
+}
+
+contract Handler<E> {
+    fn Handle(self, $request Request) Result<Response, E>
+}
+
+// Dispatches one request through a reusable application graph.
+contract Application<E> {
+    fn Dispatch(&self, $request Request) Result<Response, DispatchError<E>>
+}
+
+struct RouteMatch {
+    Id u64
+    Params own collections.List<Parameter>
+}
+
+struct routePattern {
+    id u64
+    method Method
+    path String
+}
+
+struct routeTableSearch {
+    found bool
+    pathSeen bool
+    id u64
+    params own collections.List<Parameter>
+    rank String
+}
+
+// Stores validated route metadata without owning application handlers.
+struct RouteTable {
+    routes own collections.List<routePattern>
+
+    fn Add(
+        &self,
+        id u64,
+        method Method,
+        $path String
+    ) Result<void, RegistrationError> {
+        if path == "" return .Err(.EmptyPath)
+        if !text.StartsWith(path, "/") return .Err(.InvalidPath)
+        const valid = validateRoutePath(path) else error {
+            return .Err(error)
+        }
+        discard valid
+        const available = tableRegistrationConflict(&self, id, method, path) else error {
+            return .Err(error)
+        }
+        discard available
+        self.routes.PushFront(routePattern { id = id method = method path = path })
+        .Ok
+    }
+
+    fn Match(
+        &self,
+        method Method,
+        path String
+    ) Result<RouteMatch, MatchError> {
+        const selected = findTableRoute(&self, method, path)
+        const routeTableSearch { found pathSeen id params rank } = selected
+        discard rank
+        if !found {
+            discard params
+            if pathSeen return .Err(.MethodNotAllowed)
+            return .Err(.NotFound)
+        }
+        .Ok(RouteMatch { Id = id Params = params })
+    }
+}
+
+struct route<E> {
+    method Method
+    path String
+    handler own Handler<E>
+}
+
+struct pathCursor {
+    value String
+    offset u64
+    end u64
+
+    fn HasNext(self) bool {
+        self.offset < self.end
+    }
+
+    fn Next(&self) String {
+        const start = self.offset
+        while self.offset < self.end && byteAt(self.value, self.offset) != 47 {
+            self.offset = self.offset + 1
+        }
+        const result = slice(self.value, start, self.offset)
+        if self.offset < self.end {
+            self.offset = self.offset + 1
+        }
+        result
+    }
+
+    fn Remaining(self) String {
+        slice(self.value, self.offset, self.end)
+    }
+}
+
+struct parameterSpec {
+    name String
+    constraints String
+}
+
+struct parameterNames {
+    value String
+}
+
+struct pathMatch {
+    params own collections.List<Parameter>
+    rank String
+}
+
+enum componentError {
+    Malformed
+}
+
+struct decodedComponent {
+    valid bool
+    value String
+}
+
+struct componentCursor {
+    value String
+    offset u64
+    end u64
+
+    fn Next(&self) Result<u64, componentError> {
+        if self.offset >= self.end return .Err(.Malformed)
+        const value = byteAt(self.value, self.offset)
+        if value == 43 {
+            self.offset = self.offset + 1
+            return .Ok(32)
+        }
+        if value != 37 {
+            self.offset = self.offset + 1
+            return .Ok(value)
+        }
+        if self.offset + 2 >= self.end return .Err(.Malformed)
+        const high = hexValue(byteAt(self.value, self.offset + 1))
+        const low = hexValue(byteAt(self.value, self.offset + 2))
+        if high >= 16 || low >= 16 return .Err(.Malformed)
+        self.offset = self.offset + 3
+        .Ok(high * 16 + low)
+    }
+}
+
+struct routeSearch {
+    found bool
+    pathSeen bool
+    pattern String
+    params own collections.List<Parameter>
+    rank String
+}
+
+struct Router<E> implements Application<E> {
+    routes own collections.List<own route<E>>
+
+    // Registers a unique method and path pair.
+    fn Map(
+        &self,
+        method Method,
+        $path String,
+        $handler own Handler<E>
+    ) Result<void, RegistrationError> {
+        if path == "" return .Err(.EmptyPath)
+        if !text.StartsWith(path, "/") return .Err(.InvalidPath)
+        const valid = validateRoutePath(path) else error {
+            return .Err(error)
+        }
+        discard valid
+        const available = registrationConflict(&self, method, path) else error {
+            return .Err(error)
+        }
+        discard available
+        self.routes.PushFront(own route<E> {
+            method = method
+            path = path
+            handler = handler
+        })
+        .Ok
+    }
+
+    // Dispatches one owned request and preserves every registered handler.
+    fn Dispatch(
+        &self,
+        $request Request
+    ) Result<Response, DispatchError<E>> {
+        const selected = findRoute(&self, request.Method, request.Path)
+        const routeSearch { found pathSeen pattern params rank } = selected
+        discard rank
+        if !found {
+            discard params
+            if pathSeen return .Err(.MethodNotAllowed)
+            return .Err(.NotFound)
+        }
+        var activeRequest = request
+        const previousParams = replace activeRequest.Params with params
+        discard previousParams
+        dispatchRoute(&self, activeRequest.Method, pattern, $activeRequest)
+    }
+}
+
+fn dispatchRoute<E>(
+    &router Router<E>,
+    expectedMethod Method,
+    pattern String,
+    $request Request
+) Result<Response, DispatchError<E>> {
+    var active = replace router.routes with newRouteList<E>()
+    var processed = newRouteList<E>()
+
+    while !active.IsEmpty() {
+        const current = routeValue(active.PopFront())
+        const route { method path handler } = current
+        if path == pattern && methodEqual(method, expectedMethod) {
+            const handled = handler.Handle($request)
+            processed.PushFront(own route<E> {
+                method = method
+                path = path
+                handler = handler
+            })
+            moveRemainingRoutes(&processed, $active)
+            router.routes = reverseRoutes($processed)
+            return match handled {
+                Ok(response): .Ok(response)
+                Err(error): .Err(.Handler(error = error))
+            }
+        }
+        processed.PushFront(own route<E> {
+            method = method
+            path = path
+            handler = handler
+        })
+    }
+
+    router.routes = reverseRoutes($processed)
+    .Err(.NotFound)
+}
+
+struct Server<E> {
+    listener own net.TcpListener
+    router own Application<E>
+
+    fn Port(self) u64 {
+        self.listener.Port
+    }
+
+    // Accepts and serves one HTTP/1.1 request, then returns the reusable server.
+    fn ServeOne($self) Task<own ServeOutcome<E>> {
+        spawn serveOne<E>($self)
+    }
+}
+
+struct ServeOutcome<E> {
+    Server own Server<E>
+    Value Result<void, ServeError<E>>
+}
+
+struct ReadOutcome {
+    Reader own net.TcpReader
+    Value Result<Request, ReadError>
+}
+
+struct ConnectionOutcome<E> {
+    Router own Application<E>
+    Value Result<void, ServeError<E>>
+}
+
+// Creates an empty router whose handlers share one explicit error type.
+fn NewRouter<E>() own Router<E> {
+    own Router<E> { routes = newRouteList<E>() }
+}
+
+// Creates an empty route table for compiler-generated application dispatch.
+fn NewRouteTable() own RouteTable {
+    own RouteTable { routes = newRoutePatternList() }
+}
+
+// Binds an HTTP server. Port zero asks the operating system to choose a port.
+fn NewServer<E>(
+    $address String,
+    port u64,
+    $application own Application<E>
+) Result<own Server<E>, net.Error> {
+    const listener = net.Listen($address, port) else error {
+        return .Err(error)
+    }
+    .Ok(own Server<E> { listener = listener router = application })
+}
+
+fn Text(status i32, $body String) Response {
+    var headers = collections.NewList<HeaderValue>()
+    headers.PushFront(HeaderValue {
+        Name = "Content-Type"
+        Value = "text/plain; charset=utf-8"
+    })
+    Response { Status = status Headers = headers Body = body }
+}
+
+fn Json(status i32, $body String) Response {
+    var headers = collections.NewList<HeaderValue>()
+    headers.PushFront(HeaderValue {
+        Name = "Content-Type"
+        Value = "application/json; charset=utf-8"
+    })
+    Response { Status = status Headers = headers Body = body }
+}
+
+task serveOne<E>($server own Server<E>) own ServeOutcome<E> {
+    const Server { listener router } = server
+    const accepting = spawn net.Accept($listener)
+    const accepted = $accepting.wait()
+    const net.AcceptOutcome { Listener Value } = accepted
+    const connection = Value else error {
+        return own ServeOutcome<E> {
+            Server = own Server<E> { listener = Listener router = router }
+            Value = .Err(.Network(error = error))
+        }
+    }
+    const finishing = spawn finishAccepted<E>($Listener, $router, $connection)
+    const result = $finishing.wait()
+    result
+}
+
+task finishAccepted<E>(
+    $listener own net.TcpListener,
+    $router own Application<E>,
+    $connection own net.TcpConnection
+) own ServeOutcome<E> {
+    const handling = spawn handleConnection<E>($router, $connection)
+    const handled = $handling.wait()
+    const ConnectionOutcome { Router Value } = handled
+    own ServeOutcome<E> {
+        Server = own Server<E> { listener = listener router = Router }
+        Value = Value
+    }
+}
+
+task handleConnection<E>(
+    $router own Application<E>,
+    $connection own net.TcpConnection
+) own ConnectionOutcome<E> {
+    const pair = connection.Split() else error {
+        return own ConnectionOutcome<E> {
+            Router = router
+            Value = .Err(.Network(error = error))
+        }
+    }
+    const net.StreamPair { Reader Writer } = pair
+    const reading = spawn readRequest($Reader)
+    const readOutcome = $reading.wait()
+    const ReadOutcome { Reader as readerAfter Value as read } = readOutcome
+    discard readerAfter
+    const request = read else error {
+        return finishReadError<E>($router, $Writer, $error)
+    }
+    const dispatching = spawn dispatchRequest<E>($router, $Writer, $request)
+    const result = $dispatching.wait()
+    result
+}
+
+fn finishReadError<E>(
+    $router own Application<E>,
+    $writer own net.TcpWriter,
+    $error ReadError
+) own ConnectionOutcome<E> {
+    discard writer
+    const mapped ServeError<E> = match error {
+        Network(error): .Network(error = error)
+        Protocol(error): .Protocol(error = error)
+    }
+    own ConnectionOutcome<E> { Router = router Value = .Err(mapped) }
+}
+
+task dispatchRequest<E>(
+    $router own Application<E>,
+    $writer own net.TcpWriter,
+    $request Request
+) own ConnectionOutcome<E> {
+    var activeRouter = router
+    const dispatched = activeRouter.Dispatch($request)
+    const response = responseForDispatch($dispatched) else error {
+        return finishHandlerError<E>($activeRouter, $writer, $error)
+    }
+    const writing = spawn writeResponse<E>($activeRouter, $writer, $response)
+    const result = $writing.wait()
+    result
+}
+
+fn finishHandlerError<E>(
+    $router own Application<E>,
+    $writer own net.TcpWriter,
+    $error E
+) own ConnectionOutcome<E> {
+    discard writer
+    own ConnectionOutcome<E> {
+        Router = router
+        Value = .Err(.Handler(error = error))
+    }
+}
+
+fn responseForDispatch<E>(
+    $value Result<Response, DispatchError<E>>
+) Result<Response, E> {
+    match value {
+        Ok(response): .Ok(response)
+        Err(error): match error {
+            NotFound: .Ok(Text(404, "not found"))
+            MethodNotAllowed: .Ok(Text(405, "method not allowed"))
+            Handler(error): .Err(error)
+        }
+    }
+}
+
+task writeResponse<E>(
+    $router own Application<E>,
+    $writer own net.TcpWriter,
+    $response Response
+) own ConnectionOutcome<E> {
+    const serialized = serializeResponse($response)
+    const writing = spawn net.WriteAll($writer, $serialized)
+    const written = $writing.wait()
+    const net.WriteOutcome { Writer Value } = written
+    discard Writer
+    const result Result<void, ServeError<E>> = match Value {
+        Ok: .Ok
+        Err(error): .Err(.Network(error = error))
+    }
+    own ConnectionOutcome<E> { Router = router Value = result }
+}
+
+task readRequest($reader own net.TcpReader) ReadOutcome {
+    const requestLineLimit u64 = 8192
+    const headerLineLimit u64 = 8192
+    const headerLimit i32 = 100
+    const firstReading = spawn net.ReadLineLimited($reader, requestLineLimit)
+    const firstOutcome = $firstReading.wait()
+    const net.ReadLineOutcome { Reader as currentReader Value as first } = firstOutcome
+    const firstLine = first else error {
+        return ReadOutcome {
+            Reader = currentReader
+            Value = .Err(.Network(error = error))
+        }
+    }
+    const requestLine = requestLineValue($firstLine) else error {
+        return ReadOutcome {
+            Reader = currentReader
+            Value = .Err(.Protocol(error = error))
+        }
+    }
+    const parsed = parseRequestLine($requestLine) else error {
+        return ReadOutcome {
+            Reader = currentReader
+            Value = .Err(.Protocol(error = error))
+        }
+    }
+
+    const headers = collections.NewList<HeaderValue>()
+    const remainingLimit = headerLimit
+    const readingHeaders = spawn readHeaders(
+        $currentReader,
+        $parsed,
+        $headers,
+        remainingLimit,
+        headerLineLimit
+    )
+    const result = $readingHeaders.wait()
+    result
+}
+
+task readHeaders(
+    $reader own net.TcpReader,
+    $request Request,
+    $headers own collections.List<HeaderValue>,
+    remaining i32,
+    lineLimit u64
+) ReadOutcome {
+    const reading = spawn net.ReadLineLimited($reader, lineLimit)
+    const outcome = $reading.wait()
+    const net.ReadLineOutcome { Reader Value } = outcome
+    const optional = Value else error {
+        return ReadOutcome {
+            Reader = Reader
+            Value = .Err(.Network(error = error))
+        }
+    }
+    const line = requestLineValue($optional) else error {
+        return ReadOutcome {
+            Reader = Reader
+            Value = .Err(.Protocol(error = error))
+        }
+    }
+    const accepting = spawn acceptHeaderLine(
+        $Reader,
+        $request,
+        $headers,
+        remaining,
+        lineLimit,
+        $line
+    )
+    const result = $accepting.wait()
+    result
+}
+
+task acceptHeaderLine(
+    $reader own net.TcpReader,
+    $request Request,
+    $headers own collections.List<HeaderValue>,
+    remaining i32,
+    lineLimit u64,
+    $line String
+) ReadOutcome {
+    if line == "" {
+        var complete = request
+        complete.Headers = reverseHeaders($headers)
+        if complete.ContentLength == 0 {
+            return ReadOutcome { Reader = reader Value = .Ok(complete) }
+        }
+        const reading = spawn net.ReadExact($reader, complete.ContentLength)
+        const outcome = $reading.wait()
+        const net.ReadOutcome { Reader Value } = outcome
+        const body = Value else error {
+            return bodyReadFailure($Reader, error)
+        }
+        complete.Body = body
+        return ReadOutcome { Reader = Reader Value = .Ok(complete) }
+    }
+    if remaining <= 0 {
+        return ReadOutcome {
+            Reader = reader
+            Value = .Err(.Protocol(error = .TooManyHeaders))
+        }
+    }
+    const header = parseHeader($line) else error {
+        return ReadOutcome {
+            Reader = reader
+            Value = .Err(.Protocol(error = error))
+        }
+    }
+    var activeRequest = request
+    const acceptedHeader = acceptBodyHeader(&activeRequest, $header) else error {
+        return ReadOutcome {
+            Reader = reader
+            Value = .Err(.Protocol(error = error))
+        }
+    }
+    var activeHeaders = headers
+    activeHeaders.PushFront($acceptedHeader)
+    const reading = spawn readHeaders(
+        $reader,
+        $activeRequest,
+        $activeHeaders,
+        remaining - 1,
+        lineLimit
+    )
+    const result = $reading.wait()
+    result
+}
+
+fn bodyReadFailure($reader own net.TcpReader, error net.Error) ReadOutcome {
+    if netErrorIsClosed(error) {
+        return ReadOutcome {
+            Reader = reader
+            Value = .Err(.Protocol(error = .BodyTruncated))
+        }
+    }
+    ReadOutcome { Reader = reader Value = .Err(.Network(error = error)) }
+}
+
+fn netErrorIsClosed(error net.Error) bool {
+    match error {
+        InvalidAddress: false
+        ResolveFailed: false
+        Refused: false
+        Closed: true
+        Cancelled: false
+        InvalidUtf8: false
+        LineTooLong: false
+        AddressInUse: false
+        Io: false
+    }
+}
+
+fn requestLineValue($value Option<String>) Result<String, ProtocolError> {
+    match value {
+        None: .Err(.Closed)
+        Some(line): .Ok(line)
+    }
+}
+
+fn requiredOffset(value Option<u64>) Result<u64, ProtocolError> {
+    match value {
+        None: .Err(.MalformedRequestLine)
+        Some(offset): .Ok(offset)
+    }
+}
+
+fn headerOffset(value Option<u64>) Result<u64, ProtocolError> {
+    match value {
+        None: .Err(.MalformedHeader)
+        Some(offset): .Ok(offset)
+    }
+}
+
+fn parseRequestLine($line String) Result<Request, ProtocolError> {
+    const firstSpace = requiredOffset(text.Find(line, " ")) else error {
+        return .Err(error)
+    }
+    if firstSpace == 0 return .Err(.MalformedRequestLine)
+    const afterMethod = slice(line, firstSpace + 1, text.ByteLen(line))
+    const relativeSecond = requiredOffset(text.Find(afterMethod, " ")) else error {
+        return .Err(error)
+    }
+    if relativeSecond == 0 return .Err(.MalformedRequestLine)
+    const secondSpace = firstSpace + 1 + relativeSecond
+    if secondSpace + 1 >= text.ByteLen(line) return .Err(.MalformedRequestLine)
+
+    const methodText = slice(line, 0, firstSpace)
+    const target = slice(line, firstSpace + 1, secondSpace)
+    const version = slice(line, secondSpace + 1, text.ByteLen(line))
+    const method = parseMethod(methodText) else error {
+        return .Err(error)
+    }
+    if version != "HTTP/1.1" return .Err(.UnsupportedVersion)
+    if !text.StartsWith(target, "/") return .Err(.MalformedRequestLine)
+    const path = pathFromTarget(target)
+    .Ok(Request {
+        Method = method
+        Target = target
+        Path = path
+        Version = version
+        Headers = collections.NewList<HeaderValue>()
+        Params = collections.NewList<Parameter>()
+    })
+}
+
+fn parseMethod(value String) Result<Method, ProtocolError> {
+    if value == "GET" return .Ok(.GET)
+    if value == "POST" return .Ok(.POST)
+    if value == "PUT" return .Ok(.PUT)
+    if value == "PATCH" return .Ok(.PATCH)
+    if value == "DELETE" return .Ok(.DELETE)
+    if value == "HEAD" return .Ok(.HEAD)
+    if value == "OPTIONS" return .Ok(.OPTIONS)
+    .Err(.UnsupportedMethod)
+}
+
+fn pathFromTarget(target String) String {
+    match text.Find(target, "?") {
+        None: text.Copy(target)
+        Some(offset): slice(target, 0, offset)
+    }
+}
+
+fn queryValue(target String, name String) Option<String> {
+    const marker = text.Find(target, "?")
+    match marker {
+        None: .None
+        Some(offset): queryValueAfter(target, name, offset + 1)
+    }
+}
+
+fn queryValueAfter(target String, name String, startAt u64) Option<String> {
+    const length = text.ByteLen(target)
+    var start = startAt
+    while start <= length {
+        var end = start
+        while end < length && byteAt(target, end) != 38 {
+            end = end + 1
+        }
+        var separator = start
+        while separator < end && byteAt(target, separator) != 61 {
+            separator = separator + 1
+        }
+        const decodedComponent { valid as keyValid value as key } = decodeComponent(
+            target,
+            start,
+            separator
+        )
+        if keyValid && key == name {
+            const valueStart = separator + 1 if separator < end else end
+            const decodedComponent { valid value } = decodeComponent(target, valueStart, end)
+            if !valid return .None
+            return .Some(value)
+        }
+        if end == length return .None
+        start = end + 1
+    }
+    .None
+}
+
+fn decodeComponent(value String, start u64, end u64) decodedComponent {
+    var cursor = componentCursor { value = text.Copy(value) offset = start end = end }
+    var builder = text.NewBuilder()
+    while cursor.offset < cursor.end {
+        const codePoint = decodeComponentCodePoint(&cursor) else error {
+            discard error
+            return decodedComponent { valid = false value = "" }
+        }
+        const written = builder.WriteCodePoint(codePoint) else error {
+            discard error
+            return decodedComponent { valid = false value = "" }
+        }
+        discard written
+    }
+    const result = builder.Finish() else error {
+        discard error
+        return decodedComponent { valid = false value = "" }
+    }
+    decodedComponent { valid = true value = result }
+}
+
+fn decodeComponentCodePoint(&cursor componentCursor) Result<u64, componentError> {
+    const first = cursor.Next() else error {
+        return .Err(error)
+    }
+    if first < 128 return .Ok(first)
+
+    var remaining i32 = 0
+    var codePoint u64 = 0
+    var minimum u64 = 0
+    if first >= 194 && first <= 223 {
+        remaining = 1
+        codePoint = first - 192
+        minimum = 128
+    } else {
+        if first >= 224 && first <= 239 {
+            remaining = 2
+            codePoint = first - 224
+            minimum = 2048
+        } else {
+            if first >= 240 && first <= 244 {
+                remaining = 3
+                codePoint = first - 240
+                minimum = 65536
+            } else {
+                return .Err(.Malformed)
+            }
+        }
+    }
+
+    while remaining > 0 {
+        const next = cursor.Next() else error {
+            return .Err(error)
+        }
+        if next < 128 || next > 191 return .Err(.Malformed)
+        codePoint = codePoint * 64 + next - 128
+        remaining = remaining - 1
+    }
+    if codePoint < minimum || codePoint > 1114111 {
+        return .Err(.Malformed)
+    }
+    if codePoint >= 55296 && codePoint <= 57343 {
+        return .Err(.Malformed)
+    }
+    .Ok(codePoint)
+}
+
+fn hexValue(value u64) u64 {
+    if value >= 48 && value <= 57 return value - 48
+    if value >= 65 && value <= 70 return value - 55
+    if value >= 97 && value <= 102 return value - 87
+    16
+}
+
+fn parseHeader($line String) Result<HeaderValue, ProtocolError> {
+    const separator = headerOffset(text.Find(line, ":")) else error {
+        return .Err(error)
+    }
+    if separator == 0 return .Err(.MalformedHeader)
+    const name = slice(line, 0, separator)
+    var start = separator + 1
+    const length = text.ByteLen(line)
+    while start < length && byteAt(line, start) == 32 {
+        start = start + 1
+    }
+    const value = slice(line, start, length)
+    .Ok(HeaderValue { Name = name Value = value })
+}
+
+fn bodyHeaderError(header HeaderValue) Option<ProtocolError> {
+    if equalFoldAscii(header.Name, "Transfer-Encoding") {
+        return .Some(.BodyUnsupported)
+    }
+    if !equalFoldAscii(header.Name, "Content-Length") return .None
+    const length = parse.U64(header.Value) else error {
+        discard error
+        return .Some(.InvalidContentLength)
+    }
+    if length > 1048576 return .Some(.BodyTooLarge)
+    .None
+}
+
+fn acceptBodyHeader(
+    &request Request,
+    $header HeaderValue
+) Result<HeaderValue, ProtocolError> {
+    match bodyHeaderError(header) {
+        None: acceptBodyLength(&request, $header)
+        Some(error): .Err(error)
+    }
+}
+
+fn acceptBodyLength(
+    &request Request,
+    $header HeaderValue
+) Result<HeaderValue, ProtocolError> {
+    if equalFoldAscii(header.Name, "Content-Length") {
+        if request.hasContentLength return .Err(.InvalidContentLength)
+        const length = parse.U64(header.Value) else error {
+            discard error
+            return .Err(.InvalidContentLength)
+        }
+        request.ContentLength = length
+        request.hasContentLength = true
+    }
+    .Ok(header)
+}
+
+fn serializeResponse($response Response) String {
+    const Response { Status Headers Body } = response
+    var builder = text.NewBuilder()
+    writeText(&builder, "HTTP/1.1 ")
+    writeText(&builder, format.I32(Status))
+    writeText(&builder, " ")
+    writeText(&builder, statusText(Status))
+    writeText(&builder, "\r\n")
+
+    var headers = Headers
+    while !headers.IsEmpty() {
+        const header = headerValue(headers.PopFront())
+        writeText(&builder, header.Name)
+        writeText(&builder, ": ")
+        writeText(&builder, header.Value)
+        writeText(&builder, "\r\n")
+    }
+    writeText(&builder, "Content-Length: ")
+    writeText(&builder, format.U64(text.ByteLen(Body)))
+    writeText(&builder, "\r\nConnection: close\r\n\r\n")
+    writeText(&builder, Body)
+    const result = builder.Finish() else error {
+        discard error
+        panic("HTTP response builder invariant failed")
+    }
+    result
+}
+
+fn statusText(status i32) String {
+    if status == 200 return "OK"
+    if status == 201 return "Created"
+    if status == 202 return "Accepted"
+    if status == 204 return "No Content"
+    if status == 400 return "Bad Request"
+    if status == 401 return "Unauthorized"
+    if status == 403 return "Forbidden"
+    if status == 404 return "Not Found"
+    if status == 405 return "Method Not Allowed"
+    if status == 409 return "Conflict"
+    if status == 413 return "Content Too Large"
+    if status == 415 return "Unsupported Media Type"
+    if status == 429 return "Too Many Requests"
+    if status == 500 return "Internal Server Error"
+    if status == 503 return "Service Unavailable"
+    "Status"
+}
+
+fn writeText(&builder text.Builder, value String) void {
+    const written = builder.Write(value) else error {
+        discard error
+        panic("HTTP response builder is closed")
+    }
+    discard written
+}
+
+fn slice(value String, start u64, end u64) String {
+    const result = text.Slice(value, start, end) else error {
+        discard error
+        panic("HTTP parser slice invariant failed")
+    }
+    result
+}
+
+fn byteAt(value String, offset u64) u64 {
+    const result = text.ByteAt(value, offset) else error {
+        discard error
+        panic("HTTP parser byte invariant failed")
+    }
+    result
+}
+
+fn equalFoldAscii(left String, right String) bool {
+    const length = text.ByteLen(left)
+    if length != text.ByteLen(right) return false
+    var offset u64 = 0
+    while offset < length {
+        if lowerAscii(byteAt(left, offset)) != lowerAscii(byteAt(right, offset)) {
+            return false
+        }
+        offset = offset + 1
+    }
+    true
+}
+
+fn lowerAscii(value u64) u64 {
+    if value >= 65 && value <= 90 return value + 32
+    value
+}
+
+fn methodEqual(left Method, right Method) bool {
+    methodCode(left) == methodCode(right)
+}
+
+fn methodCode(method Method) i32 {
+    match method {
+        GET: 1
+        POST: 2
+        PUT: 3
+        PATCH: 4
+        DELETE: 5
+        HEAD: 6
+        OPTIONS: 7
+    }
+}
+
+fn newPathCursor(value String) pathCursor {
+    const length = text.ByteLen(value)
+    var start u64 = 0
+    while start < length && byteAt(value, start) == 47 {
+        start = start + 1
+    }
+    var end = length
+    while end > start && byteAt(value, end - 1) == 47 {
+        end = end - 1
+    }
+    pathCursor { value = text.Copy(value) offset = start end = end }
+}
+
+fn validateRoutePath(path String) Result<bool, RegistrationError> {
+    var cursor = newPathCursor(path)
+    var names = parameterNames { value = "|" }
+    while cursor.HasNext() {
+        const segment = cursor.Next()
+        const accepted = validateRouteSegment(segment, !cursor.HasNext(), &names) else error {
+            discard names
+            return .Err(error)
+        }
+        discard accepted
+    }
+    discard names
+    .Ok(true)
+}
+
+fn validateRouteSegment(
+    segment String,
+    last bool,
+    &names parameterNames
+) Result<bool, RegistrationError> {
+    const hasOpen = text.Contains(segment, "{")
+    const hasClose = text.Contains(segment, "}")
+    if !hasOpen && !hasClose return .Ok(true)
+    if !isParameterSegment(segment) return .Err(.MalformedSegment)
+
+    if isCatchAllSegment(segment) {
+        if !last return .Err(.CatchAllNotLast)
+        const name = catchAllName(segment)
+        if text.Contains(name, ":") return .Err(.UnsupportedConstraint)
+        if !validParameterName(name) return .Err(.InvalidParameter)
+        if containsName(names, name) return .Err(.DuplicateParameter)
+        addName(&names, name)
+        return .Ok(true)
+    }
+
+    const parameterSpec { name constraints } = parameterSpecFor(segment)
+    if !validParameterName(name) return .Err(.InvalidParameter)
+    if containsName(names, name) return .Err(.DuplicateParameter)
+    const accepted = validateConstraints(constraints) else error {
+        return .Err(error)
+    }
+    discard accepted
+    addName(&names, name)
+    .Ok(true)
+}
+
+fn validateConstraints(value String) Result<bool, RegistrationError> {
+    if value == "" return .Ok(true)
+    if text.StartsWith(value, "regex(") {
+        if !text.EndsWith(value, ")") return .Err(.UnknownConstraint)
+        return .Err(.UnsupportedConstraint)
+    }
+
+    const length = text.ByteLen(value)
+    var start u64 = 0
+    while start <= length {
+        var end = start
+        while end < length && byteAt(value, end) != 44 {
+            end = end + 1
+        }
+        const constraint = slice(value, start, end)
+        if constraint != "int" && constraint != "alpha" {
+            return .Err(.UnknownConstraint)
+        }
+        if end == length return .Ok(true)
+        start = end + 1
+    }
+    .Err(.UnknownConstraint)
+}
+
+fn registrationConflict<E>(
+    &router Router<E>,
+    method Method,
+    path String
+) Result<bool, RegistrationError> {
+    var active = replace router.routes with newRouteList<E>()
+    var reversed = newRouteList<E>()
+    var result Option<RegistrationError> = .None
+    while !active.IsEmpty() {
+        const current = routeValue(active.PopFront())
+        const route { method as currentMethod path as currentPath handler } = current
+        if patternsEquivalent(currentPath, path) && methodEqual(currentMethod, method) {
+            result = .Some(.DuplicateRoute)
+        } else {
+            if patternsAmbiguous(currentPath, path) {
+                result = .Some(.AmbiguousRoute)
+            }
+        }
+        reversed.PushFront(own route<E> {
+            method = currentMethod
+            path = currentPath
+            handler = handler
+        })
+    }
+    router.routes = reverseRoutes($reversed)
+    match result {
+        None: .Ok(true)
+        Some(error): .Err(error)
+    }
+}
+
+fn tableRegistrationConflict(
+    &table RouteTable,
+    id u64,
+    method Method,
+    path String
+) Result<bool, RegistrationError> {
+    var active = replace table.routes with newRoutePatternList()
+    var reversed = newRoutePatternList()
+    var result Option<RegistrationError> = .None
+    while !active.IsEmpty() {
+        const current = routePatternValue(active.PopFront())
+        const routePattern {
+            id as currentId
+            method as currentMethod
+            path as currentPath
+        } = current
+        if currentId == id {
+            result = .Some(.DuplicateId)
+        } else {
+            if patternsEquivalent(currentPath, path) && methodEqual(currentMethod, method) {
+                result = .Some(.DuplicateRoute)
+            } else {
+                if patternsAmbiguous(currentPath, path) {
+                    result = .Some(.AmbiguousRoute)
+                }
+            }
+        }
+        reversed.PushFront(routePattern {
+            id = currentId
+            method = currentMethod
+            path = currentPath
+        })
+    }
+    table.routes = reverseRoutePatterns($reversed)
+    match result {
+        None: .Ok(true)
+        Some(error): .Err(error)
+    }
+}
+
+fn patternsEquivalent(left String, right String) bool {
+    var leftCursor = newPathCursor(left)
+    var rightCursor = newPathCursor(right)
+    while leftCursor.HasNext() && rightCursor.HasNext() {
+        if leftCursor.Next() != rightCursor.Next() return false
+    }
+    !leftCursor.HasNext() && !rightCursor.HasNext()
+}
+
+fn patternsAmbiguous(left String, right String) bool {
+    var leftCursor = newPathCursor(left)
+    var rightCursor = newPathCursor(right)
+    while leftCursor.HasNext() && rightCursor.HasNext() {
+        const leftSegment = leftCursor.Next()
+        const rightSegment = rightCursor.Next()
+        const leftParameter = isParameterSegment(leftSegment)
+        const rightParameter = isParameterSegment(rightSegment)
+        if !leftParameter || !rightParameter {
+            if leftParameter != rightParameter return false
+            if leftSegment != rightSegment return false
+            continue
+        }
+
+        const leftCatchAll = isCatchAllSegment(leftSegment)
+        const rightCatchAll = isCatchAllSegment(rightSegment)
+        if leftCatchAll != rightCatchAll return true
+        if leftCatchAll {
+            if catchAllName(leftSegment) != catchAllName(rightSegment) return true
+            continue
+        }
+
+        const leftSpec = parameterSpecFor(leftSegment)
+        const rightSpec = parameterSpecFor(rightSegment)
+        if leftSpec.name != rightSpec.name return true
+        if leftSpec.constraints != rightSpec.constraints return true
+    }
+    false
+}
+
+fn findRoute<E>(
+    &router Router<E>,
+    method Method,
+    path String
+) routeSearch {
+    var active = replace router.routes with newRouteList<E>()
+    var reversed = newRouteList<E>()
+    var result = routeSearch {
+        found = false
+        pathSeen = false
+        pattern = ""
+        params = collections.NewList<Parameter>()
+        rank = ""
+    }
+    while !active.IsEmpty() {
+        const current = routeValue(active.PopFront())
+        const route { method as currentMethod path as currentPath handler } = current
+        const inspected = match matchRoutePattern(currentPath, path) {
+            None: false
+            Some(matched): acceptPathMatch(&result, currentMethod, method, currentPath, $matched)
+        }
+        discard inspected
+        reversed.PushFront(own route<E> {
+            method = currentMethod
+            path = currentPath
+            handler = handler
+        })
+    }
+    router.routes = reverseRoutes($reversed)
+    result
+}
+
+fn findTableRoute(
+    &table RouteTable,
+    method Method,
+    path String
+) routeTableSearch {
+    var active = replace table.routes with newRoutePatternList()
+    var reversed = newRoutePatternList()
+    var result = routeTableSearch {
+        found = false
+        pathSeen = false
+        id = 0
+        params = collections.NewList<Parameter>()
+        rank = ""
+    }
+    while !active.IsEmpty() {
+        const current = routePatternValue(active.PopFront())
+        const routePattern {
+            id as currentId
+            method as currentMethod
+            path as currentPath
+        } = current
+        const inspected = match matchRoutePattern(currentPath, path) {
+            None: false
+            Some(matched): acceptTablePathMatch(
+                &result,
+                currentId,
+                currentMethod,
+                method,
+                $matched
+            )
+        }
+        discard inspected
+        reversed.PushFront(routePattern {
+            id = currentId
+            method = currentMethod
+            path = currentPath
+        })
+    }
+    table.routes = reverseRoutePatterns($reversed)
+    result
+}
+
+fn acceptTablePathMatch(
+    &result routeTableSearch,
+    currentId u64,
+    currentMethod Method,
+    requestedMethod Method,
+    $matched own pathMatch
+) bool {
+    result.pathSeen = true
+    const pathMatch { params rank } = matched
+    if methodEqual(currentMethod, requestedMethod) &&
+        (!result.found || text.Compare(rank, result.rank) > 0) {
+        const previous = replace result.params with params
+        discard previous
+        result.found = true
+        result.id = currentId
+        result.rank = rank
+    } else {
+        discard params
+    }
+    true
+}
+
+fn acceptPathMatch(
+    &result routeSearch,
+    currentMethod Method,
+    requestedMethod Method,
+    currentPath String,
+    $matched own pathMatch
+) bool {
+    result.pathSeen = true
+    const pathMatch { params rank } = matched
+    if methodEqual(currentMethod, requestedMethod) &&
+        (!result.found || text.Compare(rank, result.rank) > 0) {
+        const previous = replace result.params with params
+        discard previous
+        result.found = true
+        result.pattern = text.Copy(currentPath)
+        result.rank = rank
+    } else {
+        discard params
+    }
+    true
+}
+
+fn matchRoutePattern(pattern String, path String) Option<own pathMatch> {
+    var patterns = newPathCursor(pattern)
+    var values = newPathCursor(path)
+    var params = collections.NewList<Parameter>()
+    var rank = text.NewBuilder()
+
+    while patterns.HasNext() {
+        const segment = patterns.Next()
+        if isCatchAllSegment(segment) {
+            writeText(&rank, "0")
+            params.PushFront(Parameter {
+                Name = catchAllName(segment)
+                Value = values.Remaining()
+            })
+            return completePathMatch($params, $rank)
+        }
+        if !values.HasNext() {
+            discard params
+            discard rank.Close()
+            return .None
+        }
+
+        const value = values.Next()
+        if isParameterSegment(segment) {
+            const parameterSpec { name constraints } = parameterSpecFor(segment)
+            if !constraintsMatch(constraints, value) {
+                discard params
+                discard rank.Close()
+                return .None
+            }
+            writeText(&rank, "1")
+            params.PushFront(Parameter { Name = name Value = value })
+        } else {
+            if segment != value {
+                discard params
+                discard rank.Close()
+                return .None
+            }
+            writeText(&rank, "2")
+        }
+    }
+
+    if values.HasNext() {
+        discard params
+        discard rank.Close()
+        return .None
+    }
+    writeText(&rank, "3")
+    completePathMatch($params, $rank)
+}
+
+fn completePathMatch(
+    $params own collections.List<Parameter>,
+    $rank own text.Builder
+) Option<own pathMatch> {
+    var builder = rank
+    const value = builder.Finish() else error {
+        discard error
+        panic("HTTP route rank builder invariant failed")
+    }
+    .Some(own pathMatch {
+        params = reverseParameters($params)
+        rank = value
+    })
+}
+
+fn constraintsMatch(constraints String, value String) bool {
+    if constraints == "" return true
+    const length = text.ByteLen(constraints)
+    var start u64 = 0
+    while start <= length {
+        var end = start
+        while end < length && byteAt(constraints, end) != 44 {
+            end = end + 1
+        }
+        if !constraintMatches(slice(constraints, start, end), value) return false
+        if end == length return true
+        start = end + 1
+    }
+    false
+}
+
+fn constraintMatches(constraint String, value String) bool {
+    if constraint == "int" return integerConstraintMatches(value)
+    if constraint == "alpha" return alphaConstraintMatches(value)
+    false
+}
+
+fn integerConstraintMatches(value String) bool {
+    if text.StartsWith(value, "+") {
+        if text.ByteLen(value) == 1 return false
+        return integerParsed(slice(value, 1, text.ByteLen(value)))
+    }
+    integerParsed(value)
+}
+
+fn integerParsed(value String) bool {
+    match parse.I64(value) {
+        Ok(number): true
+        Err(error): false
+    }
+}
+
+fn alphaConstraintMatches(value String) bool {
+    const length = text.ByteLen(value)
+    var offset u64 = 0
+    while offset < length {
+        const byte = byteAt(value, offset)
+        if !((byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)) {
+            return false
+        }
+        offset = offset + 1
+    }
+    true
+}
+
+fn isParameterSegment(value String) bool {
+    const length = text.ByteLen(value)
+    length >= 3 && byteAt(value, 0) == 123 && byteAt(value, length - 1) == 125
+}
+
+fn isCatchAllSegment(value String) bool {
+    isParameterSegment(value) && text.ByteLen(value) >= 4 && byteAt(value, 1) == 42
+}
+
+fn catchAllName(value String) String {
+    slice(value, 2, text.ByteLen(value) - 1)
+}
+
+fn parameterSpecFor(value String) parameterSpec {
+    const inner = slice(value, 1, text.ByteLen(value) - 1)
+    match text.Find(inner, ":") {
+        None: parameterSpec { name = inner constraints = "" }
+        Some(offset): parameterSpec {
+            name = slice(inner, 0, offset)
+            constraints = slice(inner, offset + 1, text.ByteLen(inner))
+        }
+    }
+}
+
+fn validParameterName(value String) bool {
+    const length = text.ByteLen(value)
+    if length == 0 return false
+    const first = byteAt(value, 0)
+    if first != 95 && !asciiLetter(first) return false
+    var offset u64 = 1
+    while offset < length {
+        const byte = byteAt(value, offset)
+        if byte != 95 && !asciiLetter(byte) && (byte < 48 || byte > 57) {
+            return false
+        }
+        offset = offset + 1
+    }
+    true
+}
+
+fn asciiLetter(value u64) bool {
+    (value >= 65 && value <= 90) || (value >= 97 && value <= 122)
+}
+
+fn containsName(names parameterNames, expected String) bool {
+    var builder = text.NewBuilder()
+    writeText(&builder, "|")
+    writeText(&builder, expected)
+    writeText(&builder, "|")
+    const needle = builder.Finish() else error {
+        discard error
+        panic("HTTP route name builder invariant failed")
+    }
+    text.Contains(names.value, needle)
+}
+
+fn addName(&names parameterNames, name String) void {
+    var builder = text.NewBuilder()
+    writeText(&builder, names.value)
+    writeText(&builder, name)
+    writeText(&builder, "|")
+    const value = builder.Finish() else error {
+        discard error
+        panic("HTTP route names builder invariant failed")
+    }
+    names.value = value
+}
+
+fn moveRemainingRoutes<E>(
+    &target collections.List<own route<E>>,
+    $source own collections.List<own route<E>>
+) void {
+    var remaining = source
+    while !remaining.IsEmpty() {
+        target.PushFront(routeValue(remaining.PopFront()))
+    }
+}
+
+fn reverseRoutes<E>(
+    $values own collections.List<own route<E>>
+) own collections.List<own route<E>> {
+    var source = values
+    var result = newRouteList<E>()
+    while !source.IsEmpty() {
+        result.PushFront(routeValue(source.PopFront()))
+    }
+    result
+}
+
+fn reverseRoutePatterns(
+    $values own collections.List<routePattern>
+) own collections.List<routePattern> {
+    var source = values
+    var result = newRoutePatternList()
+    while !source.IsEmpty() {
+        result.PushFront(routePatternValue(source.PopFront()))
+    }
+    result
+}
+
+fn reverseHeaders(
+    $values own collections.List<HeaderValue>
+) own collections.List<HeaderValue> {
+    var source = values
+    var result = collections.NewList<HeaderValue>()
+    while !source.IsEmpty() {
+        result.PushFront(headerValue(source.PopFront()))
+    }
+    result
+}
+
+fn reverseParameters(
+    $values own collections.List<Parameter>
+) own collections.List<Parameter> {
+    var source = values
+    var result = collections.NewList<Parameter>()
+    while !source.IsEmpty() {
+        result.PushFront(parameterValue(source.PopFront()))
+    }
+    result
+}
+
+fn newRouteList<E>() own collections.List<own route<E>> {
+    collections.NewList<own route<E>>()
+}
+
+fn newRoutePatternList() own collections.List<routePattern> {
+    collections.NewList<routePattern>()
+}
+
+fn routeValue<E>($value Option<own route<E>>) own route<E> {
+    match value {
+        None: missingRoute<E>()
+        Some(current): current
+    }
+}
+
+fn routePatternValue($value Option<routePattern>) routePattern {
+    match value {
+        None: missingRoutePattern()
+        Some(current): current
+    }
+}
+
+fn missingRoute<E>() own route<E> {
+    panic("HTTP router entry invariant failed")
+}
+
+fn missingRoutePattern() routePattern {
+    panic("HTTP route table entry invariant failed")
+}
+
+fn headerValue($value Option<HeaderValue>) HeaderValue {
+    match value {
+        None: missingHeader()
+        Some(header): header
+    }
+}
+
+fn parameterValue($value Option<Parameter>) Parameter {
+    match value {
+        None: missingParameter()
+        Some(parameter): parameter
+    }
+}
+
+fn missingParameter() Parameter {
+    panic("HTTP parameter invariant failed")
+}
+
+fn missingHeader() HeaderValue {
+    panic("HTTP header invariant failed")
+}

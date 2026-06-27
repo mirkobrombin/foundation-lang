@@ -1,0 +1,16 @@
+struct Resource {
+    label String
+}
+
+fn consume($resource Resource) i32 {
+    discard resource
+    1
+}
+
+fn main() i32 {
+    const resource = own Resource { label = "owned" }
+    const selected = consume($resource) if true else 0
+    discard selected
+    print(resource.label)
+    0
+}

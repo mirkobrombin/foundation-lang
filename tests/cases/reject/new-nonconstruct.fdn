@@ -1,0 +1,5 @@
+fn main() i32 {
+    const value = new 42
+    discard value
+    0
+}

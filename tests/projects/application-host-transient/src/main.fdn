@@ -1,0 +1,47 @@
+package test.host.transient
+
+import foundation.actions
+import foundation.di
+
+@di.Scope(.Singleton)
+service Seed {
+    initial i32
+
+    @di.Inject()
+    fn New(@di.Input() initial i32) Seed {
+        Seed { initial = initial }
+    }
+}
+
+service Step {
+    amount i32
+
+    @di.Inject()
+    fn New(@di.Input() amount i32) Step {
+        Step { amount = amount }
+    }
+}
+
+service Counter {
+    value i32
+    step Step
+
+    @di.Inject()
+    fn New(seed Seed, $step Step, @di.Input() offset i32) Counter {
+        Counter { value = seed.initial + offset step = step }
+    }
+
+    @actions.Name("next")
+    action Next(&self) i32 {
+        self.value = self.value + self.step.amount
+        self.value
+    }
+}
+
+fn main() i32 {
+    const application = BuildFoundationApplication(10)
+    if application.Next(1, 0) != 11 return 1
+    if application.Next(2, 5) != 17 return 2
+    print("transient")
+    0
+}

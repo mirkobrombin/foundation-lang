@@ -21,7 +21,10 @@ enum class CallTargetKind {
     Print,
     Panic,
     Len,
+    Null,
+    IsNull,
     Channel,
+    NumericConversion,
 };
 
 struct CallTarget {
@@ -49,7 +52,9 @@ struct CallTarget {
         std::vector<ContractMethodTarget> methods;
     };
     std::optional<ContractConversion> receiverConversion;
+    std::vector<std::optional<Type>> argumentBorrows;
     std::vector<std::optional<ContractConversion>> argumentConversions;
+    std::vector<std::size_t> argumentParameters;
 };
 
 struct FunctionValueTarget {
@@ -71,6 +76,26 @@ struct SemanticLocal {
     bool capture{};
     CaptureMode captureMode{CaptureMode::Copy};
     bool borrowedClosure{};
+    bool readBinding{};
+};
+
+struct SemanticWorkflowStep {
+    std::string name;
+    FirFunctionId function{};
+    std::vector<Type> typeArguments;
+    std::size_t attempts{1};
+    std::optional<FirFunctionId> compensation;
+    std::vector<Type> compensationTypeArguments;
+};
+
+struct SemanticWorkflowFunction {
+    WorkflowKind kind{WorkflowKind::Pipeline};
+    Type inputType{invalidType};
+    Type successType{invalidType};
+    Type errorType{invalidType};
+    Type failureType{invalidType};
+    Type failureDetailsType{invalidType};
+    std::vector<SemanticWorkflowStep> steps;
 };
 
 struct SemanticFunction {
@@ -82,6 +107,7 @@ struct SemanticFunction {
     std::vector<FirAttributeUse> attributes;
     std::vector<std::vector<FirAttributeUse>> parameterAttributes;
     std::optional<std::string> callbackCancelSymbol;
+    std::optional<SemanticWorkflowFunction> workflow;
 };
 
 struct SemanticStruct {
@@ -106,6 +132,7 @@ struct SemanticContractMethod {
     Type returnType{invalidType};
     std::vector<Type> parameterTypes;
     std::vector<std::string> parameterNames;
+    std::vector<ParameterMode> parameterModes;
     bool exported{};
     SourceSpan span;
     std::size_t originContract{};
@@ -123,8 +150,14 @@ struct SemanticContract {
 };
 
 struct StructLiteralTarget {
+    struct DefaultField {
+        FirFieldId field{};
+        FirFunctionId function{};
+    };
+
     Type type{invalidType};
     std::vector<FirFieldId> fields;
+    std::vector<DefaultField> defaults;
 };
 
 struct StructDestructureTarget {
@@ -186,11 +219,26 @@ struct SelectTarget {
     FirLocalId deadlineStorage{};
 };
 
+struct ForTarget {
+    FirLocalId sequenceStorage{};
+    FirLocalId index{};
+    FirLocalId value{};
+    Type sequenceType{invalidType};
+    bool editable{};
+    bool iterator{};
+    FirFunctionId nextFunction{};
+    std::vector<Type> nextTypeArguments;
+    Type nextResultType{invalidType};
+    bool ownsSequence{};
+};
+
 struct SemanticModel {
     std::vector<Type> expressionTypes;
+    std::vector<bool> expressionReads;
     std::vector<std::optional<CallTarget::ContractConversion>> expressionContractConversions;
     std::vector<std::optional<FirLocalId>> expressionLocals;
     std::vector<std::optional<CallTarget>> callTargets;
+    std::vector<bool> emptyTests;
     std::vector<std::optional<StructLiteralTarget>> structTargets;
     std::vector<std::optional<FirFieldId>> expressionFields;
     std::vector<std::optional<EnumTarget>> enumTargets;
@@ -202,7 +250,9 @@ struct SemanticModel {
     std::vector<std::optional<BlockingCallTarget>> blockingCallTargets;
     std::vector<std::optional<CallbackCallTarget>> callbackCallTargets;
     std::vector<std::optional<ChannelOperationTarget>> channelOperationTargets;
+    std::vector<bool> channelSenderClones;
     std::vector<std::optional<SelectTarget>> selectTargets;
+    std::vector<std::optional<ForTarget>> forTargets;
     std::vector<bool> expressionBorrowedClosures;
     std::vector<bool> expressionMoves;
     std::vector<std::optional<FirLocalId>> statementLocals;

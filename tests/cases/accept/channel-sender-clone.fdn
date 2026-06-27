@@ -1,0 +1,63 @@
+struct Publisher {
+    sender Sender<i32>
+
+    fn Clone(self) Publisher {
+        Publisher { sender = self.sender.clone() }
+    }
+}
+
+task publish($publisher Publisher, value i32) Result<void, ChannelError> {
+    const Publisher { sender } = publisher
+    const delivered = sender.send(value)
+    delivered
+}
+
+task receiveTotal($receiver Receiver<i32>) i32 {
+    const firstReceived = receiver.receive()
+    const first = match firstReceived {
+        Ok(value): value
+        Err(error): match error {
+            Closed: -1
+            Cancelled: -2
+            Timeout: -3
+        }
+    }
+    if first < 0 {
+        return 1
+    }
+    const secondReceived = receiver.receive()
+    const second = match secondReceived {
+        Ok(value): value
+        Err(error): match error {
+            Closed: -4
+            Cancelled: -5
+            Timeout: -6
+        }
+    }
+    if second < 0 {
+        return 2
+    }
+    first + second
+}
+
+fn main() i32 {
+    const Channel { sender receiver } = channel<i32>(2)
+    const publisher = Publisher { sender = sender }
+    const first = publisher.Clone()
+    const second = publisher.Clone()
+    discard publisher
+
+    const publishingFirst = spawn publish($first, 20)
+    const publishingSecond = spawn publish($second, 22)
+    discard $publishingFirst.wait()
+    discard $publishingSecond.wait()
+
+    const receiving = spawn receiveTotal($receiver)
+    const total = $receiving.wait()
+
+    if total != 42 {
+        return total
+    }
+    print("sender clone")
+    0
+}

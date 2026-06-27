@@ -1,0 +1,57 @@
+import foundation.plugin
+import std.format
+import std.time
+
+fn main(args [String]) i32 {
+    if len(args) != 1 return 1
+
+    const created = plugin.NewExecSandbox(args[0]) else error {
+        discard error
+        return 2
+    }
+    var sandbox = created
+    const mode = sandbox.Argument("invalid-ready") else error {
+        discard error
+        return 3
+    }
+    discard mode
+
+    const starting = spawn plugin.StartSandbox($sandbox, time.Seconds(2))
+    const plugin.SandboxStartOutcome {
+        Sandbox as rejectedValue
+        Value as result
+    } = $starting.wait()
+    var rejected = rejectedValue
+    const expected = match result {
+        Ok(changed): unexpectedStart(changed)
+        Err(error): isUnexpectedReady(error)
+    }
+    print(format.Bool(expected))
+    print(format.Bool(rejected.IsRunning()))
+    print(format.Bool(rejected.Close()))
+    print(format.Bool(rejected.Close()))
+    0
+}
+
+fn unexpectedStart(changed bool) bool {
+    discard changed
+    false
+}
+
+fn isUnexpectedReady(error plugin.SandboxError) bool {
+    match error.Kind {
+        InvalidPath: false
+        InvalidArgument: false
+        AlreadyStarted: false
+        NotStarted: false
+        SpawnFailed: false
+        ReadyTimeout: false
+        ReadyTooLarge: false
+        ReadyIo: false
+        UnexpectedReady: true
+        StopWriteFailed: false
+        StopTimeout: false
+        ExitFailed: false
+        Closed: false
+    }
+}

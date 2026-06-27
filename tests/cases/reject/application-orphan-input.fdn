@@ -1,0 +1,9 @@
+import foundation.di
+
+fn create(@di.Input() value i32) i32 {
+    value
+}
+
+fn main() i32 {
+    create(0)
+}

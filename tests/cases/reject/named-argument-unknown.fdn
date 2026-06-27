@@ -1,0 +1,7 @@
+fn value(first i32) i32 {
+    first
+}
+
+fn main() i32 {
+    value(missing = 1)
+}

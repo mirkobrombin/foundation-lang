@@ -2,7 +2,7 @@ package test.filesystem_lines
 
 import std.fs
 
-fn lineOr(value Result<Option<String>, fs.Error>) String {
+fn lineOr($value Result<Option<String>, fs.Error>) String {
     match value {
         Ok(line): match line {
             None: ""
@@ -12,7 +12,7 @@ fn lineOr(value Result<Option<String>, fs.Error>) String {
     }
 }
 
-fn isLineTooLong(value Result<Option<String>, fs.Error>) bool {
+fn isLineTooLong($value Result<Option<String>, fs.Error>) bool {
     match value {
         Ok(line): false
         Err(error): match error {
@@ -28,28 +28,28 @@ fn isLineTooLong(value Result<Option<String>, fs.Error>) bool {
     }
 }
 
-fn main(args view [String]) i32 {
-    let size = fs.Size(view args[0]) else error {
+fn main(args [String]) i32 {
+    const size = fs.Size(args[0]) else error {
         discard error
         return 1
     }
-    let opened = fs.OpenLines(view args[0]) else error {
+    const opened = fs.OpenLines(args[0]) else error {
         discard error
         return 2
     }
     var reader = opened
-    let first = lineOr(reader.Next())
-    let second = lineOr(reader.Next())
-    let third = lineOr(reader.Next())
-    let end = lineOr(reader.Next())
+    const first = lineOr(reader.Next())
+    const second = lineOr(reader.Next())
+    const third = lineOr(reader.Next())
+    const end = lineOr(reader.Next())
     discard reader.Close()
-    let limited = fs.OpenLines(view args[0]) else error {
+    const limited = fs.OpenLines(args[0]) else error {
         discard error
         return 3
     }
     var limitedReader = limited
-    let shortLimit u64 = 8
-    let bounded = isLineTooLong(limitedReader.NextLimited(shortLimit))
+    const shortLimit u64 = 8
+    const bounded = isLineTooLong(limitedReader.NextLimited(shortLimit))
     discard limitedReader.Close()
     if size > 0 && first == "{\"id\":1,\"text\":\"first\"}" &&
         second == "{\"id\":2,\"text\":\"héllo\"}" &&

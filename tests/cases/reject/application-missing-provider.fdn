@@ -1,0 +1,16 @@
+import foundation.di
+
+struct Database {}
+
+@di.Scope(.Singleton)
+service Api {
+    @di.Inject()
+    fn New(database Database) Api {
+        discard database
+        Api {}
+    }
+}
+
+fn main() i32 {
+    0
+}

@@ -1,6 +1,6 @@
 fn main() i32 {
-    let value = "owned"
-    let take = fn() String capture own value {
+    const value = "owned"
+    const take = fn() String capture $value {
         value
     }
     discard take

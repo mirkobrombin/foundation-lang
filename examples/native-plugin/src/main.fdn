@@ -1,0 +1,43 @@
+package example.native_plugin
+
+import foundation.plugin
+import std.format
+
+fn main(args [String]) i32 {
+    if len(args) != 1 {
+        print("pass the native plugin path")
+        return 1
+    }
+
+    const opened = plugin.LoadNative(args[0]) else error {
+        print(error.Detail)
+        return 2
+    }
+    var loaded = opened
+    print(loaded.Name())
+
+    const started = loaded.Start() else error {
+        print(error.Detail)
+        return 3
+    }
+    print(format.Bool(started))
+
+    const alreadyStarted = loaded.Start() else error {
+        print(error.Detail)
+        return 4
+    }
+    print(format.Bool(alreadyStarted))
+
+    const stopped = loaded.Stop() else error {
+        print(error.Detail)
+        return 5
+    }
+    print(format.Bool(stopped))
+
+    const closed = loaded.Close() else error {
+        print(error.Detail)
+        return 6
+    }
+    print(format.Bool(closed))
+    0
+}

@@ -1,11 +1,11 @@
 import foundation.worker
 import std.concurrent
 
-task finish(message String) void {
+task finish($message String) void {
     print(message)
 }
 
-task observe(cancel concurrent.Cancellation) void {
+task observe($cancel concurrent.Cancellation) void {
     if cancel.IsRequested() {
         print("cancelled")
     }

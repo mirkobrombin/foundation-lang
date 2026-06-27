@@ -1,0 +1,184 @@
+package example.web
+
+import foundation.di
+import foundation.web
+import std.collections
+import std.format
+import std.net
+import std.text
+
+enum ApiError {
+    Disabled
+}
+
+@di.Scope(.Singleton)
+service AppInfo {
+    name String
+    version String
+
+    @di.Inject()
+    fn New() AppInfo {
+        AppInfo { name = "Foundation Web" version = "0.1.0" }
+    }
+
+    fn Label(self) String {
+        text.Copy(self.name) + " " + text.Copy(self.version)
+    }
+}
+
+@web.Route(.GET, "/")
+fn Index(@web.Inject() info AppInfo) web.Response {
+    web.Text(200, info.Label())
+}
+
+@web.Route(.GET, "/health")
+fn Health() web.Response {
+    web.Json(200, "{\"status\":\"healthy\"}")
+}
+
+@web.Route(.GET, "/users/{id:alpha}")
+fn GetUser(
+    @web.Path("id") id String,
+    @web.Query("limit") limit i32,
+    @web.Query("note") $note Option<String>,
+    @web.Header("X-Trace") trace String,
+    @web.Inject() info AppInfo
+) web.Response {
+    const noteValue = match note {
+        None: "none"
+        Some(value): value
+    }
+    const body = info.Label() + " user=" + text.Copy(id) +
+        " limit=" + format.I32(limit) + " note=" + noteValue +
+        " trace=" + text.Copy(trace)
+    web.Text(200, $body)
+}
+
+@web.Route(.POST, "/users/{id:alpha}")
+fn CreateUser(
+    @web.Path("id") id String,
+    @web.Header("X-Enabled") enabled bool,
+    @web.Body() body String
+) Result<web.Response, ApiError> {
+    if !enabled return .Err(.Disabled)
+    .Ok(web.Text(201, "created " + text.Copy(id) + ": " + text.Copy(body)))
+}
+
+@web.Route(.POST, "/login")
+fn Login(@web.Form("username") username String) web.Response {
+    web.Text(200, "welcome " + text.Copy(username))
+}
+
+fn newRequest(method web.Method, $target String, $path String) web.Request {
+    web.Request {
+        Method = method
+        Target = target
+        Path = path
+        Version = "HTTP/1.1"
+        Headers = collections.NewList<web.HeaderValue>()
+        Params = collections.NewList<web.Parameter>()
+    }
+}
+
+fn responseOr(
+    $value Result<web.Response, web.DispatchError<FoundationWebError>>
+) web.Response {
+    match value {
+        Ok(response): response
+        Err(error): dispatchPanic($error)
+    }
+}
+
+fn dispatchPanic($error web.DispatchError<FoundationWebError>) never {
+    discard error
+    panic("web example dispatch failed")
+}
+
+fn bodyOf($response web.Response) String {
+    const web.Response { Status Headers Body } = response
+    discard Status
+    discard Headers
+    Body
+}
+
+fn serverOr(
+    $value Result<own web.Server<FoundationWebError>, net.Error>
+) own web.Server<FoundationWebError> {
+    const server = value else error {
+        discard error
+        panic("web example server bind failed")
+    }
+    server
+}
+
+fn served($value Result<void, web.ServeError<FoundationWebError>>) bool {
+    match value {
+        Ok: true
+        Err(error): serveFailure($error)
+    }
+}
+
+fn serveFailure($error web.ServeError<FoundationWebError>) bool {
+    discard error
+    false
+}
+
+fn serveForever() i32 {
+    const application = BuildFoundationApplication()
+    var server = serverOr(web.NewServer<FoundationWebError>(
+        "127.0.0.1",
+        8080,
+        $application
+        ))
+    print("listening on http://127.0.0.1:" + format.U64(server.Port()))
+
+    while true {
+        const serving = server.ServeOne()
+        const outcome = $serving.wait()
+        const web.ServeOutcome { Server Value } = outcome
+        server = Server
+        if !served($Value) return 1
+    }
+    0
+}
+
+fn selfTest() i32 {
+    var application = BuildFoundationApplication()
+
+    var lookup = newRequest(
+        .GET,
+        "/users/Ada?limit=10&note=demo",
+        "/users/Ada"
+    )
+    lookup.Headers.PushFront(web.HeaderValue {
+        Name = "X-Trace"
+        Value = "local"
+    })
+    const lookupResponse = responseOr($application.Dispatch($lookup))
+    if bodyOf($lookupResponse) !=
+        "Foundation Web 0.1.0 user=Ada limit=10 note=demo trace=local" {
+        return 1
+    }
+
+    var create = newRequest(.POST, "/users/Ada", "/users/Ada")
+    create.Body = "profile body"
+    create.Headers.PushFront(web.HeaderValue {
+        Name = "X-Enabled"
+        Value = "true"
+    })
+    const createResponse = responseOr($application.Dispatch($create))
+    if bodyOf($createResponse) != "created Ada: profile body" return 2
+
+    var login = newRequest(.POST, "/login", "/login")
+    login.Body = "username=Ada+Lovelace"
+    const loginResponse = responseOr($application.Dispatch($login))
+    if bodyOf($loginResponse) != "welcome Ada Lovelace" return 3
+
+    print("web app example ok")
+    0
+}
+
+fn main(args [String]) i32 {
+    if len(args) > 0 && args[0] == "--serve" return serveForever()
+    selfTest()
+}

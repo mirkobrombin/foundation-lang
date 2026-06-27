@@ -1,14 +1,14 @@
-task sendClosed(sender Sender<String>) Result<void, ChannelError> {
+task sendClosed($sender Sender<String>) Result<void, ChannelError> {
     const delivered = sender.send("hel" + "lo")
     delivered
 }
 
-task receiveClosed(receiver Receiver<String>) Result<String, ChannelError> {
+task receiveClosed($receiver Receiver<String>) Result<String, ChannelError> {
     const received = receiver.receive()
     received
 }
 
-task waitForCancellation(receiver Receiver<i32>) void {
+task waitForCancellation($receiver Receiver<i32>) void {
     discard receiver.receive()
 }
 
@@ -23,7 +23,7 @@ fn closedCode(error ChannelError) i32 {
 fn main() i32 {
     const Channel { sender receiver as sendReceiver } = channel<String>(0)
     discard sendReceiver
-    const sending = spawn sendClosed(sender)
+    const sending = spawn sendClosed($sender)
     const sent = $sending.wait()
     const sendCode = match sent {
         Ok: 3
@@ -35,7 +35,7 @@ fn main() i32 {
 
     const Channel { sender as receiveSender receiver } = channel<String>(0)
     discard receiveSender
-    const receiving = spawn receiveClosed(receiver)
+    const receiving = spawn receiveClosed($receiver)
     const received = $receiving.wait()
     const receiveCode = match received {
         Ok(message): 4
@@ -46,7 +46,7 @@ fn main() i32 {
     }
 
     const Channel { sender as cancelSender receiver as cancelReceiver } = channel<i32>(0)
-    const waiting = spawn waitForCancellation(cancelReceiver)
+    const waiting = spawn waitForCancellation($cancelReceiver)
     discard waiting
     discard cancelSender
     print("channel close and cancellation")

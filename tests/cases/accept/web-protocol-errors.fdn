@@ -1,0 +1,149 @@
+package test.web_protocol_errors
+
+import foundation.web
+import std.net
+
+enum AppError {
+    Unexpected
+}
+
+struct NoopHandler implements web.Handler<AppError> {}
+
+methods NoopHandler {
+    fn Handle(self, $request web.Request) Result<web.Response, AppError> {
+        discard request
+        .Ok(web.Text(200, "unexpected"))
+    }
+}
+
+fn serverOr(
+    $value Result<own web.Server<AppError>, net.Error>
+) own web.Server<AppError> {
+    const server = value else error {
+        discard error
+        panic("HTTP server bind failed")
+    }
+    server
+}
+
+fn connectionOr(
+    $value Result<own net.TcpConnection, net.Error>
+) own net.TcpConnection {
+    const connection = value else error {
+        discard error
+        panic("HTTP client connection failed")
+    }
+    connection
+}
+
+fn pairOr($value Result<net.StreamPair, net.Error>) net.StreamPair {
+    const pair = value else error {
+        discard error
+        panic("HTTP client split failed")
+    }
+    pair
+}
+
+fn registrationAccepted($value Result<void, web.RegistrationError>) bool {
+    match value {
+        Ok: true
+        Err(error): false
+    }
+}
+
+fn writeAccepted($value Result<void, net.Error>) bool {
+    match value {
+        Ok: true
+        Err(error): false
+    }
+}
+
+fn protocolCodeFor($wire String) i32 {
+    var router = web.NewRouter<AppError>()
+    const registered = router.Map(.POST, "/body", own NoopHandler {})
+    if !registrationAccepted($registered) return 100
+    var server = serverOr(web.NewServer<AppError>("127.0.0.1", 0, $router))
+
+    const port = server.Port()
+    const serving = server.ServeOne()
+    const connecting = spawn net.Connect("127.0.0.1", port)
+    const connection = connectionOr($connecting.wait())
+    const pair = pairOr(connection.Split())
+    const net.StreamPair { Reader Writer } = pair
+    discard Reader
+
+    const writing = spawn net.WriteAll($Writer, $wire)
+    const written = $writing.wait()
+    const net.WriteOutcome { Writer as writerAfter Value as writeResult } = written
+    discard writerAfter
+
+    const served = $serving.wait()
+    const web.ServeOutcome { Server Value } = served
+    const code = match Value {
+        Ok: 0
+        Err(error): serveErrorCode(error)
+    }
+    discard Server
+    if !writeAccepted($writeResult) return 101
+    code
+}
+
+fn serveErrorCode(error web.ServeError<AppError>) i32 {
+    match error {
+        Network(error): networkErrorCode(error)
+        Protocol(error): protocolErrorCode(error)
+        Handler(error): handlerErrorCode(error)
+    }
+}
+
+fn networkErrorCode(error net.Error) i32 {
+    discard error
+    200
+}
+
+fn handlerErrorCode(error AppError) i32 {
+    discard error
+    300
+}
+
+fn protocolErrorCode(error web.ProtocolError) i32 {
+    match error {
+        Closed: 1
+        RequestLineTooLong: 2
+        HeaderLineTooLong: 3
+        TooManyHeaders: 4
+        MalformedRequestLine: 5
+        UnsupportedMethod: 6
+        UnsupportedVersion: 7
+        MalformedHeader: 8
+        InvalidContentLength: 9
+        BodyTooLarge: 10
+        BodyTruncated: 11
+        BodyUnsupported: 12
+    }
+}
+
+fn main() i32 {
+    const oversized = protocolCodeFor(
+        "POST /body HTTP/1.1\r\nContent-Length: 1048577\r\n\r\n"
+    )
+    if oversized != 10 return 1
+
+    const duplicate = protocolCodeFor(
+        "POST /body HTTP/1.1\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n"
+    )
+    if duplicate != 9 return 2
+
+    const transfer = protocolCodeFor(
+        "POST /body HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
+    )
+    if transfer != 12 return 3
+
+    const truncated = protocolCodeFor(
+        "POST /body HTTP/1.1\r\nContent-Length: 4\r\n\r\npi"
+    )
+    if truncated != 11 return 4
+
+    print("web protocol errors ok")
+    0
+}

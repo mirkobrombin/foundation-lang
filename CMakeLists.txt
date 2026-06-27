@@ -23,14 +23,17 @@ add_library(foundation_runtime STATIC
     runtime/src/pool.c
     runtime/src/reactor.c
     runtime/src/net.c
+    runtime/src/plugin.c
+    runtime/src/plugin_sandbox.c
 )
 target_include_directories(foundation_runtime PUBLIC runtime/include)
-target_link_libraries(foundation_runtime PUBLIC Threads::Threads)
+target_link_libraries(foundation_runtime PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 if(WIN32)
-    target_link_libraries(foundation_runtime PUBLIC ws2_32)
+    target_link_libraries(foundation_runtime PUBLIC bcrypt ws2_32)
 endif()
 
 add_library(foundation_compiler STATIC
+    stage0/src/application.cpp
     stage0/src/codegen.cpp
     stage0/src/diagnostic.cpp
     stage0/src/driver.cpp
@@ -55,12 +58,14 @@ add_library(foundation_compiler STATIC
     stage0/src/project.cpp
     stage0/src/sema.cpp
     stage0/src/sha256.cpp
+    stage0/src/sdk.cpp
     stage0/src/target.cpp
     stage0/src/type.cpp
 )
 target_include_directories(foundation_compiler PUBLIC stage0/include)
+get_filename_component(FOUNDATION_C_COMPILER_NAME "${CMAKE_C_COMPILER}" NAME)
 target_compile_definitions(foundation_compiler PRIVATE
-    FOUNDATION_C_COMPILER="${CMAKE_C_COMPILER}"
+    FOUNDATION_C_COMPILER="${FOUNDATION_C_COMPILER_NAME}"
     FOUNDATION_C_COMPILER_ID="${CMAKE_C_COMPILER_ID}"
     FOUNDATION_RUNTIME_INCLUDE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/include"
     FOUNDATION_RUNTIME_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c"
@@ -71,6 +76,8 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_RUNTIME_POOL_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c"
     FOUNDATION_RUNTIME_REACTOR_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c"
     FOUNDATION_RUNTIME_NET_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c"
+    FOUNDATION_RUNTIME_PLUGIN_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/plugin.c"
+    FOUNDATION_RUNTIME_PLUGIN_SANDBOX_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/plugin_sandbox.c"
     FOUNDATION_STANDARD_LIBRARY="${CMAKE_CURRENT_SOURCE_DIR}/std"
     FOUNDATION_FRAMEWORK_LIBRARY="${CMAKE_CURRENT_SOURCE_DIR}/foundation"
 )
@@ -80,6 +87,26 @@ target_link_libraries(foundationc PRIVATE foundation_compiler)
 
 add_executable(foundation-ls stage0/src/lsp_main.cpp)
 target_link_libraries(foundation-ls PRIVATE foundation_compiler)
+
+include(GNUInstallDirs)
+install(TARGETS foundationc foundation-ls RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY runtime/include/ DESTINATION runtime/include FILES_MATCHING PATTERN "*.h")
+install(DIRECTORY runtime/src/ DESTINATION runtime/src
+        FILES_MATCHING PATTERN "*.c" PATTERN "*.h")
+install(DIRECTORY std/ DESTINATION std FILES_MATCHING PATTERN "*.fdn")
+install(DIRECTORY foundation/ DESTINATION foundation FILES_MATCHING PATTERN "*.fdn")
+install(DIRECTORY docs/ DESTINATION docs FILES_MATCHING PATTERN "*.md")
+install(DIRECTORY examples/ DESTINATION examples
+        FILES_MATCHING
+        PATTERN "*.fdn"
+        PATTERN "*.c"
+        PATTERN "*.h"
+        PATTERN "*.md"
+        PATTERN "*.out"
+        PATTERN "CMakeLists.txt"
+        PATTERN "foundation.package"
+        PATTERN "foundation.lock")
+install(FILES LICENSE README.md DESTINATION .)
 
 if(MSVC)
     target_compile_options(foundation_runtime PRIVATE /W4)
@@ -166,10 +193,38 @@ if(FOUNDATION_BUILD_FUZZERS)
         "${FOUNDATION_FUZZ_CORPUS_DIR}/network.fdn"
         COPYONLY
     )
+    configure_file(
+        tests/fuzz/corpus/generic-lookahead.fdn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/generic-lookahead.fdn"
+        COPYONLY
+    )
+    configure_file(
+        tests/fuzz/corpus/raw-pointers.fdn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/raw-pointers.fdn"
+        COPYONLY
+    )
+    configure_file(
+        tests/fuzz/corpus/services.fdn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/services.fdn"
+        COPYONLY
+    )
+    configure_file(
+        tests/fuzz/corpus/application-plan.fdn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/application-plan.fdn"
+        COPYONLY
+    )
 endif()
 
 include(CTest)
 if(BUILD_TESTING)
+    add_test(
+        NAME tooling.sdk.relocated
+        COMMAND ${CMAKE_COMMAND}
+            -DBUILD_DIR=${CMAKE_BINARY_DIR}
+            -DSDK_DIR=${CMAKE_BINARY_DIR}/sdk-test
+            -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-sdk-bundle.cmake
+    )
     add_executable(foundation_runtime_panic_test runtime/tests/panic_trace_test.c)
     target_link_libraries(foundation_runtime_panic_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_allocation_test runtime/tests/allocation_panic_test.c)
@@ -186,6 +241,8 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_fs_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_time_test runtime/tests/time_test.c)
     target_link_libraries(foundation_runtime_time_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_uuid_test runtime/tests/uuid_test.c)
+    target_link_libraries(foundation_runtime_uuid_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_task_test runtime/tests/task_test.c)
     target_link_libraries(foundation_runtime_task_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_cancellation_test runtime/tests/cancellation_test.c)
@@ -200,6 +257,131 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_reactor_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_net_test runtime/tests/net_test.c)
     target_link_libraries(foundation_runtime_net_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_plugin_test runtime/tests/plugin_test.c)
+    target_link_libraries(foundation_runtime_plugin_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_plugin_sandbox_test
+        runtime/tests/plugin_sandbox_test.c
+    )
+    target_link_libraries(foundation_runtime_plugin_sandbox_test PRIVATE foundation_runtime)
+    add_executable(foundation_plugin_sandbox_helper
+        tests/fixtures/plugin_sandbox_helper.c
+    )
+    if(MSVC)
+        target_compile_options(foundation_runtime_plugin_sandbox_test PRIVATE /W4)
+        if(FOUNDATION_WARNINGS_AS_ERRORS)
+            target_compile_options(foundation_runtime_plugin_sandbox_test PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(foundation_runtime_plugin_sandbox_test PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+        if(FOUNDATION_WARNINGS_AS_ERRORS)
+            target_compile_options(foundation_runtime_plugin_sandbox_test PRIVATE -Werror)
+        endif()
+    endif()
+    if(MSVC)
+        target_compile_options(foundation_plugin_sandbox_helper PRIVATE /W4)
+        if(FOUNDATION_WARNINGS_AS_ERRORS)
+            target_compile_options(foundation_plugin_sandbox_helper PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(foundation_plugin_sandbox_helper PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+        if(FOUNDATION_WARNINGS_AS_ERRORS)
+            target_compile_options(foundation_plugin_sandbox_helper PRIVATE -Werror)
+        endif()
+    endif()
+    add_library(foundation_plugin_fixture SHARED tests/fixtures/plugin_fixture.c)
+    target_include_directories(foundation_plugin_fixture PRIVATE runtime/include)
+    add_library(foundation_plugin_abi_mismatch SHARED tests/fixtures/plugin_fixture.c)
+    target_include_directories(foundation_plugin_abi_mismatch PRIVATE runtime/include)
+    target_compile_definitions(foundation_plugin_abi_mismatch PRIVATE
+        FDN_PLUGIN_FIXTURE_ABI_MISMATCH=1
+    )
+    add_library(foundation_plugin_start_fail SHARED tests/fixtures/plugin_fixture.c)
+    target_include_directories(foundation_plugin_start_fail PRIVATE runtime/include)
+    target_compile_definitions(foundation_plugin_start_fail PRIVATE
+        FDN_PLUGIN_FIXTURE_START_FAIL=1
+    )
+    foreach(plugin_failure IN ITEMS query sdk target contract descriptor create)
+        add_library(foundation_plugin_${plugin_failure}_failure SHARED
+            tests/fixtures/plugin_fixture.c
+        )
+        target_include_directories(foundation_plugin_${plugin_failure}_failure
+            PRIVATE runtime/include
+        )
+    endforeach()
+    target_compile_definitions(foundation_plugin_query_failure PRIVATE
+        FDN_PLUGIN_FIXTURE_QUERY_FAIL=1
+    )
+    target_compile_definitions(foundation_plugin_sdk_failure PRIVATE
+        FDN_PLUGIN_FIXTURE_SDK_MISMATCH=1
+    )
+    target_compile_definitions(foundation_plugin_target_failure PRIVATE
+        FDN_PLUGIN_FIXTURE_TARGET_MISMATCH=1
+    )
+    target_compile_definitions(foundation_plugin_contract_failure PRIVATE
+        FDN_PLUGIN_FIXTURE_CONTRACT_MISMATCH=1
+    )
+    target_compile_definitions(foundation_plugin_descriptor_failure PRIVATE
+        FDN_PLUGIN_FIXTURE_INVALID_DESCRIPTOR=1
+    )
+    target_compile_definitions(foundation_plugin_create_failure PRIVATE
+        FDN_PLUGIN_FIXTURE_CREATE_FAIL=1
+    )
+    add_library(foundation_plugin_missing_query SHARED tests/fixtures/plugin_missing_query.c)
+    add_library(foundation_example_native_plugin SHARED
+        examples/native-plugin/native/plugin.c
+    )
+    target_include_directories(foundation_example_native_plugin PRIVATE runtime/include)
+    add_executable(foundation_example_process_plugin
+        examples/process-plugin/worker/main.c
+    )
+    set(foundation_plugin_test_targets
+        foundation_runtime_plugin_test
+        foundation_plugin_fixture
+        foundation_plugin_abi_mismatch
+        foundation_plugin_start_fail
+        foundation_plugin_query_failure
+        foundation_plugin_sdk_failure
+        foundation_plugin_target_failure
+        foundation_plugin_contract_failure
+        foundation_plugin_descriptor_failure
+        foundation_plugin_create_failure
+        foundation_plugin_missing_query
+        foundation_example_native_plugin
+        foundation_example_process_plugin
+    )
+    if(FOUNDATION_BUILD_FUZZERS)
+        target_compile_options(foundation_runtime_plugin_test PRIVATE
+            -fsanitize=address,undefined
+        )
+        target_link_options(foundation_runtime_plugin_test PRIVATE
+            -fsanitize=address,undefined
+        )
+        target_compile_options(foundation_runtime_plugin_sandbox_test PRIVATE
+            -fsanitize=address,undefined
+        )
+        target_link_options(foundation_runtime_plugin_sandbox_test PRIVATE
+            -fsanitize=address,undefined
+        )
+    endif()
+    if(MSVC)
+        foreach(plugin_target IN LISTS foundation_plugin_test_targets)
+            target_compile_options(${plugin_target} PRIVATE /W4)
+            if(FOUNDATION_WARNINGS_AS_ERRORS)
+                target_compile_options(${plugin_target} PRIVATE /WX)
+            endif()
+        endforeach()
+    else()
+        foreach(plugin_target IN LISTS foundation_plugin_test_targets)
+            target_compile_options(${plugin_target} PRIVATE -Wall -Wextra -Wpedantic)
+            if(FOUNDATION_WARNINGS_AS_ERRORS)
+                target_compile_options(${plugin_target} PRIVATE -Werror)
+            endif()
+        endforeach()
+    endif()
     if(FOUNDATION_BUILD_FUZZERS)
         foreach(runtime_test IN ITEMS
                 foundation_runtime_panic_test
@@ -210,6 +392,7 @@ if(BUILD_TESTING)
                 foundation_runtime_env_test
                 foundation_runtime_fs_test
                 foundation_runtime_time_test
+                foundation_runtime_uuid_test
                 foundation_runtime_task_test
                 foundation_runtime_cancellation_test
                 foundation_runtime_channel_test
@@ -230,6 +413,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_env_test PRIVATE /W4)
         target_compile_options(foundation_runtime_fs_test PRIVATE /W4)
         target_compile_options(foundation_runtime_time_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_uuid_test PRIVATE /W4)
         target_compile_options(foundation_runtime_task_test PRIVATE /W4)
         target_compile_options(foundation_runtime_cancellation_test PRIVATE /W4)
         target_compile_options(foundation_runtime_channel_test PRIVATE /W4)
@@ -246,6 +430,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_env_test PRIVATE /WX)
             target_compile_options(foundation_runtime_fs_test PRIVATE /WX)
             target_compile_options(foundation_runtime_time_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_uuid_test PRIVATE /WX)
             target_compile_options(foundation_runtime_task_test PRIVATE /WX)
             target_compile_options(foundation_runtime_cancellation_test PRIVATE /WX)
             target_compile_options(foundation_runtime_channel_test PRIVATE /WX)
@@ -265,6 +450,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_env_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_fs_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_time_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_uuid_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_task_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_cancellation_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_channel_test PRIVATE -Wall -Wextra -Wpedantic)
@@ -281,6 +467,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_env_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_fs_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_time_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_uuid_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_task_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_cancellation_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_channel_test PRIVATE -Werror)
@@ -332,6 +519,30 @@ if(BUILD_TESTING)
     add_test(NAME tooling.lsp.unit COMMAND foundation_lsp_tests)
     add_test(NAME tooling.formatter.unit COMMAND foundation_formatter_tests)
     add_test(
+        NAME tooling.test.cli
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSUCCESS=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/test-declarations.fdn
+            -DISOLATION=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/test-isolation.fdn
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-tests.cmake
+    )
+    add_test(
+        NAME stage0.check.test-empty-name
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/test-empty-name.fdn
+            -DCODE=FDN2211
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.test-duplicate-name
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/test-duplicate-name.fdn
+            -DCODE=FDN2211
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
         NAME tooling.formatter.cli
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -380,6 +591,7 @@ if(BUILD_TESTING)
     add_test(NAME runtime.u64 COMMAND foundation_runtime_u64_test)
     add_test(NAME runtime.env COMMAND foundation_runtime_env_test)
     add_test(NAME runtime.time COMMAND foundation_runtime_time_test)
+    add_test(NAME runtime.uuid COMMAND foundation_runtime_uuid_test)
     add_test(NAME runtime.task COMMAND foundation_runtime_task_test)
     add_test(NAME runtime.cancellation COMMAND foundation_runtime_cancellation_test)
     add_test(NAME runtime.channel COMMAND foundation_runtime_channel_test)
@@ -387,6 +599,185 @@ if(BUILD_TESTING)
     add_test(NAME runtime.pool COMMAND foundation_runtime_pool_test)
     add_test(NAME runtime.reactor COMMAND foundation_runtime_reactor_test)
     add_test(NAME runtime.net COMMAND foundation_runtime_net_test)
+    add_test(
+        NAME runtime.plugin
+        COMMAND foundation_runtime_plugin_test
+            $<TARGET_FILE:foundation_plugin_fixture>
+            $<TARGET_FILE:foundation_plugin_missing_query>
+            $<TARGET_FILE:foundation_plugin_abi_mismatch>
+            $<TARGET_FILE:foundation_plugin_start_fail>
+            $<TARGET_FILE:foundation_plugin_query_failure>
+            $<TARGET_FILE:foundation_plugin_sdk_failure>
+            $<TARGET_FILE:foundation_plugin_target_failure>
+            $<TARGET_FILE:foundation_plugin_contract_failure>
+            $<TARGET_FILE:foundation_plugin_descriptor_failure>
+            $<TARGET_FILE:foundation_plugin_create_failure>
+    )
+    add_test(NAME runtime.plugin-sandbox COMMAND foundation_runtime_plugin_sandbox_test)
+    add_test(
+        NAME stage0.check.plugins
+        COMMAND foundationc check
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugins.fdn
+    )
+    add_test(
+        NAME stage0.run.plugins
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugins.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugins.out
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_plugin_fixture>;$<TARGET_FILE:foundation_plugin_start_fail>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.plugins-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugins.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/plugins.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugins-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugins.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_PLUGIN_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/plugin.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_plugin_fixture>;$<TARGET_FILE:foundation_plugin_start_fail>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.native-plugin-example
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/native-plugin
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/native-plugin/expected.out
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_example_native_plugin>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.process-plugin-example
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/process-plugin
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/process-plugin/expected.out
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_example_process_plugin>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.plugin-duplicate
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-duplicate.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-duplicate.out
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_plugin_fixture>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.plugin-duplicate-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-duplicate.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/plugin-duplicate.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugin-duplicate-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-duplicate.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_PLUGIN_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/plugin.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_plugin_fixture>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.plugin-factories
+        COMMAND foundationc check
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-factories.fdn
+    )
+    add_test(
+        NAME stage0.run.plugin-factories
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-factories.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-factories.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.plugin-factories-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-factories.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/plugin-factories.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugin-factories-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-factories.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.plugin-sandbox
+        COMMAND foundationc check
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox.fdn
+    )
+    add_test(
+        NAME stage0.run.plugin-sandbox
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox.out
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_plugin_sandbox_helper>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.plugin-sandbox-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/plugin-sandbox.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugin-sandbox-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+            -DRUNTIME_PLUGIN_SANDBOX_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/plugin_sandbox.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_plugin_sandbox_helper>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.plugin-sandbox-reject
+        COMMAND foundationc check
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox-reject.fdn
+    )
+    add_test(
+        NAME stage0.run.plugin-sandbox-reject
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox-reject.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox-reject.out
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_plugin_sandbox_helper>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.plugin-sandbox-reject-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox-reject.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/plugin-sandbox-reject.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugin-sandbox-reject-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox-reject.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+            -DRUNTIME_PLUGIN_SANDBOX_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/plugin_sandbox.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_plugin_sandbox_helper>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
     set_tests_properties(runtime.env PROPERTIES
         ENVIRONMENT "FOUNDATION_ENV_TEST=foundation env value"
     )
@@ -422,6 +813,19 @@ if(BUILD_TESTING)
         COMMAND foundationc check ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/comments.fdn
     )
     add_test(
+        NAME stage0.check.ownership-markers
+        COMMAND foundationc check
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership-markers.fdn
+    )
+    add_test(
+        NAME stage0.run.ownership-markers
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership-markers.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership-markers.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
         NAME stage0.emit.accept
         COMMAND foundationc emit-c
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fdn
@@ -434,6 +838,105 @@ if(BUILD_TESTING)
     set_tests_properties(stage0.run.accept PROPERTIES
         PASS_REGULAR_EXPRESSION "hello from foundation"
     )
+    add_test(
+        NAME stage0.check.state-machine
+        COMMAND foundationc check
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.fdn
+    )
+    add_test(
+        NAME stage0.run.state-machine
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.state-machine-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/state-machine.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/state-machine-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.state-machine-unknown-state
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/state-machine-unknown-state.fdn
+            -DCODE=FDN1210
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.state-machine-borrowed-payload
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/state-machine-borrowed-payload.fdn
+            -DCODE=FDN2011
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.workflows
+        COMMAND foundationc check
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.fdn
+    )
+    add_test(
+        NAME stage0.run.workflows
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.workflows-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/workflows.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/workflows-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.workflows-metadata
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.fdn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/workflows.metadata.first.json
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/workflows.metadata.second.json
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.metadata.json
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-metadata.cmake
+    )
+    foreach(workflow_reject IN ITEMS
+            workflow-unknown-step:FDN3009
+            workflow-edit-step:FDN2224
+            workflow-chain-mismatch:FDN2011
+            saga-compensation-result:FDN2011
+            saga-without-compensation:FDN1237
+            workflow-retry-range:FDN1230)
+        string(REPLACE ":" ";" workflow_reject_parts ${workflow_reject})
+        list(GET workflow_reject_parts 0 workflow_reject_name)
+        list(GET workflow_reject_parts 1 workflow_reject_code)
+        add_test(
+            NAME stage0.check.${workflow_reject_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${workflow_reject_name}.fdn
+                -DCODE=${workflow_reject_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
     add_test(
         NAME stage0.run.tasks
         COMMAND ${CMAKE_COMMAND}
@@ -515,6 +1018,31 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(
+        NAME stage0.run.task-group
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-group.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-group.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.task-group-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-group.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/task-group.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/task-group
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-group.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
         NAME stage0.run.worker-pool
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -585,7 +1113,11 @@ if(BUILD_TESTING)
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
-    foreach(channel_case IN ITEMS channel-operations channel-close-cancel channel-select)
+    foreach(channel_case IN ITEMS
+            channel-operations
+            channel-close-cancel
+            channel-select
+            channel-sender-clone)
         add_test(
             NAME stage0.run.${channel_case}
             COMMAND ${CMAKE_COMMAND}
@@ -612,6 +1144,20 @@ if(BUILD_TESTING)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
         )
     endforeach()
+    foreach(channel_clone_reject IN ITEMS
+            "channel-receiver-clone;FDN2100"
+            "channel-sender-clone-argument;FDN2010")
+        list(GET channel_clone_reject 0 channel_clone_name)
+        list(GET channel_clone_reject 1 channel_clone_code)
+        add_test(
+            NAME stage0.check.${channel_clone_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${channel_clone_name}.fdn
+                -DCODE=${channel_clone_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
     add_test(
         NAME stage0.run.blocking-native
         COMMAND ${CMAKE_COMMAND}
@@ -621,6 +1167,321 @@ if(BUILD_TESTING)
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/blocking-native.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
     )
+    add_test(
+        NAME stage0.run.raw-pointers
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/raw-pointers.fdn
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/raw_pointers.c
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/raw-pointers.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
+    )
+    add_test(
+        NAME stage0.run.service-actions
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/service-actions.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/service-actions.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.services-example
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/services/src/main.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/services/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.web-app-example
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.web-app-example-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app/expected.out
+            -DASSERT_ALLOCATIONS=1
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.hosting
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hosting.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hosting.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.hosting-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hosting.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hosting.out
+            -DASSERT_ALLOCATIONS=1
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.health
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/health.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/health.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.health-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/health.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/health.out
+            -DASSERT_ALLOCATIONS=1
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.emit.service-actions-metadata
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/service-actions.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/service-actions.metadata.json
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/service-actions-first.json
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/service-actions-second.json
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-metadata.cmake
+    )
+    add_test(
+        NAME stage0.emit.application-plan
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/application-plan.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/application-plan.json
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/application-plan-first.json
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/application-plan-second.json
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-plan.cmake
+    )
+    add_test(
+        NAME stage0.emit.application-host
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/services
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-project
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-project/src/zz_foundation.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/application-host.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/examples/services/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
+    )
+    add_test(
+        NAME stage0.emit.web-app-host
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/web-app-host
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-app-host/src/zz_foundation.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app/src/zz_foundation.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
+    )
+    add_test(
+        NAME stage0.emit.application-host-packages
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-packages
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-packages
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-packages/app/src/zz_foundation.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-packages/expected-host.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-packages/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host-packages.cmake
+    )
+    add_test(
+        NAME stage0.emit.application-host-fallible-startup
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-fallible
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-fallible
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-fallible/src/zz_foundation.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-fallible/expected-host.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-fallible/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
+    )
+    add_test(
+        NAME stage0.emit.application-host-transient
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient/src/zz_foundation.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient/expected-host.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
+    )
+    add_test(
+        NAME stage0.emit.application-host-scope
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-scope
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-scope
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-scope/src/zz_foundation.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-scope/expected-host.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-scope/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
+    )
+    add_test(
+        NAME stage0.emit.application-host-di
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-di
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-di
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-di/src/zz_foundation.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-di/expected-host.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-di/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
+    )
+    add_test(
+        NAME stage0.emit.application-host-web
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web/src/zz_foundation.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web/expected-host.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
+    )
+    add_test(
+        NAME stage0.emit.application-host-web-stale
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-stale
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-stale/src/zz_foundation.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host-stale.cmake
+    )
+    add_test(
+        NAME stage0.emit.application-host-transient-fallible
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient-fallible
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient-fallible
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient-fallible/src/zz_foundation.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient-fallible/expected-host.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient-fallible/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
+    )
+    add_test(
+        NAME stage0.emit.application-host-dispatcher
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-dispatcher
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-dispatcher
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-dispatcher/src/zz_foundation.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-dispatcher/expected-host.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-dispatcher/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
+    )
+    add_test(
+        NAME stage0.emit.application-host-task-dispatcher
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-task-dispatcher
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-task-dispatcher
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-task-dispatcher/src/zz_foundation.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-task-dispatcher/expected-host.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-task-dispatcher/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
+    )
+    add_test(
+        NAME stage0.emit.application-host-events
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-events
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-events
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-events/src/zz_foundation.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-events/expected-host.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-events/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
+    )
+    foreach(application_host_case IN ITEMS
+            "application-host-fallible;FDN2332"
+            "application-host-singleton-scoped;FDN2338"
+            "application-host-scope-fallible;FDN2339"
+            "application-host-activation-fallible;FDN2340"
+            "application-host-action-borrowed-parameter;FDN2341"
+            "application-host-action-borrowed-result;FDN2342"
+            "application-host-introspection-collision;FDN2334"
+            "application-host-empty-policy;FDN2343"
+            "application-host-duplicate-policy;FDN2344"
+            "application-host-web-method-route;FDN2350"
+            "application-host-web-generic-route;FDN2351"
+            "application-host-web-task-route;FDN2352"
+            "application-host-web-empty-path;FDN2353"
+            "application-host-web-duplicate-route;FDN2354"
+            "application-host-web-multiple-binding;FDN2355"
+            "application-host-web-edit-binding;FDN2356"
+            "application-host-web-missing-provider;FDN2357"
+            "application-host-web-ambiguous-provider;FDN2358"
+            "application-host-web-unsupported-binding;FDN2359"
+            "application-host-web-empty-binding;FDN2360"
+            "application-host-web-return;FDN2362"
+            "application-host-web-transient-inject;FDN2363"
+            "application-host-web-invalid-path;FDN2364"
+            "application-host-web-duplicate-binding;FDN2365"
+            "application-host-web-body-form;FDN2366"
+            "application-host-web-path-binding;FDN2367"
+            "application-host-web-body-type;FDN2368"
+            "application-host-web-ambiguous-route;FDN2369"
+            "application-host-transfer;FDN2333")
+        list(GET application_host_case 0 application_host_name)
+        list(GET application_host_case 1 application_host_code)
+        add_test(
+            NAME stage0.emit.${application_host_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DAPPLICATION_COMMAND=emit-app-host
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${application_host_name}.fdn
+                -DCODE=${application_host_code}
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${application_host_name}.fdn
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-reject.cmake
+        )
+    endforeach()
+    foreach(application_case IN ITEMS
+            "application-missing-provider;FDN2307"
+            "application-ambiguous-provider;FDN2308"
+            "application-cycle;FDN2311"
+            "application-lifetime-capture;FDN2310"
+            "application-inject-struct;FDN2318"
+            "application-orphan-input;FDN2319"
+            "application-empty-provider-name;FDN2345"
+            "application-empty-provider-selector;FDN2346"
+            "application-duplicate-action;FDN2315"
+            "application-duplicate-key;FDN2317"
+            "application-consuming-singleton;FDN2320")
+        list(GET application_case 0 application_name)
+        list(GET application_case 1 application_code)
+        add_test(
+            NAME stage0.emit.${application_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${application_name}.fdn
+                -DCODE=${application_code}
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${application_name}.json
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-reject.cmake
+        )
+    endforeach()
+    foreach(action_case IN ITEMS action-owner action-receiver)
+        add_test(
+            NAME stage0.check.${action_case}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${action_case}.fdn
+                -DCODE=FDN2215
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
     add_test(
         NAME stage0.run.blocking-native-allocations
         COMMAND ${CMAKE_COMMAND}
@@ -794,6 +1655,30 @@ if(BUILD_TESTING)
             -DCODE=FDN0001
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
+    add_test(
+        NAME stage0.check.legacy-let
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/legacy-let.fdn
+            -DCODE=FDN1184
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    foreach(legacy_mode_case IN ITEMS
+            "legacy-receiver-mode;FDN1185"
+            "legacy-parameter-mode;FDN1186"
+            "legacy-edit-expression;FDN1187"
+            "legacy-capture-mode;FDN1188")
+        list(GET legacy_mode_case 0 legacy_mode_name)
+        list(GET legacy_mode_case 1 legacy_mode_code)
+        add_test(
+            NAME stage0.check.${legacy_mode_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${legacy_mode_name}.fdn
+                -DCODE=${legacy_mode_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
     add_test(
         NAME stage0.check.unterminated-block-comment
         COMMAND ${CMAKE_COMMAND}
@@ -1037,6 +1922,28 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.uuid-values
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/uuid-values.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/uuid-values.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.uuid-values-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/uuid-values.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/uuid-values.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/uuid-values
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/uuid-values.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
         NAME stage0.run.parse-values-allocations
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -1151,6 +2058,87 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/network-tcp
             -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/net_server.c
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+            -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+            -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.web-server
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.web-server-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-server.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-server
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+            -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+            -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.web-routing
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.web-routing-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-routing.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-routing
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+            -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+            -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.web-protocol-errors
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.web-protocol-errors-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-protocol-errors.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-protocol-errors
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
             -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
@@ -1345,6 +2333,44 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.field-defaults
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-defaults.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-defaults.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.field-defaults-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-defaults.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/field-defaults.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/field-defaults
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-defaults.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.field-default-type
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/field-default-type.fdn
+            -DCODE=FDN2011
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.attribute-field-default
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/attribute-field-default.fdn
+            -DCODE=FDN2160
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
         NAME stage0.check.struct-missing-field
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -1359,6 +2385,268 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/enum-match.fdn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/enum-match.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.named-enum-payloads
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/named-enum-payloads.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/named-enum-payloads.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.named-enum-payloads-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/named-enum-payloads.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/named-enum-payloads.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/named-enum-payloads
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/named-enum-payloads.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.named-enum-payload-unknown
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/named-enum-payload-unknown.fdn
+            -DCODE=FDN2206
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.unnamed-enum-payload-label
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/unnamed-enum-payload-label.fdn
+            -DCODE=FDN2209
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.match-literal-nonexhaustive
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-literal-nonexhaustive.fdn
+            -DCODE=FDN2040
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.match-literal-duplicate
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-literal-duplicate.fdn
+            -DCODE=FDN2039
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.match-literal-after-binding
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-literal-after-binding.fdn
+            -DCODE=FDN2039
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.match-literal-unsupported
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-literal-unsupported.fdn
+            -DCODE=FDN2210
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.run.conditionals
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/conditionals.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/conditionals.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.empty-tests
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/empty-tests.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/empty-tests.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.check.empty-test-number
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/empty-test-number.fdn
+            -DCODE=FDN2220
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.empty-test-edit-method
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/empty-test-edit-method.fdn
+            -DCODE=FDN2220
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.conditional-branch-mismatch
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/conditional-branch-mismatch.fdn
+            -DCODE=FDN2011
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.conditional-missing-value
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/conditional-missing-value.fdn
+            -DCODE=FDN1178
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.conditional-maybe-transferred
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/conditional-maybe-transferred.fdn
+            -DCODE=FDN2066
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.short-guard-multiline
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/short-guard-multiline.fdn
+            -DCODE=FDN1173
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.run.loop-jumps
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/loop-jumps.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/loop-jumps.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.check.break-outside-loop
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/break-outside-loop.fdn
+            -DCODE=FDN2200
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.continue-outside-loop
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/continue-outside-loop.fdn
+            -DCODE=FDN2200
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.break-value
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/break-value.fdn
+            -DCODE=FDN1179
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.run.for-sequences
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-sequences.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-sequences.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.for-sequences-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-sequences.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/for-sequences.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/for-sequences
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-sequences.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.for-iterators
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-iterators.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-iterators.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.for-iterators-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-iterators.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/for-iterators.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/for-iterators
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-iterators.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.for-iterator-next
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-iterator-next.fdn
+            -DCODE=FDN2204
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.for-iterator-edit
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-iterator-edit.fdn
+            -DCODE=FDN2205
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.for-non-sequence
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-non-sequence.fdn
+            -DCODE=FDN2201
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.for-edit-immutable
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-edit-immutable.fdn
+            -DCODE=FDN2202
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.for-task-rvalue
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-task-rvalue.fdn
+            -DCODE=FDN2203
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.for-transfer-sequence
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-transfer-sequence.fdn
+            -DCODE=FDN2067
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(
         NAME stage0.check.match-exhaustive
@@ -1395,11 +2683,79 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/u64-values.fdn
     )
     add_test(
+        NAME stage0.run.usize-values
+        COMMAND foundationc run
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/usize-values.fdn
+    )
+    add_test(
+        NAME stage0.run.machine-scalars
+        COMMAND foundationc run
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/machine-scalars.fdn
+    )
+    add_test(
+        NAME stage0.run.named-arguments
+        COMMAND foundationc run
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/named-arguments.fdn
+    )
+    add_test(
+        NAME stage0.run.range
+        COMMAND foundationc run
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/range.fdn
+    )
+    add_test(
         NAME stage0.check.u64-negative
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/u64-negative.fdn
             -DCODE=FDN2005
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.usize-negative
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/usize-negative.fdn
+            -DCODE=FDN2005
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.scalar-literal-overflow
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/scalar-literal-overflow.fdn
+            -DCODE=FDN2005
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.float-remainder
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/float-remainder.fdn
+            -DCODE=FDN2011
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.named-argument-unknown
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/named-argument-unknown.fdn
+            -DCODE=FDN2206
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.named-argument-duplicate
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/named-argument-duplicate.fdn
+            -DCODE=FDN2208
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.named-argument-positional
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/named-argument-positional.fdn
+            -DCODE=FDN2207
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(
@@ -1425,6 +2781,53 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/collections
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/collections/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.events
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.events-concurrent
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events-concurrent.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events-concurrent.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.events-concurrent-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events-concurrent.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/events-concurrent.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/events-concurrent
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events-concurrent.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.events-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/events.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/events
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
     add_test(
         NAME stage0.emit.collections-deterministic
@@ -1678,7 +3081,6 @@ if(BUILD_TESTING)
             "closure-implicit-capture;FDN2120"
             "closure-duplicate-capture;FDN2121"
             "closure-capture-parameter;FDN2122"
-            "closure-copy-owner;FDN2123"
             "closure-edit-immutable;FDN2124"
             "closure-conflicting-capture;FDN2125"
             "closure-capture-consume;FDN2126"
@@ -1741,6 +3143,25 @@ if(BUILD_TESTING)
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${c_abi_name}.fdn
                 -DCODE=${c_abi_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
+    foreach(raw_pointer_case IN ITEMS
+            "unsafe-missing-proof;FDN2212"
+            "raw-call-safe;FDN2213"
+            "raw-null-safe;FDN2213"
+            "raw-dereference-safe;FDN2213"
+            "raw-const-write;FDN2077"
+            "raw-void-dereference;FDN2214"
+            "raw-unsupported-pointee;FDN2214")
+        list(GET raw_pointer_case 0 raw_pointer_name)
+        list(GET raw_pointer_case 1 raw_pointer_code)
+        add_test(
+            NAME stage0.check.${raw_pointer_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${raw_pointer_name}.fdn
+                -DCODE=${raw_pointer_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
     endforeach()
@@ -1820,6 +3241,35 @@ if(BUILD_TESTING)
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/collections-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/collections-stress/expected.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.events-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/events-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/events-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.events-concurrent-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events-concurrent.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/events-concurrent-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/events-concurrent-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events-concurrent.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )
@@ -1954,6 +3404,60 @@ if(BUILD_TESTING)
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )
+        add_test(
+            NAME stage0.run.web-server-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-server-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-server-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.web-routing-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-routing-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-routing-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.web-protocol-errors-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-protocol-errors-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-protocol-errors-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
     endif()
     add_test(
         NAME stage0.check.use-after-move
@@ -1961,6 +3465,62 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/use-after-move.fdn
             -DCODE=FDN2065
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.new-nonconstruct
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/new-nonconstruct.fdn
+            -DCODE=FDN2191
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.edit-marker-missing
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/edit-marker-missing.fdn
+            -DCODE=FDN2192
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.transfer-marker-missing
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/transfer-marker-missing.fdn
+            -DCODE=FDN2193
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.read-marker-invalid
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/read-marker-invalid.fdn
+            -DCODE=FDN2194
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.use-after-transfer
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/use-after-transfer.fdn
+            -DCODE=FDN2065
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.function-edit-marker-missing
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/function-edit-marker-missing.fdn
+            -DCODE=FDN2192
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.function-transfer-marker-missing
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/function-transfer-marker-missing.fdn
+            -DCODE=FDN2193
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(
@@ -2157,13 +3717,12 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(
-        NAME stage0.run.negative-index
+        NAME stage0.check.negative-index
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/negative-index.fdn
-            -DPATTERN=index.out.of.bounds
-            -DTRACE_PATTERN=negative-index.fdn:3:11
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+            -DCODE=FDN2005
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(
         NAME stage0.check.array-length-overflow
@@ -2287,6 +3846,22 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/negate-overflow.fdn
             -DPATTERN=i32.overflow
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+    )
+    add_test(
+        NAME stage0.run.i8-overflow
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/i8-overflow.fdn
+            -DPATTERN=i8.overflow
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+    )
+    add_test(
+        NAME stage0.run.i64-divide-overflow
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/i64-divide-overflow.fdn
+            -DPATTERN=i64.overflow
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
 

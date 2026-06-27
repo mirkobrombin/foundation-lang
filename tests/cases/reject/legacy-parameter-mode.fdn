@@ -1,0 +1,5 @@
+fn read(value view String) void {
+    print(value)
+}
+
+fn main() i32 { 0 }

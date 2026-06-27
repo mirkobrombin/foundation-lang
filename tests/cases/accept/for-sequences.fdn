@@ -1,0 +1,71 @@
+fn sum(values [i32]) i32 {
+    var total = 0
+    for index, value in values {
+        if index == 1 continue
+        total = total + value
+    }
+    total
+}
+
+fn bump(&values [i32]) void {
+    for &value in values {
+        value = value + 10
+    }
+}
+
+task echo(value i32) i32 {
+    value
+}
+
+task taskSum() i32 {
+    const values = [1, 2, 3]
+    var total = 0
+    for value in values {
+        const pending = spawn echo(value)
+        const current = $pending.wait()
+        total = total + current
+    }
+    total
+}
+
+fn main() i32 {
+    var numbers = [1, 2, 3]
+    if sum(numbers) != 4 return 1
+    bump(&numbers)
+    if numbers[0] != 11 return 2
+    if numbers[1] != 12 return 3
+    if numbers[2] != 13 return 4
+
+    const names = ["first" + "!", "second" + "!"]
+    var found = 0
+    for name in names {
+        if name == "first!" {
+            found = found + 1
+        }
+        if name == "second!" {
+            found = found + 1
+        }
+    }
+    if found != 2 return 5
+
+    var literalTotal = 0
+    for value in [7, 8] {
+        literalTotal = literalTotal + value
+    }
+    if literalTotal != 15 return 6
+
+    var sawTemporary = false
+    for name in ["temporary" + "!"] {
+        if name == "temporary!" {
+            sawTemporary = true
+        }
+    }
+    if !sawTemporary return 7
+
+    const pending = spawn taskSum()
+    const taskTotal = $pending.wait()
+    if taskTotal != 6 return 8
+
+    print("ok")
+    0
+}

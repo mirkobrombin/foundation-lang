@@ -4,6 +4,6 @@ struct Item {
 }
 
 fn main() i32 {
-    let item = Item { id = 1 }
+    const item = Item { id = 1 }
     item.id
 }

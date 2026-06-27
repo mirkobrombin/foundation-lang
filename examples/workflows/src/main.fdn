@@ -1,0 +1,72 @@
+package example.workflows
+
+import std.format
+
+struct Checkout {
+    amount i32
+    rejectPayment bool
+}
+
+fn Validate(order Checkout) Result<Checkout, String> {
+    if order.amount <= 0 {
+        return .Err("invalid amount")
+    }
+    .Ok(order)
+}
+
+fn Total(order Checkout) Result<i32, String> {
+    .Ok(order.amount * 2)
+}
+
+pipeline Price(input Checkout) Result<i32, String> {
+    step validate using Validate
+    step total using Total retry exponential(max = 3)
+}
+
+fn Reserve(order Checkout) Result<void, String> {
+    discard order
+    .Ok
+}
+
+fn Release(order Checkout) Result<void, String> {
+    discard order
+    .Ok
+}
+
+fn Charge(order Checkout) Result<void, String> {
+    if order.rejectPayment {
+        return .Err("payment rejected")
+    }
+    .Ok
+}
+
+fn Confirm(order Checkout) Result<String, String> {
+    discard order
+    .Ok("confirmed")
+}
+
+saga PlaceOrder(input Checkout) Result<String, String> {
+    step reserve using Reserve
+        compensate Release
+    step charge using Charge
+    step confirm using Confirm
+}
+
+fn main() i32 {
+    const order = Checkout { amount = 21 rejectPayment = false }
+    const total = Price(order) else error {
+        print(error)
+        return 1
+    }
+    print(format.I32(total))
+
+    const receipt = PlaceOrder(order) else failure {
+        match failure {
+            Step(error): print(error)
+            Compensation(details): print(details.Original)
+        }
+        return 2
+    }
+    print(receipt)
+    0
+}

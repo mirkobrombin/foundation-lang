@@ -1,0 +1,23 @@
+extern c fn inspect(value *const void) bool as foundation_fuzz_inspect
+
+extern c fn acquire() *i32 as foundation_fuzz_acquire
+
+fn read(pointer *const i32) i32 {
+    // SAFETY: The caller supplies a live pointer to an i32.
+    unsafe {
+        return *pointer
+    }
+}
+
+fn main() i32 {
+    // SAFETY: The native fixture returns a live i32 pointer and only observes it.
+    unsafe {
+        const pointer = acquire()
+        if isNull(pointer) { return 1 }
+
+        *pointer = 42
+        const opaque *const void = pointer
+        discard inspect(opaque)
+        return read(pointer) - 42
+    }
+}

@@ -1,5 +1,5 @@
 fn main() i32 {
-    let values [2147483648]i32 = []
+    const values [2147483648]i32 = []
     discard values
     0
 }

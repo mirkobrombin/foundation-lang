@@ -1,0 +1,118 @@
+import foundation.events
+import std.collections
+
+enum HandlerError {
+    First
+    Second
+}
+
+fn high(event i32) Result<void, HandlerError> {
+    discard event
+    print("high")
+    .Ok
+}
+
+fn firstFailure(event i32) Result<void, HandlerError> {
+    discard event
+    print("first failure")
+    .Err(.First)
+}
+
+fn secondFailure(event i32) Result<void, HandlerError> {
+    discard event
+    print("second failure")
+    .Err(.Second)
+}
+
+fn low(event i32) Result<void, HandlerError> {
+    discard event
+    print("low")
+    .Ok
+}
+
+fn subscribeAll(&bus events.Bus<i32, HandlerError>) void {
+    discard bus.Subscribe($low, .Low)
+    discard bus.Subscribe($firstFailure, .Normal)
+    discard bus.Subscribe($secondFailure, .Normal)
+    discard bus.Subscribe($high, .High)
+}
+
+fn errorValue($value Option<HandlerError>) HandlerError {
+    match value {
+        None: panic("missing event error")
+        Some(error): error
+    }
+}
+
+fn expectErrors($errors own collections.List<HandlerError>) bool {
+    var pending = errors
+    if pending.Len() != 2 return false
+    const first = errorValue(pending.PopFront())
+    const second = errorValue(pending.PopFront())
+    match first {
+        First: match second {
+            First: false
+            Second: true
+        }
+        Second: false
+    }
+}
+
+fn rejectHandler($error HandlerError) bool {
+    discard error
+    false
+}
+
+fn rejectErrors($errors own collections.List<HandlerError>) bool {
+    discard errors
+    false
+}
+
+fn expectBestEffort(
+    $published Result<void, events.PublishError<HandlerError>>
+) bool {
+    match published {
+        Ok: false
+        Err(error): match error {
+            Reentrant: false
+            Handler(error): rejectHandler($error)
+            Handlers(errors): expectErrors($errors)
+        }
+    }
+}
+
+fn expectFirst(
+    $published Result<void, events.PublishError<HandlerError>>
+) bool {
+    match published {
+        Ok: false
+        Err(error): match error {
+            Reentrant: false
+            Handler(error): match error {
+                First: true
+                Second: false
+            }
+            Handlers(errors): rejectErrors($errors)
+        }
+    }
+}
+
+fn main() i32 {
+    var bestEffort = events.NewBus<i32, HandlerError>(.BestEffort)
+    subscribeAll(&bestEffort)
+    if !expectBestEffort($bestEffort.Publish(42)) return 1
+
+    print("again")
+    if !expectBestEffort($bestEffort.Publish(42)) return 2
+
+    print("stop")
+    var stop = events.NewBus<i32, HandlerError>(.StopOnFirstError)
+    subscribeAll(&stop)
+    if !expectFirst($stop.Publish(42)) return 3
+
+    var empty = events.NewBus<i32, HandlerError>(.BestEffort)
+    match empty.Publish(42) {
+        Ok: 0
+        Err(error): 4
+    }
+}

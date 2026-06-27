@@ -1,0 +1,12 @@
+package test.web.reject
+
+import foundation.web
+
+@web.Route(.POST, "/items")
+fn CreateItem(@web.Body() body i32) web.Response {
+    web.Text(200, "item")
+}
+
+fn main() i32 {
+    0
+}

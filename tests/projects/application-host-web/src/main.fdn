@@ -1,0 +1,354 @@
+package test.host.web
+
+import foundation.di
+import foundation.web
+import std.collections
+import std.net
+import std.text
+
+enum RouteError {
+    Rejected
+}
+
+@di.Scope(.Singleton)
+service Prefix {
+    value String
+
+    @di.Inject()
+    fn New() Prefix {
+        Prefix { value = "bound" }
+    }
+
+    fn Value(self) String {
+        text.Copy(self.value)
+    }
+}
+
+@web.Route(.POST, "/users/{id:alpha}")
+fn CreateUser(
+    @web.Path("id") id String,
+    @web.Query("source") source String,
+    @web.Query("limit") limit i32,
+    @web.Query("note") $note Option<String>,
+    @web.Header("X-Trace") trace String,
+    @web.Header("X-Enabled") enabled bool,
+    @web.Body() body String,
+    @web.Inject() prefix Prefix
+) Result<web.Response, RouteError> {
+    const noteMatched = match note {
+        None: true
+        Some(value): value == "optional"
+    }
+    if id != "Ada" || source != "test" || limit != 7 || !noteMatched ||
+        trace != "trace-id" || !enabled || prefix.Value() != "bound" {
+        return .Err(.Rejected)
+    }
+    .Ok(web.Text(200, text.Copy(body)))
+}
+
+@web.Route(.POST, "/forms")
+fn SubmitForm(@web.Form("name") name String) web.Response {
+    web.Text(200, text.Copy(name))
+}
+
+fn request(method web.Method, $target String, $path String) web.Request {
+    web.Request {
+        Method = method
+        Target = target
+        Path = path
+        Version = "HTTP/1.1"
+        Headers = collections.NewList<web.HeaderValue>()
+        Params = collections.NewList<web.Parameter>()
+    }
+}
+
+fn responseBody(
+    $value Result<web.Response, web.DispatchError<FoundationWebError>>
+) String {
+    match value {
+        Ok(response): takeBody($response)
+        Err(error): dispatchFailure(error)
+    }
+}
+
+fn takeBody($response web.Response) String {
+    const web.Response { Status Headers Body } = response
+    discard Status
+    discard Headers
+    Body
+}
+
+fn dispatchFailure(error web.DispatchError<FoundationWebError>) String {
+    discard error
+    ""
+}
+
+fn bindingFailure(
+    $value Result<web.Response, web.DispatchError<FoundationWebError>>,
+    kind FoundationWebBindingKind,
+    source FoundationWebBindingSource,
+    name String
+) bool {
+    match value {
+        Ok(response): unexpectedResponse($response)
+        Err(error): dispatchBindingFailure($error, kind, source, name)
+    }
+}
+
+fn unexpectedResponse($response web.Response) bool {
+    discard response
+    false
+}
+
+fn dispatchBindingFailure(
+    $error web.DispatchError<FoundationWebError>,
+    kind FoundationWebBindingKind,
+    source FoundationWebBindingSource,
+    name String
+) bool {
+    match error {
+        NotFound: false
+        MethodNotAllowed: false
+        Handler(error): webBindingFailure($error, kind, source, name)
+    }
+}
+
+fn webBindingFailure(
+    $value FoundationWebError,
+    kind FoundationWebBindingKind,
+    source FoundationWebBindingSource,
+    name String
+) bool {
+    match value {
+        Binding(error): bindingMatches($error, kind, source, name)
+        CreateUserFailed(error): routeFailure(error)
+    }
+}
+
+fn bindingMatches(
+    $value FoundationWebBindingError,
+    kind FoundationWebBindingKind,
+    source FoundationWebBindingSource,
+    name String
+) bool {
+    const FoundationWebBindingError { Kind Source Name } = value
+    sameBindingKind(Kind, kind) && sameBindingSource(Source, source) && Name == name
+}
+
+fn sameBindingKind(left FoundationWebBindingKind, right FoundationWebBindingKind) bool {
+    match left {
+        Missing: match right {
+            Missing: true
+            Invalid: false
+        }
+        Invalid: match right {
+            Missing: false
+            Invalid: true
+        }
+    }
+}
+
+fn sameBindingSource(
+    left FoundationWebBindingSource,
+    right FoundationWebBindingSource
+) bool {
+    match left {
+        Path: match right {
+            Path: true
+            Query: false
+            Header: false
+            Form: false
+            Body: false
+        }
+        Query: match right {
+            Path: false
+            Query: true
+            Header: false
+            Form: false
+            Body: false
+        }
+        Header: match right {
+            Path: false
+            Query: false
+            Header: true
+            Form: false
+            Body: false
+        }
+        Form: match right {
+            Path: false
+            Query: false
+            Header: false
+            Form: true
+            Body: false
+        }
+        Body: match right {
+            Path: false
+            Query: false
+            Header: false
+            Form: false
+            Body: true
+        }
+    }
+}
+
+fn routeFailure(error RouteError) bool {
+    discard error
+    false
+}
+
+fn serverOr(
+    $value Result<own web.Server<FoundationWebError>, net.Error>
+) own web.Server<FoundationWebError> {
+    const server = value else error {
+        discard error
+        panic("generated HTTP server bind failed")
+    }
+    server
+}
+
+fn connectionOr(
+    $value Result<own net.TcpConnection, net.Error>
+) own net.TcpConnection {
+    const connection = value else error {
+        discard error
+        panic("generated HTTP client connection failed")
+    }
+    connection
+}
+
+fn pairOr($value Result<net.StreamPair, net.Error>) net.StreamPair {
+    const pair = value else error {
+        discard error
+        panic("generated HTTP client split failed")
+    }
+    pair
+}
+
+fn served($value Result<void, web.ServeError<FoundationWebError>>) bool {
+    match value {
+        Ok: true
+        Err(error): false
+    }
+}
+
+fn main() i32 {
+    var application = BuildFoundationApplication()
+    var createRequest = request(
+        .POST,
+        "/users/Ada?source=test&limit=7&note=optional",
+        "/users/Ada"
+    )
+    createRequest.Body = "payload"
+    createRequest.ContentLength = 7
+    createRequest.Headers.PushFront(web.HeaderValue {
+        Name = "X-Trace"
+        Value = "trace-id"
+    })
+    createRequest.Headers.PushFront(web.HeaderValue {
+        Name = "X-Enabled"
+        Value = "true"
+    })
+    if responseBody($application.Dispatch($createRequest)) != "payload" return 1
+
+    var missingRequest = request(.POST, "/users/Ada?limit=7", "/users/Ada")
+    missingRequest.Body = "payload"
+    missingRequest.Headers.PushFront(web.HeaderValue {
+        Name = "X-Trace"
+        Value = "trace-id"
+    })
+    missingRequest.Headers.PushFront(web.HeaderValue {
+        Name = "X-Enabled"
+        Value = "true"
+    })
+    if !bindingFailure(
+        $application.Dispatch($missingRequest),
+        .Missing,
+        .Query,
+        "source"
+    ) {
+        return 2
+    }
+
+    var invalidLimitRequest = request(
+        .POST,
+        "/users/Ada?source=test&limit=seven",
+        "/users/Ada"
+    )
+    invalidLimitRequest.Body = "payload"
+    invalidLimitRequest.Headers.PushFront(web.HeaderValue {
+        Name = "X-Trace"
+        Value = "trace-id"
+    })
+    invalidLimitRequest.Headers.PushFront(web.HeaderValue {
+        Name = "X-Enabled"
+        Value = "true"
+    })
+    if !bindingFailure(
+        $application.Dispatch($invalidLimitRequest),
+        .Invalid,
+        .Query,
+        "limit"
+    ) {
+        return 3
+    }
+
+    var invalidBoolRequest = request(
+        .POST,
+        "/users/Ada?source=test&limit=7",
+        "/users/Ada"
+    )
+    invalidBoolRequest.Body = "payload"
+    invalidBoolRequest.Headers.PushFront(web.HeaderValue {
+        Name = "X-Trace"
+        Value = "trace-id"
+    })
+    invalidBoolRequest.Headers.PushFront(web.HeaderValue {
+        Name = "X-Enabled"
+        Value = "yes"
+    })
+    if !bindingFailure(
+        $application.Dispatch($invalidBoolRequest),
+        .Invalid,
+        .Header,
+        "X-Enabled"
+    ) {
+        return 4
+    }
+
+    var formRequest = request(.POST, "/forms", "/forms")
+    formRequest.Body = "name=Ada+Lovelace"
+    if responseBody($application.Dispatch($formRequest)) != "Ada Lovelace" return 5
+    discard application
+
+    const serverApplication = BuildFoundationApplication()
+    var server = serverOr(web.NewServer<FoundationWebError>(
+        "127.0.0.1",
+        0,
+        $serverApplication
+    ))
+    const port = server.Port()
+    const serving = server.ServeOne()
+    const connecting = spawn net.Connect("127.0.0.1", port)
+    const connection = connectionOr($connecting.wait())
+    const pair = pairOr(connection.Split())
+    const net.StreamPair { Reader Writer } = pair
+    discard Reader
+    const writing = spawn net.WriteAll(
+        $Writer,
+        "POST /users/Ada?source=test&limit=7 HTTP/1.1\r\nHost: localhost\r\nX-Trace: trace-id\r\nX-Enabled: true\r\nContent-Length: 7\r\n\r\npayload"
+    )
+    const written = $writing.wait()
+    const net.WriteOutcome { Writer as writerAfter Value as writeResult } = written
+    discard writerAfter
+    const writeAccepted = match writeResult {
+        Ok: true
+        Err(error): false
+    }
+    const servedOutcome = $serving.wait()
+    const web.ServeOutcome { Server Value } = servedOutcome
+    discard Server
+    if !writeAccepted || !served($Value) return 6
+
+    print("generated web")
+    0
+}

@@ -1,5 +1,5 @@
 fn main() i32 {
     var current = 1
-    let previous = replace current with true
+    const previous = replace current with true
     previous
 }

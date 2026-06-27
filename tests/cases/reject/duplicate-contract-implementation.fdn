@@ -1,9 +1,9 @@
 contract Readable {
-    fn read(view) i32
+    fn read(self) i32
 }
 
 struct Value implements Readable, Readable {
-    fn read(view) i32 {
+    fn read(self) i32 {
         0
     }
 }

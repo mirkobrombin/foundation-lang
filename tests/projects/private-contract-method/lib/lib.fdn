@@ -1,13 +1,13 @@
 package example.lib
 
 contract Reader {
-    fn read(view) i32
+    fn read(self) i32
 }
 
 struct Value implements Reader {
     Number i32
 
-    fn read(view) i32 {
+    fn read(self) i32 {
         self.Number
     }
 }

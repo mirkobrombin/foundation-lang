@@ -1,0 +1,5 @@
+fn main() i32 {
+    const maximum i8 = 127
+    const overflow i8 = maximum + 1
+    i32.From(overflow)
+}

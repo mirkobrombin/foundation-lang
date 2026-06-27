@@ -3,7 +3,7 @@
 `std.json` parses RFC 8259 values in Foundation source. It does not call a host JSON library.
 
 ```foundation
-fn Parse(source view String) Result<Value, Error>
+fn Parse(source String) Result<Value, Error>
 ```
 
 `Value` has `Null`, `Bool`, `Number`, `Text`, `Array`, and `Object` variants. Numbers retain their

@@ -1,0 +1,25 @@
+package test.host
+
+import foundation.actions
+import foundation.di
+
+@di.Scope(.Singleton)
+service Source {
+    @di.Inject()
+    fn New() Source {
+        Source {}
+    }
+
+    @actions.Name("stop")
+    action Stop(self) Result<never, Failure> {
+        .Err(.Stopped)
+    }
+}
+
+enum Failure {
+    Stopped
+}
+
+fn main() i32 {
+    0
+}

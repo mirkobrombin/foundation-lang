@@ -1,11 +1,11 @@
 enum Holder {
     Empty
-    Callback(fn() i32)
+    Callback(fn() String)
 }
 
 fn main() i32 {
-    let value = 1
-    let holder = Holder.Callback(fn() i32 capture view value {
+    const value = "borrowed"
+    const holder = Holder.Callback(fn() String capture value {
         value
     })
     discard holder

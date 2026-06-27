@@ -82,6 +82,8 @@ const char *tokenName(TokenKind kind) {
         return "identifier";
     case TokenKind::Integer:
         return "integer";
+    case TokenKind::Floating:
+        return "floating-point number";
     case TokenKind::String:
         return "string";
     case TokenKind::Package:
@@ -94,10 +96,18 @@ const char *tokenName(TokenKind kind) {
         return "extern";
     case TokenKind::Struct:
         return "struct";
+    case TokenKind::Service:
+        return "service";
     case TokenKind::Methods:
         return "methods";
     case TokenKind::Enum:
         return "enum";
+    case TokenKind::StateMachine:
+        return "state_machine";
+    case TokenKind::Pipeline:
+        return "pipeline";
+    case TokenKind::Saga:
+        return "saga";
     case TokenKind::Contract:
         return "contract";
     case TokenKind::Attribute:
@@ -110,8 +120,14 @@ const char *tokenName(TokenKind kind) {
         return "delegate";
     case TokenKind::Fn:
         return "fn";
+    case TokenKind::Action:
+        return "action";
     case TokenKind::Task:
         return "task";
+    case TokenKind::Test:
+        return "test";
+    case TokenKind::Unsafe:
+        return "unsafe";
     case TokenKind::Spawn:
         return "spawn";
     case TokenKind::Let:
@@ -130,6 +146,14 @@ const char *tokenName(TokenKind kind) {
         return "else";
     case TokenKind::While:
         return "while";
+    case TokenKind::For:
+        return "for";
+    case TokenKind::In:
+        return "in";
+    case TokenKind::Break:
+        return "break";
+    case TokenKind::Continue:
+        return "continue";
     case TokenKind::Select:
         return "select";
     case TokenKind::Timeout:
@@ -142,6 +166,8 @@ const char *tokenName(TokenKind kind) {
         return "replace";
     case TokenKind::With:
         return "with";
+    case TokenKind::New:
+        return "new";
     case TokenKind::Own:
         return "own";
     case TokenKind::View:
@@ -202,6 +228,8 @@ const char *tokenName(TokenKind kind) {
         return "||";
     case TokenKind::At:
         return "@";
+    case TokenKind::Ampersand:
+        return "&";
     case TokenKind::Dollar:
         return "$";
     }
@@ -248,8 +276,14 @@ void Lexer::skipIgnored() {
             continue;
         }
         if (value == '/' && peek(1) == '/') {
+            const auto commentStart = offset_;
+            const auto commentLine = line_;
             while (!atEnd() && peek() != '\n') {
                 advance();
+            }
+            auto comment = source_.substr(commentStart, offset_ - commentStart);
+            if (comment.starts_with("// SAFETY:")) {
+                safetyCommentLine_ = commentLine;
             }
             continue;
         }
@@ -290,20 +324,30 @@ Token Lexer::next() {
         const auto start = offset_;
         const auto line = line_;
         const auto column = column_;
+        const auto leadingSafetyProof = safetyCommentLine_.has_value() &&
+                                        line == *safetyCommentLine_ + 1;
+        safetyCommentLine_.reset();
         if (atEnd()) {
-            return {TokenKind::Eof, {}, {offset_, 0, line_, column_, sourceId_}};
+            return {TokenKind::Eof, {}, {offset_, 0, line_, column_, sourceId_},
+                    leadingSafetyProof};
         }
 
         const auto value = advance();
         if (isIdentifierStart(value)) {
-            return identifier();
+            auto token = identifier();
+            token.leadingSafetyProof = leadingSafetyProof;
+            return token;
         }
         if (std::isdigit(static_cast<unsigned char>(value)) != 0) {
-            return integer();
+            auto token = number();
+            token.leadingSafetyProof = leadingSafetyProof;
+            return token;
         }
 
-        const auto simple = [this, start, line, column](TokenKind kind, std::string text) {
-            return Token{kind, std::move(text), spanFrom(start, line, column)};
+        const auto simple = [this, start, line, column,
+                             leadingSafetyProof](TokenKind kind, std::string text) {
+            return Token{kind, std::move(text), spanFrom(start, line, column),
+                         leadingSafetyProof};
         };
         switch (value) {
         case '(':
@@ -367,7 +411,7 @@ Token Lexer::next() {
                 advance();
                 return simple(TokenKind::AndAnd, "&&");
             }
-            break;
+            return simple(TokenKind::Ampersand, "&");
         case '|':
             if (peek() == '|') {
                 advance();
@@ -375,7 +419,11 @@ Token Lexer::next() {
             }
             break;
         case '"':
-            return string();
+            {
+                auto token = string();
+                token.leadingSafetyProof = leadingSafetyProof;
+                return token;
+            }
         default:
             break;
         }
@@ -403,10 +451,18 @@ Token Lexer::identifier() {
         kind = TokenKind::Extern;
     } else if (text == "struct") {
         kind = TokenKind::Struct;
+    } else if (text == "service") {
+        kind = TokenKind::Service;
     } else if (text == "methods") {
         kind = TokenKind::Methods;
     } else if (text == "enum") {
         kind = TokenKind::Enum;
+    } else if (text == "state_machine") {
+        kind = TokenKind::StateMachine;
+    } else if (text == "pipeline") {
+        kind = TokenKind::Pipeline;
+    } else if (text == "saga") {
+        kind = TokenKind::Saga;
     } else if (text == "contract") {
         kind = TokenKind::Contract;
     } else if (text == "attribute") {
@@ -419,8 +475,12 @@ Token Lexer::identifier() {
         kind = TokenKind::Delegate;
     } else if (text == "fn") {
         kind = TokenKind::Fn;
+    } else if (text == "action") {
+        kind = TokenKind::Action;
     } else if (text == "task") {
         kind = TokenKind::Task;
+    } else if (text == "unsafe") {
+        kind = TokenKind::Unsafe;
     } else if (text == "spawn") {
         kind = TokenKind::Spawn;
     } else if (text == "let") {
@@ -439,6 +499,14 @@ Token Lexer::identifier() {
         kind = TokenKind::Else;
     } else if (text == "while") {
         kind = TokenKind::While;
+    } else if (text == "for") {
+        kind = TokenKind::For;
+    } else if (text == "in") {
+        kind = TokenKind::In;
+    } else if (text == "break") {
+        kind = TokenKind::Break;
+    } else if (text == "continue") {
+        kind = TokenKind::Continue;
     } else if (text == "select") {
         kind = TokenKind::Select;
     } else if (text == "timeout") {
@@ -451,6 +519,8 @@ Token Lexer::identifier() {
         kind = TokenKind::Replace;
     } else if (text == "with") {
         kind = TokenKind::With;
+    } else if (text == "new") {
+        kind = TokenKind::New;
     } else if (text == "own") {
         kind = TokenKind::Own;
     } else if (text == "view") {
@@ -465,13 +535,35 @@ Token Lexer::identifier() {
     return {kind, text, spanFrom(start, line_, column)};
 }
 
-Token Lexer::integer() {
+Token Lexer::number() {
     const auto start = offset_ - 1;
     const auto column = column_ - 1;
     while (std::isdigit(static_cast<unsigned char>(peek())) != 0) {
         advance();
     }
-    return {TokenKind::Integer, std::string(source_.substr(start, offset_ - start)),
+    auto kind = TokenKind::Integer;
+    if (peek() == '.' &&
+        std::isdigit(static_cast<unsigned char>(peek(1))) != 0) {
+        kind = TokenKind::Floating;
+        advance();
+        while (std::isdigit(static_cast<unsigned char>(peek())) != 0) {
+            advance();
+        }
+    }
+    if ((peek() == 'e' || peek() == 'E') &&
+        (std::isdigit(static_cast<unsigned char>(peek(1))) != 0 ||
+         ((peek(1) == '+' || peek(1) == '-') &&
+          std::isdigit(static_cast<unsigned char>(peek(2))) != 0))) {
+        kind = TokenKind::Floating;
+        advance();
+        if (peek() == '+' || peek() == '-') {
+            advance();
+        }
+        while (std::isdigit(static_cast<unsigned char>(peek())) != 0) {
+            advance();
+        }
+    }
+    return {kind, std::string(source_.substr(start, offset_ - start)),
             spanFrom(start, line_, column)};
 }
 

@@ -1,4 +1,4 @@
-attribute Borrowed(value view String) targets(fn)
+attribute Borrowed(value fn() void) targets(fn)
 
 fn main() i32 {
     0

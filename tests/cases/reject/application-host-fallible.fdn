@@ -1,0 +1,23 @@
+package test.host
+
+import foundation.di
+
+@di.Scope(.Singleton)
+service Worker {
+    @di.Inject()
+    fn New() Result<Worker, bool> {
+        .Ok(Worker {})
+    }
+}
+
+@di.Scope(.Singleton)
+service Logger {
+    @di.Inject()
+    fn New() Result<Logger, String> {
+        .Ok(Logger {})
+    }
+}
+
+fn main() i32 {
+    0
+}

@@ -1,9 +1,9 @@
 contract Reader {
-    fn read(view) i32
+    fn read(self) i32
 }
 
-fn read(value Reader) i32 {
-    0
+struct InvalidHolder {
+    value Reader
 }
 
 fn main() i32 {

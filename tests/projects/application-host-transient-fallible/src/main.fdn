@@ -1,0 +1,67 @@
+package test.host.transient_fallible
+
+import foundation.actions
+import foundation.di
+
+enum ActivationError {
+    Denied
+    Failed
+}
+
+service Worker {
+    @di.Inject()
+    fn New(@di.Input() allow bool) Result<Worker, ActivationError> {
+        if !allow return .Err(.Denied)
+        .Ok(Worker {})
+    }
+
+    @actions.Name("forward")
+    action Forward(self, fail bool) Result<i32, ActivationError> {
+        if fail return .Err(.Failed)
+        .Ok(42)
+    }
+
+    @actions.Name("notify")
+    action Notify(self, $message String) void {
+        print(message)
+    }
+
+    @actions.Name("run")
+    action Run(self, value i32) i32 {
+        value + 1
+    }
+}
+
+fn valueOr($result Result<i32, ActivationError>, fallback i32) i32 {
+    match result {
+        Ok(value): value
+        Err(error): fallback
+    }
+}
+
+fn succeeded($result Result<void, ActivationError>) bool {
+    match result {
+        Ok: true
+        Err(error): false
+    }
+}
+
+fn main() i32 {
+    const application = BuildFoundationApplication()
+
+    const denied = application.Run(false, 41)
+    if valueOr($denied, -1) != -1 return 1
+
+    const ran = application.Run(true, 41)
+    if valueOr($ran, -1) != 42 return 2
+
+    const forwarded = application.Forward(true, false)
+    if valueOr($forwarded, -1) != 42 return 3
+
+    const failed = application.Forward(true, true)
+    if valueOr($failed, -1) != -1 return 4
+
+    const notified = application.Notify(true, "notified")
+    if !succeeded($notified) return 5
+    0
+}

@@ -1,36 +1,36 @@
 contract Named<T> {
-    fn value(view) T
+    fn value(self) T
 }
 
 contract Tagged<T> extends Named<T> {
-    fn tag(view) i32
+    fn tag(self) i32
 }
 
 contract Audited<T> extends Named<T> {
-    fn audited(view) bool
+    fn audited(self) bool
 }
 
 contract Principal<T> extends Tagged<T>, Audited<T> {}
 
 contract Scored {
-    fn score(view) i32
+    fn score(self) i32
 
-    fn doubled(view) i32 {
+    fn doubled(self) i32 {
         self.score() * 2
     }
 }
 
 contract Echo<T> {
-    fn current(view) T
+    fn current(self) T
 
-    fn fallback(view, candidate T) T {
+    fn fallback(self, $candidate T) T {
         discard self.current()
         candidate
     }
 }
 
 contract RemappedDefault<A, B> {
-    fn first(view, left A, right B) A {
+    fn first(self, $left A, $right B) A {
         discard right
         left
     }
@@ -39,13 +39,13 @@ contract RemappedDefault<A, B> {
 contract IntegerDefault<T> extends RemappedDefault<i32, T> {}
 
 contract LeftValue {
-    fn left(view) i32
+    fn left(self) i32
 }
 
 contract RightValue {
-    fn right(view) i32
+    fn right(self) i32
 
-    fn rightPlusOne(view) i32 {
+    fn rightPlusOne(self) i32 {
         self.right() + 1
     }
 }
@@ -53,36 +53,36 @@ contract RightValue {
 contract CombinedValue extends LeftValue, RightValue {}
 
 contract Accumulator {
-    fn add(edit, amount i32) void
+    fn add(&self, amount i32) void
 
-    fn addTwice(edit, amount i32) void {
+    fn addTwice(&self, amount i32) void {
         self.add(amount)
         self.add(amount)
     }
 }
 
 contract Consumable {
-    fn value(view) i32
-    fn add(edit, amount i32) void
-    fn take(own) i32
+    fn value(self) i32
+    fn add(&self, amount i32) void
+    fn take($self) i32
 }
 
 contract OwnedValue<T> {
-    fn takeValue(own) T
+    fn takeValue($self) T
 }
 
 struct Entry implements Principal<i32> {
     stored i32
 
-    fn value(view) i32 { self.stored }
-    fn tag(view) i32 { 2 }
-    fn audited(view) bool { true }
+    fn value(self) i32 { self.stored }
+    fn tag(self) i32 { 2 }
+    fn audited(self) bool { true }
 }
 
 struct Identity implements Named<i32> {
     stored i32
 
-    fn value(view) i32 { self.stored }
+    fn value(self) i32 { self.stored }
 }
 
 struct DelegatedEntry implements Named<i32> {
@@ -102,20 +102,20 @@ struct OverriddenEntry implements Named<i32> {
 
     delegate identity as Named<i32>
 
-    fn value(view) i32 { self.identity.stored + 2 }
+    fn value(self) i32 { self.identity.stored + 2 }
 }
 
 struct Metric implements Scored {
     stored i32
 
-    fn score(view) i32 { self.stored }
+    fn score(self) i32 { self.stored }
 }
 
 struct CustomMetric implements Scored {
     stored i32
 
-    fn score(view) i32 { self.stored }
-    fn doubled(view) i32 { self.stored + 2 }
+    fn score(self) i32 { self.stored }
+    fn doubled(self) i32 { self.stored + 2 }
 }
 
 struct MetricWrapper implements Scored {
@@ -127,14 +127,14 @@ struct MetricWrapper implements Scored {
 struct Number implements Echo<i32> {
     stored i32
 
-    fn current(view) i32 { self.stored }
+    fn current(self) i32 { self.stored }
 }
 
 struct RemappedNumber implements IntegerDefault<bool> {}
 
 struct CombinedNumber implements CombinedValue {
-    fn left(view) i32 { 1 }
-    fn right(view) i32 { 41 }
+    fn left(self) i32 { 1 }
+    fn right(self) i32 { 41 }
 }
 
 struct CombinedWrapper implements CombinedValue {
@@ -146,7 +146,7 @@ struct CombinedWrapper implements CombinedValue {
 struct Counter implements Accumulator {
     value i32
 
-    fn add(edit, amount i32) void {
+    fn add(&self, amount i32) void {
         self.value = self.value + amount
     }
 }
@@ -154,15 +154,15 @@ struct Counter implements Accumulator {
 struct Resource implements Consumable {
     stored i32
 
-    fn value(view) i32 { self.stored }
+    fn value(self) i32 { self.stored }
 
-    fn add(edit, amount i32) void {
+    fn add(&self, amount i32) void {
         self.stored = self.stored + amount
     }
 
-    fn take(own) i32 { self.stored }
+    fn take($self) i32 { self.stored }
 
-    fn drop(edit) void {
+    fn drop(&self) void {
         print("resource dropped")
     }
 }
@@ -170,26 +170,26 @@ struct Resource implements Consumable {
 struct OwnedNumber implements OwnedValue<i32> {
     stored i32
 
-    fn takeValue(own) i32 { self.stored }
+    fn takeValue($self) i32 { self.stored }
 }
 
 struct ResourceHolder {
     resource own Consumable
 }
 
-fn readNamed(value view Named<i32>) i32 {
+fn readNamed(value Named<i32>) i32 {
     value.value()
 }
 
-fn readDoubled(value view Scored) i32 {
+fn readDoubled(value Scored) i32 {
     value.doubled()
 }
 
-fn useFallback(value view Echo<i32>) i32 {
+fn useFallback(value Echo<i32>) i32 {
     value.fallback(42)
 }
 
-fn addTwice(value edit Accumulator, amount i32) void {
+fn addTwice(&value Accumulator, amount i32) void {
     value.addTwice(amount)
 }
 
@@ -201,51 +201,51 @@ fn makeCombined() own CombinedValue {
     own CombinedWrapper { inner = CombinedNumber {} }
 }
 
-fn readResource(value view Consumable) i32 {
+fn readResource(value Consumable) i32 {
     value.value()
 }
 
-fn editResource(value edit Consumable, amount i32) void {
+fn editResource(&value Consumable, amount i32) void {
     value.add(amount)
 }
 
-fn consumeValue<T>(value own OwnedValue<T>, fallback T) T {
+fn consumeValue<T>($value own OwnedValue<T>, $fallback T) T {
     discard fallback
     value.takeValue()
 }
 
-fn takeResource(holder own ResourceHolder) own Consumable {
-    let ResourceHolder { resource } = holder
+fn takeResource($holder own ResourceHolder) own Consumable {
+    const ResourceHolder { resource } = holder
     resource
 }
 
 fn main() i32 {
-    let entry = Entry { stored = 40 }
-    let total = readNamed(view entry) + entry.tag()
-    let metric = Metric { stored = 20 }
-    let custom = CustomMetric { stored = 40 }
-    let delegated = DelegatedEntry { identity = Identity { stored = 42 } }
-    let nested = NestedEntry { entry = delegated }
-    let overridden = OverriddenEntry { identity = Identity { stored = 40 } }
-    let wrapped = MetricWrapper { inner = metric }
-    let number = Number { stored = 1 }
-    let remapped = RemappedNumber {}
-    let combined = CombinedNumber {}
-    let combinedWrapper = CombinedWrapper { inner = combined }
-    let dynamicCombined = makeCombined()
+    const entry = Entry { stored = 40 }
+    const total = readNamed(entry) + entry.tag()
+    const metric = Metric { stored = 20 }
+    const custom = CustomMetric { stored = 40 }
+    const delegated = DelegatedEntry { identity = Identity { stored = 42 } }
+    const nested = NestedEntry { entry = delegated }
+    const overridden = OverriddenEntry { identity = Identity { stored = 40 } }
+    const wrapped = MetricWrapper { inner = metric }
+    const number = Number { stored = 1 }
+    const remapped = RemappedNumber {}
+    const combined = CombinedNumber {}
+    const combinedWrapper = CombinedWrapper { inner = combined }
+    const dynamicCombined = makeCombined()
     var counter = Counter { value = 40 }
-    addTwice(edit counter, 1)
+    addTwice(&counter, 1)
     var resource = makeResource(40)
-    let resourceBefore = readResource(view resource)
+    const resourceBefore = readResource(resource)
     resource.add(1)
-    editResource(edit resource, 1)
-    let resourceValue = resource.take()
+    editResource(&resource, 1)
+    const resourceValue = resource.take()
     discard makeResource(1)
-    let ownedValue = consumeValue(own OwnedNumber { stored = 42 }, 0)
-    let holder = own ResourceHolder { resource = makeResource(1) }
-    let heldResource = takeResource(holder)
+    const ownedValue = consumeValue(own OwnedNumber { stored = 42 }, 0)
+    const holder = own ResourceHolder { resource = makeResource(1) }
+    const heldResource = takeResource($holder)
     discard heldResource
-    if total == 42 && entry.audited() && readNamed(view nested) == 42 && readNamed(view overridden) == 42 && metric.doubled() == 40 && readDoubled(view wrapped) == 40 && readDoubled(view custom) == 42 && useFallback(view number) == 42 && remapped.first(42, true) == 42 && combined.rightPlusOne() == 42 && combinedWrapper.rightPlusOne() == 42 && dynamicCombined.rightPlusOne() == 42 && counter.value == 42 && resourceBefore == 40 && resourceValue == 42 && ownedValue == 42 {
+    if total == 42 && entry.audited() && readNamed(nested) == 42 && readNamed(overridden) == 42 && metric.doubled() == 40 && readDoubled(wrapped) == 40 && readDoubled(custom) == 42 && useFallback(number) == 42 && remapped.first(42, true) == 42 && combined.rightPlusOne() == 42 && combinedWrapper.rightPlusOne() == 42 && dynamicCombined.rightPlusOne() == 42 && counter.value == 42 && resourceBefore == 40 && resourceValue == 42 && ownedValue == 42 {
         print("contract inheritance works")
         return 0
     }

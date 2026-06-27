@@ -3,7 +3,7 @@ package test.filesystem_directory
 import std.fs
 import std.path
 
-fn nameOr(value Result<Option<String>, fs.Error>) String {
+fn nameOr($value Result<Option<String>, fs.Error>) String {
     match value {
         Ok(name): match name {
             None: ""
@@ -13,16 +13,16 @@ fn nameOr(value Result<Option<String>, fs.Error>) String {
     }
 }
 
-fn main(args view [String]) i32 {
-    let opened = fs.OpenDir(view args[0]) else error {
+fn main(args [String]) i32 {
+    const opened = fs.OpenDir(args[0]) else error {
         discard error
         return 1
     }
     var directory = opened
-    let name = nameOr(directory.Next())
-    let end = nameOr(directory.Next())
-    let filePath = path.Join(view args[0], view name)
-    let isDirectory = fs.IsDirectory(view filePath) else error {
+    const name = nameOr(directory.Next())
+    const end = nameOr(directory.Next())
+    const filePath = path.Join(args[0], name)
+    const isDirectory = fs.IsDirectory(filePath) else error {
         discard error
         return 2
     }

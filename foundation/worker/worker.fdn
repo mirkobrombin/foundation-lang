@@ -1,36 +1,64 @@
 package foundation.worker
 
 extern c fn openNative() u64 as foundation_runtime_supervisor_open
-extern c fn adoptNative(handle u64, pending Task<void>) void as foundation_runtime_supervisor_adopt
+extern c fn adoptNative(handle u64, $pending Task<void>) void as foundation_runtime_supervisor_adopt
 extern c fn waitNative(handle u64) void as foundation_runtime_supervisor_wait
 extern c fn cancelNative(handle u64) void as foundation_runtime_supervisor_cancel
 extern c fn releaseNative(handle u64) void as foundation_runtime_supervisor_release
 extern c fn openPoolNative(workers u64) u64 as foundation_runtime_pool_open
-extern c fn submitPoolNative(handle u64, pending Task<void>) void as foundation_runtime_pool_submit
+extern c fn submitPoolNative(handle u64, $pending Task<void>) void as foundation_runtime_pool_submit
 extern c fn waitPoolNative(handle u64) void as foundation_runtime_pool_wait
 extern c fn cancelPoolNative(handle u64) void as foundation_runtime_pool_cancel
 extern c fn releasePoolNative(handle u64) void as foundation_runtime_pool_release
+
+// Reports bounded task-group admission and completion failures.
+enum GroupError {
+    Full
+    Empty
+    Closed
+    Cancelled
+    Timeout
+}
+
+// Returns one completed value together with the still-owned group.
+struct GroupNext<T> {
+    Group own Group<T>
+    Value Result<T, GroupError>
+}
+
+// Distinguishes a typed completion from an explicit stop signal.
+enum GroupWake<T> {
+    Completed(value T)
+    Stopped
+    Failed(error GroupError)
+}
+
+// Returns a wake reason together with the still-owned group.
+struct GroupWait<T> {
+    Group own Group<T>
+    Wake GroupWake<T>
+}
 
 // Owns detached tasks until an explicit shutdown policy joins them.
 struct Supervisor {
     handle u64
 
     // Transfers a task whose failure policy has already been handled by its body.
-    fn Start(view, pending Task<void>) void {
-        adoptNative(self.handle, pending)
+    fn Start(self, $pending Task<void>) void {
+        adoptNative(self.handle, $pending)
     }
 
     // Stops accepting work and waits for every supervised task to finish.
-    fn Shutdown(own) void {
+    fn Shutdown($self) void {
         waitNative(self.handle)
     }
 
     // Requests cancellation and then waits for every supervised task to finish.
-    fn Cancel(own) void {
+    fn Cancel($self) void {
         cancelNative(self.handle)
     }
 
-    fn drop(edit) void {
+    fn drop(&self) void {
         const handle = replace self.handle with 0
         if handle != 0 {
             cancelNative(handle)
@@ -43,26 +71,253 @@ fn NewSupervisor() own Supervisor {
     own Supervisor { handle = openNative() }
 }
 
+// Owns a bounded set of typed tasks and their completion channel.
+struct Group<T> {
+    supervisor own Supervisor
+    sender Sender<T>
+    receiver Receiver<T>
+    capacity u64
+    pending i32
+
+    // Adopts a task while preserving its typed result for Next.
+    fn Add(&self, $pending Task<T>) Result<void, GroupError> {
+        const count = u64.From(self.pending) else error {
+            discard error
+            panic("worker group count invariant failed")
+        }
+        if count >= self.capacity return .Err(.Full)
+        const publisher = self.sender.clone()
+        self.supervisor.Start(spawn publish($pending, $publisher))
+        self.pending = self.pending + 1
+        .Ok
+    }
+
+    // Transfers the group into a task that waits for one completion.
+    fn Next($self) Task<own GroupNext<T>> {
+        spawn next($self)
+    }
+
+    // Waits for either one typed completion or one explicit stop signal.
+    fn WaitOrStop(
+        $self,
+        $stop Receiver<void>
+    ) Task<own GroupWait<T>> {
+        spawn waitOrStop($self, $stop)
+    }
+
+    fn Count(self) i32 {
+        self.pending
+    }
+
+    // Waits for every adopted task and releases the group.
+    fn Shutdown($self) void {
+        const Group { supervisor sender receiver capacity pending } = self
+        discard sender
+        discard receiver
+        discard capacity
+        discard pending
+        supervisor.Shutdown()
+    }
+
+    // Requests cancellation, waits for every adopted task, and releases the group.
+    fn Cancel($self) void {
+        const Group { supervisor sender receiver capacity pending } = self
+        discard sender
+        discard receiver
+        discard capacity
+        discard pending
+        supervisor.Cancel()
+    }
+}
+
+// Creates a task group whose completion buffer matches its admission limit.
+fn NewGroup<T>(capacity u64) own Group<T> {
+    if capacity == 0 {
+        panic("worker group capacity must be greater than zero")
+    }
+    const Channel { sender receiver } = channel<T>(capacity)
+    own Group<T> {
+        supervisor = NewSupervisor()
+        sender = sender
+        receiver = receiver
+        capacity = capacity
+        pending = 0
+    }
+}
+
+task publish<T>($pending Task<T>, $sender Sender<T>) void {
+    const value = $pending.wait()
+    discard sender.send(value)
+}
+
+task next<T>($group own Group<T>) own GroupNext<T> {
+    const Group { supervisor sender receiver capacity pending } = group
+    var endpoint = receiver
+    if pending == 0 {
+        const empty = own Group<T> {
+            supervisor = supervisor
+            sender = sender
+            receiver = endpoint
+            capacity = capacity
+            pending = pending
+        }
+        return nextFailure($empty, .Empty)
+    }
+    const received = endpoint.receive()
+    const active = own Group<T> {
+        supervisor = supervisor
+        sender = sender
+        receiver = endpoint
+        capacity = capacity
+        pending = pending
+    }
+    match received {
+        Ok(item): nextValue($active, $item)
+        Err(error): nextFailure($active, mapGroupError(error))
+    }
+}
+
+fn nextValue<T>(
+    $group own Group<T>,
+    $value T
+) own GroupNext<T> {
+    var active = group
+    active.pending = active.pending - 1
+    own GroupNext<T> { Group = active Value = .Ok(value) }
+}
+
+fn nextFailure<T>(
+    $group own Group<T>,
+    error GroupError
+) own GroupNext<T> {
+    own GroupNext<T> { Group = group Value = .Err(error) }
+}
+
+fn mapGroupError(error ChannelError) GroupError {
+    match error {
+        Closed: .Closed
+        Cancelled: .Cancelled
+        Timeout: .Timeout
+    }
+}
+
+task waitOrStop<T>(
+    $group own Group<T>,
+    $stop Receiver<void>
+) own GroupWait<T> {
+    const Group { supervisor sender receiver capacity pending } = group
+    var completion = receiver
+    var control = stop
+    if pending == 0 {
+        return failedGroupWait(
+            $supervisor,
+            $sender,
+            $completion,
+            capacity,
+            pending,
+            .Empty
+        )
+    }
+    select {
+        const item = completion.receive(): return completedGroupWait(
+            $supervisor,
+            $sender,
+            $completion,
+            capacity,
+            pending,
+            $item
+        )
+        control.receive(): return stoppedGroupWait(
+            $supervisor,
+            $sender,
+            $completion,
+            capacity,
+            pending
+        )
+        else error: return failedGroupWait(
+            $supervisor,
+            $sender,
+            $completion,
+            capacity,
+            pending,
+            mapGroupError(error)
+        )
+    }
+}
+
+fn completedGroupWait<T>(
+    $supervisor own Supervisor,
+    $sender Sender<T>,
+    $receiver Receiver<T>,
+    capacity u64,
+    pending i32,
+    $value T
+) own GroupWait<T> {
+    const group = own Group<T> {
+        supervisor = supervisor
+        sender = sender
+        receiver = receiver
+        capacity = capacity
+        pending = pending - 1
+    }
+    own GroupWait<T> { Group = group Wake = .Completed(value = value) }
+}
+
+fn stoppedGroupWait<T>(
+    $supervisor own Supervisor,
+    $sender Sender<T>,
+    $receiver Receiver<T>,
+    capacity u64,
+    pending i32
+) own GroupWait<T> {
+    const group = own Group<T> {
+        supervisor = supervisor
+        sender = sender
+        receiver = receiver
+        capacity = capacity
+        pending = pending
+    }
+    own GroupWait<T> { Group = group Wake = .Stopped }
+}
+
+fn failedGroupWait<T>(
+    $supervisor own Supervisor,
+    $sender Sender<T>,
+    $receiver Receiver<T>,
+    capacity u64,
+    pending i32,
+    error GroupError
+) own GroupWait<T> {
+    const group = own Group<T> {
+        supervisor = supervisor
+        sender = sender
+        receiver = receiver
+        capacity = capacity
+        pending = pending
+    }
+    own GroupWait<T> { Group = group Wake = .Failed(error = error) }
+}
+
 // Runs transferred Foundation tasks on a fixed number of operating-system threads.
 struct Pool {
     handle u64
 
     // Transfers one directly spawned task into the parallel worker queue.
-    fn Start(view, pending Task<void>) void {
-        submitPoolNative(self.handle, pending)
+    fn Start(self, $pending Task<void>) void {
+        submitPoolNative(self.handle, $pending)
     }
 
     // Stops accepting work and waits for every submitted task to finish.
-    fn Shutdown(own) void {
+    fn Shutdown($self) void {
         waitPoolNative(self.handle)
     }
 
     // Requests structured cancellation and waits for every submitted task to finish.
-    fn Cancel(own) void {
+    fn Cancel($self) void {
         cancelPoolNative(self.handle)
     }
 
-    fn drop(edit) void {
+    fn drop(&self) void {
         const handle = replace self.handle with 0
         if handle != 0 {
             cancelPoolNative(handle)

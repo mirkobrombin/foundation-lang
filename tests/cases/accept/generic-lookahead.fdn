@@ -1,30 +1,30 @@
-fn identity<T>(value T) T {
+fn identity<T>($value T) T {
     value
 }
 
-fn apply(value i32, operation view fn(i32) i32) i32 {
+fn apply(value i32, operation fn(i32) i32) i32 {
     operation(value)
 }
 
-fn applyPair(value i32, first view fn(i32) i32, second view fn(i32) i32) i32 {
+fn applyPair(value i32, first fn(i32) i32, second fn(i32) i32) i32 {
     first(second(value))
 }
 
 fn specialize() fn(i32) i32 { identity<i32> }
 
 fn main() i32 {
-    let x = 1
-    let y = 2
-    let p = 5
-    let c = 4
-    let before = x < y
-    let after = p > (c)
+    const x = 1
+    const y = 2
+    const p = 5
+    const c = 4
+    const before = x < y
+    const after = p > (c)
 
-    let direct fn(i32) i32 = identity<i32>
-    let returned = specialize()
-    let functions = [identity<i32>, identity<i32>]
-    let single = apply(20, view identity<i32>)
-    let paired = applyPair(5, view identity<i32>, view identity<i32>)
+    const direct fn(i32) i32 = identity<i32>
+    const returned = specialize()
+    const functions = [identity<i32>, identity<i32>]
+    const single = apply(20, identity<i32>)
+    const paired = applyPair(5, identity<i32>, identity<i32>)
     discard functions
 
     if before && after {

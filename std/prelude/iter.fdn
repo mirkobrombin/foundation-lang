@@ -1,0 +1,29 @@
+package std.prelude
+
+contract Iterator<T> {
+    fn Next(&self) Option<T>
+}
+
+struct Range implements Iterator<i32> {
+    current i32
+    stop i32
+    step i32
+
+    fn Next(&self) Option<i32> {
+        if self.step > 0 {
+            if self.current >= self.stop return .None
+        } else {
+            if self.current <= self.stop return .None
+        }
+        const value = self.current
+        self.current = self.current + self.step
+        .Some(value)
+    }
+}
+
+fn range(start i32, stop i32, step i32) Range {
+    if step == 0 {
+        panic("range step cannot be zero")
+    }
+    Range { current = start stop = stop step = step }
+}

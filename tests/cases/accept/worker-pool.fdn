@@ -1,7 +1,7 @@
 import foundation.worker
 import std.concurrent
 
-task calculate(limit i32, message String) void {
+task calculate(limit i32, $message String) void {
     var current = 0
     while current < limit {
         current = current + 1
@@ -9,8 +9,8 @@ task calculate(limit i32, message String) void {
     print(message)
 }
 
-task nested(message String) void {
-    const child = spawn calculate(10000, message)
+task nested($message String) void {
+    const child = spawn calculate(10000, $message)
     $child.wait()
 }
 

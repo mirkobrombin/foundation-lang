@@ -7,6 +7,6 @@ struct Right {
 }
 
 fn main() i32 {
-    let Left { value } = Right { value = 1 }
+    const Left { value } = Right { value = 1 }
     value
 }

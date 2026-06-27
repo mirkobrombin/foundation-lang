@@ -1,0 +1,72 @@
+package test.host.events
+
+import foundation.actions
+import foundation.di
+import foundation.events
+
+enum DeliveryError {
+    Rejected
+}
+
+struct AccountEvent {
+    name String
+    reject bool
+}
+
+fn handleAccount(event AccountEvent) Result<void, DeliveryError> {
+    print(event.name)
+    if event.reject return .Err(.Rejected)
+    .Ok
+}
+
+@di.Scope(.Singleton)
+service Accounts {
+    bus own events.Bus<AccountEvent, DeliveryError>
+
+    @di.Inject()
+    fn New() Accounts {
+        var bus = events.NewBus<AccountEvent, DeliveryError>(.StopOnFirstError)
+        discard bus.Subscribe($handleAccount, .Normal)
+        Accounts { bus = bus }
+    }
+
+    @actions.Name("accounts.register")
+    action Register(
+        &self,
+        $name String,
+        reject bool
+    ) Result<void, events.PublishError<DeliveryError>> {
+        self.bus.Publish(AccountEvent { name = name reject = reject })
+    }
+}
+
+fn delivered(
+    $result Result<void, events.PublishError<DeliveryError>>
+) bool {
+    match result {
+        Ok: true
+        Err(error): false
+    }
+}
+
+fn rejected(
+    $result Result<void, events.PublishError<DeliveryError>>
+) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            Reentrant: false
+            Handler(error): match error {
+                Rejected: true
+            }
+            Handlers(errors): false
+        }
+    }
+}
+
+fn main() i32 {
+    var application = BuildFoundationApplication()
+    if !delivered($application.AccountsRegister("accepted", false)) return 1
+    if !rejected($application.AccountsRegister("rejected", true)) return 2
+    0
+}

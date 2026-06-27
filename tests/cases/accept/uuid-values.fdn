@@ -1,0 +1,67 @@
+import std.text
+
+fn parseUUID(value String) Result<UUID, UUIDError> {
+    UUID.Parse(value)
+}
+
+fn rejects(value String, expected UUIDError) bool {
+    match parseUUID(value) {
+        Ok(uuid): false
+        Err(error): match error {
+            InvalidLength: match expected {
+                InvalidLength: true
+                InvalidSeparator: false
+                InvalidHex: false
+            }
+            InvalidSeparator: match expected {
+                InvalidLength: false
+                InvalidSeparator: true
+                InvalidHex: false
+            }
+            InvalidHex: match expected {
+                InvalidLength: false
+                InvalidSeparator: false
+                InvalidHex: true
+            }
+        }
+    }
+}
+
+fn main() i32 {
+    const canonical = "01890f47-9b5a-7cc1-98f2-b6b9c317d28a"
+    const parsed = UUID.Parse("01890F47-9B5A-7CC1-98F2-B6B9C317D28A") else error {
+        discard error
+        return 1
+    }
+    if parsed.String() != canonical return 2
+    if parsed.IsNil() return 3
+    if !UUID.Nil().IsNil() return 4
+    if parsed.Compare(UUID.Nil()) <= 0 return 5
+    if !parsed.Equal(parsed) return 6
+    if !rejects("", .InvalidLength) return 7
+    if !rejects("01890f47_9b5a-7cc1-98f2-b6b9c317d28a", .InvalidSeparator) return 8
+    if !rejects("01890f47-9b5a-7cc1-98f2-b6b9c317d28g", .InvalidHex) return 9
+
+    const v4 = UUID.NewV4().String()
+    if textByte(v4, 14) != 52 return 10
+    const v4Variant = textByte(v4, 19)
+    if v4Variant != 56 && v4Variant != 57 && v4Variant != 97 && v4Variant != 98 {
+        return 11
+    }
+
+    const first = UUID.NewV7()
+    const second = UUID.NewV7()
+    if first.Compare(second) >= 0 return 12
+    if textByte(first.String(), 14) != 55 return 13
+
+    print(canonical)
+    0
+}
+
+fn textByte(value String, offset u64) u64 {
+    const byte = text.ByteAt(value, offset) else error {
+        discard error
+        panic("UUID test byte invariant failed")
+    }
+    byte
+}

@@ -1,0 +1,147 @@
+package std.prelude
+
+import std.text
+
+// Identifies a value with the canonical 128-bit UUID representation.
+struct UUID {
+    high u64
+    low u64
+
+    // Reports whether every UUID bit is zero.
+    fn IsNil(self) bool {
+        self.high == 0 && self.low == 0
+    }
+
+    // Compares UUIDs in canonical byte order.
+    fn Compare(self, other UUID) i32 {
+        if self.high < other.high return -1
+        if self.high > other.high return 1
+        if self.low < other.low return -1
+        if self.low > other.low return 1
+        0
+    }
+
+    // Reports whether two UUID values contain the same bits.
+    fn Equal(self, other UUID) bool {
+        self.high == other.high && self.low == other.low
+    }
+
+    // Formats the lowercase RFC 9562 canonical representation.
+    fn String(self) String {
+        var builder = text.NewBuilder()
+        writeHex(&builder, self.high / 4294967296, 8)
+        writeASCII(&builder, 45)
+        writeHex(&builder, self.high / 65536 % 65536, 4)
+        writeASCII(&builder, 45)
+        writeHex(&builder, self.high % 65536, 4)
+        writeASCII(&builder, 45)
+        writeHex(&builder, self.low / 281474976710656, 4)
+        writeASCII(&builder, 45)
+        writeHex(&builder, self.low % 281474976710656, 12)
+        const result = builder.Finish() else error {
+            discard error
+            panic("UUID formatter builder invariant failed")
+        }
+        result
+    }
+}
+
+// Classifies invalid canonical UUID text.
+enum UUIDError {
+    InvalidLength
+    InvalidSeparator
+    InvalidHex
+}
+
+methods UUID {
+    // Produces the all-zero UUID value.
+    fn Nil() UUID {
+        UUID { high = 0 low = 0 }
+    }
+
+    // Parses an RFC 9562 canonical UUID, accepting either hex case.
+    fn Parse(value String) Result<UUID, UUIDError> {
+        if text.ByteLen(value) != 36 {
+            return .Err(.InvalidLength)
+        }
+        var high u64 = 0
+        var low u64 = 0
+        var offset u64 = 0
+        var digits u64 = 0
+        while offset < 36 {
+            const byte = text.ByteAt(value, offset) else error {
+                discard error
+                panic("UUID parser byte invariant failed")
+            }
+            if isSeparator(offset) {
+                if byte != 45 return .Err(.InvalidSeparator)
+            } else {
+                const digit = hexValue(byte) else error {
+                    return .Err(error)
+                }
+                if digits < 16 {
+                    high = high * 16 + digit
+                } else {
+                    low = low * 16 + digit
+                }
+                digits = digits + 1
+            }
+            offset = offset + 1
+        }
+        .Ok(UUID { high = high low = low })
+    }
+
+    // Generates a random RFC 9562 version 4 UUID.
+    fn NewV4() UUID {
+        var high u64 = 0
+        var low u64 = 0
+        uuidV4Native(&high, &low)
+        UUID { high = high low = low }
+    }
+
+    // Generates a process-monotonic, time-ordered RFC 9562 version 7 UUID.
+    fn NewV7() UUID {
+        var high u64 = 0
+        var low u64 = 0
+        uuidV7Native(&high, &low)
+        UUID { high = high low = low }
+    }
+}
+
+extern c fn uuidV4Native(&high u64, &low u64) void as foundation_runtime_uuid_v4
+extern c fn uuidV7Native(&high u64, &low u64) void as foundation_runtime_uuid_v7
+
+fn isSeparator(offset u64) bool {
+    offset == 8 || offset == 13 || offset == 18 || offset == 23
+}
+
+fn hexValue(value u64) Result<u64, UUIDError> {
+    if value >= 48 && value <= 57 return .Ok(value - 48)
+    if value >= 65 && value <= 70 return .Ok(value - 55)
+    if value >= 97 && value <= 102 return .Ok(value - 87)
+    .Err(.InvalidHex)
+}
+
+fn writeHex(&builder text.Builder, value u64, width u64) void {
+    var divisor u64 = 1
+    var position u64 = 1
+    while position < width {
+        divisor = divisor * 16
+        position = position + 1
+    }
+    while divisor > 0 {
+        const digit = value / divisor % 16
+        writeASCII(&builder, digit + 48 if digit < 10 else digit + 87)
+        divisor = divisor / 16
+    }
+}
+
+fn writeASCII(&builder text.Builder, value u64) void {
+    const written = builder.WriteCodePoint(value) else error {
+        discard error
+        panic("UUID formatter code point invariant failed")
+    }
+    if !written {
+        panic("UUID formatter write invariant failed")
+    }
+}

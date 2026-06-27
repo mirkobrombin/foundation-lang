@@ -1,0 +1,4 @@
+fn main() i32 {
+    const value f64 = 5.0 % 2.0
+    if value == 1.0 { 0 } else { 1 }
+}

@@ -1,0 +1,23 @@
+attribute Managed(value bool) targets(service)
+attribute Handler(name String) targets(action)
+
+@Managed(true)
+service CounterService {
+    value i32
+
+    fn New(initial i32) CounterService {
+        CounterService { value = initial }
+    }
+
+    @Handler("counter.add")
+    action Add(&self, amount i32) i32 {
+        self.value = self.value + amount
+        self.value
+    }
+}
+
+fn main() i32 {
+    var counter = CounterService.New(40)
+    if counter.Add(2) != 42 { return 1 }
+    0
+}

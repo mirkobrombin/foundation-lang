@@ -1,0 +1,150 @@
+package test.health
+
+import std.collections
+import std.concurrent
+import std.text
+import foundation.health
+
+struct Details {
+    note String
+}
+
+struct FixedChecker implements health.Checker<Details> {
+    status health.Status
+    note String
+
+    fn Check(
+        self,
+        cancellation concurrent.Cancellation
+    ) health.Report<Details> {
+        const status = if cancellation.IsRequested() {
+            health.Status.Unhealthy
+        } else {
+            self.status
+        }
+        health.NewReport(status, Details { note = text.Copy(self.note) })
+    }
+}
+
+fn checker(status health.Status, $note String) own FixedChecker {
+    own FixedChecker { status = status note = note }
+}
+
+fn registered(
+    $result Result<void, health.RegistrationError>
+) bool {
+    match result {
+        Ok: true
+        Err(error): registrationFailed(error)
+    }
+}
+
+fn duplicate(
+    $result Result<void, health.RegistrationError>
+) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            EmptyName: false
+            DuplicateName: true
+        }
+    }
+}
+
+fn emptyName(
+    $result Result<void, health.RegistrationError>
+) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            EmptyName: true
+            DuplicateName: false
+        }
+    }
+}
+
+fn registrationFailed(error health.RegistrationError) bool {
+    discard error
+    false
+}
+
+fn reportsValue(
+    $result Result<own collections.List<health.NamedReport<Details>>, health.CheckError>
+) own collections.List<health.NamedReport<Details>> {
+    match result {
+        Ok(reports): reports
+        Err(error): missingReports(error)
+    }
+}
+
+fn missingReports(
+    error health.CheckError
+) own collections.List<health.NamedReport<Details>> {
+    discard error
+    panic("health check failed")
+}
+
+fn reportValue(
+    $value Option<health.NamedReport<Details>>
+) health.NamedReport<Details> {
+    match value {
+        None: missingReport()
+        Some(report): report
+    }
+}
+
+fn missingReport() health.NamedReport<Details> {
+    panic("health report missing")
+}
+
+fn main() i32 {
+    var registry = health.NewRegistry<Details>()
+    if !registered(registry.Register(
+        "database",
+        checker(.Healthy, "primary")
+        )) {
+        return 1
+    }
+    if !registered(registry.Register(
+        "cache",
+        checker(.Degraded, "warming")
+        )) {
+        return 2
+    }
+    if !duplicate(registry.Register(
+        "database",
+        checker(.Unhealthy, "duplicate")
+        )) {
+        return 3
+    }
+    if !emptyName(registry.Register(
+        "",
+        checker(.Unhealthy, "empty")
+        )) {
+        return 4
+    }
+
+    const cancellation = concurrent.NewCancellationSource()
+    var reports = reportsValue(registry.CheckAll(cancellation.Token()))
+    if reports.Len() != 2 return 5
+
+    const first = reportValue(reports.PopFront())
+    if first.Name != "database" return 6
+    if health.StatusText(first.Report.Status) != "healthy" return 7
+    if first.Report.Details.note != "primary" return 8
+    discard first.Report.Duration.Nanoseconds()
+
+    const second = reportValue(reports.PopFront())
+    if second.Name != "cache" return 10
+    if health.StatusText(second.Report.Status) != "degraded" return 11
+    if second.Report.Details.note != "warming" return 12
+    discard second.Report.Duration.Nanoseconds()
+
+    cancellation.Cancel()
+    var cancelled = reportsValue(registry.CheckAll(cancellation.Token()))
+    const cancelledFirst = reportValue(cancelled.PopFront())
+    if health.StatusText(cancelledFirst.Report.Status) != "unhealthy" return 14
+
+    print("health ok")
+    0
+}

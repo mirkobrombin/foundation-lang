@@ -73,6 +73,8 @@ test("registers Foundation source files", () => {
     );
     assert.match(packagingScript, /package\.json/);
     assert.match(packagingScript, /foundation-lang-\$version\.vsix/);
+    assert.match(packagingScript, /repository_root\/std\/\./);
+    assert.match(packagingScript, /repository_root\/foundation\/\./);
     assert.match(packagingScript, /languageClient\.js/);
     assert.match(packagingScript, /foundation-package\.tmLanguage\.json/);
     assert.match(packagingScript, /foundation-lock\.tmLanguage\.json/);
@@ -115,7 +117,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.47.0");
+    assert.equal(manifest.version, "0.83.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -126,6 +128,11 @@ test("registers Foundation source files", () => {
         manifest.contributes.configuration.properties["foundation.languageServer.path"].default,
         ""
     );
+    assert.equal(
+        manifest.contributes.configuration.properties["foundation.inlayHints.emptyTests"].default,
+        true
+    );
+    assert.match(languageClient, /foundationKind !== "emptyTest"/);
     assert.match(packagingScript, /extension\/bin\/\$platform/);
     assert.match(packagingScript, /FOUNDATION_LANGUAGE_SERVER/);
     assert.match(extensionEntry, /languageClient\.fail\(error\)/);
@@ -254,6 +261,52 @@ test("frames language server messages across stream chunks", () => {
     assert.equal(messages[1].method, "textDocument/publishDiagnostics");
 });
 
+test("filters empty-test inlay hints independently", async () => {
+    class Position {
+        constructor(line, character) {
+            this.line = line;
+            this.character = character;
+        }
+    }
+    class InlayHint {
+        constructor(position, label, kind) {
+            this.position = position;
+            this.label = label;
+            this.kind = kind;
+        }
+    }
+    const client = Object.create(FoundationLanguageClient.prototype);
+    client.vscode = {
+        Position,
+        InlayHint,
+        workspace: {
+            getConfiguration: () => ({
+                get: (name, fallback) => name === "inlayHints.emptyTests" ? false : fallback
+            })
+        }
+    };
+    client.request = async () => [
+        {
+            position: { line: 1, character: 8 },
+            label: "is empty",
+            kind: 1,
+            foundationKind: "emptyTest"
+        },
+        {
+            position: { line: 2, character: 12 },
+            label: "value:",
+            kind: 2
+        }
+    ];
+    const hints = await client.inlayHints(
+        { uri: { toString: () => "file:///main.fdn" } },
+        { start: { line: 0, character: 0 }, end: { line: 3, character: 0 } },
+        undefined
+    );
+
+    assert.deepEqual(hints.map((hint) => hint.label), ["value:"]);
+});
+
 test("cancels pending language server requests", async () => {
     class CancellationError extends Error {}
     const sent = [];
@@ -378,7 +431,7 @@ test("maps documented completions and parameter signature help", async () => {
             return [{
                 label: "Rename",
                 kind: 2,
-                detail: "fn Rename(edit, name String) void",
+                detail: "fn Rename(&self, name String) void",
                 insertText: "Rename($0)",
                 insertTextFormat: 2,
                 command: {
@@ -393,7 +446,7 @@ test("maps documented completions and parameter signature help", async () => {
         }
         return {
             signatures: [{
-                label: "fn Rename(edit, name String) void",
+                label: "fn Rename(&self, name String) void",
                 documentation: {
                     kind: "markdown",
                     value: "Replaces the displayed profile name."
@@ -1055,8 +1108,9 @@ test("grammar and completions track compiler keywords", () => {
         path.join(extensionRoot, "syntaxes/foundation.tmLanguage.json"),
         "utf8"
     );
-    const compilerKeywords = [...lexer.matchAll(/text == "([A-Za-z_][A-Za-z0-9_]*)"/g)]
+    const recognizedKeywords = [...lexer.matchAll(/text == "([A-Za-z_][A-Za-z0-9_]*)"/g)]
         .map((match) => match[1]);
+    const compilerKeywords = recognizedKeywords.filter((keyword) => keyword !== "let");
     const completionLabels = new Set(staticCompletions.map((entry) => entry.label));
 
     assert.deepEqual(compilerKeywords, [
@@ -1065,17 +1119,22 @@ test("grammar and completions track compiler keywords", () => {
         "as",
         "extern",
         "struct",
+        "service",
         "methods",
         "enum",
+        "state_machine",
+        "pipeline",
+        "saga",
         "contract",
         "attribute",
         "implements",
         "extends",
         "delegate",
         "fn",
+        "action",
         "task",
+        "unsafe",
         "spawn",
-        "let",
         "const",
         "var",
         "return",
@@ -1083,12 +1142,17 @@ test("grammar and completions track compiler keywords", () => {
         "if",
         "else",
         "while",
+        "for",
+        "in",
+        "break",
+        "continue",
         "select",
         "timeout",
         "match",
         "capture",
         "replace",
         "with",
+        "new",
         "own",
         "view",
         "edit",
@@ -1099,25 +1163,29 @@ test("grammar and completions track compiler keywords", () => {
         assert.match(grammar, new RegExp(`\\b${keyword}\\b`));
         assert.ok(completionLabels.has(keyword));
     }
+    assert.ok(recognizedKeywords.includes("let"));
+    assert.equal(completionLabels.has("let"), false);
+    assert.doesNotMatch(grammar, /\\blet\\b/);
 
     for (const type of [
         "i32", "u64", "bool", "String", "void", "Option", "Result", "ChannelError",
-        "Task", "Channel", "Sender", "Receiver", "channel", "send", "receive", "len",
-        "TcpConnection", "TcpReader", "TcpWriter", "StreamPair", "print", "panic"
+        "Task", "Channel", "Sender", "Receiver", "channel", "send", "receive", "clone", "len",
+        "TcpConnection", "TcpListener", "TcpReader", "TcpWriter", "StreamPair", "print", "panic"
     ]) {
         assert.match(grammar, new RegExp(`\\b${type}\\b`));
         assert.ok(completionLabels.has(type));
     }
     for (const keyword of [
         "const", "methods", "delegate", "service", "action", "state_machine", "pipeline",
-        "saga", "task", "spawn", "select", "test", "unsafe", "new", "for", "in"
+        "saga", "step", "using", "retry", "exponential", "max", "compensate", "task",
+        "spawn", "select", "test", "unsafe", "new", "for", "in"
     ]) {
         assert.match(grammar, new RegExp(`\\b${keyword}\\b`));
         assert.ok(completionLabels.has(keyword));
     }
     for (const type of [
         "i8", "i16", "i64", "u8", "u16", "u32", "f32", "f64", "isize", "usize",
-        "never", "UUID"
+        "never", "UUID", "NumberError"
     ]) {
         assert.match(grammar, new RegExp(`\\b${type}\\b`));
         assert.ok(completionLabels.has(type));
@@ -1125,33 +1193,99 @@ test("grammar and completions track compiler keywords", () => {
     assert.ok(completionLabels.has("c"));
     assert.ok(completionLabels.has("@target(...)"));
     assert.ok(completionLabels.has("@blocking"));
+    const builtinPattern = JSON.parse(grammar).repository.builtins.patterns[0].match;
+    assert.match(builtinPattern, /\brange\b/);
+    assert.match(builtinPattern, /null/);
+    assert.match(builtinPattern, /isNull/);
+    assert.ok(completionLabels.has("range"));
+    assert.ok(completionLabels.has("null"));
+    assert.ok(completionLabels.has("isNull"));
+    assert.ok(completionLabels.has("expect"));
+    assert.ok(completionLabels.has("fail"));
+    assert.ok(completionLabels.has("pass"));
     assert.ok(completionLabels.has("@callback"));
     assert.ok(completionLabels.has("targets(...)"));
+    assert.ok(completionLabels.has("foundation.di"));
+    assert.ok(completionLabels.has("foundation.actions"));
+    assert.ok(completionLabels.has("@di.Inject()"));
+    assert.ok(completionLabels.has("@actions.Name(...)"));
     assert.ok(completionLabels.has("repeatable"));
     for (const standard of [
         "std.platform", "platform.Current", "platform.Name",
         "std.env", "env.Get", "env.Home",
         "std.text", "text.ByteLen", "text.Contains", "text.NewBuilder",
         "std.path", "path.Join",
-        "std.parse", "parse.U64",
+        "std.parse", "parse.I8", "parse.I16", "parse.I32", "parse.I64",
+        "parse.Isize", "parse.U8", "parse.U16", "parse.U32", "parse.U64",
+        "parse.Usize",
         "std.fs", "fs.OpenLines", "fs.ReadText", "fs.ReadTextLimited", "fs.OpenDir", "fs.Size", "fs.Modified",
         "fs.LineReader.Next", "fs.LineReader.NextLimited",
-        "std.net", "net.Connect", "net.TcpConnection.Split", "net.ReadLine",
-        "net.ReadLineLimited", "net.WriteAll",
-        "std.format", "format.I32", "format.U64",
+        "std.net", "net.Listen", "net.Accept", "net.Connect", "net.TcpConnection.Split", "net.ReadLine",
+        "net.ReadLineLimited", "net.ReadExact", "net.WriteAll",
+        "std.format", "format.Bool", "format.I8", "format.I16", "format.I32",
+        "format.I64", "format.Isize", "format.U8", "format.U16", "format.U32",
+        "format.U64", "format.Usize", "format.F32", "format.F64",
         "std.json", "json.Parse",
-        "std.time", "time.Now", "time.FromUnix", "time.Instant.FormatUtc",
+        "std.time", "time.Now", "time.FromUnix", "time.MonotonicNow",
+        "time.Nanoseconds", "time.Milliseconds", "time.Seconds",
+        "time.Duration.Nanoseconds", "time.Instant.FormatUtc",
         "std.concurrent", "concurrent.NewCancellationSource",
         "concurrent.CancellationSource.Token", "concurrent.CancellationSource.Cancel",
         "concurrent.Cancellation.IsRequested",
+        "foundation.hosting", "hosting.Host", "hosting.HostedService",
+        "hosting.BackgroundService", "hosting.RunReport", "hosting.RunReason", "hosting.State",
+        "hosting.NewHost", "hosting.Run", "hosting.Host.Add",
+        "hosting.Host.AddBackground", "hosting.Host.OnStart", "hosting.Host.OnStop",
+        "hosting.Host.Start", "hosting.Host.Shutdown", "hosting.Host.NextBackground",
+        "foundation.health", "health.Registry", "health.Checker", "health.Report",
+        "health.NamedReport", "health.Status", "health.NewRegistry", "health.NewReport",
+        "health.StatusText", "health.Registry.Register", "health.Registry.CheckAll",
+        "foundation.plugin", "plugin.Plugin", "plugin.NativePlugin", "plugin.Registry",
+        "plugin.FactoryRegistry", "plugin.ExecSandbox",
+        "plugin.ErrorKind", "plugin.Error", "plugin.NamedError",
+        "plugin.RegistrationFailure", "plugin.StartFailure", "plugin.FactoryErrorKind",
+        "plugin.FactoryRegistrationFailure", "plugin.SandboxErrorKind", "plugin.SandboxError",
+        "plugin.SandboxStartOutcome", "plugin.SandboxStopOutcome", "plugin.LoadNative",
+        "plugin.NewRegistry", "plugin.NativePlugin.Name", "plugin.NativePlugin.Start",
+        "plugin.NativePlugin.Stop", "plugin.NativePlugin.Close",
+        "plugin.NativePlugin.IsRunning", "plugin.Registry.Register",
+        "plugin.Registry.StartAll", "plugin.Registry.StopAll", "plugin.Registry.Names",
+        "plugin.NewFactoryRegistry", "plugin.NewExecSandbox", "plugin.StartSandbox",
+        "plugin.StopSandbox", "plugin.FactoryRegistry.Register",
+        "plugin.FactoryRegistry.Create", "plugin.ExecSandbox.Argument",
+        "plugin.ExecSandbox.IsRunning", "plugin.ExecSandbox.Close",
+        "foundation.web", "web.Server", "web.Router", "web.RouteTable", "web.RouteMatch",
+        "web.Handler", "web.Application", "web.Request", "web.Response", "web.Method",
+        "web.MatchError", "web.DispatchError", "web.ServeOutcome", "web.NewServer",
+        "web.NewRouter", "web.NewRouteTable", "web.Text", "web.Json", "web.Router.Map",
+        "web.RouteTable.Add", "web.RouteTable.Match", "web.Request.Param", "web.Request.Query",
+        "web.Request.Header", "web.Request.Form", "web.Server.ServeOne",
         "foundation.worker", "worker.Supervisor", "worker.NewSupervisor",
         "worker.Supervisor.Start", "worker.Supervisor.Shutdown", "worker.Supervisor.Cancel",
+        "worker.Group", "worker.GroupNext", "worker.GroupWait", "worker.GroupWake",
+        "worker.GroupError", "worker.NewGroup", "worker.Group.Add", "worker.Group.Next",
+        "worker.Group.WaitOrStop", "worker.Group.Shutdown", "worker.Group.Cancel",
         "worker.Pool", "worker.NewPool", "worker.Pool.Start", "worker.Pool.Shutdown",
         "worker.Pool.Cancel"
     ]) {
         assert.ok(completionLabels.has(standard));
     }
+    const webInject = staticCompletions.find((completion) =>
+        completion.label === "@web.Inject()");
+    assert.equal(webInject?.insertText, "@web.Inject()");
     const parsedGrammar = JSON.parse(grammar);
+    const rawPointer = parsedGrammar.repository.types.patterns[0];
+    const rawPointerMatch = new RegExp(rawPointer.match).exec("*const i32");
+    assert.deepEqual(rawPointerMatch?.slice(1), ["*", "const "]);
+    assert.equal(rawPointer.captures[1].name,
+        "storage.modifier.pointer.foundation");
+    assert.equal(rawPointer.captures[2].name,
+        "storage.modifier.readonly.foundation");
+    const floatPattern = new RegExp(parsedGrammar.repository.numbers.patterns[0].match);
+    const integerPattern = new RegExp(parsedGrammar.repository.numbers.patterns[1].match);
+    assert.equal(floatPattern.exec("const value = 1.25e-3")?.[0], "1.25e-3");
+    assert.equal(floatPattern.test("timeout 1.seconds"), false);
+    assert.equal(integerPattern.exec("timeout 1.seconds")?.[0], "1");
     const targetAttribute = parsedGrammar.repository.compilerAttributes.patterns[0];
     assert.match(targetAttribute.match, /target/);
     assert.match(targetAttribute.captures[4].name, /target/);
@@ -1162,6 +1296,10 @@ test("grammar and completions track compiler keywords", () => {
     assert.match(callbackAttribute.match, /cancel/);
     assert.match(parsedGrammar.repository.attributeDefinitions.patterns[0].begin, /attribute/);
     assert.match(parsedGrammar.repository.attributeApplications.patterns[0].begin, /@/);
+    const enumPayloadPattern = parsedGrammar.repository.enumDefinitions.patterns[0].patterns
+        .find((pattern) => pattern.captures?.[1]?.name ===
+            "variable.parameter.enum-payload.foundation");
+    assert.equal(new RegExp(enumPayloadPattern.match).exec("Stop(code i32)")?.[1], "code");
     const cAbiDeclaration = parsedGrammar.repository.cAbiDeclarations.patterns[0];
     assert.equal(cAbiDeclaration.name, "meta.function.external.foundation");
     assert.match(cAbiDeclaration.begin, /extern/);
@@ -1240,7 +1378,7 @@ test("provides hover inventory for standard and project symbols", () => {
     assert.equal(findHover(source, "Now").detail, "fn Now() time.Instant");
     assert.equal(
         findHover(source, "NextLimited").detail,
-        "fn NextLimited(edit, limit u64) Result<Option<String>, fs.Error>"
+        "fn NextLimited(&self, limit u64) Result<Option<String>, fs.Error>"
     );
     assert.equal(
         findHover(source, "ReadText").detail,
@@ -1294,12 +1432,12 @@ test("tracks function values and explicit closure captures", () => {
     const snippets = readJson("snippets/foundation.json");
     const completions = collectCompletions(`
         struct Callback { call fn(i32) i32 }
-        fn apply(value i32, operation view fn(i32) i32) i32 {
+        fn apply(value i32, operation fn(i32) i32) i32 {
             operation(value)
         }
         fn main() i32 {
-            let factor = 2
-            let scale fn(i32) i32 = fn(value i32) i32 capture factor {
+            const factor = 2
+            const scale fn(i32) i32 = fn(value i32) i32 capture factor {
                 value * factor
             }
             scale(21) - 42
@@ -1324,7 +1462,7 @@ test("collects enums and dot-qualified variants", () => {
     const completions = collectCompletions(`
         enum Outcome {
             Empty
-            Value(i32)
+            Value(item i32)
         }
         fn main() i32 { 0 }
     `);
@@ -1332,7 +1470,7 @@ test("collects enums and dot-qualified variants", () => {
 
     assert.equal(byLabel.get("Outcome").kind, "Enum");
     assert.equal(byLabel.get("Outcome.Empty").insertText, "Outcome.Empty");
-    assert.equal(byLabel.get("Outcome.Value").insertText, "Outcome.Value(${1:value})");
+    assert.equal(byLabel.get("Outcome.Value").insertText, "Outcome.Value(${1:item})");
 });
 
 test("collects packages and exported project declarations", () => {
@@ -1344,7 +1482,7 @@ test("collects packages and exported project declarations", () => {
     const library = `
         package example.math
         struct Box<T> { Value T hidden i32 }
-        enum Status<T> { Ready Value(T) hidden }
+        enum Status<T> { Ready Value(item T) hidden }
         fn Add(left i32, right i32) i32 { left + right }
         fn hidden() i32 { 0 }
     `;
@@ -1358,7 +1496,7 @@ test("collects packages and exported project declarations", () => {
     assert.equal(byLabel.get("math.Status.Ready").kind, "EnumMember");
     assert.equal(
         byLabel.get("math.Status.Value").insertText,
-        "math.Status<${1:T}>.Value(${2:value})"
+        "math.Status<${1:T}>.Value(${2:item})"
     );
     assert.equal(byLabel.has("math.hidden"), false);
 
@@ -1440,8 +1578,8 @@ test("tracks ownership declarations and borrowed parameters", () => {
     const completions = collectCompletions(`
         struct User { id i32 }
         struct Holder { user own User count i32 }
-        fn read(user view User) i32 { user.id }
-        fn updateUser(user edit User, id i32) void { user.id = id }
+        fn read(user User) i32 { user.id }
+        fn updateUser(&user User, id i32) void { user.id = id }
         fn main() i32 { 0 }
     `);
     const fields = completions
@@ -1461,8 +1599,8 @@ test("tracks owned place operations and struct patterns", () => {
         struct Pair { Value String Count i32 }
         fn main() i32 {
             var current = "old"
-            let previous = replace current with "new"
-            let Pair { Value as value Count as count } = Pair { Value = previous Count = 1 }
+            const previous = replace current with "new"
+            const Pair { Value as value Count as count } = Pair { Value = previous Count = 1 }
             count
         }
     `;
@@ -1473,7 +1611,7 @@ test("tracks owned place operations and struct patterns", () => {
     assert.equal(byLabel.get("value").detail, "Destructured field binding");
     assert.equal(byLabel.get("count").detail, "Destructured field binding");
     assert.equal(byLabel.has("Pair"), true);
-    assert.match(grammar.repository.structPatterns.patterns[0].begin, /let/);
+    assert.match(grammar.repository.structPatterns.patterns[0].begin, /const/);
     const fieldPattern = grammar.repository.structPatterns.patterns[0].patterns.find(
         (pattern) => pattern.captures?.[2]
     );
@@ -1487,12 +1625,12 @@ test("tracks owned place operations and struct patterns", () => {
 test("collects contracts, implementations, and receiver methods", () => {
     const completions = collectCompletions(`
         contract Reader<T> {
-            fn Read(view, fallback T) T
+            fn Read(self, fallback T) T
         }
         struct Box<T> implements Reader<T> {
             value T
-            fn Read(view, fallback T) T { fallback }
-            fn Replace(edit, value T) void { self.value = value }
+            fn Read(self, fallback T) T { fallback }
+            fn Replace(&self, value T) void { self.value = value }
         }
         fn main() i32 { 0 }
     `);
@@ -1524,13 +1662,13 @@ test("collects contracts, implementations, and receiver methods", () => {
 
 test("collects contract inheritance, defaults, and delegation", () => {
     const completions = collectCompletions(`
-        contract Named { fn Name(view) String }
+        contract Named { fn Name(self) String }
         contract Principal extends Named {
-            fn DisplayName(view) String { self.Name() }
+            fn DisplayName(self) String { self.Name() }
         }
         struct Identity implements Principal {
             value String
-            fn Name(view) String { self.value }
+            fn Name(self) String { self.value }
         }
         struct Admin implements Principal {
             identity Identity
@@ -1565,10 +1703,10 @@ test("collects exported contracts and methods across packages", () => {
     `;
     const library = `
         package example.reader
-        contract Reader { fn Read(view) i32 fn hidden(view) i32 }
+        contract Reader { fn Read(self) i32 fn hidden(self) i32 }
         struct Value implements Reader {
-            fn Read(view) i32 { 1 }
-            fn hidden(view) i32 { 2 }
+            fn Read(self) i32 { 1 }
+            fn hidden(self) i32 { 2 }
         }
     `;
     const completions = collectCompletions(application, [application, library]);
@@ -1604,6 +1742,10 @@ test("ships Result handling and panic snippets", () => {
     assert.equal(snippets["Short guard"].prefix, "guard");
     assert.equal(snippets["Postfix conditional"].prefix, "ifvalue");
     assert.equal(snippets.Service.prefix, "service");
+    assert.equal(snippets["DI service"].prefix, "diservice");
+    assert.equal(snippets["Build generated application"].prefix, "apphost");
+    assert.equal(snippets.Action.prefix, "action");
+    assert.match(snippets.Action.body[0], /\(self,/);
     assert.equal(snippets.Task.prefix, "task");
     assert.equal(snippets["Spawn and wait"].prefix, "spawnwait");
     assert.equal(snippets["Channel endpoints"].prefix, "channel");
@@ -1617,6 +1759,8 @@ test("ships Result handling and panic snippets", () => {
     assert.equal(snippets.Saga.prefix, "saga");
     assert.equal(snippets.Test.prefix, "test");
     assert.equal(snippets["Unsafe block"].prefix, "unsafe");
+    assert.equal(snippets["Indexed for loop"].prefix, "forindex");
+    assert.equal(snippets["Editable for loop"].prefix, "foredit");
 });
 
 test("tracks accepted bindings and distributed methods", () => {
@@ -1632,12 +1776,17 @@ test("tracks accepted bindings and distributed methods", () => {
 
         fn main() i32 {
             const user = new User { name = "Mirko" }
+            for index, item in [1, 2] {
+                discard item
+            }
             0
         }
     `);
     const byLabel = new Map(completions.map((entry) => [entry.label, entry]));
 
     assert.equal(byLabel.get("user").detail, "Local binding");
+    assert.equal(byLabel.get("index").detail, "Loop binding");
+    assert.equal(byLabel.get("item").detail, "Loop binding");
     assert.equal(byLabel.get("displayName").detail, "Distributed method of User");
     assert.equal(byLabel.get("rename").detail, "Distributed method of User");
 });
@@ -1664,7 +1813,7 @@ test("tracks task declarations and owned waits", () => {
 test("collects declarations that use arrays and slices", () => {
     const completions = collectCompletions(`
         struct Batch { names [2]String }
-        fn first(names view [String], positions [2]i32) void {
+        fn first(names [String], positions [2]i32) void {
             var local = [1, 2]
             print(names[positions[0]])
         }
@@ -1703,7 +1852,7 @@ test("collects structs and their fields", () => {
 test("collects functions, parameters, and local bindings", () => {
     const completions = collectCompletions(`
         fn add(left i32, right i32) i32 {
-            let result = left + right
+            const result = left + right
             var calls = 1
             result
         }
@@ -1726,7 +1875,7 @@ test("ignores declarations in comments and strings", () => {
         /* fn hidden_nested(value i32) i32 {} */
         */
         fn visible(actual String) void {
-            let text = "fn hidden_in_string(value i32)"
+            const text = "fn hidden_in_string(value i32)"
         }
     `;
     const labels = collectCompletions(source).map((entry) => entry.label);
@@ -1764,7 +1913,7 @@ test("masks nested attribute applications without changing source offsets", () =
 });
 
 test("returns deterministic unique completions", () => {
-    const source = "fn same(same i32) i32 { let same = same return same }";
+    const source = "fn same(same i32) i32 { const same = same return same }";
     const first = collectCompletions(source);
     const second = collectCompletions(source);
 

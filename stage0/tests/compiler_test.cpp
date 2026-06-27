@@ -1,5 +1,7 @@
+#include "foundation/application.hpp"
 #include "foundation/codegen.hpp"
 #include "foundation/diagnostic.hpp"
+#include "foundation/driver.hpp"
 #include "foundation/lexer.hpp"
 #include "foundation/lower.hpp"
 #include "foundation/metadata.hpp"
@@ -123,9 +125,9 @@ enum Method {
     GET
 }
 
-attribute Route(method Method, path String) targets(fn)
+attribute Route(method Method, path String, weight f64, code i8) targets(fn)
 
-@Route(.GET, "/health")
+@Route(.GET, "/health", 1.25, 7)
 fn main() i32 {
     0
 }
@@ -156,8 +158,10 @@ fn main() i32 {
            "attribute metadata emission is deterministic");
     expect(metadata.find("foundation.metadata/v1") != std::string::npos &&
                metadata.find("\"name\":\"Route\"") != std::string::npos &&
-               metadata.find("\"case\":\"Method.GET\"") != std::string::npos,
-           "attribute metadata preserves schema, declaration, and enum value");
+               metadata.find("\"case\":\"Method.GET\"") != std::string::npos &&
+               metadata.find("\"weight\":1.25") != std::string::npos &&
+               metadata.find("\"code\":7") != std::string::npos,
+           "attribute metadata preserves schema and scalar values");
     expect(foundation::emitC(*first.fir, "<memory>") ==
                foundation::emitC(*baseline.fir, "<memory>"),
            "attributes add no generated C or runtime tables");
@@ -199,7 +203,7 @@ fn add(left i32, right i32) i32 {
 }
 
 fn main() i32 {
-    let message String = "hello\nworld"
+    const message String = "hello\nworld"
     print(message)
     var total i32 = 0
     while total < 3 {
@@ -272,7 +276,7 @@ fn main() i32 {
 
 void tasksLowerToOwnedRuntimeHandles() {
     constexpr std::string_view source = R"(
-task announce(message String) String {
+task announce($message String) String {
     print(message)
     message
 }
@@ -352,7 +356,7 @@ fn move(point Point, x i32) Point {
 }
 
 fn main() i32 {
-    let start = Point { x = 1 y = 2 }
+    const start = Point { x = 1 y = 2 }
     var current Point = start
     current = move(current, 3)
     return current.x
@@ -412,7 +416,7 @@ fn read(value Value) i32 {
 }
 
 fn main() i32 {
-    let value = Value.Number(3)
+    const value = Value.Number(3)
     return read(value) - 3
 }
 )";
@@ -431,8 +435,8 @@ fn main() i32 {
     expect(firstC == secondC, "enum C emission is deterministic");
     expect(firstC.find("VARIANT_1") != std::string::npos,
            "enum variant has a stable C tag");
-    expect(firstC.find("switch (") != std::string::npos,
-           "match expression emits a C switch");
+    expect(firstC.find(".fdn_tag ==") != std::string::npos,
+           "match expression emits tagged C branches");
 }
 
 void genericValuesMonomorphizeDeterministically() {
@@ -440,11 +444,11 @@ void genericValuesMonomorphizeDeterministically() {
 struct Box<T> { value T }
 struct Nested { value Box<Box<i32>> }
 enum Choice<T> { None Some(T) }
-fn identity<T>(value T) T { return value }
+fn identity<T>($value T) T { return value }
 fn main() i32 {
-    let nested = Box { value = Box { value = 3 } }
-    let number = Choice.Some(identity(3))
-    let flag = Choice.Some(identity(true))
+    const nested = Box { value = Box { value = 3 } }
+    const number = Choice.Some(identity(3))
+    const flag = Choice.Some(identity(true))
     if identity(true) {
         return match number {
             None: 1
@@ -477,18 +481,18 @@ fn main() i32 {
 void genericLookaheadStaysTypeAware() {
     constexpr std::string_view source = R"(
 struct Box<T> { value T }
-fn identity<T>(value T) T { value }
+fn identity<T>($value T) T { value }
 fn typeMarker<T>() void { return }
-fn apply(value i32, operation view fn(i32) i32) i32 { operation(value) }
+fn apply(value i32, operation fn(i32) i32) i32 { operation(value) }
 fn main() i32 {
-    let x = 1
-    let y = 2
-    let p = 5
-    let c = 4
-    let before = x < y
-    let after = p > (c)
-    let direct fn(i32) i32 = identity<i32>
-    let result = apply(42, view identity<i32>)
+    const x = 1
+    const y = 2
+    const p = 5
+    const c = 4
+    const before = x < y
+    const after = p > (c)
+    const direct fn(i32) i32 = identity<i32>
+    const result = apply(42, identity<i32>)
     typeMarker<own Box<i32>>()
     typeMarker<view [i32]>()
     typeMarker<edit [i32]>()
@@ -511,7 +515,7 @@ fn main() i32 {
            "explicit generic function value selects a specialization");
 
     constexpr std::string_view malformed = R"(
-fn identity<T>(value T) T { value }
+fn identity<T>($value T) T { value }
 fn main() i32 {
     identity<i32,>(1)
 }
@@ -520,17 +524,16 @@ fn main() i32 {
     expect(rejected.diagnostics.hasErrors(),
            "malformed generic type list is rejected by bounded lookahead");
 
-    constexpr std::string_view invalidBorrow = R"(
-fn identity<T>(value T) T { value }
+    constexpr std::string_view functionValue = R"(
+fn identity<T>($value T) T { value }
 fn main() i32 {
-    let borrowed = view identity<i32>
-    discard borrowed
-    0
+    const selected fn(i32) i32 = identity<i32>
+    selected(42) - 42
 }
 )";
-    auto borrowRejected = check(invalidBorrow);
-    expect(hasCode(borrowRejected.diagnostics, "FDN2070"),
-           "specialized function borrow remains call-site transient");
+    auto selected = check(functionValue);
+    expect(!selected.diagnostics.hasErrors() && selected.fir.has_value(),
+           "specialized function can be selected as a typed value");
 }
 
 void ownershipLowersToDeterministicC() {
@@ -538,15 +541,15 @@ void ownershipLowersToDeterministicC() {
 struct User { id i32 }
 struct Holder { user own User }
 
-fn read(user view User) i32 { user.id }
-fn updateUser(user edit User, id i32) void { user.id = id }
+fn read(user User) i32 { user.id }
+fn updateUser(&user User, id i32) void { user.id = id }
 
 fn main() i32 {
     var user = own User { id = 3 }
-    updateUser(edit user, 4)
-    let value = read(view user)
-    let holder = Holder { user = user }
-    let moved = holder
+    updateUser(&user, 4)
+    const value = read(user)
+    const holder = Holder { user = $user }
+    const moved = holder
     discard moved
     value - 4
 }
@@ -571,8 +574,8 @@ fn main() i32 {
            "owned composites receive move glue");
     expect(firstC.find(" = NULL;") != std::string::npos,
            "moves invalidate their source storage");
-    expect(firstC.find("const fdn_struct_") != std::string::npos,
-           "view parameters lower to const pointers");
+    expect(firstC.find("fdn_fn_read_0(fdn_struct_0 ") != std::string::npos,
+           "copyable read parameters lower by value");
     expect(firstC.find("FOUNDATION_VERIFY_ALLOCATIONS") != std::string::npos,
            "main can verify that deterministic cleanup reaches zero live allocations");
 }
@@ -586,8 +589,8 @@ struct Item {
 struct Box {
     item own Item
 
-    fn drop(edit) void {
-        let previous = replace self.item with own Item { value = "released" }
+    fn drop(&self) void {
+        const previous = replace self.item with own Item { value = "released" }
         discard previous
     }
 }
@@ -596,15 +599,15 @@ struct Packet {
     item own Item
 }
 
-fn unpack(packet own Packet) String {
-    let Packet { item } = packet
-    let Item { value } = item
+fn unpack($packet own Packet) String {
+    const Packet { item } = packet
+    const Item { value } = item
     value
 }
 
 fn main() i32 {
     var box = own Box { item = own Item { value = "first" } }
-    let previous = replace box.item with own Item { value = "next" }
+    const previous = replace box.item with own Item { value = "next" }
     discard previous
     discard box
     print(unpack(own Packet { item = own Item { value = "payload" } }))
@@ -655,18 +658,18 @@ void sequenceValuesLowerToDeterministicC() {
     constexpr std::string_view source = R"(
 struct Batch<T> { values [2]T }
 
-fn first(values view [String]) void { print(values[0]) }
+fn first(values [String]) void { print(values[0]) }
 
 fn main() i32 {
-    let numbers = Batch { values = [1, 2] }
+    const numbers = Batch { values = [1, 2] }
     discard numbers
-    let text = Batch { values = ["left", "right"] }
+    const text = Batch { values = ["left", "right"] }
     discard text
     var values = ["A\0B", "C"]
-    first(view values)
+    first(values)
     values[1] = values[0] + values[1]
     discard values
-    let empty [0]i32 = []
+    const empty [0]i32 = []
     discard empty
     0
 }
@@ -699,7 +702,7 @@ fn main() i32 {
 
 void mainArgumentsLowerToPortableWrapper() {
     constexpr std::string_view source = R"(
-fn main(args view [String]) i32 {
+fn main(args [String]) i32 {
     print(args[0])
     0
 }
@@ -722,16 +725,16 @@ fn main(args view [String]) i32 {
     expect(generated.find("fdn_dealloc(fdn_argument_values)") != std::string::npos,
            "the argument adapter is released before process exit");
 
-    const auto invalid = check("fn main(args view [i32]) i32 { args[0] }");
+    const auto invalid = check("fn main(args [i32]) i32 { args[0] }");
     expect(hasCode(invalid.diagnostics, "FDN2007"),
            "non-String main arguments report FDN2007");
 }
 
 void sequenceLengthsLowerToU64() {
     constexpr std::string_view source = R"(
-fn main(args view [String]) i32 {
-    let values = [1, 2]
-    let label = "ok"
+fn main(args [String]) i32 {
+    const values = [1, 2]
+    const label = "ok"
     if len(args) == 0 && len(values) == 2 && len(label) == 2 {
         return 0
     }
@@ -766,7 +769,7 @@ fn add(left u64, right u64) u64 {
 }
 
 fn main() i32 {
-    let bytes u64 = 18446744073709551615
+    const bytes u64 = 18446744073709551615
     if add(nativeSize(bytes), 0) == bytes { return 0 } else { return 1 }
 }
 )";
@@ -785,32 +788,94 @@ fn main() i32 {
     expect(generated.find("foundation_native_size(uint64_t);") != std::string::npos,
            "u64 maps to uint64_t at the C ABI boundary");
 
-    const auto negative = check("fn main() i32 { let value u64 = -1 discard value 0 }");
+    const auto negative = check("fn main() i32 { const value u64 = -1 discard value 0 }");
     expect(hasCode(negative.diagnostics, "FDN2005"),
            "negative u64 literal reports FDN2005");
+}
+
+void machineScalarsAndNeverLowerToPortableC() {
+    constexpr std::string_view source = R"(
+extern c fn FoundationScalars(
+    signed8 i8,
+    signed16 i16,
+    signed32 i32,
+    signed64 i64,
+    signedSize isize,
+    unsigned8 u8,
+    unsigned16 u16,
+    unsigned32 u32,
+    unsigned64 u64,
+    unsignedSize usize,
+    decimal32 f32,
+    decimal64 f64,
+    flag bool
+) f64 as foundation_scalars {
+    decimal64
+}
+
+fn stop() never {
+    panic("stop")
+}
+
+fn choose(flag bool) f32 {
+    if flag { 1.25 } else { stop() }
+}
+
+fn main() i32 {
+    const narrowed = i8.From(120) else error {
+        discard error
+        return 1
+    }
+    if choose(true) == 1.25 && narrowed == 120 { 0 } else { 1 }
+}
+)";
+    const auto result = check(source);
+    expect(!result.diagnostics.hasErrors(), "machine scalar program has no diagnostics");
+    if (!result.fir.has_value()) {
+        expect(false, "machine scalar program lowers to FIR");
+        return;
+    }
+
+    const auto generated = foundation::emitC(*result.fir, "scalars.fdn");
+    const auto header = foundation::emitCHeader(*result.fir);
+    for (const auto type : {"int8_t", "int16_t", "int32_t", "int64_t", "intptr_t",
+                            "uint8_t", "uint16_t", "uint32_t", "uint64_t", "size_t",
+                            "float", "double", "bool"}) {
+        expect(header.find(type) != std::string::npos,
+               std::string("C scalar header contains ") + type);
+    }
+    expect(header.find("double foundation_scalars(") != std::string::npos,
+           "C scalar export preserves its f64 result");
+    expect(generated.find("1.25f") != std::string::npos,
+           "contextual f32 literals carry the C float suffix");
+    expect(generated.find("INT8_MIN") != std::string::npos &&
+               generated.find("INT8_MAX") != std::string::npos,
+           "fallible numeric conversion emits checked target bounds");
+    expect(generated.find("_Noreturn void fdn_fn_stop_") != std::string::npos,
+           "an explicit never function lowers to a C noreturn function");
 }
 
 void methodsAndContractsLowerToDeterministicC() {
     constexpr std::string_view source = R"(
 contract Readable {
-    fn read(view) i32
+    fn read(self) i32
 }
 
 struct Value implements Readable {
     value i32
 
-    fn read(view) i32 {
+    fn read(self) i32 {
         self.value
     }
 }
 
-fn readAny(value view Readable) i32 {
+fn readAny(value Readable) i32 {
     value.read()
 }
 
 fn main() i32 {
-    let value = Value { value = 42 }
-    readAny(view value) - value.read()
+    const value = Value { value = 42 }
+    readAny(value) - value.read()
 }
 )";
     auto first = check(source);
@@ -843,15 +908,15 @@ fn main() i32 {
 void contractInheritanceFlattensDeterministically() {
     constexpr std::string_view source = R"(
 contract Named<T> {
-    fn value(view) T
+    fn value(self) T
 }
 
 contract Tagged<T> extends Named<T> {
-    fn tag(view) i32
+    fn tag(self) i32
 }
 
 contract Audited<T> extends Named<T> {
-    fn audited(view) bool
+    fn audited(self) bool
 }
 
 contract Principal<T> extends Tagged<T>, Audited<T> {}
@@ -859,18 +924,18 @@ contract Principal<T> extends Tagged<T>, Audited<T> {}
 struct Entry implements Principal<i32> {
     stored i32
 
-    fn value(view) i32 { self.stored }
-    fn tag(view) i32 { 2 }
-    fn audited(view) bool { true }
+    fn value(self) i32 { self.stored }
+    fn tag(self) i32 { 2 }
+    fn audited(self) bool { true }
 }
 
-fn readNamed(value view Named<i32>) i32 {
+fn readNamed(value Named<i32>) i32 {
     value.value()
 }
 
 fn main() i32 {
-    let entry = Entry { stored = 40 }
-    readNamed(view entry) + entry.tag() - 42
+    const entry = Entry { stored = 40 }
+    readNamed(entry) + entry.tag() - 42
 }
 )";
     const auto first = check(source);
@@ -904,8 +969,8 @@ fn main() i32 { 0 }
            "contract inheritance cycle reports FDN2142");
 
     const auto conflict = check(R"conflict(
-contract Numbered { fn value(view) i32 }
-contract Flagged { fn value(view) bool }
+contract Numbered { fn value(self) i32 }
+contract Flagged { fn value(self) bool }
 contract Invalid extends Numbered, Flagged {}
 fn main() i32 { 0 }
 )conflict");
@@ -913,8 +978,8 @@ fn main() i32 { 0 }
            "conflicting inherited methods report FDN2143");
 
     const auto ambiguousDefault = check(R"defaults(
-contract First { fn value(view) i32 { 1 } }
-contract Second { fn value(view) i32 { 2 } }
+contract First { fn value(self) i32 { 1 } }
+contract Second { fn value(self) i32 { 2 } }
 contract Invalid extends First, Second {}
 fn main() i32 { 0 }
 )defaults");
@@ -922,19 +987,19 @@ fn main() i32 { 0 }
            "ambiguous inherited defaults report FDN2144");
 
     const auto resolvedDefault = check(R"defaults(
-contract First { fn value(view) i32 { 1 } }
-contract Second { fn value(view) i32 { 2 } }
-contract Valid extends First, Second { fn value(view) i32 { 3 } }
+contract First { fn value(self) i32 { 1 } }
+contract Second { fn value(self) i32 { 2 } }
+contract Valid extends First, Second { fn value(self) i32 { 3 } }
 struct Number implements Valid {}
-fn read(value view Valid) i32 { value.value() }
-fn main() i32 { let value = Number {} read(view value) - 3 }
+fn read(value Valid) i32 { value.value() }
+fn main() i32 { const value = Number {} read(value) - 3 }
 )defaults");
     expect(!resolvedDefault.diagnostics.hasErrors(),
            "a direct default resolves inherited default ambiguity");
 
     const auto unknownDelegate = check(R"delegate(
-contract Named { fn value(view) i32 }
-struct Identity implements Named { fn value(view) i32 { 1 } }
+contract Named { fn value(self) i32 }
+struct Identity implements Named { fn value(self) i32 { 1 } }
 struct Invalid implements Named {
     identity Identity
     delegate missing as Named
@@ -945,7 +1010,7 @@ fn main() i32 { 0 }
            "unknown delegation field reports FDN2146");
 
     const auto invalidDelegate = check(R"delegate(
-contract Named { fn value(view) i32 }
+contract Named { fn value(self) i32 }
 struct Identity { value i32 }
 struct Invalid implements Named {
     identity Identity
@@ -957,8 +1022,8 @@ fn main() i32 { 0 }
            "non-conforming delegation field reports FDN2147");
 
     const auto undeclaredDelegation = check(R"delegate(
-contract Named { fn value(view) i32 }
-struct Identity implements Named { fn value(view) i32 { 1 } }
+contract Named { fn value(self) i32 }
+struct Identity implements Named { fn value(self) i32 { 1 } }
 struct Invalid {
     identity Identity
     delegate identity as Named
@@ -969,8 +1034,8 @@ fn main() i32 { 0 }
            "delegation requires the contract in the implements list");
 
     const auto duplicateDelegation = check(R"delegate(
-contract Named { fn value(view) i32 }
-struct Identity implements Named { fn value(view) i32 { 1 } }
+contract Named { fn value(self) i32 }
+struct Identity implements Named { fn value(self) i32 { 1 } }
 struct Invalid implements Named {
     identity Identity
     delegate identity as Named
@@ -1000,9 +1065,9 @@ fn MakeChoice() Choice<i32> {
 }
 
 fn main() i32 {
-    let Value = Holder { Value = 0 hidden = false }
-    let none Choice<i32> = .None
-    let chosen = MakeChoice()
+    const Value = Holder { Value = 0 hidden = false }
+    const none Choice<i32> = .None
+    const chosen = MakeChoice()
     match chosen {
         None: Value.Value + 1
         Some(number): number - 4
@@ -1018,8 +1083,8 @@ fn main() i32 {
     expect(result.program.structs.size() == 1 && result.program.structs[0].fields[0].exported &&
                !result.program.structs[0].fields[1].exported,
            "field visibility follows the initial letter");
-    expect(result.program.enums.size() == 4 && result.program.enums[3].variants[0].exported &&
-               !result.program.enums[3].variants[2].exported,
+    expect(result.program.enums.size() == 5 && result.program.enums[4].variants[0].exported &&
+               !result.program.enums[4].variants[2].exported,
            "variant visibility follows the initial letter");
     expect(result.program.functions.size() == 2 && result.program.functions[0].exported &&
                !result.program.functions[1].exported,
@@ -1032,7 +1097,7 @@ fn main() i32 {
 
 void panicLowersWithSourceFrames() {
     constexpr std::string_view source = R"(
-fn crash(message String) i32 {
+fn crash($message String) i32 {
     panic(message)
 }
 
@@ -1159,7 +1224,7 @@ fn main() i32 {
 }
 )");
     expect(hasCode(mutableElse.diagnostics, "FDN1067"),
-           "mutable let else binding reports FDN1067");
+           "mutable const else binding reports FDN1067");
 
     const auto trySyntax = check(R"(
 fn failure() Result<i32, String> { .Err("failed") }
@@ -1195,18 +1260,18 @@ void semanticFailuresHaveStableDiagnostics() {
     expect(!minimum.diagnostics.hasErrors(), "minimum i32 literal is accepted");
 
     const auto immutable =
-        check("fn main() i32 { let value i32 = 1 value = 2 return value }");
+        check("fn main() i32 { const value i32 = 1 value = 2 return value }");
     expect(hasCode(immutable.diagnostics, "FDN2013"),
            "immutable assignment reports FDN2013");
 
-    const auto mismatch = check("fn main() i32 { let value bool = 1 return 0 }");
+    const auto mismatch = check("fn main() i32 { const value bool = 1 return 0 }");
     expect(hasCode(mismatch.diagnostics, "FDN2011"), "type mismatch reports FDN2011");
 
     const auto unknown = check("fn main() i32 { missing() return 0 }");
     expect(hasCode(unknown.diagnostics, "FDN2009"), "unknown function reports FDN2009");
 
     const auto duplicate =
-        check("fn main() i32 { let value = 1 let value = 2 return value }");
+        check("fn main() i32 { const value = 1 const value = 2 return value }");
     expect(hasCode(duplicate.diagnostics, "FDN2003"),
            "duplicate binding reports FDN2003");
 
@@ -1256,7 +1321,7 @@ fn main() i32 { consume() return 0 }
     expect(hasCode(voidReturnValue.diagnostics, "FDN2015"),
            "void return value reports FDN2015");
 
-    const auto fallthrough = check("fn main() i32 { let value = 1 }");
+    const auto fallthrough = check("fn main() i32 { const value = 1 }");
     expect(hasCode(fallthrough.diagnostics, "FDN2008"),
            "fallthrough in non-void function reports FDN2008");
 
@@ -1284,25 +1349,25 @@ fn main() i32 { return 0 }
 
     const auto unknownField = check(R"(
 struct Item { value i32 }
-fn main() i32 { let item = Item { value = 1 } return item.missing }
+fn main() i32 { const item = Item { value = 1 } return item.missing }
 )");
     expect(hasCode(unknownField.diagnostics, "FDN2025"),
            "unknown struct field reports FDN2025");
 
     const auto duplicateInitializer = check(R"(
 struct Item { value i32 }
-fn main() i32 { let item = Item { value = 1 value = 2 } return 0 }
+fn main() i32 { const item = Item { value = 1 value = 2 } return 0 }
 )");
     expect(hasCode(duplicateInitializer.diagnostics, "FDN2026"),
            "duplicate field initializer reports FDN2026");
 
-    const auto nonStructAccess = check("fn main() i32 { let value = 1 return value.field }");
+    const auto nonStructAccess = check("fn main() i32 { const value = 1 return value.field }");
     expect(hasCode(nonStructAccess.diagnostics, "FDN2028"),
            "field access on a primitive reports FDN2028");
 
     const auto missingPayload = check(R"(
 enum Value { Empty Number(i32) }
-fn main() i32 { let value = Value.Number return 0 }
+fn main() i32 { const value = Value.Number return 0 }
 )");
     expect(hasCode(missingPayload.diagnostics, "FDN2036"),
            "missing enum payload reports FDN2036");
@@ -1310,7 +1375,7 @@ fn main() i32 { let value = Value.Number return 0 }
     const auto duplicatePattern = check(R"(
 enum Value { Empty Number(i32) }
 fn main() i32 {
-    let value = Value.Empty
+    const value = Value.Empty
     return match value {
         Empty: 0
         Empty: 1
@@ -1345,7 +1410,7 @@ fn main() i32 { return 0 }
            "wrong type argument count reports FDN2043");
 
     const auto wrongFunctionTypeArity = check(R"(
-fn identity<T>(value T) T { return value }
+fn identity<T>($value T) T { return value }
 fn main() i32 { return identity<i32, bool>(1) }
 )");
     expect(hasCode(wrongFunctionTypeArity.diagnostics, "FDN2043"),
@@ -1353,14 +1418,14 @@ fn main() i32 { return identity<i32, bool>(1) }
 
     const auto unresolvedType = check(R"(
 enum Maybe<T> { None Some(T) }
-fn main() i32 { let value = Maybe.None return 0 }
+fn main() i32 { const value = Maybe.None return 0 }
 )");
     expect(hasCode(unresolvedType.diagnostics, "FDN2045"),
            "unresolved constructor type reports FDN2045");
 
     const auto conflictingInference = check(R"(
 struct Pair<T> { first T second T }
-fn main() i32 { let value = Pair { first = 1 second = true } return 0 }
+fn main() i32 { const value = Pair { first = 1 second = true } return 0 }
 )");
     expect(hasCode(conflictingInference.diagnostics, "FDN2011"),
            "conflicting generic inference reports FDN2011");
@@ -1407,7 +1472,7 @@ fn main() i32 { return 0 }
            "nested owner introduced by substitution reports FDN2064");
 
     const auto voidFunctionParameter = check(R"(
-fn identity<T>(value T) T { return value }
+fn identity<T>($value T) T { return value }
 fn main() i32 { identity(print("bad")) return 0 }
 )");
     expect(hasCode(voidFunctionParameter.diagnostics, "FDN2016"),
@@ -1430,7 +1495,7 @@ fn main() i32 { 0 }
     const auto branchDropsResult = check(R"(
 fn failure() Result<i32, String> { .Err("failed") }
 fn main() i32 {
-    let result = failure()
+    const result = failure()
     if true {
         discard result
     }
@@ -1443,7 +1508,7 @@ fn main() i32 {
     const auto repeatedExit = check(R"(
 fn failure() Result<i32, String> { .Err("failed") }
 fn main() i32 {
-    let result = failure()
+    const result = failure()
     if true {
         return 0
     }
@@ -1456,7 +1521,7 @@ fn main() i32 {
     const auto allBranchesHandleResult = check(R"(
 fn failure() Result<i32, String> { .Err("failed") }
 fn main() i32 {
-    let result = failure()
+    const result = failure()
     if true {
         discard result
     } else {
@@ -1471,25 +1536,25 @@ fn main() i32 {
     const auto fallingThroughElse = check(R"(
 fn failure() Result<i32, String> { .Err("failed") }
 fn main() i32 {
-    let value = failure() else error {
+    const value = failure() else error {
         print(error)
     }
     value
 }
 )");
     expect(hasCode(fallingThroughElse.diagnostics, "FDN2054"),
-           "falling-through let else reports FDN2054");
+           "falling-through const else reports FDN2054");
 
     const auto panicElse = check(R"(
 fn failure() Result<i32, String> { .Err("failed") }
 fn main() i32 {
-    let value = failure() else error {
+    const value = failure() else error {
         panic(error)
     }
     value
 }
 )");
-    expect(!panicElse.diagnostics.hasErrors(), "panic exits a let else error path");
+    expect(!panicElse.diagnostics.hasErrors(), "panic exits a const else error path");
 }
 
 void diagnosticsBoundLongSourceExcerpts() {
@@ -1556,7 +1621,7 @@ void cAbiFunctionsLowerToDeterministicBoundaries() {
     constexpr std::string_view source = R"(
 extern c fn nativeAdd(left i32, right i32) i32 as foundation_native_add
 extern c fn nativeText() String as foundation_native_text
-extern c fn nativeEdit(value edit String) i32 as foundation_native_edit
+extern c fn nativeEdit(&value String) i32 as foundation_native_edit
 
 extern c fn FoundationDouble(value i32) i32 as foundation_double {
     value * 2
@@ -1564,7 +1629,7 @@ extern c fn FoundationDouble(value i32) i32 as foundation_double {
 
 fn main() i32 {
     var text = nativeText()
-    discard nativeEdit(edit text)
+    discard nativeEdit(&text)
     discard text
     nativeAdd(FoundationDouble(20), 2)
 }
@@ -1605,6 +1670,45 @@ fn main() i32 {
            "C export appears in the public header");
     expect(firstHeader.find("foundation_native_add") == std::string::npos,
            "C import does not leak into the public header");
+}
+
+void rawPointersLowerToExplicitCBoundaries() {
+    constexpr std::string_view source = R"(
+extern c fn nativeValues() *i32 as foundation_raw_values
+
+extern c fn FoundationRaw(value *const *i32) *const *i32 as foundation_raw_export {
+    value
+}
+
+fn main() i32 {
+    // SAFETY: the fixture contract provides two live, aligned i32 values.
+    unsafe {
+        const values = nativeValues()
+        *values = 41
+        const next = values + 1
+        discard *next
+        const empty = null<*void>()
+        if isNull(empty) return 0
+    }
+    1
+}
+)";
+    const auto result = check(source);
+    expect(!result.diagnostics.hasErrors(), "raw pointer program has no diagnostics");
+    if (!result.fir.has_value()) {
+        expect(false, "raw pointer program lowers to FIR");
+        return;
+    }
+
+    const auto generated = foundation::emitC(*result.fir, "raw.fdn");
+    const auto header = foundation::emitCHeader(*result.fir);
+    expect(generated.find("foundation_raw_values(void);") != std::string::npos,
+           "raw pointer import receives a C prototype");
+    expect(generated.find(" = NULL;") != std::string::npos,
+           "typed raw null construction lowers to C NULL");
+    expect(header.find("int32_t * const * foundation_raw_export(") != std::string::npos &&
+               header.find("int32_t * const * fdn_arg_0") != std::string::npos,
+           "nested raw const qualification survives public header emission");
 }
 
 void blockingImportsLowerToTaskSuspension() {
@@ -1656,11 +1760,11 @@ fn main() i32 {
 void callbackImportsLowerToReactorSuspension() {
     constexpr std::string_view source = R"(
 @callback(cancel = foundation_native_cancel)
-extern c fn nativeRead(value u64, result edit i32) i32 as foundation_native_read
+extern c fn nativeRead(value u64, &result i32) i32 as foundation_native_read
 
 task read(value u64) i32 {
     var result = 0
-    const status = nativeRead(value, edit result)
+    const status = nativeRead(value, &result)
     status + result
 }
 
@@ -1717,17 +1821,17 @@ void closuresLowerToDeterministicFunctionValues() {
     constexpr std::string_view source = R"(
 fn double(value i32) i32 { value * 2 }
 
-fn apply<T>(value T, operation view fn(T) T) T {
+fn apply<T>($value T, operation fn(T) T) T {
     operation(value)
 }
 
 fn main() i32 {
-    let direct fn(i32) i32 = double
-    let factor = 2
-    let closure = fn(value i32) i32 capture factor {
+    const direct fn(i32) i32 = double
+    const factor = 2
+    const closure = fn(value i32) i32 capture factor {
         value * factor
     }
-    apply(21, view direct) + apply(21, view closure) - 84
+    apply(21, direct) + apply(21, closure) - 84
 }
 )";
     auto first = check(source);
@@ -1750,6 +1854,127 @@ fn main() i32 {
            "captured closure receives deterministic environment cleanup");
     expect(firstC.find("_value_adapter") != std::string::npos,
            "named function value receives an invocation adapter");
+}
+
+void servicesAndActionsLowerToStaticApplicationMetadata() {
+    constexpr std::string_view source = R"(
+attribute Managed(value bool) targets(service)
+attribute Handler(name String) targets(action)
+
+@Managed(true)
+service CounterService {
+    value i32
+
+    fn New(initial i32) CounterService {
+        CounterService { value = initial }
+    }
+
+    @Handler("counter.add")
+    action Add(&self, amount i32) i32 {
+        self.value = self.value + amount
+        self.value
+    }
+}
+
+fn main() i32 {
+    var counter = CounterService { value = 40 }
+    counter.Add(2) - 42
+}
+)";
+    const auto first = check(source);
+    const auto second = check(source);
+    expect(!first.diagnostics.hasErrors(), "service and action program has no diagnostics");
+    expect(!second.diagnostics.hasErrors(),
+           "repeated service and action program has no diagnostics");
+    expect(!first.program.structs.empty() &&
+               first.program.structs.front().kind == foundation::StructKind::Service,
+           "service identity remains explicit in the AST");
+    const auto action = std::find_if(first.program.functions.begin(),
+                                     first.program.functions.end(),
+                                     [](const auto &function) { return function.action; });
+    expect(action != first.program.functions.end() && action->receiver.has_value(),
+           "action remains a receiver method in the AST");
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        expect(false, "service and action program lowers to FIR");
+        return;
+    }
+    expect(!first.fir->structs.empty() && first.fir->structs.front().service,
+           "service identity survives into FIR");
+    expect(std::any_of(first.fir->functions.begin(), first.fir->functions.end(),
+                       [](const auto &function) { return function.action; }),
+           "action identity survives into FIR");
+    const auto metadata = foundation::emitMetadata(*first.fir);
+    expect(metadata.find("\"kind\":\"service\"") != std::string::npos &&
+               metadata.find("\"kind\":\"action\"") != std::string::npos,
+           "service and action emit static application metadata");
+    expect(foundation::emitC(*first.fir, "service.fdn") ==
+               foundation::emitC(*second.fir, "service.fdn"),
+           "service and action C emission is deterministic");
+}
+
+void applicationPlanValidatesStaticDependencyGraph() {
+    const auto source = std::filesystem::path(FOUNDATION_TEST_SOURCE_DIR) /
+                        "tests/cases/accept/application-plan.fdn";
+    auto analysis = foundation::analyzeProject(source);
+    expect(!analysis.diagnostics.hasErrors(), "application plan fixture has no diagnostics");
+    expect(analysis.semantic.has_value(), "application plan fixture has a semantic model");
+    if (!analysis.semantic.has_value()) {
+        return;
+    }
+    const auto fir = foundation::lower(analysis.program, *analysis.semantic);
+    foundation::Diagnostics firstDiagnostics;
+    foundation::Diagnostics secondDiagnostics;
+    const auto first = foundation::emitApplicationPlan(fir, firstDiagnostics);
+    const auto second = foundation::emitApplicationPlan(fir, secondDiagnostics);
+    expect(!firstDiagnostics.hasErrors() && !secondDiagnostics.hasErrors(),
+           "application plan validates its providers and lifetimes");
+    expect(first == second, "application plan emission is deterministic");
+    expect(first.find("\"provider\":\"SystemClock\"") != std::string::npos,
+           "application plan resolves a contract to its concrete provider");
+    expect(first.find("\"input\":true") != std::string::npos,
+           "application plan keeps explicit boundary inputs");
+    expect(first.find("\"type\":\"Fallible\",\"lifetime\":\"transient\","
+                      "\"constructor\":\"Fallible.New\",\"fallible\":true") !=
+               std::string::npos,
+           "application plan retains fallible constructors");
+    expect(first.find("\"name\":\"greeter.greet\"") != std::string::npos &&
+               first.find("\"keys\":[\"ctrl+g\"]") != std::string::npos,
+           "application plan keeps typed action dispatch metadata");
+}
+
+void applicationHostEmitsTypedFoundationSource() {
+    const auto source = std::filesystem::path(FOUNDATION_TEST_SOURCE_DIR) /
+                        "examples/services";
+    auto analysis = foundation::analyzeProject(source);
+    expect(!analysis.diagnostics.hasErrors(), "application host example has no diagnostics");
+    expect(analysis.semantic.has_value(), "application host example has a semantic model");
+    if (!analysis.semantic.has_value()) {
+        return;
+    }
+    const auto generatedSource = std::find_if(
+        analysis.sources.begin(), analysis.sources.end(), [](const auto &candidate) {
+            return candidate.path.ends_with("zz_foundation.fdn");
+        });
+    expect(generatedSource != analysis.sources.end(),
+           "application host example includes its generated source");
+    if (generatedSource == analysis.sources.end()) {
+        return;
+    }
+    const auto fir = foundation::lower(analysis.program, *analysis.semantic);
+    foundation::Diagnostics firstDiagnostics;
+    foundation::Diagnostics secondDiagnostics;
+    const auto first = foundation::emitApplicationHost(
+        fir, firstDiagnostics, generatedSource->path);
+    const auto second = foundation::emitApplicationHost(
+        fir, secondDiagnostics, generatedSource->path);
+    expect(!firstDiagnostics.hasErrors() && !secondDiagnostics.hasErrors(),
+           "application host validates singleton construction");
+    expect(first == second, "application host emission is deterministic");
+    expect(first.find("struct FoundationApplication") != std::string::npos &&
+               first.find("fn BuildFoundationApplication") != std::string::npos,
+           "application host emits a typed application root");
+    expect(first.find("fn Greet(self, name String) String") != std::string::npos,
+           "application host emits a typed action method");
 }
 
 void projectDiagnosticsRetainTheirSource() {
@@ -1831,6 +2056,7 @@ int main() {
     mainArgumentsLowerToPortableWrapper();
     sequenceLengthsLowerToU64();
     u64ValuesLowerToCheckedC();
+    machineScalarsAndNeverLowerToPortableC();
     methodsAndContractsLowerToDeterministicC();
     contractInheritanceFlattensDeterministically();
     lightweightSyntaxCarriesVisibilityAndContext();
@@ -1841,9 +2067,13 @@ int main() {
     diagnosticsBoundLongSourceExcerpts();
     packageHeadersAndSourceDiagnosticsStayStable();
     cAbiFunctionsLowerToDeterministicBoundaries();
+    rawPointersLowerToExplicitCBoundaries();
     blockingImportsLowerToTaskSuspension();
     callbackImportsLowerToReactorSuspension();
     closuresLowerToDeterministicFunctionValues();
+    servicesAndActionsLowerToStaticApplicationMetadata();
+    applicationPlanValidatesStaticDependencyGraph();
+    applicationHostEmitsTypedFoundationSource();
     projectDiagnosticsRetainTheirSource();
     standardLibrarySourceIsLoadedOnce();
 

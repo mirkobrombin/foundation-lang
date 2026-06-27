@@ -2,7 +2,7 @@ struct User {
     id i32
 }
 
-fn borrow(user view User) view User {
+fn borrow(user User) view User {
     user
 }
 

@@ -1,0 +1,21 @@
+import foundation.di
+
+service Left {
+    @di.Inject()
+    fn New(right Right) Left {
+        discard right
+        Left {}
+    }
+}
+
+service Right {
+    @di.Inject()
+    fn New(left Left) Right {
+        discard left
+        Right {}
+    }
+}
+
+fn main() i32 {
+    0
+}

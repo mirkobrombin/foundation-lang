@@ -22,7 +22,7 @@ fn second() i32 {
     2
 }
 
-fn echo(value String) String {
+fn echo($value String) String {
     value
 }
 
@@ -36,10 +36,10 @@ fn greet(message String) void {
 
 fn main() i32 {
     greet(echo("typed foundation"))
-    let unused = 1
-    let minimum i32 = -2147483648
-    let arithmetic = (8 - 2) * 2 / 4 % 2
-    let negative = -1
+    const unused = 1
+    const minimum i32 = -2147483648
+    const arithmetic = (8 - 2) * 2 / 4 % 2
+    const negative = -1
     var total i32 = 0
     while total < 3 {
         total = total + 1

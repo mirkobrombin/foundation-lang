@@ -1,0 +1,19 @@
+import foundation.actions
+import foundation.di
+
+@di.Scope(.Singleton)
+service Session {
+    @di.Inject()
+    fn New() Session {
+        Session {}
+    }
+
+    @actions.Name("session.close")
+    action Close($self) void {
+        discard self
+    }
+}
+
+fn main() i32 {
+    0
+}

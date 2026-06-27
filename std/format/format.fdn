@@ -1,12 +1,67 @@
 package std.format
 
+extern c fn boolNative(value bool) String as foundation_runtime_format_bool
+extern c fn i8Native(value i8) String as foundation_runtime_format_i8
+extern c fn i16Native(value i16) String as foundation_runtime_format_i16
 extern c fn i32Native(value i32) String as foundation_runtime_format_i32
+extern c fn i64Native(value i64) String as foundation_runtime_format_i64
+extern c fn isizeNative(value isize) String as foundation_runtime_format_isize
+extern c fn u8Native(value u8) String as foundation_runtime_format_u8
+extern c fn u16Native(value u16) String as foundation_runtime_format_u16
+extern c fn u32Native(value u32) String as foundation_runtime_format_u32
 extern c fn u64Native(value u64) String as foundation_runtime_format_u64
+extern c fn usizeNative(value usize) String as foundation_runtime_format_usize
+extern c fn f32Native(value f32) String as foundation_runtime_format_f32
+extern c fn f64Native(value f64) String as foundation_runtime_format_f64
+
+fn Bool(value bool) String {
+    boolNative(value)
+}
+
+fn I8(value i8) String {
+    i8Native(value)
+}
+
+fn I16(value i16) String {
+    i16Native(value)
+}
 
 fn I32(value i32) String {
     i32Native(value)
 }
 
+fn I64(value i64) String {
+    i64Native(value)
+}
+
+fn Isize(value isize) String {
+    isizeNative(value)
+}
+
+fn U8(value u8) String {
+    u8Native(value)
+}
+
+fn U16(value u16) String {
+    u16Native(value)
+}
+
+fn U32(value u32) String {
+    u32Native(value)
+}
+
 fn U64(value u64) String {
     u64Native(value)
+}
+
+fn Usize(value usize) String {
+    usizeNative(value)
+}
+
+fn F32(value f32) String {
+    f32Native(value)
+}
+
+fn F64(value f64) String {
+    f64Native(value)
 }

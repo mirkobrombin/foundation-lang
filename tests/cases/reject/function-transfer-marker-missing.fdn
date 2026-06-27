@@ -1,0 +1,10 @@
+fn Consume($value String) void {
+    print(value)
+}
+
+fn main() i32 {
+    const operation fn($String) void = Consume
+    const value = "owned"
+    operation(value)
+    0
+}

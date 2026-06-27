@@ -1,0 +1,10 @@
+extern c fn nativeValue() *const i32 as foundation_raw_value
+
+fn main() i32 {
+    // SAFETY: the native function returns a live, aligned i32 pointer.
+    unsafe {
+        const value = nativeValue()
+        *value = 1
+    }
+    0
+}

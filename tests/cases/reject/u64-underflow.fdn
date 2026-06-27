@@ -1,6 +1,6 @@
 fn main() i32 {
-    let zero u64 = 0
-    let underflow = zero - 1
+    const zero u64 = 0
+    const underflow = zero - 1
     discard underflow
     0
 }

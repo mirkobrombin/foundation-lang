@@ -7,7 +7,7 @@ struct Item {
     value i32
 }
 
-fn compareText(left view String, right view String) i32 {
+fn compareText(left String, right String) i32 {
     text.Compare(left, right)
 }
 
@@ -16,26 +16,26 @@ fn main() i32 {
     values.PushFront("one")
     values.PushFront("two")
 
-    let first = values.PopFront()
-    let second = values.PopFront()
-    let missing = values.PopFront()
+    const first = values.PopFront()
+    const second = values.PopFront()
+    const missing = values.PopFront()
 
-    let firstValue = match first {
+    const firstValue = match first {
         None: "missing"
         Some(value): value
     }
-    let secondValue = match second {
+    const secondValue = match second {
         None: "missing"
         Some(value): value
     }
-    let missingValue = match missing {
+    const missingValue = match missing {
         None: "empty"
         Some(value): value
     }
 
     var owned = collections.NewList<own Item>()
     owned.PushFront(own Item { value = 42 })
-    let ownedValue = match owned.PopFront() {
+    const ownedValue = match owned.PopFront() {
         None: 0
         Some(item): item.value
     }
@@ -48,17 +48,17 @@ fn main() i32 {
     unsorted.PushFront("b")
     unsorted.PushFront("a")
     unsorted.PushFront("c")
-    let compare fn(view String, view String) i32 = compareText
-    var sorted = collections.Sort(unsorted, view compare)
-    let firstSorted = match sorted.PopFront() {
+    const compare fn(String, String) i32 = compareText
+    var sorted = collections.Sort($unsorted, compare)
+    const firstSorted = match sorted.PopFront() {
         None: ""
         Some(value): value
     }
-    let secondSorted = match sorted.PopFront() {
+    const secondSorted = match sorted.PopFront() {
         None: ""
         Some(value): value
     }
-    let thirdSorted = match sorted.PopFront() {
+    const thirdSorted = match sorted.PopFront() {
         None: ""
         Some(value): value
     }

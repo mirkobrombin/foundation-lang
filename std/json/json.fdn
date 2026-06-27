@@ -33,16 +33,16 @@ struct itemReverse {
     current Option<own item>
     result Option<own item>
 
-    fn step(edit, selected Option<own item>) bool {
+    fn step(&self, $selected Option<own item>) bool {
         match selected {
             None: false
-            Some(node): self.accept(node)
+            Some(node): self.accept($node)
         }
     }
 
-    fn accept(edit, node own item) bool {
-        let item { value next } = node
-        let previous = replace self.result with .None
+    fn accept(&self, $node own item) bool {
+        const item { value next } = node
+        const previous = replace self.result with .None
         self.result = .Some(own item { value = value next = previous })
         self.current = next
         true
@@ -53,16 +53,16 @@ struct fieldReverse {
     current Option<own field>
     result Option<own field>
 
-    fn step(edit, selected Option<own field>) bool {
+    fn step(&self, $selected Option<own field>) bool {
         match selected {
             None: false
-            Some(node): self.accept(node)
+            Some(node): self.accept($node)
         }
     }
 
-    fn accept(edit, node own field) bool {
-        let field { key value next } = node
-        let previous = replace self.result with .None
+    fn accept(&self, $node own field) bool {
+        const field { key value next } = node
+        const previous = replace self.result with .None
         self.result = .Some(own field { key = key value = value next = previous })
         self.current = next
         true
@@ -74,19 +74,19 @@ struct fieldSearch {
     result Option<own field>
     found bool
 
-    fn step(edit, expected view String, selected Option<own field>) bool {
+    fn step(&self, expected String, $selected Option<own field>) bool {
         match selected {
             None: false
-            Some(node): self.accept(expected, node)
+            Some(node): self.accept(expected, $node)
         }
     }
 
-    fn accept(edit, expected view String, node own field) bool {
-        let field { key value next } = node
-        if text.Equal(view key, expected) {
+    fn accept(&self, expected String, $node own field) bool {
+        const field { key value next } = node
+        if text.Equal(key, expected) {
             self.found = true
         }
-        let previous = replace self.result with .None
+        const previous = replace self.result with .None
         self.result = .Some(own field { key = key value = value next = previous })
         self.current = next
         true
@@ -99,20 +99,20 @@ struct fieldTake {
     value Option<Value>
     found bool
 
-    fn step(edit, expected view String, selected Option<own field>) bool {
+    fn step(&self, expected String, $selected Option<own field>) bool {
         match selected {
             None: false
-            Some(node): self.accept(expected, node)
+            Some(node): self.accept(expected, $node)
         }
     }
 
-    fn accept(edit, expected view String, node own field) bool {
-        let field { key value next } = node
-        if !self.found && text.Equal(view key, expected) {
+    fn accept(&self, expected String, $node own field) bool {
+        const field { key value next } = node
+        if !self.found && text.Equal(key, expected) {
             self.value = .Some(value)
             self.found = true
         } else {
-            let previous = replace self.remaining with .None
+            const previous = replace self.remaining with .None
             self.remaining = .Some(own field {
                 key = key
                 value = value
@@ -128,36 +128,36 @@ struct Array {
     head Option<own item>
     length u64
 
-    fn Len(view) u64 {
+    fn Len(self) u64 {
         self.length
     }
 
-    fn pushFront(edit, value Value) void {
-        let previous = replace self.head with .None
+    fn pushFront(&self, $value Value) void {
+        const previous = replace self.head with .None
         self.head = .Some(own item { value = value next = previous })
         self.length = self.length + 1
     }
 
-    fn reverse(edit) void {
+    fn reverse(&self) void {
         var state = itemReverse {
             current = replace self.head with .None
             result = .None
         }
         var running = true
         while running {
-            let selected = replace state.current with .None
-            running = state.step(selected)
+            const selected = replace state.current with .None
+            running = state.step($selected)
         }
-        let itemReverse { current result } = state
+        const itemReverse { current result } = state
         discard current
         self.head = result
     }
 
-    fn PopFront(edit) Option<Value> {
-        let current = replace self.head with .None
+    fn PopFront(&self) Option<Value> {
+        const current = replace self.head with .None
         match current {
             None: .None
-            Some(node): popItem(edit self, node)
+            Some(node): popItem(&self, $node)
         }
     }
 }
@@ -166,32 +166,32 @@ struct Object {
     fields Option<own field>
     length u64
 
-    fn Len(view) u64 {
+    fn Len(self) u64 {
         self.length
     }
 
-    fn pushFront(edit, key String, value Value) void {
-        let previous = replace self.fields with .None
+    fn pushFront(&self, $key String, $value Value) void {
+        const previous = replace self.fields with .None
         self.fields = .Some(own field { key = key value = value next = previous })
         self.length = self.length + 1
     }
 
-    fn reverse(edit) void {
+    fn reverse(&self) void {
         var state = fieldReverse {
             current = replace self.fields with .None
             result = .None
         }
         var running = true
         while running {
-            let selected = replace state.current with .None
-            running = state.step(selected)
+            const selected = replace state.current with .None
+            running = state.step($selected)
         }
-        let fieldReverse { current result } = state
+        const fieldReverse { current result } = state
         discard current
         self.fields = result
     }
 
-    fn hasKey(edit, expected view String) bool {
+    fn hasKey(&self, expected String) bool {
         var state = fieldSearch {
             current = replace self.fields with .None
             result = .None
@@ -199,16 +199,16 @@ struct Object {
         }
         var running = true
         while running {
-            let selected = replace state.current with .None
-            running = state.step(expected, selected)
+            const selected = replace state.current with .None
+            running = state.step(expected, $selected)
         }
-        let fieldSearch { current result found } = state
+        const fieldSearch { current result found } = state
         discard current
         self.fields = result
         found
     }
 
-    fn Take(edit, expected view String) Option<Value> {
+    fn Take(&self, expected String) Option<Value> {
         var state = fieldTake {
             current = replace self.fields with .None
             remaining = .None
@@ -217,10 +217,10 @@ struct Object {
         }
         var running = true
         while running {
-            let selected = replace state.current with .None
-            running = state.step(expected, selected)
+            const selected = replace state.current with .None
+            running = state.step(expected, $selected)
         }
-        let fieldTake { current remaining value found } = state
+        const fieldTake { current remaining value found } = state
         discard current
         self.fields = remaining
         if found {
@@ -243,10 +243,10 @@ struct parser {
     offset u64
     length u64
 
-    fn skipWhitespace(edit, source view String) void {
+    fn skipWhitespace(&self, source String) void {
         var running = true
         while running && self.offset < self.length {
-            let byte = readByte(source, self.offset)
+            const byte = readByte(source, self.offset)
             if byte == 32 || byte == 9 || byte == 10 || byte == 13 {
                 self.offset = self.offset + 1
             } else {
@@ -255,27 +255,27 @@ struct parser {
         }
     }
 
-    fn consume(edit, source view String, expected view String) bool {
-        let end = self.offset + text.ByteLen(expected)
+    fn consume(&self, source String, expected String) bool {
+        const end = self.offset + text.ByteLen(expected)
         if end > self.length {
             return false
         }
-        let selected = readSlice(source, self.offset, end)
-        if !text.Equal(view selected, expected) {
+        const selected = readSlice(source, self.offset, end)
+        if !text.Equal(selected, expected) {
             return false
         }
         self.offset = end
         true
     }
 
-    fn parseHex(edit, source view String) Result<u64, Error> {
+    fn parseHex(&self, source String) Result<u64, Error> {
         var result u64 = 0
         var count u64 = 0
         while count < 4 {
             if self.offset >= self.length {
                 return .Err(parseError(.UnexpectedEnd, self.offset))
             }
-            let digit = hexDigit(readByte(source, self.offset))
+            const digit = hexDigit(readByte(source, self.offset))
             if digit >= 16 {
                 return .Err(parseError(.InvalidEscape, self.offset))
             }
@@ -286,20 +286,20 @@ struct parser {
         .Ok(result)
     }
 
-    fn parseString(edit, source view String) Result<String, Error> {
+    fn parseString(&self, source String) Result<String, Error> {
         self.offset = self.offset + 1
         var builder = text.NewBuilder()
         var segment = self.offset
         while self.offset < self.length {
-            let byte = readByte(source, self.offset)
+            const byte = readByte(source, self.offset)
             if byte == 34 {
-                let appended = appendRange(edit builder, source, segment, self.offset) else error {
+                const appended = appendRange(&builder, source, segment, self.offset) else error {
                     discard error
                     return .Err(parseError(.InvalidString, self.offset))
                 }
                 discard appended
                 self.offset = self.offset + 1
-                let value = builder.Finish() else error {
+                const value = builder.Finish() else error {
                     discard error
                     return .Err(parseError(.InvalidString, self.offset))
                 }
@@ -311,7 +311,7 @@ struct parser {
             if byte != 92 {
                 self.offset = self.offset + 1
             } else {
-                let appended = appendRange(edit builder, source, segment, self.offset) else error {
+                const appended = appendRange(&builder, source, segment, self.offset) else error {
                     discard error
                     return .Err(parseError(.InvalidString, self.offset))
                 }
@@ -320,17 +320,17 @@ struct parser {
                 if self.offset >= self.length {
                     return .Err(parseError(.UnexpectedEnd, self.offset))
                 }
-                let escaped = readByte(source, self.offset)
+                const escaped = readByte(source, self.offset)
                 self.offset = self.offset + 1
                 var codePoint u64 = 0
-                let simple = simpleEscape(escaped)
+                const simple = simpleEscape(escaped)
                 if simple != 0 {
                     codePoint = simple
                 } else {
                     if escaped != 117 {
                         return .Err(parseError(.InvalidEscape, self.offset - 1))
                     }
-                    let first = self.parseHex(source) else error {
+                    const first = self.parseHex(source) else error {
                         return .Err(error)
                     }
                     if first >= 55296 && first <= 56319 {
@@ -340,7 +340,7 @@ struct parser {
                             return .Err(parseError(.InvalidEscape, self.offset))
                         }
                         self.offset = self.offset + 2
-                        let second = self.parseHex(source) else error {
+                        const second = self.parseHex(source) else error {
                             return .Err(error)
                         }
                         if second < 56320 || second > 57343 {
@@ -355,7 +355,7 @@ struct parser {
                         }
                     }
                 }
-                let wrote = builder.WriteCodePoint(codePoint) else error {
+                const wrote = builder.WriteCodePoint(codePoint) else error {
                     discard error
                     return .Err(parseError(.InvalidEscape, self.offset))
                 }
@@ -366,15 +366,15 @@ struct parser {
         .Err(parseError(.UnexpectedEnd, self.offset))
     }
 
-    fn parseNumber(edit, source view String) Result<Value, Error> {
-        let start = self.offset
+    fn parseNumber(&self, source String) Result<Value, Error> {
+        const start = self.offset
         if readByte(source, self.offset) == 45 {
             self.offset = self.offset + 1
             if self.offset >= self.length {
                 return .Err(parseError(.InvalidNumber, self.offset))
             }
         }
-        let first = readByte(source, self.offset)
+        const first = readByte(source, self.offset)
         if first == 48 {
             self.offset = self.offset + 1
             if self.offset < self.length && isDigit(readByte(source, self.offset)) {
@@ -416,7 +416,7 @@ struct parser {
         .Ok(.Number(readSlice(source, start, self.offset)))
     }
 
-    fn parseArray(edit, source view String, depth u64) Result<own Array, Error> {
+    fn parseArray(&self, source String, depth u64) Result<own Array, Error> {
         self.offset = self.offset + 1
         self.skipWhitespace(source)
         var result = newArray()
@@ -426,15 +426,15 @@ struct parser {
         }
         var running = true
         while running {
-            let value = self.parseValue(source, depth + 1) else error {
+            const value = self.parseValue(source, depth + 1) else error {
                 return .Err(error)
             }
-            result.pushFront(value)
+            result.pushFront($value)
             self.skipWhitespace(source)
             if self.offset >= self.length {
                 return .Err(parseError(.UnexpectedEnd, self.offset))
             }
-            let delimiter = readByte(source, self.offset)
+            const delimiter = readByte(source, self.offset)
             self.offset = self.offset + 1
             if delimiter == 93 {
                 running = false
@@ -450,7 +450,7 @@ struct parser {
         .Ok(result)
     }
 
-    fn parseObject(edit, source view String, depth u64) Result<own Object, Error> {
+    fn parseObject(&self, source String, depth u64) Result<own Object, Error> {
         self.offset = self.offset + 1
         self.skipWhitespace(source)
         var result = newObject()
@@ -466,10 +466,10 @@ struct parser {
             if readByte(source, self.offset) != 34 {
                 return .Err(parseError(.UnexpectedToken, self.offset))
             }
-            let key = self.parseString(source) else error {
+            const key = self.parseString(source) else error {
                 return .Err(error)
             }
-            if result.hasKey(view key) {
+            if result.hasKey(key) {
                 return .Err(parseError(.DuplicateKey, self.offset))
             }
             self.skipWhitespace(source)
@@ -478,15 +478,15 @@ struct parser {
             }
             self.offset = self.offset + 1
             self.skipWhitespace(source)
-            let value = self.parseValue(source, depth + 1) else error {
+            const value = self.parseValue(source, depth + 1) else error {
                 return .Err(error)
             }
-            result.pushFront(key, value)
+            result.pushFront($key, $value)
             self.skipWhitespace(source)
             if self.offset >= self.length {
                 return .Err(parseError(.UnexpectedEnd, self.offset))
             }
-            let delimiter = readByte(source, self.offset)
+            const delimiter = readByte(source, self.offset)
             self.offset = self.offset + 1
             if delimiter == 125 {
                 running = false
@@ -502,7 +502,7 @@ struct parser {
         .Ok(result)
     }
 
-    fn parseValue(edit, source view String, depth u64) Result<Value, Error> {
+    fn parseValue(&self, source String, depth u64) Result<Value, Error> {
         if depth > 128 {
             return .Err(parseError(.DepthLimit, self.offset))
         }
@@ -510,35 +510,35 @@ struct parser {
         if self.offset >= self.length {
             return .Err(parseError(.UnexpectedEnd, self.offset))
         }
-        let byte = readByte(source, self.offset)
+        const byte = readByte(source, self.offset)
         if byte == 34 {
-            let value = self.parseString(source) else error {
+            const value = self.parseString(source) else error {
                 return .Err(error)
             }
             return .Ok(.Text(value))
         }
         if byte == 91 {
-            let value = self.parseArray(source, depth) else error {
+            const value = self.parseArray(source, depth) else error {
                 return .Err(error)
             }
             return .Ok(.Array(value))
         }
         if byte == 123 {
-            let value = self.parseObject(source, depth) else error {
+            const value = self.parseObject(source, depth) else error {
                 return .Err(error)
             }
             return .Ok(.Object(value))
         }
-        let nullValue = "null"
-        if byte == 110 && self.consume(source, view nullValue) {
+        const nullValue = "null"
+        if byte == 110 && self.consume(source, nullValue) {
             return .Ok(.Null)
         }
-        let trueValue = "true"
-        if byte == 116 && self.consume(source, view trueValue) {
+        const trueValue = "true"
+        if byte == 116 && self.consume(source, trueValue) {
             return .Ok(.Bool(true))
         }
-        let falseValue = "false"
-        if byte == 102 && self.consume(source, view falseValue) {
+        const falseValue = "false"
+        if byte == 102 && self.consume(source, falseValue) {
             return .Ok(.Bool(false))
         }
         if byte == 45 || isDigit(byte) {
@@ -548,8 +548,8 @@ struct parser {
     }
 }
 
-fn popItem(array edit Array, node own item) Option<Value> {
-    let item { value next } = node
+fn popItem(&array Array, $node own item) Option<Value> {
+    const item { value next } = node
     array.head = next
     array.length = array.length - 1
     .Some(value)
@@ -567,16 +567,16 @@ fn parseError(kind ErrorKind, offset u64) Error {
     Error { Kind = kind Offset = offset }
 }
 
-fn readByte(source view String, offset u64) u64 {
-    let value = text.ByteAt(source, offset) else error {
+fn readByte(source String, offset u64) u64 {
+    const value = text.ByteAt(source, offset) else error {
         discard error
         panic("JSON parser byte invariant failed")
     }
     value
 }
 
-fn readSlice(source view String, start u64, end u64) String {
-    let value = text.Slice(source, start, end) else error {
+fn readSlice(source String, start u64, end u64) String {
+    const value = text.Slice(source, start, end) else error {
         discard error
         panic("JSON parser slice invariant failed")
     }
@@ -584,16 +584,16 @@ fn readSlice(source view String, start u64, end u64) String {
 }
 
 fn appendRange(
-    builder edit text.Builder,
-    source view String,
+    &builder text.Builder,
+    source String,
     start u64,
     end u64
 ) Result<bool, text.BuilderError> {
     if start == end {
         return .Ok(true)
     }
-    let value = readSlice(source, start, end)
-    builder.Write(view value)
+    const value = readSlice(source, start, end)
+    builder.Write(value)
 }
 
 fn isDigit(value u64) bool {
@@ -635,10 +635,10 @@ fn hexDigit(value u64) u64 {
     16
 }
 
-fn Parse(source view String) Result<Value, Error> {
+fn Parse(source String) Result<Value, Error> {
     var state = parser { offset = 0 length = text.ByteLen(source) }
-    let rootDepth u64 = 0
-    let value = state.parseValue(source, rootDepth) else error {
+    const rootDepth u64 = 0
+    const value = state.parseValue(source, rootDepth) else error {
         return .Err(error)
     }
     state.skipWhitespace(source)

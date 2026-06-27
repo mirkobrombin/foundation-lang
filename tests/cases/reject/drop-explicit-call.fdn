@@ -1,5 +1,5 @@
 struct Item {
-    fn drop(edit) void {
+    fn drop(&self) void {
         return
     }
 }

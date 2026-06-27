@@ -8,23 +8,23 @@ enum IntegerError {
     Overflow
 }
 
-fn U64(value view String) Result<u64, IntegerError> {
-    let length = text.ByteLen(value)
+fn U64(value String) Result<u64, IntegerError> {
+    const length = text.ByteLen(value)
     if length == 0 {
         return .Err(.Empty)
     }
-    let maximum u64 = 18446744073709551615
+    const maximum u64 = 18446744073709551615
     var result u64 = 0
     var offset u64 = 0
     while offset < length {
-        let byte = text.ByteAt(value, offset) else error {
+        const byte = text.ByteAt(value, offset) else error {
             discard error
             panic("integer parser byte invariant failed")
         }
         if byte < 48 || byte > 57 {
             return .Err(.Invalid)
         }
-        let digit = byte - 48
+        const digit = byte - 48
         if result > (maximum - digit) / 10 {
             return .Err(.Overflow)
         }
@@ -32,4 +32,128 @@ fn U64(value view String) Result<u64, IntegerError> {
         offset = offset + 1
     }
     .Ok(result)
+}
+
+fn I64(value String) Result<i64, IntegerError> {
+    const length = text.ByteLen(value)
+    if length == 0 {
+        return .Err(.Empty)
+    }
+    const first = text.ByteAt(value, 0) else error {
+        discard error
+        panic("integer parser byte invariant failed")
+    }
+    const negative = first == 45
+    var offset u64 = 0
+    if negative {
+        if length == 1 {
+            return .Err(.Invalid)
+        }
+        offset = 1
+    }
+    const maximum u64 = 9223372036854775808 if negative else 9223372036854775807
+    var magnitude u64 = 0
+    while offset < length {
+        const byte = text.ByteAt(value, offset) else error {
+            discard error
+            panic("integer parser byte invariant failed")
+        }
+        if byte < 48 || byte > 57 {
+            return .Err(.Invalid)
+        }
+        const digit = byte - 48
+        if magnitude > (maximum - digit) / 10 {
+            return .Err(.Overflow)
+        }
+        magnitude = magnitude * 10 + digit
+        offset = offset + 1
+    }
+    if negative && magnitude == 9223372036854775808 {
+        return .Ok(-9223372036854775807 - 1)
+    }
+    const signed = i64.From(magnitude) else error {
+        discard error
+        return .Err(.Overflow)
+    }
+    .Ok(-signed if negative else signed)
+}
+
+fn I8(value String) Result<i8, IntegerError> {
+    const parsed = I64(value) else error {
+        return .Err(error)
+    }
+    const converted = i8.From(parsed) else error {
+        discard error
+        return .Err(.Overflow)
+    }
+    .Ok(converted)
+}
+
+fn I16(value String) Result<i16, IntegerError> {
+    const parsed = I64(value) else error {
+        return .Err(error)
+    }
+    const converted = i16.From(parsed) else error {
+        discard error
+        return .Err(.Overflow)
+    }
+    .Ok(converted)
+}
+
+fn I32(value String) Result<i32, IntegerError> {
+    const parsed = I64(value) else error {
+        return .Err(error)
+    }
+    const converted = i32.From(parsed) else error {
+        discard error
+        return .Err(.Overflow)
+    }
+    .Ok(converted)
+}
+
+fn Isize(value String) Result<isize, IntegerError> {
+    const parsed = I64(value) else error {
+        return .Err(error)
+    }
+    .Ok(isize.From(parsed))
+}
+
+fn U8(value String) Result<u8, IntegerError> {
+    const parsed = U64(value) else error {
+        return .Err(error)
+    }
+    const converted = u8.From(parsed) else error {
+        discard error
+        return .Err(.Overflow)
+    }
+    .Ok(converted)
+}
+
+fn U16(value String) Result<u16, IntegerError> {
+    const parsed = U64(value) else error {
+        return .Err(error)
+    }
+    const converted = u16.From(parsed) else error {
+        discard error
+        return .Err(.Overflow)
+    }
+    .Ok(converted)
+}
+
+fn U32(value String) Result<u32, IntegerError> {
+    const parsed = U64(value) else error {
+        return .Err(error)
+    }
+    const converted = u32.From(parsed) else error {
+        discard error
+        return .Err(.Overflow)
+    }
+    .Ok(converted)
+}
+
+fn Usize(value String) Result<usize, IntegerError> {
+    const parsed = U64(value) else error {
+        return .Err(error)
+    }
+    .Ok(usize.From(parsed))
 }

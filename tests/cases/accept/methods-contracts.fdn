@@ -1,33 +1,33 @@
 contract Readable {
-    fn read(view) i32
-    fn add(edit, amount i32) void
-    fn take(own) i32
+    fn read(self) i32
+    fn add(&self, amount i32) void
+    fn take($self) i32
 }
 
 contract Boxed<T> {
-    fn set(edit, value T) void
+    fn set(&self, $value T) void
 }
 
 contract Pinger {
-    fn ping(view) i32
+    fn ping(self) i32
 }
 
 contract Formatter {
-    fn format(view, value view Pinger) i32
+    fn format(self, value Pinger) i32
 }
 
 struct Counter implements Readable {
     value i32
 
-    fn read(view) i32 {
+    fn read(self) i32 {
         self.value
     }
 
-    fn add(edit, amount i32) void {
+    fn add(&self, amount i32) void {
         self.value = self.value + amount
     }
 
-    fn take(own) i32 {
+    fn take($self) i32 {
         self.value
     }
 }
@@ -41,73 +41,73 @@ methods Counter {
 struct Box<T> implements Boxed<T> {
     value T
 
-    fn set(edit, value T) void {
+    fn set(&self, $value T) void {
         self.value = value
     }
 }
 
 methods Box<T> {
-    fn New(value T) Box<T> {
+    fn New($value T) Box<T> {
         Box<T> { value = value }
     }
 }
 
 struct EmptyPinger implements Pinger {
-    fn ping(view) i32 {
+    fn ping(self) i32 {
         42
     }
 }
 
 struct PingerFormatter implements Formatter {
-    fn format(view, value view Pinger) i32 {
+    fn format(self, value Pinger) i32 {
         value.ping()
     }
 }
 
-fn readContract(value view Readable) i32 {
+fn readContract(value Readable) i32 {
     value.read()
 }
 
-fn addContract(value edit Readable, amount i32) void {
+fn addContract(&value Readable, amount i32) void {
     value.add(amount)
 }
 
-fn readConcrete(value view Counter) i32 {
+fn readConcrete(value Counter) i32 {
     value.read()
 }
 
-fn addConcrete(value edit Counter, amount i32) void {
+fn addConcrete(&value Counter, amount i32) void {
     value.add(amount)
 }
 
-fn setAny<T>(value edit Boxed<T>, next T) void {
-    value.set(next)
+fn setAny<T>(&value Boxed<T>, $next T) void {
+    value.set($next)
 }
 
-fn ping(value view Pinger) i32 {
+fn ping(value Pinger) i32 {
     value.ping()
 }
 
-fn format(value view Formatter, pinger view EmptyPinger) i32 {
-    value.format(view pinger)
+fn format(value Formatter, pinger EmptyPinger) i32 {
+    value.format(pinger)
 }
 
 fn main() i32 {
     var counter = Counter.New(40)
-    addConcrete(edit counter, 1)
-    addContract(edit counter, 1)
-    let current = readContract(view counter)
-    let concrete = readConcrete(view counter)
-    let owned = own Counter { value = current }
-    let taken = owned.take()
+    addConcrete(&counter, 1)
+    addContract(&counter, 1)
+    const current = readContract(counter)
+    const concrete = readConcrete(counter)
+    const owned = own Counter { value = current }
+    const taken = owned.take()
     var box = Box<i32>.New(0)
-    setAny(edit box, 42)
-    let boxed = box.value
-    let pinger = EmptyPinger {}
-    let pinged = ping(view pinger)
-    let formatter = PingerFormatter {}
-    let direct = formatter.format(view pinger)
-    let dynamic = format(view formatter, view pinger)
+    setAny(&box, 42)
+    const boxed = box.value
+    const pinger = EmptyPinger {}
+    const pinged = ping(pinger)
+    const formatter = PingerFormatter {}
+    const direct = formatter.format(pinger)
+    const dynamic = format(formatter, pinger)
     if taken == 42 && concrete == 42 && boxed == 42 && pinged == 42 && direct == 42 && dynamic == 42 {
         print("methods work")
         return 0

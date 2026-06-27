@@ -1,0 +1,53 @@
+package test.host.fallible
+
+import foundation.actions
+import foundation.di
+
+enum StartupError {
+    Invalid
+}
+
+@di.Scope(.Singleton)
+service Greeter {
+    prefix String
+
+    @di.Inject()
+    fn New(@di.Input() $prefix String) Result<Greeter, StartupError> {
+        if prefix == "" return .Err(.Invalid)
+        .Ok(Greeter { prefix = prefix })
+    }
+
+    @actions.Name("greet")
+    action Greet(self, name String) String {
+        self.prefix + name
+    }
+}
+
+fn unexpectedStartup($application FoundationApplication) bool {
+    discard application
+    false
+}
+
+fn expectedStartup(error StartupError) bool {
+    discard error
+    true
+}
+
+fn startupRejected($result Result<FoundationApplication, StartupError>) bool {
+    match result {
+        Ok(application): unexpectedStartup($application)
+        Err(error): expectedStartup(error)
+    }
+}
+
+fn main() i32 {
+    const rejected = BuildFoundationApplication("")
+    if !startupRejected($rejected) return 2
+
+    const application = BuildFoundationApplication("Hello, ") else error {
+        discard error
+        return 1
+    }
+    print(application.Greet("fallible"))
+    0
+}

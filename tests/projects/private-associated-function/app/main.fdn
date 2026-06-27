@@ -3,6 +3,6 @@ package example.app
 import example.lib
 
 fn main() i32 {
-    discard lib.Value.new()
+    discard lib.Value.hidden()
     0
 }

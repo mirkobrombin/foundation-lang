@@ -1,0 +1,9 @@
+fn main() i32 {
+    const value = if true {
+        return 0
+    } else {
+        1
+    }
+    discard value
+    0
+}

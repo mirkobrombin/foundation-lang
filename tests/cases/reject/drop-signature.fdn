@@ -1,5 +1,5 @@
 struct Item {
-    fn drop(view) i32 {
+    fn drop(self) i32 {
         0
     }
 }

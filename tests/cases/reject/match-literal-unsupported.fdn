@@ -1,0 +1,14 @@
+enum Measurement {
+    Value(amount f64)
+}
+
+fn classify($measurement Measurement) i32 {
+    match measurement {
+        Value(1.5): 1
+        Value(amount): 0
+    }
+}
+
+fn main() i32 {
+    classify(Measurement.Value(amount = 1.5))
+}

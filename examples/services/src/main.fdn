@@ -1,0 +1,27 @@
+package example.services
+
+import foundation.actions
+import foundation.di
+
+@di.Scope(.Singleton)
+service Greeter {
+    prefix String
+
+    @di.Inject()
+    fn New(@di.Input() $prefix String) Greeter {
+        Greeter { prefix = prefix }
+    }
+
+    @actions.Name("greet")
+    @actions.Key("ctrl+g")
+    @actions.Policy("greet")
+    action Greet(self, name String) String {
+        self.prefix + name
+    }
+}
+
+fn main() i32 {
+    const application = BuildFoundationApplication("Hello, ")
+    print(application.Greet("Foundation"))
+    0
+}

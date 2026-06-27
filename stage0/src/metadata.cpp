@@ -1,6 +1,7 @@
 #include "foundation/metadata.hpp"
 
 #include <sstream>
+#include <set>
 #include <string>
 #include <string_view>
 
@@ -40,12 +41,16 @@ const char *targetName(FirAttributeTarget target) {
         return "fn";
     case FirAttributeTarget::Struct:
         return "struct";
+    case FirAttributeTarget::Service:
+        return "service";
     case FirAttributeTarget::Enum:
         return "enum";
     case FirAttributeTarget::Contract:
         return "contract";
     case FirAttributeTarget::Method:
         return "method";
+    case FirAttributeTarget::Action:
+        return "action";
     case FirAttributeTarget::Field:
         return "field";
     case FirAttributeTarget::Variant:
@@ -57,17 +62,8 @@ const char *targetName(FirAttributeTarget target) {
 }
 
 std::string typeName(const FirProgram &program, const Type &type) {
-    if (type == voidType) {
-        return "void";
-    }
-    if (type == i32Type) {
-        return "i32";
-    }
-    if (type == u64Type) {
-        return "u64";
-    }
-    if (type == boolType) {
-        return "bool";
+    if (isMachineScalar(type)) {
+        return foundation::typeName(type);
     }
     if (type == stringType) {
         return "String";
@@ -81,6 +77,11 @@ std::string typeName(const FirProgram &program, const Type &type) {
     }
     if (type.kind == TypeKind::Slice && type.arguments.size() == 1) {
         return "[" + typeName(program, type.arguments.front()) + "]";
+    }
+    if ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) &&
+        type.arguments.size() == 1) {
+        return std::string(type.kind == TypeKind::Raw ? "*" : "*const ") +
+               typeName(program, type.arguments.front());
     }
     std::string result;
     if (type.kind == TypeKind::Own) {
@@ -124,6 +125,9 @@ void emitValue(std::ostringstream &out, const FirProgram &program,
             out << '-';
         }
         out << value.magnitude;
+        return;
+    case FirAttributeValueKind::Floating:
+        out << value.text;
         return;
     case FirAttributeValueKind::Boolean:
         out << (value.boolean ? "true" : "false");
@@ -203,8 +207,8 @@ void emitUses(std::ostringstream &out, const FirProgram &program,
 
 void emitDeclaration(std::ostringstream &out, const FirProgram &program, bool &first,
                      std::string_view id, std::string_view kind,
-                     const std::vector<FirAttributeUse> &attributes) {
-    if (attributes.empty()) {
+                     const std::vector<FirAttributeUse> &attributes, bool force = false) {
+    if (attributes.empty() && !force) {
         return;
     }
     if (!first) {
@@ -220,16 +224,169 @@ void emitDeclaration(std::ostringstream &out, const FirProgram &program, bool &f
     out << '}';
 }
 
-} // namespace
-
-std::string emitMetadata(const FirProgram &program) {
-    std::ostringstream out;
-    out << "{\"schema\":\"foundation.metadata/v1\",\"attributes\":[";
-    for (std::size_t index = 0; index < program.attributeDeclarations.size(); ++index) {
+void emitStateTransitionDeclaration(std::ostringstream &out, const FirProgram &program,
+                                    bool &first, const FirFunction &function) {
+    if (!function.stateTransition.has_value() || function.parameters.empty()) {
+        return;
+    }
+    const auto receiver = function.parameters.front();
+    if (receiver >= function.locals.size()) {
+        return;
+    }
+    const auto &receiverType = function.locals[receiver].type;
+    if (receiverType.kind != TypeKind::Edit || receiverType.arguments.size() != 1 ||
+        receiverType.arguments.front().kind != TypeKind::Enum ||
+        receiverType.arguments.front().declaration >= program.enums.size()) {
+        return;
+    }
+    const auto machine = receiverType.arguments.front().declaration;
+    const auto &declaration = program.enums[machine];
+    const auto &transition = *function.stateTransition;
+    if (!first) {
+        out << ',';
+    }
+    first = false;
+    const auto separator = function.name.rfind('.');
+    const auto event = separator == std::string::npos
+                           ? function.name
+                           : function.name.substr(separator + 1);
+    out << "{\"id\":";
+    emitString(out, declaration.name + "#transition:" + event);
+    out << ",\"kind\":\"transition\",\"owner\":";
+    emitString(out, declaration.name);
+    out << ",\"sources\":[";
+    for (std::size_t index = 0; index < transition.sourceVariants.size(); ++index) {
         if (index != 0) {
             out << ',';
         }
+        const auto variant = transition.sourceVariants[index];
+        emitString(out, variant < declaration.variants.size()
+                            ? declaration.variants[variant].name
+                            : std::string{});
+    }
+    out << "],\"destination\":";
+    emitString(out, transition.destinationVariant < declaration.variants.size()
+                        ? declaration.variants[transition.destinationVariant].name
+                        : std::string{});
+    if (transition.destinationParameter.has_value() &&
+        *transition.destinationParameter < function.locals.size()) {
+        out << ",\"payloadParameter\":";
+        emitString(out, function.locals[*transition.destinationParameter].name);
+    }
+    out << ",\"attributes\":";
+    emitUses(out, program, function.attributes);
+    out << '}';
+}
+
+void emitWorkflowDeclaration(std::ostringstream &out, const FirProgram &program,
+                             bool &first, const FirFunction &function) {
+    if (!function.workflow.has_value()) {
+        return;
+    }
+    const auto &workflow = *function.workflow;
+    if (!first) {
+        out << ',';
+    }
+    first = false;
+    out << "{\"id\":";
+    emitString(out, function.name);
+    out << ",\"kind\":";
+    emitString(out, workflow.kind == FirWorkflowKind::Pipeline ? "pipeline" : "saga");
+    out << ",\"input\":";
+    emitString(out, typeName(program, workflow.inputType));
+    out << ",\"output\":";
+    emitString(out, typeName(program, workflow.successType));
+    out << ",\"error\":";
+    emitString(out, typeName(program, workflow.errorType));
+    out << ",\"callableError\":";
+    emitString(out, typeName(program, workflow.failureType));
+    out << ",\"steps\":[";
+    for (std::size_t index = 0; index < workflow.steps.size(); ++index) {
+        if (index != 0) {
+            out << ',';
+        }
+        const auto &step = workflow.steps[index];
+        out << "{\"name\":";
+        emitString(out, step.name);
+        out << ",\"function\":";
+        emitString(out, step.function < program.functions.size()
+                            ? program.functions[step.function].name
+                            : std::string{});
+        out << ",\"attempts\":" << step.attempts;
+        if (step.compensation.has_value()) {
+            out << ",\"compensation\":";
+            emitString(out, *step.compensation < program.functions.size()
+                                ? program.functions[*step.compensation].name
+                                : std::string{});
+        }
+        out << '}';
+    }
+    out << "],\"attributes\":";
+    emitUses(out, program, function.attributes);
+    out << '}';
+}
+
+std::string_view attributePackage(std::string_view name) {
+    const auto separator = name.rfind('.');
+    return separator == std::string_view::npos ? std::string_view{} : name.substr(0, separator);
+}
+
+void collectAttributePackages(const FirProgram &program,
+                              const std::vector<FirAttributeUse> &uses,
+                              std::set<std::string> &packages) {
+    for (const auto &use : uses) {
+        if (use.declaration < program.attributeDeclarations.size()) {
+            packages.emplace(attributePackage(
+                program.attributeDeclarations[use.declaration].name));
+        }
+    }
+}
+
+} // namespace
+
+std::string emitMetadata(const FirProgram &program) {
+    std::set<std::string> attributePackages;
+    for (const auto &type : program.structs) {
+        collectAttributePackages(program, type.attributes, attributePackages);
+        for (const auto &field : type.fields) {
+            collectAttributePackages(program, field.attributes, attributePackages);
+        }
+    }
+    for (const auto &type : program.enums) {
+        collectAttributePackages(program, type.attributes, attributePackages);
+        for (const auto &variant : type.variants) {
+            collectAttributePackages(program, variant.attributes, attributePackages);
+        }
+    }
+    for (const auto &type : program.contracts) {
+        collectAttributePackages(program, type.attributes, attributePackages);
+        for (const auto &method : type.methods) {
+            collectAttributePackages(program, method.attributes, attributePackages);
+            for (const auto &parameter : method.parameterAttributes) {
+                collectAttributePackages(program, parameter, attributePackages);
+            }
+        }
+    }
+    for (const auto &function : program.functions) {
+        collectAttributePackages(program, function.attributes, attributePackages);
+        for (const auto &parameter : function.parameterAttributes) {
+            collectAttributePackages(program, parameter, attributePackages);
+        }
+    }
+
+    std::ostringstream out;
+    out << "{\"schema\":\"foundation.metadata/v1\",\"attributes\":[";
+    auto firstAttribute = true;
+    for (std::size_t index = 0; index < program.attributeDeclarations.size(); ++index) {
         const auto &attribute = program.attributeDeclarations[index];
+        if (!attributePackages.contains(
+                std::string(attributePackage(attribute.name)))) {
+            continue;
+        }
+        if (!firstAttribute) {
+            out << ',';
+        }
+        firstAttribute = false;
         out << "{\"name\":";
         emitString(out, attribute.name);
         out << ",\"exported\":" << (attribute.exported ? "true" : "false")
@@ -257,17 +414,21 @@ std::string emitMetadata(const FirProgram &program) {
     out << "],\"declarations\":[";
     auto first = true;
     for (const auto &type : program.structs) {
-        emitDeclaration(out, program, first, type.name, "struct", type.attributes);
+        emitDeclaration(out, program, first, type.name, type.service ? "service" : "struct",
+                        type.attributes, type.service);
         for (const auto &field : type.fields) {
             emitDeclaration(out, program, first, type.name + "#field:" + field.name, "field",
                             field.attributes);
         }
     }
     for (const auto &type : program.enums) {
-        emitDeclaration(out, program, first, type.name, "enum", type.attributes);
+        emitDeclaration(out, program, first, type.name,
+                        type.stateMachine ? "state_machine" : "enum", type.attributes,
+                        type.stateMachine);
         for (const auto &variant : type.variants) {
             emitDeclaration(out, program, first, type.name + "#variant:" + variant.name,
-                            "variant", variant.attributes);
+                            type.stateMachine ? "state" : "variant", variant.attributes,
+                            type.stateMachine);
         }
     }
     for (const auto &type : program.contracts) {
@@ -285,8 +446,19 @@ std::string emitMetadata(const FirProgram &program) {
         }
     }
     for (const auto &function : program.functions) {
-        const auto kind = function.method ? "method" : "fn";
-        emitDeclaration(out, program, first, function.name, kind, function.attributes);
+        if (function.stateTransition.has_value()) {
+            emitStateTransitionDeclaration(out, program, first, function);
+            continue;
+        }
+        if (function.workflow.has_value()) {
+            emitWorkflowDeclaration(out, program, first, function);
+            continue;
+        }
+        const auto kind = function.action                 ? "action"
+                          : function.method               ? "method"
+                                                          : "fn";
+        emitDeclaration(out, program, first, function.name, kind, function.attributes,
+                        function.action || function.stateTransition.has_value());
         for (std::size_t parameter = 0; parameter < function.parameterAttributes.size();
              ++parameter) {
             const auto local = function.parameters[parameter];

@@ -1,7 +1,7 @@
 struct Value {}
 
 contract Invalid extends Value {
-    fn read(view) i32
+    fn read(self) i32
 }
 
 fn main() i32 { 0 }

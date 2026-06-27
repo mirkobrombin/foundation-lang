@@ -1,0 +1,9 @@
+fn increment(&value i32) void {
+    value = value + 1
+}
+
+fn main() i32 {
+    var value = 41
+    increment(value)
+    value - 42
+}

@@ -66,16 +66,7 @@ typedef struct fdn_supervisor {
 } fdn_supervisor;
 
 uint64_t fdn_monotonic_nanoseconds(void) {
-#if defined(_WIN32)
-    return (uint64_t)GetTickCount64() * UINT64_C(1000000);
-#else
-    struct timespec value;
-    if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) {
-        fdn_panic_cstr("monotonic clock failed");
-    }
-    return (uint64_t)value.tv_sec * UINT64_C(1000000000) +
-           (uint64_t)value.tv_nsec;
-#endif
+    return foundation_runtime_time_monotonic_nanoseconds();
 }
 
 static void fdn_task_external_lock(fdn_task_external_hub *hub) {

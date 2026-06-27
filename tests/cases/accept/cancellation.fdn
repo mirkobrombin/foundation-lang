@@ -1,10 +1,10 @@
 import std.concurrent
 
-task observe(cancel concurrent.Cancellation) bool {
+task observe($cancel concurrent.Cancellation) bool {
     cancel.IsRequested()
 }
 
-task report(cancel concurrent.Cancellation) void {
+task report($cancel concurrent.Cancellation) void {
     if cancel.IsRequested() {
         print("cancelled")
     }

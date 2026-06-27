@@ -4,8 +4,8 @@ import example.counter
 
 fn main() i32 {
     var value = counter.Memory { Value = 40 }
-    counter.Apply(edit value, 2)
-    if counter.Snapshot(view value) == 42 {
+    counter.Apply(&value, 2)
+    if counter.Snapshot(value) == 42 {
         print("contracts work")
         return 0
     }

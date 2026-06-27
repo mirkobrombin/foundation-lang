@@ -1,6 +1,6 @@
 fn main() i32 {
     var value = 1
-    let update = fn() i32 capture edit value {
+    const update = fn() i32 capture &value {
         value = value + 1
         value
     }

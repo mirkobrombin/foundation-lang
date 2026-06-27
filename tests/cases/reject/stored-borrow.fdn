@@ -3,7 +3,7 @@ struct User {
 }
 
 fn main() i32 {
-    let user = own User { id = 7 }
-    let borrowed = view user
+    var user = new User { id = 7 }
+    const borrowed = &user
     borrowed.id
 }

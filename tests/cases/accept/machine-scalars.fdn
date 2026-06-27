@@ -1,0 +1,117 @@
+fn stop(message String) never {
+    panic(message)
+}
+
+fn choose(flag bool) i16 {
+    if flag { 12 } else { stop("unreachable") }
+}
+
+fn rejectsOutOfRange(value i32) bool {
+    const converted = i8.From(value) else error {
+        return match error {
+            OutOfRange: true
+            NonFinite: false
+            PrecisionLoss: false
+        }
+    }
+    discard converted
+    false
+}
+
+fn rejectsPrecisionLoss(value f64) bool {
+    const converted = i32.From(value) else error {
+        return match error {
+            OutOfRange: false
+            NonFinite: false
+            PrecisionLoss: true
+        }
+    }
+    discard converted
+    false
+}
+
+fn rejectsNonFinite(value f64) bool {
+    const converted = i32.From(value) else error {
+        return match error {
+            OutOfRange: false
+            NonFinite: true
+            PrecisionLoss: false
+        }
+    }
+    discard converted
+    false
+}
+
+fn rejectsIntegerPrecision(value i64) bool {
+    const converted = f32.From(value) else error {
+        return match error {
+            OutOfRange: false
+            NonFinite: false
+            PrecisionLoss: true
+        }
+    }
+    discard converted
+    false
+}
+
+fn rejectsFloatPrecision(value f64) bool {
+    const converted = f32.From(value) else error {
+        return match error {
+            OutOfRange: false
+            NonFinite: false
+            PrecisionLoss: true
+        }
+    }
+    discard converted
+    false
+}
+
+fn main() i32 {
+    const signed8 i8 = 120 + 7
+    const signed16 i16 = choose(true) * 2
+    const signed32 i32 = -40 / 2
+    const signed64 i64 = 9000000000 + 7
+    const signedSize isize = -8 + 3
+
+    const unsigned8 u8 = 250 + 5
+    const unsigned16 u16 = 65000 + 535
+    const unsigned32 u32 = 4000000000 + 7
+    const unsigned64 u64 = 18000000000000000000 + 7
+    const unsignedSize usize = 8 * 4
+
+    const float32 f32 = 1.5 + 2.25
+    const float64 f64 = -8.5 / 2.0
+    const widened i64 = i64.From(signed8)
+    const widenedFloat f64 = f64.From(signed32)
+    const narrowed = i8.From(120) else error {
+        discard error
+        return 13
+    }
+    const narrowedFloat = f32.From(1.5) else error {
+        discard error
+        return 14
+    }
+
+    if signed8 != 127 return 1
+    if signed16 != 24 return 2
+    if signed32 != -20 return 3
+    if signed64 != 9000000007 return 4
+    if signedSize != -5 return 5
+    if unsigned8 != 255 return 6
+    if unsigned16 != 65535 return 7
+    if unsigned32 != 4000000007 return 8
+    if unsigned64 != 18000000000000000007 return 9
+    if unsignedSize != 32 return 10
+    if float32 != 3.75 return 11
+    if float64 != -4.25 return 12
+    if widened != 127 return 13
+    if widenedFloat != -20.0 return 14
+    if narrowed != 120 return 15
+    if narrowedFloat != 1.5 return 16
+    if !rejectsOutOfRange(128) return 17
+    if !rejectsPrecisionLoss(1.5) return 18
+    if !rejectsNonFinite(1.0 / 0.0) return 19
+    if !rejectsIntegerPrecision(16777217) return 20
+    if !rejectsFloatPrecision(1.0000000000000002) return 21
+    0
+}

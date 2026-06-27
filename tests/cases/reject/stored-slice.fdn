@@ -1,7 +1,7 @@
-fn read(values view [i32]) i32 { values[0] }
+fn read(values [i32]) i32 { values[0] }
 
 fn main() i32 {
-    let values = [1]
-    let borrowed = view values
+    var values = [1]
+    const borrowed = &values
     read(borrowed)
 }

@@ -1,6 +1,6 @@
 fn main() i32 {
-    let maximum u64 = 18446744073709551615
-    let overflow = maximum + 1
+    const maximum u64 = 18446744073709551615
+    const overflow = maximum + 1
     discard overflow
     0
 }

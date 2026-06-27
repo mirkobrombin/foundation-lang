@@ -1,0 +1,55 @@
+package example.process_plugin
+
+import foundation.plugin
+import std.format
+import std.time
+
+fn main(args [String]) i32 {
+    if len(args) != 1 return 1
+
+    const created = plugin.NewExecSandbox(args[0]) else error {
+        print(error.Detail)
+        return 2
+    }
+    var sandbox = created
+    const mode = sandbox.Argument("serve") else error {
+        print(error.Detail)
+        return 3
+    }
+    discard mode
+
+    const starting = spawn plugin.StartSandbox($sandbox, time.Seconds(5))
+    const plugin.SandboxStartOutcome {
+        Sandbox as active
+        Value as startResult
+    } = $starting.wait()
+    const started = match startResult {
+        Ok(changed): changed
+        Err(error): reportStartFailure(error)
+    }
+    print(format.Bool(started))
+
+    const stopping = spawn plugin.StopSandbox($active, time.Seconds(5))
+    const plugin.SandboxStopOutcome {
+        Sandbox as stoppedValue
+        Value as stopResult
+    } = $stopping.wait()
+    var stopped = stoppedValue
+    const exitCode = match stopResult {
+        Ok(code): code
+        Err(error): reportStopFailure(error)
+    }
+    print(format.I32(exitCode))
+    print(format.Bool(stopped.Close()))
+    0
+}
+
+fn reportStartFailure(error plugin.SandboxError) bool {
+    print(error.Detail)
+    false
+}
+
+fn reportStopFailure(error plugin.SandboxError) i32 {
+    print(error.Detail)
+    -1
+}

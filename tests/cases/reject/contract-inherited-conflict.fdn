@@ -1,9 +1,9 @@
 contract Numbered {
-    fn value(view) i32
+    fn value(self) i32
 }
 
 contract Flagged {
-    fn value(view) bool
+    fn value(self) bool
 }
 
 contract Invalid extends Numbered, Flagged {}

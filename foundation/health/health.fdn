@@ -1,0 +1,195 @@
+package foundation.health
+
+import std.collections
+import std.concurrent
+import std.text
+import std.time
+
+// Describes whether a component can provide its intended service.
+enum Status {
+    Healthy
+    Degraded
+    Unhealthy
+}
+
+// Reports a component status with typed details and measured monotonic duration.
+struct Report<D> {
+    Status Status
+    Duration time.Duration
+    Details D
+}
+
+// Associates one registered checker name with its latest report.
+struct NamedReport<D> {
+    Name String
+    Report Report<D>
+}
+
+// Rejects invalid or conflicting checker registration.
+enum RegistrationError {
+    EmptyName
+    DuplicateName
+}
+
+// Rejects recursive execution of the same registry.
+enum CheckError {
+    Reentrant
+}
+
+// Produces one typed health report under explicit cancellation policy.
+contract Checker<D> {
+    fn Check(self, cancellation concurrent.Cancellation) Report<D>
+}
+
+struct entry<D> {
+    name String
+    checker own Checker<D>
+}
+
+// Owns a deterministic set of named health checkers.
+struct Registry<D> {
+    entries own collections.List<own entry<D>>
+    checking bool
+
+    // Transfers a checker into the registry under a unique non-empty name.
+    fn Register(
+        &self,
+        $name String,
+        $checker own Checker<D>
+    ) Result<void, RegistrationError> {
+        if name == "" return .Err(.EmptyName)
+        if containsName(&self, name) return .Err(.DuplicateName)
+        self.entries.PushFront(own entry<D> { name = name checker = checker })
+        .Ok
+    }
+
+    // Runs every checker in registration order and preserves the registry.
+    fn CheckAll(
+        &self,
+        cancellation concurrent.Cancellation
+    ) Result<own collections.List<NamedReport<D>>, CheckError> {
+        if self.checking return .Err(.Reentrant)
+        self.checking = true
+
+        var ready = reverseEntries(replace self.entries with newEntryList<D>())
+        var processed = newEntryList<D>()
+        var reports = collections.NewList<NamedReport<D>>()
+
+        while !ready.IsEmpty() {
+            const current = entryValue(ready.PopFront())
+            const entry { name checker } = current
+            const started = time.MonotonicNow()
+            const report = checker.Check(cancellation)
+            const finished = time.MonotonicNow()
+            const duration = durationValue(finished.Since(started))
+            var measured = report
+            measured.Duration = duration
+            const outputName = text.Copy(name)
+            reports.PushFront(NamedReport<D> {
+                Name = outputName
+                Report = measured
+            })
+            processed.PushFront(own entry<D> { name = name checker = checker })
+        }
+
+        self.entries = processed
+        self.checking = false
+        .Ok(reverseReports($reports))
+    }
+}
+
+// Creates an empty typed health registry.
+fn NewRegistry<D>() own Registry<D> {
+    own Registry<D> { entries = newEntryList<D>() checking = false }
+}
+
+// Creates a report whose duration will be measured by Registry.CheckAll.
+fn NewReport<D>(status Status, $details D) Report<D> {
+    Report<D> { Status = status Duration = time.Zero() Details = details }
+}
+
+fn StatusText(status Status) String {
+    match status {
+        Healthy: "healthy"
+        Degraded: "degraded"
+        Unhealthy: "unhealthy"
+    }
+}
+
+fn containsName<D>(&registry Registry<D>, expected String) bool {
+    var active = replace registry.entries with newEntryList<D>()
+    var reversed = newEntryList<D>()
+    var found = false
+    while !active.IsEmpty() {
+        const current = entryValue(active.PopFront())
+        const entry { name checker } = current
+        if name == expected {
+            found = true
+        }
+        reversed.PushFront(own entry<D> { name = name checker = checker })
+    }
+    registry.entries = reverseEntries($reversed)
+    found
+}
+
+fn reverseEntries<D>(
+    $values own collections.List<own entry<D>>
+) own collections.List<own entry<D>> {
+    var source = values
+    var result = newEntryList<D>()
+    while !source.IsEmpty() {
+        const current = entryValue(source.PopFront())
+        result.PushFront($current)
+    }
+    result
+}
+
+fn reverseReports<D>(
+    $values own collections.List<NamedReport<D>>
+) own collections.List<NamedReport<D>> {
+    var source = values
+    var result = collections.NewList<NamedReport<D>>()
+    while !source.IsEmpty() {
+        const report = namedReportValue(source.PopFront())
+        result.PushFront($report)
+    }
+    result
+}
+
+fn newEntryList<D>() own collections.List<own entry<D>> {
+    collections.NewList<own entry<D>>()
+}
+
+fn entryValue<D>($value Option<own entry<D>>) own entry<D> {
+    match value {
+        None: missingEntry<D>()
+        Some(current): current
+    }
+}
+
+fn missingEntry<D>() own entry<D> {
+    panic("health registry entry invariant failed")
+}
+
+fn namedReportValue<D>($value Option<NamedReport<D>>) NamedReport<D> {
+    match value {
+        None: missingNamedReport<D>()
+        Some(report): report
+    }
+}
+
+fn missingNamedReport<D>() NamedReport<D> {
+    panic("health report invariant failed")
+}
+
+fn durationValue($value Result<time.Duration, time.Error>) time.Duration {
+    match value {
+        Ok(duration): duration
+        Err(error): invalidDuration(error)
+    }
+}
+
+fn invalidDuration(error time.Error) time.Duration {
+    discard error
+    panic("monotonic clock moved backwards")
+}

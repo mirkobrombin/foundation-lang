@@ -37,6 +37,7 @@ class Parser {
     [[nodiscard]] bool check(TokenKind kind) const;
     [[nodiscard]] bool continuesLine() const;
     [[nodiscard]] bool startsGenericPrimary() const;
+    [[nodiscard]] bool startsTailIfExpression() const;
     [[nodiscard]] ParsedAttributes attributes(bool allowTarget = true);
     [[nodiscard]] std::optional<AttributeTarget> attributeTarget();
     [[nodiscard]] TargetPlatform targetArgument(const Token &argument);
@@ -47,13 +48,17 @@ class Parser {
     std::pair<std::string, SourceSpan> qualifiedName(const char *code, const char *message);
     std::vector<std::string> typeParameters();
     TypeSyntax typeSyntax(const char *code, const char *message);
-    StructDeclaration structDeclaration();
+    StructDeclaration structDeclaration(bool service = false);
     void methodsDeclaration();
     EnumDeclaration enumDeclaration();
+    void stateMachineDeclaration();
+    void workflowDeclaration(WorkflowKind kind);
     ContractDeclaration contractDeclaration();
     AttributeDeclaration attributeDeclaration();
     Function function(bool external = false, bool task = false);
-    Function method(const std::string &owner, const std::vector<std::string> &typeParameters);
+    Function testDeclaration();
+    Function method(const std::string &owner, const std::vector<std::string> &typeParameters,
+                    bool action = false);
     ContractMethod contractMethod(const std::string &owner,
                                   const std::vector<std::string> &typeParameters);
     ReceiverKind receiver(const char *code, const char *message);
@@ -66,10 +71,14 @@ class Parser {
     AstStatementId discardStatement(const Token &start);
     AstStatementId ifStatement(const Token &start);
     AstStatementId whileStatement(const Token &start);
+    AstStatementId forStatement(const Token &start);
+    AstStatementId loopJumpStatement(const Token &start, bool continues);
     AstStatementId selectStatement(const Token &start);
+    AstStatementId unsafeStatement(const Token &start);
     AstBlockId selectArmBlock();
     AstStatementId expressionStatement();
     AstExpressionId expression();
+    AstExpressionId conditional();
     AstExpressionId logicalOr();
     AstExpressionId logicalAnd();
     AstExpressionId equality();
@@ -84,6 +93,8 @@ class Parser {
     AstExpressionId finishMember(std::optional<AstExpressionId> base);
     AstExpressionId finishArray(const Token &start);
     AstExpressionId matchExpression(const Token &start);
+    AstExpressionId ifExpression(const Token &start);
+    std::pair<AstBlockId, AstExpressionId> expressionBlock();
     AstExpressionId functionExpression(const Token &start);
     AstExpressionId addExpression(ExpressionValue value, SourceSpan span);
     AstStatementId addStatement(StatementValue value, SourceSpan span);

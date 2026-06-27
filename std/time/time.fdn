@@ -1,7 +1,8 @@
 package std.time
 
 extern c fn nowNative() u64 as foundation_runtime_time_unix_seconds
-extern c fn formatUtcNative(seconds u64, result edit String) i32 as foundation_runtime_time_format_utc
+extern c fn monotonicNative() u64 as foundation_runtime_time_monotonic_nanoseconds
+extern c fn formatUtcNative(seconds u64, &result String) i32 as foundation_runtime_time_format_utc
 
 enum Error {
     BeforeReference
@@ -10,37 +11,61 @@ enum Error {
 
 struct Duration {
     seconds u64
+    nanoseconds u64
 
-    fn Seconds(view) u64 {
+    fn Seconds(self) u64 {
         self.seconds
+    }
+
+    fn Nanoseconds(self) u64 {
+        if self.seconds > 18446744073 return 18446744073709551615
+        const whole = self.seconds * 1000000000
+        if self.nanoseconds > 18446744073709551615 - whole {
+            return 18446744073709551615
+        }
+        whole + self.nanoseconds
+    }
+}
+
+struct MonotonicInstant {
+    nanoseconds u64
+
+    fn Since(self, earlier MonotonicInstant) Result<Duration, Error> {
+        if self.nanoseconds < earlier.nanoseconds {
+            return .Err(.BeforeReference)
+        }
+        .Ok(fromNanoseconds(self.nanoseconds - earlier.nanoseconds))
     }
 }
 
 struct Instant {
     unixSeconds u64
 
-    fn Unix(view) u64 {
+    fn Unix(self) u64 {
         self.unixSeconds
     }
 
-    fn Before(view, other view Instant) bool {
+    fn Before(self, other Instant) bool {
         self.unixSeconds < other.unixSeconds
     }
 
-    fn After(view, other view Instant) bool {
+    fn After(self, other Instant) bool {
         self.unixSeconds > other.unixSeconds
     }
 
-    fn Since(view, earlier view Instant) Result<Duration, Error> {
+    fn Since(self, earlier Instant) Result<Duration, Error> {
         if self.unixSeconds < earlier.unixSeconds {
             return .Err(.BeforeReference)
         }
-        .Ok(Duration { seconds = self.unixSeconds - earlier.unixSeconds })
+        .Ok(Duration {
+            seconds = self.unixSeconds - earlier.unixSeconds
+            nanoseconds = 0
+        })
     }
 
-    fn FormatUtc(view) Result<String, Error> {
+    fn FormatUtc(self) Result<String, Error> {
         var result = ""
-        if formatUtcNative(self.unixSeconds, edit result) != 0 {
+        if formatUtcNative(self.unixSeconds, &result) != 0 {
             return .Err(.OutOfRange)
         }
         .Ok(result)
@@ -53,4 +78,37 @@ fn FromUnix(seconds u64) Instant {
 
 fn Now() Instant {
     FromUnix(nowNative())
+}
+
+fn MonotonicNow() MonotonicInstant {
+    MonotonicInstant { nanoseconds = monotonicNative() }
+}
+
+fn Zero() Duration {
+    Duration { seconds = 0 nanoseconds = 0 }
+}
+
+fn Nanoseconds(value u64) Duration {
+    fromNanoseconds(value)
+}
+
+fn Milliseconds(value u64) Duration {
+    if value > 18446744073709 {
+        return Duration {
+            seconds = 18446744073
+            nanoseconds = 709551615
+        }
+    }
+    fromNanoseconds(value * 1000000)
+}
+
+fn Seconds(value u64) Duration {
+    Duration { seconds = value nanoseconds = 0 }
+}
+
+fn fromNanoseconds(value u64) Duration {
+    Duration {
+        seconds = value / 1000000000
+        nanoseconds = value % 1000000000
+    }
 }

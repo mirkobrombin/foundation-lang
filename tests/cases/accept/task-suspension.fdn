@@ -1,6 +1,6 @@
 import std.concurrent
 
-task child(message String) String {
+task child($message String) String {
     print("child")
     message
 }
@@ -21,7 +21,7 @@ task parent() String {
     result
 }
 
-task observe(cancel concurrent.Cancellation) void {
+task observe($cancel concurrent.Cancellation) void {
     if cancel.IsRequested() {
         print("cancelled")
     }

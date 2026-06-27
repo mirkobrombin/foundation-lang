@@ -1,13 +1,13 @@
 struct Counter {
     value i32
 
-    fn add(edit, amount i32) void {
+    fn add(&self, amount i32) void {
         self.value = self.value + amount
     }
 }
 
 fn main() i32 {
-    let counter = Counter { value = 0 }
+    const counter = Counter { value = 0 }
     counter.add(1)
     0
 }

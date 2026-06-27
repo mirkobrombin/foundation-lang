@@ -4,7 +4,7 @@
 
 ```foundation
 fn Separator() String
-fn Join(left view String, right view String) String
+fn Join(left String, right String) String
 ```
 
 `Separator` returns `/` on Linux and macOS and `\` on Windows. `Join` returns an owned String,

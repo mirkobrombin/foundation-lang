@@ -23,11 +23,11 @@ fn Add(left i32, right i32) i32 {
     double(left) / 2 + right
 }
 
-fn Identity<T>(value T) T {
+fn Identity<T>($value T) T {
     value
 }
 
-fn BoxOf<T>(value T) Box<T> {
+fn BoxOf<T>($value T) Box<T> {
     Box { Value = value }
 }
 

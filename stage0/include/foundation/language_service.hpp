@@ -22,6 +22,7 @@ enum class LanguageSymbolKind {
     Field,
     Enum,
     EnumVariant,
+    EnumPayload,
     Contract,
     ContractMethod,
     Attribute,

@@ -1,0 +1,44 @@
+contract Combiner {
+    fn combine(self, left i32, right i32) i32
+}
+
+struct Trace implements Combiner {
+    value i32
+
+    fn mark(&self, digit i32) i32 {
+        self.value = self.value * 10 + digit
+        digit
+    }
+
+    fn combine(self, left i32, right i32) i32 {
+        left * 10 + right
+    }
+}
+
+methods Trace {
+    fn New(value i32) Trace {
+        Trace { value = value }
+    }
+}
+
+fn compose(first i32, second i32, third i32) i32 {
+    first * 100 + second * 10 + third
+}
+
+fn combineContract(value Combiner) i32 {
+    value.combine(right = 2, left = 1)
+}
+
+fn main() i32 {
+    var trace = Trace.New(value = 0)
+    const result = compose(
+        third = trace.mark(3),
+        first = trace.mark(1),
+        second = trace.mark(2)
+    )
+    if result != 123 return 1
+    if trace.value != 312 return 2
+    if trace.combine(right = 2, left = 1) != 12 return 3
+    if combineContract(trace) != 12 return 4
+    0
+}

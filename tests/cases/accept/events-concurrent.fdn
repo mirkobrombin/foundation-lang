@@ -1,0 +1,105 @@
+import foundation.events
+import std.collections
+
+enum DeliveryError {
+    Rejected
+}
+
+enum Message {
+    First
+    Second
+    Fail
+}
+
+fn deliver(event Message) Result<void, DeliveryError> {
+    match event {
+        First: printFirst()
+        Second: printSecond()
+        Fail: reject()
+    }
+}
+
+fn printFirst() Result<void, DeliveryError> {
+    print("first")
+    .Ok
+}
+
+fn printSecond() Result<void, DeliveryError> {
+    print("second")
+    .Ok
+}
+
+fn reject() Result<void, DeliveryError> {
+    print("fail")
+    .Err(.Rejected)
+}
+
+fn printHandlerError(error DeliveryError) bool {
+    discard error
+    print("handler error")
+    true
+}
+
+fn printErrors($errors own collections.List<DeliveryError>) bool {
+    discard errors
+    print("handler errors")
+    false
+}
+
+fn reportFailures(
+    $failures own collections.List<events.PublishError<DeliveryError>>
+) bool {
+    var pending = failures
+    if pending.Len() != 1 return false
+    const failure = pending.PopFront()
+    match failure {
+        None: false
+        Some(error): match error {
+            Reentrant: false
+            Handler(error): printHandlerError(error)
+            Handlers(errors): printErrors($errors)
+        }
+    }
+}
+
+fn closed($result Result<void, ChannelError>) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            Closed: true
+            Cancelled: false
+            Timeout: false
+        }
+    }
+}
+
+fn main() i32 {
+    var bus = events.NewBus<Message, DeliveryError>(.StopOnFirstError)
+    discard bus.Subscribe($deliver, .Normal)
+    const concurrent = events.NewConcurrentBus($bus, 2)
+    const first = events.NewPublisher(concurrent)
+    const second = events.NewPublisher(concurrent)
+
+    const firstPublishing = spawn events.Publish($first, Message.First)
+    discard $firstPublishing.wait()
+    const secondPublishing = spawn events.Publish($second, Message.Second)
+    discard $secondPublishing.wait()
+    const failing = events.NewPublisher(concurrent)
+    const failingPublishing = spawn events.Publish($failing, Message.Fail)
+    discard $failingPublishing.wait()
+    const failures = events.Shutdown($concurrent)
+    if !reportFailures($failures) return 1
+
+    const cancelled = events.NewConcurrentBus(
+        events.NewBus<Message, DeliveryError>(.BestEffort),
+        1
+    )
+    const afterCancel = events.NewPublisher(cancelled)
+    events.Cancel($cancelled)
+    const rejected = spawn events.Publish($afterCancel, Message.First)
+    const rejectedResult = $rejected.wait()
+    if !closed($rejectedResult) return 2
+
+    print("cancelled")
+    0
+}

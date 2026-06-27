@@ -1,0 +1,11 @@
+fn add(left i32, right i32) i32 {
+    left + right
+}
+
+test "addition returns the sum" {
+    expect(add(20, 22) == 42)
+}
+
+test "explicit pass" {
+    pass()
+}

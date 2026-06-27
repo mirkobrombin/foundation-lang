@@ -1,11 +1,11 @@
 struct Holder {
-    callback fn() i32
+    callback fn() String
 }
 
 fn main() i32 {
-    let value = 1
-    let holder = Holder {
-        callback = fn() i32 capture view value {
+    const value = "borrowed"
+    const holder = Holder {
+        callback = fn() String capture value {
             value
         }
     }

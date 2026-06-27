@@ -1,5 +1,6 @@
 #include "foundation/driver.hpp"
 
+#include "foundation/application.hpp"
 #include "foundation/codegen.hpp"
 #include "foundation/formatter.hpp"
 #include "foundation/lower.hpp"
@@ -7,6 +8,7 @@
 #include "foundation/package.hpp"
 #include "foundation/process.hpp"
 #include "foundation/project.hpp"
+#include "foundation/sdk.hpp"
 #include "foundation/sema.hpp"
 
 #include <algorithm>
@@ -110,6 +112,16 @@ std::optional<std::string> readSourceFile(const std::filesystem::path &path) {
         return std::nullopt;
     }
     return contents.str();
+}
+
+std::filesystem::path sourceIdentity(const std::filesystem::path &path) {
+    std::error_code error;
+    auto result = std::filesystem::absolute(path, error);
+    if (error) {
+        return path.lexically_normal();
+    }
+    const auto canonical = std::filesystem::weakly_canonical(result, error);
+    return error ? result.lexically_normal() : canonical;
 }
 
 long processId() {
@@ -380,46 +392,67 @@ int report(const std::filesystem::path &path, const Compilation &compilation) {
 std::vector<std::string> compilerArguments(const std::filesystem::path &generated,
                                            const std::filesystem::path &output,
                                            const std::filesystem::path &nativeInclude,
-                                           const std::vector<std::filesystem::path> &nativeInputs) {
+                                           const std::vector<std::filesystem::path> &nativeInputs,
+                                           bool verifyAllocations = false) {
+    const auto runtimeInclude =
+        sdkAsset("runtime/include", std::filesystem::path{FOUNDATION_RUNTIME_INCLUDE});
+    const std::vector<std::filesystem::path> runtimeSources{
+        sdkAsset("runtime/src/runtime.c", std::filesystem::path{FOUNDATION_RUNTIME_SOURCE}),
+        sdkAsset("runtime/src/task.c", std::filesystem::path{FOUNDATION_RUNTIME_TASK_SOURCE}),
+        sdkAsset("runtime/src/cancellation.c",
+                 std::filesystem::path{FOUNDATION_RUNTIME_CANCELLATION_SOURCE}),
+        sdkAsset("runtime/src/channel.c", std::filesystem::path{FOUNDATION_RUNTIME_CHANNEL_SOURCE}),
+        sdkAsset("runtime/src/blocking.c", std::filesystem::path{FOUNDATION_RUNTIME_BLOCKING_SOURCE}),
+        sdkAsset("runtime/src/pool.c", std::filesystem::path{FOUNDATION_RUNTIME_POOL_SOURCE}),
+        sdkAsset("runtime/src/reactor.c", std::filesystem::path{FOUNDATION_RUNTIME_REACTOR_SOURCE}),
+        sdkAsset("runtime/src/net.c", std::filesystem::path{FOUNDATION_RUNTIME_NET_SOURCE}),
+        sdkAsset("runtime/src/plugin.c", std::filesystem::path{FOUNDATION_RUNTIME_PLUGIN_SOURCE}),
+        sdkAsset("runtime/src/plugin_sandbox.c",
+                 std::filesystem::path{FOUNDATION_RUNTIME_PLUGIN_SANDBOX_SOURCE}),
+    };
     std::vector<std::string> arguments{FOUNDATION_C_COMPILER};
     const std::string compilerId = FOUNDATION_C_COMPILER_ID;
     if (compilerId == "MSVC") {
-        arguments.insert(arguments.end(), {"/nologo", "/std:c11", "/W4", "/WX",
-                                           generated.string(), FOUNDATION_RUNTIME_SOURCE,
-                                           FOUNDATION_RUNTIME_TASK_SOURCE,
-                                           FOUNDATION_RUNTIME_CANCELLATION_SOURCE,
-                                           FOUNDATION_RUNTIME_CHANNEL_SOURCE,
-                                           FOUNDATION_RUNTIME_BLOCKING_SOURCE,
-                                           FOUNDATION_RUNTIME_POOL_SOURCE,
-                                           FOUNDATION_RUNTIME_REACTOR_SOURCE,
-                                           FOUNDATION_RUNTIME_NET_SOURCE,
-                                           "/I" FOUNDATION_RUNTIME_INCLUDE,
+        arguments.insert(arguments.end(),
+                         {"/nologo", "/std:c11", "/W4", "/WX", generated.string()});
+        for (const auto &source : runtimeSources) {
+            arguments.push_back(source.string());
+        }
+        arguments.insert(arguments.end(), {"/I" + runtimeInclude.string(),
                                            "/I" + nativeInclude.string()});
+        if (verifyAllocations) {
+            arguments.push_back("/DFOUNDATION_VERIFY_ALLOCATIONS=1");
+        }
         for (const auto &input : nativeInputs) {
             arguments.push_back(input.string());
         }
+        arguments.push_back("bcrypt.lib");
         arguments.push_back("ws2_32.lib");
         arguments.push_back("/Fe:" + output.string());
         return arguments;
     }
 
     arguments.insert(arguments.end(), {"-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
-                                       generated.string(), FOUNDATION_RUNTIME_SOURCE,
-                                       FOUNDATION_RUNTIME_TASK_SOURCE,
-                                       FOUNDATION_RUNTIME_CANCELLATION_SOURCE,
-                                       FOUNDATION_RUNTIME_CHANNEL_SOURCE,
-                                       FOUNDATION_RUNTIME_BLOCKING_SOURCE,
-                                       FOUNDATION_RUNTIME_POOL_SOURCE,
-                                       FOUNDATION_RUNTIME_REACTOR_SOURCE,
-                                       FOUNDATION_RUNTIME_NET_SOURCE, "-I",
-                                       FOUNDATION_RUNTIME_INCLUDE, "-I", nativeInclude.string()});
+                                       generated.string()});
+    for (const auto &source : runtimeSources) {
+        arguments.push_back(source.string());
+    }
+    arguments.insert(arguments.end(), {"-I", runtimeInclude.string(), "-I",
+                                       nativeInclude.string()});
+    if (verifyAllocations) {
+        arguments.push_back("-DFOUNDATION_VERIFY_ALLOCATIONS=1");
+    }
 #ifndef _WIN32
     arguments.push_back("-pthread");
+#if !defined(__APPLE__)
+    arguments.push_back("-ldl");
+#endif
 #endif
     for (const auto &input : nativeInputs) {
         arguments.push_back(input.string());
     }
 #ifdef _WIN32
+    arguments.push_back("-lbcrypt");
     arguments.push_back("-lws2_32");
 #endif
     arguments.insert(arguments.end(), {"-o", output.string()});
@@ -570,6 +603,108 @@ int emitMetadataFile(const std::filesystem::path &source, const std::filesystem:
     return writeFile(output, compilation.generatedMetadata) ? 0 : 1;
 }
 
+int emitApplicationPlanFile(const std::filesystem::path &source,
+                            const std::filesystem::path &output) {
+    auto analysis = analyzeProject(source);
+    if (analysis.semantic.has_value()) {
+        const auto fir = lower(analysis.program, *analysis.semantic);
+        const auto generated = emitApplicationPlan(fir, analysis.diagnostics);
+        Compilation result;
+        result.sources = std::move(analysis.sources);
+        result.diagnostics = std::move(analysis.diagnostics);
+        if (const auto status = report(source, result); status != 0) {
+            return status;
+        }
+        return writeFile(output, generated) ? 0 : 1;
+    }
+    Compilation result;
+    result.sources = std::move(analysis.sources);
+    result.diagnostics = std::move(analysis.diagnostics);
+    return report(source, result);
+}
+
+int emitApplicationHostFile(const std::filesystem::path &source,
+                            const std::filesystem::path &output) {
+    if (output.extension() != ".fdn") {
+        std::cerr << "foundationc: application host output must use the .fdn extension\n";
+        return 2;
+    }
+
+    constexpr std::string_view marker = "// foundation:generated application/v1";
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(output, error);
+    const auto exists = !error && status.type() != std::filesystem::file_type::not_found;
+    if (error && error != std::errc::no_such_file_or_directory) {
+        std::cerr << "foundationc: cannot inspect " << output.string() << ": "
+                  << error.message() << '\n';
+        return 1;
+    }
+    if (exists) {
+        if (!replaceableFile(output)) {
+            return 1;
+        }
+        const auto contents = readSourceFile(output);
+        if (!contents.has_value()) {
+            return 1;
+        }
+        if (contents->find(marker) == std::string::npos) {
+            std::cerr << "foundationc: refusing to replace non-generated source "
+                      << output.string() << '\n';
+            return 1;
+        }
+    }
+
+    ProjectAnalysis analysis;
+    auto loaded = loadProject(source, analysis.diagnostics);
+    if (!loaded.has_value()) {
+        Compilation result;
+        result.diagnostics = std::move(analysis.diagnostics);
+        return report(source, result);
+    }
+    analysis.sources = std::move(loaded->sources);
+    analysis.program = std::move(loaded->program);
+
+    std::string generatedSourcePath;
+    if (exists) {
+        const auto identity = sourceIdentity(output).generic_string();
+        const auto found = std::find_if(
+            analysis.sources.begin(), analysis.sources.end(), [&](const auto &candidate) {
+                if (candidate.identity == identity) {
+                    return true;
+                }
+                return std::filesystem::path(candidate.path).filename() == output.filename() &&
+                       candidate.contents.find(marker) != std::string::npos;
+            });
+        if (found != analysis.sources.end()) {
+            generatedSourcePath = found->path;
+            for (auto &function : analysis.program.functions) {
+                if (function.sourcePath == generatedSourcePath) {
+                    function.hasBody = false;
+                }
+            }
+        }
+    }
+    if (!analysis.diagnostics.hasErrors()) {
+        analysis.semantic = analyze(analysis.program, analysis.diagnostics);
+    }
+    if (analysis.semantic.has_value()) {
+        const auto fir = lower(analysis.program, *analysis.semantic);
+        const auto generated =
+            emitApplicationHost(fir, analysis.diagnostics, generatedSourcePath);
+        Compilation result;
+        result.sources = std::move(analysis.sources);
+        result.diagnostics = std::move(analysis.diagnostics);
+        if (const auto reportStatus = report(source, result); reportStatus != 0) {
+            return reportStatus;
+        }
+        return (exists ? replaceFile(output, generated) : writeFile(output, generated)) ? 0 : 1;
+    }
+    Compilation result;
+    result.sources = std::move(analysis.sources);
+    result.diagnostics = std::move(analysis.diagnostics);
+    return report(source, result);
+}
+
 int buildFile(const std::filesystem::path &source, const std::filesystem::path &output,
               const std::vector<std::filesystem::path> &nativeInputs) {
     auto temporary = createTempDirectory();
@@ -600,6 +735,69 @@ int runFile(const std::filesystem::path &source,
     std::vector<std::string> processArguments{executable.string()};
     processArguments.insert(processArguments.end(), arguments.begin(), arguments.end());
     return runProcess(processArguments);
+}
+
+int runTests(const std::filesystem::path &source,
+             const std::vector<std::filesystem::path> &nativeInputs) {
+    auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false});
+    if (analysis.diagnostics.hasErrors()) {
+        if (analysis.sources.empty()) {
+            std::cerr << renderDiagnostics(source.string(), {}, analysis.diagnostics);
+        } else {
+            std::cerr << renderDiagnostics(analysis.sources, analysis.diagnostics);
+        }
+        return 1;
+    }
+    if (!analysis.semantic.has_value()) {
+        return 1;
+    }
+
+    const auto fir = lower(analysis.program, *analysis.semantic);
+    std::vector<FirFunctionId> tests;
+    for (FirFunctionId function = 0; function < fir.functions.size(); ++function) {
+        if (fir.functions[function].testName.has_value()) {
+            tests.push_back(function);
+        }
+    }
+    auto temporary = createTempDirectory();
+    if (!temporary.has_value()) {
+        return 1;
+    }
+    const auto header = temporary->path() / "foundation_abi.h";
+    if (!writeFile(header, emitCHeader(fir))) {
+        return 1;
+    }
+
+    std::size_t passed{};
+    for (std::size_t index = 0; index < tests.size(); ++index) {
+        const auto function = tests[index];
+        const auto generated = temporary->path() / ("test-" + std::to_string(index) + ".c");
+#ifdef _WIN32
+        const auto executable =
+            temporary->path() / ("test-" + std::to_string(index) + ".exe");
+#else
+        const auto executable = temporary->path() / ("test-" + std::to_string(index));
+#endif
+        if (!writeFile(generated, emitTestC(fir, function, source.generic_string()))) {
+            return 1;
+        }
+        const auto compiled = runProcess(
+            compilerArguments(generated, executable, temporary->path(), nativeInputs, true),
+            ProcessOutput::StdoutToStderr);
+        if (compiled != 0) {
+            return compiled;
+        }
+        std::cout << "test " << *fir.functions[function].testName << '\n' << std::flush;
+        const auto status = runProcess({executable.string()});
+        if (status == 0) {
+            ++passed;
+            std::cout << "ok " << *fir.functions[function].testName << '\n';
+        } else {
+            std::cout << "FAILED " << *fir.functions[function].testName << '\n';
+        }
+    }
+    std::cout << passed << " passed; " << tests.size() - passed << " failed\n";
+    return passed == tests.size() ? 0 : 1;
 }
 
 } // namespace foundation

@@ -1,12 +1,14 @@
 struct User {
-    id i32
+    id String
 }
 
-fn keep(left view User, right own User) i32 {
-    left.id + right.id
+fn keep(left User, $right User) void {
+    print(left.id)
+    print(right.id)
 }
 
 fn main() i32 {
-    let user = own User { id = 7 }
-    keep(view user, user)
+    const user = new User { id = "seven" }
+    keep(user, $user)
+    0
 }

@@ -2,12 +2,12 @@ struct User {
     id i32
 }
 
-fn consume(user own User) void {
+fn consume($user own User) void {
     return
 }
 
 fn main() i32 {
-    let user = own User { id = 7 }
+    const user = own User { id = 7 }
     consume(user)
     consume(user)
     0

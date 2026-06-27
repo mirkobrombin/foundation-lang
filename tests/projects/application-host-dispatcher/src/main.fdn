@@ -1,0 +1,209 @@
+package test.host.dispatcher
+
+import foundation.actions
+import foundation.di
+
+enum ActivationError {
+    Denied
+}
+
+enum WorkError {
+    Failed
+}
+
+struct Policies implements actions.Authorizer {
+    allow bool
+
+    fn Allows(self, actionName String, policy String) bool {
+        self.allow && actionName != "" && policy == "work"
+    }
+}
+
+@di.Scope(.Singleton)
+service Calculator {
+    calls i32
+
+    @di.Inject()
+    fn New() Calculator {
+        Calculator { calls = 0 }
+    }
+
+    @actions.Name("calculate")
+    @actions.Key("ctrl+c")
+    @actions.Policy("work")
+    action Calculate(&self, value i32, fail bool) Result<i32, WorkError> {
+        self.calls = self.calls + 1
+        if fail return .Err(.Failed)
+        .Ok(value + self.calls)
+    }
+
+    @actions.Name("echo")
+    @actions.Key("enter")
+    action Echo(self, $text String) String {
+        text
+    }
+}
+
+service Worker {
+    @di.Inject()
+    fn New(@di.Input() allow bool) Result<Worker, ActivationError> {
+        if !allow return .Err(.Denied)
+        .Ok(Worker {})
+    }
+
+    @actions.Name("work")
+    @actions.Key("ctrl+w")
+    @actions.Policy("work")
+    action Work(self, value i32, fail bool) Result<i32, WorkError> {
+        if fail return .Err(.Failed)
+        .Ok(value + 2)
+    }
+}
+
+fn resultValue(
+    $result Result<FoundationActionResult, FoundationDispatchError>
+) i32 {
+    match result {
+        Ok(value): match value {
+            Calculate(number): number
+            Echo(text): 0
+            Work(number): number
+        }
+        Err(error): -1
+    }
+}
+
+fn echoValue(
+    $result Result<FoundationActionResult, FoundationDispatchError>
+) String {
+    match result {
+        Ok(value): match value {
+            Calculate(number): "wrong"
+            Echo(text): text
+            Work(number): "wrong"
+        }
+        Err(error): "error"
+    }
+}
+
+fn errorCode(
+    $result Result<FoundationActionResult, FoundationDispatchError>
+) i32 {
+    match result {
+        Ok(value): 0
+        Err(error): match error {
+            UnknownName: 1
+            UnknownKey: 2
+            ActionMismatch: 3
+            Denied(policy): 4
+            CalculateFailed(reason): 5
+            WorkActivation(reason): 6
+            WorkFailed(reason): 7
+        }
+    }
+}
+
+fn main() i32 {
+    var application = BuildFoundationApplication()
+    const allowed = Policies { allow = true }
+    const denied = Policies { allow = false }
+
+    if !application.HasAction("calculate") return 20
+    if application.HasAction("missing") return 21
+    const actionNames = application.ActionNames()
+    if actionNames[0] != "calculate" return 22
+    if actionNames[1] != "echo" return 23
+    if actionNames[2] != "work" return 24
+    const keyBindings = application.ActionKeyBindings()
+    if keyBindings[0].key != "ctrl+c" return 25
+    if keyBindings[0].actionName != "calculate" return 26
+    if keyBindings[1].key != "ctrl+w" return 27
+    if keyBindings[1].actionName != "work" return 28
+    if keyBindings[2].key != "enter" return 29
+    if keyBindings[2].actionName != "echo" return 30
+
+    const calculated = application.Dispatch(
+        allowed,
+        FoundationAction.Calculate(FoundationCalculateAction { value = 41 fail = false })
+    )
+    if resultValue($calculated) != 42 return 1
+
+    const blocked = application.Dispatch(
+        denied,
+        FoundationAction.Calculate(FoundationCalculateAction { value = 1 fail = false })
+    )
+    if errorCode($blocked) != 4 return 2
+
+    const failed = application.Dispatch(
+        allowed,
+        FoundationAction.Calculate(FoundationCalculateAction { value = 1 fail = true })
+    )
+    if errorCode($failed) != 5 return 3
+
+    const unknownName = application.DispatchName(
+        allowed,
+        "missing",
+        FoundationAction.Calculate(FoundationCalculateAction { value = 1 fail = false })
+    )
+    if errorCode($unknownName) != 1 return 4
+
+    const mismatchedName = application.DispatchName(
+        allowed,
+        "echo",
+        FoundationAction.Calculate(FoundationCalculateAction { value = 1 fail = false })
+    )
+    if errorCode($mismatchedName) != 3 return 5
+
+    const unknownKey = application.DispatchKey(
+        allowed,
+        "missing",
+        FoundationAction.Echo(FoundationEchoAction { text = "ignored" })
+    )
+    if errorCode($unknownKey) != 2 return 6
+
+    const mismatchedKey = application.DispatchKey(
+        allowed,
+        "ctrl+c",
+        FoundationAction.Echo(FoundationEchoAction { text = "ignored" })
+    )
+    if errorCode($mismatchedKey) != 3 return 7
+
+    const activationFailed = application.Dispatch(
+        allowed,
+        FoundationAction.Work(FoundationWorkAction {
+            foundationWorkerAllow = false
+            value = 40
+            fail = false
+        })
+    )
+    if errorCode($activationFailed) != 6 return 8
+
+    const executionFailed = application.Dispatch(
+        allowed,
+        FoundationAction.Work(FoundationWorkAction {
+            foundationWorkerAllow = true
+            value = 40
+            fail = true
+        })
+    )
+    if errorCode($executionFailed) != 7 return 9
+
+    const worked = application.DispatchKey(
+        allowed,
+        "ctrl+w",
+        FoundationAction.Work(FoundationWorkAction {
+            foundationWorkerAllow = true
+            value = 40
+            fail = false
+        })
+    )
+    if resultValue($worked) != 42 return 10
+
+    const echoed = application.DispatchKey(
+        allowed,
+        "enter",
+        FoundationAction.Echo(FoundationEchoAction { text = "hello" })
+    )
+    print(echoValue($echoed))
+    0
+}

@@ -1,0 +1,91 @@
+package test.host.fallible
+
+struct FoundationApplication {
+    foundationGreeter Greeter
+}
+
+fn BuildFoundationApplication($foundationGreeterPrefix String) Result<FoundationApplication, StartupError> {
+    const foundationGreeter = Greeter.New($foundationGreeterPrefix) else error {
+        return .Err(error)
+    }
+    .Ok(FoundationApplication { foundationGreeter = foundationGreeter })
+}
+
+methods FoundationApplication {
+    fn Greet(self, name String) String {
+        self.foundationGreeter.Greet(name)
+    }
+}
+
+struct FoundationGreetAction {
+    name String
+}
+
+enum FoundationAction {
+    Greet(FoundationGreetAction)
+}
+
+struct FoundationActionKeyBinding {
+    key String
+    actionName String
+}
+
+enum FoundationActionResult {
+    Greet(value String)
+}
+
+enum FoundationDispatchError {
+    UnknownName
+    UnknownKey
+    ActionMismatch
+}
+
+methods FoundationApplication {
+    fn HasAction(self, name String) bool {
+        name == "greet"
+    }
+
+    fn ActionNames(self) [1]String {
+        ["greet"]
+    }
+
+    fn ActionKeyBindings(self) [0]FoundationActionKeyBinding {
+        []
+    }
+}
+
+methods FoundationApplication {
+    fn foundationDispatchGreet(self, $payload FoundationGreetAction) Result<FoundationActionResult, FoundationDispatchError> {
+        const FoundationGreetAction { name } = payload
+        .Ok(.Greet(value = self.Greet(name)))
+    }
+
+    fn foundationDispatchNameGreet(self, foundationDispatchName String, $payload FoundationGreetAction) Result<FoundationActionResult, FoundationDispatchError> {
+        if foundationDispatchName != "greet" return .Err(.ActionMismatch)
+        self.foundationDispatchGreet($payload)
+    }
+
+    fn foundationDispatchKeyGreet(self, foundationDispatchKey String, $payload FoundationGreetAction) Result<FoundationActionResult, FoundationDispatchError> {
+        if true return .Err(.ActionMismatch)
+        self.foundationDispatchGreet($payload)
+    }
+}
+
+methods FoundationApplication {
+    fn Dispatch(self, $request FoundationAction) Result<FoundationActionResult, FoundationDispatchError> {
+        match request {
+            Greet(payload): self.foundationDispatchGreet($payload)
+        }
+    }
+}
+
+methods FoundationApplication {
+    fn DispatchName(self, foundationDispatchName String, $request FoundationAction) Result<FoundationActionResult, FoundationDispatchError> {
+        if foundationDispatchName != "greet" return .Err(.UnknownName)
+        match request {
+            Greet(payload): self.foundationDispatchNameGreet(foundationDispatchName, $payload)
+        }
+    }
+}
+
+// foundation:generated application/v1

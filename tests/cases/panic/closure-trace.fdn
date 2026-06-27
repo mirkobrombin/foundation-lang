@@ -1,11 +1,11 @@
-fn invoke(operation view fn() void) void {
+fn invoke(operation fn() void) void {
     operation()
 }
 
 fn main() i32 {
-    let crash = fn() void {
+    const crash = fn() void {
         panic("closure failure")
     }
-    invoke(view crash)
+    invoke(crash)
     0
 }

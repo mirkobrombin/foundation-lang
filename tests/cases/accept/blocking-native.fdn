@@ -18,7 +18,7 @@ task ready() void {
     print("sibling")
 }
 
-task waitDeadline(receiver Receiver<String>) i32 {
+task waitDeadline($receiver Receiver<String>) i32 {
     select {
         const message = receiver.receive(): discard message
         timeout 5.milliseconds: return 0
@@ -31,7 +31,7 @@ fn main() i32 {
     const slow = spawn doubleLater(21, 40)
     const sibling = spawn ready()
     const Channel { sender receiver } = channel<String>(0)
-    const timing = spawn waitDeadline(receiver)
+    const timing = spawn waitDeadline($receiver)
 
     $sibling.wait()
     const timeoutCode = $timing.wait()

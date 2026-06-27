@@ -10,20 +10,20 @@ struct Record {
     values [3]i32
 }
 
-fn copyName(value view String) String {
+fn copyName(value String) String {
     text.Copy(value)
 }
 
-fn increment(value edit Counter) void {
+fn increment(&value Counter) void {
     value.value = value.value + 1
 }
 
-fn first(values view [i32]) i32 {
+fn first(values [i32]) i32 {
     values[0]
 }
 
-fn preserveOnSuccess(result Result<i32, bool>, message String) String {
-    let value = result else error {
+fn preserveOnSuccess(result Result<i32, bool>, $message String) String {
+    const value = result else error {
         discard error
         discard message
         return "failed"
@@ -38,10 +38,10 @@ fn main() i32 {
         counter = Counter { value = 41 }
         values = [7, 8, 9]
     }
-    let name = copyName(view record.name)
-    increment(edit record.counter)
-    let selected = first(view record.values)
-    let preserved = preserveOnSuccess(.Ok(1), "preserved")
+    const name = copyName(record.name)
+    increment(&record.counter)
+    const selected = first(record.values)
+    const preserved = preserveOnSuccess(.Ok(1), "preserved")
     print(name)
     print(preserved)
     if record.counter.value != 42 || selected != 7 {

@@ -44,6 +44,8 @@ mkdir -p "$work_dir/extension/bin/$platform"
 mkdir -p "$work_dir/extension/src"
 mkdir -p "$work_dir/extension/snippets"
 mkdir -p "$work_dir/extension/syntaxes"
+mkdir -p "$work_dir/extension/std"
+mkdir -p "$work_dir/extension/foundation"
 
 cp "$extension_root/vsix/Content_Types.xml" "$work_dir/[Content_Types].xml"
 cp "$extension_root/vsix/extension.vsixmanifest" "$work_dir/extension.vsixmanifest"
@@ -61,6 +63,8 @@ cp "$extension_root/syntaxes/foundation-package.tmLanguage.json" \
     "$work_dir/extension/syntaxes/foundation-package.tmLanguage.json"
 cp "$extension_root/syntaxes/foundation-lock.tmLanguage.json" \
     "$work_dir/extension/syntaxes/foundation-lock.tmLanguage.json"
+cp -R "$repository_root/std/." "$work_dir/extension/std"
+cp -R "$repository_root/foundation/." "$work_dir/extension/foundation"
 cp "$server" "$work_dir/extension/bin/$platform/$server_name"
 chmod 755 "$work_dir/extension/bin/$platform/$server_name"
 

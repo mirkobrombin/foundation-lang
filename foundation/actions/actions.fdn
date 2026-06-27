@@ -1,0 +1,15 @@
+package foundation.actions
+
+// Decides whether an action may run under one declared policy.
+contract Authorizer {
+    fn Allows(self, actionName String, policy String) bool
+}
+
+// Attaches an authorization policy name to an action handler.
+attribute Policy(value String) targets(action) repeatable
+
+// Sets the stable dispatch name for an action handler.
+attribute Name(value String) targets(action)
+
+// Attaches a user-facing key binding to an action handler.
+attribute Key(value String) targets(action) repeatable

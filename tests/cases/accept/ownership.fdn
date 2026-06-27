@@ -8,19 +8,19 @@ enum Item {
     Present(own Node)
 }
 
-fn nodeValue(node view Node) i32 {
+fn nodeValue(node Node) i32 {
     node.value
 }
 
-fn consume(node own Node) i32 {
+fn consume($node own Node) i32 {
     node.value
 }
 
-fn setValue(node edit Node, value i32) void {
+fn setValue(&node Node, value i32) void {
     node.value = value
 }
 
-fn allocate<T>(value T) own T {
+fn allocate<T>($value T) own T {
     own value
 }
 
@@ -33,39 +33,39 @@ fn failedNode() Result<i32, own Node> {
 }
 
 fn recoverNode() i32 {
-    let value = failedNode() else node {
+    const value = failedNode() else node {
         return node.value
     }
     value
 }
 
 fn main() i32 {
-    let tail = own Node { value = 2 next = .None }
+    const tail = own Node { value = 2 next = .None }
     var head = own Node { value = 7 next = .Some(tail) }
-    let viewed = nodeValue(view head)
-    setValue(edit head, 8)
+    const viewed = nodeValue(head)
+    setValue(&head, 8)
     head.value = 9
-    let moved = head
-    let consumed = consume(moved)
+    const moved = head
+    const consumed = consume($moved)
 
-    let item = Item.Present(own Node { value = 5 next = .None })
-    let matched = match item {
+    const item = Item.Present(own Node { value = 5 next = .None })
+    const matched = match item {
         Empty: 0
         Present(node): node.value
     }
 
-    let loaded = loadNode(4) else error {
+    const loaded = loadNode(4) else error {
         panic(error)
     }
-    let loadedValue = nodeValue(view loaded)
+    const loadedValue = nodeValue(loaded)
     discard loaded
 
-    let generic = allocate(Node { value = 6 next = .None })
+    const generic = allocate(Node { value = 6 next = .None })
     discard generic
 
     if true {
-        let scoped = own Node { value = 11 next = .None }
-        nodeValue(view scoped)
+        const scoped = own Node { value = 11 next = .None }
+        nodeValue(scoped)
     }
 
     var replaced = own Node { value = 12 next = .None }
@@ -74,12 +74,12 @@ fn main() i32 {
 
     var round = 0
     while round < 2 {
-        let scoped = own Node { value = round next = .None }
-        nodeValue(view scoped)
+        const scoped = own Node { value = round next = .None }
+        nodeValue(scoped)
         round = round + 1
     }
 
-    let discarded = own Node { value = 1 next = .None }
+    const discarded = own Node { value = 1 next = .None }
     discard discarded
     print("ownership ok")
     viewed + consumed + matched + loadedValue + recoverNode() - 35

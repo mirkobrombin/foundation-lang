@@ -1,0 +1,20 @@
+fn choose(ready bool) String {
+    if ready {
+        const value = "block"
+        value
+    } else {
+        "fallback"
+    }
+}
+
+fn main() i32 {
+    const blockValue = choose(true)
+    const fallbackValue = choose(false)
+    const postfixValue = 42 if blockValue == "block" else 0
+    const falsePostfix = 1 if false else 2
+    if postfixValue != 42 return 1
+    if falsePostfix != 2 return 2
+    print(blockValue)
+    print(fallbackValue)
+    0
+}

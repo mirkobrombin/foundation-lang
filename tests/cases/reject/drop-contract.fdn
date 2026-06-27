@@ -1,9 +1,9 @@
 contract Disposable {
-    fn drop(edit) void
+    fn drop(&self) void
 }
 
 struct Resource implements Disposable {
-    fn drop(edit) void {}
+    fn drop(&self) void {}
 }
 
 fn main() i32 {

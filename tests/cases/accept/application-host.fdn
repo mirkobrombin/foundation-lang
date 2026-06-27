@@ -1,0 +1,104 @@
+package example.services
+
+import foundation.actions as foundationHost0
+
+struct FoundationApplication {
+    foundationGreeter Greeter
+}
+
+fn BuildFoundationApplication($foundationGreeterPrefix String) FoundationApplication {
+    const foundationGreeter = Greeter.New($foundationGreeterPrefix)
+    FoundationApplication { foundationGreeter = foundationGreeter }
+}
+
+methods FoundationApplication {
+    fn Greet(self, name String) String {
+        self.foundationGreeter.Greet(name)
+    }
+}
+
+struct FoundationGreetAction {
+    name String
+}
+
+enum FoundationAction {
+    Greet(FoundationGreetAction)
+}
+
+struct FoundationActionKeyBinding {
+    key String
+    actionName String
+}
+
+enum FoundationActionResult {
+    Greet(value String)
+}
+
+enum FoundationDispatchError {
+    UnknownName
+    UnknownKey
+    ActionMismatch
+    Denied(policy String)
+}
+
+methods FoundationApplication {
+    fn HasAction(self, name String) bool {
+        name == "greet"
+    }
+
+    fn ActionNames(self) [1]String {
+        ["greet"]
+    }
+
+    fn ActionKeyBindings(self) [1]FoundationActionKeyBinding {
+        [FoundationActionKeyBinding { key = "ctrl+g" actionName = "greet" }]
+    }
+}
+
+methods FoundationApplication {
+    fn foundationDispatchGreet(self, $payload FoundationGreetAction, authorizer foundationHost0.Authorizer) Result<FoundationActionResult, FoundationDispatchError> {
+        const FoundationGreetAction { name } = payload
+        if !authorizer.Allows("greet", "greet") {
+            return .Err(.Denied(policy = "greet"))
+        }
+        .Ok(.Greet(value = self.Greet(name)))
+    }
+
+    fn foundationDispatchNameGreet(self, foundationDispatchName String, $payload FoundationGreetAction, authorizer foundationHost0.Authorizer) Result<FoundationActionResult, FoundationDispatchError> {
+        if foundationDispatchName != "greet" return .Err(.ActionMismatch)
+        self.foundationDispatchGreet($payload, authorizer)
+    }
+
+    fn foundationDispatchKeyGreet(self, foundationDispatchKey String, $payload FoundationGreetAction, authorizer foundationHost0.Authorizer) Result<FoundationActionResult, FoundationDispatchError> {
+        if foundationDispatchKey != "ctrl+g" return .Err(.ActionMismatch)
+        self.foundationDispatchGreet($payload, authorizer)
+    }
+}
+
+methods FoundationApplication {
+    fn Dispatch(self, authorizer foundationHost0.Authorizer, $request FoundationAction) Result<FoundationActionResult, FoundationDispatchError> {
+        match request {
+            Greet(payload): self.foundationDispatchGreet($payload, authorizer)
+        }
+    }
+}
+
+methods FoundationApplication {
+    fn DispatchName(self, authorizer foundationHost0.Authorizer, foundationDispatchName String, $request FoundationAction) Result<FoundationActionResult, FoundationDispatchError> {
+        if foundationDispatchName != "greet" return .Err(.UnknownName)
+        match request {
+            Greet(payload): self.foundationDispatchNameGreet(foundationDispatchName, $payload, authorizer)
+        }
+    }
+}
+
+methods FoundationApplication {
+    fn DispatchKey(self, authorizer foundationHost0.Authorizer, foundationDispatchKey String, $request FoundationAction) Result<FoundationActionResult, FoundationDispatchError> {
+        if foundationDispatchKey != "ctrl+g" return .Err(.UnknownKey)
+        match request {
+            Greet(payload): self.foundationDispatchKeyGreet(foundationDispatchKey, $payload, authorizer)
+        }
+    }
+}
+
+// foundation:generated application/v1

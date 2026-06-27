@@ -3,6 +3,6 @@ struct Pair {
 }
 
 fn main() i32 {
-    let Pair { missing } = Pair { value = 1 }
+    const Pair { missing } = Pair { value = 1 }
     missing
 }

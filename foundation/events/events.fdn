@@ -1,0 +1,349 @@
+package foundation.events
+
+import std.collections
+
+// Orders handlers before registration order is used as the stable tie breaker.
+enum Priority {
+    Low
+    Normal
+    High
+}
+
+// Chooses whether publication stops or collects every handler error.
+enum Strategy {
+    StopOnFirstError
+    BestEffort
+}
+
+// Reports a subscription attempted while the bus is publishing.
+enum SubscribeError {
+    Publishing
+}
+
+// Preserves one handler failure or every failure in publication order.
+enum PublishError<E> {
+    Reentrant
+    Handler(error E)
+    Handlers(errors own collections.List<E>)
+}
+
+struct subscription<T, E> {
+    handler fn(T) Result<void, E>
+    priority Priority
+    order u64
+}
+
+struct publishState<E> {
+    errors own collections.List<E>
+    firstError Option<E>
+    stopped bool
+}
+
+// Owns one producer endpoint for a concurrent typed event bus.
+struct Publisher<T> {
+    sender Sender<T>
+
+    // Creates another publisher for the same concurrent bus.
+    fn Clone(self) Publisher<T> {
+        Publisher<T> { sender = self.sender.clone() }
+    }
+}
+
+// Owns the internal publisher and pump task for a concurrent typed event bus.
+struct ConcurrentBus<T, E> {
+    publisher Publisher<T>
+    worker Task<own collections.List<PublishError<E>>>
+}
+
+// Dispatches one event type to handlers with one explicit error type.
+struct Bus<T, E> {
+    subscribers own collections.List<subscription<T, E>>
+    strategy Strategy
+    nextOrder u64
+    publishing bool
+
+    // Adds a typed handler and keeps equal-priority handlers in registration order.
+    fn Subscribe(
+        &self,
+        $handler fn(T) Result<void, E>,
+        priority Priority
+    ) Result<void, SubscribeError> {
+        if self.publishing return .Err(.Publishing)
+        var subscribers = replace self.subscribers with collections.NewList<subscription<T, E>>()
+        subscribers.PushFront(subscription<T, E> {
+            handler = handler
+            priority = priority
+            order = self.nextOrder
+        })
+        self.nextOrder = self.nextOrder + 1
+        const compare fn(subscription<T, E>, subscription<T, E>) i32 = compareSubscriptions
+        self.subscribers = collections.Sort($subscribers, compare)
+        .Ok
+    }
+
+    // Invokes the current typed subscriptions synchronously.
+    fn Publish(&self, event T) Result<void, PublishError<E>> {
+        if self.publishing return .Err(.Reentrant)
+        self.publishing = true
+
+        var active = replace self.subscribers with collections.NewList<subscription<T, E>>()
+        var processed = collections.NewList<subscription<T, E>>()
+        var state = own publishState<E> {
+            errors = collections.NewList<E>()
+            firstError = .None
+            stopped = false
+        }
+
+        while !active.IsEmpty() {
+            const current = subscriptionValue(active.PopFront())
+            const subscription { handler priority order } = current
+            if !state.stopped {
+                const handled = handler(event)
+                match handled {
+                    Ok: handledSuccessfully()
+                    Err(error): recordError(
+                        &state,
+                        self.strategy,
+                        $error
+                    )
+                }
+            }
+            processed.PushFront(subscription<T, E> {
+                handler = handler
+                priority = priority
+                order = order
+            })
+        }
+
+        while !processed.IsEmpty() {
+            self.subscribers.PushFront(subscriptionValue(processed.PopFront()))
+        }
+        self.publishing = false
+
+        const publishState { errors firstError stopped } = state
+        discard stopped
+        finishPublish($firstError, $errors)
+    }
+}
+
+// Creates an owned typed bus with an explicit failure strategy.
+fn NewBus<T, E>(strategy Strategy) own Bus<T, E> {
+    own Bus<T, E> {
+        subscribers = collections.NewList<subscription<T, E>>()
+        strategy = strategy
+        nextOrder = 0
+        publishing = false
+    }
+}
+
+// Starts a bounded concurrent publisher around one synchronous typed bus.
+fn NewConcurrentBus<T, E>(
+    $bus own Bus<T, E>,
+    capacity u64
+) own ConcurrentBus<T, E> {
+    const Channel { sender receiver } = channel<T>(capacity)
+    const publisher = Publisher<T> { sender = sender }
+    const worker = spawn pump($bus, $receiver)
+    own ConcurrentBus<T, E> {
+        publisher = publisher
+        worker = worker
+    }
+}
+
+// Creates a publisher that may outlive other producer handles.
+fn NewPublisher<T, E>(bus ConcurrentBus<T, E>) Publisher<T> {
+    bus.publisher.Clone()
+}
+
+// Sends one event with bounded backpressure and a typed channel result.
+task Publish<T>($publisher Publisher<T>, $event T) Result<void, ChannelError> {
+    const Publisher { sender } = publisher
+    const delivered = sender.send(event)
+    delivered
+}
+
+// Drops the internal producer, drains queued events, and returns handler failures in order.
+fn Shutdown<T, E>(
+    $bus own ConcurrentBus<T, E>
+) own collections.List<PublishError<E>> {
+    const ConcurrentBus { publisher worker } = bus
+    discard publisher
+    $worker.wait()
+}
+
+// Drops the internal producer and requests structured pump cancellation.
+fn Cancel<T, E>($bus own ConcurrentBus<T, E>) void {
+    const ConcurrentBus { publisher worker } = bus
+    discard publisher
+    discard worker
+}
+
+task pump<T, E>(
+    $bus own Bus<T, E>,
+    $receiver Receiver<T>
+) own collections.List<PublishError<E>> {
+    var active = bus
+    var failures = collections.NewList<PublishError<E>>()
+    while true {
+        const received = receiver.receive()
+        const keepRunning = match received {
+            Ok(event): recordPublish(&active, event, &failures)
+            Err(error): stopPump(error)
+        }
+        if !keepRunning return orderPublishErrors($failures)
+    }
+    orderPublishErrors($failures)
+}
+
+fn recordPublish<T, E>(
+    &bus Bus<T, E>,
+    event T,
+    &failures collections.List<PublishError<E>>
+) bool {
+    match bus.Publish(event) {
+        Ok: true
+        Err(error): storePublishError(&failures, $error)
+    }
+}
+
+fn storePublishError<E>(
+    &failures collections.List<PublishError<E>>,
+    $error PublishError<E>
+) bool {
+    failures.PushFront($error)
+    true
+}
+
+fn orderPublishErrors<E>(
+    $failures own collections.List<PublishError<E>>
+) own collections.List<PublishError<E>> {
+    var pending = failures
+    var ordered = collections.NewList<PublishError<E>>()
+    while !pending.IsEmpty() {
+        const failure = publishErrorValue(pending.PopFront())
+        ordered.PushFront($failure)
+    }
+    ordered
+}
+
+fn publishErrorValue<E>(
+    $value Option<PublishError<E>>
+) PublishError<E> {
+    match value {
+        None: missingPublishError<E>()
+        Some(error): error
+    }
+}
+
+fn missingPublishError<E>() PublishError<E> {
+    panic("concurrent event error invariant failed")
+}
+
+fn stopPump(error ChannelError) bool {
+    discard error
+    false
+}
+
+fn priorityScore(priority Priority) i32 {
+    match priority {
+        Low: -100
+        Normal: 0
+        High: 100
+    }
+}
+
+fn compareSubscriptions<T, E>(
+    left subscription<T, E>,
+    right subscription<T, E>
+) i32 {
+    const leftPriority = priorityScore(left.priority)
+    const rightPriority = priorityScore(right.priority)
+    if leftPriority > rightPriority return -1
+    if leftPriority < rightPriority return 1
+    if left.order < right.order return -1
+    if left.order > right.order return 1
+    0
+}
+
+fn subscriptionValue<T, E>(
+    $value Option<subscription<T, E>>
+) subscription<T, E> {
+    match value {
+        None: missingSubscription<T, E>()
+        Some(item): item
+    }
+}
+
+fn missingSubscription<T, E>() subscription<T, E> {
+    panic("event subscription invariant failed")
+}
+
+fn handledSuccessfully() void {
+    return
+}
+
+fn recordError<E>(
+    &state publishState<E>,
+    strategy Strategy,
+    $error E
+) void {
+    if stopsOnFirst(strategy) {
+        state.firstError = .Some(error)
+        state.stopped = true
+    } else {
+        state.errors.PushFront($error)
+    }
+}
+
+fn stopsOnFirst(strategy Strategy) bool {
+    match strategy {
+        StopOnFirstError: true
+        BestEffort: false
+    }
+}
+
+fn finishPublish<E>(
+    $firstError Option<E>,
+    $errors own collections.List<E>
+) Result<void, PublishError<E>> {
+    match firstError {
+        Some(error): publishFirst($error, $errors)
+        None: publishBestEffort($errors)
+    }
+}
+
+fn publishFirst<E>(
+    $error E,
+    $errors own collections.List<E>
+) Result<void, PublishError<E>> {
+    discard errors
+    .Err(.Handler(error = error))
+}
+
+fn publishBestEffort<E>(
+    $errors own collections.List<E>
+) Result<void, PublishError<E>> {
+    if errors.IsEmpty() {
+        discard errors
+        return .Ok
+    }
+
+    var pending = errors
+    var ordered = collections.NewList<E>()
+    while !pending.IsEmpty() {
+        const error = errorValue(pending.PopFront())
+        ordered.PushFront($error)
+    }
+    .Err(.Handlers(errors = ordered))
+}
+
+fn errorValue<E>($value Option<E>) E {
+    match value {
+        None: missingError<E>()
+        Some(error): error
+    }
+}
+
+fn missingError<E>() E {
+    panic("event error invariant failed")
+}

@@ -1,26 +1,26 @@
 package example.counter
 
 contract Counter {
-    fn Add(edit, amount i32) void
-    fn Read(view) i32
+    fn Add(&self, amount i32) void
+    fn Read(self) i32
 }
 
 struct Memory implements Counter {
     Value i32
 
-    fn Add(edit, amount i32) void {
+    fn Add(&self, amount i32) void {
         self.Value = self.Value + amount
     }
 
-    fn Read(view) i32 {
+    fn Read(self) i32 {
         self.Value
     }
 }
 
-fn Apply(value edit Counter, amount i32) void {
+fn Apply(&value Counter, amount i32) void {
     value.Add(amount)
 }
 
-fn Snapshot(value view Counter) i32 {
+fn Snapshot(value Counter) i32 {
     value.Read()
 }

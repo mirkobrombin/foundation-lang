@@ -28,9 +28,11 @@ using FirAttributeId = std::size_t;
 enum class FirAttributeTarget {
     Function,
     Struct,
+    Service,
     Enum,
     Contract,
     Method,
+    Action,
     Field,
     Variant,
     Parameter,
@@ -38,6 +40,7 @@ enum class FirAttributeTarget {
 
 enum class FirAttributeValueKind {
     Integer,
+    Floating,
     Boolean,
     String,
     Enum,
@@ -90,6 +93,8 @@ enum class FirCaptureMode {
 enum class FirUnaryOperator {
     Negate,
     Not,
+    Empty,
+    Dereference,
 };
 
 enum class FirOwnershipOperator {
@@ -127,11 +132,18 @@ enum class FirCallKind {
     Print,
     Panic,
     Len,
+    Null,
+    IsNull,
+    NumericConversion,
 };
 
 struct FirIntegerExpression {
     std::uint64_t magnitude{};
     bool negative{};
+};
+
+struct FirFloatingExpression {
+    std::string text;
 };
 
 struct FirBooleanExpression {
@@ -147,6 +159,10 @@ struct FirArrayExpression {
 };
 
 struct FirLocalExpression {
+    FirLocalId local{};
+};
+
+struct FirReadExpression {
     FirLocalId local{};
 };
 
@@ -177,6 +193,7 @@ struct FirUnaryExpression {
 struct FirOwnershipExpression {
     FirOwnershipOperator operation{FirOwnershipOperator::Own};
     FirExpressionId operand{};
+    bool implicitRead{};
 };
 
 struct FirBinaryExpression {
@@ -194,6 +211,7 @@ struct FirCallExpression {
     FirContractId contract{};
     std::size_t method{};
     FirLocalId local{};
+    std::vector<std::size_t> argumentParameters;
 };
 
 struct FirContractMethodTarget {
@@ -231,6 +249,10 @@ struct FirIndexExpression {
     FirExpressionId index{};
 };
 
+struct FirRawPointerExpression {
+    FirExpressionId base{};
+};
+
 struct FirReplaceExpression {
     FirExpressionId target{};
     FirExpressionId value{};
@@ -249,6 +271,7 @@ struct FirBlockingCallExpression {
     std::vector<FirExpressionId> arguments;
     std::vector<FirLocalId> argumentStorages;
     std::optional<FirLocalId> resultStorage;
+    std::vector<std::size_t> argumentParameters;
 };
 
 struct FirCallbackCallExpression {
@@ -256,11 +279,16 @@ struct FirCallbackCallExpression {
     std::vector<FirExpressionId> arguments;
     std::vector<FirLocalId> argumentStorages;
     FirLocalId resultStorage{};
+    std::vector<std::size_t> argumentParameters;
 };
 
 struct FirChannelExpression {
     Type payload{invalidType};
     FirExpressionId capacity{};
+};
+
+struct FirChannelSenderCloneExpression {
+    FirExpressionId sender{};
 };
 
 struct FirChannelSendExpression {
@@ -284,6 +312,7 @@ struct FirEnumExpression {
 struct FirMatchArm {
     FirVariantId variant{};
     std::optional<FirLocalId> binding;
+    std::optional<FirExpressionId> pattern;
     FirExpressionId expression{};
     std::vector<FirLocalId> drops;
 };
@@ -294,18 +323,30 @@ struct FirMatchExpression {
     std::vector<FirMatchArm> arms;
 };
 
+struct FirConditionalExpression {
+    FirExpressionId condition{};
+    FirBlockId thenBlock{};
+    FirExpressionId thenValue{};
+    FirBlockId elseBlock{};
+    FirExpressionId elseValue{};
+};
+
 using FirExpressionValue =
-    std::variant<FirIntegerExpression, FirBooleanExpression, FirStringExpression,
-                 FirArrayExpression, FirLocalExpression, FirMoveExpression, FirUnaryExpression,
+    std::variant<FirIntegerExpression, FirFloatingExpression, FirBooleanExpression,
+                 FirStringExpression,
+                 FirArrayExpression, FirLocalExpression, FirReadExpression, FirMoveExpression,
+                 FirUnaryExpression,
                  FirFunctionValueExpression, FirClosureExpression, FirOwnershipExpression,
                  FirBinaryExpression, FirCallExpression,
                  FirContractExpression, FirStructExpression, FirFieldExpression,
-                 FirIndexExpression, FirReplaceExpression, FirEnumExpression,
+                 FirIndexExpression, FirRawPointerExpression, FirReplaceExpression,
+                 FirEnumExpression,
                  FirSpawnExpression, FirTaskWaitExpression, FirBlockingCallExpression,
                  FirCallbackCallExpression,
                  FirChannelExpression,
+                 FirChannelSenderCloneExpression,
                  FirChannelSendExpression, FirChannelReceiveExpression,
-                 FirMatchExpression>;
+                 FirMatchExpression, FirConditionalExpression>;
 
 struct FirExpression {
     FirExpressionValue value;
@@ -333,6 +374,12 @@ struct FirStructDestructureStatement {
 struct FirLetElseStatement {
     FirLocalId local{};
     FirExpressionId initializer{};
+    FirLocalId errorLocal{};
+    FirBlockId elseBlock{};
+};
+
+struct FirResultElseStatement {
+    FirExpressionId expression{};
     FirLocalId errorLocal{};
     FirBlockId elseBlock{};
 };
@@ -366,6 +413,28 @@ struct FirWhileStatement {
     FirBlockId body{};
 };
 
+struct FirForStatement {
+    FirExpressionId sequence{};
+    FirLocalId sequenceStorage{};
+    FirLocalId index{};
+    FirLocalId value{};
+    FirBlockId body{};
+    std::optional<FirExpressionId> next;
+    bool ownsSequence{};
+};
+
+struct FirBreakStatement {
+    std::vector<FirLocalId> drops;
+};
+
+struct FirContinueStatement {
+    std::vector<FirLocalId> drops;
+};
+
+struct FirUnsafeStatement {
+    FirBlockId body{};
+};
+
 struct FirSelectOperationArm {
     bool send{};
     FirLocalId endpoint{};
@@ -391,10 +460,12 @@ struct FirSelectStatement {
 };
 
 using FirStatementValue =
-    std::variant<FirVariableStatement, FirLetElseStatement, FirStructDestructureStatement,
+    std::variant<FirVariableStatement, FirLetElseStatement, FirResultElseStatement,
+                 FirStructDestructureStatement,
                  FirAssignmentStatement, FirExpressionStatement, FirDiscardStatement,
                  FirReturnStatement, FirIfStatement, FirWhileStatement,
-                 FirSelectStatement>;
+                 FirForStatement, FirBreakStatement, FirContinueStatement,
+                 FirSelectStatement, FirUnsafeStatement>;
 
 struct FirStatement {
     FirStatementValue value;
@@ -415,6 +486,36 @@ struct FirLocal {
     bool borrowedClosure{};
 };
 
+struct FirStateTransitionFunction {
+    std::vector<FirVariantId> sourceVariants;
+    FirVariantId destinationVariant{};
+    std::optional<FirLocalId> destinationParameter;
+};
+
+enum class FirWorkflowKind {
+    Pipeline,
+    Saga,
+};
+
+struct FirWorkflowStep {
+    std::string name;
+    FirFunctionId function{};
+    std::vector<Type> typeArguments;
+    std::size_t attempts{1};
+    std::optional<FirFunctionId> compensation;
+    std::vector<Type> compensationTypeArguments;
+};
+
+struct FirWorkflowFunction {
+    FirWorkflowKind kind{FirWorkflowKind::Pipeline};
+    Type inputType{invalidType};
+    Type successType{invalidType};
+    Type errorType{invalidType};
+    Type failureType{invalidType};
+    Type failureDetailsType{invalidType};
+    std::vector<FirWorkflowStep> steps;
+};
+
 struct FirFunction {
     std::string name;
     std::string packageName;
@@ -425,6 +526,7 @@ struct FirFunction {
     std::size_t typeParameterCount{};
     Type returnType{invalidType};
     std::vector<FirLocalId> parameters;
+    std::vector<bool> readParameters;
     std::vector<FirLocal> locals;
     std::vector<FirExpression> expressions;
     std::vector<FirStatement> statements;
@@ -436,12 +538,17 @@ struct FirFunction {
     bool hasBody{true};
     bool closure{};
     bool method{};
+    std::optional<FirReceiverKind> receiver;
     std::vector<FirAttributeUse> attributes;
     std::vector<std::vector<FirAttributeUse>> parameterAttributes;
     bool task{};
     bool blocking{};
     bool callback{};
     std::optional<std::string> callbackCancelSymbol;
+    std::optional<std::string> testName;
+    bool action{};
+    std::optional<FirStateTransitionFunction> stateTransition;
+    std::optional<FirWorkflowFunction> workflow;
 };
 
 struct FirStructField {
@@ -453,11 +560,15 @@ struct FirStructField {
 
 struct FirStruct {
     std::string name;
+    std::string sourcePath;
+    SourceSpan sourceSpan;
     std::size_t typeParameterCount{};
     std::vector<FirStructField> fields;
+    std::vector<Type> implementations;
     bool exported{};
     std::optional<FirFunctionId> dropFunction;
     std::vector<FirAttributeUse> attributes;
+    bool service{};
 };
 
 struct FirEnumVariant {
@@ -474,6 +585,7 @@ struct FirEnum {
     bool exported{};
     bool builtin{};
     std::vector<FirAttributeUse> attributes;
+    bool stateMachine{};
 };
 
 struct FirContractMethod {
@@ -481,6 +593,7 @@ struct FirContractMethod {
     std::string name;
     Type returnType{invalidType};
     std::vector<Type> parameters;
+    std::vector<bool> readParameters;
     std::vector<std::string> parameterNames;
     bool exported{};
     std::vector<FirAttributeUse> attributes;

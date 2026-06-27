@@ -1,4 +1,4 @@
-extern c fn nativeOwned(value own i32) i32 as foundation_native_owned
+extern c fn nativeOwned($value own i32) i32 as foundation_native_owned
 
 fn main() i32 {
     0

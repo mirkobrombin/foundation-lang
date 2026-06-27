@@ -1,13 +1,13 @@
 struct Value {
     number i32
 
-    fn take(own) i32 {
+    fn take($self) i32 {
         self.number
     }
 }
 
 fn main() i32 {
-    let value = own Value { number = 42 }
-    let number = value.take()
+    const value = own Value { number = 42 }
+    const number = value.take()
     number + value.number
 }

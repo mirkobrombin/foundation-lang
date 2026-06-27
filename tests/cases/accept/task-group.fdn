@@ -1,0 +1,135 @@
+import foundation.worker
+import std.format
+
+task value(number i32) i32 {
+    number
+}
+
+task awaitNumber($receiver Receiver<i32>) i32 {
+    const received = receiver.receive()
+    match received {
+        Ok(number): number
+        Err(error): closed(error)
+    }
+}
+
+task requestStop($sender Sender<void>) void {
+    discard sender.send()
+}
+
+fn closed(error ChannelError) i32 {
+    discard error
+    - 1
+}
+
+fn added($result Result<void, worker.GroupError>) bool {
+    match result {
+        Ok: true
+        Err(error): rejected(error)
+    }
+}
+
+fn rejected(error worker.GroupError) bool {
+    discard error
+    false
+}
+
+fn full($result Result<void, worker.GroupError>) bool {
+    match result {
+        Ok: false
+        Err(error): isFull(error)
+    }
+}
+
+fn isFull(error worker.GroupError) bool {
+    match error {
+        Full: true
+        Empty: false
+        Closed: false
+        Cancelled: false
+        Timeout: false
+    }
+}
+
+fn completed($result Result<i32, worker.GroupError>) i32 {
+    match result {
+        Ok(number): number
+        Err(error): failed(error)
+    }
+}
+
+fn failed(error worker.GroupError) i32 {
+    discard error
+    - 1
+}
+
+fn empty($result Result<i32, worker.GroupError>) bool {
+    match result {
+        Ok(number): unexpected(number)
+        Err(error): isEmpty(error)
+    }
+}
+
+fn unexpected(number i32) bool {
+    discard number
+    false
+}
+
+fn isEmpty(error worker.GroupError) bool {
+    match error {
+        Full: false
+        Empty: true
+        Closed: false
+        Cancelled: false
+        Timeout: false
+    }
+}
+
+fn stopped($wake worker.GroupWake<i32>) bool {
+    match wake {
+        Completed(number): unexpected(number)
+        Stopped: true
+        Failed(error): observationFailed(error)
+    }
+}
+
+fn observationFailed(error worker.GroupError) bool {
+    discard error
+    false
+}
+
+fn main() i32 {
+    var group = worker.NewGroup<i32>(2)
+    if !added(group.Add(spawn value(11))) return 1
+    if !added(group.Add(spawn value(22))) return 2
+    if !full(group.Add(spawn value(33))) return 3
+
+    const firstPending = $group.Next()
+    const worker.GroupNext { Group as afterFirst Value as first } = $firstPending.wait()
+    group = afterFirst
+    print(format.I32(completed($first)))
+
+    const secondPending = $group.Next()
+    const worker.GroupNext { Group as afterSecond Value as second } = $secondPending.wait()
+    print(format.I32(completed($second)))
+    if afterSecond.Count() != 0 return 4
+
+    const emptyPending = $afterSecond.Next()
+    const worker.GroupNext { Group as afterEmpty Value as emptyResult } = $emptyPending.wait()
+    if !empty($emptyResult) return 5
+    afterEmpty.Shutdown()
+
+    var stoppable = worker.NewGroup<i32>(1)
+    const Channel { sender as workSender receiver as workReceiver } = channel<i32>(0)
+    if !added(stoppable.Add(spawn awaitNumber($workReceiver))) return 6
+    const Channel { sender as stopSender receiver as stopReceiver } = channel<void>(0)
+    const stopRequest = spawn requestStop($stopSender)
+    const stopWaiting = $stoppable.WaitOrStop($stopReceiver)
+    const stopOutcome = $stopWaiting.wait()
+    discard $stopRequest.wait()
+    const worker.GroupWait { Group as stoppedGroup Wake } = stopOutcome
+    if !stopped($Wake) return 7
+    stoppedGroup.Cancel()
+    discard workSender
+    0
+}

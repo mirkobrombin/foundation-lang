@@ -1,0 +1,178 @@
+package test.web_server
+
+import foundation.web
+import std.net
+
+enum AppError {
+    Failed
+}
+
+struct HelloHandler implements web.Handler<AppError> {}
+
+methods HelloHandler {
+    fn Handle(self, $request web.Request) Result<web.Response, AppError> {
+        var active = request
+        const nameMatched = match active.Param("name") {
+            None: false
+            Some(name): name == "Foundation"
+        }
+        const sourceMatched = match active.Query("source") {
+            None: false
+            Some(source): source == "network path"
+        }
+        const traceMatched = match active.Header("X-Trace") {
+            None: false
+            Some(trace): trace == "trace-id"
+        }
+        const bodyMatched = active.Body == "ping" && active.ContentLength == 4
+        discard active
+        if !nameMatched || !sourceMatched || !traceMatched || !bodyMatched {
+            return .Err(.Failed)
+        }
+        .Ok(web.Text(200, "hello from Foundation"))
+    }
+}
+
+fn serverOr(
+    $value Result<own web.Server<AppError>, net.Error>
+) own web.Server<AppError> {
+    const server = value else error {
+        discard error
+        panic("HTTP server bind failed")
+    }
+    server
+}
+
+fn connectionOr(
+    $value Result<own net.TcpConnection, net.Error>
+) own net.TcpConnection {
+    const connection = value else error {
+        discard error
+        panic("HTTP client connection failed")
+    }
+    connection
+}
+
+fn pairOr($value Result<net.StreamPair, net.Error>) net.StreamPair {
+    const pair = value else error {
+        discard error
+        panic("HTTP client split failed")
+    }
+    pair
+}
+
+fn lineOr($value Result<Option<String>, net.Error>) String {
+    match value {
+        Ok(optional): match optional {
+            None: ""
+            Some(line): line
+        }
+        Err(error): ""
+    }
+}
+
+fn registrationAccepted($value Result<void, web.RegistrationError>) bool {
+    match value {
+        Ok: true
+        Err(error): false
+    }
+}
+
+fn writeAccepted($value Result<void, net.Error>) bool {
+    match value {
+        Ok: true
+        Err(error): false
+    }
+}
+
+fn served($value Result<void, web.ServeError<AppError>>) bool {
+    match value {
+        Ok: true
+        Err(error): false
+    }
+}
+
+fn main() i32 {
+    var router = web.NewRouter<AppError>()
+    const handler = own HelloHandler {}
+    const registered = router.Map(
+        .POST,
+        "/hello/{name:alpha}",
+        $handler
+    )
+    if !registrationAccepted($registered) {
+        return 1
+    }
+    var server = serverOr(web.NewServer<AppError>("127.0.0.1", 0, $router))
+
+    const port = server.Port()
+    const serving = server.ServeOne()
+    const connecting = spawn net.Connect("127.0.0.1", port)
+    const connection = connectionOr($connecting.wait())
+    const pair = pairOr(connection.Split())
+    const net.StreamPair { Reader Writer } = pair
+
+    const headerWriting = spawn net.WriteAll(
+        $Writer,
+        "POST /hello/Foundation?source=network+path HTTP/1.1\r\nHost: localhost\r\nX-Trace: trace-id\r\nContent-Length: 4\r\n\r\n"
+    )
+    const headerWritten = $headerWriting.wait()
+    const net.WriteOutcome { Writer as bodyWriter Value as headerResult } = headerWritten
+    const headerAccepted = writeAccepted($headerResult)
+    const bodyWriting = spawn net.WriteAll($bodyWriter, "ping")
+    const bodyWritten = $bodyWriting.wait()
+    const net.WriteOutcome { Writer as writerAfter Value as bodyWriteResult } = bodyWritten
+    const bodyAccepted = writeAccepted($bodyWriteResult)
+    discard writerAfter
+
+    const statusReading = spawn net.ReadLine($Reader)
+    const statusOutcome = $statusReading.wait()
+    const net.ReadLineOutcome { Reader as reader1 Value as statusResult } = statusOutcome
+    const status = lineOr($statusResult)
+    const contentTypeReading = spawn net.ReadLine($reader1)
+    const contentTypeOutcome = $contentTypeReading.wait()
+    const net.ReadLineOutcome { Reader as reader2 Value as contentTypeResult } = contentTypeOutcome
+    const contentType = lineOr($contentTypeResult)
+    const contentLengthReading = spawn net.ReadLine($reader2)
+    const contentLengthOutcome = $contentLengthReading.wait()
+    const net.ReadLineOutcome { Reader as reader3 Value as contentLengthResult } = contentLengthOutcome
+    const contentLength = lineOr($contentLengthResult)
+    const connectionReading = spawn net.ReadLine($reader3)
+    const connectionOutcome = $connectionReading.wait()
+    const net.ReadLineOutcome { Reader as reader4 Value as connectionResult } = connectionOutcome
+    const connectionHeader = lineOr($connectionResult)
+    const separatorReading = spawn net.ReadLine($reader4)
+    const separatorOutcome = $separatorReading.wait()
+    const net.ReadLineOutcome { Reader as reader5 Value as separatorResult } = separatorOutcome
+    const separator = lineOr($separatorResult)
+    const bodyReading = spawn net.ReadLine($reader5)
+    const bodyOutcome = $bodyReading.wait()
+    const net.ReadLineOutcome { Reader as readerAfter Value as bodyResult } = bodyOutcome
+    const body = lineOr($bodyResult)
+    discard readerAfter
+
+    const serveOutcome = $serving.wait()
+    const web.ServeOutcome { Server as serverAfter Value as serveResult } = serveOutcome
+    discard serverAfter
+
+    if !headerAccepted || !bodyAccepted || !served($serveResult) {
+        return 2
+    }
+    if status != "HTTP/1.1 200 OK" {
+        return 3
+    }
+    if contentType != "Content-Type: text/plain; charset=utf-8" {
+        return 4
+    }
+    if contentLength != "Content-Length: 21" {
+        return 5
+    }
+    if connectionHeader != "Connection: close" || separator != "" {
+        return 6
+    }
+    if body != "hello from Foundation" {
+        return 7
+    }
+    print("web ok")
+    0
+}

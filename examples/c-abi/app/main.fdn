@@ -2,7 +2,7 @@ package example.abi
 
 extern c fn nativeSum(left i32, right i32) i32 as foundation_native_sum
 
-extern c fn nativeDrive(value i32, label view String) i32 as foundation_native_drive
+extern c fn nativeDrive(value i32, label String) i32 as foundation_native_drive
 
 extern c fn FoundationDouble(value i32) i32 as foundation_double {
     value * 2
@@ -12,8 +12,33 @@ extern c fn FoundationReady(value bool) bool as foundation_ready {
     value
 }
 
-extern c fn FoundationAcceptLabel(label view String) bool as foundation_accept_label {
+extern c fn FoundationRaw(value *const i32) *const i32 as foundation_raw {
+    value
+}
+
+extern c fn FoundationAcceptLabel(label String) bool as foundation_accept_label {
     true
+}
+
+extern c fn FoundationScalars(
+    signed8 i8,
+    signed16 i16,
+    signed32 i32,
+    signed64 i64,
+    signedSize isize,
+    unsigned8 u8,
+    unsigned16 u16,
+    unsigned32 u32,
+    unsigned64 u64,
+    unsignedSize usize,
+    decimal32 f32,
+    decimal64 f64,
+    flag bool
+) bool as foundation_scalars {
+    signed8 == -8 && signed16 == -16 && signed32 == -32 && signed64 == -64 &&
+        signedSize == -5 && unsigned8 == 8 && unsigned16 == 16 && unsigned32 == 32 &&
+        unsigned64 == 64 && unsignedSize == 10 && decimal32 == 1.5 &&
+        decimal64 == -4.25 && flag
 }
 
 extern c fn FoundationMark() void as foundation_mark {
@@ -21,8 +46,8 @@ extern c fn FoundationMark() void as foundation_mark {
 }
 
 fn main() i32 {
-    let label = "abi"
-    let result = nativeDrive(nativeSum(20, 1), view label)
+    const label = "abi"
+    const result = nativeDrive(nativeSum(20, 1), label)
     if result == 42 {
         print("c abi ok")
         return 0

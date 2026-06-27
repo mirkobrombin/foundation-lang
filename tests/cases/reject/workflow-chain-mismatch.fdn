@@ -1,0 +1,16 @@
+fn text(value i32) Result<String, bool> {
+    .Ok("text")
+}
+
+fn number(value i32) Result<i32, bool> {
+    .Ok(value)
+}
+
+pipeline Broken(input i32) Result<i32, bool> {
+    step text using text
+    step number using number
+}
+
+fn main() i32 {
+    0
+}

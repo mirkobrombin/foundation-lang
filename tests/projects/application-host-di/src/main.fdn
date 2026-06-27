@@ -1,0 +1,59 @@
+package test.host.di
+
+import foundation.actions
+import foundation.di
+
+contract Store {
+    fn Value(self) i32
+}
+
+@di.Name("primary")
+@di.Scope(.Singleton)
+service PrimaryStore implements Store {
+    @di.Inject()
+    fn New() PrimaryStore {
+        PrimaryStore {}
+    }
+
+    fn Value(self) i32 {
+        1
+    }
+}
+
+@di.Name("secondary")
+@di.Scope(.Singleton)
+service SecondaryStore implements Store {
+    @di.Inject()
+    fn New() SecondaryStore {
+        SecondaryStore {}
+    }
+
+    fn Value(self) i32 {
+        2
+    }
+}
+
+@di.Scope(.Singleton)
+service Reader {
+    value i32
+
+    @di.Inject()
+    fn New(
+        @di.From("primary") primary Store,
+        @di.From("secondary") secondary Store
+    ) Reader {
+        Reader { value = primary.Value() * 10 + secondary.Value() }
+    }
+
+    @actions.Name("read")
+    action Read(self) i32 {
+        self.value
+    }
+}
+
+fn main() i32 {
+    const application = BuildFoundationApplication()
+    if application.Read() != 12 return 1
+    print("named DI")
+    0
+}

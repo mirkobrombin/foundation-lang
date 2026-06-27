@@ -1,0 +1,14 @@
+package std.prelude
+
+fn expect(condition bool) void {
+    if !condition {
+        panic("expectation failed")
+    }
+}
+
+fn fail<T>(value T) never {
+    discard value
+    panic("test failed")
+}
+
+fn pass() void {}

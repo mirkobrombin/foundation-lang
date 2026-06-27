@@ -4,7 +4,7 @@ struct Item {
 
 fn main() i32 {
     var current = own Item { value = 1 }
-    let previous = replace current with current
+    const previous = replace current with current
     discard previous
     0
 }

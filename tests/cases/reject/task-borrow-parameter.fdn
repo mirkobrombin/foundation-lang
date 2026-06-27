@@ -1,4 +1,4 @@
-task inspect(value view String) i32 {
+task inspect(value String) i32 {
     discard value
     0
 }

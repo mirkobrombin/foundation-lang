@@ -55,6 +55,11 @@ drops its payload; a successful send transfers ownership exactly once. `select` 
 send and receive operations without blocking the executor, chooses ready branches in source order,
 and uses an explicit error branch plus a monotonic timeout branch.
 
+`sender.clone()` returns another owned producer endpoint. Every clone contributes to the sender
+count and cleanup releases exactly one contribution. Receiver cloning is intentionally absent:
+one channel has one explicit consumer owner, while packages can distribute as many producers as
+their protocol requires.
+
 ## Blocking native work
 
 The runtime owns a fixed worker pool for native operations that may block an operating-system
@@ -88,11 +93,11 @@ source declaration names the native start symbol and may name its cancellation s
 
 ```foundation
 @callback(cancel = package_read_cancel)
-extern c fn nativeRead(handle u64, result edit String) i32 as package_read_start
+extern c fn nativeRead(handle u64, &result String) i32 as package_read_start
 
 task read(handle u64) Result<String, ReadError> {
     var result = ""
-    const status = nativeRead(handle, edit result)
+    const status = nativeRead(handle, &result)
     // The package converts status and result to its public typed error contract.
 }
 ```

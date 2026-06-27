@@ -9,20 +9,20 @@ fn offset(value i32) i32 {
 
 fn main() i32 {
     print(text.Message())
-    let add fn(i32, i32) i32 = math.Add
-    let offset fn(i32) i32 = fn(value i32) i32 {
+    const add fn(i32, i32) i32 = math.Add
+    const offset fn(i32) i32 = fn(value i32) i32 {
         value
     }
-    let pair math.Pair = math.MakePair(20, 22)
-    let boxed math.Box<i32> = math.BoxOf<i32>(pair.Left)
-    let direct math.Box<i32> = math.Box<i32> { Value = boxed.Value }
-    let maybe math.Maybe<i32> = math.Maybe<i32>.Value(direct.Value)
-    let status = math.StatusFor(0)
-    let code = match status {
+    const pair math.Pair = math.MakePair(20, 22)
+    const boxed math.Box<i32> = math.BoxOf<i32>(pair.Left)
+    const direct math.Box<i32> = math.Box<i32> { Value = boxed.Value }
+    const maybe math.Maybe<i32> = math.Maybe<i32>.Value(direct.Value)
+    const status = math.StatusFor(0)
+    const code = match status {
         Ready: 0
         Failed(value): value
     }
-    let unwrapped = match maybe {
+    const unwrapped = match maybe {
         Empty: 0
         Value(value): value
     }

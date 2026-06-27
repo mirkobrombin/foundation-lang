@@ -1,5 +1,5 @@
 fn main() i32 {
-    let value = "text"
+    const value = "text"
     discard value[0]
     0
 }

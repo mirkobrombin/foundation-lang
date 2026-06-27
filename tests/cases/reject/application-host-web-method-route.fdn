@@ -1,0 +1,16 @@
+package test.web.reject
+
+import foundation.web
+
+struct Handler {}
+
+methods Handler {
+    @web.Route(.GET, "/items")
+    fn Get(self) web.Response {
+        web.Text(200, "items")
+    }
+}
+
+fn main() i32 {
+    0
+}

@@ -22,10 +22,10 @@ fn lookup(found bool) Lookup {
 
 fn report(error Failure) i32 {
     print(error.message)
-    -1
+    - 1
 }
 
-fn valueOr(result Lookup, fallback i32) i32 {
+fn valueOr($result Lookup, fallback i32) i32 {
     match result {
         Missing: fallback
         Found(value): value
@@ -35,9 +35,9 @@ fn valueOr(result Lookup, fallback i32) i32 {
 
 fn main() i32 {
     var result Lookup = lookup(true)
-    let found = valueOr(result, 0)
+    const found = valueOr($result, 0)
     result = Lookup.Failed(Failure { message = "failed" })
-    let failed = valueOr(result, 0)
+    const failed = valueOr($result, 0)
     if found == 7 && failed == -1 {
         return 0
     }

@@ -1,0 +1,13 @@
+struct Counter {
+    value i32
+
+    fn IsEmpty(&self) bool {
+        self.value == 0
+    }
+}
+
+fn main() i32 {
+    var counter = Counter { value = 0 }
+    if !counter return 1
+    0
+}

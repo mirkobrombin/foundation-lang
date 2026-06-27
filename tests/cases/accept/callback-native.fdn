@@ -1,20 +1,20 @@
 @callback(cancel = foundation_native_read_cancel)
-extern c fn nativeRead(value u64, delay u64, result edit i32) i32 as foundation_native_read_start
+extern c fn nativeRead(value u64, delay u64, &result i32) i32 as foundation_native_read_start
 
 @callback
-extern c fn nativeReadWithoutCancel(value u64, delay u64, result edit i32) i32 as foundation_native_read_without_cancel_start
+extern c fn nativeReadWithoutCancel(value u64, delay u64, &result i32) i32 as foundation_native_read_without_cancel_start
 
 extern c fn nativeCancellationCount() i32 as foundation_native_cancellation_count
 
 task readValue(value u64, delay u64) i32 {
     var result = 0
-    const status = nativeRead(value, delay, edit result)
+    const status = nativeRead(value, delay, &result)
     status + result
 }
 
 task readValueWithoutCancel(value u64, delay u64) i32 {
     var result = 0
-    const status = nativeReadWithoutCancel(value, delay, edit result)
+    const status = nativeReadWithoutCancel(value, delay, &result)
     status + result
 }
 
@@ -22,7 +22,7 @@ task ready() void {
     print("sibling")
 }
 
-task waitDeadline(receiver Receiver<String>) i32 {
+task waitDeadline($receiver Receiver<String>) i32 {
     select {
         const message = receiver.receive(): discard message
         timeout 5.milliseconds: return 0
@@ -35,7 +35,7 @@ fn main() i32 {
     const pending = spawn readValue(20, 40)
     const sibling = spawn ready()
     const Channel { sender receiver } = channel<String>(0)
-    const timing = spawn waitDeadline(receiver)
+    const timing = spawn waitDeadline($receiver)
 
     $sibling.wait()
     const timeoutCode = $timing.wait()

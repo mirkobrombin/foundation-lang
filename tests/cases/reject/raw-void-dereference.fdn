@@ -1,0 +1,11 @@
+fn read(value *const void) i32 {
+    // SAFETY: the caller owns the validity proof for this opaque handle.
+    unsafe {
+        discard *value
+    }
+    0
+}
+
+fn main() i32 {
+    0
+}

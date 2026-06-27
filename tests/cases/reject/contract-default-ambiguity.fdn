@@ -1,9 +1,9 @@
 contract First {
-    fn value(view) i32 { 1 }
+    fn value(self) i32 { 1 }
 }
 
 contract Second {
-    fn value(view) i32 { 2 }
+    fn value(self) i32 { 2 }
 }
 
 contract Invalid extends First, Second {}

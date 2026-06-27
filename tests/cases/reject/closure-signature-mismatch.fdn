@@ -1,5 +1,5 @@
 fn main() i32 {
-    let operation fn(bool) bool = fn(value i32) i32 {
+    const operation fn(bool) bool = fn(value i32) i32 {
         value
     }
     discard operation

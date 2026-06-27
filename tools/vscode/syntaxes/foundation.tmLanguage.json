@@ -271,6 +271,28 @@
                     }
                 },
                 {
+                    "match": "^\\s*(state)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(\\()\\s*([A-Za-z_][A-Za-z0-9_]*)\\s+([A-Za-z_][A-Za-z0-9_.]*(?:\\s*<[^{}()\\n]+>)?)\\s*(\\)))?",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.state.foundation" },
+                        "2": { "name": "entity.name.type.variant.foundation" },
+                        "3": { "name": "punctuation.definition.parameters.begin.foundation" },
+                        "4": { "name": "variable.parameter.foundation" },
+                        "5": { "name": "entity.name.type.foundation" },
+                        "6": { "name": "punctuation.definition.parameters.end.foundation" }
+                    }
+                },
+                {
+                    "match": "^\\s*(on)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\([^\\n)]*\\))?\\s+(from)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\s*,\\s*[A-Za-z_][A-Za-z0-9_]*)*)\\s+(to)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.function.foundation" },
+                        "2": { "name": "entity.name.function.foundation" },
+                        "3": { "name": "keyword.control.transition.foundation" },
+                        "4": { "name": "entity.name.type.variant.foundation" },
+                        "5": { "name": "keyword.control.transition.foundation" },
+                        "6": { "name": "entity.name.type.variant.foundation" }
+                    }
+                },
+                {
                     "match": "\\b(delegate)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+(as)\\s+([A-Z][A-Za-z0-9_]*(?:\\s*<[^{}()\\n]+>)?)",
                     "captures": {
                         "1": { "name": "keyword.declaration.delegation.foundation" },
@@ -434,6 +456,12 @@
                             }
                         },
                         {
+                            "match": "(?<=\\()\\s*([A-Za-z_][A-Za-z0-9_]*)\\s+(?=(?:[A-Za-z_\\[]|fn\\b|own\\b|view\\b|edit\\b))",
+                            "captures": {
+                                "1": { "name": "variable.parameter.enum-payload.foundation" }
+                            }
+                        },
+                        {
                             "match": "(?<=\\()\\s*([A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?)\\s*(?=\\))",
                             "captures": {
                                 "1": { "name": "entity.name.type.foundation" }
@@ -454,7 +482,7 @@
             "patterns": [
                 {
                     "name": "meta.function.definition.foundation",
-                    "begin": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(<)\\s*([A-Za-z_][A-Za-z0-9_]*(?:\\s*,\\s*[A-Za-z_][A-Za-z0-9_]*)*)\\s*(>))?\\s*(\\()",
+                    "begin": "\\b(fn|task)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(<)\\s*([A-Za-z_][A-Za-z0-9_]*(?:\\s*,\\s*[A-Za-z_][A-Za-z0-9_]*)*)\\s*(>))?\\s*(\\()",
                     "beginCaptures": {
                         "1": { "name": "keyword.declaration.function.foundation" },
                         "2": { "name": "entity.name.function.foundation" },
@@ -538,7 +566,7 @@
         "bindings": {
             "patterns": [
                 {
-                    "match": "\\b(let|const|var)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "match": "\\b(const|var)\\s+([A-Za-z_][A-Za-z0-9_]*)",
                     "captures": {
                         "1": { "name": "storage.type.foundation" },
                         "2": { "name": "variable.other.readwrite.foundation" }
@@ -556,7 +584,7 @@
             "patterns": [
                 {
                     "name": "meta.struct.pattern.foundation",
-                    "begin": "\\b(let|const)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s*(\\{)",
+                    "begin": "\\b(const)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s*(\\{)",
                     "beginCaptures": {
                         "1": { "name": "storage.type.foundation" },
                         "2": { "name": "entity.name.type.struct.foundation" },
@@ -596,7 +624,7 @@
                 },
                 {
                     "name": "keyword.control.foundation",
-                    "match": "\\b(return|discard|if|else|while|for|in|break|continue|match|capture|replace|with|new|spawn|select|timeout|unsafe|state|on|from|to|step|using|retry|compensate)\\b"
+                    "match": "\\b(return|discard|if|else|while|for|in|break|continue|match|capture|replace|with|new|spawn|select|timeout|unsafe|step|using|retry|exponential|max|compensate)\\b"
                 },
                 {
                     "name": "constant.language.boolean.foundation",
@@ -619,8 +647,15 @@
         "types": {
             "patterns": [
                 {
+                    "match": "(\\*)(const\\s+)?(?=(?:bool|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|isize|usize|void|[A-Za-z_][A-Za-z0-9_.]*))",
+                    "captures": {
+                        "1": { "name": "storage.modifier.pointer.foundation" },
+                        "2": { "name": "storage.modifier.readonly.foundation" }
+                    }
+                },
+                {
                     "name": "support.type.foundation",
-                    "match": "\\b(bool|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|isize|usize|void|never|String|UUID|Option|Result|ChannelError|Channel|Sender|Receiver|Cancellation|Task|TcpConnection|TcpReader|TcpWriter|StreamPair)\\b"
+                        "match": "\\b(bool|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|isize|usize|void|never|String|UUID|Option|Result|ChannelError|NumberError|Channel|Sender|Receiver|Cancellation|Task|TcpListener|TcpConnection|TcpReader|TcpWriter|StreamPair)\\b"
                 }
             ]
         },
@@ -644,7 +679,7 @@
             "patterns": [
                 {
                     "name": "support.function.builtin.foundation",
-                    "match": "\\b(channel|send|receive|len|print|panic)\\b"
+                    "match": "\\b(channel|send|receive|clone|len|null|isNull|print|panic|range)\\b"
                 }
             ]
         },
@@ -790,7 +825,7 @@
         "typePositions": {
             "patterns": [
                 {
-                    "match": "\\b(?:let|const|var)\\s+[A-Za-z_][A-Za-z0-9_]*\\s+((?:(?:own|view|edit)\\s+)?[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?:\\s*<[^={};\\n]+>)?)\\s*(?==)",
+                    "match": "\\b(?:const|var)\\s+[A-Za-z_][A-Za-z0-9_]*\\s+((?:(?:own|view|edit)\\s+)?[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?:\\s*<[^={};\\n]+>)?)\\s*(?==)",
                     "captures": {
                         "1": { "name": "entity.name.type.foundation" }
                     }
@@ -824,6 +859,10 @@
         },
         "numbers": {
             "patterns": [
+                {
+                    "name": "constant.numeric.float.foundation",
+                    "match": "\\b[0-9]+(?:\\.[0-9]+(?:[eE][+-]?[0-9]+)?|[eE][+-]?[0-9]+)\\b"
+                },
                 {
                     "name": "constant.numeric.integer.foundation",
                     "match": "\\b[0-9]+\\b"

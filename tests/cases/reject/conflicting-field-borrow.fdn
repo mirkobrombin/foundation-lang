@@ -1,15 +1,15 @@
 struct Pair {
-    left i32
-    right i32
+    left String
+    right String
 }
 
-fn inspect(left view i32, right edit i32) void {
+fn inspect(left String, &right String) void {
     discard left
     discard right
 }
 
 fn main() i32 {
-    var pair = Pair { left = 1 right = 2 }
-    inspect(view pair.left, edit pair.right)
+    var pair = Pair { left = "left" right = "right" }
+    inspect(pair.left, &pair.right)
     0
 }

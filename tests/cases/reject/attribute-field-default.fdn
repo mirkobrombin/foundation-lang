@@ -1,0 +1,10 @@
+struct Metadata {
+    value i32 = 1
+}
+
+attribute Marker(metadata Metadata) targets(fn)
+
+@Marker(Metadata {})
+fn main() i32 {
+    0
+}

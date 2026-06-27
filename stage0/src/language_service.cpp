@@ -91,6 +91,8 @@ std::string documentationBefore(std::string_view source, std::size_t offset) {
     return {};
 }
 
+std::string displayTypeSyntax(const TypeSyntax &type);
+
 std::string parameterDocumentation(const ProjectAnalysis &analysis,
                                    const Parameter &parameter) {
     if (parameter.span.source >= analysis.sources.size()) {
@@ -124,6 +126,39 @@ std::string parameterDocumentation(const ProjectAnalysis &analysis,
     }
     return atLineStart(attributeOffset) ? documentationBefore(source, attributeOffset)
                                         : std::string{};
+}
+
+std::string fieldDetail(const ProjectAnalysis &analysis, const StructField &field) {
+    auto result = field.name + ' ' + displayTypeSyntax(field.type);
+    if (!field.defaultSpan.has_value() ||
+        field.defaultSpan->source >= analysis.sources.size()) {
+        return result;
+    }
+    const auto &source = analysis.sources[field.defaultSpan->source].contents;
+    if (field.defaultSpan->offset > source.size() ||
+        field.defaultSpan->length > source.size() - field.defaultSpan->offset) {
+        return result;
+    }
+    const auto expression = trimWhitespace(std::string_view(source).substr(
+        field.defaultSpan->offset, field.defaultSpan->length));
+    if (!expression.empty()) {
+        result += " = ";
+        result += expression;
+    }
+    return result;
+}
+
+std::string enumVariantDetail(const EnumVariant &variant) {
+    auto result = variant.name;
+    if (!variant.payloadType.has_value()) {
+        return result;
+    }
+    result += '(';
+    if (variant.payloadName.has_value()) {
+        result += *variant.payloadName + ' ';
+    }
+    result += displayTypeSyntax(*variant.payloadType) + ')';
+    return result;
 }
 
 std::string shortName(std::string_view name) {
@@ -165,6 +200,11 @@ std::string displayTypeSyntax(const TypeSyntax &type) {
     if (type.name == "[slice]" && type.arguments.size() == 1) {
         return '[' + displayTypeSyntax(type.arguments[0]) + ']';
     }
+    if ((type.name == "[raw]" || type.name == "[raw-const]") &&
+        type.arguments.size() == 1) {
+        return std::string(type.name == "[raw]" ? "*" : "*const ") +
+               displayTypeSyntax(type.arguments[0]);
+    }
     if (type.name == "[function]" && !type.arguments.empty()) {
         std::string result = "fn(";
         for (std::size_t index = 1; index < type.arguments.size(); ++index) {
@@ -175,6 +215,14 @@ std::string displayTypeSyntax(const TypeSyntax &type) {
         }
         result += ") " + displayTypeSyntax(type.arguments[0]);
         return result;
+    }
+    if ((type.name == "[function-read]" || type.name == "[function-edit]" ||
+         type.name == "[function-transfer]") &&
+        type.arguments.size() == 1) {
+        const auto prefix = type.name == "[function-edit]"     ? "&"
+                            : type.name == "[function-transfer]" ? "$"
+                                                                  : "";
+        return std::string(prefix) + displayTypeSyntax(type.arguments[0]);
     }
     if ((type.name == "own" || type.name == "view" || type.name == "edit") &&
         type.arguments.size() == 1) {
@@ -223,12 +271,28 @@ std::string parameterDetail(const Parameter &parameter) {
     for (const auto &attribute : parameter.attributes) {
         result += attributeDetail(attribute) + ' ';
     }
+    if (parameter.mode == ParameterMode::Edit) {
+        result += '&';
+    } else if (parameter.mode == ParameterMode::Transfer) {
+        result += '$';
+    }
     result += parameter.name + ' ' + displayTypeSyntax(parameter.type);
     return result;
 }
 
+std::string receiverDetail(ReceiverKind receiver) {
+    return receiver == ReceiverKind::View ? "self"
+           : receiver == ReceiverKind::Edit ? "&self"
+                                             : "$self";
+}
+
 std::string functionDetail(const Function &function) {
-    auto prefix = function.task ? std::string("task ")
+    auto prefix = function.workflow.has_value()
+                      ? std::string(function.workflow->kind == WorkflowKind::Pipeline
+                                        ? "pipeline "
+                                        : "saga ")
+                  : function.action ? std::string("action ")
+                                : function.task ? std::string("task ")
                                 : function.cSymbol.has_value() ? std::string("extern c fn ")
                                                                : std::string("fn ");
     if (function.blocking) {
@@ -250,9 +314,7 @@ std::string functionDetail(const Function &function) {
         }
         const auto &parameter = function.parameters[index];
         if (function.receiver.has_value() && index == 0) {
-            result += *function.receiver == ReceiverKind::View ? "view"
-                      : *function.receiver == ReceiverKind::Edit ? "edit"
-                                                                  : "own";
+            result += receiverDetail(*function.receiver);
         } else {
             result += parameterDetail(parameter);
         }
@@ -263,9 +325,7 @@ std::string functionDetail(const Function &function) {
 
 std::string contractMethodDetail(const ContractMethod &method) {
     std::string result = "fn " + method.name + '(';
-    result += method.receiver == ReceiverKind::View ? "view"
-              : method.receiver == ReceiverKind::Edit ? "edit"
-                                                       : "own";
+    result += receiverDetail(method.receiver);
     for (const auto &parameter : method.parameters) {
         result += ", " + parameterDetail(parameter);
     }
@@ -312,11 +372,63 @@ class IndexBuilder {
             bindCaptures();
             addStatementReferences();
             addExpressionReferences();
+            addWorkflowReferences();
         }
         addDeclarationTypeReferences();
         finish();
         return LanguageIndex(std::move(symbols_), std::move(occurrences_),
                              std::move(calls_), std::move(typeLinks_));
+    }
+
+    void addWorkflowReferences() {
+        for (std::size_t function = 0;
+             function < analysis_.program.functions.size() &&
+             function < semantic_->functions.size();
+             ++function) {
+            const auto &source = analysis_.program.functions[function];
+            const auto &semantic = semantic_->functions[function];
+            if (!source.workflow.has_value() || !semantic.workflow.has_value()) {
+                continue;
+            }
+            const auto caller = functionSymbols_.find(function);
+            const auto count = std::min(source.workflow->steps.size(),
+                                        semantic.workflow->steps.size());
+            for (std::size_t index = 0; index < count; ++index) {
+                const auto &sourceStep = source.workflow->steps[index];
+                const auto &targetStep = semantic.workflow->steps[index];
+                const auto target = functionSymbols_.find(targetStep.function);
+                if (target != functionSymbols_.end()) {
+                    const auto *targetSymbol = symbol(target->second);
+                    if (targetSymbol != nullptr) {
+                        const auto span = identifierSpan(
+                            analysis_, sourceStep.functionSpan, targetSymbol->name);
+                        addOccurrence(target->second, span);
+                        if (caller != functionSymbols_.end()) {
+                            calls_.push_back({caller->second, target->second, span});
+                        }
+                    }
+                }
+                if (!targetStep.compensation.has_value() ||
+                    !sourceStep.compensationSpan.has_value()) {
+                    continue;
+                }
+                const auto compensation =
+                    functionSymbols_.find(*targetStep.compensation);
+                if (compensation == functionSymbols_.end()) {
+                    continue;
+                }
+                const auto *compensationSymbol = symbol(compensation->second);
+                if (compensationSymbol == nullptr) {
+                    continue;
+                }
+                const auto span = identifierSpan(analysis_, *sourceStep.compensationSpan,
+                                                 compensationSymbol->name);
+                addOccurrence(compensation->second, span);
+                if (caller != functionSymbols_.end()) {
+                    calls_.push_back({caller->second, compensation->second, span});
+                }
+            }
+        }
     }
 
   private:
@@ -403,6 +515,9 @@ class IndexBuilder {
             visitExpression(assignment->value, function);
         } else if (const auto *expression = std::get_if<ExpressionStatement>(&value)) {
             visitExpression(expression->expression, function);
+        } else if (const auto *resultElse = std::get_if<ResultElseStatement>(&value)) {
+            visitExpression(resultElse->expression, function);
+            visitBlock(resultElse->elseBlock, function);
         } else if (const auto *returned = std::get_if<ReturnStatement>(&value)) {
             if (returned->value.has_value()) {
                 visitExpression(*returned->value, function);
@@ -417,6 +532,9 @@ class IndexBuilder {
             }
         } else if (const auto *loop = std::get_if<WhileStatement>(&value)) {
             visitExpression(loop->condition, function);
+            visitBlock(loop->body, function);
+        } else if (const auto *loop = std::get_if<ForStatement>(&value)) {
+            visitExpression(loop->sequence, function);
             visitBlock(loop->body, function);
         } else if (const auto *selection = std::get_if<SelectStatement>(&value)) {
             for (const auto &operation : selection->operations) {
@@ -471,8 +589,18 @@ class IndexBuilder {
         } else if (const auto *match = std::get_if<MatchExpression>(&value)) {
             visitExpression(match->value, function);
             for (const auto &arm : match->arms) {
+                if (arm.pattern.has_value()) {
+                    visitExpression(*arm.pattern, function);
+                }
                 visitExpression(arm.expression, function);
             }
+        } else if (const auto *conditional =
+                       std::get_if<ConditionalExpression>(&value)) {
+            visitExpression(conditional->condition, function);
+            visitBlock(conditional->thenBlock, function);
+            visitExpression(conditional->thenValue, function);
+            visitBlock(conditional->elseBlock, function);
+            visitExpression(conditional->elseValue, function);
         }
     }
 
@@ -481,24 +609,39 @@ class IndexBuilder {
                            [name](const auto &contract) { return contract.name == name; });
     }
 
+    bool generatedWorkflowType(std::string_view name) const {
+        return std::any_of(
+            analysis_.program.functions.begin(), analysis_.program.functions.end(),
+            [name](const auto &function) {
+                return function.workflow.has_value() &&
+                       ((function.workflow->failureStruct.has_value() &&
+                         *function.workflow->failureStruct == name) ||
+                        (function.workflow->failureEnum.has_value() &&
+                         *function.workflow->failureEnum == name));
+            });
+    }
+
     void addDeclarations() {
         for (std::size_t id = 0; id < analysis_.program.structs.size(); ++id) {
             const auto &declaration = analysis_.program.structs[id];
+            const auto generated = generatedWorkflowType(declaration.name);
             const LanguageSymbolId symbol{LanguageSymbolKind::Struct, id, 0};
             typeSymbols_[declaration.name] = symbol;
+            const auto kind = declaration.kind == StructKind::Service ? "service " : "struct ";
             addSymbol({symbol, shortName(declaration.name),
-                       "struct " + shortName(declaration.name) +
+                       kind + shortName(declaration.name) +
                            typeParameterSuffix(declaration.typeParameters),
                        "type:" + declaration.packageName,
                        identifierSpan(analysis_, declaration.span, declaration.name),
-                       !standardSource(declaration.span)});
+                       !standardSource(declaration.span) && !generated}, !generated,
+                      !generated);
             for (std::size_t field = 0; field < declaration.fields.size(); ++field) {
                 const auto &value = declaration.fields[field];
                 const LanguageSymbolId fieldSymbol{LanguageSymbolKind::Field, id, field};
-                addSymbol({fieldSymbol, value.name,
-                           value.name + ' ' + displayTypeSyntax(value.type),
+                addSymbol({fieldSymbol, value.name, fieldDetail(analysis_, value),
                            "field:" + std::to_string(id), value.span,
-                           !standardSource(value.span)});
+                           !standardSource(value.span) && !generated}, !generated,
+                          !generated);
             }
         }
         for (std::size_t id = 0; id < analysis_.program.enums.size(); ++id) {
@@ -506,23 +649,35 @@ class IndexBuilder {
             if (declaration.builtin != BuiltinEnumKind::None) {
                 continue;
             }
+            const auto generated = generatedWorkflowType(declaration.name);
             const LanguageSymbolId symbol{LanguageSymbolKind::Enum, id, 0};
             typeSymbols_[declaration.name] = symbol;
             addSymbol({symbol, shortName(declaration.name),
-                       "enum " + shortName(declaration.name) +
+                       std::string(declaration.stateMachine ? "state_machine " : "enum ") +
+                           shortName(declaration.name) +
                            typeParameterSuffix(declaration.typeParameters),
                        "type:" + declaration.packageName,
                        identifierSpan(analysis_, declaration.span, declaration.name),
-                       !standardSource(declaration.span)});
+                       !standardSource(declaration.span) && !generated}, !generated,
+                      !generated);
             for (std::size_t variant = 0; variant < declaration.variants.size(); ++variant) {
                 const auto &value = declaration.variants[variant];
-                auto detail = value.name;
-                if (value.payloadType.has_value()) {
-                    detail += '(' + displayTypeSyntax(*value.payloadType) + ')';
-                }
                 addSymbol({{LanguageSymbolKind::EnumVariant, id, variant}, value.name,
-                           std::move(detail), "variant:" + std::to_string(id), value.span,
-                           !standardSource(value.span)});
+                           enumVariantDetail(value), "variant:" + std::to_string(id), value.span,
+                           !standardSource(value.span) && !generated}, !generated,
+                          !generated);
+                if (value.payloadName.has_value() && value.payloadNameSpan.has_value() &&
+                    value.payloadType.has_value()) {
+                    addSymbol({{LanguageSymbolKind::EnumPayload, id, variant},
+                               *value.payloadName,
+                               *value.payloadName + ' ' +
+                                   displayTypeSyntax(*value.payloadType),
+                               "enum-payload:" + std::to_string(id) + ':' +
+                                   std::to_string(variant),
+                               *value.payloadNameSpan,
+                               !standardSource(*value.payloadNameSpan) && !generated},
+                              !generated, !generated);
+                }
             }
         }
         for (std::size_t id = 0; id < analysis_.program.contracts.size(); ++id) {
@@ -569,7 +724,9 @@ class IndexBuilder {
         }
         for (std::size_t id = 0; id < analysis_.program.functions.size(); ++id) {
             const auto &function = analysis_.program.functions[id];
-            if (function.closure || (function.receiver.has_value() && contractOwner(function.ownerType))) {
+            if (function.closure || function.testName.has_value() ||
+                function.name.find("$field_default.") != std::string::npos ||
+                (function.receiver.has_value() && contractOwner(function.ownerType))) {
                 continue;
             }
             const auto typeMember = !function.ownerType.empty();
@@ -586,6 +743,72 @@ class IndexBuilder {
         }
     }
 
+    Type substituteType(Type type, const std::vector<Type> &arguments) const {
+        if (type.kind == TypeKind::Parameter && type.declaration < arguments.size()) {
+            return arguments[type.declaration];
+        }
+        for (auto &argument : type.arguments) {
+            argument = substituteType(std::move(argument), arguments);
+        }
+        return type;
+    }
+
+    bool isCopyParameterType(const Type &type,
+                             std::set<std::pair<TypeKind, std::size_t>> &active) const {
+        if (isMachineScalar(type) && type != voidType && type != neverType) {
+            return true;
+        }
+        if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) {
+            return type.arguments.size() == 1;
+        }
+        if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
+            return isCopyParameterType(type.arguments.front(), active);
+        }
+        if (type.kind != TypeKind::Struct && type.kind != TypeKind::Enum) {
+            return false;
+        }
+
+        const auto key = std::pair{type.kind, type.declaration};
+        if (!active.insert(key).second) {
+            return true;
+        }
+        auto copy = true;
+        if (type.kind == TypeKind::Struct && type.declaration < semantic_->structs.size()) {
+            const auto &name = analysis_.program.structs[type.declaration].name;
+            for (const auto &candidate : analysis_.program.functions) {
+                if (candidate.ownerType == name && candidate.name.ends_with(".drop")) {
+                    copy = false;
+                    break;
+                }
+            }
+            if (copy) {
+                for (const auto &field : semantic_->structs[type.declaration].fieldTypes) {
+                    if (!isCopyParameterType(substituteType(field, type.arguments), active)) {
+                        copy = false;
+                        break;
+                    }
+                }
+            }
+        } else if (type.declaration >= semantic_->enums.size()) {
+            copy = false;
+        } else {
+            for (const auto &payload : semantic_->enums[type.declaration].payloadTypes) {
+                if (payload.has_value() &&
+                    !isCopyParameterType(substituteType(*payload, type.arguments), active)) {
+                    copy = false;
+                    break;
+                }
+            }
+        }
+        active.erase(key);
+        return copy;
+    }
+
+    bool isCopyParameterType(const Type &type) const {
+        std::set<std::pair<TypeKind, std::size_t>> active;
+        return isCopyParameterType(type, active);
+    }
+
     std::string displayType(const Type &type, const Function &function) const {
         if (type.kind == TypeKind::Parameter &&
             type.declaration < function.typeParameters.size()) {
@@ -597,6 +820,11 @@ class IndexBuilder {
                                    : type.kind == TypeKind::View ? "view"
                                                                  : "edit";
             return std::string(qualifier) + ' ' + displayType(type.arguments[0], function);
+        }
+        if ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) &&
+            type.arguments.size() == 1) {
+            return std::string(type.kind == TypeKind::Raw ? "*" : "*const ") +
+                   displayType(type.arguments[0], function);
         }
         if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
             return '[' + std::to_string(type.declaration) + ']' +
@@ -611,7 +839,19 @@ class IndexBuilder {
                 if (index != 1) {
                     result += ", ";
                 }
-                result += displayType(type.arguments[index], function);
+                const auto &parameter = type.arguments[index];
+                if (parameter.kind == TypeKind::View && parameter.declaration == 1 &&
+                    parameter.arguments.size() == 1) {
+                    result += displayType(parameter.arguments.front(), function);
+                } else if (parameter.kind == TypeKind::Edit &&
+                           parameter.arguments.size() == 1) {
+                    result += '&' + displayType(parameter.arguments.front(), function);
+                } else if (parameter.kind != TypeKind::Own &&
+                           !isCopyParameterType(parameter)) {
+                    result += '$' + displayType(parameter, function);
+                } else {
+                    result += displayType(parameter, function);
+                }
             }
             result += ") " + displayType(type.arguments[0], function);
             return result;
@@ -634,12 +874,7 @@ class IndexBuilder {
                    type.declaration < analysis_.program.contracts.size()) {
             result = shortName(analysis_.program.contracts[type.declaration].name);
         } else {
-            result = type.kind == TypeKind::Void      ? "void"
-                     : type.kind == TypeKind::I32     ? "i32"
-                     : type.kind == TypeKind::U64     ? "u64"
-                     : type.kind == TypeKind::Bool    ? "bool"
-                     : type.kind == TypeKind::String  ? "String"
-                                                       : "invalid";
+            result = type.kind == TypeKind::String ? "String" : typeName(type);
         }
         if (type.arguments.empty()) {
             return result;
@@ -664,11 +899,18 @@ class IndexBuilder {
         }
         const auto &semanticFunction = semantic_->functions[function];
         const auto &declaration = semanticFunction.locals[local];
+        auto displayedType = declaration.type;
+        if (declaration.readBinding &&
+            (displayedType.kind == TypeKind::View ||
+             displayedType.kind == TypeKind::Edit) &&
+            displayedType.arguments.size() == 1) {
+            displayedType = displayedType.arguments.front();
+        }
         const LanguageSymbolId symbol{kind, function, local};
         localSymbols_[function][local] = symbol;
         addSymbol({symbol, declaration.name,
                    declaration.name + ' ' +
-                       displayType(declaration.type, analysis_.program.functions[function]),
+                       displayType(displayedType, analysis_.program.functions[function]),
                    "local:" + std::to_string(function), span,
                    renameable && !standardSource(span), std::move(documentation)},
                   addDefinition, false);
@@ -726,6 +968,21 @@ class IndexBuilder {
                                  identifierSpan(analysis_, sourceStatement.span,
                                                 *variable->elseBinding, start));
                 }
+            } else if (const auto *resultElse =
+                           std::get_if<ResultElseStatement>(&sourceStatement.value)) {
+                if (semantic_->statementElseLocals[statement].has_value()) {
+                    auto start = sourceStatement.span.offset;
+                    if (const auto *value = source(sourceStatement.span); value != nullptr) {
+                        const auto found = value->contents.find("else", start);
+                        if (found != std::string::npos) {
+                            start = found + 4;
+                        }
+                    }
+                    declareLocal(function, *semantic_->statementElseLocals[statement],
+                                 LanguageSymbolKind::Local,
+                                 identifierSpan(analysis_, sourceStatement.span,
+                                                resultElse->errorBinding, start));
+                }
             } else if (const auto *destructure =
                            std::get_if<StructDestructureStatement>(&sourceStatement.value)) {
                 const auto &target = semantic_->statementStructTargets[statement];
@@ -741,6 +998,23 @@ class IndexBuilder {
                                  identifierSpan(analysis_, pattern.span, pattern.binding, start),
                                  pattern.binding != pattern.field);
                 }
+            } else if (const auto *loop =
+                           std::get_if<ForStatement>(&sourceStatement.value)) {
+                const auto &target = semantic_->forTargets[statement];
+                if (!target.has_value()) {
+                    continue;
+                }
+                auto valueStart = sourceStatement.span.offset;
+                if (loop->indexBinding.has_value()) {
+                    const auto indexSpan = identifierSpan(
+                        analysis_, sourceStatement.span, *loop->indexBinding, valueStart);
+                    declareLocal(function, target->index, LanguageSymbolKind::Local,
+                                 indexSpan);
+                    valueStart = indexSpan.offset + indexSpan.length;
+                }
+                declareLocal(function, target->value, LanguageSymbolKind::Local,
+                             identifierSpan(analysis_, sourceStatement.span,
+                                            loop->valueBinding, valueStart));
             } else if (const auto *selection =
                            std::get_if<SelectStatement>(&sourceStatement.value)) {
                 const auto &target = semantic_->selectTargets[statement];
@@ -796,7 +1070,8 @@ class IndexBuilder {
     std::optional<LanguageSymbolId> typeSymbol(Type type) const {
         while ((type.kind == TypeKind::Own || type.kind == TypeKind::View ||
                 type.kind == TypeKind::Edit || type.kind == TypeKind::Array ||
-                type.kind == TypeKind::Slice) &&
+                type.kind == TypeKind::Slice || type.kind == TypeKind::Raw ||
+                type.kind == TypeKind::RawConst) &&
                type.arguments.size() == 1) {
             type = type.arguments.front();
         }
@@ -814,7 +1089,8 @@ class IndexBuilder {
 
     std::optional<LanguageSymbolId> typeSymbol(const TypeSyntax &type) const {
         if ((type.name == "own" || type.name == "view" || type.name == "edit" ||
-             type.name == "[array]" || type.name == "[slice]") &&
+             type.name == "[array]" || type.name == "[slice]" ||
+             type.name == "[raw]" || type.name == "[raw-const]") &&
             type.arguments.size() == 1) {
             return typeSymbol(type.arguments.front());
         }
@@ -856,6 +1132,11 @@ class IndexBuilder {
                 if (semantic.payloadTypes[variant].has_value()) {
                     addTypeLink({LanguageSymbolKind::EnumVariant, declaration, variant},
                                 typeSymbol(*semantic.payloadTypes[variant]));
+                    if (analysis_.program.enums[declaration].variants[variant]
+                            .payloadName.has_value()) {
+                        addTypeLink({LanguageSymbolKind::EnumPayload, declaration, variant},
+                                    typeSymbol(*semantic.payloadTypes[variant]));
+                    }
                 }
             }
         }
@@ -1079,6 +1360,43 @@ class IndexBuilder {
         }
     }
 
+    void addNamedArgumentReferences(
+        AstExpressionId expression,
+        const std::vector<std::optional<std::string>> &names,
+        const std::vector<std::optional<SourceSpan>> &spans) {
+        if (expression >= semantic_->callTargets.size() ||
+            !semantic_->callTargets[expression].has_value()) {
+            return;
+        }
+        const auto &target = *semantic_->callTargets[expression];
+        if ((target.kind != CallTargetKind::Function &&
+             target.kind != CallTargetKind::Method) ||
+            target.function >= semantic_->functions.size()) {
+            return;
+        }
+        const auto &function = semantic_->functions[target.function];
+        for (std::size_t source = 0;
+             source < names.size() && source < spans.size() &&
+             source < target.argumentParameters.size();
+             ++source) {
+            if (!names[source].has_value() || !spans[source].has_value()) {
+                continue;
+            }
+            auto parameter = target.argumentParameters[source];
+            if (target.kind == CallTargetKind::Method) {
+                ++parameter;
+            }
+            if (parameter >= function.parameters.size()) {
+                continue;
+            }
+            if (const auto symbol = resolveLocal(target.function,
+                                                 function.parameters[parameter]);
+                symbol.has_value()) {
+                addOccurrence(*symbol, *spans[source]);
+            }
+        }
+    }
+
     static Type valueType(Type type) {
         while ((type.kind == TypeKind::Own || type.kind == TypeKind::View ||
                 type.kind == TypeKind::Edit) && type.arguments.size() == 1) {
@@ -1114,6 +1432,8 @@ class IndexBuilder {
                 }
                 if (semantic_->callTargets[id].has_value()) {
                     addCallReference(id, *semantic_->callTargets[id], expression.span);
+                    addNamedArgumentReferences(id, call->argumentNames,
+                                               call->argumentNameSpans);
                 }
             } else if (const auto *literal = std::get_if<StructExpression>(&expression.value)) {
                 addTypeReference(literal->type);
@@ -1137,6 +1457,8 @@ class IndexBuilder {
                 if (semantic_->callTargets[id].has_value()) {
                     const auto &target = *semantic_->callTargets[id];
                     addCallReference(id, target, expression.span);
+                    addNamedArgumentReferences(id, member->argumentNames,
+                                               member->argumentNameSpans);
                     if (target.kind == CallTargetKind::Function &&
                         target.function < analysis_.program.functions.size() &&
                         member->base.has_value()) {
@@ -1153,6 +1475,21 @@ class IndexBuilder {
                     addNamedOccurrence({LanguageSymbolKind::EnumVariant,
                                         target.type.declaration, target.variant},
                                        expression.span);
+                    const auto &variant = analysis_.program.enums[target.type.declaration]
+                                              .variants[target.variant];
+                    for (std::size_t argument = 0;
+                         variant.payloadName.has_value() &&
+                         argument < member->argumentNames.size() &&
+                         argument < member->argumentNameSpans.size();
+                         ++argument) {
+                        if (member->argumentNames[argument] == variant.payloadName &&
+                            member->argumentNameSpans[argument].has_value()) {
+                            addNamedOccurrence(
+                                {LanguageSymbolKind::EnumPayload,
+                                 target.type.declaration, target.variant},
+                                *member->argumentNameSpans[argument]);
+                        }
+                    }
                     if (member->base.has_value()) {
                         const auto baseSpan = analysis_.program.expressions[*member->base].span;
                         addNamedOccurrence(
@@ -1300,12 +1637,15 @@ bool validIdentifier(std::string_view name) {
 
 bool reservedIdentifier(std::string_view name) {
     static const std::set<std::string_view> reserved{
-        "package", "import", "as",      "extern", "struct", "enum",  "contract",
-        "attribute", "implements", "extends", "delegate", "fn", "let", "var", "return",
-        "discard", "if", "else", "while", "match", "capture", "replace", "with",
-        "own", "view", "edit", "true", "false", "print", "panic", "len", "i32",
-        "u64", "bool", "String", "void", "Option", "Result", "ChannelError", "Task",
-        "Channel", "Sender", "Receiver", "channel"};
+        "package", "import", "as",      "extern", "struct", "service", "enum",  "contract",
+        "attribute", "implements", "extends", "delegate", "fn", "action", "task", "test", "spawn",
+        "const", "var", "return", "discard", "if", "else", "while", "for", "in", "break",
+        "continue", "select", "timeout", "unsafe", "match", "capture", "replace", "with",
+        "new", "own", "view", "edit", "true", "false", "print", "panic", "len", "i8", "i16",
+        "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "f32", "f64",
+        "bool", "String", "void", "never", "Option", "Result", "ChannelError", "NumberError",
+        "Task",
+        "Channel", "Sender", "Receiver", "channel", "null", "isNull"};
     return reserved.contains(name);
 }
 

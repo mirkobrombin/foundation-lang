@@ -1,0 +1,9 @@
+fn main() i32 {
+    const minimum i64 = -9223372036854775808
+    const overflow i64 = minimum / -1
+    const result = i32.From(overflow) else error {
+        discard error
+        return 1
+    }
+    result
+}

@@ -1,10 +1,9 @@
 # C ABI example
 
-This project exercises both directions of the stable native boundary. Foundation calls
-`foundation_native_sum` and `foundation_native_drive`. The C driver calls the exported
-`foundation_double`, `foundation_ready`, `foundation_accept_label`, and `foundation_mark`
-functions through the generated header. The round trip covers scalar values and a borrowed
-`fdn_string`.
+This project exercises both directions of the stable native boundary. Foundation imports
+`foundation_native_sum` and `foundation_native_drive`, while the C driver includes the generated
+header and calls functions exported by the Foundation package. Together those calls cover the
+machine scalar types, a read-only raw pointer, and a borrowed `fdn_string`.
 
 Build and run with two native source inputs:
 
@@ -20,5 +19,6 @@ Emit the public header separately:
 ./build/dev/foundationc emit-c-header examples/c-abi -o out/foundation_abi.h
 ```
 
-The header contains exports only. Imported C symbols remain implementation dependencies. A native
-source compiled by `foundationc` may include the generated file as `foundation_abi.h`.
+The header contains only the public exports. C symbols imported by Foundation remain implementation
+dependencies, and native sources passed to `foundationc` can include the generated file as
+`foundation_abi.h`.

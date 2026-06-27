@@ -22,7 +22,7 @@ struct User {
     id u64
 
     @Label("formatter")
-    fn display(view, @Label("prefix") prefix String) String {
+    fn display(self, @Label("prefix") $prefix String) String {
         prefix
     }
 }
@@ -36,7 +36,7 @@ enum State {
 @Label("reader")
 contract Reader {
     @Label("read")
-    fn read(view, @Label("fallback") fallback i32) i32
+    fn read(self, @Label("fallback") fallback i32) i32
 }
 
 @Route(.GET, "/users/:id")

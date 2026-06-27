@@ -1,0 +1,14 @@
+struct Counter {
+    value i32
+}
+
+fn Increment(&counter Counter) void {
+    counter.value = counter.value + 1
+}
+
+fn main() i32 {
+    const operation fn(&Counter) void = Increment
+    var counter = Counter { value = 0 }
+    operation(counter)
+    0
+}

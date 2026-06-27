@@ -1,5 +1,5 @@
-fn joiner(prefix String) fn(String) String {
-    fn(suffix String) String capture own prefix {
+fn joiner($prefix String) fn($String) String {
+    fn($suffix String) String capture $prefix {
         prefix + suffix
     }
 }
@@ -21,19 +21,19 @@ fn double(value i32) i32 {
     value * 2
 }
 
-fn twice(operation fn(i32) i32) fn(i32) i32 {
-    fn(value i32) i32 capture own operation {
+fn twice($operation fn(i32) i32) fn(i32) i32 {
+    fn(value i32) i32 capture $operation {
         operation(operation(value))
     }
 }
 
-fn prefer<T>(value T, ignored view T) T {
+fn prefer<T>($value T, ignored T) T {
     value
 }
 
-fn keep<T>(captured T) fn(T) T {
-    fn(value T) T capture own captured {
-        prefer(value, view captured)
+fn keep<T>($captured T) fn($T) T {
+    fn($value T) T capture $captured {
+        prefer($value, captured)
     }
 }
 
@@ -43,57 +43,62 @@ enum Branch {
 }
 
 fn main() i32 {
-    let factor = 2
-    let scale = fn(value i32) i32 capture factor {
+    const factor = 2
+    const scale = fn(value i32) i32 capture factor {
         value * factor
     }
-    let base = 2
-    let read = fn(value i32) i32 capture view base {
+    const base = 2
+    const read = fn(value i32) i32 capture base {
         value + base
     }
+    const borrowedLabel = "borrowed"
+    const borrowedRead = fn() void capture borrowedLabel {
+        discard len(borrowedLabel)
+    }
+    borrowedRead()
 
     var total = 0
-    let bump = fn(value i32) i32 capture edit total {
+    const bump = fn(value i32) i32 capture &total {
         total = total + value
         total
     }
 
-    let label = "value"
-    let render = fn(suffix String) void capture own label {
+    const label = "value"
+    const render = fn($suffix String) void capture $label {
         print(label + suffix)
     }
     render("!")
-    let join = joiner("left")
-    let composed = twice(double)
-    let keepText = keep("captured")
-    let keptText = keepText("value")
-    let directLabel = "direct"
-    let directText = invokeRead(fn() String capture own directLabel {
+    const join = joiner("left")
+    const composed = twice($double)
+    const keepText = keep("captured")
+    const keptText = keepText("value")
+    const directLabel = "direct"
+    const directText = invokeRead(fn() String capture $directLabel {
         directLabel + ""
     })
-    let boxedLabel = "boxed"
-    let box = CallbackBox {
-        callback = fn() String capture own boxedLabel {
+    const boxedLabel = "boxed"
+    const box = CallbackBox {
+        callback = fn() String capture $boxedLabel {
             boxedLabel + ""
         }
     }
-    let movedBox = box
+    const movedBox = box
     discard movedBox
-    let selectedLabel = "selected"
-    let choice = CallbackChoice.Ready(fn() String capture own selectedLabel {
+    const selectedLabel = "selected"
+    const choice = CallbackChoice.Ready(fn() String capture $selectedLabel {
         selectedLabel + ""
     })
-    let selectedText = match choice {
+    const selectedText = match choice {
         Missing: "missing"
         Ready(callback): callback()
     }
     var branchTotal = 0
-    let selected = match Branch.First {
-        First: fn(value i32) i32 capture edit branchTotal {
+    const selected = match Branch.First {
+        First: fn(value i32) i32 capture &branchTotal {
             branchTotal = branchTotal + value
             branchTotal
         }
-        Second: fn(value i32) i32 capture edit branchTotal {
+        Second: fn(value i32) i32 capture &branchTotal {
             branchTotal = branchTotal - value
             branchTotal
         }

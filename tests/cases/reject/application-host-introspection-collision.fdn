@@ -1,0 +1,21 @@
+package test.host
+
+import foundation.actions
+import foundation.di
+
+@di.Scope(.Singleton)
+service Runner {
+    @di.Inject()
+    fn New() Runner {
+        Runner {}
+    }
+
+    @actions.Name("ActionNames")
+    action Run(self) i32 {
+        0
+    }
+}
+
+fn main() i32 {
+    0
+}

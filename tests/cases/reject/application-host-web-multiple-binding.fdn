@@ -1,0 +1,16 @@
+package test.web.reject
+
+import foundation.web
+
+@web.Route(.GET, "/items")
+fn GetItems(
+    @web.Query("value")
+    @web.Header("X-Value")
+    value String
+) web.Response {
+    web.Text(200, "items")
+}
+
+fn main() i32 {
+    0
+}

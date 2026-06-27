@@ -3,6 +3,6 @@ struct Pair {
 }
 
 fn main() i32 {
-    let Pair { capture } = Pair { value = 1 }
+    const Pair { capture } = Pair { value = 1 }
     0
 }

@@ -1,11 +1,11 @@
 import std.json
 import std.text
 
-fn textIs(value Option<json.Value>, expected view String) bool {
+fn textIs($value Option<json.Value>, expected String) bool {
     match value {
         None: false
         Some(actual): match actual {
-            Text(content): text.Equal(view content, expected)
+            Text(content): text.Equal(content, expected)
             Null: false
             Bool(flag): false
             Number(number): false
@@ -15,11 +15,11 @@ fn textIs(value Option<json.Value>, expected view String) bool {
     }
 }
 
-fn numberIs(value Option<json.Value>, expected view String) bool {
+fn numberIs($value Option<json.Value>, expected String) bool {
     match value {
         None: false
         Some(actual): match actual {
-            Number(number): text.Equal(view number, expected)
+            Number(number): text.Equal(number, expected)
             Null: false
             Bool(flag): false
             Text(content): false
@@ -29,7 +29,7 @@ fn numberIs(value Option<json.Value>, expected view String) bool {
     }
 }
 
-fn boolIs(value Option<json.Value>, expected bool) bool {
+fn boolIs($value Option<json.Value>, expected bool) bool {
     match value {
         None: false
         Some(actual): match actual {
@@ -43,7 +43,7 @@ fn boolIs(value Option<json.Value>, expected bool) bool {
     }
 }
 
-fn isNull(value Option<json.Value>) bool {
+fn isJsonNull($value Option<json.Value>) bool {
     match value {
         None: false
         Some(actual): match actual {
@@ -57,11 +57,11 @@ fn isNull(value Option<json.Value>) bool {
     }
 }
 
-fn arrayIs(value Option<json.Value>) bool {
+fn arrayIs($value Option<json.Value>) bool {
     match value {
         None: false
         Some(actual): match actual {
-            Array(items): inspectArray(items)
+            Array(items): inspectArray($items)
             Null: false
             Bool(flag): false
             Number(number): false
@@ -71,34 +71,34 @@ fn arrayIs(value Option<json.Value>) bool {
     }
 }
 
-fn inspectArray(items own json.Array) bool {
+fn inspectArray($items own json.Array) bool {
     var values = items
-    let expected = "x"
+    const expected = "x"
     values.Len() == 3 && boolIs(values.PopFront(), true) &&
-        isNull(values.PopFront()) && textIs(values.PopFront(), view expected) &&
+        isJsonNull(values.PopFront()) && textIs(values.PopFront(), expected) &&
         values.Len() == 0
 }
 
-fn inspectObject(object own json.Object) bool {
+fn inspectObject($object own json.Object) bool {
     var fields = object
-    let name = "name"
-    let count = "count"
-    let entries = "items"
-    let escaped = "escaped"
-    let expectedName = "Foundation 🙂"
-    let expectedNumber = "12.5e2"
-    let expectedEscaped = "a\nb"
+    const name = "name"
+    const count = "count"
+    const entries = "items"
+    const escaped = "escaped"
+    const expectedName = "Foundation 🙂"
+    const expectedNumber = "12.5e2"
+    const expectedEscaped = "a\nb"
     fields.Len() == 4 &&
-        textIs(fields.Take(view name), view expectedName) &&
-        numberIs(fields.Take(view count), view expectedNumber) &&
-        arrayIs(fields.Take(view entries)) &&
-        textIs(fields.Take(view escaped), view expectedEscaped) &&
+        textIs(fields.Take(name), expectedName) &&
+        numberIs(fields.Take(count), expectedNumber) &&
+        arrayIs(fields.Take(entries)) &&
+        textIs(fields.Take(escaped), expectedEscaped) &&
         fields.Len() == 0
 }
 
-fn inspect(value json.Value) bool {
+fn inspect($value json.Value) bool {
     match value {
-        Object(object): inspectObject(object)
+        Object(object): inspectObject($object)
         Null: false
         Bool(flag): false
         Number(number): false
@@ -120,7 +120,7 @@ fn errorCode(kind json.ErrorKind) i32 {
     }
 }
 
-fn failedAs(value Result<json.Value, json.Error>, code i32) bool {
+fn failedAs($value Result<json.Value, json.Error>, code i32) bool {
     match value {
         Ok(parsed): false
         Err(error): errorCode(error.Kind) == code
@@ -129,21 +129,21 @@ fn failedAs(value Result<json.Value, json.Error>, code i32) bool {
 
 fn deeplyNested() String {
     var builder = text.NewBuilder()
-    let open = "["
-    let close = "]"
-    let zero = "0"
+    const open = "["
+    const close = "]"
+    const zero = "0"
     var count u64 = 0
     while count < 130 {
-        discard builder.Write(view open)
+        discard builder.Write(open)
         count = count + 1
     }
-    discard builder.Write(view zero)
+    discard builder.Write(zero)
     count = 0
     while count < 130 {
-        discard builder.Write(view close)
+        discard builder.Write(close)
         count = count + 1
     }
-    let value = builder.Finish() else error {
+    const value = builder.Finish() else error {
         discard error
         panic("builder closed before JSON depth test")
     }
@@ -151,32 +151,32 @@ fn deeplyNested() String {
 }
 
 fn main() i32 {
-    let source = "{\"name\":\"Foundation \\uD83D\\uDE42\",\"count\":12.5e2,\"items\":[true,null,\"x\"],\"escaped\":\"a\\nb\"}"
-    let parsed = json.Parse(view source) else error {
+    const source = "{\"name\":\"Foundation \\uD83D\\uDE42\",\"count\":12.5e2,\"items\":[true,null,\"x\"],\"escaped\":\"a\\nb\"}"
+    const parsed = json.Parse(source) else error {
         discard error
         return 1
     }
-    if !inspect(parsed) {
+    if !inspect($parsed) {
         return 2
     }
-    let duplicate = "{\"x\":1,\"x\":2}"
-    if !failedAs(json.Parse(view duplicate), 6) {
+    const duplicate = "{\"x\":1,\"x\":2}"
+    if !failedAs(json.Parse(duplicate), 6) {
         return 3
     }
-    let invalidEscape = "\"\\uD800\""
-    if !failedAs(json.Parse(view invalidEscape), 4) {
+    const invalidEscape = "\"\\uD800\""
+    if !failedAs(json.Parse(invalidEscape), 4) {
         return 4
     }
-    let trailing = "true false"
-    if !failedAs(json.Parse(view trailing), 8) {
+    const trailing = "true false"
+    if !failedAs(json.Parse(trailing), 8) {
         return 5
     }
-    let invalidNumber = "01"
-    if !failedAs(json.Parse(view invalidNumber), 5) {
+    const invalidNumber = "01"
+    if !failedAs(json.Parse(invalidNumber), 5) {
         return 6
     }
-    let deep = deeplyNested()
-    if !failedAs(json.Parse(view deep), 7) {
+    const deep = deeplyNested()
+    if !failedAs(json.Parse(deep), 7) {
         return 7
     }
     print("json ok")

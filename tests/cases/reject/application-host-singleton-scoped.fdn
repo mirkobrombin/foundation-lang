@@ -1,0 +1,24 @@
+package test.host
+
+import foundation.di
+
+@di.Scope(.Scoped)
+service Session {
+    @di.Inject()
+    fn New() Session {
+        Session {}
+    }
+}
+
+@di.Scope(.Singleton)
+service Server {
+    @di.Inject()
+    fn New(session Session) Server {
+        discard session
+        Server {}
+    }
+}
+
+fn main() i32 {
+    0
+}

@@ -1,0 +1,40 @@
+import foundation.di
+
+contract Store {
+    fn Count(self) i32
+}
+
+service MemoryStore implements Store {
+    @di.Inject()
+    fn New() MemoryStore {
+        MemoryStore {}
+    }
+
+    fn Count(self) i32 {
+        1
+    }
+}
+
+service FileStore implements Store {
+    @di.Inject()
+    fn New() FileStore {
+        FileStore {}
+    }
+
+    fn Count(self) i32 {
+        2
+    }
+}
+
+@di.Scope(.Singleton)
+service Api {
+    @di.Inject()
+    fn New(store Store) Api {
+        discard store
+        Api {}
+    }
+}
+
+fn main() i32 {
+    0
+}

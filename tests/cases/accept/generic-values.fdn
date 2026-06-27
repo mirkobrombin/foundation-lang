@@ -13,7 +13,7 @@ enum Outcome<T, E> {
     Err(E)
 }
 
-fn identity<T>(value T) T {
+fn identity<T>($value T) T {
     value
 }
 
@@ -37,11 +37,11 @@ fn outcomeOr(value Outcome<i32, bool>, fallback i32) i32 {
 
 fn main() i32 {
     typeMarker<Outcome<i32, bool>>()
-    let pair = Pair { first = identity(40) second = identity(true) }
-    let some = Maybe.Some(pair.first + 2)
-    let none Maybe<i32> = .None
-    let ok = Outcome<i32, bool>.Ok(maybeOr(some, 0))
-    let failed = Outcome<i32, bool>.Err(false)
+    const pair = Pair { first = identity(40) second = identity(true) }
+    const some = Maybe.Some(pair.first + 2)
+    const none Maybe<i32> = .None
+    const ok = Outcome<i32, bool>.Ok(maybeOr(some, 0))
+    const failed = Outcome<i32, bool>.Err(false)
     print("generic values")
     if pair.second && outcomeOr(ok, 0) == 42 && maybeOr(none, 7) == 7 {
         return outcomeOr(failed, 0)

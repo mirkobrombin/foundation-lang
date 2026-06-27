@@ -4,10 +4,10 @@ struct Item {
 
 fn main() i32 {
     var current = own Item { value = 1 }
-    let read = fn() i32 capture view current {
+    const read = fn() i32 capture current {
         current.value
     }
-    let previous = replace current with own Item { value = 2 }
+    const previous = replace current with own Item { value = 2 }
     discard previous
     read()
 }

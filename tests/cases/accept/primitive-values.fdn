@@ -2,16 +2,16 @@ fn success(value i32) Result<i32, String> {
     .Ok(value)
 }
 
-fn forward(result Result<i32, String>) Result<i32, String> {
-    let value = result else error {
+fn forward($result Result<i32, String>) Result<i32, String> {
+    const value = result else error {
         return .Err(error)
     }
     .Ok(value)
 }
 
 fn main() i32 {
-    let optional = Option.Some(2)
-    let result = forward(success(match optional {
+    const optional = Option.Some(2)
+    const result = forward(success(match optional {
         None: 0
         Some(value): value
     }))

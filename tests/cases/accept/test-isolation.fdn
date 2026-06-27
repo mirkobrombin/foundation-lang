@@ -1,0 +1,7 @@
+test "failure remains isolated" {
+    expect(false)
+}
+
+test "later test still runs" {
+    pass()
+}

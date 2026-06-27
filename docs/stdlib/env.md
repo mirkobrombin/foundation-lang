@@ -6,8 +6,8 @@ mutation in the bootstrap surface.
 ```foundation
 import std.env
 
-let key = "FOUNDATION_HOME"
-let configured = env.Get(view key) else error {
+const key = "FOUNDATION_HOME"
+const configured = env.Get(key) else error {
     return reportEnvironmentError(error)
 }
 ```
@@ -21,7 +21,7 @@ enum Error {
     Platform
 }
 
-fn Get(name view String) Result<Option<String>, Error>
+fn Get(name String) Result<Option<String>, Error>
 fn Home() Result<Option<String>, Error>
 ```
 

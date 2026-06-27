@@ -1,0 +1,8 @@
+extern c fn nativeValue() *i32 as foundation_raw_value
+
+fn main() i32 {
+    unsafe {
+        discard nativeValue()
+    }
+    0
+}

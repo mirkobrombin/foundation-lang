@@ -1,0 +1,37 @@
+struct Bag {
+    count usize
+
+    fn IsEmpty(self) bool {
+        self.count == 0
+    }
+}
+
+contract Empty {
+    fn IsEmpty(self) bool
+}
+
+struct ContractBag implements Empty {
+    count usize
+
+    fn IsEmpty(self) bool {
+        self.count == 0
+    }
+}
+
+fn emptyContract(value Empty) bool {
+    !value
+}
+
+fn main() i32 {
+    const empty = ""
+    const value = "foundation"
+    const emptyBag = Bag { count = 0 }
+    const fullBag = Bag { count = 1 }
+    const contractBag = ContractBag { count = 0 }
+
+    if !empty && !emptyBag && emptyContract(contractBag) && !(!value) && !(!fullBag) {
+        print("empty tests ok")
+        return 0
+    }
+    1
+}

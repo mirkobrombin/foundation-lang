@@ -18,8 +18,11 @@ void printUsage(std::ostream &output) {
            << "  foundationc emit-c <source-or-project> -o <output.c>\n"
            << "  foundationc emit-c-header <source-or-project> -o <output.h>\n"
            << "  foundationc emit-metadata <source-or-project> -o <output.json>\n"
+           << "  foundationc emit-app-plan <source-or-project> -o <output.json>\n"
+           << "  foundationc emit-app-host <source-or-project> -o <output.fdn>\n"
            << "  foundationc build <source-or-project> -o <executable> [--native <input>]...\n"
            << "  foundationc run <source-or-project> [--native <input>]... [-- <argument>...]\n"
+           << "  foundationc test <source-or-project> [--native <input>]...\n"
            << "  foundationc package <init|resolve|fetch|verify|inspect|prune> ...\n"
            << "  foundationc version\n";
 }
@@ -112,6 +115,14 @@ int main(int argc, char **argv) {
             return foundation::emitMetadataFile(std::filesystem::path(argv[2]),
                                                 std::filesystem::path(argv[4]));
         }
+        if (command == "emit-app-plan" && outputArgumentsAreValid(argc, argv)) {
+            return foundation::emitApplicationPlanFile(std::filesystem::path(argv[2]),
+                                                       std::filesystem::path(argv[4]));
+        }
+        if (command == "emit-app-host" && outputArgumentsAreValid(argc, argv)) {
+            return foundation::emitApplicationHostFile(std::filesystem::path(argv[2]),
+                                                       std::filesystem::path(argv[4]));
+        }
         if (command == "build" && argc >= 5 && std::string_view(argv[3]) == "-o") {
             std::vector<std::filesystem::path> nativeInputs;
             if (!parseNativeArguments(argc, argv, 5, nativeInputs)) {
@@ -129,6 +140,14 @@ int main(int argc, char **argv) {
                 return 2;
             }
             return foundation::runFile(std::filesystem::path(argv[2]), nativeInputs, arguments);
+        }
+        if (command == "test" && argc >= 3) {
+            std::vector<std::filesystem::path> nativeInputs;
+            if (!parseNativeArguments(argc, argv, 3, nativeInputs)) {
+                printUsage(std::cerr);
+                return 2;
+            }
+            return foundation::runTests(std::filesystem::path(argv[2]), nativeInputs);
         }
     }
 

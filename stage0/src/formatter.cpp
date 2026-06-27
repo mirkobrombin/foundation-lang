@@ -23,6 +23,7 @@ bool closes(TokenKind kind) {
 
 bool endsExpression(TokenKind kind) {
     return kind == TokenKind::Identifier || kind == TokenKind::Integer ||
+           kind == TokenKind::Floating ||
            kind == TokenKind::String || kind == TokenKind::True ||
            kind == TokenKind::False || closes(kind);
 }
@@ -41,6 +42,14 @@ bool unaryMinus(const std::vector<Token> &tokens, std::size_t index) {
            (index == 0 || !endsExpression(tokens[index - 1].kind));
 }
 
+bool unaryStar(const std::vector<Token> &tokens, std::size_t index,
+               const std::unordered_set<std::size_t> &typeStarts) {
+    return tokens[index].kind == TokenKind::Star &&
+           (typeStarts.contains(tokens[index].span.offset) || index == 0 ||
+            tokens[index - 1].span.line != tokens[index].span.line ||
+            !endsExpression(tokens[index - 1].kind));
+}
+
 bool comparisonDelimiter(TokenKind kind) {
     return kind == TokenKind::Less || kind == TokenKind::Greater;
 }
@@ -57,7 +66,7 @@ void collectTypeStarts(const TypeSyntax &type, std::unordered_set<std::size_t> &
     }
 }
 
-std::vector<bool> typeOpeningBrackets(const std::vector<Token> &tokens, const Program &program) {
+std::unordered_set<std::size_t> typeStarts(const Program &program) {
     std::unordered_set<std::size_t> starts;
     const auto collectParameters = [&starts](const auto &parameters) {
         for (const auto &parameter : parameters) {
@@ -94,6 +103,10 @@ std::vector<bool> typeOpeningBrackets(const std::vector<Token> &tokens, const Pr
     for (const auto &function : program.functions) {
         collectParameters(function.parameters);
         collectTypeStarts(function.returnType, starts);
+        if (function.workflow.has_value()) {
+            collectTypeStarts(function.workflow->successType, starts);
+            collectTypeStarts(function.workflow->errorType, starts);
+        }
     }
     for (const auto &statement : program.statements) {
         if (const auto *variable = std::get_if<VariableStatement>(&statement.value);
@@ -122,6 +135,11 @@ std::vector<bool> typeOpeningBrackets(const std::vector<Token> &tokens, const Pr
         }
     }
 
+    return starts;
+}
+
+std::vector<bool> typeOpeningBrackets(const std::vector<Token> &tokens,
+                                      const std::unordered_set<std::size_t> &starts) {
     std::vector<bool> result(tokens.size());
     for (std::size_t index = 0; index < tokens.size(); ++index) {
         result[index] = tokens[index].kind == TokenKind::LeftBracket &&
@@ -132,7 +150,8 @@ std::vector<bool> typeOpeningBrackets(const std::vector<Token> &tokens, const Pr
 
 bool spaceBetween(const std::vector<Token> &tokens, std::size_t index,
                   const std::vector<bool> &genericDelimiters,
-                  const std::vector<bool> &typeBrackets) {
+                  const std::vector<bool> &typeBrackets,
+                  const std::unordered_set<std::size_t> &typeStarts) {
     const auto previous = tokens[index - 1].kind;
     const auto current = tokens[index].kind;
     if (current == TokenKind::RightParen || current == TokenKind::RightBracket ||
@@ -149,8 +168,9 @@ bool spaceBetween(const std::vector<Token> &tokens, std::size_t index,
     }
     if (previous == TokenKind::LeftParen || previous == TokenKind::LeftBracket ||
         previous == TokenKind::At || previous == TokenKind::Dot ||
-        previous == TokenKind::Bang || previous == TokenKind::Dollar ||
-        unaryMinus(tokens, index - 1)) {
+        previous == TokenKind::Bang || previous == TokenKind::Ampersand ||
+        previous == TokenKind::Dollar ||
+        unaryMinus(tokens, index - 1) || unaryStar(tokens, index - 1, typeStarts)) {
         return false;
     }
     if (current == TokenKind::LeftParen) {
@@ -235,7 +255,18 @@ class Writer {
 
     [[nodiscard]] std::string format(const std::vector<Token> &tokens, const Program &program) {
         const auto angleDelimiters = genericDelimiters(tokens);
-        const auto typeBrackets = typeOpeningBrackets(tokens, program);
+        const auto starts = typeStarts(program);
+        const auto typeBrackets = typeOpeningBrackets(tokens, starts);
+        for (const auto &function : program.functions) {
+            if (!function.workflow.has_value()) {
+                continue;
+            }
+            for (const auto &step : function.workflow->steps) {
+                if (step.compensationSpan.has_value()) {
+                    compensationLines_.insert(step.compensationSpan->line);
+                }
+            }
+        }
         std::size_t previousEnd{};
         for (std::size_t index = 0; index < tokens.size(); ++index) {
             const auto &token = tokens[index];
@@ -246,10 +277,12 @@ class Writer {
             const auto gap = source_.substr(previousEnd, token.span.offset - previousEnd);
             trivia(gap);
             if (lineStart_) {
-                indent(token.kind);
+                indent(token.kind, token.kind == TokenKind::Identifier &&
+                                       token.text == "compensate" &&
+                                       compensationLines_.contains(token.span.line));
             } else if (index != 0 && gap.find("//") == std::string_view::npos &&
                        gap.find_first_of("\r\n") == std::string_view::npos &&
-                       spaceBetween(tokens, index, angleDelimiters, typeBrackets)) {
+                       spaceBetween(tokens, index, angleDelimiters, typeBrackets, starts)) {
                 output_.push_back(' ');
             }
             const auto raw = source_.substr(token.span.offset, token.span.length);
@@ -282,7 +315,7 @@ class Writer {
             comment.remove_suffix(1);
         }
         if (lineStart_) {
-            indent(TokenKind::Eof);
+            indent(TokenKind::Eof, false);
         } else {
             trimLine();
             output_.push_back(' ');
@@ -293,7 +326,7 @@ class Writer {
 
     void writeBlockComment(std::string_view comment) {
         if (lineStart_) {
-            indent(TokenKind::Eof);
+            indent(TokenKind::Eof, false);
         } else {
             trimLine();
             output_.push_back(' ');
@@ -354,7 +387,7 @@ class Writer {
         }
     }
 
-    void indent(TokenKind next) {
+    void indent(TokenKind next, bool workflowChild) {
         auto braces = braceDepth_;
         if (next == TokenKind::RightBrace && braces != 0) {
             --braces;
@@ -373,6 +406,9 @@ class Writer {
                         [threshold](std::size_t depth) { return depth >= threshold; });
         output_.append((braces + (nested ? 1 : 0)) * 4, ' ');
         if (continuation_ && !nested) {
+            output_.append(4, ' ');
+        }
+        if (workflowChild) {
             output_.append(4, ' ');
         }
         lineStart_ = false;
@@ -402,6 +438,7 @@ class Writer {
     std::size_t braceDepth_{};
     std::vector<std::size_t> parenBraceDepths_;
     std::vector<std::size_t> bracketBraceDepths_;
+    std::unordered_set<std::size_t> compensationLines_;
     TokenKind lastToken_{TokenKind::Eof};
     bool lastTokenWasGenericDelimiter_{};
     bool lineStart_{true};

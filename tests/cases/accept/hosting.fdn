@@ -1,0 +1,299 @@
+import foundation.hosting
+import foundation.worker
+import std.concurrent
+
+enum Failure {
+    Start
+    Stop
+    Background
+}
+
+struct First implements hosting.HostedService<Failure> {
+    fn Start(&self) Result<void, Failure> {
+        print("first start")
+        .Ok
+    }
+
+    fn Stop(&self) Result<void, Failure> {
+        print("first stop")
+        .Ok
+    }
+}
+
+struct Second implements hosting.HostedService<Failure> {
+    failStart bool
+    failStop bool
+
+    fn Start(&self) Result<void, Failure> {
+        print("second start")
+        if self.failStart return .Err(.Start)
+        .Ok
+    }
+
+    fn Stop(&self) Result<void, Failure> {
+        print("second stop")
+        if self.failStop return .Err(.Stop)
+        .Ok
+    }
+}
+
+struct Background implements hosting.BackgroundService<Failure> {
+    label String
+    fail bool
+
+    fn Execute(
+        $self,
+        $cancel concurrent.Cancellation
+    ) Task<Result<void, Failure>> {
+        spawn executeBackground($self, $cancel)
+    }
+}
+
+task executeBackground(
+    $background own Background,
+    $cancel concurrent.Cancellation
+) Result<void, Failure> {
+    if background.fail {
+        print(background.label)
+        return .Err(.Background)
+    }
+    if cancel.IsRequested() {
+        print(background.label)
+    }
+    .Ok
+}
+
+task requestStop($sender Sender<void>) void {
+    discard sender.send()
+}
+
+fn added($result Result<void, hosting.RegistrationError>) bool {
+    match result {
+        Ok: true
+        Err(error): registrationFailed(error)
+    }
+}
+
+fn registrationFailed(error hosting.RegistrationError) bool {
+    discard error
+    false
+}
+
+fn registrationRejected($result Result<void, hosting.RegistrationError>) bool {
+    match result {
+        Ok: false
+        Err(error): isStarted(error)
+    }
+}
+
+fn isStarted(error hosting.RegistrationError) bool {
+    match error {
+        Started: true
+    }
+}
+
+fn started($result Result<void, hosting.StartError<Failure>>) bool {
+    match result {
+        Ok: true
+        Err(error): startRejected($error)
+    }
+}
+
+fn startRejected($error hosting.StartError<Failure>) bool {
+    match error {
+        AlreadyStarted: false
+        Failed(failure): inspectFailure($failure)
+    }
+}
+
+fn alreadyStarted($result Result<void, hosting.StartError<Failure>>) bool {
+    match result {
+        Ok: false
+        Err(error): isAlreadyStarted($error)
+    }
+}
+
+fn isAlreadyStarted($error hosting.StartError<Failure>) bool {
+    match error {
+        AlreadyStarted: true
+        Failed(failure): discardFailure($failure)
+    }
+}
+
+fn discardFailure($failure own hosting.StartupFailure<Failure>) bool {
+    discard failure
+    false
+}
+
+fn inspectFailure($failure own hosting.StartupFailure<Failure>) bool {
+    const hosting.StartupFailure { Error Cleanup } = failure
+    isStart(Error) && Cleanup.IsEmpty()
+}
+
+fn isStart(error Failure) bool {
+    match error {
+        Start: true
+        Stop: false
+        Background: false
+    }
+}
+
+fn observed(
+    $result Result<Result<void, Failure>, worker.GroupError>
+) bool {
+    match result {
+        Ok(completed): backgroundFailed($completed)
+        Err(error): observationFailed(error)
+    }
+}
+
+fn backgroundFailed($result Result<void, Failure>) bool {
+    match result {
+        Ok: false
+        Err(error): isBackground(error)
+    }
+}
+
+fn isBackground(error Failure) bool {
+    match error {
+        Start: false
+        Stop: false
+        Background: true
+    }
+}
+
+fn observationFailed(error worker.GroupError) bool {
+    discard error
+    false
+}
+
+fn backgroundRun(
+    $result Result<own hosting.RunReport<Failure>, hosting.StartError<Failure>>
+) bool {
+    match result {
+        Ok(report): inspectBackgroundRun($report)
+        Err(error): runFailed($error)
+    }
+}
+
+fn inspectBackgroundRun($report own hosting.RunReport<Failure>) bool {
+    const hosting.RunReport { Reason Cleanup } = report
+    Cleanup.IsEmpty() && backgroundReason($Reason)
+}
+
+fn backgroundReason($reason hosting.RunReason<Failure>) bool {
+    match reason {
+        StopRequested: false
+        BackgroundCompleted: false
+        BackgroundFailed(error): isBackground(error)
+        ControlFailed(error): observationFailed(error)
+    }
+}
+
+fn stoppedRun(
+    $result Result<own hosting.RunReport<Failure>, hosting.StartError<Failure>>
+) bool {
+    match result {
+        Ok(report): inspectStoppedRun($report)
+        Err(error): runFailed($error)
+    }
+}
+
+fn inspectStoppedRun($report own hosting.RunReport<Failure>) bool {
+    const hosting.RunReport { Reason Cleanup } = report
+    Cleanup.IsEmpty() && stoppedReason($Reason)
+}
+
+fn stoppedReason($reason hosting.RunReason<Failure>) bool {
+    match reason {
+        StopRequested: true
+        BackgroundCompleted: false
+        BackgroundFailed(error): unexpectedBackground(error)
+        ControlFailed(error): observationFailed(error)
+    }
+}
+
+fn unexpectedBackground(error Failure) bool {
+    discard error
+    false
+}
+
+fn runFailed($error hosting.StartError<Failure>) bool {
+    discard error
+    false
+}
+
+fn main() i32 {
+    var successful = hosting.NewHost<Failure>()
+    const startLabel = "on start"
+    const stopLabel = "on stop"
+    const startHook = fn() void capture $startLabel {
+        print(startLabel)
+    }
+    const stopHook = fn() void capture $stopLabel {
+        print(stopLabel)
+    }
+    if !added(successful.OnStart($startHook)) return 1
+    if !added(successful.OnStop($stopHook)) return 2
+    const successfulFirst = own First {}
+    const successfulSecond = own Second { failStart = false failStop = true }
+    const successfulBackground = own Background {
+        label = "background stop"
+        fail = true
+    }
+    if !added(successful.Add($successfulFirst)) return 3
+    if !added(successful.Add($successfulSecond)) return 4
+    if !added(successful.AddBackground($successfulBackground)) return 5
+    if !started(successful.Start()) return 6
+    if !successful.IsRunning() return 7
+    const late = own First {}
+    if !registrationRejected(successful.Add($late)) return 8
+    if !alreadyStarted(successful.Start()) return 9
+    const stopFailures = successful.Shutdown()
+    if stopFailures.Len() != 2 || !successful.IsStopped() return 10
+
+    var failing = hosting.NewHost<Failure>()
+    const failingFirst = own First {}
+    const failingSecond = own Second { failStart = true failStop = false }
+    if !added(failing.Add($failingFirst)) return 11
+    if !added(failing.Add($failingSecond)) return 12
+    if !started(failing.Start()) return 13
+    if !failing.IsStopped() return 14
+
+    var observing = hosting.NewHost<Failure>()
+    const observedBackground = own Background {
+        label = "background fail"
+        fail = true
+    }
+    if !added(observing.AddBackground($observedBackground)) return 15
+    if !started(observing.Start()) return 16
+    const observation = $observing.NextBackground()
+    const observedOutcome = $observation.wait()
+    const hosting.BackgroundNext { Host Value } = observedOutcome
+    if !observed($Value) return 17
+    var restored = Host
+    const observedFailures = restored.Shutdown()
+    if !observedFailures.IsEmpty() return 18
+
+    var automatic = hosting.NewHost<Failure>()
+    const automaticBackground = own Background {
+        label = "background run fail"
+        fail = true
+    }
+    if !added(automatic.AddBackground($automaticBackground)) return 19
+    const Channel { sender as automaticStop receiver as automaticControl } = channel<void>(0)
+    const automaticRun = hosting.Run($automatic, $automaticControl)
+    const automaticResult = $automaticRun.wait()
+    discard automaticStop
+    if !backgroundRun($automaticResult) return 20
+
+    const controlled = hosting.NewHost<Failure>()
+    const Channel { sender as stopSender receiver as stopReceiver } = channel<void>(0)
+    const controlledRun = hosting.Run($controlled, $stopReceiver)
+    const stopRequest = spawn requestStop($stopSender)
+    const controlledResult = $controlledRun.wait()
+    discard $stopRequest.wait()
+    if !stoppedRun($controlledResult) return 21
+    print("hosting")
+    0
+}

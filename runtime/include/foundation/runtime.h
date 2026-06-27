@@ -4,6 +4,19 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <float.h>
+
+#ifdef __cplusplus
+static_assert(sizeof(float) == 4 && FLT_RADIX == 2 && FLT_MANT_DIG == 24,
+              "Foundation f32 requires IEEE 754 binary32");
+static_assert(sizeof(double) == 8 && FLT_RADIX == 2 && DBL_MANT_DIG == 53,
+              "Foundation f64 requires IEEE 754 binary64");
+#else
+_Static_assert(sizeof(float) == 4 && FLT_RADIX == 2 && FLT_MANT_DIG == 24,
+               "Foundation f32 requires IEEE 754 binary32");
+_Static_assert(sizeof(double) == 8 && FLT_RADIX == 2 && DBL_MANT_DIG == 53,
+               "Foundation f64 requires IEEE 754 binary64");
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -83,7 +96,7 @@ void fdn_string_drop(fdn_string *value);
 fdn_string fdn_string_concat(fdn_string left, fdn_string right);
 int fdn_string_equal(fdn_string left, fdn_string right);
 void fdn_println(fdn_string value);
-size_t fdn_bounds_check(int32_t index, size_t length);
+size_t fdn_bounds_check(size_t index, size_t length);
 void *fdn_alloc(size_t size);
 void fdn_dealloc(void *value);
 size_t fdn_total_allocations(void);
@@ -135,6 +148,7 @@ fdn_channel_status fdn_channel_poll_select(
     void *context, const fdn_channel_select_case *cases, size_t count,
     uint64_t deadline_nanoseconds, size_t *selected);
 uint64_t fdn_monotonic_nanoseconds(void);
+void fdn_retry_wait(uint32_t retry_index);
 size_t fdn_channel_live_count(void);
 #ifdef __cplusplus
 [[noreturn]] void fdn_panic(fdn_string message);
@@ -145,17 +159,34 @@ _Noreturn void fdn_panic(fdn_string message);
 _Noreturn void fdn_panic_cstr(const char *message);
 _Noreturn void fdn_invalid_enum_tag(void);
 #endif
-int32_t fdn_i32_add(int32_t left, int32_t right);
-int32_t fdn_i32_subtract(int32_t left, int32_t right);
-int32_t fdn_i32_multiply(int32_t left, int32_t right);
-int32_t fdn_i32_divide(int32_t left, int32_t right);
-int32_t fdn_i32_remainder(int32_t left, int32_t right);
-int32_t fdn_i32_negate(int32_t value);
-uint64_t fdn_u64_add(uint64_t left, uint64_t right);
-uint64_t fdn_u64_subtract(uint64_t left, uint64_t right);
-uint64_t fdn_u64_multiply(uint64_t left, uint64_t right);
-uint64_t fdn_u64_divide(uint64_t left, uint64_t right);
-uint64_t fdn_u64_remainder(uint64_t left, uint64_t right);
+#define FDN_DECLARE_SIGNED_ARITHMETIC(TYPE, NAME) \
+    TYPE fdn_##NAME##_add(TYPE left, TYPE right); \
+    TYPE fdn_##NAME##_subtract(TYPE left, TYPE right); \
+    TYPE fdn_##NAME##_multiply(TYPE left, TYPE right); \
+    TYPE fdn_##NAME##_divide(TYPE left, TYPE right); \
+    TYPE fdn_##NAME##_remainder(TYPE left, TYPE right); \
+    TYPE fdn_##NAME##_negate(TYPE value)
+
+#define FDN_DECLARE_UNSIGNED_ARITHMETIC(TYPE, NAME) \
+    TYPE fdn_##NAME##_add(TYPE left, TYPE right); \
+    TYPE fdn_##NAME##_subtract(TYPE left, TYPE right); \
+    TYPE fdn_##NAME##_multiply(TYPE left, TYPE right); \
+    TYPE fdn_##NAME##_divide(TYPE left, TYPE right); \
+    TYPE fdn_##NAME##_remainder(TYPE left, TYPE right)
+
+FDN_DECLARE_SIGNED_ARITHMETIC(int8_t, i8);
+FDN_DECLARE_SIGNED_ARITHMETIC(int16_t, i16);
+FDN_DECLARE_SIGNED_ARITHMETIC(int32_t, i32);
+FDN_DECLARE_SIGNED_ARITHMETIC(int64_t, i64);
+FDN_DECLARE_SIGNED_ARITHMETIC(intptr_t, isize);
+FDN_DECLARE_UNSIGNED_ARITHMETIC(uint8_t, u8);
+FDN_DECLARE_UNSIGNED_ARITHMETIC(uint16_t, u16);
+FDN_DECLARE_UNSIGNED_ARITHMETIC(uint32_t, u32);
+FDN_DECLARE_UNSIGNED_ARITHMETIC(uint64_t, u64);
+FDN_DECLARE_UNSIGNED_ARITHMETIC(size_t, usize);
+
+#undef FDN_DECLARE_SIGNED_ARITHMETIC
+#undef FDN_DECLARE_UNSIGNED_ARITHMETIC
 int32_t foundation_runtime_env_read(const fdn_string *name, fdn_string *value);
 fdn_string foundation_runtime_string_copy(const fdn_string *value);
 uint64_t foundation_runtime_string_byte_length(const fdn_string *value);
@@ -175,10 +206,24 @@ bool foundation_runtime_string_builder_append_code_point(uint64_t handle, uint64
 fdn_string foundation_runtime_string_builder_finish(uint64_t handle);
 void foundation_runtime_string_builder_close(uint64_t handle);
 uint64_t foundation_runtime_string_builder_live_handles(void);
+fdn_string foundation_runtime_format_bool(bool value);
+fdn_string foundation_runtime_format_i8(int8_t value);
+fdn_string foundation_runtime_format_i16(int16_t value);
 fdn_string foundation_runtime_format_i32(int32_t value);
+fdn_string foundation_runtime_format_i64(int64_t value);
+fdn_string foundation_runtime_format_isize(intptr_t value);
+fdn_string foundation_runtime_format_u8(uint8_t value);
+fdn_string foundation_runtime_format_u16(uint16_t value);
+fdn_string foundation_runtime_format_u32(uint32_t value);
 fdn_string foundation_runtime_format_u64(uint64_t value);
+fdn_string foundation_runtime_format_usize(size_t value);
+fdn_string foundation_runtime_format_f32(float value);
+fdn_string foundation_runtime_format_f64(double value);
 uint64_t foundation_runtime_time_unix_seconds(void);
+uint64_t foundation_runtime_time_monotonic_nanoseconds(void);
 int32_t foundation_runtime_time_format_utc(uint64_t unix_seconds, fdn_string *result);
+void foundation_runtime_uuid_v4(uint64_t *high, uint64_t *low);
+void foundation_runtime_uuid_v7(uint64_t *high, uint64_t *low);
 uint64_t foundation_runtime_cancellation_open(void);
 uint64_t foundation_runtime_cancellation_retain(uint64_t handle);
 void foundation_runtime_cancellation_request(uint64_t handle);
@@ -203,6 +248,13 @@ uint64_t foundation_runtime_fs_live_directories(void);
 int32_t foundation_runtime_net_resolve(const fdn_string *host, uint64_t port,
                                        uint64_t *addresses);
 void foundation_runtime_net_addresses_close(uint64_t addresses);
+int32_t foundation_runtime_net_listen(const fdn_string *address, uint64_t port,
+                                      uint64_t backlog, uint64_t *listener,
+                                      uint64_t *bound_port);
+void foundation_runtime_net_listener_close(uint64_t listener);
+void foundation_runtime_net_accept_start(uint64_t listener, uint64_t *connection,
+                                         fdn_reactor_operation *operation);
+void foundation_runtime_net_accept_cancel(fdn_reactor_operation *operation);
 void foundation_runtime_net_connect_start(uint64_t addresses, uint64_t *connection,
                                           fdn_reactor_operation *operation);
 void foundation_runtime_net_connect_cancel(fdn_reactor_operation *operation);
@@ -215,13 +267,42 @@ void foundation_runtime_net_read_line_start(uint64_t reader, uint64_t limit,
                                             fdn_string *line,
                                             fdn_reactor_operation *operation);
 void foundation_runtime_net_read_line_cancel(fdn_reactor_operation *operation);
+void foundation_runtime_net_read_exact_start(uint64_t reader, uint64_t length,
+                                             fdn_string *text,
+                                             fdn_reactor_operation *operation);
+void foundation_runtime_net_read_exact_cancel(fdn_reactor_operation *operation);
 void foundation_runtime_net_write_all_start(uint64_t writer, const fdn_string *text,
                                             fdn_reactor_operation *operation);
 void foundation_runtime_net_write_all_cancel(fdn_reactor_operation *operation);
 uint64_t foundation_runtime_net_live_addresses(void);
+uint64_t foundation_runtime_net_live_listeners(void);
 uint64_t foundation_runtime_net_live_connections(void);
 uint64_t foundation_runtime_net_live_requests(void);
 uint64_t foundation_runtime_net_live_services(void);
+int32_t foundation_runtime_plugin_open(const fdn_string *path, uint64_t *handle,
+                                       fdn_string *name, fdn_string *detail);
+int32_t foundation_runtime_plugin_start(uint64_t handle, fdn_string *detail);
+int32_t foundation_runtime_plugin_stop(uint64_t handle, fdn_string *detail);
+int32_t foundation_runtime_plugin_close(uint64_t *handle, fdn_string *detail);
+uint64_t foundation_runtime_plugin_live_handles(void);
+int32_t foundation_runtime_plugin_sandbox_open(const fdn_string *path,
+                                               uint64_t *handle,
+                                               fdn_string *detail);
+int32_t foundation_runtime_plugin_sandbox_add_argument(uint64_t handle,
+                                                       const fdn_string *argument,
+                                                       fdn_string *detail);
+int32_t foundation_runtime_plugin_sandbox_start(uint64_t handle,
+                                                uint64_t timeout_nanoseconds,
+                                                fdn_string *ready,
+                                                fdn_string *detail);
+int32_t foundation_runtime_plugin_sandbox_stop(uint64_t handle,
+                                               uint64_t timeout_nanoseconds,
+                                               int32_t *exit_code,
+                                               fdn_string *detail);
+void foundation_runtime_plugin_sandbox_abort(uint64_t handle);
+void foundation_runtime_plugin_sandbox_close(uint64_t *handle);
+uint64_t foundation_runtime_plugin_sandbox_live_handles(void);
+uint64_t foundation_runtime_plugin_sandbox_live_processes(void);
 
 #ifdef __cplusplus
 }

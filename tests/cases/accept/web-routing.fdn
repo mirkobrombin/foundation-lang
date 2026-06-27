@@ -1,0 +1,280 @@
+package test.web_routing
+
+import foundation.web
+import std.collections
+import std.text
+
+enum AppError {
+    MissingParameter
+}
+
+struct ParameterHandler implements web.Handler<AppError> {
+    name String
+}
+
+methods ParameterHandler {
+    fn Handle(self, $request web.Request) Result<web.Response, AppError> {
+        var active = request
+        const value = active.Param(self.name)
+        discard active
+        match value {
+            None: .Err(.MissingParameter)
+            Some(found): .Ok(web.Text(200, $found))
+        }
+    }
+}
+
+struct TextHandler implements web.Handler<AppError> {
+    value String
+}
+
+methods TextHandler {
+    fn Handle(self, $request web.Request) Result<web.Response, AppError> {
+        discard request
+        .Ok(web.Text(200, text.Copy(self.value)))
+    }
+}
+
+fn request(method web.Method, $path String) web.Request {
+    web.Request {
+        Method = method
+        Target = text.Copy(path)
+        Path = path
+        Version = "HTTP/1.1"
+        Headers = collections.NewList<web.HeaderValue>()
+        Params = collections.NewList<web.Parameter>()
+    }
+}
+
+fn responseBody(
+    $value Result<web.Response, web.DispatchError<AppError>>
+) String {
+    match value {
+        Ok(response): takeBody($response)
+        Err(error): dispatchFailure(error)
+    }
+}
+
+fn takeBody($response web.Response) String {
+    const web.Response { Status Headers Body } = response
+    discard Status
+    discard Headers
+    Body
+}
+
+fn dispatchFailure(error web.DispatchError<AppError>) String {
+    discard error
+    ""
+}
+
+fn dispatchCode(
+    $value Result<web.Response, web.DispatchError<AppError>>
+) i32 {
+    match value {
+        Ok(response): successfulDispatch($response)
+        Err(error): dispatchErrorCode(error)
+    }
+}
+
+fn successfulDispatch($response web.Response) i32 {
+    discard response
+    0
+}
+
+fn dispatchErrorCode(error web.DispatchError<AppError>) i32 {
+    match error {
+        NotFound: 1
+        MethodNotAllowed: 2
+        Handler(error): 3
+    }
+}
+
+fn registrationCode(
+    $value Result<void, web.RegistrationError>
+) i32 {
+    match value {
+        Ok: 0
+        Err(error): registrationErrorCode(error)
+    }
+}
+
+fn registrationErrorCode(error web.RegistrationError) i32 {
+    match error {
+        EmptyPath: 1
+        InvalidPath: 2
+        MalformedSegment: 3
+        InvalidParameter: 4
+        DuplicateParameter: 5
+        UnknownConstraint: 6
+        UnsupportedConstraint: 7
+        CatchAllNotLast: 8
+        AmbiguousRoute: 9
+        DuplicateRoute: 10
+        DuplicateId: 11
+    }
+}
+
+fn parameterHandler($name String) own web.Handler<AppError> {
+    own ParameterHandler { name = name }
+}
+
+fn textHandler($value String) own web.Handler<AppError> {
+    own TextHandler { value = value }
+}
+
+fn optionEqual($value Option<String>, expected String) bool {
+    match value {
+        None: false
+        Some(found): found == expected
+    }
+}
+
+fn encodedValue($value Option<String>) bool {
+    match value {
+        None: false
+        Some(found): encodedText(found)
+    }
+}
+
+fn encodedText(value String) bool {
+    if text.ByteLen(value) != 2 return false
+    const first = text.ByteAt(value, 0) else error {
+        discard error
+        return false
+    }
+    const second = text.ByteAt(value, 1) else error {
+        discard error
+        return false
+    }
+    first == 195 && second == 169
+}
+
+fn routeMatchCode(
+    $value Result<web.RouteMatch, web.MatchError>,
+    expectedId u64,
+    expectedName String,
+    expectedValue String
+) i32 {
+    match value {
+        Ok(found): acceptedRouteMatch($found, expectedId, expectedName, expectedValue)
+        Err(error): routeMatchErrorCode(error)
+    }
+}
+
+fn acceptedRouteMatch(
+    $found web.RouteMatch,
+    expectedId u64,
+    expectedName String,
+    expectedValue String
+) i32 {
+    const web.RouteMatch { Id Params } = found
+    if Id != expectedId {
+        discard Params
+        return 3
+    }
+    var activeParams = Params
+    const selected = activeParams.PopFront()
+    discard activeParams
+    match selected {
+        None: 4
+        Some(parameter): if parameter.Name == expectedName && parameter.Value == expectedValue {
+            0
+        } else {
+            5
+        }
+    }
+}
+
+fn routeMatchErrorCode(error web.MatchError) i32 {
+    match error {
+        NotFound: 1
+        MethodNotAllowed: 2
+    }
+}
+
+fn main() i32 {
+    var router = web.NewRouter<AppError>()
+    if registrationCode($router.Map(.GET, "/users/{id:int}", parameterHandler("id"))) != 0 {
+        return 1
+    }
+    if registrationCode($router.Map(.GET, "/items/{slug:alpha}", parameterHandler("slug"))) != 0 {
+        return 2
+    }
+    if registrationCode($router.Map(.GET, "/static/{*rest}", parameterHandler("rest"))) != 0 {
+        return 3
+    }
+    if registrationCode($router.Map(.GET, "/priority/{value}", textHandler("parameter"))) != 0 {
+        return 4
+    }
+    if registrationCode($router.Map(.GET, "/priority/static", textHandler("literal"))) != 0 {
+        return 5
+    }
+    if registrationCode($router.Map(.GET, "/methods/static", textHandler("get"))) != 0 {
+        return 6
+    }
+    if registrationCode($router.Map(.POST, "/methods/{id}", parameterHandler("id"))) != 0 {
+        return 7
+    }
+
+    if responseBody($router.Dispatch(request(.GET, "/users/42"))) != "42" return 8
+    if dispatchCode($router.Dispatch(request(.GET, "/users/nope"))) != 1 return 9
+    if responseBody($router.Dispatch(request(.GET, "/items/alpha"))) != "alpha" return 10
+    if dispatchCode($router.Dispatch(request(.GET, "/items/a1"))) != 1 return 11
+    if responseBody($router.Dispatch(request(.GET, "/static/css/main.css"))) != "css/main.css" {
+        return 12
+    }
+    if responseBody($router.Dispatch(request(.GET, "/priority/static"))) != "literal" return 13
+    if responseBody($router.Dispatch(request(.POST, "/methods/static"))) != "static" return 14
+    if dispatchCode($router.Dispatch(request(.POST, "/users/42"))) != 2 return 15
+
+    if registrationCode($router.Map(.POST, "/users/{name:int}", parameterHandler("name"))) != 9 {
+        return 16
+    }
+    if registrationCode($router.Map(.GET, "/bad/{id}/{id}", textHandler("bad"))) != 5 {
+        return 17
+    }
+    if registrationCode($router.Map(.GET, "/bad/{*rest}/tail", textHandler("bad"))) != 8 {
+        return 18
+    }
+    if registrationCode($router.Map(.GET, "/bad/{id:innt}", textHandler("bad"))) != 6 {
+        return 19
+    }
+    if registrationCode($router.Map(.GET, "/bad/{id:regex(^x$)}", textHandler("bad"))) != 7 {
+        return 20
+    }
+
+    var bindingRequest = request(
+        .GET,
+        "/search?q=hello+world&encoded=%C3%A9&%ZZ=bad&tail=ok"
+    )
+    bindingRequest.Body = "name=Ada+Lovelace&enabled="
+    bindingRequest.Headers.PushFront(web.HeaderValue {
+        Name = "x-trace"
+        Value = "ignored"
+    })
+    bindingRequest.Headers.PushFront(web.HeaderValue {
+        Name = "X-Trace"
+        Value = "trace-id"
+    })
+    if !optionEqual(bindingRequest.Query("q"), "hello world") return 21
+    if !encodedValue(bindingRequest.Query("encoded")) return 22
+    if !optionEqual(bindingRequest.Query("tail"), "ok") return 23
+    if !optionEqual(bindingRequest.Header("X-Trace"), "trace-id") return 24
+    if !optionEqual(bindingRequest.Form("name"), "Ada Lovelace") return 25
+    if !optionEqual(bindingRequest.Form("enabled"), "") return 26
+    discard bindingRequest
+
+    var table = web.NewRouteTable()
+    if registrationCode($table.Add(10, .GET, "/generated/{id:int}")) != 0 return 27
+    if registrationCode($table.Add(20, .GET, "/generated/static")) != 0 return 28
+    if registrationCode($table.Add(10, .POST, "/other")) != 11 return 29
+    if routeMatchCode($table.Match(.GET, "/generated/42"), 10, "id", "42") != 0 return 30
+    if routeMatchCode($table.Match(.GET, "/generated/static"), 20, "", "") != 4 return 31
+    if routeMatchCode($table.Match(.POST, "/generated/42"), 0, "", "") != 2 return 32
+    if routeMatchCode($table.Match(.GET, "/missing"), 0, "", "") != 1 return 33
+    discard table
+
+    discard router
+    print("web routing ok")
+    0
+}

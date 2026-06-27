@@ -1,0 +1,51 @@
+import foundation.actions
+import foundation.di
+
+contract Clock {
+    fn Now(self) i32
+}
+
+service Fallible {
+    @di.Inject()
+    fn New() Result<Fallible, bool> {
+        .Ok(Fallible {})
+    }
+}
+
+@di.Name("system")
+@di.Scope(.Singleton)
+service SystemClock implements Clock {
+    @di.Inject()
+    fn New() SystemClock {
+        SystemClock {}
+    }
+
+    fn Now(self) i32 {
+        42
+    }
+}
+
+@di.Scope(.Scoped)
+service Greeter {
+    prefix String
+
+    @di.Inject()
+    fn New(
+        @di.From("system") clock Clock,
+        @di.Input() $prefix String
+    ) Greeter {
+        discard clock
+        Greeter { prefix = prefix }
+    }
+
+    @actions.Name("greeter.greet")
+    @actions.Key("ctrl+g")
+    @actions.Policy("greet")
+    action Greet(self, name String) String {
+        self.prefix + name
+    }
+}
+
+fn main() i32 {
+    0
+}

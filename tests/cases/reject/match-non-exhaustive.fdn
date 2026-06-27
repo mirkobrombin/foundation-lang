@@ -4,7 +4,7 @@ enum Status {
 }
 
 fn main() i32 {
-    let status = Status.Ready(1)
+    const status = Status.Ready(1)
     match status {
         Ready(value): value
     }

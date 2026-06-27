@@ -1,0 +1,166 @@
+package test.host.transient_fallible
+
+struct FoundationApplication {
+}
+
+fn BuildFoundationApplication() FoundationApplication {
+    FoundationApplication { }
+}
+
+methods FoundationApplication {
+    fn Forward(self, foundationWorkerAllow bool, fail bool) Result<i32, ActivationError> {
+        const foundationWorker = Worker.New(foundationWorkerAllow) else error {
+            return .Err(error)
+        }
+        foundationWorker.Forward(fail)
+    }
+
+    fn Notify(self, foundationWorkerAllow bool, $message String) Result<void, ActivationError> {
+        const foundationWorker = Worker.New(foundationWorkerAllow) else error {
+            return .Err(error)
+        }
+        foundationWorker.Notify($message)
+        .Ok
+    }
+
+    fn Run(self, foundationWorkerAllow bool, value i32) Result<i32, ActivationError> {
+        const foundationWorker = Worker.New(foundationWorkerAllow) else error {
+            return .Err(error)
+        }
+        .Ok(foundationWorker.Run(value))
+    }
+}
+
+struct FoundationForwardAction {
+    foundationWorkerAllow bool
+    fail bool
+}
+
+struct FoundationNotifyAction {
+    foundationWorkerAllow bool
+    message String
+}
+
+struct FoundationRunAction {
+    foundationWorkerAllow bool
+    value i32
+}
+
+enum FoundationAction {
+    Forward(FoundationForwardAction)
+    Notify(FoundationNotifyAction)
+    Run(FoundationRunAction)
+}
+
+struct FoundationActionKeyBinding {
+    key String
+    actionName String
+}
+
+enum FoundationActionResult {
+    Forward(value i32)
+    Notify
+    Run(value i32)
+}
+
+enum FoundationDispatchError {
+    UnknownName
+    UnknownKey
+    ActionMismatch
+    ForwardFailed(error ActivationError)
+    NotifyActivation(error ActivationError)
+    RunActivation(error ActivationError)
+}
+
+methods FoundationApplication {
+    fn HasAction(self, name String) bool {
+        name == "forward" || name == "notify" || name == "run"
+    }
+
+    fn ActionNames(self) [3]String {
+        ["forward", "notify", "run"]
+    }
+
+    fn ActionKeyBindings(self) [0]FoundationActionKeyBinding {
+        []
+    }
+}
+
+methods FoundationApplication {
+    fn foundationDispatchForward(self, $payload FoundationForwardAction) Result<FoundationActionResult, FoundationDispatchError> {
+        const FoundationForwardAction { foundationWorkerAllow fail } = payload
+        match self.Forward(foundationWorkerAllow, fail) {
+            Ok(value): .Ok(.Forward(value = value))
+            Err(error): .Err(.ForwardFailed(error = error))
+        }
+    }
+
+    fn foundationDispatchNameForward(self, foundationDispatchName String, $payload FoundationForwardAction) Result<FoundationActionResult, FoundationDispatchError> {
+        if foundationDispatchName != "forward" return .Err(.ActionMismatch)
+        self.foundationDispatchForward($payload)
+    }
+
+    fn foundationDispatchKeyForward(self, foundationDispatchKey String, $payload FoundationForwardAction) Result<FoundationActionResult, FoundationDispatchError> {
+        if true return .Err(.ActionMismatch)
+        self.foundationDispatchForward($payload)
+    }
+
+    fn foundationDispatchNotify(self, $payload FoundationNotifyAction) Result<FoundationActionResult, FoundationDispatchError> {
+        const FoundationNotifyAction { foundationWorkerAllow message } = payload
+        match self.Notify(foundationWorkerAllow, $message) {
+            Ok: .Ok(.Notify)
+            Err(error): .Err(.NotifyActivation(error = error))
+        }
+    }
+
+    fn foundationDispatchNameNotify(self, foundationDispatchName String, $payload FoundationNotifyAction) Result<FoundationActionResult, FoundationDispatchError> {
+        if foundationDispatchName != "notify" return .Err(.ActionMismatch)
+        self.foundationDispatchNotify($payload)
+    }
+
+    fn foundationDispatchKeyNotify(self, foundationDispatchKey String, $payload FoundationNotifyAction) Result<FoundationActionResult, FoundationDispatchError> {
+        if true return .Err(.ActionMismatch)
+        self.foundationDispatchNotify($payload)
+    }
+
+    fn foundationDispatchRun(self, $payload FoundationRunAction) Result<FoundationActionResult, FoundationDispatchError> {
+        const FoundationRunAction { foundationWorkerAllow value } = payload
+        match self.Run(foundationWorkerAllow, value) {
+            Ok(value): .Ok(.Run(value = value))
+            Err(error): .Err(.RunActivation(error = error))
+        }
+    }
+
+    fn foundationDispatchNameRun(self, foundationDispatchName String, $payload FoundationRunAction) Result<FoundationActionResult, FoundationDispatchError> {
+        if foundationDispatchName != "run" return .Err(.ActionMismatch)
+        self.foundationDispatchRun($payload)
+    }
+
+    fn foundationDispatchKeyRun(self, foundationDispatchKey String, $payload FoundationRunAction) Result<FoundationActionResult, FoundationDispatchError> {
+        if true return .Err(.ActionMismatch)
+        self.foundationDispatchRun($payload)
+    }
+}
+
+methods FoundationApplication {
+    fn Dispatch(self, $request FoundationAction) Result<FoundationActionResult, FoundationDispatchError> {
+        match request {
+            Forward(payload): self.foundationDispatchForward($payload)
+            Notify(payload): self.foundationDispatchNotify($payload)
+            Run(payload): self.foundationDispatchRun($payload)
+        }
+    }
+}
+
+methods FoundationApplication {
+    fn DispatchName(self, foundationDispatchName String, $request FoundationAction) Result<FoundationActionResult, FoundationDispatchError> {
+        if foundationDispatchName != "forward" && foundationDispatchName != "notify" && foundationDispatchName != "run" return .Err(.UnknownName)
+        match request {
+            Forward(payload): self.foundationDispatchNameForward(foundationDispatchName, $payload)
+            Notify(payload): self.foundationDispatchNameNotify(foundationDispatchName, $payload)
+            Run(payload): self.foundationDispatchNameRun(foundationDispatchName, $payload)
+        }
+    }
+}
+
+// foundation:generated application/v1

@@ -1,0 +1,9 @@
+fn inspect(value String) void {
+    print(value)
+}
+
+fn main() i32 {
+    const value = "borrowed"
+    inspect($value)
+    0
+}

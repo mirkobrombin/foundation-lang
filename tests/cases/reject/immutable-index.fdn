@@ -1,5 +1,5 @@
 fn main() i32 {
-    let values = [1, 2]
+    const values = [1, 2]
     values[0] = 3
     0
 }

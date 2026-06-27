@@ -26,6 +26,27 @@ Only `Task<void>` can be supervised. A task that performs a fallible operation m
 `Result`, send the error to an owned channel, or apply another explicit policy before it returns.
 This keeps `Result` must-use intact after detachment.
 
+`Group<T>` is the typed completion counterpart. It admits at most its declared capacity, owns
+every task through a supervisor, and buffers exactly one completion per admitted task. `Next`
+transfers the group into a task and returns both the first completed value and the still-owned
+group:
+
+```foundation
+var group = worker.NewGroup<i32>(2)
+discard group.Add(spawn compute(1))
+discard group.Add(spawn compute(2))
+
+const waiting = $group.Next()
+const outcome = $waiting.wait()
+const worker.GroupNext { Group Value } = outcome
+group = Group
+```
+
+The ownership round trip prevents concurrent `Next` calls on one receiver. `Shutdown` joins and
+discards unread completions, while `Cancel` requests cancellation before joining. `WaitOrStop`
+selects between the first typed completion and a caller-owned `Receiver<void>` stop signal; it is
+the coordination primitive used by `foundation.hosting.Run`.
+
 The current executor remains cooperative. `Pool` provides bounded parallel execution for CPU work
 that must use multiple cores:
 

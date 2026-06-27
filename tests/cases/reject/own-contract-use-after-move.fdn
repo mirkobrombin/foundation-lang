@@ -1,18 +1,18 @@
 contract Consumer {
-    fn take(own) i32
+    fn take($self) i32
 }
 
 struct Value implements Consumer {
     stored i32
 
-    fn take(own) i32 { self.stored }
+    fn take($self) i32 { self.stored }
 }
 
-fn erase(value own Value) own Consumer { value }
+fn erase($value own Value) own Consumer { value }
 
 fn main() i32 {
-    let value = erase(own Value { stored = 42 })
-    let result = value.take()
+    const value = erase(own Value { stored = 42 })
+    const result = value.take()
     discard value
     result
 }

@@ -1,0 +1,36 @@
+package test.host
+
+import foundation.actions
+import foundation.di
+
+service First {
+    @di.Inject()
+    fn New() Result<First, bool> {
+        .Ok(First {})
+    }
+}
+
+service Second {
+    @di.Inject()
+    fn New() Result<Second, String> {
+        .Ok(Second {})
+    }
+}
+
+service Runner {
+    @di.Inject()
+    fn New(first First, second Second) Runner {
+        discard first
+        discard second
+        Runner {}
+    }
+
+    @actions.Name("run")
+    action Run(self) i32 {
+        0
+    }
+}
+
+fn main() i32 {
+    0
+}

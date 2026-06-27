@@ -1,0 +1,15 @@
+fn main() i32 {
+    var counter = 0
+    var total = 0
+    while counter < 6 {
+        counter = counter + 1
+        const marker = "iteration" + "!"
+        if counter == 2 continue
+        if counter == 5 break
+        total = total + counter
+        discard marker
+    }
+    if total != 8 return 1
+    print("ok")
+    0
+}

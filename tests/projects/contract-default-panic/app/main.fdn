@@ -5,7 +5,7 @@ import trace.defaults
 contract Principal extends defaults.Failure {}
 
 struct PrincipalImpl implements Principal {
-    fn Cause(view) void {
+    fn Cause(self) void {
         panic("default contract failure")
     }
 }
@@ -16,12 +16,12 @@ struct Wrapped implements Principal {
     delegate inner as Principal
 }
 
-fn run(value view defaults.Failure) void {
+fn run(value defaults.Failure) void {
     value.Fail()
 }
 
 fn main() i32 {
-    let value = Wrapped { inner = PrincipalImpl {} }
-    run(view value)
+    const value = Wrapped { inner = PrincipalImpl {} }
+    run(value)
     0
 }

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstdint>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -83,6 +84,10 @@ class TypeLookahead {
         }
         if (check(TokenKind::Own) || check(TokenKind::View) || check(TokenKind::Edit)) {
             ++current_;
+            return scanType(depth + 1);
+        }
+        if (match(TokenKind::Star)) {
+            match(TokenKind::Const);
             return scanType(depth + 1);
         }
         if (match(TokenKind::Fn)) {
@@ -195,6 +200,16 @@ Program Parser::parse() {
             }
             continue;
         }
+        if (check(TokenKind::Service)) {
+            auto declaration = structDeclaration(true);
+            declaration.attributes = std::move(parsedAttributes.applications);
+            if (parsedAttributes.selected) {
+                program_.structs.push_back(std::move(declaration));
+            } else {
+                restoreProgram(expressions, statements, blocks, functions);
+            }
+            continue;
+        }
         if (check(TokenKind::Methods)) {
             if (!parsedAttributes.applications.empty()) {
                 diagnostics_.error("FDN1160", "methods block cannot be attributed",
@@ -213,6 +228,35 @@ Program Parser::parse() {
                 program_.enums.push_back(std::move(declaration));
             } else {
                 restoreProgram(expressions, statements, blocks, functions);
+            }
+            continue;
+        }
+        if (check(TokenKind::StateMachine)) {
+            const auto enums = program_.enums.size();
+            stateMachineDeclaration();
+            if (parsedAttributes.selected) {
+                if (program_.enums.size() > enums) {
+                    program_.enums[enums].attributes =
+                        std::move(parsedAttributes.applications);
+                }
+            } else {
+                restoreProgram(expressions, statements, blocks, functions);
+                program_.enums.resize(enums);
+            }
+            continue;
+        }
+        if (check(TokenKind::Pipeline) || check(TokenKind::Saga)) {
+            const auto structs = program_.structs.size();
+            const auto enums = program_.enums.size();
+            workflowDeclaration(check(TokenKind::Pipeline) ? WorkflowKind::Pipeline
+                                                           : WorkflowKind::Saga);
+            if (!parsedAttributes.selected) {
+                restoreProgram(expressions, statements, blocks, functions);
+                program_.structs.resize(structs);
+                program_.enums.resize(enums);
+            } else if (!parsedAttributes.applications.empty()) {
+                diagnostics_.error("FDN1148", "workflow attributes are not supported yet",
+                                   parsedAttributes.applications.front().span);
             }
             continue;
         }
@@ -256,6 +300,17 @@ Program Parser::parse() {
             declaration.attributes = std::move(parsedAttributes.applications);
             declaration.blocking = hasBlockingAttribute(declaration.attributes);
             declaration.callback = hasCallbackAttribute(declaration.attributes);
+            if (parsedAttributes.selected) {
+                program_.functions.push_back(std::move(declaration));
+            } else {
+                restoreProgram(expressions, statements, blocks, functions);
+            }
+            continue;
+        }
+        if (check(TokenKind::Test) ||
+            (check(TokenKind::Identifier) && current().text == "test")) {
+            auto declaration = testDeclaration();
+            declaration.attributes = std::move(parsedAttributes.applications);
             if (parsedAttributes.selected) {
                 program_.functions.push_back(std::move(declaration));
             } else {
@@ -340,6 +395,10 @@ std::optional<AttributeTarget> Parser::attributeTarget() {
         advance();
         return AttributeTarget::Struct;
     }
+    if (kind == TokenKind::Service) {
+        advance();
+        return AttributeTarget::Service;
+    }
     if (kind == TokenKind::Enum) {
         advance();
         return AttributeTarget::Enum;
@@ -347,6 +406,10 @@ std::optional<AttributeTarget> Parser::attributeTarget() {
     if (kind == TokenKind::Contract) {
         advance();
         return AttributeTarget::Contract;
+    }
+    if (kind == TokenKind::Action) {
+        advance();
+        return AttributeTarget::Action;
     }
     if (kind != TokenKind::Identifier) {
         diagnostics_.error("FDN1154", "expected attribute target", current().span);
@@ -396,10 +459,16 @@ void Parser::restoreProgram(std::size_t expressions, std::size_t statements,
 
 std::pair<std::string, SourceSpan> Parser::qualifiedName(const char *code,
                                                         const char *message) {
-    const auto first = expect(TokenKind::Identifier, code, message);
+    const auto takeSegment = [&]() -> const Token & {
+        if (check(TokenKind::Identifier) || check(TokenKind::Test)) {
+            return advance();
+        }
+        return expect(TokenKind::Identifier, code, message);
+    };
+    const auto first = takeSegment();
     std::string name = first.text;
     while (match(TokenKind::Dot)) {
-        const auto segment = expect(TokenKind::Identifier, code, message);
+        const auto segment = takeSegment();
         name += '.';
         name += segment.text;
     }
@@ -428,6 +497,59 @@ bool Parser::check(TokenKind kind) const { return current().kind == kind; }
 
 bool Parser::continuesLine() const {
     return current_ != 0 && current().span.line == previous().span.line;
+}
+
+bool Parser::startsTailIfExpression() const {
+    if (!check(TokenKind::If)) {
+        return false;
+    }
+    auto index = current_ + 1;
+    while (index < tokens_.size() && tokens_[index].kind != TokenKind::LeftBrace &&
+           tokens_[index].kind != TokenKind::Eof) {
+        ++index;
+    }
+    const auto skipBlock = [&](std::size_t &position, bool &hasTailValue) {
+        if (position >= tokens_.size() ||
+            tokens_[position].kind != TokenKind::LeftBrace) {
+            return false;
+        }
+        const auto contentStart = position + 1;
+        auto depth = std::size_t{1};
+        ++position;
+        while (position < tokens_.size() && depth != 0) {
+            if (tokens_[position].kind == TokenKind::LeftBrace) {
+                ++depth;
+            } else if (tokens_[position].kind == TokenKind::RightBrace) {
+                --depth;
+            }
+            ++position;
+        }
+        if (depth != 0 || position <= contentStart + 1) {
+            return false;
+        }
+        const auto closing = position - 1;
+        auto tailStart = closing - 1;
+        const auto tailLine = tokens_[tailStart].span.line;
+        while (tailStart > contentStart &&
+               tokens_[tailStart - 1].span.line == tailLine) {
+            --tailStart;
+        }
+        const auto kind = tokens_[tailStart].kind;
+        hasTailValue = kind != TokenKind::Let && kind != TokenKind::Const &&
+                       kind != TokenKind::Var && kind != TokenKind::Return &&
+                       kind != TokenKind::Discard && kind != TokenKind::While &&
+                       kind != TokenKind::Select;
+        return true;
+    };
+    auto thenHasValue = false;
+    if (!skipBlock(index, thenHasValue) || !thenHasValue || index >= tokens_.size() ||
+        tokens_[index].kind != TokenKind::Else) {
+        return false;
+    }
+    ++index;
+    auto elseHasValue = false;
+    return skipBlock(index, elseHasValue) && elseHasValue &&
+           index < tokens_.size() && tokens_[index].kind == TokenKind::RightBrace;
 }
 
 bool Parser::startsGenericPrimary() const {
@@ -479,6 +601,19 @@ std::vector<std::string> Parser::typeParameters() {
 }
 
 TypeSyntax Parser::typeSyntax(const char *code, const char *message) {
+    if (match(TokenKind::Star)) {
+        const auto pointer = previous();
+        const auto readOnly = match(TokenKind::Const);
+        TypeSyntax type{readOnly ? "[raw-const]" : "[raw]", {}, pointer.span};
+        if (typeDepth_ >= maxTypeDepth) {
+            diagnostics_.error("FDN1065", "type nesting exceeds 128 levels", pointer.span);
+            return type;
+        }
+        ++typeDepth_;
+        type.arguments.push_back(typeSyntax(code, message));
+        --typeDepth_;
+        return type;
+    }
     if (check(TokenKind::Own) || check(TokenKind::View) || check(TokenKind::Edit)) {
         const auto qualifier = advance();
         TypeSyntax type{qualifier.text, {}, qualifier.span};
@@ -497,8 +632,23 @@ TypeSyntax Parser::typeSyntax(const char *code, const char *message) {
         expect(TokenKind::LeftParen, "FDN1120", "expected ( in function type");
         if (!check(TokenKind::RightParen)) {
             do {
+                auto mode = std::string{"[function-read]"};
+                auto modeSpan = current().span;
+                if (match(TokenKind::Ampersand)) {
+                    mode = "[function-edit]";
+                    modeSpan = previous().span;
+                } else if (match(TokenKind::Dollar)) {
+                    mode = "[function-transfer]";
+                    modeSpan = previous().span;
+                } else if (check(TokenKind::Own) || check(TokenKind::View) ||
+                           check(TokenKind::Edit)) {
+                    type.arguments.push_back(
+                        typeSyntax("FDN1121", "expected function parameter type"));
+                    continue;
+                }
+                auto parameter = typeSyntax("FDN1121", "expected function parameter type");
                 type.arguments.push_back(
-                    typeSyntax("FDN1121", "expected function parameter type"));
+                    TypeSyntax{std::move(mode), {std::move(parameter)}, modeSpan});
             } while (match(TokenKind::Comma));
         }
         expect(TokenKind::RightParen, "FDN1122", "expected ) in function type");
@@ -567,9 +717,12 @@ TypeSyntax Parser::typeSyntax(const char *code, const char *message) {
     return type;
 }
 
-StructDeclaration Parser::structDeclaration() {
-    const auto start = expect(TokenKind::Struct, "FDN1031", "expected struct");
-    const auto name = expect(TokenKind::Identifier, "FDN1032", "expected struct name");
+StructDeclaration Parser::structDeclaration(bool service) {
+    const auto declarationKind = service ? TokenKind::Service : TokenKind::Struct;
+    const auto start = expect(declarationKind, "FDN1031",
+                              service ? "expected service" : "expected struct");
+    const auto name = expect(TokenKind::Identifier, "FDN1032",
+                             service ? "expected service name" : "expected struct name");
     auto parameters = typeParameters();
     std::vector<StructImplementation> implementations;
     if (match(TokenKind::Implements)) {
@@ -611,8 +764,9 @@ StructDeclaration Parser::structDeclaration() {
             advance();
             continue;
         }
-        if (check(TokenKind::Fn)) {
-            auto declaration = method(name.text, parameters);
+        if (check(TokenKind::Fn) || check(TokenKind::Action)) {
+            const auto action = check(TokenKind::Action);
+            auto declaration = method(name.text, parameters, action);
             declaration.attributes = std::move(parsedAttributes.applications);
             program_.functions.push_back(std::move(declaration));
             continue;
@@ -624,12 +778,45 @@ StructDeclaration Parser::structDeclaration() {
         }
         const auto field = advance();
         auto type = typeSyntax("FDN1036", "expected struct field type");
+        std::optional<AstFunctionId> defaultFunction;
+        std::optional<SourceSpan> defaultSpan;
+        if (match(TokenKind::Equal)) {
+            const auto defaultStart = current().span;
+            auto previousTypeParameters = std::move(activeTypeParameters_);
+            activeTypeParameters_ = parameters;
+            const auto value = expression();
+            activeTypeParameters_ = std::move(previousTypeParameters);
+            const auto defaultEnd = previous().span;
+            defaultSpan = SourceSpan{
+                defaultStart.offset,
+                defaultEnd.offset + defaultEnd.length - defaultStart.offset,
+                defaultStart.line,
+                defaultStart.column,
+                defaultStart.source,
+            };
+
+            const auto returned = addStatement(ReturnStatement{value}, field.span);
+            program_.blocks.push_back({{returned}, field.span});
+
+            Function initializer;
+            initializer.name = "$field_default." + name.text + '.' + field.text;
+            initializer.typeParameters = parameters;
+            initializer.returnType = type;
+            initializer.body = program_.blocks.size() - 1;
+            initializer.span = field.span;
+            defaultFunction = program_.functions.size();
+            program_.functions.push_back(std::move(initializer));
+        }
         fields.push_back({field.text, std::move(type), isExported(field.text), field.span,
-                          std::move(parsedAttributes.applications)});
+                          std::move(parsedAttributes.applications), defaultFunction,
+                          defaultSpan});
     }
     expect(TokenKind::RightBrace, "FDN1037", "expected } after struct declaration");
-    return {name.text, std::move(parameters), std::move(implementations), std::move(fields),
-            isExported(name.text), start.span, {}, {}};
+    StructDeclaration result{name.text, std::move(parameters), std::move(implementations),
+                             std::move(fields), isExported(name.text), start.span, {}, {},
+                             StructKind::Struct, {}};
+    result.kind = service ? StructKind::Service : StructKind::Struct;
+    return result;
 }
 
 void Parser::methodsDeclaration() {
@@ -645,12 +832,13 @@ void Parser::methodsDeclaration() {
             advance();
             continue;
         }
-        if (!check(TokenKind::Fn)) {
+        if (!check(TokenKind::Fn) && !check(TokenKind::Action)) {
             diagnostics_.error("FDN1164", "expected method declaration", current().span);
             advance();
             continue;
         }
-        auto declaration = method(owner.text, parameters);
+        const auto action = check(TokenKind::Action);
+        auto declaration = method(owner.text, parameters, action);
         declaration.attributes = std::move(parsedAttributes.applications);
         program_.functions.push_back(std::move(declaration));
     }
@@ -673,17 +861,379 @@ EnumDeclaration Parser::enumDeclaration() {
         }
         const auto variant = advance();
         std::optional<TypeSyntax> payloadType;
+        std::optional<std::string> payloadName;
+        std::optional<SourceSpan> payloadNameSpan;
         if (match(TokenKind::LeftParen)) {
+            if (check(TokenKind::Identifier) &&
+                (peek(1).kind == TokenKind::Identifier ||
+                 peek(1).kind == TokenKind::LeftBracket || peek(1).kind == TokenKind::Fn ||
+                 peek(1).kind == TokenKind::Own || peek(1).kind == TokenKind::View ||
+                 peek(1).kind == TokenKind::Edit || peek(1).kind == TokenKind::Star)) {
+                const auto payload = advance();
+                payloadName = payload.text;
+                payloadNameSpan = payload.span;
+            }
             payloadType = typeSyntax("FDN1048", "expected payload type");
             expect(TokenKind::RightParen, "FDN1049", "expected ) after enum payload");
         }
         variants.push_back(
             {variant.text, std::move(payloadType), isExported(variant.text), variant.span,
-             std::move(parsedAttributes.applications)});
+             std::move(parsedAttributes.applications), std::move(payloadName),
+             payloadNameSpan});
     }
     expect(TokenKind::RightBrace, "FDN1050", "expected } after enum declaration");
     return {name.text, std::move(parameters), std::move(variants), isExported(name.text),
             BuiltinEnumKind::None, start.span, {}, {}};
+}
+
+void Parser::stateMachineDeclaration() {
+    const auto start = expect(TokenKind::StateMachine, "FDN1190", "expected state_machine");
+    const auto name =
+        expect(TokenKind::Identifier, "FDN1191", "expected state machine name");
+    if (check(TokenKind::Less)) {
+        diagnostics_.error("FDN1192", "generic state machines are not supported yet",
+                           current().span);
+        static_cast<void>(typeParameters());
+    }
+    expect(TokenKind::LeftBrace, "FDN1193", "expected { after state machine name");
+
+    std::vector<EnumVariant> states;
+    struct PendingTransition {
+        Token event;
+        std::vector<Parameter> parameters;
+        std::vector<Token> sources;
+        Token destination;
+        std::optional<Token> destinationArgument;
+    };
+    std::vector<PendingTransition> transitions;
+    auto sawTransition = false;
+    const auto contextual = [&](std::string_view keyword, const char *code,
+                                const char *message) -> Token {
+        const auto token = expect(TokenKind::Identifier, code, message);
+        if (token.text != keyword) {
+            diagnostics_.error(code, message, token.span);
+        }
+        return token;
+    };
+
+    while (!check(TokenKind::RightBrace) && !atEnd()) {
+        if (check(TokenKind::Identifier) && current().text == "state") {
+            advance();
+            const auto stateToken =
+                expect(TokenKind::Identifier, "FDN1194", "expected state name");
+            if (sawTransition) {
+                diagnostics_.error("FDN1195", "state must be declared before transitions",
+                                   stateToken.span);
+            }
+            std::optional<TypeSyntax> payloadType;
+            std::optional<std::string> payloadName;
+            std::optional<SourceSpan> payloadNameSpan;
+            if (match(TokenKind::LeftParen)) {
+                const auto payload = expect(TokenKind::Identifier, "FDN1196",
+                                            "expected state payload name");
+                payloadName = payload.text;
+                payloadNameSpan = payload.span;
+                payloadType = typeSyntax("FDN1197", "expected state payload type");
+                expect(TokenKind::RightParen, "FDN1198",
+                       "expected ) after state payload");
+            }
+            states.push_back({stateToken.text, std::move(payloadType),
+                              isExported(stateToken.text), stateToken.span, {},
+                              std::move(payloadName), payloadNameSpan});
+            continue;
+        }
+
+        if (check(TokenKind::Identifier) && current().text == "on") {
+            advance();
+            sawTransition = true;
+            PendingTransition transition;
+            transition.event = expect(TokenKind::Identifier, "FDN1199",
+                                      "expected transition event name");
+            if (match(TokenKind::LeftParen)) {
+                if (!check(TokenKind::RightParen)) {
+                    do {
+                        transition.parameters.push_back(parameter());
+                    } while (match(TokenKind::Comma));
+                }
+                expect(TokenKind::RightParen, "FDN1200",
+                       "expected ) after transition parameters");
+            }
+            static_cast<void>(contextual("from", "FDN1201",
+                                         "expected from in transition"));
+            do {
+                transition.sources.push_back(
+                    expect(TokenKind::Identifier, "FDN1202", "expected source state"));
+            } while (match(TokenKind::Comma));
+            static_cast<void>(contextual("to", "FDN1203", "expected to in transition"));
+            transition.destination =
+                expect(TokenKind::Identifier, "FDN1204", "expected destination state");
+            if (match(TokenKind::LeftParen)) {
+                transition.destinationArgument = expect(
+                    TokenKind::Identifier, "FDN1205", "expected destination payload binding");
+                expect(TokenKind::RightParen, "FDN1206",
+                       "expected ) after destination payload");
+            }
+            transitions.push_back(std::move(transition));
+            continue;
+        }
+
+        diagnostics_.error("FDN1207", "expected state or on declaration", current().span);
+        advance();
+    }
+    expect(TokenKind::RightBrace, "FDN1208", "expected } after state machine");
+
+    if (states.empty()) {
+        diagnostics_.error("FDN1209", "state machine requires at least one state", start.span);
+    }
+
+    const auto machineExported = isExported(name.text);
+    EnumDeclaration machine{name.text, {}, states, machineExported, BuiltinEnumKind::None,
+                            start.span, {}, {}, true};
+    program_.enums.push_back(std::move(machine));
+
+    const auto errorName = name.text + "TransitionError";
+    EnumVariant invalidState{"InvalidState", std::nullopt, true, start.span, {},
+                             std::nullopt, std::nullopt};
+    program_.enums.push_back({errorName, {}, {std::move(invalidState)}, machineExported,
+                              BuiltinEnumKind::None, start.span, {}, {}, false});
+
+    const auto findState = [&](const Token &token) -> std::optional<std::size_t> {
+        const auto found = std::find_if(states.begin(), states.end(), [&](const auto &state) {
+            return state.name == token.text;
+        });
+        if (found == states.end()) {
+            diagnostics_.error("FDN1210", "unknown state " + token.text, token.span);
+            return std::nullopt;
+        }
+        return static_cast<std::size_t>(std::distance(states.begin(), found));
+    };
+
+    for (auto &transition : transitions) {
+        StateTransitionFunction metadata;
+        for (const auto &source : transition.sources) {
+            if (const auto state = findState(source); state.has_value()) {
+                if (std::find(metadata.sourceVariants.begin(), metadata.sourceVariants.end(),
+                              *state) != metadata.sourceVariants.end()) {
+                    diagnostics_.error("FDN1211", "duplicate transition source " + source.text,
+                                       source.span);
+                } else {
+                    metadata.sourceVariants.push_back(*state);
+                }
+            }
+        }
+        if (const auto destination = findState(transition.destination);
+            destination.has_value()) {
+            metadata.destinationVariant = *destination;
+            const auto expectsPayload = states[*destination].payloadType.has_value();
+            if (expectsPayload != transition.destinationArgument.has_value()) {
+                diagnostics_.error(
+                    "FDN1212",
+                    expectsPayload ? "destination state requires a payload binding"
+                                   : "destination state does not accept a payload",
+                    transition.destination.span);
+            }
+        }
+        if (transition.destinationArgument.has_value()) {
+            const auto found = std::find_if(
+                transition.parameters.begin(), transition.parameters.end(),
+                [&](const auto &parameter) {
+                    return parameter.name == transition.destinationArgument->text;
+                });
+            if (found == transition.parameters.end()) {
+                diagnostics_.error("FDN1213",
+                                   "unknown transition parameter " +
+                                       transition.destinationArgument->text,
+                                   transition.destinationArgument->span);
+            } else {
+                metadata.destinationParameter =
+                    1 + static_cast<std::size_t>(
+                            std::distance(transition.parameters.begin(), found));
+            }
+        }
+
+        TypeSyntax machineType{name.text, {}, name.span};
+        Parameter receiver{"self", TypeSyntax{"edit", {machineType}, name.span}, name.span, {},
+                           ParameterMode::Bootstrap};
+        std::vector<Parameter> parameters;
+        parameters.reserve(transition.parameters.size() + 1);
+        parameters.push_back(std::move(receiver));
+        parameters.insert(parameters.end(), transition.parameters.begin(),
+                          transition.parameters.end());
+        TypeSyntax returnType{
+            "Result",
+            {TypeSyntax{"void", {}, transition.event.span},
+             TypeSyntax{errorName, {}, transition.event.span}},
+            transition.event.span};
+        program_.blocks.push_back({{}, transition.event.span});
+
+        Function function;
+        function.name = transition.event.text;
+        function.parameters = std::move(parameters);
+        function.returnType = std::move(returnType);
+        function.body = program_.blocks.size() - 1;
+        function.exported = isExported(transition.event.text);
+        function.span = transition.event.span;
+        function.receiver = ReceiverKind::Edit;
+        function.ownerType = name.text;
+        function.stateTransition = std::move(metadata);
+        program_.functions.push_back(std::move(function));
+    }
+}
+
+void Parser::workflowDeclaration(WorkflowKind kind) {
+    const auto token = kind == WorkflowKind::Pipeline ? TokenKind::Pipeline : TokenKind::Saga;
+    const auto word = kind == WorkflowKind::Pipeline ? "pipeline" : "saga";
+    const auto start = expect(token, "FDN1214", "expected workflow declaration");
+    const auto name = expect(TokenKind::Identifier, "FDN1215", "expected workflow name");
+    auto typeParameters = this->typeParameters();
+    expect(TokenKind::LeftParen, "FDN1216", "expected ( after workflow name");
+    std::vector<Parameter> parameters;
+    if (!check(TokenKind::RightParen)) {
+        parameters.push_back(parameter());
+        while (match(TokenKind::Comma)) {
+            parameters.push_back(parameter());
+        }
+    }
+    expect(TokenKind::RightParen, "FDN1217", "expected ) after workflow input");
+    auto declaredReturn = typeSyntax("FDN1218", "expected workflow result type");
+    TypeSyntax successType{"void", {}, declaredReturn.span};
+    TypeSyntax errorType{"void", {}, declaredReturn.span};
+    if (declaredReturn.name != "Result" || declaredReturn.arguments.size() != 2) {
+        diagnostics_.error("FDN1219", "workflow must declare Result<Output, Error>",
+                           declaredReturn.span);
+    } else {
+        successType = declaredReturn.arguments[0];
+        errorType = declaredReturn.arguments[1];
+    }
+    expect(TokenKind::LeftBrace, "FDN1220", "expected { after workflow result type");
+
+    std::vector<WorkflowStep> steps;
+    std::vector<std::string> stepNames;
+    const auto contextual = [&](std::string_view expected, const char *code,
+                                const char *message) -> Token {
+        const auto value = expect(TokenKind::Identifier, code, message);
+        if (value.text != expected) {
+            diagnostics_.error(code, message, value.span);
+        }
+        return value;
+    };
+    while (!check(TokenKind::RightBrace) && !atEnd()) {
+        const auto step = contextual("step", "FDN1221", "expected step in workflow");
+        const auto stepName =
+            expect(TokenKind::Identifier, "FDN1222", "expected workflow step name");
+        static_cast<void>(contextual("using", "FDN1223", "expected using after step name"));
+        auto [functionName, functionSpan] =
+            qualifiedName("FDN1224", "expected workflow step function");
+
+        WorkflowStep workflowStep{stepName.text, std::move(functionName), step.span,
+                                  functionSpan, 1, std::nullopt, std::nullopt};
+        if (check(TokenKind::Identifier) && current().text == "retry") {
+            advance();
+            static_cast<void>(contextual("exponential", "FDN1225",
+                                         "expected exponential retry strategy"));
+            expect(TokenKind::LeftParen, "FDN1226", "expected ( after exponential");
+            static_cast<void>(contextual("max", "FDN1227", "expected max retry argument"));
+            expect(TokenKind::Equal, "FDN1228", "expected = after retry max");
+            const auto attempts =
+                expect(TokenKind::Integer, "FDN1229", "expected retry attempt count");
+            std::size_t parsed{};
+            const auto conversion =
+                std::from_chars(attempts.text.data(),
+                                attempts.text.data() + attempts.text.size(), parsed);
+            if (conversion.ec != std::errc{} || parsed == 0 || parsed > 1024) {
+                diagnostics_.error("FDN1230", "retry max must be between 1 and 1024",
+                                   attempts.span);
+            } else {
+                workflowStep.attempts = parsed;
+            }
+            expect(TokenKind::RightParen, "FDN1231", "expected ) after retry strategy");
+        }
+        if (kind == WorkflowKind::Saga && check(TokenKind::Identifier) &&
+            current().text == "compensate") {
+            advance();
+            auto [compensation, compensationSpan] =
+                qualifiedName("FDN1232", "expected compensation function");
+            workflowStep.compensation = std::move(compensation);
+            workflowStep.compensationSpan = compensationSpan;
+        }
+        if (std::find(stepNames.begin(), stepNames.end(), stepName.text) != stepNames.end()) {
+            diagnostics_.error("FDN1233", "duplicate workflow step " + stepName.text,
+                               stepName.span);
+        } else {
+            stepNames.push_back(stepName.text);
+        }
+        steps.push_back(std::move(workflowStep));
+    }
+    expect(TokenKind::RightBrace, "FDN1234", "expected } after workflow");
+    if (parameters.size() != 1) {
+        diagnostics_.error("FDN1235", std::string(word) + " requires exactly one input",
+                           name.span);
+    }
+    if (steps.empty()) {
+        diagnostics_.error("FDN1236", std::string(word) + " requires at least one step",
+                           name.span);
+    }
+    if (kind == WorkflowKind::Saga &&
+        std::none_of(steps.begin(), steps.end(), [](const auto &entry) {
+            return entry.compensation.has_value();
+        })) {
+        diagnostics_.error("FDN1237", "saga requires at least one compensation", name.span);
+    }
+
+    WorkflowFunction workflow{kind, successType, errorType, std::move(steps),
+                              std::nullopt, std::nullopt};
+    auto returnType = declaredReturn;
+    if (kind == WorkflowKind::Saga) {
+        const auto detailsName = name.text + "CompensationFailure";
+        const auto failureName = name.text + "Failure";
+        workflow.failureStruct = detailsName;
+        workflow.failureEnum = failureName;
+
+        TypeSyntax errorArray{"[array]", {errorType}, name.span,
+                              static_cast<std::size_t>(std::count_if(
+                                  workflow.steps.begin(), workflow.steps.end(),
+                                  [](const auto &entry) {
+                                      return entry.compensation.has_value();
+                                  }))};
+        std::vector<StructField> fields;
+        fields.push_back({"Original", errorType, true, name.span, {}, std::nullopt,
+                          std::nullopt});
+        fields.push_back({"CompensationCount", TypeSyntax{"usize", {}, name.span}, true,
+                          name.span, {}, std::nullopt, std::nullopt});
+        fields.push_back({"CompensationErrors", std::move(errorArray), true, name.span, {},
+                          std::nullopt, std::nullopt});
+        program_.structs.push_back({detailsName, typeParameters, {}, std::move(fields),
+                                    isExported(name.text), start.span, {}, {},
+                                    StructKind::Struct, {}});
+
+        TypeSyntax detailsType{detailsName, {}, name.span};
+        TypeSyntax failureType{failureName, {}, name.span};
+        for (const auto &parameterName : typeParameters) {
+            detailsType.arguments.push_back(TypeSyntax{parameterName, {}, name.span});
+            failureType.arguments.push_back(TypeSyntax{parameterName, {}, name.span});
+        }
+        std::vector<EnumVariant> variants;
+        variants.push_back({"Step", errorType, true, name.span, {}, "error", name.span});
+        variants.push_back(
+            {"Compensation", detailsType, true, name.span, {}, "details", name.span});
+        program_.enums.push_back({failureName, typeParameters, std::move(variants),
+                                  isExported(name.text), BuiltinEnumKind::None, start.span,
+                                  {}, {}, false});
+        returnType = TypeSyntax{"Result", {successType, std::move(failureType)},
+                                declaredReturn.span};
+    }
+
+    program_.blocks.push_back({{}, start.span});
+    Function function;
+    function.name = name.text;
+    function.typeParameters = std::move(typeParameters);
+    function.parameters = std::move(parameters);
+    function.returnType = std::move(returnType);
+    function.body = program_.blocks.size() - 1;
+    function.exported = isExported(name.text);
+    function.span = start.span;
+    function.workflow = std::move(workflow);
+    program_.functions.push_back(std::move(function));
 }
 
 ContractDeclaration Parser::contractDeclaration() {
@@ -804,24 +1354,47 @@ Function Parser::function(bool external, bool task) {
     }
     Function result{name.text, std::move(typeParameters), std::move(parameters),
                     std::move(returnType), body, isExported(name.text), start.span, {}, {},
-                    std::nullopt, {}, std::nullopt, true, false, {}, {}};
+                    std::nullopt, {}, std::nullopt, true, false, {}, {}, false, false, false,
+                    std::nullopt, std::nullopt, false, std::nullopt, std::nullopt};
     result.cSymbol = std::move(cSymbol);
     result.hasBody = hasBody;
     result.task = task;
     return result;
 }
 
+Function Parser::testDeclaration() {
+    const auto start = advance();
+    if (start.kind != TokenKind::Test &&
+        (start.kind != TokenKind::Identifier || start.text != "test")) {
+        diagnostics_.error("FDN1180", "expected test", start.span);
+    }
+    const auto name = expect(TokenKind::String, "FDN1181", "expected test name");
+    const auto body = block();
+    Function result{"$test." + std::to_string(start.span.offset), {}, {},
+                    TypeSyntax{"void", {}, start.span}, body, false, start.span, {}, {},
+                    std::nullopt, {}, std::nullopt, true, false, {}, {}, false, false, false,
+                    name.text, std::nullopt, false, std::nullopt, std::nullopt};
+    result.testNameSpan = name.span;
+    return result;
+}
+
 Function Parser::method(const std::string &owner,
-                        const std::vector<std::string> &typeParameters) {
-    const auto start = expect(TokenKind::Fn, "FDN1100", "expected fn");
+                        const std::vector<std::string> &typeParameters, bool action) {
+    const auto start = expect(action ? TokenKind::Action : TokenKind::Fn, "FDN1100",
+                              action ? "expected action" : "expected fn");
     const auto name = expect(TokenKind::Identifier, "FDN1101", "expected method name");
     expect(TokenKind::LeftParen, "FDN1102", "expected ( after method name");
     std::vector<Parameter> parameters;
     std::optional<ReceiverKind> access;
     auto parseParameters = true;
-    if (check(TokenKind::View) || check(TokenKind::Edit) || check(TokenKind::Own)) {
+    const auto targetReceiver =
+        (check(TokenKind::Identifier) && current().text == "self") ||
+        ((check(TokenKind::Ampersand) || check(TokenKind::Dollar)) &&
+         peek(1).kind == TokenKind::Identifier && peek(1).text == "self");
+    if (check(TokenKind::View) || check(TokenKind::Edit) || check(TokenKind::Own) ||
+        targetReceiver) {
         const auto receiverStart = current();
-        access = receiver("FDN1103", "expected view, edit, or own receiver");
+        access = receiver("FDN1103", "expected self, &self, or $self receiver");
         std::vector<TypeSyntax> ownerArguments;
         ownerArguments.reserve(typeParameters.size());
         for (const auto &parameterName : typeParameters) {
@@ -833,7 +1406,7 @@ Function Parser::method(const std::string &owner,
                                                               : "own";
         parameters.push_back(
             {"self", TypeSyntax{qualifier, {std::move(ownerType)}, receiverStart.span},
-             receiverStart.span, {}});
+             receiverStart.span, {}, ParameterMode::Bootstrap});
         parseParameters = match(TokenKind::Comma);
     }
     if (parseParameters && !check(TokenKind::RightParen)) {
@@ -848,9 +1421,12 @@ Function Parser::method(const std::string &owner,
     activeTypeParameters_ = typeParameters;
     const auto body = block(tailResult);
     activeTypeParameters_ = std::move(previousTypeParameters);
-    return {name.text, typeParameters, std::move(parameters), std::move(returnType), body,
-            isExported(name.text), start.span, {}, {}, access, owner, std::nullopt, true, false,
-            {}, {}};
+    Function result{name.text, typeParameters, std::move(parameters), std::move(returnType), body,
+                    isExported(name.text), start.span, {}, {}, access, owner, std::nullopt, true,
+                    false, {}, {}, false, false, false, std::nullopt, std::nullopt, action,
+                    std::nullopt, std::nullopt};
+    result.action = action;
+    return result;
 }
 
 ContractMethod Parser::contractMethod(const std::string &owner,
@@ -858,7 +1434,7 @@ ContractMethod Parser::contractMethod(const std::string &owner,
     const auto start = expect(TokenKind::Fn, "FDN1106", "expected fn");
     const auto name = expect(TokenKind::Identifier, "FDN1107", "expected contract method name");
     expect(TokenKind::LeftParen, "FDN1108", "expected ( after contract method name");
-    const auto access = receiver("FDN1109", "expected view, edit, or own receiver");
+    const auto access = receiver("FDN1109", "expected self, &self, or $self receiver");
     std::vector<Parameter> parameters;
     if (match(TokenKind::Comma)) {
         do {
@@ -881,7 +1457,8 @@ ContractMethod Parser::contractMethod(const std::string &owner,
         std::vector<Parameter> functionParameters;
         functionParameters.reserve(parameters.size() + 1);
         functionParameters.push_back(
-            {"self", TypeSyntax{qualifier, {std::move(ownerType)}, start.span}, start.span, {}});
+            {"self", TypeSyntax{qualifier, {std::move(ownerType)}, start.span}, start.span, {},
+             ParameterMode::Bootstrap});
         functionParameters.insert(functionParameters.end(), parameters.begin(), parameters.end());
         const auto tailResult = returnType.name != "void" || !returnType.arguments.empty();
         auto previousTypeParameters = std::move(activeTypeParameters_);
@@ -892,20 +1469,42 @@ ContractMethod Parser::contractMethod(const std::string &owner,
         program_.functions.push_back(
             {name.text, typeParameters, std::move(functionParameters), returnType, body,
              isExported(name.text), start.span, {}, {}, access, owner, std::nullopt, true, false,
-             {}, {}});
+             {}, {}, false, false, false, std::nullopt, std::nullopt, false, std::nullopt,
+             std::nullopt});
     }
     return {name.text, access, std::move(parameters), std::move(returnType),
             isExported(name.text), start.span, defaultFunction, {}};
 }
 
 ReceiverKind Parser::receiver(const char *code, const char *message) {
+    if (match(TokenKind::Ampersand)) {
+        const auto self = expect(TokenKind::Identifier, code, message);
+        if (self.text != "self") {
+            diagnostics_.error(code, message, self.span);
+        }
+        return ReceiverKind::Edit;
+    }
+    if (match(TokenKind::Dollar)) {
+        const auto self = expect(TokenKind::Identifier, code, message);
+        if (self.text != "self") {
+            diagnostics_.error(code, message, self.span);
+        }
+        return ReceiverKind::Own;
+    }
+    if (check(TokenKind::Identifier) && current().text == "self") {
+        advance();
+        return ReceiverKind::View;
+    }
     if (match(TokenKind::View)) {
+        diagnostics_.error("FDN1185", "view receiver was removed; use self", previous().span);
         return ReceiverKind::View;
     }
     if (match(TokenKind::Edit)) {
+        diagnostics_.error("FDN1185", "edit receiver was removed; use &self", previous().span);
         return ReceiverKind::Edit;
     }
     if (match(TokenKind::Own)) {
+        diagnostics_.error("FDN1185", "own receiver was removed; use $self", previous().span);
         return ReceiverKind::Own;
     }
     diagnostics_.error(code, message, current().span);
@@ -917,9 +1516,33 @@ ReceiverKind Parser::receiver(const char *code, const char *message) {
 
 Parameter Parser::parameter() {
     auto parsedAttributes = attributes(false);
+    const auto start = current().span;
+    auto mode = ParameterMode::Read;
+    if (match(TokenKind::Ampersand)) {
+        mode = ParameterMode::Edit;
+    } else if (match(TokenKind::Dollar)) {
+        mode = ParameterMode::Transfer;
+    }
     const auto name = expect(TokenKind::Identifier, "FDN1026", "expected parameter name");
     auto type = typeSyntax("FDN1028", "expected parameter type");
-    return {name.text, std::move(type), name.span, std::move(parsedAttributes.applications)};
+    if (mode == ParameterMode::Read &&
+        (type.name == "own" || type.name == "view" || type.name == "edit")) {
+        const auto replacement = type.name == "edit" ? "&" + name.text
+                                 : type.name == "own" ? "$" + name.text
+                                                       : name.text;
+        diagnostics_.error("FDN1186",
+                           "parameter mode after the name was removed; use " + replacement,
+                           type.span);
+        mode = ParameterMode::Bootstrap;
+    }
+    auto span = name.span;
+    if (start.offset < name.span.offset) {
+        span.offset = start.offset;
+        span.length = name.span.offset + name.span.length - start.offset;
+        span.line = start.line;
+        span.column = start.column;
+    }
+    return {name.text, std::move(type), span, std::move(parsedAttributes.applications), mode};
 }
 
 AstBlockId Parser::block(bool tailResult) {
@@ -932,7 +1555,14 @@ AstBlockId Parser::block(bool tailResult) {
     ++blockDepth_;
     Block result{{}, start.span};
     while (!check(TokenKind::RightBrace) && !atEnd()) {
-        result.statements.push_back(statement());
+        if (tailResult && startsTailIfExpression()) {
+            const auto conditionalStart = advance();
+            const auto value = ifExpression(conditionalStart);
+            result.statements.push_back(
+                addStatement(ExpressionStatement{value}, conditionalStart.span));
+        } else {
+            result.statements.push_back(statement());
+        }
     }
     expect(TokenKind::RightBrace, "FDN1009", "expected } after block");
     if (tailResult && !result.statements.empty()) {
@@ -947,7 +1577,11 @@ AstBlockId Parser::block(bool tailResult) {
 }
 
 AstStatementId Parser::statement() {
-    if (match(TokenKind::Let) || match(TokenKind::Const)) {
+    if (check(TokenKind::Let) || check(TokenKind::Const)) {
+        const auto declaration = advance();
+        if (declaration.kind == TokenKind::Let) {
+            diagnostics_.error("FDN1184", "let was removed; use const", declaration.span);
+        }
         auto distance = std::size_t{};
         auto pattern = peek(distance).kind == TokenKind::Identifier;
         if (pattern) {
@@ -959,9 +1593,9 @@ AstStatementId Parser::statement() {
             pattern = peek(distance).kind == TokenKind::LeftBrace;
         }
         if (pattern) {
-            return structDestructureStatement(previous());
+            return structDestructureStatement(declaration);
         }
-        return variableStatement(previous(), false);
+        return variableStatement(declaration, false);
     }
     if (match(TokenKind::Var)) {
         auto distance = std::size_t{};
@@ -993,10 +1627,26 @@ AstStatementId Parser::statement() {
     if (match(TokenKind::While)) {
         return whileStatement(previous());
     }
+    if (match(TokenKind::For)) {
+        return forStatement(previous());
+    }
+    if (match(TokenKind::Break)) {
+        return loopJumpStatement(previous(), false);
+    }
+    if (match(TokenKind::Continue)) {
+        return loopJumpStatement(previous(), true);
+    }
     if (match(TokenKind::Select)) {
         return selectStatement(previous());
     }
+    if (match(TokenKind::Unsafe)) {
+        return unsafeStatement(previous());
+    }
     return expressionStatement();
+}
+
+AstStatementId Parser::unsafeStatement(const Token &start) {
+    return addStatement(UnsafeStatement{block(), start.leadingSafetyProof}, start.span);
 }
 
 AstStatementId Parser::structDestructureStatement(const Token &start) {
@@ -1067,6 +1717,36 @@ AstStatementId Parser::ifStatement(const Token &start) {
     structLiteralsAllowed_ = false;
     const auto condition = expression();
     structLiteralsAllowed_ = allowed;
+    if (!check(TokenKind::LeftBrace)) {
+        const auto sameLine = current().span.line == start.span.line;
+        const auto jump = check(TokenKind::Return) || check(TokenKind::Break) ||
+                          check(TokenKind::Continue);
+        if (!sameLine || !jump) {
+            diagnostics_.error(
+                "FDN1173",
+                "short if requires return, break, or continue on the same line",
+                current().span);
+        }
+        AstStatementId guarded;
+        SourceSpan guardedSpan;
+        if (match(TokenKind::Break)) {
+            guardedSpan = previous().span;
+            guarded = loopJumpStatement(previous(), false);
+        } else if (match(TokenKind::Continue)) {
+            guardedSpan = previous().span;
+            guarded = loopJumpStatement(previous(), true);
+        } else {
+            const auto returned = expect(
+                TokenKind::Return, "FDN1173",
+                "short if requires return, break, or continue on the same line");
+            guardedSpan = returned.span;
+            guarded = returnStatement(returned);
+        }
+        Block body{{guarded}, guardedSpan};
+        program_.blocks.push_back(std::move(body));
+        return addStatement(IfStatement{condition, program_.blocks.size() - 1, std::nullopt},
+                            start.span);
+    }
     const auto thenBlock = block();
     std::optional<AstBlockId> elseBlock;
     if (match(TokenKind::Else)) {
@@ -1082,6 +1762,43 @@ AstStatementId Parser::whileStatement(const Token &start) {
     structLiteralsAllowed_ = allowed;
     const auto body = block();
     return addStatement(WhileStatement{condition, body}, start.span);
+}
+
+AstStatementId Parser::forStatement(const Token &start) {
+    auto editable = match(TokenKind::Ampersand);
+    const auto first = expect(TokenKind::Identifier, "FDN1180",
+                              "expected loop binding after for");
+    std::optional<std::string> indexBinding;
+    auto valueBinding = first.text;
+    if (match(TokenKind::Comma)) {
+        if (editable) {
+            diagnostics_.error("FDN1181", "loop index cannot be editable", first.span);
+        }
+        indexBinding = first.text;
+        editable = match(TokenKind::Ampersand);
+        valueBinding = expect(TokenKind::Identifier, "FDN1182",
+                              "expected value binding after comma")
+                           .text;
+    }
+    expect(TokenKind::In, "FDN1183", "expected in after loop binding");
+    const auto allowed = structLiteralsAllowed_;
+    structLiteralsAllowed_ = false;
+    const auto sequence = expression();
+    structLiteralsAllowed_ = allowed;
+    const auto body = block();
+    return addStatement(ForStatement{std::move(indexBinding), std::move(valueBinding), editable,
+                                     sequence, body},
+                        start.span);
+}
+
+AstStatementId Parser::loopJumpStatement(const Token &start, bool continues) {
+    if (!check(TokenKind::RightBrace) && !atEnd() && current().span.line == start.span.line) {
+        diagnostics_.error("FDN1179", std::string(continues ? "continue" : "break") +
+                                          " does not accept a value",
+                           current().span);
+    }
+    return continues ? addStatement(ContinueStatement{}, start.span)
+                     : addStatement(BreakStatement{}, start.span);
 }
 
 AstBlockId Parser::selectArmBlock() {
@@ -1200,6 +1917,11 @@ AstStatementId Parser::expressionStatement() {
     if (match(TokenKind::Equal)) {
         return addStatement(AssignmentStatement{value, expression()}, start);
     }
+    if (match(TokenKind::Else)) {
+        const auto binding = expect(TokenKind::Identifier, "FDN1214",
+                                    "expected error binding after else");
+        return addStatement(ResultElseStatement{value, binding.text, block()}, start);
+    }
     return addStatement(ExpressionStatement{value}, start);
 }
 
@@ -1210,9 +1932,27 @@ AstExpressionId Parser::expression() {
         expressionLimitReported_ = false;
     }
     ++expressionCalls_;
-    const auto result = logicalOr();
+    const auto result = conditional();
     --expressionCalls_;
     return result;
+}
+
+AstExpressionId Parser::conditional() {
+    const auto value = logicalOr();
+    if (!continuesLine() || !match(TokenKind::If)) {
+        return value;
+    }
+
+    const auto start = previous();
+    const auto condition = logicalOr();
+    expect(TokenKind::Else, "FDN1174", "expected else in postfix conditional expression");
+    const auto fallback = conditional();
+    program_.blocks.push_back({{}, start.span});
+    const auto thenBlock = program_.blocks.size() - 1;
+    program_.blocks.push_back({{}, start.span});
+    const auto elseBlock = program_.blocks.size() - 1;
+    return addExpression(
+        ConditionalExpression{condition, thenBlock, value, elseBlock, fallback}, start.span);
 }
 
 AstExpressionId Parser::logicalOr() {
@@ -1340,9 +2080,18 @@ AstExpressionId Parser::unary() {
     } else if (match(TokenKind::Bang)) {
         const auto start = previous().span;
         result = addExpression(UnaryExpression{UnaryOperator::Not, unary()}, start);
+    } else if (match(TokenKind::Star)) {
+        const auto start = previous().span;
+        result = addExpression(UnaryExpression{UnaryOperator::Dereference, unary()}, start);
     } else if (match(TokenKind::Dollar)) {
         const auto start = previous().span;
-        result = addExpression(OwnershipExpression{OwnershipOperator::Own, unary()}, start);
+        result = addExpression(OwnershipExpression{OwnershipOperator::Transfer, unary()}, start);
+    } else if (match(TokenKind::Ampersand)) {
+        const auto start = previous().span;
+        result = addExpression(OwnershipExpression{OwnershipOperator::Edit, unary()}, start);
+    } else if (match(TokenKind::New)) {
+        const auto start = previous().span;
+        result = addExpression(OwnershipExpression{OwnershipOperator::New, unary()}, start);
     } else if (match(TokenKind::Spawn)) {
         const auto start = previous().span;
         result = addExpression(SpawnExpression{unary()}, start);
@@ -1350,8 +2099,12 @@ AstExpressionId Parser::unary() {
         const auto token = advance();
         auto operation = OwnershipOperator::Own;
         if (token.kind == TokenKind::View) {
+            diagnostics_.error("FDN1187", "view expression was removed; pass the value directly",
+                               token.span);
             operation = OwnershipOperator::View;
         } else if (token.kind == TokenKind::Edit) {
+            diagnostics_.error("FDN1187", "edit expression was removed; use &value",
+                               token.span);
             operation = OwnershipOperator::Edit;
         }
         result = addExpression(OwnershipExpression{operation, unary()}, token.span);
@@ -1374,6 +2127,17 @@ AstExpressionId Parser::primary() {
             diagnostics_.error("FDN1016", "integer is outside the supported range", token.span);
         }
         result = addExpression(IntegerExpression{magnitude, false}, token.span);
+    } else if (match(TokenKind::Floating)) {
+        const auto token = previous();
+        double value{};
+        const auto conversion = std::from_chars(token.text.data(),
+                                                token.text.data() + token.text.size(), value);
+        if (conversion.ec != std::errc{} ||
+            conversion.ptr != token.text.data() + token.text.size()) {
+            diagnostics_.error("FDN1016", "floating-point literal is outside the supported range",
+                               token.span);
+        }
+        result = addExpression(FloatingExpression{token.text}, token.span);
     } else if (match(TokenKind::True)) {
         result = addExpression(BooleanExpression{true}, previous().span);
     } else if (match(TokenKind::False)) {
@@ -1385,6 +2149,8 @@ AstExpressionId Parser::primary() {
         result = finishArray(previous());
     } else if (match(TokenKind::Match)) {
         result = matchExpression(previous());
+    } else if (match(TokenKind::If)) {
+        result = ifExpression(previous());
     } else if (match(TokenKind::Fn)) {
         result = functionExpression(previous());
     } else if (match(TokenKind::Replace)) {
@@ -1461,14 +2227,28 @@ AstExpressionId Parser::replaceExpression(const Token &start) {
 
 AstExpressionId Parser::finishCall(const Token &callee, std::vector<TypeSyntax> typeArguments) {
     std::vector<AstExpressionId> arguments;
+    std::vector<std::optional<std::string>> argumentNames;
+    std::vector<std::optional<SourceSpan>> argumentNameSpans;
     if (!check(TokenKind::RightParen)) {
         do {
+            std::optional<std::string> name;
+            std::optional<SourceSpan> nameSpan;
+            if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Equal) {
+                const auto token = advance();
+                name = token.text;
+                nameSpan = token.span;
+                advance();
+            }
+            argumentNames.push_back(std::move(name));
+            argumentNameSpans.push_back(nameSpan);
             arguments.push_back(expression());
         } while (match(TokenKind::Comma));
     }
     expect(TokenKind::RightParen, "FDN1024", "expected ) after call arguments");
     return addExpression(
-        CallExpression{callee.text, std::move(typeArguments), std::move(arguments)}, callee.span);
+        CallExpression{callee.text, std::move(typeArguments), std::move(arguments),
+                       std::move(argumentNames), std::move(argumentNameSpans)},
+        callee.span);
 }
 
 AstExpressionId Parser::finishStruct(TypeSyntax type) {
@@ -1500,17 +2280,30 @@ AstExpressionId Parser::finishMember(std::optional<AstExpressionId> base) {
     }
     auto invoked = false;
     std::vector<AstExpressionId> arguments;
+    std::vector<std::optional<std::string>> argumentNames;
+    std::vector<std::optional<SourceSpan>> argumentNameSpans;
     if (match(TokenKind::LeftParen)) {
         invoked = true;
         if (!check(TokenKind::RightParen)) {
             do {
+                std::optional<std::string> name;
+                std::optional<SourceSpan> nameSpan;
+                if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Equal) {
+                    const auto token = advance();
+                    name = token.text;
+                    nameSpan = token.span;
+                    advance();
+                }
+                argumentNames.push_back(std::move(name));
+                argumentNameSpans.push_back(nameSpan);
                 arguments.push_back(expression());
             } while (match(TokenKind::Comma));
         }
         expect(TokenKind::RightParen, "FDN1052", "expected ) after member invocation");
     }
     return addExpression(MemberExpression{base, member.text, std::move(typeArguments), invoked,
-                                          std::move(arguments)},
+                                          std::move(arguments), std::move(argumentNames),
+                                          std::move(argumentNameSpans)},
                          member.span);
 }
 
@@ -1532,15 +2325,77 @@ AstExpressionId Parser::matchExpression(const Token &start) {
     while (!check(TokenKind::RightBrace) && !atEnd()) {
         const auto variant = expect(TokenKind::Identifier, "FDN1056", "expected pattern variant");
         std::optional<std::string> binding;
+        std::optional<AstExpressionId> pattern;
         if (match(TokenKind::LeftParen)) {
-            binding = expect(TokenKind::Identifier, "FDN1057", "expected payload binding").text;
-            expect(TokenKind::RightParen, "FDN1058", "expected ) after payload binding");
+            if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::RightParen) {
+                binding = advance().text;
+            } else {
+                pattern = expression();
+            }
+            expect(TokenKind::RightParen, "FDN1058", "expected ) after payload pattern");
         }
         expect(TokenKind::Colon, "FDN1059", "expected : after match pattern");
-        arms.push_back({variant.text, std::move(binding), expression(), variant.span});
+        arms.push_back(
+            {variant.text, std::move(binding), pattern, expression(), variant.span});
     }
     expect(TokenKind::RightBrace, "FDN1060", "expected } after match expression");
     return addExpression(MatchExpression{value, std::move(arms)}, start.span);
+}
+
+AstExpressionId Parser::ifExpression(const Token &start) {
+    const auto allowed = structLiteralsAllowed_;
+    structLiteralsAllowed_ = false;
+    const auto condition = expression();
+    structLiteralsAllowed_ = allowed;
+    auto [thenBlock, thenValue] = expressionBlock();
+    expect(TokenKind::Else, "FDN1175", "expected else after conditional expression branch");
+    auto [elseBlock, elseValue] = expressionBlock();
+    return addExpression(
+        ConditionalExpression{condition, thenBlock, thenValue, elseBlock, elseValue},
+        start.span);
+}
+
+std::pair<AstBlockId, AstExpressionId> Parser::expressionBlock() {
+    const auto start = expect(TokenKind::LeftBrace, "FDN1176",
+                              "expected { before conditional expression branch");
+    if (blockDepth_ >= maxBlockDepth) {
+        const auto skipped = skipNestedBlock(start.span);
+        return {skipped, addExpression(IntegerExpression{0, false}, start.span)};
+    }
+
+    ++blockDepth_;
+    Block result{{}, start.span};
+    while (!check(TokenKind::RightBrace) && !atEnd()) {
+        if (startsTailIfExpression()) {
+            const auto conditionalStart = advance();
+            const auto value = ifExpression(conditionalStart);
+            result.statements.push_back(
+                addStatement(ExpressionStatement{value}, conditionalStart.span));
+        } else {
+            result.statements.push_back(statement());
+        }
+    }
+    expect(TokenKind::RightBrace, "FDN1177",
+           "expected } after conditional expression branch");
+
+    std::optional<AstExpressionId> value;
+    if (!result.statements.empty()) {
+        const auto statement = result.statements.back();
+        if (const auto *expression =
+                std::get_if<ExpressionStatement>(&program_.statements[statement].value)) {
+            value = expression->expression;
+            result.statements.pop_back();
+        }
+    }
+    if (!value.has_value()) {
+        diagnostics_.error("FDN1178", "conditional expression branch requires a final value",
+                           start.span);
+        value = addExpression(IntegerExpression{0, false}, start.span);
+    }
+
+    --blockDepth_;
+    program_.blocks.push_back(std::move(result));
+    return {program_.blocks.size() - 1, *value};
 }
 
 AstExpressionId Parser::functionExpression(const Token &start) {
@@ -1556,16 +2411,29 @@ AstExpressionId Parser::functionExpression(const Token &start) {
 
     std::vector<Capture> captures;
     if (match(TokenKind::Capture)) {
+        const auto parenthesized = match(TokenKind::LeftParen);
         do {
             auto mode = CaptureMode::Copy;
             SourceSpan span = current().span;
-            if (match(TokenKind::Own)) {
+            if (match(TokenKind::Dollar)) {
+                mode = CaptureMode::Own;
+                span = previous().span;
+            } else if (match(TokenKind::Ampersand)) {
+                mode = CaptureMode::Edit;
+                span = previous().span;
+            } else if (match(TokenKind::Own)) {
+                diagnostics_.error("FDN1188", "own capture was removed; use $name",
+                                   previous().span);
                 mode = CaptureMode::Own;
                 span = previous().span;
             } else if (match(TokenKind::View)) {
+                diagnostics_.error("FDN1188", "view capture was removed; use the name directly",
+                                   previous().span);
                 mode = CaptureMode::View;
                 span = previous().span;
             } else if (match(TokenKind::Edit)) {
+                diagnostics_.error("FDN1188", "edit capture was removed; use &name",
+                                   previous().span);
                 mode = CaptureMode::Edit;
                 span = previous().span;
             }
@@ -1573,6 +2441,9 @@ AstExpressionId Parser::functionExpression(const Token &start) {
                                      "expected captured binding");
             captures.push_back({mode, name.text, span});
         } while (match(TokenKind::Comma));
+        if (parenthesized) {
+            expect(TokenKind::RightParen, "FDN1129", "expected ) after capture list");
+        }
     }
 
     const auto tailResult = returnType.name != "void" || !returnType.arguments.empty();
@@ -1626,8 +2497,8 @@ void Parser::installBuiltins() {
     program_.enums.push_back({
         "Option",
         {"T"},
-        {{"None", std::nullopt, true, span, {}},
-         {"Some", optionValue, true, span, {}}},
+        {{"None", std::nullopt, true, span, {}, {}, {}},
+         {"Some", optionValue, true, span, {}, "value", span}},
         true,
         BuiltinEnumKind::Option,
         span,
@@ -1640,8 +2511,8 @@ void Parser::installBuiltins() {
     program_.enums.push_back({
         "Result",
         {"T", "E"},
-        {{"Ok", resultValue, true, span, {}},
-         {"Err", resultError, true, span, {}}},
+        {{"Ok", resultValue, true, span, {}, "value", span},
+         {"Err", resultError, true, span, {}, "error", span}},
         true,
         BuiltinEnumKind::Result,
         span,
@@ -1652,11 +2523,24 @@ void Parser::installBuiltins() {
     program_.enums.push_back({
         "ChannelError",
         {},
-        {{"Closed", std::nullopt, true, span, {}},
-         {"Cancelled", std::nullopt, true, span, {}},
-         {"Timeout", std::nullopt, true, span, {}}},
+        {{"Closed", std::nullopt, true, span, {}, {}, {}},
+         {"Cancelled", std::nullopt, true, span, {}, {}, {}},
+         {"Timeout", std::nullopt, true, span, {}, {}, {}}},
         true,
         BuiltinEnumKind::ChannelError,
+        span,
+        {},
+        {},
+    });
+
+    program_.enums.push_back({
+        "NumberError",
+        {},
+        {{"OutOfRange", std::nullopt, true, span, {}, {}, {}},
+         {"NonFinite", std::nullopt, true, span, {}, {}, {}},
+         {"PrecisionLoss", std::nullopt, true, span, {}, {}, {}}},
+        true,
+        BuiltinEnumKind::NumberError,
         span,
         {},
         {},

@@ -48,12 +48,19 @@ enum class FormatMode {
                                   const std::filesystem::path &output);
 [[nodiscard]] int emitMetadataFile(const std::filesystem::path &source,
                                    const std::filesystem::path &output);
+[[nodiscard]] int emitApplicationPlanFile(const std::filesystem::path &source,
+                                          const std::filesystem::path &output);
+[[nodiscard]] int emitApplicationHostFile(const std::filesystem::path &source,
+                                          const std::filesystem::path &output);
 [[nodiscard]] int buildFile(const std::filesystem::path &source,
                             const std::filesystem::path &output,
                             const std::vector<std::filesystem::path> &nativeInputs = {});
 [[nodiscard]] int runFile(const std::filesystem::path &source,
                           const std::vector<std::filesystem::path> &nativeInputs = {},
                           const std::vector<std::string> &arguments = {});
+[[nodiscard]] int runTests(
+    const std::filesystem::path &source,
+    const std::vector<std::filesystem::path> &nativeInputs = {});
 
 } // namespace foundation
 

@@ -1,6 +1,6 @@
 fn main() i32 {
-    let value = 1
-    let update = fn() void capture edit value {
+    const value = 1
+    const update = fn() void capture &value {
         value = 2
     }
     update()

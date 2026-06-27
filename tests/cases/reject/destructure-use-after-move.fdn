@@ -3,8 +3,8 @@ struct Item {
 }
 
 fn main() i32 {
-    let item = Item { value = "text" }
-    let Item { value } = item
+    const item = Item { value = "text" }
+    const Item { value } = item
     print(value)
     discard item
     0

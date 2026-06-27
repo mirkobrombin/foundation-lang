@@ -5,17 +5,17 @@ are explicit because protocol parsers and file formats address encoded bytes rat
 scalar positions.
 
 ```foundation
-fn Copy(value view String) String
-fn ByteLen(value view String) u64
-fn IsEmpty(value view String) bool
-fn Contains(value view String, part view String) bool
-fn StartsWith(value view String, prefix view String) bool
-fn EndsWith(value view String, suffix view String) bool
-fn Slice(value view String, start u64, end u64) Result<String, RangeError>
-fn ByteAt(value view String, index u64) Result<u64, RangeError>
-fn Find(value view String, part view String) Option<u64>
-fn Compare(left view String, right view String) i32
-fn Equal(left view String, right view String) bool
+fn Copy(value String) String
+fn ByteLen(value String) u64
+fn IsEmpty(value String) bool
+fn Contains(value String, part String) bool
+fn StartsWith(value String, prefix String) bool
+fn EndsWith(value String, suffix String) bool
+fn Slice(value String, start u64, end u64) Result<String, RangeError>
+fn ByteAt(value String, index u64) Result<u64, RangeError>
+fn Find(value String, part String) Option<u64>
+fn Compare(left String, right String) i32
+fn Equal(left String, right String) bool
 fn NewBuilder() own Builder
 ```
 

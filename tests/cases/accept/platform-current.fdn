@@ -18,7 +18,7 @@ fn expectedName() String {
 }
 
 fn main() i32 {
-    let current = platform.Current()
+    const current = platform.Current()
     if platform.Name(current) == expectedName() {
         print("platform ok")
         return 0

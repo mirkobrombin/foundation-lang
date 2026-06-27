@@ -1,0 +1,17 @@
+package test.web.reject
+
+import foundation.web
+
+@web.Route(.GET, "/items/{id}")
+fn GetItem(@web.Path("id") id String) web.Response {
+    web.Text(200, "item")
+}
+
+@web.Route(.GET, "/items/{name}")
+fn GetNamedItem(@web.Path("name") name String) web.Response {
+    web.Text(200, "item")
+}
+
+fn main() i32 {
+    0
+}

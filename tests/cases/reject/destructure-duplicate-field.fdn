@@ -4,6 +4,6 @@ struct Pair {
 }
 
 fn main() i32 {
-    let Pair { left left right } = Pair { left = 1 right = 2 }
+    const Pair { left left right } = Pair { left = 1 right = 2 }
     right
 }

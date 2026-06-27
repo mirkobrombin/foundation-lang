@@ -18,25 +18,25 @@ fn Separator() String {
 }
 
 @target(linux)
-fn SeparatorFor(left view String) String {
+fn SeparatorFor(left String) String {
     Separator()
 }
 
 @target(macos)
-fn SeparatorFor(left view String) String {
+fn SeparatorFor(left String) String {
     Separator()
 }
 
 @target(windows)
-fn SeparatorFor(left view String) String {
-    let forward = "/"
-    if text.Contains(left, view forward) {
+fn SeparatorFor(left String) String {
+    const forward = "/"
+    if text.Contains(left, forward) {
         return forward
     }
     Separator()
 }
 
-fn Join(left view String, right view String) String {
+fn Join(left String, right String) String {
     if text.IsEmpty(left) {
         return text.Copy(right)
     }
@@ -44,14 +44,14 @@ fn Join(left view String, right view String) String {
         return text.Copy(left)
     }
 
-    let separator = SeparatorFor(left)
-    let leftEnds = text.EndsWith(left, view separator)
-    let rightStarts = text.StartsWith(right, view separator)
-    let leftCopy = text.Copy(left)
-    let rightCopy = text.Copy(right)
+    const separator = SeparatorFor(left)
+    const leftEnds = text.EndsWith(left, separator)
+    const rightStarts = text.StartsWith(right, separator)
+    const leftCopy = text.Copy(left)
+    const rightCopy = text.Copy(right)
     if leftEnds && rightStarts {
-        let rightLength = text.ByteLen(right)
-        let trimmed = text.Slice(right, 1, rightLength) else error {
+        const rightLength = text.ByteLen(right)
+        const trimmed = text.Slice(right, 1, rightLength) else error {
             discard error
             panic("invalid path boundary")
         }

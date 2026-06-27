@@ -1,0 +1,50 @@
+extern c fn mutableValues() *i32 as foundation_raw_mutable_values
+
+extern c fn constantValue() *const i32 as foundation_raw_constant_value
+
+extern c fn sumValues(values *i32, length usize) i32 as foundation_raw_sum_values
+
+extern c fn readValues(values *const i32, length usize) i32 as foundation_raw_read_values
+
+extern c fn nativeCopy(destination *u8, source *const u8, length usize) void as foundation_raw_copy
+
+extern c fn opaqueHandle() *const void as foundation_raw_opaque_handle
+
+extern c fn opaqueValue(handle *const void) i32 as foundation_raw_opaque_value
+
+fn copy(&destination [u8], source [u8]) void {
+    // SAFETY: both slice pointers are live for length elements during this call.
+    unsafe {
+        nativeCopy(destination.pointer, source.pointer, len(source))
+    }
+}
+
+fn main() i32 {
+    // SAFETY: the native fixture returns two live, aligned i32 values.
+    unsafe {
+        const values = mutableValues()
+        if isNull(values) return 1
+        *values = 20
+        const second = values + 1
+        *second = 22
+        if sumValues(values, 2) != 42 return 2
+        if readValues(values, 2) != 42 return 3
+
+        const constant = constantValue()
+        if *constant != 7 return 4
+
+        const handle = opaqueHandle()
+        if opaqueValue(handle) != 9 return 5
+
+        const empty = null<*void>()
+        if !isNull(empty) return 6
+    }
+
+    var destination [2]u8 = [0, 0]
+    const source [2]u8 = [4, 2]
+    copy(&destination, source)
+    if destination[0] != 4 || destination[1] != 2 return 7
+
+    print("raw pointer boundary")
+    0
+}

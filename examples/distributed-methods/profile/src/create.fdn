@@ -2,7 +2,7 @@ package example.profile
 
 methods User {
     // Creates a profile with a display name and starting score.
-    fn New(name String, initialScore i32) User {
+    fn New($name String, initialScore i32) User {
         User { Name = name Score = initialScore }
     }
 }

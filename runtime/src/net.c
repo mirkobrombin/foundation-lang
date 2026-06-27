@@ -18,6 +18,7 @@
 #include <windows.h>
 #include <wchar.h>
 #else
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <poll.h>
@@ -41,6 +42,7 @@ enum {
     FDN_NET_LINE_TOO_LONG = 7,
     FDN_NET_IO = 8,
     FDN_NET_EOF = 9,
+    FDN_NET_ADDRESS_IN_USE = 10,
     FDN_NET_PENDING = -1,
 };
 
@@ -85,7 +87,12 @@ typedef struct fdn_net_connection {
 #endif
 } fdn_net_connection;
 
+typedef struct fdn_net_listener {
+    fdn_net_socket socket;
+} fdn_net_listener;
+
 typedef enum fdn_net_request_kind {
+    FDN_NET_REQUEST_ACCEPT,
     FDN_NET_REQUEST_CONNECT,
     FDN_NET_REQUEST_READ_LINE,
     FDN_NET_REQUEST_WRITE_ALL,
@@ -99,6 +106,10 @@ typedef struct fdn_net_request {
     bool cancelled;
     union {
         struct {
+            fdn_net_listener *listener;
+            uint64_t *result;
+        } accept;
+        struct {
             fdn_net_addresses *addresses;
             size_t index;
             uint64_t *result;
@@ -108,6 +119,7 @@ typedef struct fdn_net_request {
             fdn_net_connection *connection;
             size_t limit;
             fdn_string *result;
+            bool exact;
         } read;
         struct {
             fdn_net_connection *connection;
@@ -133,6 +145,7 @@ typedef struct fdn_net_service {
 #if defined(_WIN32)
 static SRWLOCK fdn_net_global_lock = SRWLOCK_INIT;
 static volatile LONG64 fdn_net_addresses_count;
+static volatile LONG64 fdn_net_listeners_count;
 static volatile LONG64 fdn_net_connections_count;
 static volatile LONG64 fdn_net_requests_count;
 static volatile LONG64 fdn_net_services_count;
@@ -140,6 +153,7 @@ static bool fdn_net_winsock_started;
 #else
 static pthread_mutex_t fdn_net_global_lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_uint_fast64_t fdn_net_addresses_count;
+static atomic_uint_fast64_t fdn_net_listeners_count;
 static atomic_uint_fast64_t fdn_net_connections_count;
 static atomic_uint_fast64_t fdn_net_requests_count;
 static atomic_uint_fast64_t fdn_net_services_count;
@@ -313,6 +327,14 @@ static bool fdn_net_refused(int error) {
     return error == WSAECONNREFUSED;
 #else
     return error == ECONNREFUSED;
+#endif
+}
+
+static bool fdn_net_address_in_use(int error) {
+#if defined(_WIN32)
+    return error == WSAEADDRINUSE;
+#else
+    return error == EADDRINUSE;
 #endif
 }
 
@@ -543,6 +565,194 @@ int32_t foundation_runtime_net_resolve(const fdn_string *host, uint64_t port,
 
 void foundation_runtime_net_addresses_close(uint64_t handle) {
     fdn_net_addresses_destroy((fdn_net_addresses *)(uintptr_t)handle);
+}
+
+static bool fdn_net_bind_address_valid(const fdn_string *address) {
+    size_t offset;
+    if (address == NULL ||
+        (address->length != 0 && address->data == NULL) ||
+        !fdn_utf8_valid(address->data, address->length)) {
+        return false;
+    }
+    for (offset = 0; offset < address->length; ++offset) {
+        if (address->data[offset] == '\0') {
+            return false;
+        }
+    }
+    return true;
+}
+
+int32_t foundation_runtime_net_listen(const fdn_string *address, uint64_t port,
+                                      uint64_t backlog, uint64_t *handle,
+                                      uint64_t *bound_port) {
+    fdn_net_socket native_socket = FDN_NET_INVALID_SOCKET;
+    int family = AF_INET;
+    struct sockaddr_storage storage;
+    int length;
+    int error;
+    fdn_net_listener *listener;
+    if (handle == NULL || bound_port == NULL) {
+        fdn_panic_cstr("network listener output is null");
+    }
+    *handle = 0;
+    *bound_port = 0;
+    if (!fdn_net_bind_address_valid(address) || port > UINT64_C(65535) ||
+        backlog == 0 || backlog > (uint64_t)INT_MAX) {
+        return FDN_NET_INVALID_ADDRESS;
+    }
+    fdn_net_global_enter();
+    const bool platform_ready = fdn_net_platform_start();
+    fdn_net_global_leave();
+    if (!platform_ready) {
+        return FDN_NET_IO;
+    }
+    (void)memset(&storage, 0, sizeof(storage));
+    if (address->length == 0) {
+        struct sockaddr_in *value = (struct sockaddr_in *)&storage;
+        value->sin_family = AF_INET;
+        value->sin_addr.s_addr = htonl(INADDR_ANY);
+        value->sin_port = htons((uint16_t)port);
+        length = (int)sizeof(*value);
+    } else {
+#if defined(_WIN32)
+        wchar_t *wide_address;
+        int wide_length;
+        if (address->length > (size_t)INT_MAX) {
+            return FDN_NET_INVALID_ADDRESS;
+        }
+        wide_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                          address->data, (int)address->length,
+                                          NULL, 0);
+        if (wide_length <= 0) {
+            return FDN_NET_INVALID_ADDRESS;
+        }
+        wide_address = fdn_alloc(((size_t)wide_length + 1) * sizeof(*wide_address));
+        if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, address->data,
+                                (int)address->length, wide_address,
+                                wide_length) != wide_length) {
+            fdn_dealloc(wide_address);
+            return FDN_NET_INVALID_ADDRESS;
+        }
+        wide_address[wide_length] = L'\0';
+        {
+            struct sockaddr_in *value = (struct sockaddr_in *)&storage;
+            value->sin_family = AF_INET;
+            value->sin_port = htons((uint16_t)port);
+            if (InetPtonW(AF_INET, wide_address, &value->sin_addr) == 1) {
+                length = (int)sizeof(*value);
+            } else {
+                struct sockaddr_in6 *value6 = (struct sockaddr_in6 *)&storage;
+                (void)memset(&storage, 0, sizeof(storage));
+                value6->sin6_family = AF_INET6;
+                value6->sin6_port = htons((uint16_t)port);
+                if (InetPtonW(AF_INET6, wide_address, &value6->sin6_addr) != 1) {
+                    fdn_dealloc(wide_address);
+                    return FDN_NET_INVALID_ADDRESS;
+                }
+                family = AF_INET6;
+                length = (int)sizeof(*value6);
+            }
+        }
+        fdn_dealloc(wide_address);
+#else
+        char *native_address;
+        if (address->length == SIZE_MAX) {
+            return FDN_NET_INVALID_ADDRESS;
+        }
+        native_address = fdn_alloc(address->length + 1);
+        (void)memcpy(native_address, address->data, address->length);
+        native_address[address->length] = '\0';
+        {
+            struct sockaddr_in *value = (struct sockaddr_in *)&storage;
+            value->sin_family = AF_INET;
+            value->sin_port = htons((uint16_t)port);
+            if (inet_pton(AF_INET, native_address, &value->sin_addr) == 1) {
+                length = (int)sizeof(*value);
+            } else {
+                struct sockaddr_in6 *value6 = (struct sockaddr_in6 *)&storage;
+                (void)memset(&storage, 0, sizeof(storage));
+                value6->sin6_family = AF_INET6;
+                value6->sin6_port = htons((uint16_t)port);
+                if (inet_pton(AF_INET6, native_address, &value6->sin6_addr) != 1) {
+                    fdn_dealloc(native_address);
+                    return FDN_NET_INVALID_ADDRESS;
+                }
+                family = AF_INET6;
+                length = (int)sizeof(*value6);
+            }
+        }
+        fdn_dealloc(native_address);
+#endif
+    }
+    native_socket = (fdn_net_socket)socket(family, SOCK_STREAM, IPPROTO_TCP);
+    if (native_socket == FDN_NET_INVALID_SOCKET) {
+        return FDN_NET_IO;
+    }
+#if !defined(_WIN32)
+    {
+        const int enabled = 1;
+        if (setsockopt(native_socket, SOL_SOCKET, SO_REUSEADDR, &enabled,
+                       (socklen_t)sizeof(enabled)) != 0) {
+            fdn_net_close_socket(native_socket);
+            return FDN_NET_IO;
+        }
+    }
+#endif
+#if defined(_WIN32)
+    if (bind(native_socket, (const struct sockaddr *)&storage, length) != 0) {
+#else
+    if (bind(native_socket, (const struct sockaddr *)&storage,
+             (socklen_t)length) != 0) {
+#endif
+        error = fdn_net_last_error();
+        fdn_net_close_socket(native_socket);
+        return fdn_net_address_in_use(error) ? FDN_NET_ADDRESS_IN_USE
+                                             : FDN_NET_IO;
+    }
+    if (listen(native_socket, (int)backlog) != 0 ||
+        !fdn_net_nonblocking(native_socket)) {
+        fdn_net_close_socket(native_socket);
+        return FDN_NET_IO;
+    }
+    (void)memset(&storage, 0, sizeof(storage));
+#if defined(_WIN32)
+    length = (int)sizeof(storage);
+    if (getsockname(native_socket, (struct sockaddr *)&storage, &length) != 0) {
+#else
+    {
+        socklen_t native_length = (socklen_t)sizeof(storage);
+        if (getsockname(native_socket, (struct sockaddr *)&storage,
+                        &native_length) != 0) {
+#endif
+            fdn_net_close_socket(native_socket);
+            return FDN_NET_IO;
+        }
+#if !defined(_WIN32)
+    }
+#endif
+    if (storage.ss_family == AF_INET) {
+        *bound_port = (uint64_t)ntohs(((struct sockaddr_in *)&storage)->sin_port);
+    } else if (storage.ss_family == AF_INET6) {
+        *bound_port = (uint64_t)ntohs(((struct sockaddr_in6 *)&storage)->sin6_port);
+    } else {
+        fdn_net_close_socket(native_socket);
+        return FDN_NET_IO;
+    }
+    listener = fdn_alloc(sizeof(*listener));
+    listener->socket = native_socket;
+    fdn_net_count_add(&fdn_net_listeners_count);
+    *handle = (uint64_t)(uintptr_t)listener;
+    return FDN_NET_OK;
+}
+
+void foundation_runtime_net_listener_close(uint64_t handle) {
+    fdn_net_listener *listener = (fdn_net_listener *)(uintptr_t)handle;
+    if (listener == NULL) {
+        return;
+    }
+    fdn_net_close_socket(listener->socket);
+    fdn_dealloc(listener);
+    fdn_net_count_remove(&fdn_net_listeners_count);
 }
 
 static fdn_net_connection *fdn_net_connection_open(fdn_net_socket socket) {
@@ -880,6 +1090,30 @@ static bool fdn_net_service_finish(fdn_net_service *service,
     return stopped;
 }
 
+static int32_t fdn_net_accept_ready(fdn_net_request *request) {
+    for (;;) {
+        fdn_net_socket native_socket =
+            (fdn_net_socket)accept(request->socket, NULL, NULL);
+        if (native_socket != FDN_NET_INVALID_SOCKET) {
+            if (!fdn_net_nonblocking(native_socket)) {
+                fdn_net_close_socket(native_socket);
+                return FDN_NET_IO;
+            }
+            fdn_net_connection *connection = fdn_net_connection_open(native_socket);
+            *request->value.accept.result = (uint64_t)(uintptr_t)connection;
+            return FDN_NET_OK;
+        }
+        const int error = fdn_net_last_error();
+        if (fdn_net_interrupted(error)) {
+            continue;
+        }
+        if (fdn_net_would_block(error)) {
+            return FDN_NET_PENDING;
+        }
+        return fdn_net_closed_error(error) ? FDN_NET_CLOSED : FDN_NET_IO;
+    }
+}
+
 static int32_t fdn_net_connect_next(fdn_net_request *request) {
     fdn_net_addresses *addresses = request->value.connect.addresses;
     while (request->value.connect.index < addresses->count) {
@@ -965,7 +1199,8 @@ static int32_t fdn_net_read_publish(fdn_net_request *request, size_t length,
     fdn_string *result = request->value.read.result;
     size_t text_length = length;
     char *data = NULL;
-    if (text_length != 0 && connection->read_data[text_length - 1] == '\r') {
+    if (!request->value.read.exact && text_length != 0 &&
+        connection->read_data[text_length - 1] == '\r') {
         --text_length;
     }
     if (!fdn_utf8_valid(connection->read_data, text_length)) {
@@ -994,6 +1229,16 @@ static int32_t fdn_net_read_publish(fdn_net_request *request, size_t length,
 
 static int32_t fdn_net_read_buffered(fdn_net_request *request) {
     fdn_net_connection *connection = request->value.read.connection;
+    if (request->value.read.exact) {
+        if (connection->read_length >= request->value.read.limit) {
+            return fdn_net_read_publish(request, request->value.read.limit,
+                                        request->value.read.limit);
+        }
+        if (connection->read_eof) {
+            return FDN_NET_EOF;
+        }
+        return FDN_NET_PENDING;
+    }
     size_t offset;
     for (offset = 0; offset < connection->read_length; ++offset) {
         if (connection->read_data[offset] == '\n') {
@@ -1140,6 +1385,9 @@ static int32_t fdn_net_process_request(fdn_net_request *request, short events,
         return FDN_NET_CANCELLED;
     }
     if ((events & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+        if (request->kind == FDN_NET_REQUEST_ACCEPT) {
+            return fdn_net_accept_ready(request);
+        }
         if (request->kind == FDN_NET_REQUEST_CONNECT) {
             return fdn_net_connect_ready(request);
         }
@@ -1147,6 +1395,10 @@ static int32_t fdn_net_process_request(fdn_net_request *request, short events,
             return fdn_net_read_ready(request);
         }
         return fdn_net_write_ready(request);
+    }
+    if (request->kind == FDN_NET_REQUEST_ACCEPT &&
+        (events & FDN_NET_POLL_READ) != 0) {
+        return fdn_net_accept_ready(request);
     }
     if (request->kind == FDN_NET_REQUEST_CONNECT &&
         (events & FDN_NET_POLL_WRITE) != 0) {
@@ -1191,8 +1443,10 @@ static void *fdn_net_service_thread(void *raw)
             requests[index] = request;
             descriptors[index + 1].fd = request->socket;
             descriptors[index + 1].events =
-                request->kind == FDN_NET_REQUEST_READ_LINE ? FDN_NET_POLL_READ
-                                                           : FDN_NET_POLL_WRITE;
+                request->kind == FDN_NET_REQUEST_ACCEPT ||
+                        request->kind == FDN_NET_REQUEST_READ_LINE
+                    ? FDN_NET_POLL_READ
+                    : FDN_NET_POLL_WRITE;
             ++index;
         }
         fdn_net_service_leave(service);
@@ -1332,6 +1586,44 @@ static void fdn_net_cancel(fdn_reactor_operation *operation) {
     fdn_net_global_leave();
 }
 
+void foundation_runtime_net_accept_start(uint64_t listener_handle,
+                                         uint64_t *connection,
+                                         fdn_reactor_operation *operation) {
+    fdn_net_listener *listener =
+        (fdn_net_listener *)(uintptr_t)listener_handle;
+    fdn_net_request *request;
+    int32_t status;
+    if (connection == NULL || operation == NULL) {
+        fdn_panic_cstr("invalid network accept operation");
+    }
+    *connection = 0;
+    if (listener == NULL || listener->socket == FDN_NET_INVALID_SOCKET) {
+        fdn_reactor_complete(operation, FDN_NET_CLOSED);
+        return;
+    }
+    request = fdn_alloc(sizeof(*request));
+    (void)memset(request, 0, sizeof(*request));
+    request->operation = operation;
+    request->kind = FDN_NET_REQUEST_ACCEPT;
+    request->socket = listener->socket;
+    request->value.accept.listener = listener;
+    request->value.accept.result = connection;
+    status = fdn_net_accept_ready(request);
+    if (status != FDN_NET_PENDING) {
+        fdn_dealloc(request);
+        fdn_reactor_complete(operation, status);
+        return;
+    }
+    if (!fdn_net_submit(request)) {
+        fdn_dealloc(request);
+        fdn_reactor_complete(operation, FDN_NET_IO);
+    }
+}
+
+void foundation_runtime_net_accept_cancel(fdn_reactor_operation *operation) {
+    fdn_net_cancel(operation);
+}
+
 void foundation_runtime_net_connect_start(uint64_t address_handle,
                                           uint64_t *connection,
                                           fdn_reactor_operation *operation) {
@@ -1370,18 +1662,21 @@ void foundation_runtime_net_connect_cancel(fdn_reactor_operation *operation) {
     fdn_net_cancel(operation);
 }
 
-void foundation_runtime_net_read_line_start(uint64_t reader, uint64_t limit,
-                                            fdn_string *line,
-                                            fdn_reactor_operation *operation) {
+static void fdn_net_read_start(uint64_t reader, uint64_t limit, fdn_string *text,
+                               fdn_reactor_operation *operation, bool exact) {
     fdn_net_connection *connection = (fdn_net_connection *)(uintptr_t)reader;
     fdn_net_request *request;
     fdn_net_socket socket;
     int32_t status;
-    if (line == NULL || operation == NULL) {
+    if (text == NULL || operation == NULL) {
         fdn_panic_cstr("invalid network read operation");
     }
-    fdn_string_drop(line);
-    *line = fdn_string_static("", 0);
+    fdn_string_drop(text);
+    *text = fdn_string_static("", 0);
+    if (exact && limit > (uint64_t)SIZE_MAX) {
+        fdn_reactor_complete(operation, FDN_NET_LINE_TOO_LONG);
+        return;
+    }
     if (connection == NULL) {
         fdn_reactor_complete(operation, FDN_NET_CLOSED);
         return;
@@ -1401,7 +1696,8 @@ void foundation_runtime_net_read_line_start(uint64_t reader, uint64_t limit,
     request->socket = socket;
     request->value.read.connection = connection;
     request->value.read.limit = limit > (uint64_t)SIZE_MAX ? SIZE_MAX : (size_t)limit;
-    request->value.read.result = line;
+    request->value.read.result = text;
+    request->value.read.exact = exact;
     status = fdn_net_read_buffered(request);
     if (status != FDN_NET_PENDING) {
         fdn_dealloc(request);
@@ -1414,7 +1710,23 @@ void foundation_runtime_net_read_line_start(uint64_t reader, uint64_t limit,
     }
 }
 
+void foundation_runtime_net_read_line_start(uint64_t reader, uint64_t limit,
+                                            fdn_string *line,
+                                            fdn_reactor_operation *operation) {
+    fdn_net_read_start(reader, limit, line, operation, false);
+}
+
 void foundation_runtime_net_read_line_cancel(fdn_reactor_operation *operation) {
+    fdn_net_cancel(operation);
+}
+
+void foundation_runtime_net_read_exact_start(uint64_t reader, uint64_t length,
+                                             fdn_string *text,
+                                             fdn_reactor_operation *operation) {
+    fdn_net_read_start(reader, length, text, operation, true);
+}
+
+void foundation_runtime_net_read_exact_cancel(fdn_reactor_operation *operation) {
     fdn_net_cancel(operation);
 }
 
@@ -1472,6 +1784,10 @@ void foundation_runtime_net_write_all_cancel(fdn_reactor_operation *operation) {
 
 uint64_t foundation_runtime_net_live_addresses(void) {
     return fdn_net_count_read(&fdn_net_addresses_count);
+}
+
+uint64_t foundation_runtime_net_live_listeners(void) {
+    return fdn_net_count_read(&fdn_net_listeners_count);
 }
 
 uint64_t foundation_runtime_net_live_connections(void) {

@@ -1,7 +1,10 @@
 #include "foundation/sema.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <climits>
+#include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -120,11 +123,14 @@ bool isReservedCSymbol(std::string_view value) {
 
 bool isCParameterType(const Type &type, std::string_view symbol,
                       std::string_view packageName) {
-    return type == i32Type || type == u64Type || type == boolType ||
+    return (isMachineScalar(type) && type != voidType && type != neverType) ||
+           ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) &&
+            type.arguments.size() == 1) ||
            (type.kind == TypeKind::View && type.arguments.size() == 1 &&
             type.arguments.front() == stringType) ||
            (type.kind == TypeKind::Edit && type.arguments.size() == 1 &&
-            (type.arguments.front() == i32Type || type.arguments.front() == u64Type ||
+            ((isMachineScalar(type.arguments.front()) &&
+              type.arguments.front() != voidType && type.arguments.front() != neverType) ||
              type.arguments.front() == boolType || type.arguments.front() == stringType)) ||
            (packageName == "foundation.worker" &&
             (symbol == "foundation_runtime_supervisor_adopt" ||
@@ -134,20 +140,136 @@ bool isCParameterType(const Type &type, std::string_view symbol,
 }
 
 bool isCReturnType(const Type &type) {
-    return type == voidType || type == i32Type || type == u64Type || type == boolType ||
-           type == stringType;
+    return (isMachineScalar(type) && type != neverType) || type == stringType ||
+           ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) &&
+            type.arguments.size() == 1);
 }
 
-bool isIntegerType(const Type &type) { return type == i32Type || type == u64Type; }
+bool containsRawPointer(const Type &type) {
+    if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) {
+        return true;
+    }
+    return std::any_of(type.arguments.begin(), type.arguments.end(), containsRawPointer);
+}
+
+bool integerLiteralFits(Type type, std::uint64_t magnitude, bool negative) {
+    if (isUnsignedInteger(type)) {
+        if (negative) {
+            return false;
+        }
+        switch (type.kind) {
+        case TypeKind::U8:
+            return magnitude <= UINT8_MAX;
+        case TypeKind::U16:
+            return magnitude <= UINT16_MAX;
+        case TypeKind::U32:
+            return magnitude <= UINT32_MAX;
+        case TypeKind::U64:
+            return true;
+        case TypeKind::Usize:
+            return magnitude <= std::numeric_limits<std::size_t>::max();
+        default:
+            return false;
+        }
+    }
+    if (!isSignedInteger(type)) {
+        return false;
+    }
+    std::uint64_t maximum{};
+    switch (type.kind) {
+    case TypeKind::I8:
+        maximum = INT8_MAX;
+        break;
+    case TypeKind::I16:
+        maximum = INT16_MAX;
+        break;
+    case TypeKind::I32:
+        maximum = INT32_MAX;
+        break;
+    case TypeKind::I64:
+        maximum = INT64_MAX;
+        break;
+    case TypeKind::Isize:
+        maximum = static_cast<std::uint64_t>(std::numeric_limits<std::intptr_t>::max());
+        break;
+    default:
+        return false;
+    }
+    return magnitude <= maximum + (negative ? UINT64_C(1) : UINT64_C(0));
+}
+
+std::optional<Type> machineScalarType(std::string_view name) {
+    if (name == "i8") return i8Type;
+    if (name == "i16") return i16Type;
+    if (name == "i32") return i32Type;
+    if (name == "i64") return i64Type;
+    if (name == "u8") return u8Type;
+    if (name == "u16") return u16Type;
+    if (name == "u32") return u32Type;
+    if (name == "u64") return u64Type;
+    if (name == "isize") return isizeType;
+    if (name == "usize") return usizeType;
+    if (name == "f32") return f32Type;
+    if (name == "f64") return f64Type;
+    return std::nullopt;
+}
+
+unsigned int integerValueBits(Type type) {
+    switch (type.kind) {
+    case TypeKind::I8:
+        return std::numeric_limits<std::int8_t>::digits;
+    case TypeKind::I16:
+        return std::numeric_limits<std::int16_t>::digits;
+    case TypeKind::I32:
+        return std::numeric_limits<std::int32_t>::digits;
+    case TypeKind::I64:
+        return std::numeric_limits<std::int64_t>::digits;
+    case TypeKind::Isize:
+        return std::numeric_limits<std::intptr_t>::digits;
+    case TypeKind::U8:
+        return std::numeric_limits<std::uint8_t>::digits;
+    case TypeKind::U16:
+        return std::numeric_limits<std::uint16_t>::digits;
+    case TypeKind::U32:
+        return std::numeric_limits<std::uint32_t>::digits;
+    case TypeKind::U64:
+        return std::numeric_limits<std::uint64_t>::digits;
+    case TypeKind::Usize:
+        return std::numeric_limits<std::size_t>::digits;
+    default:
+        return 0;
+    }
+}
+
+bool numericConversionIsInfallible(Type source, Type target) {
+    if (source == target) {
+        return true;
+    }
+    if (isInteger(source) && isInteger(target)) {
+        if (isSignedInteger(source) && isUnsignedInteger(target)) {
+            return false;
+        }
+        return integerValueBits(target) >= integerValueBits(source);
+    }
+    if (isInteger(source) && isFloating(target)) {
+        const auto precision = static_cast<unsigned int>(
+            target == f32Type ? std::numeric_limits<float>::digits
+                              : std::numeric_limits<double>::digits);
+        return precision >= integerValueBits(source);
+    }
+    return source == f32Type && target == f64Type;
+}
 
 class Analyzer {
   public:
     Analyzer(const Program &program, Diagnostics &diagnostics, AnalyzeOptions options)
         : program_(program), diagnostics_(diagnostics), options_(options) {
         model_.expressionTypes.resize(program.expressions.size(), invalidType);
+        model_.expressionReads.resize(program.expressions.size());
         model_.expressionContractConversions.resize(program.expressions.size());
         model_.expressionLocals.resize(program.expressions.size());
         model_.callTargets.resize(program.expressions.size());
+        model_.emptyTests.resize(program.expressions.size());
         model_.structTargets.resize(program.expressions.size());
         model_.expressionFields.resize(program.expressions.size());
         model_.enumTargets.resize(program.expressions.size());
@@ -159,7 +281,9 @@ class Analyzer {
         model_.blockingCallTargets.resize(program.expressions.size());
         model_.callbackCallTargets.resize(program.expressions.size());
         model_.channelOperationTargets.resize(program.expressions.size());
+        model_.channelSenderClones.resize(program.expressions.size());
         model_.selectTargets.resize(program.statements.size());
+        model_.forTargets.resize(program.statements.size());
         model_.expressionBorrowedClosures.resize(program.expressions.size());
         model_.expressionMoves.resize(program.expressions.size());
         model_.statementLocals.resize(program.statements.size());
@@ -271,12 +395,16 @@ class Analyzer {
             return FirAttributeTarget::Function;
         case AttributeTarget::Struct:
             return FirAttributeTarget::Struct;
+        case AttributeTarget::Service:
+            return FirAttributeTarget::Service;
         case AttributeTarget::Enum:
             return FirAttributeTarget::Enum;
         case AttributeTarget::Contract:
             return FirAttributeTarget::Contract;
         case AttributeTarget::Method:
             return FirAttributeTarget::Method;
+        case AttributeTarget::Action:
+            return FirAttributeTarget::Action;
         case AttributeTarget::Field:
             return FirAttributeTarget::Field;
         case AttributeTarget::Variant:
@@ -285,6 +413,112 @@ class Analyzer {
             return FirAttributeTarget::Parameter;
         }
         return FirAttributeTarget::Function;
+    }
+
+    bool isCopyParameterType(const Type &type,
+                             std::unordered_set<std::string> &active) const {
+        if (isMachineScalar(type) && type != voidType && type != neverType) {
+            return true;
+        }
+        if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) {
+            return type.arguments.size() == 1;
+        }
+        if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
+            return isCopyParameterType(type.arguments.front(), active);
+        }
+        if (type.kind != TypeKind::Struct && type.kind != TypeKind::Enum) {
+            return false;
+        }
+
+        const auto key = semanticTypeKey(type);
+        if (!active.insert(key).second) {
+            return true;
+        }
+        auto copy = true;
+        if (type.kind == TypeKind::Struct && type.declaration < model_.structs.size()) {
+            const auto &name = program_.structs[type.declaration].name;
+            for (const auto &function : program_.functions) {
+                if (function.ownerType == name && function.name.ends_with(".drop")) {
+                    copy = false;
+                    break;
+                }
+            }
+            if (copy) {
+                for (const auto &field : model_.structs[type.declaration].fieldTypes) {
+                    if (!isCopyParameterType(substitute(field, type.arguments), active)) {
+                        copy = false;
+                        break;
+                    }
+                }
+            }
+        } else if (type.declaration >= model_.enums.size()) {
+            copy = false;
+        } else {
+            for (const auto &payload : model_.enums[type.declaration].payloadTypes) {
+                if (payload.has_value() &&
+                    !isCopyParameterType(substitute(*payload, type.arguments), active)) {
+                    copy = false;
+                    break;
+                }
+            }
+        }
+        active.erase(key);
+        return copy;
+    }
+
+    bool isCopyParameterType(const Type &type) const {
+        std::unordered_set<std::string> active;
+        return isCopyParameterType(type, active);
+    }
+
+    Type resolveParameterType(const Parameter &parameter) {
+        const auto base = resolveType(parameter.type);
+        if (base == voidType) {
+            return base;
+        }
+        switch (parameter.mode) {
+        case ParameterMode::Bootstrap:
+        case ParameterMode::Transfer:
+            return base;
+        case ParameterMode::Edit:
+            return Type{TypeKind::Edit, 0, {base}};
+        case ParameterMode::Read:
+            if (isCopyParameterType(base)) {
+                return base;
+            }
+            return Type{TypeKind::View, 0, {base}};
+        }
+        return invalidType;
+    }
+
+    Type specializeReadParameter(Type type, ParameterMode mode) const {
+        if (mode == ParameterMode::Read && type.kind == TypeKind::View &&
+            type.arguments.size() == 1 && isCopyParameterType(type.arguments.front())) {
+            return type.arguments.front();
+        }
+        return type;
+    }
+
+    ParameterMode functionParameterMode(const Type &type) const {
+        if (type.kind == TypeKind::View) {
+            return ParameterMode::Read;
+        }
+        if (type.kind == TypeKind::Edit) {
+            return ParameterMode::Edit;
+        }
+        return isCopyParameterType(type) ? ParameterMode::Read : ParameterMode::Transfer;
+    }
+
+    Type functionValueParameterType(Type type, ParameterMode mode) const {
+        if (mode != ParameterMode::Read) {
+            return type;
+        }
+        if (type.kind == TypeKind::View && type.arguments.size() == 1) {
+            type = type.arguments.front();
+        }
+        return isCopyParameterType(type)
+                   ? type
+                   : Type{TypeKind::View, 1, {std::move(type)}};
     }
 
     void resolveContracts() {
@@ -340,9 +574,9 @@ class Analyzer {
                                        method.returnType.span);
                 }
                 for (const auto &parameter : method.parameters) {
-                    const auto type = resolveType(parameter.type);
-                    if (type == voidType) {
-                        diagnostics_.error("FDN2016", "parameter cannot have type void",
+                    const auto type = resolveParameterType(parameter);
+                    if (type == voidType || type == neverType) {
+                        diagnostics_.error("FDN2016", "parameter cannot have type void or never",
                                            parameter.span);
                     }
                     if (containsBareSlice(type)) {
@@ -360,6 +594,7 @@ class Analyzer {
                     }
                     target.parameterTypes.push_back(type);
                     target.parameterNames.push_back(parameter.name);
+                    target.parameterModes.push_back(parameter.mode);
                 }
                 semantic.methods.push_back(std::move(target));
             }
@@ -374,7 +609,8 @@ class Analyzer {
     static bool sameContractSignature(const SemanticContractMethod &left,
                                       const SemanticContractMethod &right) {
         return left.receiver == right.receiver && left.returnType == right.returnType &&
-               left.parameterTypes == right.parameterTypes;
+               left.parameterTypes == right.parameterTypes &&
+               left.parameterModes == right.parameterModes;
     }
 
     void mergeContractMethod(std::vector<SemanticContractMethod> &methods,
@@ -472,8 +708,7 @@ class Analyzer {
 
     bool parallelTransferSafe(const Type &type,
                               std::unordered_set<std::string> &active) const {
-        if (type == voidType || type == i32Type || type == u64Type || type == boolType ||
-            type == stringType) {
+        if (isMachineScalar(type) || type == stringType) {
             return true;
         }
         if (type.kind == TypeKind::Own && type.arguments.size() == 1) {
@@ -644,8 +879,8 @@ class Analyzer {
                                        source.span);
                 }
                 const auto type = resolveType(source.type);
-                if (type == voidType) {
-                    diagnostics_.error("FDN2022", "struct field cannot have type void",
+                if (type == voidType || type == neverType) {
+                    diagnostics_.error("FDN2022", "struct field cannot have type void or never",
                                        source.span);
                 }
                 if (containsBorrow(type)) {
@@ -711,8 +946,8 @@ class Analyzer {
                     continue;
                 }
                 const auto type = resolveType(*source.payloadType);
-                if (type == voidType) {
-                    diagnostics_.error("FDN2033", "enum payload cannot have type void",
+                if (type == voidType || type == neverType) {
+                    diagnostics_.error("FDN2033", "enum payload cannot have type void or never",
                                        source.span);
                 }
                 if (containsBorrow(type)) {
@@ -848,7 +1083,7 @@ class Analyzer {
 
     bool metadataType(const Type &type, SourceSpan span,
                       std::unordered_set<std::string> &active) {
-        if (type == i32Type || type == u64Type || type == boolType || type == stringType) {
+        if (isNumeric(type) || type == boolType || type == stringType) {
             return true;
         }
         if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
@@ -911,6 +1146,7 @@ class Analyzer {
     bool attributeConstant(AstExpressionId id) const {
         const auto &expression = program_.expressions[id];
         if (std::holds_alternative<IntegerExpression>(expression.value) ||
+            std::holds_alternative<FloatingExpression>(expression.value) ||
             std::holds_alternative<BooleanExpression>(expression.value) ||
             std::holds_alternative<StringExpression>(expression.value)) {
             return true;
@@ -922,6 +1158,11 @@ class Analyzer {
                                });
         }
         if (const auto *literal = std::get_if<StructExpression>(&expression.value)) {
+            const auto declaration = structs_.find(literal->type.name);
+            if (declaration != structs_.end() &&
+                literal->fields.size() != program_.structs[declaration->second].fields.size()) {
+                return false;
+            }
             return std::all_of(literal->fields.begin(), literal->fields.end(),
                                [this](const auto &field) {
                                    return attributeConstant(field.value);
@@ -949,6 +1190,10 @@ class Analyzer {
             result.kind = FirAttributeValueKind::Integer;
             result.magnitude = integer->magnitude;
             result.negative = integer->negative;
+        } else if (const auto *floating =
+                       std::get_if<FloatingExpression>(&expression.value)) {
+            result.kind = FirAttributeValueKind::Floating;
+            result.text = floating->text;
         } else if (const auto *boolean = std::get_if<BooleanExpression>(&expression.value)) {
             result.kind = FirAttributeValueKind::Boolean;
             result.boolean = boolean->value;
@@ -984,12 +1229,16 @@ class Analyzer {
             return "fn";
         case FirAttributeTarget::Struct:
             return "struct";
+        case FirAttributeTarget::Service:
+            return "service";
         case FirAttributeTarget::Enum:
             return "enum";
         case FirAttributeTarget::Contract:
             return "contract";
         case FirAttributeTarget::Method:
             return "method";
+        case FirAttributeTarget::Action:
+            return "action";
         case FirAttributeTarget::Field:
             return "field";
         case FirAttributeTarget::Variant:
@@ -1113,8 +1362,11 @@ class Analyzer {
         for (std::size_t index = 0; index < program_.structs.size(); ++index) {
             const auto &source = program_.structs[index];
             auto &target = model_.structs[index];
-            target.attributes = resolveAttributes(source.attributes, FirAttributeTarget::Struct,
-                                                  source.packageName);
+            target.attributes = resolveAttributes(
+                source.attributes,
+                source.kind == StructKind::Service ? FirAttributeTarget::Service
+                                                   : FirAttributeTarget::Struct,
+                source.packageName);
             target.fieldAttributes.resize(source.fields.size());
             for (std::size_t field = 0; field < source.fields.size(); ++field) {
                 target.fieldAttributes[field] =
@@ -1164,11 +1416,13 @@ class Analyzer {
         for (std::size_t index = 0; index < program_.functions.size(); ++index) {
             const auto &source = program_.functions[index];
             auto &target = model_.functions[index];
-            target.attributes = resolveAttributes(
-                source.attributes,
-                source.receiver.has_value() ? FirAttributeTarget::Method
-                                            : FirAttributeTarget::Function,
-                source.packageName);
+            const auto attributeTarget =
+                source.action
+                    ? FirAttributeTarget::Action
+                    : !source.ownerType.empty() ? FirAttributeTarget::Method
+                                                : FirAttributeTarget::Function;
+            target.attributes = resolveAttributes(source.attributes, attributeTarget,
+                                                  source.packageName);
             target.parameterAttributes.resize(source.parameters.size());
             for (std::size_t parameter = 0; parameter < source.parameters.size(); ++parameter) {
                 target.parameterAttributes[parameter] = resolveAttributes(
@@ -1182,7 +1436,8 @@ class Analyzer {
         bool foundMain = false;
         std::unordered_set<std::string> cSymbols;
         std::unordered_set<std::string> callbackCancelSymbols;
-        methods_.resize(program_.structs.size());
+        std::unordered_set<std::string> testNames;
+        methods_.resize(program_.structs.size() + program_.enums.size());
         for (std::size_t index = 0; index < program_.functions.size(); ++index) {
             const auto &function = program_.functions[index];
             auto &semantic = model_.functions[index];
@@ -1281,6 +1536,9 @@ class Analyzer {
                 diagnostics_.error("FDN2164", "main must be a function, not a task",
                                    function.span);
             }
+            if (function.task && semantic.returnType == neverType) {
+                diagnostics_.error("FDN2016", "task cannot return never", function.returnType.span);
+            }
             if (containsBorrow(semantic.returnType) ||
                 containsBareSlice(semantic.returnType) ||
                 containsBareContract(semantic.returnType)) {
@@ -1288,9 +1546,9 @@ class Analyzer {
                                    function.returnType.span);
             }
             for (const auto &parameter : function.parameters) {
-                const auto type = resolveType(parameter.type);
-                if (type == voidType) {
-                    diagnostics_.error("FDN2016", "parameter cannot have type void",
+                const auto type = resolveParameterType(parameter);
+                if (type == voidType || type == neverType) {
+                    diagnostics_.error("FDN2016", "parameter cannot have type void or never",
                                        parameter.span);
                 }
                 if (containsBareSlice(type)) {
@@ -1356,23 +1614,58 @@ class Analyzer {
                 }
             }
 
+            if (function.testName.has_value()) {
+                if (function.testName->empty()) {
+                    diagnostics_.error("FDN2211", "test name cannot be empty", function.span);
+                } else if (!testNames.emplace(*function.testName).second) {
+                    diagnostics_.error("FDN2211", "duplicate test name " + *function.testName,
+                                       function.span);
+                }
+                if (!function.typeParameters.empty() || !function.parameters.empty() ||
+                    semantic.returnType != voidType || function.receiver.has_value() ||
+                    function.task || function.cSymbol.has_value() || function.closure) {
+                    diagnostics_.error("FDN2211", "test declaration has an invalid signature",
+                                       function.span);
+                }
+                signatures_.push_back({semantic.returnType, semantic.parameterTypes});
+                continue;
+            }
             if (function.closure) {
                 signatures_.push_back({semantic.returnType, semantic.parameterTypes});
                 continue;
             }
             if (!function.ownerType.empty()) {
-                const auto owner = structs_.find(function.ownerType);
-                if (owner != structs_.end()) {
+                const auto structOwner = structs_.find(function.ownerType);
+                const auto enumOwner = enums_.find(function.ownerType);
+                if (structOwner != structs_.end() || enumOwner != enums_.end()) {
+                    const auto ownerIsStruct = structOwner != structs_.end();
+                    const auto owner = ownerIsStruct
+                                           ? structOwner->second
+                                           : program_.structs.size() + enumOwner->second;
                     const auto prefix = function.ownerType + '.';
                     const auto methodName = function.name.starts_with(prefix)
                                                 ? function.name.substr(prefix.size())
                                                 : function.name;
+                    if (function.action &&
+                        (!ownerIsStruct ||
+                         program_.structs[structOwner->second].kind != StructKind::Service)) {
+                        diagnostics_.error("FDN2215",
+                                           "action owner must be a service", function.span);
+                    }
+                    if (function.action && !function.receiver.has_value()) {
+                        diagnostics_.error("FDN2215",
+                                           "action requires an explicit receiver", function.span);
+                    }
+                    if (function.action && methodName == "drop") {
+                        diagnostics_.error("FDN2215", "action cannot be named drop",
+                                           function.span);
+                    }
                     if (function.receiver.has_value()) {
-                        if (!methods_[owner->second].emplace(methodName, index).second) {
+                        if (!methods_[owner].emplace(methodName, index).second) {
                             diagnostics_.error("FDN2095", "duplicate method " + methodName,
                                                function.span);
                         }
-                        if (methodName == "drop" &&
+                        if (ownerIsStruct && methodName == "drop" &&
                             (function.receiver != ReceiverKind::Edit ||
                              semantic.parameterTypes.size() != 1 ||
                              semantic.returnType != voidType)) {
@@ -1390,8 +1683,8 @@ class Analyzer {
                     diagnostics_.error(
                         "FDN2094",
                         function.receiver.has_value()
-                            ? "method owner is not a struct or contract"
-                            : "associated function owner is not a struct",
+                            ? "method owner is not a struct, enum, or contract"
+                            : "associated function owner is not a struct or enum",
                         function.span);
                 }
             } else if (!functions_.emplace(function.name, index).second) {
@@ -1406,6 +1699,12 @@ class Analyzer {
             }
             if (!function.receiver.has_value() && function.name == "len") {
                 diagnostics_.error("FDN2018", "len is a reserved builtin", function.span);
+            }
+            if (!function.receiver.has_value() && function.name == "null") {
+                diagnostics_.error("FDN2018", "null is a reserved builtin", function.span);
+            }
+            if (!function.receiver.has_value() && function.name == "isNull") {
+                diagnostics_.error("FDN2018", "isNull is a reserved builtin", function.span);
             }
             if (!function.receiver.has_value() && function.name == "channel") {
                 diagnostics_.error("FDN2018", "channel is a reserved builtin", function.span);
@@ -1523,6 +1822,15 @@ class Analyzer {
                     }
                     for (std::size_t parameter = 0;
                          parameter < required.parameterTypes.size(); ++parameter) {
+                        if (parameter + 1 >= provided.parameters.size() ||
+                            parameter >= required.parameterModes.size() ||
+                            provided.parameters[parameter + 1].mode !=
+                                required.parameterModes[parameter]) {
+                            diagnostics_.error(
+                                "FDN2195",
+                                "parameter mode mismatch for method " + requiredMethod.name,
+                                provided.span);
+                        }
                         requireSame(
                             substitute(required.parameterTypes[parameter],
                                        implementation.arguments),
@@ -1545,6 +1853,165 @@ class Analyzer {
         }
     }
 
+    struct WorkflowTarget {
+        FirFunctionId function{};
+        std::vector<Type> typeArguments;
+        Type successType{invalidType};
+    };
+
+    std::optional<WorkflowTarget>
+    analyzeWorkflowTarget(std::string_view name, Type input, Type error,
+                          std::optional<Type> expectedSuccess, SourceSpan span,
+                          std::string_view role) {
+        auto found = functions_.find(std::string(name));
+        if (found == functions_.end() && name.find('.') == std::string_view::npos &&
+            !currentPackage().empty()) {
+            found = functions_.find(std::string(currentPackage()) + '.' + std::string(name));
+        }
+        if (found == functions_.end()) {
+            diagnostics_.error("FDN2221", "unknown " + std::string(role) + " " +
+                                                  std::string(name),
+                               span);
+            return std::nullopt;
+        }
+        const auto id = found->second;
+        const auto &declaration = program_.functions[id];
+        const auto &signature = signatures_[id];
+        if (declaration.receiver.has_value() || declaration.task || declaration.blocking ||
+            declaration.callback || declaration.testName.has_value() ||
+            declaration.cSymbol.has_value()) {
+            diagnostics_.error("FDN2222", std::string(role) +
+                                                  " must be a synchronous Foundation function",
+                               span);
+        }
+        if (declaration.parameters.size() != 1 || signature.parameters.size() != 1) {
+            diagnostics_.error("FDN2223", std::string(role) +
+                                                  " must accept exactly one input",
+                               span);
+            return std::nullopt;
+        }
+        if (declaration.parameters.front().mode != ParameterMode::Read) {
+            diagnostics_.error("FDN2224", std::string(role) +
+                                                  " input must use read mode",
+                               declaration.parameters.front().span);
+        }
+
+        auto parameter = signature.parameters.front();
+        if (parameter.kind == TypeKind::View && parameter.arguments.size() == 1) {
+            parameter = parameter.arguments.front();
+        }
+        if (!isResult(signature.returnType) || signature.returnType.arguments.size() != 2) {
+            diagnostics_.error("FDN2225", std::string(role) +
+                                                  " must return Result<Value, Error>",
+                               declaration.returnType.span);
+            return std::nullopt;
+        }
+
+        std::vector<std::optional<Type>> inferred(declaration.typeParameters.size());
+        inferType(parameter, input, inferred, span, role);
+        inferType(signature.returnType.arguments[1], error, inferred, span, role);
+        if (expectedSuccess.has_value()) {
+            inferType(signature.returnType.arguments[0], *expectedSuccess, inferred, span, role);
+        }
+        auto typeArguments =
+            completeInference(inferred, declaration.typeParameters, span, name);
+        requireSame(substitute(parameter, typeArguments), input, span, role);
+        requireSame(error, substitute(signature.returnType.arguments[1], typeArguments), span,
+                    role);
+        const auto success = substitute(signature.returnType.arguments[0], typeArguments);
+        if (expectedSuccess.has_value()) {
+            requireSame(*expectedSuccess, success, span, role);
+        }
+        if (!program_.functions[currentFunction_].typeParameters.empty() &&
+            !declaration.typeParameters.empty()) {
+            genericCalls_.push_back({currentFunction_, id, typeArguments, span});
+        }
+        return WorkflowTarget{id, std::move(typeArguments), success};
+    }
+
+    void analyzeWorkflow(const Function &function, SemanticFunction &semantic) {
+        const auto &source = *function.workflow;
+        SemanticWorkflowFunction workflow;
+        workflow.kind = source.kind;
+        workflow.successType = resolveType(source.successType);
+        workflow.errorType = resolveType(source.errorType);
+
+        if (function.parameters.size() != 1 || semantic.parameterTypes.size() != 1) {
+            diagnostics_.error("FDN2226", "workflow requires exactly one input",
+                               function.span);
+            semantic.workflow = std::move(workflow);
+            return;
+        }
+        if (function.parameters.front().mode != ParameterMode::Read) {
+            diagnostics_.error("FDN2224", "workflow input must use read mode",
+                               function.parameters.front().span);
+        }
+        auto input = semantic.parameterTypes.front();
+        if (input.kind == TypeKind::View && input.arguments.size() == 1) {
+            input = input.arguments.front();
+        }
+        workflow.inputType = input;
+        if (!isResult(semantic.returnType) || semantic.returnType.arguments.size() != 2) {
+            diagnostics_.error("FDN2227", "workflow callable type must be a Result",
+                               function.returnType.span);
+        } else {
+            requireSame(workflow.successType, semantic.returnType.arguments[0], function.span,
+                        "workflow output");
+            workflow.failureType = semantic.returnType.arguments[1];
+            if (source.kind == WorkflowKind::Pipeline) {
+                requireSame(workflow.errorType, workflow.failureType, function.span,
+                            "pipeline error");
+            } else if (workflow.failureType.kind != TypeKind::Enum ||
+                       workflow.failureType.declaration >= model_.enums.size() ||
+                       model_.enums[workflow.failureType.declaration].payloadTypes.size() != 2 ||
+                       !model_.enums[workflow.failureType.declaration]
+                            .payloadTypes[1]
+                            .has_value()) {
+                diagnostics_.error("FDN2227", "saga failure type is invalid", function.span);
+            } else {
+                workflow.failureDetailsType = substitute(
+                    *model_.enums[workflow.failureType.declaration].payloadTypes[1],
+                    workflow.failureType.arguments);
+            }
+        }
+
+        auto current = input;
+        for (std::size_t index = 0; index < source.steps.size(); ++index) {
+            const auto &step = source.steps[index];
+            const auto last = index + 1 == source.steps.size();
+            const auto expected = source.kind == WorkflowKind::Saga
+                                      ? std::optional<Type>{last ? workflow.successType : voidType}
+                                      : std::nullopt;
+            const auto target = analyzeWorkflowTarget(
+                step.function, source.kind == WorkflowKind::Pipeline ? current : input,
+                workflow.errorType, expected, step.functionSpan, "workflow step");
+            SemanticWorkflowStep lowered;
+            lowered.name = step.name;
+            lowered.attempts = step.attempts;
+            if (target.has_value()) {
+                lowered.function = target->function;
+                lowered.typeArguments = target->typeArguments;
+                if (source.kind == WorkflowKind::Pipeline) {
+                    current = target->successType;
+                }
+            }
+            if (step.compensation.has_value() && step.compensationSpan.has_value()) {
+                const auto compensation = analyzeWorkflowTarget(
+                    *step.compensation, input, workflow.errorType, voidType,
+                    *step.compensationSpan, "saga compensation");
+                if (compensation.has_value()) {
+                    lowered.compensation = compensation->function;
+                    lowered.compensationTypeArguments = compensation->typeArguments;
+                }
+            }
+            workflow.steps.push_back(std::move(lowered));
+        }
+        if (source.kind == WorkflowKind::Pipeline) {
+            requireSame(workflow.successType, current, function.span, "pipeline output");
+        }
+        semantic.workflow = std::move(workflow);
+    }
+
     void analyzeFunction(std::size_t index) {
         currentFunction_ = index;
         scopes_.clear();
@@ -1559,6 +2026,10 @@ class Analyzer {
         channelStorage_ = 0;
         blockingStorage_ = 0;
         callbackStorage_ = 0;
+        iterationStorage_ = 0;
+        loopScopeBases_.clear();
+        loopJumps_ = 0;
+        unsafeDepth_ = 0;
 
         const auto &function = program_.functions[index];
         setTypeParameters(function.typeParameters, function.span);
@@ -1569,6 +2040,66 @@ class Analyzer {
             const auto local = addLocal(parameter.name, semantic.parameterTypes[parameterIndex],
                                         false, parameter.span);
             semantic.parameters.push_back(local);
+        }
+
+        if (function.stateTransition.has_value()) {
+            const auto owner = enums_.find(function.ownerType);
+            if (owner == enums_.end()) {
+                diagnostics_.error("FDN2196", "state transition owner is not an enum",
+                                   function.span);
+                return;
+            }
+            const auto machine = Type{TypeKind::Enum, owner->second};
+            const auto receiver = Type{TypeKind::Edit, 0, {machine}};
+            if (semantic.parameterTypes.empty()) {
+                diagnostics_.error("FDN2196", "state transition requires an edit receiver",
+                                   function.span);
+                return;
+            }
+            requireSame(receiver, semantic.parameterTypes.front(), function.span,
+                        "state transition receiver");
+            const auto &transition = *function.stateTransition;
+            if (transition.sourceVariants.empty()) {
+                diagnostics_.error("FDN2197", "state transition requires a valid source state",
+                                   function.span);
+            }
+            if (transition.destinationVariant >=
+                model_.enums[owner->second].payloadTypes.size()) {
+                diagnostics_.error("FDN2198", "state transition destination is invalid",
+                                   function.span);
+                return;
+            }
+            const auto payload =
+                model_.enums[owner->second].payloadTypes[transition.destinationVariant];
+            if (payload.has_value()) {
+                if (!transition.destinationParameter.has_value() ||
+                    *transition.destinationParameter >= semantic.parameterTypes.size()) {
+                    diagnostics_.error("FDN2198",
+                                       "state transition destination payload is missing",
+                                       function.span);
+                } else {
+                    const auto parameter = *transition.destinationParameter;
+                    requireSame(*payload, semantic.parameterTypes[parameter],
+                                function.parameters[parameter].span,
+                                "state transition destination payload");
+                }
+            } else if (transition.destinationParameter.has_value()) {
+                diagnostics_.error("FDN2198",
+                                   "unit state transition cannot store a payload",
+                                   function.span);
+            }
+            if (!isResult(semantic.returnType) || semantic.returnType.arguments.size() != 2 ||
+                semantic.returnType.arguments.front() != voidType) {
+                diagnostics_.error("FDN2199",
+                                   "state transition must return Result<void, E>",
+                                   function.returnType.span);
+            }
+            return;
+        }
+
+        if (function.workflow.has_value()) {
+            analyzeWorkflow(function, semantic);
+            return;
         }
 
         if (!function.hasBody) {
@@ -1622,13 +2153,13 @@ class Analyzer {
             taskWaitRoot_ = previousTaskWaitRoot;
             if (hasElse) {
                 if (!isResult(initializer) || initializer.arguments.size() != 2) {
-                    diagnostics_.error("FDN2053", "let else requires a Result initializer",
+                    diagnostics_.error("FDN2053", "const else requires a Result initializer",
                                        statement.span);
                     declared = invalidType;
                 } else {
                     const auto payload = initializer.arguments[0];
                     if (variable->type.has_value()) {
-                        requireSame(declared, payload, statement.span, "let else payload");
+                        requireSame(declared, payload, statement.span, "const else payload");
                     } else {
                         declared = payload;
                     }
@@ -1647,7 +2178,7 @@ class Analyzer {
                     restoreMoves(successMoves);
                     restoreLoans(successLoans);
                     if (!exits) {
-                        diagnostics_.error("FDN2054", "let else block must exit",
+                        diagnostics_.error("FDN2054", "const else block must exit",
                                            statement.span);
                     }
                 }
@@ -1843,17 +2374,26 @@ class Analyzer {
             const auto &targetExpression = program_.expressions[assignment->target];
             if (const auto *name = std::get_if<NameExpression>(&targetExpression.value)) {
                 const auto local = findLocal(name->name, statement.span);
-                const auto expected = local.has_value()
-                                          ? std::optional<Type>{model_.functions[currentFunction_]
-                                                                    .locals[*local]
-                                                                    .type}
-                                          : std::nullopt;
+                std::optional<Type> expected;
+                if (local.has_value()) {
+                    const auto &declaration =
+                        model_.functions[currentFunction_].locals[*local];
+                    expected = declaration.type;
+                    if (declaration.readBinding &&
+                        (expected->kind == TypeKind::View ||
+                         expected->kind == TypeKind::Edit) &&
+                        expected->arguments.size() == 1) {
+                        expected = expected->arguments.front();
+                    }
+                }
                 const auto value = analyzeExpression(assignment->value, expected);
                 if (!local.has_value()) {
                     return false;
                 }
                 model_.expressionLocals[assignment->target] = *local;
                 model_.expressionTypes[assignment->target] = *expected;
+                model_.expressionReads[assignment->target] =
+                    model_.functions[currentFunction_].locals[*local].readBinding;
                 model_.statementLocals[id] = *local;
                 const auto &declaration = model_.functions[currentFunction_].locals[*local];
                 if (!declaration.mutableBinding) {
@@ -1866,7 +2406,7 @@ class Analyzer {
                                                         declaration.name,
                                        statement.span);
                 }
-                requireSame(declaration.type, value, statement.span, "assignment");
+                requireSame(*expected, value, statement.span, "assignment");
                 if (assignment->value < model_.expressionBorrowedClosures.size() &&
                     model_.expressionBorrowedClosures[assignment->value]) {
                     diagnostics_.error("FDN2127", "borrowed closure cannot be assigned",
@@ -1896,6 +2436,46 @@ class Analyzer {
             requireSame(target, value, statement.span, "assignment");
             return false;
         }
+        if (const auto *resultElse = std::get_if<ResultElseStatement>(&statement.value)) {
+            const auto previousTaskWaitRoot = taskWaitRoot_;
+            const auto previousTaskWaitVoidStatement = taskWaitVoidStatement_;
+            if (program_.functions[currentFunction_].task) {
+                taskWaitRoot_ = resultElse->expression;
+                taskWaitVoidStatement_ = true;
+            }
+            const auto result = analyzeExpression(resultElse->expression);
+            taskWaitRoot_ = previousTaskWaitRoot;
+            taskWaitVoidStatement_ = previousTaskWaitVoidStatement;
+            if (!isResult(result) || result.arguments.size() != 2) {
+                diagnostics_.error("FDN2053", "expression else requires a Result value",
+                                   statement.span);
+                return false;
+            }
+            if (result.arguments.front() != voidType) {
+                diagnostics_.error(
+                    "FDN2053",
+                    "expression else requires Result<void, E>; bind a non-void success value",
+                    statement.span);
+            }
+            const auto successState = resultOutstanding_;
+            const auto successMoves = moveStates_;
+            const auto successLoans = loanStates_;
+            scopes_.emplace_back();
+            const auto errorLocal =
+                addLocal(resultElse->errorBinding, result.arguments[1], false, statement.span);
+            model_.statementElseLocals[id] = errorLocal;
+            const auto exits = analyzeBlock(resultElse->elseBlock, false);
+            reportScope(scopes_.back());
+            scopes_.pop_back();
+            restoreOutstanding(successState);
+            restoreMoves(successMoves);
+            restoreLoans(successLoans);
+            if (!exits) {
+                diagnostics_.error("FDN2054", "expression else block must exit",
+                                   statement.span);
+            }
+            return false;
+        }
         if (const auto *expression = std::get_if<ExpressionStatement>(&statement.value)) {
             const auto previousTaskWaitRoot = taskWaitRoot_;
             const auto previousTaskWaitVoidStatement = taskWaitVoidStatement_;
@@ -1915,7 +2495,8 @@ class Analyzer {
                                    statement.span);
             }
             const auto &target = model_.callTargets[expression->expression];
-            if (target.has_value() && target->kind == CallTargetKind::Panic) {
+            if (type == neverType ||
+                (target.has_value() && target->kind == CallTargetKind::Panic)) {
                 std::fill(resultOutstanding_.begin(), resultOutstanding_.end(), false);
                 return true;
             }
@@ -1965,6 +2546,33 @@ class Analyzer {
             taskWaitVoidStatement_ = previousTaskWaitVoidStatement;
             return false;
         }
+        if (const auto *unsafe = std::get_if<UnsafeStatement>(&statement.value)) {
+            if (!unsafe->safetyProof) {
+                diagnostics_.error(
+                    "FDN2212",
+                    "unsafe block requires an immediately preceding // SAFETY: proof",
+                    statement.span);
+            }
+            ++unsafeDepth_;
+            const auto returns = analyzeBlock(unsafe->body, true);
+            --unsafeDepth_;
+            return returns;
+        }
+        if (std::holds_alternative<BreakStatement>(statement.value) ||
+            std::holds_alternative<ContinueStatement>(statement.value)) {
+            const auto keyword = std::holds_alternative<BreakStatement>(statement.value)
+                                     ? "break"
+                                     : "continue";
+            if (loopScopeBases_.empty()) {
+                diagnostics_.error("FDN2200", std::string(keyword) +
+                                                  " is only available inside a loop",
+                                   statement.span);
+                return true;
+            }
+            reportScopesFrom(loopScopeBases_.back());
+            model_.statementDrops[id] = activeDropsFrom(loopScopeBases_.back());
+            return true;
+        }
         if (const auto *branch = std::get_if<IfStatement>(&statement.value)) {
             requireSame(boolType, analyzeExpression(branch->condition), statement.span,
                         "if condition");
@@ -2002,6 +2610,171 @@ class Analyzer {
             restoreLoans(
                 mergeLoans(loansBefore, thenLoans, elseLoans, thenReturns, elseReturns));
             return thenReturns && elseReturns;
+        }
+
+        if (const auto *loop = std::get_if<ForStatement>(&statement.value)) {
+            const auto loansBefore = loanStates_;
+            auto sequence = analyzeExpression(loop->sequence, std::nullopt,
+                                              ExpressionUse::Inspect);
+            auto base = sequence;
+            if ((base.kind == TypeKind::Own || base.kind == TypeKind::View ||
+                 base.kind == TypeKind::Edit) &&
+                base.arguments.size() == 1) {
+                base = base.arguments.front();
+            }
+            const auto indexedSequence =
+                (base.kind == TypeKind::Array || base.kind == TypeKind::Slice) &&
+                base.arguments.size() == 1;
+            auto iterator = false;
+            auto nextFunction = FirFunctionId{};
+            std::vector<Type> nextTypeArguments;
+            auto nextResult = invalidType;
+            auto element = indexedSequence ? base.arguments.front() : invalidType;
+            if (!indexedSequence && base.kind == TypeKind::Struct &&
+                base.declaration < methods_.size()) {
+                const auto found = methods_[base.declaration].find("Next");
+                if (found != methods_[base.declaration].end()) {
+                    nextFunction = found->second;
+                    const auto &declaration = program_.functions[nextFunction];
+                    const auto &signature = signatures_[nextFunction];
+                    nextTypeArguments = base.arguments;
+                    nextResult = substitute(signature.returnType, nextTypeArguments);
+                    iterator = declaration.receiver == ReceiverKind::Edit &&
+                               signature.parameters.size() == 1 && isOption(nextResult) &&
+                               nextResult.arguments.size() == 1;
+                    if (iterator) {
+                        element = nextResult.arguments.front();
+                    }
+                }
+                if (!iterator) {
+                    diagnostics_.error(
+                        "FDN2204",
+                        "iterator requires fn Next(&self) Option<T>", statement.span);
+                }
+            } else if (!indexedSequence) {
+                diagnostics_.error("FDN2201",
+                                   "for requires an array, sequence view, or iterator",
+                                   statement.span);
+            }
+            if (iterator && loop->editable) {
+                diagnostics_.error("FDN2205",
+                                   "iterator values cannot use editable iteration",
+                                   statement.span);
+            } else if (!iterator && loop->editable &&
+                       (!isPlaceExpression(loop->sequence) ||
+                        !editablePlace(loop->sequence))) {
+                diagnostics_.error("FDN2202", "editable iteration requires a mutable place",
+                                   statement.span);
+            }
+            if (!iterator && loop->editable && sequence.kind == TypeKind::View) {
+                diagnostics_.error("FDN2071", "shared view cannot become an edit",
+                                   statement.span);
+            }
+            if (iterator && isPlaceExpression(loop->sequence) &&
+                (sequence.kind == TypeKind::View || !editablePlace(loop->sequence))) {
+                diagnostics_.error("FDN2202", "iterator requires a mutable place",
+                                   statement.span);
+            }
+            if (!iterator && program_.functions[currentFunction_].task &&
+                !isPlaceExpression(loop->sequence)) {
+                diagnostics_.error(
+                    "FDN2203",
+                    "task iteration requires a bound sequence so it survives suspension",
+                    statement.span);
+            }
+
+            const auto root = placeRootLocal(loop->sequence);
+            if (root.has_value()) {
+                const auto requested = iterator || loop->editable ? LoanState::Edit
+                                                                  : LoanState::View;
+                if ((requested == LoanState::View && loanStates_[*root] == LoanState::Edit) ||
+                    (requested == LoanState::Edit &&
+                     loanStates_[*root] != LoanState::None)) {
+                    diagnostics_.error(
+                        "FDN2073",
+                        "conflicting borrow of binding " +
+                            model_.functions[currentFunction_].locals[*root].name,
+                        statement.span);
+                } else if (requested == LoanState::Edit ||
+                           loanStates_[*root] == LoanState::None) {
+                    loanStates_[*root] = requested;
+                }
+            }
+
+            const auto before = resultOutstanding_;
+            const auto movesBefore = moveStates_;
+            const auto outerLocals = movesBefore.size();
+            const auto persistentScope = scopes_.size();
+            scopes_.emplace_back();
+            const auto suffix = std::to_string(iterationStorage_++);
+            const auto ownsSequence = iterator && !isPlaceExpression(loop->sequence);
+            const auto sequenceType = iterator
+                                          ? (ownsSequence
+                                                 ? base
+                                                 : Type{TypeKind::Edit, 0, {base}})
+                                          : Type{
+                                                loop->editable ? TypeKind::Edit : TypeKind::View,
+                                                0, {Type{TypeKind::Slice, 0, {element}}}};
+            const auto sequenceStorage =
+                addLocal("$forSequence" + suffix, sequenceType, ownsSequence, statement.span);
+            scopes_.emplace_back();
+            const auto loopScope = persistentScope + 1;
+            const auto index = addLocal(loop->indexBinding.value_or("$forIndex" + suffix),
+                                        usizeType, false, statement.span);
+            auto valueType = element;
+            auto readBinding = false;
+            auto mutableBinding = false;
+            if (!iterator && loop->editable) {
+                valueType = Type{TypeKind::Edit, 0, {element}};
+                readBinding = true;
+                mutableBinding = true;
+            } else if (!iterator && requiresDrop(element)) {
+                valueType = Type{TypeKind::View, 0, {element}};
+                readBinding = true;
+            }
+            const auto value =
+                addLocal(loop->valueBinding, valueType, mutableBinding, statement.span);
+            model_.functions[currentFunction_].locals[value].readBinding = readBinding;
+
+            const auto loopJumpsBefore = loopJumps_;
+            loopScopeBases_.push_back(loopScope);
+            const auto bodyReturns = analyzeBlock(loop->body, false);
+            loopScopeBases_.pop_back();
+            const auto bodyHasLoopJump = loopJumps_ != loopJumpsBefore;
+            const auto bodyState = outstandingPrefix(before.size());
+            const auto bodyMoves = movePrefix(outerLocals);
+            model_.blockDrops[loop->body] = scopeDrops(scopes_.back());
+            reportScope(scopes_.back());
+            scopes_.pop_back();
+            reportScope(scopes_.back());
+            scopes_.pop_back();
+
+            std::vector<bool> merged(before.size());
+            for (std::size_t local = 0; local < before.size(); ++local) {
+                merged[local] = before[local] || bodyState[local];
+            }
+            restoreOutstanding(merged);
+            std::vector<MoveState> loopMoves(outerLocals);
+            for (std::size_t local = 0; local < outerLocals; ++local) {
+                if ((!bodyReturns || bodyHasLoopJump) &&
+                    movesBefore[local] != bodyMoves[local]) {
+                    diagnostics_.error(
+                        "FDN2079",
+                        "loop body cannot leave binding " +
+                            model_.functions[currentFunction_].locals[local].name + " moved",
+                        statement.span);
+                }
+                loopMoves[local] = (bodyReturns && !bodyHasLoopJump) ||
+                                           movesBefore[local] == bodyMoves[local]
+                                       ? movesBefore[local]
+                                       : MoveState::MaybeMoved;
+            }
+            restoreMoves(loopMoves);
+            restoreLoans(loansBefore);
+            model_.forTargets[id] = ForTarget{
+                sequenceStorage, index, value, sequenceType, loop->editable, iterator,
+                nextFunction, std::move(nextTypeArguments), nextResult, ownsSequence};
+            return false;
         }
 
         if (const auto *selection = std::get_if<SelectStatement>(&statement.value)) {
@@ -2151,7 +2924,11 @@ class Analyzer {
         }
         const auto before = resultOutstanding_;
         const auto movesBefore = moveStates_;
+        const auto loopJumpsBefore = loopJumps_;
+        loopScopeBases_.push_back(scopes_.size());
         const auto bodyReturns = analyzeBlock(loop.body, true);
+        loopScopeBases_.pop_back();
+        const auto bodyHasLoopJump = loopJumps_ != loopJumpsBefore;
         const auto bodyState = outstandingPrefix(before.size());
         const auto bodyMoves = movePrefix(movesBefore.size());
         std::vector<bool> merged(before.size());
@@ -2161,7 +2938,8 @@ class Analyzer {
         restoreOutstanding(merged);
         std::vector<MoveState> loopMoves(movesBefore.size());
         for (std::size_t local = 0; local < loopMoves.size(); ++local) {
-            if (!bodyReturns && movesBefore[local] != bodyMoves[local]) {
+            if ((!bodyReturns || bodyHasLoopJump) &&
+                movesBefore[local] != bodyMoves[local]) {
                 diagnostics_.error("FDN2079", "loop body cannot leave binding " +
                                                    model_.functions[currentFunction_]
                                                        .locals[local]
@@ -2169,7 +2947,8 @@ class Analyzer {
                                                    " moved",
                                    statement.span);
             }
-            loopMoves[local] = bodyReturns || movesBefore[local] == bodyMoves[local]
+            loopMoves[local] = (bodyReturns && !bodyHasLoopJump) ||
+                                       movesBefore[local] == bodyMoves[local]
                                    ? movesBefore[local]
                                    : MoveState::MaybeMoved;
         }
@@ -2182,23 +2961,25 @@ class Analyzer {
         const auto &expression = program_.expressions[id];
         auto type = invalidType;
         if (const auto *integer = std::get_if<IntegerExpression>(&expression.value)) {
-            if (expected == u64Type) {
-                if (integer->negative) {
-                    diagnostics_.error("FDN2005", "negative integer literal does not fit u64",
+            type = expected.has_value() && isInteger(*expected) ? *expected : i32Type;
+            if (!integerLiteralFits(type, integer->magnitude, integer->negative)) {
+                diagnostics_.error("FDN2005",
+                                   "integer literal does not fit " +
+                                       std::string(typeName(type)),
+                                   expression.span);
+            }
+        } else if (const auto *floating =
+                       std::get_if<FloatingExpression>(&expression.value)) {
+            type = expected == f32Type ? f32Type : f64Type;
+            if (type == f32Type) {
+                float value{};
+                const auto conversion = std::from_chars(
+                    floating->text.data(), floating->text.data() + floating->text.size(), value);
+                if (conversion.ec != std::errc{} ||
+                    conversion.ptr != floating->text.data() + floating->text.size()) {
+                    diagnostics_.error("FDN2005", "floating-point literal does not fit f32",
                                        expression.span);
                 }
-                type = u64Type;
-            } else {
-                constexpr auto minimumMagnitude = std::uint64_t{2147483648};
-                const auto fits = integer->negative
-                                      ? integer->magnitude <= minimumMagnitude
-                                      : integer->magnitude <=
-                                            static_cast<std::uint64_t>(INT32_MAX);
-                if (!fits) {
-                    diagnostics_.error("FDN2005", "integer literal does not fit i32",
-                                       expression.span);
-                }
-                type = i32Type;
             }
         } else if (std::holds_alternative<BooleanExpression>(expression.value)) {
             type = boolType;
@@ -2211,6 +2992,24 @@ class Analyzer {
             if (local.has_value()) {
                 model_.expressionLocals[id] = *local;
                 type = model_.functions[currentFunction_].locals[*local].type;
+                const auto &semantic = model_.functions[currentFunction_];
+                const auto parameter =
+                    std::find(semantic.parameters.begin(), semantic.parameters.end(), *local);
+                const auto parameterIndex = static_cast<std::size_t>(
+                    std::distance(semantic.parameters.begin(), parameter));
+                const auto targetRead = semantic.locals[*local].readBinding ||
+                                        (parameter != semantic.parameters.end() &&
+                                         parameterIndex < program_.functions[currentFunction_]
+                                                              .parameters.size() &&
+                                         program_.functions[currentFunction_]
+                                                 .parameters[parameterIndex]
+                                                 .mode == ParameterMode::Read);
+                if (targetRead && use == ExpressionUse::Inspect &&
+                    (type.kind == TypeKind::View || type.kind == TypeKind::Edit) &&
+                    type.arguments.size() == 1) {
+                    type = type.arguments.front();
+                    model_.expressionReads[id] = true;
+                }
                 if (loanStates_[*local] == LoanState::Edit) {
                     diagnostics_.error("FDN2073", "cannot inspect edited binding " + name->name,
                                        expression.span);
@@ -2247,10 +3046,12 @@ class Analyzer {
                     resultOutstanding_[*local] = false;
                 }
             } else {
-                auto function = functions_.find(name->name);
-                if (function == functions_.end() && name->name.find('.') == std::string::npos &&
-                    !currentPackage().empty()) {
+                auto function = functions_.end();
+                if (name->name.find('.') == std::string::npos && !currentPackage().empty()) {
                     function = functions_.find(std::string(currentPackage()) + '.' + name->name);
+                }
+                if (function == functions_.end()) {
+                    function = functions_.find(name->name);
                 }
                 if (function == functions_.end()) {
                     static_cast<void>(findLocal(name->name, expression.span));
@@ -2293,8 +3094,13 @@ class Analyzer {
                     inferType(signature.returnType, expected->arguments.front(), inferred,
                               expression.span, "function value return");
                     for (std::size_t index = 0; index < signature.parameters.size(); ++index) {
-                        inferType(signature.parameters[index], expected->arguments[index + 1],
-                                  inferred, expression.span, "function value parameter");
+                        const auto mode =
+                            index < program_.functions[functionId].parameters.size()
+                                ? program_.functions[functionId].parameters[index].mode
+                                : ParameterMode::Bootstrap;
+                        inferType(functionValueParameterType(signature.parameters[index], mode),
+                                  expected->arguments[index + 1], inferred, expression.span,
+                                  "function value parameter");
                     }
                 }
                 const auto typeArguments = completeInference(
@@ -2302,15 +3108,19 @@ class Analyzer {
                     name->name);
                 std::vector<Type> parts;
                 parts.push_back(substitute(signature.returnType, typeArguments));
-                for (const auto &parameter : signature.parameters) {
-                    parts.push_back(substitute(parameter, typeArguments));
+                for (std::size_t index = 0; index < signature.parameters.size(); ++index) {
+                    const auto mode = index < program_.functions[functionId].parameters.size()
+                                          ? program_.functions[functionId].parameters[index].mode
+                                          : ParameterMode::Bootstrap;
+                    parts.push_back(functionValueParameterType(
+                        substitute(signature.parameters[index], typeArguments), mode));
                 }
                 type = Type{TypeKind::Function, 0, std::move(parts)};
                 model_.functionValueTargets[id] =
                     FunctionValueTarget{functionId, std::move(typeArguments)};
             }
         } else if (const auto *unary = std::get_if<UnaryExpression>(&expression.value)) {
-            type = analyzeUnary(*unary, expression.span);
+            type = analyzeUnary(id, *unary, expected, expression.span);
         } else if (const auto *ownership = std::get_if<OwnershipExpression>(&expression.value)) {
             type = analyzeOwnership(id, *ownership, expression.span);
         } else if (const auto *spawn = std::get_if<SpawnExpression>(&expression.value)) {
@@ -2329,6 +3139,9 @@ class Analyzer {
             type = analyzeReplace(id, *replace, expression.span);
         } else if (const auto *function = std::get_if<FunctionExpression>(&expression.value)) {
             type = analyzeClosure(id, *function, expected, expression.span);
+        } else if (const auto *conditional =
+                       std::get_if<ConditionalExpression>(&expression.value)) {
+            type = analyzeConditional(id, *conditional, expected, expression.span);
         } else {
             type = analyzeMatch(id, std::get<MatchExpression>(expression.value), expected,
                                 expression.span);
@@ -2346,7 +3159,7 @@ class Analyzer {
 
     Type analyzeOwnership(AstExpressionId id, const OwnershipExpression &ownership,
                           SourceSpan span) {
-        if (ownership.operation == OwnershipOperator::Own) {
+        if (ownership.operation == OwnershipOperator::Transfer) {
             if (const auto *member = std::get_if<MemberExpression>(
                     &program_.expressions[ownership.operand].value);
                 member != nullptr && member->invoked && member->member == "wait" &&
@@ -2378,6 +3191,35 @@ class Analyzer {
                 model_.taskWaitTargets[id] = TaskWaitTarget{*member->base};
                 return task.arguments.front();
             }
+            const auto value = analyzeExpression(ownership.operand, std::nullopt,
+                                                 ExpressionUse::Consume);
+            if (value.kind == TypeKind::View || value.kind == TypeKind::Edit) {
+                diagnostics_.error("FDN2068", "cannot transfer a borrowed value", span);
+                return invalidType;
+            }
+            model_.ownershipTargets[id] = OwnershipTarget{ownership.operation, std::nullopt};
+            return value;
+        }
+        if (ownership.operation == OwnershipOperator::New) {
+            if (!std::holds_alternative<StructExpression>(
+                    program_.expressions[ownership.operand].value) &&
+                !std::holds_alternative<CallExpression>(
+                    program_.expressions[ownership.operand].value) &&
+                !std::holds_alternative<MemberExpression>(
+                    program_.expressions[ownership.operand].value)) {
+                diagnostics_.error("FDN2191", "new requires a struct literal or call", span);
+            }
+            const auto value = analyzeExpression(ownership.operand, std::nullopt,
+                                                 ExpressionUse::Consume);
+            if (value == voidType || value.kind == TypeKind::Invalid ||
+                value.kind == TypeKind::View || value.kind == TypeKind::Edit) {
+                diagnostics_.error("FDN2068", "new requires an owned value", span);
+                return invalidType;
+            }
+            model_.ownershipTargets[id] = OwnershipTarget{ownership.operation, std::nullopt};
+            return value;
+        }
+        if (ownership.operation == OwnershipOperator::Own) {
             const auto value = analyzeExpression(ownership.operand);
             if (value == voidType || value.kind == TypeKind::Invalid ||
                 value.kind == TypeKind::Own || value.kind == TypeKind::View ||
@@ -2476,14 +3318,95 @@ class Analyzer {
         return Type{TypeKind::Task, 0, {result}};
     }
 
-    Type analyzeUnary(const UnaryExpression &unary, SourceSpan span) {
-        const auto operand = analyzeExpression(unary.operand);
-        if (unary.operation == UnaryOperator::Negate) {
-            requireSame(i32Type, operand, span, "unary -");
-            return i32Type;
+    Type analyzeUnary(AstExpressionId id, const UnaryExpression &unary,
+                      std::optional<Type> expected,
+                      SourceSpan span) {
+        if (unary.operation == UnaryOperator::Dereference) {
+            const auto operand = analyzeExpression(unary.operand, std::nullopt,
+                                                   ExpressionUse::Inspect);
+            if (operand.kind != TypeKind::Raw && operand.kind != TypeKind::RawConst) {
+                diagnostics_.error("FDN2213", "unary * requires a raw pointer", span);
+                return invalidType;
+            }
+            if (unsafeDepth_ == 0) {
+                diagnostics_.error("FDN2213",
+                                   "raw pointer dereference requires an unsafe block", span);
+            }
+            if (operand.arguments.size() != 1 || operand.arguments.front() == voidType) {
+                diagnostics_.error("FDN2214", "void raw pointer cannot be dereferenced", span);
+                return invalidType;
+            }
+            return operand.arguments.front();
         }
-        requireSame(boolType, operand, span, "unary !");
-        return boolType;
+        const auto numericExpected = expected.has_value() &&
+                                             (isSignedInteger(*expected) ||
+                                              isFloating(*expected))
+                                         ? expected
+                                         : std::nullopt;
+        const auto operand = analyzeExpression(unary.operand, numericExpected,
+                                               ExpressionUse::Inspect);
+        if (unary.operation == UnaryOperator::Negate) {
+            if (!isSignedInteger(operand) && !isFloating(operand)) {
+                diagnostics_.error("FDN2011",
+                                   "unary - requires a signed integer or floating-point value",
+                                   span);
+                return invalidType;
+            }
+            return operand;
+        }
+        if (operand == boolType) {
+            return boolType;
+        }
+
+        auto base = operand;
+        if ((base.kind == TypeKind::Own || base.kind == TypeKind::View ||
+             base.kind == TypeKind::Edit) &&
+            base.arguments.size() == 1) {
+            base = base.arguments.front();
+        }
+        if (base.kind == TypeKind::String || base.kind == TypeKind::Array ||
+            base.kind == TypeKind::Slice) {
+            model_.emptyTests[id] = true;
+            CallTarget target;
+            target.kind = CallTargetKind::Len;
+            target.receiver = unary.operand;
+            model_.callTargets[id] = std::move(target);
+            return boolType;
+        }
+        auto hasEmptyMethod = base.kind == TypeKind::Struct &&
+                              base.declaration < methods_.size() &&
+                              methods_[base.declaration].contains("IsEmpty");
+        if (base.kind == TypeKind::Contract && base.declaration < model_.contracts.size()) {
+            hasEmptyMethod = std::any_of(
+                model_.contracts[base.declaration].methods.begin(),
+                model_.contracts[base.declaration].methods.end(),
+                [](const SemanticContractMethod &method) { return method.name == "IsEmpty"; });
+        }
+        if (hasEmptyMethod) {
+            const MemberExpression method{unary.operand, "IsEmpty", {}, true, {}, {}, {}};
+            const auto result = analyzeMethod(id, method, operand, base, span);
+            const auto &target = model_.callTargets[id];
+            auto readOnly = false;
+            if (target.has_value() && target->kind == CallTargetKind::Method &&
+                target->function < program_.functions.size()) {
+                readOnly = program_.functions[target->function].receiver == ReceiverKind::View;
+            } else if (target.has_value() && target->kind == CallTargetKind::ContractMethod &&
+                       target->contract < model_.contracts.size() &&
+                       target->method < model_.contracts[target->contract].methods.size()) {
+                readOnly = model_.contracts[target->contract].methods[target->method].receiver ==
+                           ReceiverKind::View;
+            }
+            if (!readOnly || result != boolType) {
+                diagnostics_.error("FDN2220",
+                                   "empty test requires fn IsEmpty(self) bool", span);
+            }
+            model_.emptyTests[id] = true;
+            return boolType;
+        }
+        diagnostics_.error("FDN2220",
+                           "unary ! requires bool, String, a sequence, or fn IsEmpty(self) bool",
+                           span);
+        return invalidType;
     }
 
     Type analyzeReplace(AstExpressionId id, const ReplaceExpression &replace,
@@ -2548,7 +3471,12 @@ class Analyzer {
         std::vector<Type> parts;
         parts.reserve(signature.parameters.size() + 1);
         parts.push_back(signature.returnType);
-        parts.insert(parts.end(), signature.parameters.begin(), signature.parameters.end());
+        for (std::size_t index = 0; index < signature.parameters.size(); ++index) {
+            const auto mode = index < closure.parameters.size()
+                                  ? closure.parameters[index].mode
+                                  : ParameterMode::Bootstrap;
+            parts.push_back(functionValueParameterType(signature.parameters[index], mode));
+        }
         const Type closureType{TypeKind::Function, 0, std::move(parts)};
         if (expected.has_value()) {
             auto target = *expected;
@@ -2595,13 +3523,13 @@ class Analyzer {
                 diagnostics_.error("FDN2123", "capture cannot contain an existing borrow",
                                    capture.span);
             }
-            if (capture.mode == CaptureMode::Copy) {
-                if (requiresDrop(type)) {
-                    diagnostics_.error("FDN2123", "move-only capture requires own " +
-                                                        capture.name,
-                                       capture.span);
-                }
-            } else if (capture.mode == CaptureMode::Own) {
+            auto captureMode = capture.mode;
+            if (captureMode == CaptureMode::Copy && requiresDrop(type)) {
+                captureMode = CaptureMode::View;
+            }
+            if (captureMode == CaptureMode::Copy) {
+                // Copyable captures are stored directly in the closure environment.
+            } else if (captureMode == CaptureMode::Own) {
                 if (moveStates_[*source] == MoveState::Moved) {
                     diagnostics_.error("FDN2065", "use of moved binding " + capture.name,
                                        capture.span);
@@ -2620,7 +3548,7 @@ class Analyzer {
                     resultOutstanding_[*source] = false;
                 }
             } else {
-                const auto requested = capture.mode == CaptureMode::View ? LoanState::View
+                const auto requested = captureMode == CaptureMode::View ? LoanState::View
                                                                          : LoanState::Edit;
                 if (requested == LoanState::Edit &&
                     !model_.functions[currentFunction_].locals[*source].mutableBinding &&
@@ -2640,7 +3568,7 @@ class Analyzer {
                 borrowed = true;
             }
             captureSources.push_back(*source);
-            captureModes.push_back(capture.mode);
+            captureModes.push_back(captureMode);
             captureTypes.push_back(type);
         }
 
@@ -2760,8 +3688,8 @@ class Analyzer {
 
     Type analyzeIndex(const IndexExpression &index, ExpressionUse use, SourceSpan span) {
         auto base = analyzeExpression(index.base, std::nullopt, ExpressionUse::Inspect);
-        requireSame(i32Type,
-                    analyzeExpression(index.index, std::nullopt, ExpressionUse::Inspect), span,
+        requireSame(usizeType,
+                    analyzeExpression(index.index, usizeType, ExpressionUse::Inspect), span,
                     "index");
         if ((base.kind == TypeKind::Own || base.kind == TypeKind::View ||
              base.kind == TypeKind::Edit) &&
@@ -2783,14 +3711,17 @@ class Analyzer {
 
     Type analyzeBinary(const BinaryExpression &binary, std::optional<Type> expected,
                        SourceSpan span) {
-        const auto numericExpected = expected.has_value() && isIntegerType(*expected)
+        const auto numericExpected = expected.has_value() && isNumeric(*expected)
                                          ? expected
                                          : std::nullopt;
         const auto left = analyzeExpression(binary.left, numericExpected,
                                             ExpressionUse::Inspect);
         const auto movesBeforeRight = moveStates_;
-        const auto rightExpected = isIntegerType(left) ? std::optional<Type>{left}
-                                                       : std::nullopt;
+        const auto rightExpected = isNumeric(left) ? std::optional<Type>{left}
+                                   : (left.kind == TypeKind::Raw ||
+                                      left.kind == TypeKind::RawConst)
+                                       ? std::optional<Type>{usizeType}
+                                       : std::nullopt;
         const auto right = analyzeExpression(binary.right, rightExpected,
                                              ExpressionUse::Inspect);
         if (binary.operation == BinaryOperator::And || binary.operation == BinaryOperator::Or) {
@@ -2804,23 +3735,56 @@ class Analyzer {
         }
         switch (binary.operation) {
         case BinaryOperator::Add:
+            if (left.kind == TypeKind::Raw || left.kind == TypeKind::RawConst) {
+                if (unsafeDepth_ == 0) {
+                    diagnostics_.error("FDN2213",
+                                       "raw pointer arithmetic requires an unsafe block", span);
+                }
+                if (left.arguments.size() != 1 || left.arguments.front() == voidType) {
+                    diagnostics_.error("FDN2214",
+                                       "void raw pointer does not support arithmetic", span);
+                    return invalidType;
+                }
+                requireSame(usizeType, right, span, "raw pointer offset");
+                return left;
+            }
             if (left == stringType || right == stringType) {
                 requireSame(stringType, left, span, "string concatenation operand");
                 requireSame(stringType, right, span, "string concatenation operand");
                 return stringType;
             }
-            if (!isIntegerType(left)) {
-                diagnostics_.error("FDN2011", "arithmetic operand requires i32 or u64", span);
+            if (!isNumeric(left)) {
+                diagnostics_.error("FDN2011", "arithmetic operand requires a numeric type", span);
                 return invalidType;
             }
             requireSame(left, right, span, "arithmetic operand");
             return left;
         case BinaryOperator::Subtract:
+            if (left.kind == TypeKind::Raw || left.kind == TypeKind::RawConst) {
+                if (unsafeDepth_ == 0) {
+                    diagnostics_.error("FDN2213",
+                                       "raw pointer arithmetic requires an unsafe block", span);
+                }
+                if (left.arguments.size() != 1 || left.arguments.front() == voidType) {
+                    diagnostics_.error("FDN2214",
+                                       "void raw pointer does not support arithmetic", span);
+                    return invalidType;
+                }
+                requireSame(usizeType, right, span, "raw pointer offset");
+                return left;
+            }
+            [[fallthrough]];
         case BinaryOperator::Multiply:
         case BinaryOperator::Divide:
+            if (!isNumeric(left)) {
+                diagnostics_.error("FDN2011", "arithmetic operand requires a numeric type", span);
+                return invalidType;
+            }
+            requireSame(left, right, span, "arithmetic operand");
+            return left;
         case BinaryOperator::Remainder:
-            if (!isIntegerType(left)) {
-                diagnostics_.error("FDN2011", "arithmetic operand requires i32 or u64", span);
+            if (!isInteger(left)) {
+                diagnostics_.error("FDN2011", "remainder operand requires an integer type", span);
                 return invalidType;
             }
             requireSame(left, right, span, "arithmetic operand");
@@ -2829,8 +3793,8 @@ class Analyzer {
         case BinaryOperator::LessEqual:
         case BinaryOperator::Greater:
         case BinaryOperator::GreaterEqual:
-            if (!isIntegerType(left)) {
-                diagnostics_.error("FDN2011", "comparison operand requires i32 or u64", span);
+            if (!isNumeric(left)) {
+                diagnostics_.error("FDN2011", "comparison operand requires a numeric type", span);
                 return boolType;
             }
             requireSame(left, right, span, "comparison operand");
@@ -2862,6 +3826,178 @@ class Analyzer {
         return invalidType;
     }
 
+    Type analyzeCallArgument(AstExpressionId argument, std::optional<Type> expected,
+                             ParameterMode mode, SourceSpan span,
+                             std::optional<Type> &implicitBorrow) {
+        const auto *ownership = std::get_if<OwnershipExpression>(
+            &program_.expressions[argument].value);
+        if (mode == ParameterMode::Edit &&
+            (ownership == nullptr || ownership->operation != OwnershipOperator::Edit)) {
+            diagnostics_.error("FDN2192", "edit parameter requires & at the call site", span);
+        }
+        if (mode != ParameterMode::Read) {
+            const auto actual = analyzeExpression(argument, expected, ExpressionUse::Consume);
+            if (mode == ParameterMode::Transfer && requiresDrop(actual) &&
+                isPlaceExpression(argument) &&
+                (ownership == nullptr ||
+                 ownership->operation != OwnershipOperator::Transfer)) {
+                diagnostics_.error("FDN2193", "transfer parameter requires $ at the call site",
+                                   span);
+            }
+            return actual;
+        }
+        if (ownership != nullptr &&
+            (ownership->operation == OwnershipOperator::Edit ||
+             ownership->operation == OwnershipOperator::Transfer)) {
+            diagnostics_.error("FDN2194", "read parameter does not accept & or $", span);
+        }
+        if (!expected.has_value() || expected->kind != TypeKind::View ||
+            expected->arguments.size() != 1) {
+            const auto local = placeRootLocal(argument);
+            const auto ownedCopy = expected.has_value() && local.has_value() &&
+                                   isCopyParameterType(*expected) &&
+                                   model_.functions[currentFunction_].locals[*local].type.kind ==
+                                       TypeKind::Own &&
+                                   model_.functions[currentFunction_]
+                                           .locals[*local]
+                                           .type.arguments.size() == 1 &&
+                                   model_.functions[currentFunction_]
+                                           .locals[*local]
+                                           .type.arguments.front() == *expected;
+            if (ownedCopy) {
+                static_cast<void>(analyzeExpression(argument, std::nullopt,
+                                                    ExpressionUse::Inspect));
+                implicitBorrow = Type{TypeKind::View, 0, {*expected}};
+                if (loanStates_[*local] == LoanState::Edit) {
+                    diagnostics_.error(
+                        "FDN2073",
+                        "conflicting borrow of binding " +
+                            model_.functions[currentFunction_].locals[*local].name,
+                        span);
+                } else if (loanStates_[*local] == LoanState::None) {
+                    loanStates_[*local] = LoanState::View;
+                }
+                return *expected;
+            }
+            return analyzeExpression(argument, expected, ExpressionUse::Inspect);
+        }
+        if (ownership != nullptr && ownership->operation == OwnershipOperator::View) {
+            return analyzeExpression(argument, expected, ExpressionUse::Consume);
+        }
+
+        const auto &readTarget = expected->arguments.front();
+        const auto contextualExpected =
+            readTarget.kind == TypeKind::Contract || readTarget.kind == TypeKind::Slice
+                ? std::optional<Type>{}
+                : std::optional<Type>{readTarget};
+        const auto actual =
+            analyzeExpression(argument, contextualExpected, ExpressionUse::Inspect);
+        if (model_.expressionReads[argument] &&
+            (readTarget.kind == TypeKind::Contract || readTarget.kind == TypeKind::Slice)) {
+            return *expected;
+        }
+        if (actual.kind == TypeKind::View) {
+            if (actual.arguments.size() == 1 && actual.arguments.front() == readTarget) {
+                return *expected;
+            }
+            return actual;
+        }
+        if (isCopyParameterType(actual) && readTarget.kind != TypeKind::Contract &&
+            readTarget.kind != TypeKind::Slice) {
+            return actual;
+        }
+        auto target = actual;
+        if ((actual.kind == TypeKind::Own || actual.kind == TypeKind::Edit) &&
+            actual.arguments.size() == 1) {
+            target = actual.arguments.front();
+        }
+        if (target.kind == TypeKind::Array && target.arguments.size() == 1) {
+            target = Type{TypeKind::Slice, 0, {target.arguments.front()}};
+        }
+        const Type borrowed{TypeKind::View, expected->declaration, {target}};
+        implicitBorrow = borrowed;
+
+        if (const auto local = placeRootLocal(argument); local.has_value()) {
+            if (loanStates_[*local] == LoanState::Edit) {
+                diagnostics_.error(
+                    "FDN2073",
+                    "conflicting borrow of binding " +
+                        model_.functions[currentFunction_].locals[*local].name,
+                    span);
+            } else if (loanStates_[*local] == LoanState::None) {
+                loanStates_[*local] = LoanState::View;
+            }
+        }
+        return borrowed;
+    }
+
+    bool hasNamedArguments(
+        const std::vector<std::optional<std::string>> &argumentNames) const {
+        return std::any_of(argumentNames.begin(), argumentNames.end(),
+                           [](const auto &name) { return name.has_value(); });
+    }
+
+    void rejectNamedArguments(const std::vector<std::optional<std::string>> &argumentNames,
+                              std::string_view target, SourceSpan span) {
+        if (hasNamedArguments(argumentNames)) {
+            diagnostics_.error("FDN2209",
+                               std::string(target) + " does not accept named arguments", span);
+        }
+    }
+
+    std::vector<std::size_t> mapArgumentParameters(
+        const std::vector<std::optional<std::string>> &argumentNames,
+        std::size_t argumentCount, const std::vector<std::string> &parameterNames,
+        SourceSpan span) {
+        std::vector<std::size_t> result(argumentCount);
+        for (std::size_t index = 0; index < argumentCount; ++index) {
+            result[index] = index;
+        }
+        if (!hasNamedArguments(argumentNames)) {
+            return result;
+        }
+
+        std::vector<bool> assigned(parameterNames.size());
+        std::size_t positional = 0;
+        auto named = false;
+        for (std::size_t source = 0; source < argumentCount; ++source) {
+            const auto name = source < argumentNames.size() ? argumentNames[source]
+                                                            : std::nullopt;
+            std::size_t parameter = source;
+            if (name.has_value()) {
+                named = true;
+                const auto found = std::find(parameterNames.begin(), parameterNames.end(), *name);
+                if (found == parameterNames.end()) {
+                    diagnostics_.error("FDN2206", "unknown named argument " + *name, span);
+                    continue;
+                }
+                parameter = static_cast<std::size_t>(found - parameterNames.begin());
+            } else {
+                if (named) {
+                    diagnostics_.error("FDN2207",
+                                       "positional argument cannot follow a named argument",
+                                       span);
+                }
+                while (positional < assigned.size() && assigned[positional]) {
+                    ++positional;
+                }
+                parameter = positional++;
+            }
+            if (parameter >= assigned.size()) {
+                continue;
+            }
+            result[source] = parameter;
+            if (assigned[parameter]) {
+                diagnostics_.error("FDN2208",
+                                   "argument " + parameterNames[parameter] +
+                                       " is supplied more than once",
+                                   span);
+            }
+            assigned[parameter] = true;
+        }
+        return result;
+    }
+
     Type analyzeCall(AstExpressionId id, const CallExpression &call, SourceSpan span) {
         const auto loansBefore = loanStates_;
         const auto borrowsAllowedBefore = transientBorrowsAllowed_;
@@ -2871,8 +4007,15 @@ class Analyzer {
         for (const auto &argument : call.typeArguments) {
             explicitTypes.push_back(resolveType(argument));
         }
+        std::vector<std::size_t> argumentParameters(call.arguments.size());
+        for (std::size_t index = 0; index < argumentParameters.size(); ++index) {
+            argumentParameters[index] = index;
+        }
         std::vector<std::optional<Type>> argumentExpectations(call.arguments.size());
+        std::vector<ParameterMode> parameterModes(call.arguments.size(),
+                                                  ParameterMode::Bootstrap);
         if (const auto local = lookupLocal(call.callee); local.has_value()) {
+            rejectNamedArguments(call.argumentNames, "function value call", span);
             auto functionType = model_.functions[currentFunction_].locals[*local].type;
             if ((functionType.kind == TypeKind::View || functionType.kind == TypeKind::Edit) &&
                 functionType.arguments.size() == 1) {
@@ -2883,47 +4026,90 @@ class Analyzer {
                      index < call.arguments.size() && index + 1 < functionType.arguments.size();
                      ++index) {
                     argumentExpectations[index] = functionType.arguments[index + 1];
+                    parameterModes[index] =
+                        functionParameterMode(functionType.arguments[index + 1]);
                 }
             }
         } else if (call.callee == "print" || call.callee == "panic") {
+            rejectNamedArguments(call.argumentNames, call.callee, span);
             if (!argumentExpectations.empty()) {
                 argumentExpectations.front() = stringType;
             }
         } else if (call.callee == "channel") {
+            rejectNamedArguments(call.argumentNames, "channel", span);
             if (!argumentExpectations.empty()) {
                 argumentExpectations.front() = u64Type;
             }
+        } else if (call.callee == "len") {
+            rejectNamedArguments(call.argumentNames, "len", span);
         } else {
-            auto found = functions_.find(call.callee);
-            if (found == functions_.end() && call.callee.find('.') == std::string::npos &&
-                !currentPackage().empty()) {
+            auto found = functions_.end();
+            if (call.callee.find('.') == std::string::npos && !currentPackage().empty()) {
                 found = functions_.find(std::string(currentPackage()) + '.' + call.callee);
+            }
+            if (found == functions_.end()) {
+                found = functions_.find(call.callee);
+            }
+            if (found == functions_.end() && call.callee.find('.') == std::string::npos) {
+                found = functions_.find("std.prelude." + call.callee);
             }
             if (found != functions_.end()) {
                 const auto &declaration = program_.functions[found->second];
                 const auto &signature = signatures_[found->second];
+                std::vector<std::string> parameterNames;
+                parameterNames.reserve(declaration.parameters.size());
+                for (const auto &parameter : declaration.parameters) {
+                    parameterNames.push_back(parameter.name);
+                }
+                argumentParameters = mapArgumentParameters(
+                    call.argumentNames, call.arguments.size(), parameterNames, span);
                 const auto hasCompleteExplicitTypes =
                     declaration.typeParameters.empty() ||
                     explicitTypes.size() == declaration.typeParameters.size();
                 if (hasCompleteExplicitTypes) {
-                    for (std::size_t index = 0;
-                         index < call.arguments.size() && index < signature.parameters.size();
-                         ++index) {
-                        argumentExpectations[index] =
-                            substitute(signature.parameters[index], explicitTypes);
+                    for (std::size_t source = 0; source < call.arguments.size(); ++source) {
+                        const auto parameter = argumentParameters[source];
+                        if (parameter < signature.parameters.size()) {
+                            argumentExpectations[source] =
+                                substitute(signature.parameters[parameter], explicitTypes);
+                        }
+                    }
+                } else {
+                    for (std::size_t source = 0; source < call.arguments.size(); ++source) {
+                        const auto parameter = argumentParameters[source];
+                        if (parameter < signature.parameters.size()) {
+                            argumentExpectations[source] = signature.parameters[parameter];
+                        }
+                    }
+                }
+                for (std::size_t source = 0; source < parameterModes.size(); ++source) {
+                    const auto parameter = argumentParameters[source];
+                    if (parameter < declaration.parameters.size()) {
+                        parameterModes[source] = declaration.parameters[parameter].mode;
                     }
                 }
             }
         }
         std::vector<Type> arguments;
+        std::vector<std::optional<Type>> implicitBorrows(call.arguments.size());
         arguments.reserve(call.arguments.size());
+        for (std::size_t index = 0; index < argumentExpectations.size(); ++index) {
+            if (argumentExpectations[index].has_value()) {
+                argumentExpectations[index] = specializeReadParameter(
+                    *argumentExpectations[index], parameterModes[index]);
+            }
+        }
         const auto inspectsArguments = call.callee == "print" || call.callee == "panic" ||
-                                       call.callee == "len";
+                                       call.callee == "len" || call.callee == "isNull";
         for (std::size_t index = 0; index < call.arguments.size(); ++index) {
             const auto argument = call.arguments[index];
-            arguments.push_back(analyzeExpression(
-                argument, argumentExpectations[index],
-                inspectsArguments ? ExpressionUse::Inspect : ExpressionUse::Consume));
+            arguments.push_back(
+                inspectsArguments
+                    ? analyzeExpression(argument, argumentExpectations[index],
+                                        ExpressionUse::Inspect)
+                    : analyzeCallArgument(argument, argumentExpectations[index],
+                                          parameterModes[index], span,
+                                          implicitBorrows[index]));
         }
         restoreLoans(loansBefore);
         transientBorrowsAllowed_ = borrowsAllowedBefore;
@@ -2948,18 +4134,27 @@ class Analyzer {
                 diagnostics_.error("FDN2010", "wrong argument count for " + call.callee, span);
             }
             const auto count = std::min(arguments.size(), parameterCount);
+            std::vector<std::optional<CallTarget::ContractConversion>> conversions(
+                arguments.size());
             for (std::size_t index = 0; index < count; ++index) {
-                requireSame(functionType.arguments[index + 1], arguments[index], span,
-                            "function value argument");
+                const auto expected = functionType.arguments[index + 1];
+                if (const auto conversion = contractConversion(expected, arguments[index]);
+                    conversion.has_value()) {
+                    conversions[index] = *conversion;
+                } else {
+                    requireSame(expected, arguments[index], span, "function value argument");
+                }
                 if (model_.expressionBorrowedClosures[call.arguments[index]] &&
-                    functionType.arguments[index + 1].kind != TypeKind::View &&
-                    functionType.arguments[index + 1].kind != TypeKind::Edit) {
+                    expected.kind != TypeKind::View && expected.kind != TypeKind::Edit) {
                     diagnostics_.error("FDN2127", "borrowed closure cannot escape", span);
                 }
             }
             CallTarget target;
             target.kind = CallTargetKind::FunctionValue;
             target.local = *local;
+            target.argumentBorrows = std::move(implicitBorrows);
+            target.argumentConversions = std::move(conversions);
+            target.argumentParameters = std::move(argumentParameters);
             model_.callTargets[id] = std::move(target);
             return functionType.arguments.front();
         }
@@ -3017,7 +4212,7 @@ class Analyzer {
             CallTarget target;
             target.kind = CallTargetKind::Panic;
             model_.callTargets[id] = std::move(target);
-            return voidType;
+            return neverType;
         }
         if (call.callee == "len") {
             if (!explicitTypes.empty()) {
@@ -3039,13 +4234,53 @@ class Analyzer {
             CallTarget target;
             target.kind = CallTargetKind::Len;
             model_.callTargets[id] = std::move(target);
-            return u64Type;
+            return usizeType;
+        }
+        if (call.callee == "null") {
+            if (explicitTypes.size() != 1 ||
+                (explicitTypes.front().kind != TypeKind::Raw &&
+                 explicitTypes.front().kind != TypeKind::RawConst)) {
+                diagnostics_.error("FDN2214", "null expects one raw pointer type argument",
+                                   span);
+            }
+            if (!arguments.empty()) {
+                diagnostics_.error("FDN2010", "null does not accept value arguments", span);
+            }
+            if (unsafeDepth_ == 0) {
+                diagnostics_.error("FDN2213", "raw pointer construction requires an unsafe block",
+                                   span);
+            }
+            CallTarget target;
+            target.kind = CallTargetKind::Null;
+            target.typeArguments = explicitTypes;
+            model_.callTargets[id] = std::move(target);
+            return explicitTypes.size() == 1 ? explicitTypes.front() : invalidType;
+        }
+        if (call.callee == "isNull") {
+            if (!explicitTypes.empty()) {
+                diagnostics_.error("FDN2043", "isNull does not accept type arguments", span);
+            }
+            if (arguments.size() != 1) {
+                diagnostics_.error("FDN2010", "isNull expects one argument", span);
+            } else if (arguments.front().kind != TypeKind::Raw &&
+                       arguments.front().kind != TypeKind::RawConst) {
+                diagnostics_.error("FDN2214", "isNull requires a raw pointer", span);
+            }
+            CallTarget target;
+            target.kind = CallTargetKind::IsNull;
+            model_.callTargets[id] = std::move(target);
+            return boolType;
         }
 
-        auto found = functions_.find(call.callee);
-        if (found == functions_.end() && call.callee.find('.') == std::string::npos &&
-            !currentPackage().empty()) {
+        auto found = functions_.end();
+        if (call.callee.find('.') == std::string::npos && !currentPackage().empty()) {
             found = functions_.find(std::string(currentPackage()) + '.' + call.callee);
+        }
+        if (found == functions_.end()) {
+            found = functions_.find(call.callee);
+        }
+        if (found == functions_.end() && call.callee.find('.') == std::string::npos) {
+            found = functions_.find("std.prelude." + call.callee);
         }
         if (found == functions_.end()) {
             diagnostics_.error("FDN2009", "unknown function " + call.callee, span);
@@ -3061,6 +4296,14 @@ class Analyzer {
             diagnostics_.error("FDN2019", "main cannot be called", span);
         }
         const auto &signature = signatures_[function];
+        if (program_.functions[function].cSymbol.has_value() &&
+            (containsRawPointer(signature.returnType) ||
+             std::any_of(signature.parameters.begin(), signature.parameters.end(),
+                         containsRawPointer)) &&
+            unsafeDepth_ == 0) {
+            diagnostics_.error("FDN2213",
+                               "C ABI call with a raw pointer requires an unsafe block", span);
+        }
         if (arguments.size() != signature.parameters.size()) {
             diagnostics_.error("FDN2010", "wrong argument count for " + call.callee, span);
         }
@@ -3077,22 +4320,37 @@ class Analyzer {
             }
         }
         const auto count = std::min(arguments.size(), signature.parameters.size());
-        for (std::size_t index = 0; index < count; ++index) {
-            inferType(signature.parameters[index], arguments[index], inferred, span,
-                      "function argument");
+        for (std::size_t source = 0; source < count; ++source) {
+            const auto parameter = argumentParameters[source];
+            if (parameter >= signature.parameters.size()) {
+                continue;
+            }
+            auto pattern = signature.parameters[parameter];
+            if (parameterModes[source] == ParameterMode::Read &&
+                pattern.kind == TypeKind::View && pattern.arguments.size() == 1 &&
+                isCopyParameterType(arguments[source])) {
+                pattern = pattern.arguments.front();
+            }
+            inferType(pattern, arguments[source], inferred, span, "function argument");
         }
         const auto typeArguments = completeInference(
             inferred, program_.functions[function].typeParameters, span, call.callee);
         std::vector<std::optional<CallTarget::ContractConversion>> conversions(arguments.size());
-        for (std::size_t index = 0; index < count; ++index) {
-            const auto expected = substitute(signature.parameters[index], typeArguments);
-            if (const auto conversion = contractConversion(expected, arguments[index]);
-                conversion.has_value()) {
-                conversions[index] = *conversion;
-            } else {
-                requireSame(expected, arguments[index], span, "function argument");
+        for (std::size_t source = 0; source < count; ++source) {
+            const auto parameter = argumentParameters[source];
+            if (parameter >= signature.parameters.size()) {
+                continue;
             }
-            if (model_.expressionBorrowedClosures[call.arguments[index]] &&
+            const auto expected = specializeReadParameter(
+                substitute(signature.parameters[parameter], typeArguments),
+                parameterModes[source]);
+            if (const auto conversion = contractConversion(expected, arguments[source]);
+                conversion.has_value()) {
+                conversions[source] = *conversion;
+            } else {
+                requireSame(expected, arguments[source], span, "function argument");
+            }
+            if (model_.expressionBorrowedClosures[call.arguments[source]] &&
                 expected.kind != TypeKind::View && expected.kind != TypeKind::Edit) {
                 diagnostics_.error("FDN2127", "borrowed closure cannot escape", span);
             }
@@ -3101,7 +4359,9 @@ class Analyzer {
         target.kind = CallTargetKind::Function;
         target.function = function;
         target.typeArguments = typeArguments;
+        target.argumentBorrows = std::move(implicitBorrows);
         target.argumentConversions = std::move(conversions);
+        target.argumentParameters = std::move(argumentParameters);
         model_.callTargets[id] = std::move(target);
         const auto returnType = substitute(signature.returnType, typeArguments);
         if (program_.functions[function].blocking) {
@@ -3239,9 +4499,16 @@ class Analyzer {
             }
             const auto &target = *model_.callTargets[expression];
             const auto &signature = signatures_[target.function];
-            for (const auto &parameter : signature.parameters) {
+            for (std::size_t index = 0; index < signature.parameters.size(); ++index) {
+                const auto &parameter = signature.parameters[index];
                 const auto concrete = substitute(parameter, target.typeArguments);
-                if (concrete == voidType) {
+                const auto readVoid =
+                    index < program_.functions[target.function].parameters.size() &&
+                    program_.functions[target.function].parameters[index].mode ==
+                        ParameterMode::Read &&
+                    concrete.kind == TypeKind::View && concrete.arguments.size() == 1 &&
+                    concrete.arguments.front() == voidType;
+                if (concrete == voidType || readVoid) {
                     diagnostics_.error("FDN2016", "generic parameter cannot become void",
                                        program_.expressions[expression].span);
                 } else {
@@ -3293,15 +4560,22 @@ class Analyzer {
         };
         std::unordered_set<std::string> validated;
         for (const auto &[root, span] : roots) {
-            if (root.kind != TypeKind::Struct && root.kind != TypeKind::Enum) {
+            auto layoutRoot = root;
+            while ((layoutRoot.kind == TypeKind::Own ||
+                    layoutRoot.kind == TypeKind::View ||
+                    layoutRoot.kind == TypeKind::Edit) &&
+                   layoutRoot.arguments.size() == 1) {
+                layoutRoot = layoutRoot.arguments.front();
+            }
+            if (layoutRoot.kind != TypeKind::Struct && layoutRoot.kind != TypeKind::Enum) {
                 continue;
             }
-            const auto rootKey = semanticTypeKey(root);
+            const auto rootKey = semanticTypeKey(layoutRoot);
             if (validated.contains(rootKey)) {
                 continue;
             }
             std::vector<Frame> stack;
-            stack.push_back({root, rootKey, layoutChildren(root), 0});
+            stack.push_back({layoutRoot, rootKey, layoutChildren(layoutRoot), 0});
             while (!stack.empty()) {
                 auto &frame = stack.back();
                 if (frame.next == frame.children.size()) {
@@ -3397,7 +4671,7 @@ class Analyzer {
                       "field initializer");
         }
         for (std::size_t field = 0; field < initialized.size(); ++field) {
-            if (!initialized[field]) {
+            if (!initialized[field] && !declaration.fields[field].defaultFunction.has_value()) {
                 diagnostics_.error("FDN2027", "missing field " + declaration.fields[field].name,
                                    span);
             }
@@ -3408,8 +4682,15 @@ class Analyzer {
             requireSame(substitute(semantic.fieldTypes[fields[index]], arguments), values[index],
                         span, "field initializer");
         }
+        std::vector<StructLiteralTarget::DefaultField> defaults;
+        for (std::size_t field = 0; field < initialized.size(); ++field) {
+            if (!initialized[field] && declaration.fields[field].defaultFunction.has_value()) {
+                defaults.push_back({field, *declaration.fields[field].defaultFunction});
+            }
+        }
         Type result{TypeKind::Struct, type, arguments};
-        model_.structTargets[id] = StructLiteralTarget{result, std::move(fields)};
+        model_.structTargets[id] =
+            StructLiteralTarget{result, std::move(fields), std::move(defaults)};
         return result;
     }
 
@@ -3422,6 +4703,53 @@ class Analyzer {
         const auto &baseExpression = program_.expressions[*member.base];
         if (const auto *name = std::get_if<NameExpression>(&baseExpression.value);
             name != nullptr && !lookupLocal(name->name).has_value()) {
+            if (const auto targetType = machineScalarType(name->name);
+                targetType.has_value()) {
+                if (!member.invoked || member.member != "From") {
+                    for (const auto argument : member.arguments) {
+                        static_cast<void>(analyzeExpression(argument));
+                    }
+                    diagnostics_.error("FDN2100",
+                                       "unknown numeric type member " + member.member, span);
+                    return invalidType;
+                }
+                if (!name->typeArguments.empty() || !member.typeArguments.empty()) {
+                    diagnostics_.error("FDN2043",
+                                       "numeric conversion does not accept type arguments",
+                                       span);
+                }
+                rejectNamedArguments(member.argumentNames, "numeric conversion", span);
+                if (member.arguments.size() != 1) {
+                    for (const auto argument : member.arguments) {
+                        static_cast<void>(analyzeExpression(argument));
+                    }
+                    diagnostics_.error("FDN2010", "numeric conversion expects one argument",
+                                       span);
+                    return invalidType;
+                }
+                const auto sourceType = analyzeExpression(member.arguments.front());
+                if (!isNumeric(sourceType)) {
+                    diagnostics_.error("FDN2011", "numeric conversion requires a numeric value",
+                                       span);
+                    return invalidType;
+                }
+                CallTarget target;
+                target.kind = CallTargetKind::NumericConversion;
+                target.typeArguments = {sourceType, *targetType};
+                model_.callTargets[id] = std::move(target);
+                if (numericConversionIsInfallible(sourceType, *targetType)) {
+                    return *targetType;
+                }
+                const auto result = enums_.find("Result");
+                const auto numberError = enums_.find("NumberError");
+                if (result == enums_.end() || numberError == enums_.end()) {
+                    diagnostics_.error("FDN2017", "numeric conversion builtins are unavailable",
+                                       span);
+                    return invalidType;
+                }
+                return Type{TypeKind::Enum, result->second,
+                            {*targetType, Type{TypeKind::Enum, numberError->second, {}}}};
+            }
             auto structName = name->name;
             if (!structs_.contains(structName) && structName.find('.') == std::string::npos &&
                 !currentPackage().empty()) {
@@ -3458,7 +4786,9 @@ class Analyzer {
                 }
                 return analyzeCall(
                     id,
-                    CallExpression{associatedName, name->typeArguments, member.arguments}, span);
+                    CallExpression{associatedName, name->typeArguments, member.arguments,
+                                   member.argumentNames, member.argumentNameSpans},
+                    span);
             }
             auto enumName = name->name;
             if (!enums_.contains(enumName) && enumName.find('.') == std::string::npos &&
@@ -3478,12 +4808,33 @@ class Analyzer {
         if (sourceType.kind == TypeKind::Invalid) {
             return invalidType;
         }
+        if (!member.invoked && member.member == "pointer" &&
+            (((sourceType.kind == TypeKind::View || sourceType.kind == TypeKind::Edit) &&
+              sourceType.arguments.size() == 1 &&
+              sourceType.arguments.front().kind == TypeKind::Slice &&
+              sourceType.arguments.front().arguments.size() == 1) ||
+             (sourceType.kind == TypeKind::Slice && sourceType.arguments.size() == 1))) {
+            if (!member.arguments.empty() || !member.typeArguments.empty()) {
+                diagnostics_.error("FDN2100", "slice pointer does not accept arguments", span);
+            }
+            if (unsafeDepth_ == 0) {
+                diagnostics_.error("FDN2213",
+                                   "slice pointer access requires an unsafe block", span);
+            }
+            const auto editable = sourceType.kind == TypeKind::Edit;
+            const auto element = sourceType.kind == TypeKind::Slice
+                                     ? sourceType.arguments.front()
+                                     : sourceType.arguments.front().arguments.front();
+            return Type{editable ? TypeKind::Raw : TypeKind::RawConst, 0, {element}};
+        }
         if ((sourceType.kind == TypeKind::Sender || sourceType.kind == TypeKind::Receiver) &&
             sourceType.arguments.size() == 1) {
+            rejectNamedArguments(member.argumentNames, "channel operation", span);
             const auto send = sourceType.kind == TypeKind::Sender && member.member == "send";
             const auto receive =
                 sourceType.kind == TypeKind::Receiver && member.member == "receive";
-            if (!member.invoked || (!send && !receive)) {
+            const auto clone = sourceType.kind == TypeKind::Sender && member.member == "clone";
+            if (!member.invoked || (!send && !receive && !clone)) {
                 for (const auto argument : member.arguments) {
                     static_cast<void>(analyzeExpression(argument));
                 }
@@ -3496,6 +4847,17 @@ class Analyzer {
             if (!member.typeArguments.empty()) {
                 diagnostics_.error("FDN2043", "channel operation does not accept type arguments",
                                    span);
+            }
+            if (clone) {
+                if (!member.arguments.empty()) {
+                    diagnostics_.error("FDN2010", "Sender.clone does not accept arguments",
+                                       span);
+                    for (const auto argument : member.arguments) {
+                        static_cast<void>(analyzeExpression(argument));
+                    }
+                }
+                model_.channelSenderClones[id] = true;
+                return sourceType;
             }
             if (!program_.functions[currentFunction_].task || taskWaitRoot_ != id) {
                 diagnostics_.error(
@@ -3559,6 +4921,7 @@ class Analyzer {
         }
         auto base = sourceType;
         if (base.kind == TypeKind::Task) {
+            rejectNamedArguments(member.argumentNames, "Task.wait", span);
             for (const auto argument : member.arguments) {
                 static_cast<void>(analyzeExpression(argument));
             }
@@ -3703,10 +5066,24 @@ class Analyzer {
         const auto loansBefore = loanStates_;
         const auto borrowsAllowedBefore = transientBorrowsAllowed_;
         transientBorrowsAllowed_ = true;
+        const auto argumentParameters = mapArgumentParameters(
+            member.argumentNames, member.arguments.size(), method.parameterNames, span);
         std::vector<Type> arguments;
+        std::vector<std::optional<Type>> implicitBorrows(member.arguments.size());
         arguments.reserve(member.arguments.size());
-        for (const auto argument : member.arguments) {
-            arguments.push_back(analyzeExpression(argument));
+        for (std::size_t source = 0; source < member.arguments.size(); ++source) {
+            const auto parameter = argumentParameters[source];
+            const auto mode = parameter < method.parameterModes.size()
+                                  ? method.parameterModes[parameter]
+                                  : ParameterMode::Bootstrap;
+            const auto expected = parameter < method.parameterTypes.size()
+                                      ? std::optional<Type>{specializeReadParameter(
+                                            substitute(method.parameterTypes[parameter],
+                                                       candidate.contract.arguments),
+                                            mode)}
+                                      : std::nullopt;
+            arguments.push_back(analyzeCallArgument(
+                member.arguments[source], expected, mode, span, implicitBorrows[source]));
         }
         restoreLoans(loansBefore);
         transientBorrowsAllowed_ = borrowsAllowedBefore;
@@ -3716,14 +5093,22 @@ class Analyzer {
         }
         const auto count = std::min(arguments.size(), method.parameterTypes.size());
         std::vector<std::optional<CallTarget::ContractConversion>> conversions(arguments.size());
-        for (std::size_t index = 0; index < count; ++index) {
-            const auto expected =
-                substitute(method.parameterTypes[index], candidate.contract.arguments);
-            if (const auto conversion = contractConversion(expected, arguments[index]);
+        for (std::size_t source = 0; source < count; ++source) {
+            const auto parameter = argumentParameters[source];
+            if (parameter >= method.parameterTypes.size()) {
+                continue;
+            }
+            const auto mode = parameter < method.parameterModes.size()
+                                  ? method.parameterModes[parameter]
+                                  : ParameterMode::Bootstrap;
+            const auto expected = specializeReadParameter(
+                substitute(method.parameterTypes[parameter], candidate.contract.arguments),
+                mode);
+            if (const auto conversion = contractConversion(expected, arguments[source]);
                 conversion.has_value()) {
-                conversions[index] = *conversion;
+                conversions[source] = *conversion;
             } else {
-                requireSame(expected, arguments[index], span, "method argument");
+                requireSame(expected, arguments[source], span, "method argument");
             }
         }
 
@@ -3745,7 +5130,9 @@ class Analyzer {
         target.method = candidate.method;
         target.typeArguments = candidate.contract.arguments;
         target.receiverConversion = std::move(receiverConversion);
+        target.argumentBorrows = std::move(implicitBorrows);
         target.argumentConversions = std::move(conversions);
+        target.argumentParameters = argumentParameters;
         model_.callTargets[id] = std::move(target);
         return substitute(method.returnType, candidate.contract.arguments);
     }
@@ -3758,18 +5145,27 @@ class Analyzer {
         if (base.kind == TypeKind::Contract) {
             return analyzeContractMethod(id, member, sourceType, base, span);
         }
-        if (base.kind != TypeKind::Struct || base.declaration >= methods_.size()) {
+        const auto methodOwner = base.kind == TypeKind::Struct
+                                     ? base.declaration
+                                 : base.kind == TypeKind::Enum
+                                     ? program_.structs.size() + base.declaration
+                                     : methods_.size();
+        if ((base.kind != TypeKind::Struct && base.kind != TypeKind::Enum) ||
+            methodOwner >= methods_.size()) {
             for (const auto argument : member.arguments) {
                 static_cast<void>(analyzeExpression(argument));
             }
-            diagnostics_.error("FDN2050", "method call requires a struct or contract", span);
+            diagnostics_.error("FDN2050", "method call requires a struct, enum, or contract",
+                               span);
             return invalidType;
         }
-        const auto found = methods_[base.declaration].find(member.member);
-        if (found == methods_[base.declaration].end()) {
-            if (const auto method = findDefaultMethod(base, member.member, span);
-                method.has_value()) {
-                return analyzeDefaultMethod(id, member, sourceType, base, *method, span);
+        const auto found = methods_[methodOwner].find(member.member);
+        if (found == methods_[methodOwner].end()) {
+            if (base.kind == TypeKind::Struct) {
+                if (const auto method = findDefaultMethod(base, member.member, span);
+                    method.has_value()) {
+                    return analyzeDefaultMethod(id, member, sourceType, base, *method, span);
+                }
             }
             for (const auto argument : member.arguments) {
                 static_cast<void>(analyzeExpression(argument));
@@ -3814,15 +5210,37 @@ class Analyzer {
         const auto loansBefore = loanStates_;
         const auto borrowsAllowedBefore = transientBorrowsAllowed_;
         transientBorrowsAllowed_ = true;
+        const auto &signature = signatures_[function];
+        std::vector<std::string> parameterNames;
+        if (declaration.parameters.size() > 1) {
+            parameterNames.reserve(declaration.parameters.size() - 1);
+            for (auto parameter = declaration.parameters.begin() + 1;
+                 parameter != declaration.parameters.end(); ++parameter) {
+                parameterNames.push_back(parameter->name);
+            }
+        }
+        const auto argumentParameters = mapArgumentParameters(
+            member.argumentNames, member.arguments.size(), parameterNames, span);
         std::vector<Type> arguments;
+        std::vector<std::optional<Type>> implicitBorrows(member.arguments.size());
         arguments.reserve(member.arguments.size());
-        for (const auto argument : member.arguments) {
-            arguments.push_back(analyzeExpression(argument));
+        for (std::size_t source = 0; source < member.arguments.size(); ++source) {
+            const auto parameter = argumentParameters[source] + 1;
+            const auto mode = parameter < declaration.parameters.size()
+                                  ? declaration.parameters[parameter].mode
+                                  : ParameterMode::Bootstrap;
+            const auto expected = parameter < signature.parameters.size()
+                                      ? std::optional<Type>{specializeReadParameter(
+                                            substitute(signature.parameters[parameter],
+                                                       base.arguments),
+                                            mode)}
+                                      : std::nullopt;
+            arguments.push_back(analyzeCallArgument(
+                member.arguments[source], expected, mode, span, implicitBorrows[source]));
         }
         restoreLoans(loansBefore);
         transientBorrowsAllowed_ = borrowsAllowedBefore;
 
-        const auto &signature = signatures_[function];
         const auto parameterCount = signature.parameters.empty()
                                         ? std::size_t{}
                                         : signature.parameters.size() - 1;
@@ -3832,13 +5250,21 @@ class Analyzer {
         }
         const auto count = std::min(arguments.size(), parameterCount);
         std::vector<std::optional<CallTarget::ContractConversion>> conversions(arguments.size());
-        for (std::size_t index = 0; index < count; ++index) {
-            const auto expected = substitute(signature.parameters[index + 1], base.arguments);
-            if (const auto conversion = contractConversion(expected, arguments[index]);
+        for (std::size_t source = 0; source < count; ++source) {
+            const auto parameter = argumentParameters[source] + 1;
+            if (parameter >= signature.parameters.size()) {
+                continue;
+            }
+            const auto mode = parameter < declaration.parameters.size()
+                                  ? declaration.parameters[parameter].mode
+                                  : ParameterMode::Bootstrap;
+            const auto expected = specializeReadParameter(
+                substitute(signature.parameters[parameter], base.arguments), mode);
+            if (const auto conversion = contractConversion(expected, arguments[source]);
                 conversion.has_value()) {
-                conversions[index] = *conversion;
+                conversions[source] = *conversion;
             } else {
-                requireSame(expected, arguments[index], span, "method argument");
+                requireSame(expected, arguments[source], span, "method argument");
             }
         }
         if (isParallelPoolStart(base, declaration, member.member)) {
@@ -3851,7 +5277,9 @@ class Analyzer {
         target.typeArguments = base.arguments;
         target.receiver = *member.base;
         target.receiverType = substitute(signature.parameters.front(), base.arguments);
+        target.argumentBorrows = std::move(implicitBorrows);
         target.argumentConversions = std::move(conversions);
+        target.argumentParameters = argumentParameters;
         model_.callTargets[id] = std::move(target);
         return substitute(signature.returnType, base.arguments);
     }
@@ -3911,10 +5339,24 @@ class Analyzer {
         const auto loansBefore = loanStates_;
         const auto borrowsAllowedBefore = transientBorrowsAllowed_;
         transientBorrowsAllowed_ = true;
+        const auto argumentParameters = mapArgumentParameters(
+            member.argumentNames, member.arguments.size(), semantic.parameterNames, span);
         std::vector<Type> arguments;
+        std::vector<std::optional<Type>> implicitBorrows(member.arguments.size());
         arguments.reserve(member.arguments.size());
-        for (const auto argument : member.arguments) {
-            arguments.push_back(analyzeExpression(argument));
+        for (std::size_t source = 0; source < member.arguments.size(); ++source) {
+            const auto parameter = argumentParameters[source];
+            const auto mode = parameter < semantic.parameterModes.size()
+                                  ? semantic.parameterModes[parameter]
+                                  : ParameterMode::Bootstrap;
+            const auto expected = parameter < semantic.parameterTypes.size()
+                                      ? std::optional<Type>{specializeReadParameter(
+                                            substitute(semantic.parameterTypes[parameter],
+                                                       base.arguments),
+                                            mode)}
+                                      : std::nullopt;
+            arguments.push_back(analyzeCallArgument(
+                member.arguments[source], expected, mode, span, implicitBorrows[source]));
         }
         restoreLoans(loansBefore);
         transientBorrowsAllowed_ = borrowsAllowedBefore;
@@ -3924,13 +5366,21 @@ class Analyzer {
         }
         const auto count = std::min(arguments.size(), semantic.parameterTypes.size());
         std::vector<std::optional<CallTarget::ContractConversion>> conversions(arguments.size());
-        for (std::size_t index = 0; index < count; ++index) {
-            const auto expected = substitute(semantic.parameterTypes[index], base.arguments);
-            if (const auto conversion = contractConversion(expected, arguments[index]);
+        for (std::size_t source = 0; source < count; ++source) {
+            const auto parameter = argumentParameters[source];
+            if (parameter >= semantic.parameterTypes.size()) {
+                continue;
+            }
+            const auto mode = parameter < semantic.parameterModes.size()
+                                  ? semantic.parameterModes[parameter]
+                                  : ParameterMode::Bootstrap;
+            const auto expected = specializeReadParameter(
+                substitute(semantic.parameterTypes[parameter], base.arguments), mode);
+            if (const auto conversion = contractConversion(expected, arguments[source]);
                 conversion.has_value()) {
-                conversions[index] = *conversion;
+                conversions[source] = *conversion;
             } else {
-                requireSame(expected, arguments[index], span, "method argument");
+                requireSame(expected, arguments[source], span, "method argument");
             }
         }
 
@@ -3941,13 +5391,20 @@ class Analyzer {
         target.contract = base.declaration;
         target.method = *methodIndex;
         target.typeArguments = base.arguments;
+        target.argumentBorrows = std::move(implicitBorrows);
         target.argumentConversions = std::move(conversions);
+        target.argumentParameters = argumentParameters;
         model_.callTargets[id] = std::move(target);
         return substitute(semantic.returnType, base.arguments);
     }
 
     bool editablePlace(AstExpressionId id) const {
         const auto &expression = program_.expressions[id];
+        if (const auto *unary = std::get_if<UnaryExpression>(&expression.value);
+            unary != nullptr && unary->operation == UnaryOperator::Dereference) {
+            return unary->operand < model_.expressionTypes.size() &&
+                   model_.expressionTypes[unary->operand].kind == TypeKind::Raw;
+        }
         if (std::holds_alternative<NameExpression>(expression.value)) {
             if (id >= model_.expressionTypes.size()) {
                 return false;
@@ -3971,6 +5428,23 @@ class Analyzer {
 
     Type placeContextType(AstExpressionId id) const {
         const auto &expression = program_.expressions[id];
+        if (const auto *unary = std::get_if<UnaryExpression>(&expression.value);
+            unary != nullptr && unary->operation == UnaryOperator::Dereference) {
+            auto pointer = unary->operand < model_.expressionTypes.size()
+                               ? model_.expressionTypes[unary->operand]
+                               : invalidType;
+            if (const auto *name = std::get_if<NameExpression>(
+                    &program_.expressions[unary->operand].value)) {
+                if (const auto local = lookupLocal(name->name); local.has_value()) {
+                    pointer = model_.functions[currentFunction_].locals[*local].type;
+                }
+            }
+            if ((pointer.kind == TypeKind::Raw || pointer.kind == TypeKind::RawConst) &&
+                pointer.arguments.size() == 1) {
+                return pointer.arguments.front();
+            }
+            return invalidType;
+        }
         if (const auto *name = std::get_if<NameExpression>(&expression.value)) {
             const auto local = lookupLocal(name->name);
             return local.has_value()
@@ -4029,11 +5503,15 @@ class Analyzer {
 
     bool isPlaceExpression(AstExpressionId id) const {
         const auto &expression = program_.expressions[id];
+        if (const auto *unary = std::get_if<UnaryExpression>(&expression.value)) {
+            return unary->operation == UnaryOperator::Dereference;
+        }
         if (std::holds_alternative<NameExpression>(expression.value)) {
             return true;
         }
         if (const auto *member = std::get_if<MemberExpression>(&expression.value)) {
-            return member->base.has_value() && isPlaceExpression(*member->base);
+            return !member->invoked && member->base.has_value() &&
+                   isPlaceExpression(*member->base);
         }
         if (const auto *index = std::get_if<IndexExpression>(&expression.value)) {
             return isPlaceExpression(index->base);
@@ -4075,6 +5553,16 @@ class Analyzer {
         }
 
         const auto &declaration = program_.enums[*enumType];
+        if (hasNamedArguments(constructor.argumentNames)) {
+            const auto &payloadName = declaration.variants[*variant].payloadName;
+            if (!payloadName.has_value()) {
+                rejectNamedArguments(constructor.argumentNames, "enum variant", span);
+            } else {
+                static_cast<void>(mapArgumentParameters(
+                    constructor.argumentNames, constructor.arguments.size(), {*payloadName},
+                    span));
+            }
+        }
         if (declaration.packageName != currentPackage() &&
             !declaration.variants[*variant].exported) {
             diagnostics_.error("FDN3008", "variant " + constructor.member + " is not exported",
@@ -4172,6 +5660,8 @@ class Analyzer {
         const auto movesBeforeArms = moveStates_;
         const auto loansBeforeArms = loanStates_;
         std::vector<bool> covered(declaration.variants.size());
+        std::vector<std::unordered_set<std::string>> literalPatterns(
+            declaration.variants.size());
         std::vector<FirVariantId> variants;
         std::vector<std::optional<FirLocalId>> bindings;
         std::vector<std::vector<FirLocalId>> drops;
@@ -4187,11 +5677,7 @@ class Analyzer {
             auto variant = findVariant(enumType, arm.variant);
             if (!variant.has_value()) {
                 diagnostics_.error("FDN2035", "unknown variant " + arm.variant, arm.span);
-            } else if (covered[*variant]) {
-                diagnostics_.error("FDN2039", "duplicate match pattern " + arm.variant,
-                                   arm.span);
             } else {
-                covered[*variant] = true;
                 if (declaration.packageName != currentPackage() &&
                     !declaration.variants[*variant].exported) {
                     diagnostics_.error("FDN3008", "variant " + arm.variant + " is not exported",
@@ -4210,13 +5696,59 @@ class Analyzer {
                         payload.reset();
                     }
                 }
-                if (payload.has_value() && !arm.binding.has_value()) {
-                    diagnostics_.error("FDN2041", "payload pattern requires a binding", arm.span);
-                } else if (!payload.has_value() && arm.binding.has_value()) {
-                    diagnostics_.error("FDN2041", "unit pattern does not accept a binding",
-                                       arm.span);
-                } else if (payload.has_value()) {
+                if (!payload.has_value()) {
+                    if (arm.binding.has_value() || arm.pattern.has_value()) {
+                        diagnostics_.error("FDN2041", "unit pattern does not accept a payload",
+                                           arm.span);
+                    }
+                    if (covered[*variant]) {
+                        diagnostics_.error("FDN2039", "duplicate match pattern " + arm.variant,
+                                           arm.span);
+                    }
+                    covered[*variant] = true;
+                } else if (arm.binding.has_value()) {
+                    if (covered[*variant]) {
+                        diagnostics_.error("FDN2039", "duplicate match pattern " + arm.variant,
+                                           arm.span);
+                    }
+                    covered[*variant] = true;
                     binding = addLocal(*arm.binding, *payload, false, arm.span);
+                } else if (arm.pattern.has_value()) {
+                    const auto &patternExpression = program_.expressions[*arm.pattern];
+                    std::optional<std::string> key;
+                    if (const auto *integer =
+                            std::get_if<IntegerExpression>(&patternExpression.value)) {
+                        key = "integer:" + std::string(integer->negative ? "-" : "+") +
+                              std::to_string(integer->magnitude);
+                    } else if (const auto *boolean =
+                                   std::get_if<BooleanExpression>(&patternExpression.value)) {
+                        key = boolean->value ? "bool:true" : "bool:false";
+                    } else if (const auto *string =
+                                   std::get_if<StringExpression>(&patternExpression.value)) {
+                        key = "string:" + string->value;
+                    } else {
+                        diagnostics_.error(
+                            "FDN2210",
+                            "match payload pattern must be an integer, boolean, or string literal",
+                            patternExpression.span);
+                    }
+                    const auto patternType = analyzeExpression(*arm.pattern, *payload);
+                    requireSame(*payload, patternType, patternExpression.span,
+                                "match payload pattern");
+                    if (covered[*variant] ||
+                        (key.has_value() && !literalPatterns[*variant].insert(*key).second)) {
+                        diagnostics_.error("FDN2039", "duplicate match pattern " + arm.variant,
+                                           arm.span);
+                    }
+                    if (*payload == boolType &&
+                        literalPatterns[*variant].contains("bool:true") &&
+                        literalPatterns[*variant].contains("bool:false")) {
+                        covered[*variant] = true;
+                    }
+                } else {
+                    diagnostics_.error("FDN2041", "payload pattern requires a binding or literal",
+                                       arm.span);
+                    covered[*variant] = true;
                 }
             }
             const auto armExpected = expected.has_value()
@@ -4233,9 +5765,9 @@ class Analyzer {
             armStates.push_back(outstandingPrefix(beforeArms.size()));
             armMoveStates.push_back(movePrefix(movesBeforeArms.size()));
             armLoanStates.push_back(loanPrefix(loansBeforeArms.size()));
-            if (result.kind == TypeKind::Invalid) {
+            if (result.kind == TypeKind::Invalid || result == neverType) {
                 result = armType;
-            } else {
+            } else if (armType != neverType) {
                 requireSame(result, armType, arm.span, "match arm");
             }
             variants.push_back(variant.value_or(0));
@@ -4291,6 +5823,80 @@ class Analyzer {
         return result;
     }
 
+    Type analyzeConditional(AstExpressionId id, const ConditionalExpression &conditional,
+                            std::optional<Type> expected, SourceSpan span) {
+        requireSame(boolType, analyzeExpression(conditional.condition), span,
+                    "conditional expression condition");
+
+        const auto before = resultOutstanding_;
+        const auto movesBefore = moveStates_;
+        const auto loansBefore = loanStates_;
+        struct BranchState {
+            Type type{invalidType};
+            std::vector<bool> outstanding;
+            std::vector<MoveState> moves;
+            std::vector<LoanState> loans;
+            bool returns{};
+            bool borrowedClosure{};
+        };
+        const auto analyzeBranch = [&](AstBlockId block, AstExpressionId value,
+                                       std::optional<Type> branchExpected) {
+            restoreOutstanding(before);
+            restoreMoves(movesBefore);
+            restoreLoans(loansBefore);
+            scopes_.emplace_back();
+            auto returns = false;
+            for (const auto statement : program_.blocks[block].statements) {
+                if (analyzeStatement(statement)) {
+                    returns = true;
+                }
+            }
+            const auto type = analyzeExpression(value, branchExpected);
+            model_.blockDrops[block] = scopeDrops(scopes_.back());
+            reportScope(scopes_.back());
+            scopes_.pop_back();
+            return BranchState{type,
+                               outstandingPrefix(before.size()),
+                               movePrefix(movesBefore.size()),
+                               loanPrefix(loansBefore.size()),
+                               returns,
+                               model_.expressionBorrowedClosures[value]};
+        };
+
+        const auto thenState =
+            analyzeBranch(conditional.thenBlock, conditional.thenValue, expected);
+        const auto elseExpected = expected.has_value()
+                                      ? expected
+                                      : std::optional<Type>{thenState.type};
+        const auto elseState =
+            analyzeBranch(conditional.elseBlock, conditional.elseValue, elseExpected);
+        if (thenState.type != neverType && elseState.type != neverType) {
+            requireSame(thenState.type, elseState.type, span, "conditional expression branch");
+        }
+
+        std::vector<bool> merged(before.size());
+        for (std::size_t local = 0; local < before.size(); ++local) {
+            if (thenState.returns && elseState.returns) {
+                merged[local] = false;
+            } else if (thenState.returns) {
+                merged[local] = elseState.outstanding[local];
+            } else if (elseState.returns) {
+                merged[local] = thenState.outstanding[local];
+            } else {
+                merged[local] = thenState.outstanding[local] ||
+                                elseState.outstanding[local];
+            }
+        }
+        restoreOutstanding(merged);
+        restoreMoves(mergeMoves(movesBefore, thenState.moves, elseState.moves,
+                                thenState.returns, elseState.returns));
+        restoreLoans(mergeLoans(loansBefore, thenState.loans, elseState.loans,
+                                thenState.returns, elseState.returns));
+        model_.expressionBorrowedClosures[id] =
+            thenState.borrowedClosure || elseState.borrowedClosure;
+        return thenState.type == neverType ? elseState.type : thenState.type;
+    }
+
     void setTypeParameters(const std::vector<std::string> &parameters, SourceSpan span) {
         typeParameters_.clear();
         currentTypeParameterNames_ = parameters;
@@ -4306,17 +5912,65 @@ class Analyzer {
     }
 
     Type resolveType(const TypeSyntax &syntax) {
+        if (syntax.name == "[function-read]" || syntax.name == "[function-edit]" ||
+            syntax.name == "[function-transfer]") {
+            if (syntax.arguments.size() != 1) {
+                diagnostics_.error("FDN2043", "invalid function parameter mode", syntax.span);
+                return invalidType;
+            }
+            auto target = resolveType(syntax.arguments.front());
+            if (target == voidType || target == neverType) {
+                diagnostics_.error("FDN2016", "function parameter cannot have type void or never",
+                                   syntax.span);
+                return invalidType;
+            }
+            if (syntax.name == "[function-read]") {
+                return isCopyParameterType(target)
+                           ? target
+                           : Type{TypeKind::View, 1, {std::move(target)}};
+            }
+            if (syntax.name == "[function-edit]") {
+                return Type{TypeKind::Edit, 0, {std::move(target)}};
+            }
+            return target;
+        }
         std::optional<Type> base;
         if (syntax.name == "void") {
             base = voidType;
+        } else if (syntax.name == "never") {
+            base = neverType;
+        } else if (syntax.name == "i8") {
+            base = i8Type;
+        } else if (syntax.name == "i16") {
+            base = i16Type;
         } else if (syntax.name == "i32") {
             base = i32Type;
+        } else if (syntax.name == "i64") {
+            base = i64Type;
+        } else if (syntax.name == "u8") {
+            base = u8Type;
+        } else if (syntax.name == "u16") {
+            base = u16Type;
+        } else if (syntax.name == "u32") {
+            base = u32Type;
         } else if (syntax.name == "u64") {
             base = u64Type;
+        } else if (syntax.name == "isize") {
+            base = isizeType;
+        } else if (syntax.name == "usize") {
+            base = usizeType;
+        } else if (syntax.name == "f32") {
+            base = f32Type;
+        } else if (syntax.name == "f64") {
+            base = f64Type;
         } else if (syntax.name == "bool") {
             base = boolType;
         } else if (syntax.name == "String") {
             base = stringType;
+        } else if (syntax.name == "[raw]") {
+            base = Type{TypeKind::Raw};
+        } else if (syntax.name == "[raw-const]") {
+            base = Type{TypeKind::RawConst};
         } else if (syntax.name == "[array]") {
             base = Type{TypeKind::Array, syntax.arrayLength};
             if (syntax.arrayLength > static_cast<std::size_t>(INT32_MAX)) {
@@ -4379,14 +6033,15 @@ class Analyzer {
                                    syntax.span);
             }
             for (std::size_t index = 1; index < arguments.size(); ++index) {
-                if (arguments[index] == voidType) {
-                    diagnostics_.error("FDN2016", "function parameter cannot have type void",
+                if (arguments[index] == voidType || arguments[index] == neverType) {
+                    diagnostics_.error("FDN2016", "function parameter cannot have type void or never",
                                        syntax.span);
                 }
             }
         } else if (base->kind == TypeKind::Own || base->kind == TypeKind::View ||
                    base->kind == TypeKind::Edit || base->kind == TypeKind::Array ||
-                   base->kind == TypeKind::Slice || base->kind == TypeKind::Task ||
+                   base->kind == TypeKind::Slice || base->kind == TypeKind::Raw ||
+                   base->kind == TypeKind::RawConst || base->kind == TypeKind::Task ||
                    base->kind == TypeKind::Channel || base->kind == TypeKind::Sender ||
                    base->kind == TypeKind::Receiver) {
             expected = 1;
@@ -4400,7 +6055,7 @@ class Analyzer {
              base->kind == TypeKind::Edit) &&
             !base->arguments.empty()) {
             const auto &target = base->arguments.front();
-            if (target == voidType || target.kind == TypeKind::View ||
+            if (target == voidType || target == neverType || target.kind == TypeKind::View ||
                 target.kind == TypeKind::Edit || target.kind == TypeKind::Own) {
                 diagnostics_.error("FDN2064",
                                    syntax.name + " requires a direct non-void value type",
@@ -4410,8 +6065,24 @@ class Analyzer {
                 diagnostics_.error("FDN2080", "slice cannot be owned directly", syntax.span);
             }
         } else if ((base->kind == TypeKind::Array || base->kind == TypeKind::Slice) &&
-                   !base->arguments.empty() && base->arguments.front() == voidType) {
-            diagnostics_.error("FDN2047", "array or slice element cannot be void", syntax.span);
+                   !base->arguments.empty() &&
+                   (base->arguments.front() == voidType ||
+                    base->arguments.front() == neverType)) {
+            diagnostics_.error("FDN2047", "array or slice element cannot be void or never",
+                               syntax.span);
+        } else if ((base->kind == TypeKind::Raw || base->kind == TypeKind::RawConst) &&
+                   !base->arguments.empty()) {
+            const auto &pointee = base->arguments.front();
+            const auto supported = pointee == voidType ||
+                                   (isMachineScalar(pointee) && pointee != neverType) ||
+                                   ((pointee.kind == TypeKind::Raw ||
+                                     pointee.kind == TypeKind::RawConst) &&
+                                    pointee.arguments.size() == 1);
+            if (!supported) {
+                diagnostics_.error("FDN2214",
+                                   "raw pointer pointee must be a C ABI scalar or pointer",
+                                   syntax.span);
+            }
         } else if (base->kind == TypeKind::Task && !base->arguments.empty() &&
                    containsBorrow(base->arguments.front())) {
             diagnostics_.error("FDN2165", "Task result cannot contain a borrow", syntax.span);
@@ -4432,6 +6103,10 @@ class Analyzer {
         for (auto &argument : result.arguments) {
             argument = substitute(argument, arguments);
         }
+        if (result.kind == TypeKind::View && result.declaration == 1 &&
+            result.arguments.size() == 1 && isCopyParameterType(result.arguments.front())) {
+            return result.arguments.front();
+        }
         return result;
     }
 
@@ -4450,6 +6125,18 @@ class Analyzer {
                 requireSame(*inferred[pattern.declaration], actual, span, context);
             }
             return;
+        }
+        if (pattern.kind == TypeKind::View && pattern.declaration == 1 &&
+            pattern.arguments.size() == 1) {
+            if (actual.kind == TypeKind::View && actual.arguments.size() == 1) {
+                inferType(pattern.arguments.front(), actual.arguments.front(), inferred, span,
+                          context);
+                return;
+            }
+            if (isCopyParameterType(actual)) {
+                inferType(pattern.arguments.front(), actual, inferred, span, context);
+                return;
+            }
         }
         if ((pattern.kind == TypeKind::View || pattern.kind == TypeKind::Edit ||
              pattern.kind == TypeKind::Own) &&
@@ -4506,9 +6193,13 @@ class Analyzer {
     }
 
     bool isBuiltinType(std::string_view name) const {
-        return name == "void" || name == "i32" || name == "u64" || name == "bool" ||
+        return name == "void" || name == "never" || name == "i8" || name == "i16" ||
+               name == "i32" || name == "i64" || name == "u8" || name == "u16" ||
+               name == "u32" || name == "u64" || name == "isize" || name == "usize" ||
+               name == "f32" || name == "f64" || name == "bool" ||
                name == "String" ||
                name == "Option" || name == "Result" || name == "ChannelError" ||
+               name == "NumberError" ||
                name == "Task" ||
                name == "Channel" || name == "Sender" || name == "Receiver" ||
                name == "own" || name == "view" ||
@@ -4724,6 +6415,11 @@ class Analyzer {
                program_.enums[type.declaration].builtin == BuiltinEnumKind::Result;
     }
 
+    bool isOption(const Type &type) const {
+        return type.kind == TypeKind::Enum && type.declaration < program_.enums.size() &&
+               program_.enums[type.declaration].builtin == BuiltinEnumKind::Option;
+    }
+
     bool requiresDrop(const Type &type) const {
         std::unordered_set<std::string> active;
         return requiresDrop(type, active);
@@ -4794,6 +6490,22 @@ class Analyzer {
             drops.insert(drops.end(), current.begin(), current.end());
         }
         return drops;
+    }
+
+    std::vector<FirLocalId> activeDropsFrom(std::size_t firstScope) const {
+        std::vector<FirLocalId> drops;
+        for (auto index = scopes_.size(); index > firstScope; --index) {
+            auto current = scopeDrops(scopes_[index - 1]);
+            drops.insert(drops.end(), current.begin(), current.end());
+        }
+        return drops;
+    }
+
+    void reportScopesFrom(std::size_t firstScope) {
+        ++loopJumps_;
+        for (auto index = scopes_.size(); index > firstScope; --index) {
+            reportScope(scopes_[index - 1]);
+        }
     }
 
     void reportScope(const std::unordered_map<std::string, FirLocalId> &scope) {
@@ -4966,6 +6678,10 @@ class Analyzer {
             type.arguments.size() == 1) {
             return std::string(typeName(type)) + ' ' + displayType(type.arguments.front());
         }
+        if ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) &&
+            type.arguments.size() == 1) {
+            return std::string(typeName(type)) + ' ' + displayType(type.arguments.front());
+        }
         if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
             return '[' + std::to_string(type.declaration) + ']' +
                    displayType(type.arguments.front());
@@ -4979,7 +6695,19 @@ class Analyzer {
                 if (index != 1) {
                     name += ", ";
                 }
-                name += displayType(type.arguments[index]);
+                const auto &parameter = type.arguments[index];
+                if (parameter.kind == TypeKind::View && parameter.declaration == 1 &&
+                    parameter.arguments.size() == 1) {
+                    name += displayType(parameter.arguments.front());
+                } else if (parameter.kind == TypeKind::Edit &&
+                           parameter.arguments.size() == 1) {
+                    name += '&' + displayType(parameter.arguments.front());
+                } else if (parameter.kind != TypeKind::Own &&
+                           !isCopyParameterType(parameter)) {
+                    name += '$' + displayType(parameter);
+                } else {
+                    name += displayType(parameter);
+                }
             }
             name += ") ";
             name += displayType(type.arguments.front());
@@ -5019,7 +6747,18 @@ class Analyzer {
 
     void requireSame(Type expected, Type actual, SourceSpan span, std::string_view context) {
         if (expected.kind == TypeKind::Invalid || actual.kind == TypeKind::Invalid ||
-            expected == actual) {
+            expected == actual || actual == neverType) {
+            return;
+        }
+        if (expected.kind == TypeKind::RawConst && actual.kind == TypeKind::Raw &&
+            expected.arguments == actual.arguments) {
+            return;
+        }
+        if ((expected.kind == TypeKind::Raw || expected.kind == TypeKind::RawConst) &&
+            expected.arguments.size() == 1 && expected.arguments.front() == voidType &&
+            (actual.kind == TypeKind::Raw || actual.kind == TypeKind::RawConst) &&
+            actual.arguments.size() == 1 &&
+            !(expected.kind == TypeKind::Raw && actual.kind == TypeKind::RawConst)) {
             return;
         }
         diagnostics_.error("FDN2011",
@@ -5057,6 +6796,10 @@ class Analyzer {
     std::size_t channelStorage_{};
     std::size_t blockingStorage_{};
     std::size_t callbackStorage_{};
+    std::size_t iterationStorage_{};
+    std::vector<std::size_t> loopScopeBases_;
+    std::size_t loopJumps_{};
+    std::size_t unsafeDepth_{};
     FirFunctionId currentFunction_{};
 };
 

@@ -3,7 +3,7 @@ package test.qualified_spawn_function
 import std.text
 
 task work(value String) void {
-    const pending = spawn text.Copy(view value)
+    const pending = spawn text.Copy(value)
     discard pending
 }
 

@@ -3,6 +3,6 @@ fn failure() Result<i32, String> {
 }
 
 fn main() i32 {
-    let result = failure()
+    const result = failure()
     0
 }

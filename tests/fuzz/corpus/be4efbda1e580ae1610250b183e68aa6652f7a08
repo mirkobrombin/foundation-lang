@@ -1,0 +1,15 @@
+package fuzz.cancellation
+
+import std.concurrent
+
+task observe(cancel concurrent.Cancellation) bool {
+    cancel.IsRequested()
+}
+
+fn main() i32 {
+    const source = concurrent.NewCancellationSource()
+    const pending a = wpnsobserve(source.Token())
+    source.Cancel()
+    discard $pending.wait()
+    0
+}

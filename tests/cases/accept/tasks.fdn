@@ -1,4 +1,4 @@
-task announce(message String) String {
+task announce($message String) String {
     print(message)
     message
 }
@@ -7,7 +7,7 @@ task finish() void {
     return
 }
 
-task preserve(message String) String {
+task preserve($message String) String {
     message
 }
 
@@ -17,7 +17,7 @@ task fail() i32 {
 
 fn main() i32 {
     const message = "ta" + "sk"
-    const pending = spawn announce(message)
+    const pending = spawn announce($message)
     print("before")
     const result = $pending.wait()
     const finishing = spawn finish()

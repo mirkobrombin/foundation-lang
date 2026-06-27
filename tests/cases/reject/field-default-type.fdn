@@ -1,0 +1,8 @@
+struct Invalid {
+    value i32 = "wrong"
+}
+
+fn main() i32 {
+    const value = Invalid {}
+    value.value
+}

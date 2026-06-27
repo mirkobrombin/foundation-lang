@@ -1,0 +1,13 @@
+on start
+first start
+second start
+background stop
+second stop
+first stop
+on stop
+first start
+second start
+first stop
+background fail
+background run fail
+hosting

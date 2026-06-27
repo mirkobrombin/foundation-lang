@@ -3,8 +3,8 @@ struct User {
 }
 
 fn main() i32 {
-    let user = own User { id = 7 }
-    let moved = user
+    const user = own User { id = 7 }
+    const moved = user
     discard moved
     user.id
 }

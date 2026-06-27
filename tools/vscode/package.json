@@ -2,7 +2,7 @@
     "name": "foundation-lang",
     "displayName": "Foundation Lang",
     "description": "Language support for Foundation Lang",
-    "version": "0.47.0",
+    "version": "0.83.0",
     "publisher": "mirkobrombin",
     "license": "MIT",
     "engines": {
@@ -102,6 +102,11 @@
                     "type": "string",
                     "default": "",
                     "description": "Path to foundation-ls. Empty uses the SDK or workspace build."
+                },
+                "foundation.inlayHints.emptyTests": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show the resolved is empty meaning after typed !value tests."
                 }
             }
         }

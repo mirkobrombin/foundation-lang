@@ -851,16 +851,21 @@ class FoundationLanguageClient {
                 end: { line: range.end.line, character: range.end.character }
             }
         }, token);
-        const hints = (result || []).map((value) => {
-            const position = new this.vscode.Position(
-                value.position.line,
-                value.position.character
-            );
-            const hint = new this.vscode.InlayHint(position, value.label, value.kind);
-            hint.paddingLeft = value.paddingLeft || false;
-            hint.paddingRight = value.paddingRight || false;
-            return hint;
-        });
+        const showEmptyTests = this.vscode.workspace
+            .getConfiguration("foundation")
+            .get("inlayHints.emptyTests", true);
+        const hints = (result || [])
+            .filter((value) => showEmptyTests || value.foundationKind !== "emptyTest")
+            .map((value) => {
+                const position = new this.vscode.Position(
+                    value.position.line,
+                    value.position.character
+                );
+                const hint = new this.vscode.InlayHint(position, value.label, value.kind);
+                hint.paddingLeft = value.paddingLeft || false;
+                hint.paddingRight = value.paddingRight || false;
+                return hint;
+            });
         return hints;
     }
 

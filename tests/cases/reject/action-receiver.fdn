@@ -1,0 +1,9 @@
+service CounterService {
+    action Add(amount i32) i32 {
+        amount
+    }
+}
+
+fn main() i32 {
+    0
+}

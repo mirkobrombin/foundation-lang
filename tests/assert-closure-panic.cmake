@@ -18,7 +18,8 @@ if(C_COMPILER_ID STREQUAL "MSVC")
     set(executable "${OUTPUT}.exe")
     execute_process(
         COMMAND "${C_COMPILER}" /nologo /std:c11 /O2 /W4 /WX "${GENERATED}"
-                "${RUNTIME_SOURCE}" "/I${RUNTIME_INCLUDE}" "/Fe:${executable}"
+                "${RUNTIME_SOURCE}" "/I${RUNTIME_INCLUDE}" bcrypt.lib
+                "/Fe:${executable}"
         RESULT_VARIABLE build_result
         OUTPUT_VARIABLE build_output
         ERROR_VARIABLE build_error

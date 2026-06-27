@@ -1,4 +1,4 @@
 fn main() i32 {
-    let Value {} = 1
+    const Value {} = 1
     0
 }

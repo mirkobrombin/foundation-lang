@@ -4,6 +4,6 @@ enum Maybe<T> {
 }
 
 fn main() i32 {
-    let value = Maybe.None
+    const value = Maybe.None
     0
 }

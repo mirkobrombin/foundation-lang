@@ -1,0 +1,16 @@
+import foundatx String
+
+    @di.Inject()
+    fn New(@di.Input() $prefix String) Greeter {
+        Greeter { prefix = prefix }
+    }
+
+    @actions.Name("greet")
+    action Greet(self, name String) String {
+        self.prefix + name
+    }
+}
+
+fn main() i32 {
+    0
+}

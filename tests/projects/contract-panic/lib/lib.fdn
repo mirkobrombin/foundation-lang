@@ -1,11 +1,11 @@
 package trace.failure
 
 contract Failure {
-    fn Fail(view) void
+    fn Fail(self) void
 }
 
 struct Crashing implements Failure {
-    fn Fail(view) void {
+    fn Fail(self) void {
         panic("contract failure")
     }
 }

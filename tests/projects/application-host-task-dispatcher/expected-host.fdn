@@ -1,0 +1,92 @@
+package test.host.taskdispatcher
+
+import std.concurrent as foundationHost0
+
+struct FoundationApplication {
+    foundationWorker Worker
+}
+
+fn BuildFoundationApplication() FoundationApplication {
+    const foundationWorker = Worker.New()
+    FoundationApplication { foundationWorker = foundationWorker }
+}
+
+methods FoundationApplication {
+    fn Begin(self, $cancel foundationHost0.Cancellation, value i32) Task<Result<i32, WorkError>> {
+        self.foundationWorker.Begin($cancel, value)
+    }
+}
+
+struct FoundationBeginAction {
+    cancel foundationHost0.Cancellation
+    value i32
+}
+
+enum FoundationAction {
+    Begin(FoundationBeginAction)
+}
+
+struct FoundationActionKeyBinding {
+    key String
+    actionName String
+}
+
+enum FoundationActionResult {
+    Begin(value Task<Result<i32, WorkError>>)
+}
+
+enum FoundationDispatchError {
+    UnknownName
+    UnknownKey
+    ActionMismatch
+}
+
+methods FoundationApplication {
+    fn HasAction(self, name String) bool {
+        name == "begin"
+    }
+
+    fn ActionNames(self) [1]String {
+        ["begin"]
+    }
+
+    fn ActionKeyBindings(self) [0]FoundationActionKeyBinding {
+        []
+    }
+}
+
+methods FoundationApplication {
+    fn foundationDispatchBegin(self, $payload FoundationBeginAction) Result<FoundationActionResult, FoundationDispatchError> {
+        const FoundationBeginAction { cancel value } = payload
+        .Ok(.Begin(value = self.Begin($cancel, value)))
+    }
+
+    fn foundationDispatchNameBegin(self, foundationDispatchName String, $payload FoundationBeginAction) Result<FoundationActionResult, FoundationDispatchError> {
+        if foundationDispatchName != "begin" return .Err(.ActionMismatch)
+        self.foundationDispatchBegin($payload)
+    }
+
+    fn foundationDispatchKeyBegin(self, foundationDispatchKey String, $payload FoundationBeginAction) Result<FoundationActionResult, FoundationDispatchError> {
+        if true return .Err(.ActionMismatch)
+        self.foundationDispatchBegin($payload)
+    }
+}
+
+methods FoundationApplication {
+    fn Dispatch(self, $request FoundationAction) Result<FoundationActionResult, FoundationDispatchError> {
+        match request {
+            Begin(payload): self.foundationDispatchBegin($payload)
+        }
+    }
+}
+
+methods FoundationApplication {
+    fn DispatchName(self, foundationDispatchName String, $request FoundationAction) Result<FoundationActionResult, FoundationDispatchError> {
+        if foundationDispatchName != "begin" return .Err(.UnknownName)
+        match request {
+            Begin(payload): self.foundationDispatchNameBegin(foundationDispatchName, $payload)
+        }
+    }
+}
+
+// foundation:generated application/v1

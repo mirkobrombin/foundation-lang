@@ -3,7 +3,7 @@ fn identity<T>(value T) T {
 }
 
 fn main() i32 {
-    let operation = identity
+    const operation = identity
     discard operation
     0
 }

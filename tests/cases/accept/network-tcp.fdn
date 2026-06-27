@@ -2,9 +2,10 @@ package test.network_tcp
 
 import std.net
 
-extern c fn startServer(port edit u64) u64 as foundation_test_net_server_start
+extern c fn startServer(&port u64) u64 as foundation_test_net_server_start
 extern c fn joinServer(server u64) i32 as foundation_test_net_server_join
 extern c fn liveAddresses() u64 as foundation_runtime_net_live_addresses
+extern c fn liveListeners() u64 as foundation_runtime_net_live_listeners
 extern c fn liveConnections() u64 as foundation_runtime_net_live_connections
 extern c fn liveRequests() u64 as foundation_runtime_net_live_requests
 extern c fn liveServices() u64 as foundation_runtime_net_live_services
@@ -18,18 +19,19 @@ fn errorName(error net.Error) String {
         Cancelled: "TCP connection was cancelled"
         InvalidUtf8: "TCP connection returned invalid UTF-8"
         LineTooLong: "TCP connection returned a long line"
+        AddressInUse: "TCP address is already in use"
         Io: "TCP connection I/O failed"
     }
 }
 
-fn connectionOr(value Result<own net.TcpConnection, net.Error>) own net.TcpConnection {
+fn connectionOr($value Result<own net.TcpConnection, net.Error>) own net.TcpConnection {
     const connection = value else error {
         panic(errorName(error))
     }
     connection
 }
 
-fn pairOr(value Result<net.StreamPair, net.Error>) net.StreamPair {
+fn pairOr($value Result<net.StreamPair, net.Error>) net.StreamPair {
     const pair = value else error {
         discard error
         panic("TCP split failed")
@@ -37,7 +39,7 @@ fn pairOr(value Result<net.StreamPair, net.Error>) net.StreamPair {
     pair
 }
 
-fn lineOr(value Result<Option<String>, net.Error>) String {
+fn lineOr($value Result<Option<String>, net.Error>) String {
     match value {
         Ok(optional): match optional {
             None: ""
@@ -47,7 +49,14 @@ fn lineOr(value Result<Option<String>, net.Error>) String {
     }
 }
 
-fn isEof(value Result<Option<String>, net.Error>) bool {
+fn textOr($value Result<String, net.Error>) String {
+    match value {
+        Ok(text): text
+        Err(error): ""
+    }
+}
+
+fn isEof($value Result<Option<String>, net.Error>) bool {
     match value {
         Ok(optional): match optional {
             None: true
@@ -57,14 +66,14 @@ fn isEof(value Result<Option<String>, net.Error>) bool {
     }
 }
 
-fn writeSucceeded(value Result<void, net.Error>) bool {
+fn writeSucceeded($value Result<void, net.Error>) bool {
     match value {
         Ok: true
         Err(error): false
     }
 }
 
-fn isInvalidUtf8(value Result<Option<String>, net.Error>) bool {
+fn isInvalidUtf8($value Result<Option<String>, net.Error>) bool {
     match value {
         Ok(optional): false
         Err(error): match error {
@@ -75,12 +84,13 @@ fn isInvalidUtf8(value Result<Option<String>, net.Error>) bool {
             Cancelled: false
             InvalidUtf8: true
             LineTooLong: false
+            AddressInUse: false
             Io: false
         }
     }
 }
 
-fn isLineTooLong(value Result<Option<String>, net.Error>) bool {
+fn isLineTooLong($value Result<Option<String>, net.Error>) bool {
     match value {
         Ok(optional): false
         Err(error): match error {
@@ -91,12 +101,13 @@ fn isLineTooLong(value Result<Option<String>, net.Error>) bool {
             Cancelled: false
             InvalidUtf8: false
             LineTooLong: true
+            AddressInUse: false
             Io: false
         }
     }
 }
 
-fn isRefused(value Result<own net.TcpConnection, net.Error>) bool {
+fn isRefused($value Result<own net.TcpConnection, net.Error>) bool {
     match value {
         Ok(connection): false
         Err(error): match error {
@@ -107,12 +118,13 @@ fn isRefused(value Result<own net.TcpConnection, net.Error>) bool {
             Cancelled: false
             InvalidUtf8: false
             LineTooLong: false
+            AddressInUse: false
             Io: false
         }
     }
 }
 
-fn isInvalidAddress(value Result<own net.TcpConnection, net.Error>) bool {
+fn isInvalidAddress($value Result<own net.TcpConnection, net.Error>) bool {
     match value {
         Ok(connection): false
         Err(error): match error {
@@ -123,14 +135,60 @@ fn isInvalidAddress(value Result<own net.TcpConnection, net.Error>) bool {
             Cancelled: false
             InvalidUtf8: false
             LineTooLong: false
+            AddressInUse: false
             Io: false
         }
     }
 }
 
+fn listenerOr($value Result<own net.TcpListener, net.Error>) own net.TcpListener {
+    const listener = value else error {
+        panic(errorName(error))
+    }
+    listener
+}
+
+fn listenerRoundTrip() bool {
+    const listener = listenerOr(net.Listen("127.0.0.1", 0))
+    const port = listener.Port
+    const accepting = spawn net.Accept($listener)
+    const connecting = spawn net.Connect("127.0.0.1", port)
+    const client = connectionOr($connecting.wait())
+    const net.AcceptOutcome { Listener as listenerAfter Value as accepted } = $accepting.wait()
+    const server = connectionOr($accepted)
+    const clientPair = pairOr(client.Split())
+    const serverPair = pairOr(server.Split())
+    const net.StreamPair { Reader as clientReader Writer as clientWriter } = clientPair
+    const net.StreamPair { Reader as serverReader Writer as serverWriter } = serverPair
+
+    const clientWriting = spawn net.WriteAll($clientWriter, "hello\nbody")
+    const serverReading = spawn net.ReadLine($serverReader)
+    const net.WriteOutcome { Writer as clientWriterAfter Value as clientWrite } = $clientWriting.wait()
+    const net.ReadLineOutcome { Reader as serverReaderAfter Value as request } = $serverReading.wait()
+    const bodyReading = spawn net.ReadExact($serverReaderAfter, 4)
+    const net.ReadOutcome { Reader as serverReaderBody Value as bodyResult } = $bodyReading.wait()
+    const serverWriting = spawn net.WriteAll($serverWriter, "world\n")
+    const clientReading = spawn net.ReadLine($clientReader)
+    const net.WriteOutcome { Writer as serverWriterAfter Value as serverWrite } = $serverWriting.wait()
+    const net.ReadLineOutcome { Reader as clientReaderAfter Value as response } = $clientReading.wait()
+
+    const success = lineOr($request) == "hello" && textOr($bodyResult) == "body" &&
+        lineOr($response) == "world" &&
+        writeSucceeded($clientWrite) && writeSucceeded($serverWrite)
+    discard listenerAfter
+    discard clientWriterAfter
+    discard serverReaderBody
+    discard serverWriterAfter
+    discard clientReaderAfter
+    success
+}
+
 fn main() i32 {
+    if !listenerRoundTrip() {
+        return 9
+    }
     var port u64 = 0
-    const server = startServer(edit port)
+    const server = startServer(&port)
     if server == 0 || port == 0 || port > 65535 {
         return 1
     }
@@ -144,20 +202,20 @@ fn main() i32 {
     const pair = pairOr(connection.Split())
     const net.StreamPair { Reader as reader Writer as writer } = pair
 
-    const writing = spawn net.WriteAll(writer, "ping\n")
-    const reading = spawn net.ReadLine(reader)
+    const writing = spawn net.WriteAll($writer, "ping\n")
+    const reading = spawn net.ReadLine($reader)
     const net.WriteOutcome { Writer as writerAfter Value as writeResult } = $writing.wait()
     const net.ReadLineOutcome { Reader as readerAfter Value as firstResult } = $reading.wait()
-    const first = lineOr(firstResult)
+    const first = lineOr($firstResult)
 
-    const secondReading = spawn net.ReadLineLimited(readerAfter, 3)
+    const secondReading = spawn net.ReadLineLimited($readerAfter, 3)
     const net.ReadLineOutcome { Reader as readerSecond Value as secondResult } = $secondReading.wait()
-    const second = lineOr(secondResult)
+    const second = lineOr($secondResult)
 
-    const eofReading = spawn net.ReadLine(readerSecond)
+    const eofReading = spawn net.ReadLine($readerSecond)
     const net.ReadLineOutcome { Reader as readerEof Value as eofResult } = $eofReading.wait()
-    if first != "pong" || second != "abc" || !writeSucceeded(writeResult) ||
-        !isEof(eofResult) {
+    if first != "pong" || second != "abc" || !writeSucceeded($writeResult) ||
+        !isEof($eofResult) {
         return 2
     }
     discard readerEof
@@ -166,7 +224,7 @@ fn main() i32 {
     const cancellingConnection = connectionOr($(spawn net.Connect("127.0.0.1", port)).wait())
     const cancellingPair = pairOr(cancellingConnection.Split())
     const net.StreamPair { Reader as cancellingReader Writer as cancellingWriter } = cancellingPair
-    const cancelledRead = spawn net.ReadLine(cancellingReader)
+    const cancelledRead = spawn net.ReadExact($cancellingReader, 4)
     discard cancelledRead
     discard cancellingWriter
 
@@ -174,9 +232,9 @@ fn main() i32 {
     const invalidPair = pairOr(invalidConnection.Split())
     const net.StreamPair { Reader as invalidReader Writer as invalidWriter } = invalidPair
     discard invalidWriter
-    const invalidReading = spawn net.ReadLine(invalidReader)
+    const invalidReading = spawn net.ReadLine($invalidReader)
     const net.ReadLineOutcome { Reader as invalidReaderAfter Value as invalidResult } = $invalidReading.wait()
-    if !isInvalidUtf8(invalidResult) {
+    if !isInvalidUtf8($invalidResult) {
         return 3
     }
     discard invalidReaderAfter
@@ -185,9 +243,9 @@ fn main() i32 {
     const longPair = pairOr(longConnection.Split())
     const net.StreamPair { Reader as longReader Writer as longWriter } = longPair
     discard longWriter
-    const longReading = spawn net.ReadLineLimited(longReader, 3)
+    const longReading = spawn net.ReadLineLimited($longReader, 3)
     const net.ReadLineOutcome { Reader as longReaderAfter Value as longResult } = $longReading.wait()
-    if !isLineTooLong(longResult) {
+    if !isLineTooLong($longResult) {
         return 4
     }
     discard longReaderAfter
@@ -199,7 +257,7 @@ fn main() i32 {
     if !isRefused($refused.wait()) {
         return 6
     }
-    if liveAddresses() != 0 || liveConnections() != 0 ||
+    if liveAddresses() != 0 || liveListeners() != 0 || liveConnections() != 0 ||
         liveRequests() != 0 || liveServices() != 0 {
         return 7
     }

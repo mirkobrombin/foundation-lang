@@ -1,0 +1,75 @@
+struct Counter {
+    current i32
+    stop i32
+
+    fn Next(&self) Option<i32> {
+        if self.current >= self.stop {
+            return .None
+        }
+        const value = self.current
+        self.current = self.current + 1
+        .Some(value)
+    }
+}
+
+struct Token {
+    text String
+}
+
+struct Tokens {
+    next i32
+
+    fn Next(&self) Option<Token> {
+        if self.next > 0 {
+            return .None
+        }
+        self.next = self.next + 1
+        .Some(Token { text = "owned" + "!" })
+    }
+}
+
+fn NewCounter(stop i32) Counter {
+    Counter { current = 0 stop = stop }
+}
+
+fn NewTokens() Tokens {
+    Tokens { next = 0 }
+}
+
+task echo(value i32) i32 {
+    value
+}
+
+task countInTask() i32 {
+    var total = 0
+    for value in NewCounter(3) {
+        const pending = spawn echo(value)
+        const delivered = $pending.wait()
+        total = total + delivered
+    }
+    total
+}
+
+fn main() i32 {
+    var counter = NewCounter(5)
+    var total = 0
+    for index, value in counter {
+        if index == 1 continue
+        total = total + value
+        if value == 3 break
+    }
+    if total != 5 return 1
+
+    var text = ""
+    for token in NewTokens() {
+        text = text + token.text
+    }
+    if text != "owned!" return 2
+
+    const pending = spawn countInTask()
+    const taskTotal = $pending.wait()
+    if taskTotal != 3 return 3
+
+    print("ok")
+    0
+}

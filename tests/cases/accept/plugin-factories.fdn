@@ -1,0 +1,90 @@
+import foundation.plugin
+import std.text
+
+struct MemoryPlugin implements plugin.Plugin {
+    name String
+    running bool
+
+    fn Name(self) String {
+        text.Copy(self.name)
+    }
+
+    fn Start(&self) Result<bool, plugin.Error> {
+        if self.running return .Ok(false)
+        self.running = true
+        .Ok(true)
+    }
+
+    fn Stop(&self) Result<bool, plugin.Error> {
+        if !self.running return .Ok(false)
+        self.running = false
+        .Ok(true)
+    }
+}
+
+fn makeSample() own plugin.Plugin {
+    own MemoryPlugin { name = "sample" running = false }
+}
+
+fn main() i32 {
+    var factories = plugin.NewFactoryRegistry()
+    const registered = factories.Register("sample", $makeSample) else failure {
+        discard failure
+        return 1
+    }
+    discard registered
+
+    const duplicate = factories.Register("sample", $makeSample)
+    const duplicateStatus = match duplicate {
+        Ok(changed): unexpectedDuplicate(changed)
+        Err(failure): useRejectedFactory($failure)
+    }
+    if duplicateStatus != 0 return duplicateStatus
+
+    const first = factories.Create("sample") else error {
+        discard error
+        return 3
+    }
+    const second = factories.Create("sample") else error {
+        discard error
+        return 4
+    }
+    print(first.Name())
+    print(second.Name())
+
+    const missing = factories.Create("missing")
+    match missing {
+        Ok(created): unexpectedPlugin($created)
+        Err(error): reportMissing(error)
+    }
+}
+
+fn unexpectedDuplicate(changed bool) i32 {
+    discard changed
+    2
+}
+
+fn useRejectedFactory($failure own plugin.FactoryRegistrationFailure) i32 {
+    const plugin.FactoryRegistrationFailure { Name Factory Kind } = failure
+    discard Name
+    discard Kind
+    const make fn() own plugin.Plugin = Factory
+    const rejected = make()
+    print(rejected.Name())
+    discard rejected
+    discard make
+    0
+}
+
+fn unexpectedPlugin($value own plugin.Plugin) i32 {
+    discard value
+    5
+}
+
+fn reportMissing(error plugin.FactoryErrorKind) i32 {
+    match error {
+        EmptyName: 6
+        AlreadyRegistered: 7
+        NotFound: 0
+    }
+}

@@ -1,4 +1,4 @@
-extern c fn nativeEdit(value edit [String]) i32 as foundation_native_edit
+extern c fn nativeEdit(&value [String]) i32 as foundation_native_edit
 
 fn main() i32 {
     0

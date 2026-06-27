@@ -3,7 +3,7 @@ import foundation.worker
 struct Handle {
     value u64
 
-    fn drop(edit) void {
+    fn drop(&self) void {
         self.value = 0
     }
 }

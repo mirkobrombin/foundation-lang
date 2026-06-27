@@ -1,0 +1,6 @@
+fn main() i32 {
+    const Channel { sender receiver } = channel<i32>(1)
+    discard receiver
+    discard sender.clone(1)
+    0
+}

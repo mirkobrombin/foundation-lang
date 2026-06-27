@@ -1,4 +1,4 @@
-fn main(args view [String]) i32 {
+fn main(args [String]) i32 {
     print(args[0])
     print(args[1])
     0

@@ -1,0 +1,11 @@
+fn mutate(&value i32) Result<i32, bool> {
+    .Ok(1)
+}
+
+pipeline Broken(input i32) Result<i32, bool> {
+    step mutate using mutate
+}
+
+fn main() i32 {
+    0
+}

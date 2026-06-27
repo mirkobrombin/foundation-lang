@@ -9,11 +9,11 @@ extern c fn releaseNative(handle u64) void as foundation_runtime_cancellation_re
 struct Cancellation {
     handle u64
 
-    fn IsRequested(view) bool {
+    fn IsRequested(self) bool {
         requestedNative(self.handle)
     }
 
-    fn drop(edit) void {
+    fn drop(&self) void {
         releaseNative(self.handle)
         self.handle = 0
     }
@@ -22,19 +22,19 @@ struct Cancellation {
 struct CancellationSource {
     handle u64
 
-    fn Token(view) Cancellation {
+    fn Token(self) Cancellation {
         Cancellation { handle = retainNative(self.handle) }
     }
 
-    fn Cancel(view) void {
+    fn Cancel(self) void {
         requestNative(self.handle)
     }
 
-    fn IsCancellationRequested(view) bool {
+    fn IsCancellationRequested(self) bool {
         requestedNative(self.handle)
     }
 
-    fn drop(edit) void {
+    fn drop(&self) void {
         releaseNative(self.handle)
         self.handle = 0
     }

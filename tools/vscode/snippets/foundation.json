@@ -56,6 +56,64 @@
         ],
         "description": "Connect and split an owned TCP stream"
     },
+    "TCP listener task": {
+        "prefix": "tcplistener",
+        "body": [
+            "const ${1:listener} = net.Listen(${2:\"127.0.0.1\"}, ${3:0}) else ${4:error} {",
+            "    ${5:return 1}",
+            "}",
+            "const ${6:accepting} = spawn net.Accept(${1:listener})",
+            "const ${7:outcome} = \\$${6:accepting}.wait()"
+        ],
+        "description": "Bind and accept one owned TCP connection"
+    },
+    "HTTP handler": {
+        "prefix": "webhandler",
+        "body": [
+            "struct ${1:Handler} implements web.Handler<${2:Error}> {}",
+            "",
+            "methods ${1:Handler} {",
+            "    fn Handle(self, \\$${3:request} web.Request) Result<web.Response, ${2:Error}> {",
+            "        ${4:.Ok(web.Text(200, \"ok\"))}",
+            "    }",
+            "}"
+        ],
+        "description": "Implement a typed Foundation HTTP handler"
+    },
+    "Generated HTTP route": {
+        "prefix": "webroute",
+        "body": [
+            "@web.Route(${1|.GET,.POST,.PUT,.PATCH,.DELETE,.HEAD,.OPTIONS|}, \"${2:/items/{id}}\")",
+            "fn ${3:GetItem}(",
+            "    @web.Path(\"${4:id}\") ${4:id} String,",
+            "    @web.Query(\"${5:limit}\") ${5:limit} i32",
+            ") web.Response {",
+            "    ${6:web.Text(200, \"ok\")}",
+            "}"
+        ],
+        "description": "Declare a compiler-generated typed HTTP route"
+    },
+    "HTTP parameter route": {
+        "prefix": "webrouteparam",
+        "body": [
+            "const ${1:value} = ${2:request}.Param(\"${3:id}\")",
+            "const ${4:found} = match ${1:value} {",
+            "    None: ${5:false}",
+            "    Some(${6:value}): ${7:true}",
+            "}"
+        ],
+        "description": "Read a typed router parameter"
+    },
+    "HTTP request sources": {
+        "prefix": "webrequest",
+        "body": [
+            "const ${1:pathValue} = ${2:request}.Param(\"${3:id}\")",
+            "const ${4:queryValue} = ${2:request}.Query(\"${5:page}\")",
+            "const ${6:headerValue} = ${2:request}.Header(\"${7:X-Request-ID}\")",
+            "const ${8:formValue} = ${2:request}.Form(\"${9:name}\")"
+        ],
+        "description": "Read copied path, query, header, and form values"
+    },
     "Parse JSON value": {
         "prefix": "jsonparse",
         "body": [
@@ -103,7 +161,7 @@
         "prefix": "externcallback",
         "body": [
             "@callback(cancel = ${1:foundation_native_cancel})",
-            "extern c fn ${2:nativeCall}(${3:result edit i32}) i32 as ${4:foundation_native_start}"
+            "extern c fn ${2:nativeCall}(${3:&result i32}) i32 as ${4:foundation_native_start}"
         ],
         "description": "Import a native callback operation through the completion reactor"
     },
@@ -128,7 +186,7 @@
     },
     "Typed attribute declaration": {
         "prefix": "attribute",
-        "body": "attribute ${1:Route}(${2:path String}) targets(${3|fn,struct,enum,contract,method,field,variant,parameter|})${4: repeatable}",
+        "body": "attribute ${1:Route}(${2:path String}) targets(${3|fn,struct,service,enum,contract,method,action,field,variant,parameter|})${4: repeatable}",
         "description": "Declare typed compile-time metadata"
     },
     "Typed attribute application": {
@@ -462,6 +520,24 @@
         ],
         "description": "Iterate over a sequence or iterator"
     },
+    "Indexed for loop": {
+        "prefix": "forindex",
+        "body": [
+            "for ${1:index}, ${2:value} in ${3:values} {",
+            "    ${4}",
+            "}"
+        ],
+        "description": "Iterate with a zero-based index"
+    },
+    "Editable for loop": {
+        "prefix": "foredit",
+        "body": [
+            "for &${1:value} in ${2:values} {",
+            "    ${3}",
+            "}"
+        ],
+        "description": "Iterate with an exclusive element loan"
+    },
     "Service": {
         "prefix": "service",
         "body": [
@@ -471,10 +547,28 @@
         ],
         "description": "Declare a Foundation service"
     },
+    "DI service": {
+        "prefix": "diservice",
+        "body": [
+            "@di.Scope(${1|.Transient,.Scoped,.Singleton|})",
+            "service ${2:Name} {",
+            "    @di.Inject()",
+            "    fn New(${3}) ${2:Name} {",
+            "        ${2:Name} { ${4} }",
+            "    }",
+            "}"
+        ],
+        "description": "Declare a service with a static DI constructor"
+    },
+    "Build generated application": {
+        "prefix": "apphost",
+        "body": "const ${1:application} = BuildFoundationApplication(${2})",
+        "description": "Construct the generated typed Foundation application"
+    },
     "Action": {
         "prefix": "action",
         "body": [
-            "action ${1:Name}(${2:command} ${3:Command}) Result<${4:void}, ${5:Error}> {",
+            "action ${1:Name}(self, ${2:command} ${3:Command}) Result<${4:void}, ${5:Error}> {",
             "    ${6:.Ok}",
             "}"
         ],

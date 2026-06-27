@@ -1,0 +1,23 @@
+import foundation.actions
+import foundation.di
+
+service Commands {
+    @di.Inject()
+    fn New() Commands {
+        Commands {}
+    }
+
+    @actions.Name("same")
+    action First(self) i32 {
+        1
+    }
+
+    @actions.Name("same")
+    action Second(self) i32 {
+        2
+    }
+}
+
+fn main() i32 {
+    0
+}

@@ -1,0 +1,7 @@
+package test.host.app
+
+fn main() i32 {
+    const application = BuildFoundationApplication("Hello, ")
+    print(application.Greet("packages"))
+    0
+}

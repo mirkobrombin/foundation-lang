@@ -5,6 +5,7 @@
 #include "foundation/token.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -22,7 +23,7 @@ class Lexer {
     void skipIgnored();
     Token next();
     Token identifier();
-    Token integer();
+    Token number();
     Token string();
     [[nodiscard]] SourceSpan spanFrom(std::size_t offset, std::size_t line,
                                       std::size_t column) const;
@@ -33,6 +34,7 @@ class Lexer {
     std::size_t line_{1};
     std::size_t column_{1};
     std::size_t sourceId_{};
+    std::optional<std::size_t> safetyCommentLine_;
 };
 
 } // namespace foundation

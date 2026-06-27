@@ -1,6 +1,6 @@
 fn main() i32 {
-    let value = 1
-    let read = fn(value i32) i32 capture value {
+    const value = 1
+    const read = fn(value i32) i32 capture value {
         value
     }
     read(1)

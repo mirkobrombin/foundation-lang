@@ -7,6 +7,8 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <locale.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,11 +21,17 @@ _Static_assert(sizeof(uintptr_t) <= sizeof(uint64_t), "runtime handles require a
 #define WIN32_LEAN_AND_MEAN
 #include <share.h>
 #include <windows.h>
+#include <bcrypt.h>
 #include <wchar.h>
 static SRWLOCK fdn_stdout_lock = SRWLOCK_INIT;
+static SRWLOCK fdn_uuid_lock = SRWLOCK_INIT;
 #else
 #include <dirent.h>
 #include <stdatomic.h>
+#if defined(__linux__)
+#include <sys/random.h>
+#endif
+static atomic_flag fdn_uuid_lock = ATOMIC_FLAG_INIT;
 #endif
 
 #if defined(_MSC_VER)
@@ -101,6 +109,22 @@ static uint64_t fdn_handle_count_read(
 
 static const char *fdn_trace_value(const char *value) {
     return value != NULL ? value : "<unknown>";
+}
+
+void fdn_retry_wait(uint32_t retry_index) {
+    const uint32_t shift = retry_index > 10 ? 10 : retry_index;
+    const uint32_t milliseconds = UINT32_C(1) << shift;
+#if defined(_WIN32)
+    Sleep((DWORD)milliseconds);
+#else
+    struct timespec delay = {(time_t)(milliseconds / 1000),
+                             (long)(milliseconds % 1000) * 1000000L};
+    while (nanosleep(&delay, &delay) != 0) {
+        if (errno != EINTR) {
+            fdn_panic_cstr("retry wait failed");
+        }
+    }
+#endif
 }
 
 bool fdn_utf8_valid(const char *value, size_t length) {
@@ -251,13 +275,6 @@ static void fdn_arithmetic_panic(const char *message) {
     fdn_panic_cstr(buffer);
 }
 
-static int32_t fdn_i32_checked(int64_t value) {
-    if (value < INT32_MIN || value > INT32_MAX) {
-        fdn_arithmetic_panic("i32 overflow");
-    }
-    return (int32_t)value;
-}
-
 fdn_string fdn_string_move(fdn_string *value) {
     const fdn_string result = *value;
     value->data = NULL;
@@ -319,11 +336,11 @@ void fdn_println(fdn_string value) {
 #endif
 }
 
-size_t fdn_bounds_check(int32_t index, size_t length) {
-    if (index < 0 || (size_t)index >= length) {
+size_t fdn_bounds_check(size_t index, size_t length) {
+    if (index >= length) {
         fdn_panic_cstr("index out of bounds");
     }
-    return (size_t)index;
+    return index;
 }
 
 void *fdn_alloc(size_t size) {
@@ -394,68 +411,107 @@ _Noreturn void fdn_invalid_enum_tag(void) {
     fdn_panic_cstr("invalid enum tag");
 }
 
-int32_t fdn_i32_add(int32_t left, int32_t right) {
-    return fdn_i32_checked((int64_t)left + (int64_t)right);
-}
-
-int32_t fdn_i32_subtract(int32_t left, int32_t right) {
-    return fdn_i32_checked((int64_t)left - (int64_t)right);
-}
-
-int32_t fdn_i32_multiply(int32_t left, int32_t right) {
-    return fdn_i32_checked((int64_t)left * (int64_t)right);
-}
-
-int32_t fdn_i32_divide(int32_t left, int32_t right) {
-    if (right == 0) {
-        fdn_arithmetic_panic("division by zero");
+#define FDN_DEFINE_SIGNED_ARITHMETIC(TYPE, NAME, MINIMUM, MAXIMUM) \
+    TYPE fdn_##NAME##_add(TYPE left, TYPE right) { \
+        if ((right > 0 && left > (TYPE)((MAXIMUM) - right)) || \
+            (right < 0 && left < (TYPE)((MINIMUM) - right))) { \
+            fdn_arithmetic_panic(#NAME " overflow"); \
+        } \
+        return (TYPE)(left + right); \
+    } \
+    TYPE fdn_##NAME##_subtract(TYPE left, TYPE right) { \
+        if ((right < 0 && left > (TYPE)((MAXIMUM) + right)) || \
+            (right > 0 && left < (TYPE)((MINIMUM) + right))) { \
+            fdn_arithmetic_panic(#NAME " overflow"); \
+        } \
+        return (TYPE)(left - right); \
+    } \
+    TYPE fdn_##NAME##_multiply(TYPE left, TYPE right) { \
+        if (left == 0 || right == 0) { \
+            return 0; \
+        } \
+        if ((left == -1 && right == (MINIMUM)) || \
+            (right == -1 && left == (MINIMUM))) { \
+            fdn_arithmetic_panic(#NAME " overflow"); \
+        } \
+        if ((left > 0 && right > 0 && left > (TYPE)((MAXIMUM) / right)) || \
+            (left > 0 && right < 0 && right < (TYPE)((MINIMUM) / left)) || \
+            (left < 0 && right > 0 && left < (TYPE)((MINIMUM) / right)) || \
+            (left < 0 && right < 0 && left < (TYPE)((MAXIMUM) / right))) { \
+            fdn_arithmetic_panic(#NAME " overflow"); \
+        } \
+        return (TYPE)(left * right); \
+    } \
+    TYPE fdn_##NAME##_divide(TYPE left, TYPE right) { \
+        if (right == 0) { \
+            fdn_arithmetic_panic("division by zero"); \
+        } \
+        if (left == (MINIMUM) && right == -1) { \
+            fdn_arithmetic_panic(#NAME " overflow"); \
+        } \
+        return (TYPE)(left / right); \
+    } \
+    TYPE fdn_##NAME##_remainder(TYPE left, TYPE right) { \
+        if (right == 0) { \
+            fdn_arithmetic_panic("remainder by zero"); \
+        } \
+        if (left == (MINIMUM) && right == -1) { \
+            return 0; \
+        } \
+        return (TYPE)(left % right); \
+    } \
+    TYPE fdn_##NAME##_negate(TYPE value) { \
+        if (value == (MINIMUM)) { \
+            fdn_arithmetic_panic(#NAME " overflow"); \
+        } \
+        return (TYPE)-value; \
     }
-    return fdn_i32_checked((int64_t)left / (int64_t)right);
-}
 
-int32_t fdn_i32_remainder(int32_t left, int32_t right) {
-    if (right == 0) {
-        fdn_arithmetic_panic("remainder by zero");
+#define FDN_DEFINE_UNSIGNED_ARITHMETIC(TYPE, NAME, MAXIMUM) \
+    TYPE fdn_##NAME##_add(TYPE left, TYPE right) { \
+        if (right > (TYPE)((MAXIMUM) - left)) { \
+            fdn_arithmetic_panic(#NAME " overflow"); \
+        } \
+        return (TYPE)(left + right); \
+    } \
+    TYPE fdn_##NAME##_subtract(TYPE left, TYPE right) { \
+        if (right > left) { \
+            fdn_arithmetic_panic(#NAME " overflow"); \
+        } \
+        return (TYPE)(left - right); \
+    } \
+    TYPE fdn_##NAME##_multiply(TYPE left, TYPE right) { \
+        if (left != 0 && right > (TYPE)((MAXIMUM) / left)) { \
+            fdn_arithmetic_panic(#NAME " overflow"); \
+        } \
+        return (TYPE)(left * right); \
+    } \
+    TYPE fdn_##NAME##_divide(TYPE left, TYPE right) { \
+        if (right == 0) { \
+            fdn_arithmetic_panic("division by zero"); \
+        } \
+        return (TYPE)(left / right); \
+    } \
+    TYPE fdn_##NAME##_remainder(TYPE left, TYPE right) { \
+        if (right == 0) { \
+            fdn_arithmetic_panic("remainder by zero"); \
+        } \
+        return (TYPE)(left % right); \
     }
-    return fdn_i32_checked((int64_t)left % (int64_t)right);
-}
 
-int32_t fdn_i32_negate(int32_t value) { return fdn_i32_checked(-(int64_t)value); }
+FDN_DEFINE_SIGNED_ARITHMETIC(int8_t, i8, INT8_MIN, INT8_MAX)
+FDN_DEFINE_SIGNED_ARITHMETIC(int16_t, i16, INT16_MIN, INT16_MAX)
+FDN_DEFINE_SIGNED_ARITHMETIC(int32_t, i32, INT32_MIN, INT32_MAX)
+FDN_DEFINE_SIGNED_ARITHMETIC(int64_t, i64, INT64_MIN, INT64_MAX)
+FDN_DEFINE_SIGNED_ARITHMETIC(intptr_t, isize, INTPTR_MIN, INTPTR_MAX)
+FDN_DEFINE_UNSIGNED_ARITHMETIC(uint8_t, u8, UINT8_MAX)
+FDN_DEFINE_UNSIGNED_ARITHMETIC(uint16_t, u16, UINT16_MAX)
+FDN_DEFINE_UNSIGNED_ARITHMETIC(uint32_t, u32, UINT32_MAX)
+FDN_DEFINE_UNSIGNED_ARITHMETIC(uint64_t, u64, UINT64_MAX)
+FDN_DEFINE_UNSIGNED_ARITHMETIC(size_t, usize, SIZE_MAX)
 
-uint64_t fdn_u64_add(uint64_t left, uint64_t right) {
-    if (UINT64_MAX - left < right) {
-        fdn_arithmetic_panic("u64 overflow");
-    }
-    return left + right;
-}
-
-uint64_t fdn_u64_subtract(uint64_t left, uint64_t right) {
-    if (left < right) {
-        fdn_arithmetic_panic("u64 overflow");
-    }
-    return left - right;
-}
-
-uint64_t fdn_u64_multiply(uint64_t left, uint64_t right) {
-    if (left != 0 && right > UINT64_MAX / left) {
-        fdn_arithmetic_panic("u64 overflow");
-    }
-    return left * right;
-}
-
-uint64_t fdn_u64_divide(uint64_t left, uint64_t right) {
-    if (right == 0) {
-        fdn_arithmetic_panic("division by zero");
-    }
-    return left / right;
-}
-
-uint64_t fdn_u64_remainder(uint64_t left, uint64_t right) {
-    if (right == 0) {
-        fdn_arithmetic_panic("remainder by zero");
-    }
-    return left % right;
-}
+#undef FDN_DEFINE_SIGNED_ARITHMETIC
+#undef FDN_DEFINE_UNSIGNED_ARITHMETIC
 
 int32_t foundation_runtime_env_read(const fdn_string *name, fdn_string *value) {
     if (value == NULL) {
@@ -826,24 +882,112 @@ uint64_t foundation_runtime_string_builder_live_handles(void) {
     return fdn_handle_count_read(&fdn_live_string_builder_count);
 }
 
-fdn_string foundation_runtime_format_i32(int32_t value) {
-    char buffer[32];
-    const int length = snprintf(buffer, sizeof(buffer), "%" PRId32, value);
-    if (length < 0 || (size_t)length >= sizeof(buffer)) {
-        fdn_panic_cstr("i32 formatting failed");
+static fdn_string fdn_format_result(const char *type_name, char *buffer, size_t capacity,
+                                    int length) {
+    if (length < 0 || (size_t)length >= capacity) {
+        char message[64];
+        const int message_length =
+            snprintf(message, sizeof(message), "%s formatting failed", type_name);
+        if (message_length < 0 || (size_t)message_length >= sizeof(message)) {
+            fdn_panic_cstr("scalar formatting failed");
+        }
+        fdn_panic_cstr(message);
     }
-    return foundation_runtime_string_copy(
-        &(fdn_string){buffer, (size_t)length, 0});
+    return foundation_runtime_string_copy(&(fdn_string){buffer, (size_t)length, 0});
 }
 
-fdn_string foundation_runtime_format_u64(uint64_t value) {
-    char buffer[32];
-    const int length = snprintf(buffer, sizeof(buffer), "%" PRIu64, value);
-    if (length < 0 || (size_t)length >= sizeof(buffer)) {
-        fdn_panic_cstr("u64 formatting failed");
+static int fdn_normalize_decimal_point(char *buffer, size_t capacity, int length) {
+    const struct lconv *locale = localeconv();
+    const char *point = locale == NULL ? NULL : locale->decimal_point;
+    if (point == NULL || point[0] == '\0' || strcmp(point, ".") == 0) {
+        return length;
     }
+    char *position = strstr(buffer, point);
+    if (position == NULL) {
+        return length;
+    }
+    const size_t point_length = strlen(point);
+    const size_t prefix_length = (size_t)(position - buffer);
+    const size_t suffix_length = (size_t)length - prefix_length - point_length;
+    if (prefix_length + 1 + suffix_length >= capacity) {
+        fdn_panic_cstr("floating-point formatting failed");
+    }
+    position[0] = '.';
+    memmove(position + 1, position + point_length, suffix_length + 1);
+    return (int)(prefix_length + 1 + suffix_length);
+}
+
+fdn_string foundation_runtime_format_bool(bool value) {
+    const char *text = value ? "true" : "false";
     return foundation_runtime_string_copy(
-        &(fdn_string){buffer, (size_t)length, 0});
+        &(fdn_string){text, value ? (size_t)4 : (size_t)5, 0});
+}
+
+#define FDN_DEFINE_SIGNED_FORMAT(TYPE, NAME, FORMAT)                                      \
+    fdn_string foundation_runtime_format_##NAME(TYPE value) {                            \
+        char buffer[32];                                                                  \
+        const int length = snprintf(buffer, sizeof(buffer), "%" FORMAT, value);          \
+        return fdn_format_result(#NAME, buffer, sizeof(buffer), length);                  \
+    }
+
+#define FDN_DEFINE_UNSIGNED_FORMAT(TYPE, NAME, FORMAT)                                    \
+    fdn_string foundation_runtime_format_##NAME(TYPE value) {                            \
+        char buffer[32];                                                                  \
+        const int length = snprintf(buffer, sizeof(buffer), "%" FORMAT, value);          \
+        return fdn_format_result(#NAME, buffer, sizeof(buffer), length);                  \
+    }
+
+FDN_DEFINE_SIGNED_FORMAT(int8_t, i8, PRId8)
+FDN_DEFINE_SIGNED_FORMAT(int16_t, i16, PRId16)
+FDN_DEFINE_SIGNED_FORMAT(int32_t, i32, PRId32)
+FDN_DEFINE_SIGNED_FORMAT(int64_t, i64, PRId64)
+FDN_DEFINE_SIGNED_FORMAT(intptr_t, isize, PRIdPTR)
+FDN_DEFINE_UNSIGNED_FORMAT(uint8_t, u8, PRIu8)
+FDN_DEFINE_UNSIGNED_FORMAT(uint16_t, u16, PRIu16)
+FDN_DEFINE_UNSIGNED_FORMAT(uint32_t, u32, PRIu32)
+FDN_DEFINE_UNSIGNED_FORMAT(uint64_t, u64, PRIu64)
+
+#undef FDN_DEFINE_SIGNED_FORMAT
+#undef FDN_DEFINE_UNSIGNED_FORMAT
+
+fdn_string foundation_runtime_format_usize(size_t value) {
+    char buffer[32];
+    const int length = snprintf(buffer, sizeof(buffer), "%" PRIuPTR, (uintptr_t)value);
+    return fdn_format_result("usize", buffer, sizeof(buffer), length);
+}
+
+fdn_string foundation_runtime_format_f32(float value) {
+    if (isnan(value)) {
+        return foundation_runtime_string_copy(&(fdn_string){"NaN", 3, 0});
+    }
+    if (isinf(value)) {
+        const char *text = signbit(value) ? "-Infinity" : "Infinity";
+        return foundation_runtime_string_copy(
+            &(fdn_string){text, signbit(value) ? (size_t)9 : (size_t)8, 0});
+    }
+    char buffer[32];
+    int length = snprintf(buffer, sizeof(buffer), "%.9g", (double)value);
+    if (length >= 0 && (size_t)length < sizeof(buffer)) {
+        length = fdn_normalize_decimal_point(buffer, sizeof(buffer), length);
+    }
+    return fdn_format_result("f32", buffer, sizeof(buffer), length);
+}
+
+fdn_string foundation_runtime_format_f64(double value) {
+    if (isnan(value)) {
+        return foundation_runtime_string_copy(&(fdn_string){"NaN", 3, 0});
+    }
+    if (isinf(value)) {
+        const char *text = signbit(value) ? "-Infinity" : "Infinity";
+        return foundation_runtime_string_copy(
+            &(fdn_string){text, signbit(value) ? (size_t)9 : (size_t)8, 0});
+    }
+    char buffer[32];
+    int length = snprintf(buffer, sizeof(buffer), "%.17g", value);
+    if (length >= 0 && (size_t)length < sizeof(buffer)) {
+        length = fdn_normalize_decimal_point(buffer, sizeof(buffer), length);
+    }
+    return fdn_format_result("f64", buffer, sizeof(buffer), length);
 }
 
 uint64_t foundation_runtime_time_unix_seconds(void) {
@@ -852,6 +996,19 @@ uint64_t foundation_runtime_time_unix_seconds(void) {
         fdn_panic_cstr("system time is unavailable");
     }
     return (uint64_t)value;
+}
+
+uint64_t foundation_runtime_time_monotonic_nanoseconds(void) {
+#if defined(_WIN32)
+    return (uint64_t)GetTickCount64() * UINT64_C(1000000);
+#else
+    struct timespec value;
+    if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) {
+        fdn_panic_cstr("monotonic clock failed");
+    }
+    return (uint64_t)value.tv_sec * UINT64_C(1000000000) +
+           (uint64_t)value.tv_nsec;
+#endif
 }
 
 int32_t foundation_runtime_time_format_utc(uint64_t unix_seconds, fdn_string *result) {
@@ -892,6 +1049,124 @@ int32_t foundation_runtime_time_format_utc(uint64_t unix_seconds, fdn_string *re
     }
     *result = foundation_runtime_string_copy(&(fdn_string){buffer, 20, 0});
     return 0;
+}
+
+static uint64_t fdn_uuid_unix_milliseconds(void) {
+#if defined(_WIN32)
+    FILETIME value;
+    ULARGE_INTEGER ticks;
+    GetSystemTimeAsFileTime(&value);
+    ticks.LowPart = value.dwLowDateTime;
+    ticks.HighPart = value.dwHighDateTime;
+    return (ticks.QuadPart - UINT64_C(116444736000000000)) / UINT64_C(10000);
+#else
+    struct timespec value;
+    if (clock_gettime(CLOCK_REALTIME, &value) != 0) {
+        fdn_panic_cstr("UUID clock failed");
+    }
+    return (uint64_t)value.tv_sec * UINT64_C(1000) +
+           (uint64_t)value.tv_nsec / UINT64_C(1000000);
+#endif
+}
+
+static void fdn_uuid_random(void *buffer, size_t length) {
+#if defined(_WIN32)
+    if (BCryptGenRandom(NULL, (PUCHAR)buffer, (ULONG)length,
+                        BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+        fdn_panic_cstr("UUID entropy failed");
+    }
+#elif defined(__APPLE__)
+    arc4random_buf(buffer, length);
+#elif defined(__linux__)
+    size_t offset = 0;
+    while (offset < length) {
+        const ssize_t read = getrandom((unsigned char *)buffer + offset, length - offset, 0);
+        if (read > 0) {
+            offset += (size_t)read;
+        } else if (read < 0 && errno == EINTR) {
+            continue;
+        } else {
+            fdn_panic_cstr("UUID entropy failed");
+        }
+    }
+#else
+    FILE *source = fopen("/dev/urandom", "rb");
+    if (source == NULL) {
+        fdn_panic_cstr("UUID entropy failed");
+    }
+    if (fread(buffer, 1, length, source) != length) {
+        (void)fclose(source);
+        fdn_panic_cstr("UUID entropy failed");
+    }
+    if (fclose(source) != 0) {
+        fdn_panic_cstr("UUID entropy failed");
+    }
+#endif
+}
+
+void foundation_runtime_uuid_v4(uint64_t *high, uint64_t *low) {
+    uint64_t words[2];
+    if (high == NULL || low == NULL) {
+        fdn_panic_cstr("UUID output is null");
+    }
+    fdn_uuid_random(words, sizeof(words));
+    *high = (words[0] & ~UINT64_C(0xf000)) | UINT64_C(0x4000);
+    *low = (words[1] & UINT64_C(0x3fffffffffffffff)) |
+           UINT64_C(0x8000000000000000);
+}
+
+void foundation_runtime_uuid_v7(uint64_t *high, uint64_t *low) {
+    static bool initialized;
+    static uint64_t last_high;
+    static uint64_t last_low;
+    uint64_t words[2];
+    const uint64_t milliseconds = fdn_uuid_unix_milliseconds();
+    bool exhausted = false;
+
+    if (high == NULL || low == NULL) {
+        fdn_panic_cstr("UUID output is null");
+    }
+    if (milliseconds > UINT64_C(0xffffffffffff)) {
+        fdn_panic_cstr("UUID v7 timestamp is out of range");
+    }
+    fdn_uuid_random(words, sizeof(words));
+#if defined(_WIN32)
+    AcquireSRWLockExclusive(&fdn_uuid_lock);
+#else
+    while (atomic_flag_test_and_set_explicit(&fdn_uuid_lock, memory_order_acquire)) {
+    }
+#endif
+    if (!initialized || milliseconds > (last_high >> 16U)) {
+        *high = (milliseconds << 16U) | UINT64_C(0x7000) |
+                (words[0] & UINT64_C(0x0fff));
+        *low = (words[1] & UINT64_C(0x3fffffffffffffff)) |
+               UINT64_C(0x8000000000000000);
+    } else {
+        *high = last_high;
+        *low = last_low;
+        if ((*low & UINT64_C(0x3fffffffffffffff)) !=
+            UINT64_C(0x3fffffffffffffff)) {
+            *low += 1;
+        } else if ((*high & UINT64_C(0x0fff)) != UINT64_C(0x0fff)) {
+            *high += 1;
+            *low = UINT64_C(0x8000000000000000);
+        } else {
+            exhausted = true;
+        }
+    }
+    if (!exhausted) {
+        initialized = true;
+        last_high = *high;
+        last_low = *low;
+    }
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&fdn_uuid_lock);
+#else
+    atomic_flag_clear_explicit(&fdn_uuid_lock, memory_order_release);
+#endif
+    if (exhausted) {
+        fdn_panic_cstr("UUID v7 sequence exhausted");
+    }
 }
 
 static int32_t fdn_fs_status(int error) {

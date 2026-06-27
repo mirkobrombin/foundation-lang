@@ -1,0 +1,12 @@
+package test.web.reject
+
+import foundation.web
+
+@web.Route(.GET, "/items")
+task GetItems() web.Response {
+    web.Text(200, "items")
+}
+
+fn main() i32 {
+    0
+}

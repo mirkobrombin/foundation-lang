@@ -1,6 +1,6 @@
 fn main() i32 {
-    let value = "owned"
-    let read = fn() void capture own value {
+    const value = "owned"
+    const read = fn() void capture $value {
         print(value)
     }
     print(value)

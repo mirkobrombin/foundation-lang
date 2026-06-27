@@ -1,0 +1,5 @@
+fn main() i32 {
+    const value = 42
+    if !value return 1
+    0
+}

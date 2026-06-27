@@ -1,0 +1,10 @@
+state_machine Note {
+    state Empty
+    state Written(text String)
+
+    on Write(text String) from Empty to Written(text)
+}
+
+fn main() i32 {
+    0
+}

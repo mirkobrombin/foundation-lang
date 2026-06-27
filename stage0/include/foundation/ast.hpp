@@ -27,9 +27,11 @@ struct TypeSyntax {
 enum class AttributeTarget {
     Function,
     Struct,
+    Service,
     Enum,
     Contract,
     Method,
+    Action,
     Field,
     Variant,
     Parameter,
@@ -51,12 +53,22 @@ struct AttributeApplication {
 enum class UnaryOperator {
     Negate,
     Not,
+    Dereference,
 };
 
 enum class OwnershipOperator {
     Own,
     View,
     Edit,
+    Transfer,
+    New,
+};
+
+enum class ParameterMode {
+    Bootstrap,
+    Read,
+    Edit,
+    Transfer,
 };
 
 enum class CaptureMode {
@@ -91,6 +103,10 @@ enum class BinaryOperator {
 struct IntegerExpression {
     std::uint64_t magnitude{};
     bool negative{};
+};
+
+struct FloatingExpression {
+    std::string text;
 };
 
 struct BooleanExpression {
@@ -130,6 +146,8 @@ struct CallExpression {
     std::string callee;
     std::vector<TypeSyntax> typeArguments;
     std::vector<AstExpressionId> arguments;
+    std::vector<std::optional<std::string>> argumentNames;
+    std::vector<std::optional<SourceSpan>> argumentNameSpans;
 };
 
 struct StructFieldInitializer {
@@ -149,6 +167,8 @@ struct MemberExpression {
     std::vector<TypeSyntax> typeArguments;
     bool invoked{};
     std::vector<AstExpressionId> arguments;
+    std::vector<std::optional<std::string>> argumentNames;
+    std::vector<std::optional<SourceSpan>> argumentNameSpans;
 };
 
 struct IndexExpression {
@@ -168,6 +188,7 @@ struct SpawnExpression {
 struct MatchArm {
     std::string variant;
     std::optional<std::string> binding;
+    std::optional<AstExpressionId> pattern;
     AstExpressionId expression{};
     SourceSpan span;
 };
@@ -177,15 +198,25 @@ struct MatchExpression {
     std::vector<MatchArm> arms;
 };
 
+struct ConditionalExpression {
+    AstExpressionId condition{};
+    AstBlockId thenBlock{};
+    AstExpressionId thenValue{};
+    AstBlockId elseBlock{};
+    AstExpressionId elseValue{};
+};
+
 struct FunctionExpression {
     AstFunctionId function{};
 };
 
 using ExpressionValue =
-    std::variant<IntegerExpression, BooleanExpression, StringExpression, ArrayExpression,
+    std::variant<IntegerExpression, FloatingExpression, BooleanExpression, StringExpression,
+                 ArrayExpression,
                  NameExpression, UnaryExpression, OwnershipExpression, BinaryExpression,
                  CallExpression, StructExpression, MemberExpression, IndexExpression,
-                 ReplaceExpression, SpawnExpression, MatchExpression, FunctionExpression>;
+                 ReplaceExpression, SpawnExpression, MatchExpression, ConditionalExpression,
+                 FunctionExpression>;
 
 struct Expression {
     ExpressionValue value;
@@ -222,6 +253,12 @@ struct ExpressionStatement {
     AstExpressionId expression{};
 };
 
+struct ResultElseStatement {
+    AstExpressionId expression{};
+    std::string errorBinding;
+    AstBlockId elseBlock{};
+};
+
 struct ReturnStatement {
     std::optional<AstExpressionId> value;
 };
@@ -239,6 +276,23 @@ struct IfStatement {
 struct WhileStatement {
     AstExpressionId condition{};
     AstBlockId body{};
+};
+
+struct ForStatement {
+    std::optional<std::string> indexBinding;
+    std::string valueBinding;
+    bool editable{};
+    AstExpressionId sequence{};
+    AstBlockId body{};
+};
+
+struct BreakStatement {};
+
+struct ContinueStatement {};
+
+struct UnsafeStatement {
+    AstBlockId body{};
+    bool safetyProof{};
 };
 
 struct SelectOperationArm {
@@ -263,8 +317,10 @@ struct SelectStatement {
 
 using StatementValue =
     std::variant<VariableStatement, StructDestructureStatement, AssignmentStatement,
-                 ExpressionStatement, ReturnStatement, DiscardStatement, IfStatement,
-                 WhileStatement, SelectStatement>;
+                 ExpressionStatement, ResultElseStatement, ReturnStatement, DiscardStatement,
+                 IfStatement,
+                 WhileStatement, ForStatement, BreakStatement, ContinueStatement,
+                 SelectStatement, UnsafeStatement>;
 
 struct Statement {
     StatementValue value;
@@ -281,12 +337,43 @@ struct Parameter {
     TypeSyntax type;
     SourceSpan span;
     std::vector<AttributeApplication> attributes;
+    ParameterMode mode{ParameterMode::Bootstrap};
 };
 
 struct Capture {
     CaptureMode mode{CaptureMode::Copy};
     std::string name;
     SourceSpan span;
+};
+
+struct StateTransitionFunction {
+    std::vector<std::size_t> sourceVariants;
+    std::size_t destinationVariant{};
+    std::optional<std::size_t> destinationParameter;
+};
+
+enum class WorkflowKind {
+    Pipeline,
+    Saga,
+};
+
+struct WorkflowStep {
+    std::string name;
+    std::string function;
+    SourceSpan span;
+    SourceSpan functionSpan;
+    std::size_t attempts{1};
+    std::optional<std::string> compensation;
+    std::optional<SourceSpan> compensationSpan;
+};
+
+struct WorkflowFunction {
+    WorkflowKind kind{WorkflowKind::Pipeline};
+    TypeSyntax successType;
+    TypeSyntax errorType;
+    std::vector<WorkflowStep> steps;
+    std::optional<std::string> failureStruct;
+    std::optional<std::string> failureEnum;
 };
 
 struct Function {
@@ -309,6 +396,16 @@ struct Function {
     bool task{};
     bool blocking{};
     bool callback{};
+    std::optional<std::string> testName{};
+    std::optional<SourceSpan> testNameSpan{};
+    bool action{};
+    std::optional<StateTransitionFunction> stateTransition;
+    std::optional<WorkflowFunction> workflow;
+};
+
+enum class StructKind {
+    Struct,
+    Service,
 };
 
 struct StructField {
@@ -317,6 +414,8 @@ struct StructField {
     bool exported{};
     SourceSpan span;
     std::vector<AttributeApplication> attributes;
+    std::optional<AstFunctionId> defaultFunction;
+    std::optional<SourceSpan> defaultSpan;
 };
 
 struct StructImplementation {
@@ -334,6 +433,8 @@ struct StructDeclaration {
     SourceSpan span;
     std::string packageName;
     std::vector<AttributeApplication> attributes;
+    StructKind kind{StructKind::Struct};
+    std::string sourcePath;
 };
 
 struct ContractMethod {
@@ -364,6 +465,8 @@ struct EnumVariant {
     bool exported{};
     SourceSpan span;
     std::vector<AttributeApplication> attributes;
+    std::optional<std::string> payloadName;
+    std::optional<SourceSpan> payloadNameSpan;
 };
 
 enum class BuiltinEnumKind {
@@ -371,6 +474,7 @@ enum class BuiltinEnumKind {
     Option,
     Result,
     ChannelError,
+    NumberError,
 };
 
 struct EnumDeclaration {
@@ -382,6 +486,7 @@ struct EnumDeclaration {
     SourceSpan span;
     std::string packageName;
     std::vector<AttributeApplication> attributes;
+    bool stateMachine{};
 };
 
 struct AttributeDeclaration {

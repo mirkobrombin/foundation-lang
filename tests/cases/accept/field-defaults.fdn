@@ -1,0 +1,39 @@
+struct Settings<T> {
+    value T
+    label String = defaultLabel()
+    attempts i32 = defaultAttempts()
+}
+
+fn explicitValue() i32 {
+    print("explicit value")
+    41
+}
+
+fn explicitLabel() String {
+    print("explicit label")
+    "custom"
+}
+
+fn defaultLabel() String {
+    print("default label")
+    "ready"
+}
+
+fn defaultAttempts() i32 {
+    print("default attempts")
+    1
+}
+
+fn main() i32 {
+    const defaulted Settings<i32> = Settings { value = explicitValue() }
+    print(defaulted.label)
+
+    const overridden Settings<i32> = Settings {
+        attempts = 2
+        label = explicitLabel()
+        value = 40
+    }
+    print(overridden.label)
+
+    defaulted.value + defaulted.attempts + overridden.attempts - 44
+}

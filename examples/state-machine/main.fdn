@@ -1,0 +1,87 @@
+state_machine Order {
+    state Draft
+    state Submitted
+    state Paid(receipt i32)
+    state Cancelled(reason String)
+
+    on Submit from Draft to Submitted
+    on Pay(receipt i32) from Submitted to Paid(receipt)
+    on Cancel($reason String) from Draft, Submitted to Cancelled(reason)
+}
+
+fn paymentRejected(&order Order) bool {
+    order.Pay(7) else transition {
+        print("invalid transition")
+        discard transition
+        return true
+    }
+    false
+}
+
+fn cancelledCode(reason String) i32 {
+    print(reason)
+    0
+}
+
+fn cancellationRejected(&order Order, $reason String) bool {
+    order.Cancel($reason) else transition {
+        discard transition
+        return true
+    }
+    false
+}
+
+fn main() i32 {
+    var paid Order = .Draft
+    if !paymentRejected(&paid) return 1
+
+    paid.Submit() else transition {
+        discard transition
+        return 2
+    }
+    paid.Pay(42) else transition {
+        discard transition
+        return 3
+    }
+    const paidCode = match paid {
+        Draft: -1
+        Submitted: -2
+        Paid(receipt): receipt
+        Cancelled(reason): cancelledCode(reason)
+    }
+    if paidCode != 42 return 5
+    print("paid")
+
+    var retained Order = .Draft
+    retained.Submit() else transition {
+        discard transition
+        return 6
+    }
+    retained.Pay(9) else transition {
+        discard transition
+        return 7
+    }
+    var invalidReason String = "not stored"
+    if !cancellationRejected(&retained, $invalidReason) return 8
+    const retainedCode = match retained {
+        Draft: -1
+        Submitted: -2
+        Paid(receipt): receipt
+        Cancelled(message): cancelledCode(message)
+    }
+    if retainedCode != 9 return 9
+
+    var cancelled Order = .Draft
+    var reason String = "cancelled"
+    cancelled.Cancel($reason) else transition {
+        discard transition
+        return 10
+    }
+    const cancelledResult = match cancelled {
+        Draft: -1
+        Submitted: -2
+        Paid(receipt): receipt
+        Cancelled(message): cancelledCode(message)
+    }
+    cancelledResult
+}

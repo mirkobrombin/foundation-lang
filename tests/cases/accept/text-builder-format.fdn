@@ -3,28 +3,39 @@ import std.text
 
 fn main() i32 {
     var builder = text.NewBuilder()
-    let prefix = "Foundation "
-    let smile u64 = 128578
-    let first = builder.Write(view prefix) else error {
+    const prefix = "Foundation "
+    const smile u64 = 128578
+    const first = builder.Write(prefix) else error {
         discard error
         return 1
     }
     if !first {
         return 2
     }
-    let second = builder.WriteCodePoint(smile) else error {
+    const second = builder.WriteCodePoint(smile) else error {
         discard error
         return 3
     }
     if !second {
         return 4
     }
-    let value = builder.Finish() else error {
+    const value = builder.Finish() else error {
         discard error
         return 5
     }
     print(value)
+    print(format.Bool(true))
+    print(format.I8(-128))
+    print(format.I16(-32768))
     print(format.I32(-2147483647 - 1))
+    print(format.I64(-9223372036854775807 - 1))
+    print(format.Isize(-1))
+    print(format.U8(255))
+    print(format.U16(65535))
+    print(format.U32(4294967295))
     print(format.U64(18446744073709551615))
+    print(format.Usize(42))
+    print(format.F32(1.5))
+    print(format.F64(-4.25))
     0
 }

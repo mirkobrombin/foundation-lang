@@ -1,0 +1,204 @@
+package example.web
+
+import foundation.web as foundationHost0
+import std.parse as foundationHost1
+import std.text as foundationHost2
+
+enum FoundationWebBindingSource {
+    Path
+    Query
+    Header
+    Form
+    Body
+}
+
+enum FoundationWebBindingKind {
+    Missing
+    Invalid
+}
+
+struct FoundationWebBindingError {
+    Kind FoundationWebBindingKind
+    Source FoundationWebBindingSource
+    Name String
+}
+
+enum FoundationWebError {
+    Binding(error FoundationWebBindingError)
+    CreateUserFailed(error ApiError)
+}
+
+struct FoundationApplication implements foundationHost0.Application<FoundationWebError> {
+    foundationRoutes own foundationHost0.RouteTable
+    foundationAppInfo AppInfo
+}
+
+fn BuildFoundationApplication() own FoundationApplication {
+    var foundationRoutes = foundationHost0.NewRouteTable()
+    foundationRequireWebRoute($foundationRoutes.Add(1, .GET, "/"))
+    foundationRequireWebRoute($foundationRoutes.Add(2, .GET, "/health"))
+    foundationRequireWebRoute($foundationRoutes.Add(3, .POST, "/login"))
+    foundationRequireWebRoute($foundationRoutes.Add(4, .GET, "/users/{id:alpha}"))
+    foundationRequireWebRoute($foundationRoutes.Add(5, .POST, "/users/{id:alpha}"))
+    const foundationAppInfo = AppInfo.New()
+    own FoundationApplication { foundationRoutes = foundationRoutes foundationAppInfo = foundationAppInfo }
+}
+
+fn foundationRequireWebRoute(
+    $value Result<void, foundationHost0.RegistrationError>
+) void {
+    const accepted = match value {
+        Ok: true
+        Err(error): foundationWebRouteInvariant($error)
+    }
+    discard accepted
+}
+
+fn foundationWebRouteInvariant(
+    $error foundationHost0.RegistrationError
+) never {
+    discard error
+    panic("generated web route invariant failed")
+}
+
+fn foundationRequireWebValue(
+    $value Option<String>,
+    source FoundationWebBindingSource,
+    name String
+) Result<String, FoundationWebBindingError> {
+    match value {
+        None: .Err(FoundationWebBindingError {
+            Kind = .Missing
+            Source = source
+            Name = foundationHost2.Copy(name)
+        })
+        Some(found): .Ok(found)
+    }
+}
+
+fn foundationParseWebBool(
+    $value String,
+    source FoundationWebBindingSource,
+    name String
+) Result<bool, FoundationWebBindingError> {
+    if value == "true" {
+        discard value
+        return .Ok(true)
+    }
+    if value == "false" {
+        discard value
+        return .Ok(false)
+    }
+    discard value
+    .Err(FoundationWebBindingError {
+        Kind = .Invalid
+        Source = source
+        Name = foundationHost2.Copy(name)
+    })
+}
+
+methods FoundationApplication {
+    fn foundationDispatchWebIndex(
+        &self,
+        $foundationRequest foundationHost0.Request
+    ) Result<foundationHost0.Response, foundationHost0.DispatchError<FoundationWebError>> {
+        var foundationActiveRequest = foundationRequest
+        discard foundationActiveRequest
+        .Ok(Index(self.foundationAppInfo))
+    }
+
+    fn foundationDispatchWebHealth(
+        &self,
+        $foundationRequest foundationHost0.Request
+    ) Result<foundationHost0.Response, foundationHost0.DispatchError<FoundationWebError>> {
+        var foundationActiveRequest = foundationRequest
+        discard foundationActiveRequest
+        .Ok(Health())
+    }
+
+    fn foundationDispatchWebLogin(
+        &self,
+        $foundationRequest foundationHost0.Request
+    ) Result<foundationHost0.Response, foundationHost0.DispatchError<FoundationWebError>> {
+        var foundationActiveRequest = foundationRequest
+        const foundationWebParameter0 = foundationRequireWebValue($foundationActiveRequest.Form("username"), .Form, "username") else error {
+            return .Err(.Handler(error = .Binding(error = error)))
+        }
+        discard foundationActiveRequest
+        .Ok(Login(foundationWebParameter0))
+    }
+
+    fn foundationDispatchWebGetUser(
+        &self,
+        $foundationRequest foundationHost0.Request
+    ) Result<foundationHost0.Response, foundationHost0.DispatchError<FoundationWebError>> {
+        var foundationActiveRequest = foundationRequest
+        const foundationWebParameter0 = foundationRequireWebValue($foundationActiveRequest.Param("id"), .Path, "id") else error {
+            return .Err(.Handler(error = .Binding(error = error)))
+        }
+        const foundationWebParameter1Text = foundationRequireWebValue($foundationActiveRequest.Query("limit"), .Query, "limit") else error {
+            return .Err(.Handler(error = .Binding(error = error)))
+        }
+        const foundationWebParameter1 = foundationHost1.I32(foundationWebParameter1Text) else error {
+            discard error
+            return .Err(.Handler(error = .Binding(error = FoundationWebBindingError { Kind = .Invalid Source = .Query Name = "limit" })))
+        }
+        discard foundationWebParameter1Text
+        const foundationWebParameter2 = foundationActiveRequest.Query("note")
+        const foundationWebParameter3 = foundationRequireWebValue($foundationActiveRequest.Header("X-Trace"), .Header, "X-Trace") else error {
+            return .Err(.Handler(error = .Binding(error = error)))
+        }
+        discard foundationActiveRequest
+        .Ok(GetUser(foundationWebParameter0, foundationWebParameter1, $foundationWebParameter2, foundationWebParameter3, self.foundationAppInfo))
+    }
+
+    fn foundationDispatchWebCreateUser(
+        &self,
+        $foundationRequest foundationHost0.Request
+    ) Result<foundationHost0.Response, foundationHost0.DispatchError<FoundationWebError>> {
+        var foundationActiveRequest = foundationRequest
+        const foundationWebParameter0 = foundationRequireWebValue($foundationActiveRequest.Param("id"), .Path, "id") else error {
+            return .Err(.Handler(error = .Binding(error = error)))
+        }
+        const foundationWebParameter1Text = foundationRequireWebValue($foundationActiveRequest.Header("X-Enabled"), .Header, "X-Enabled") else error {
+            return .Err(.Handler(error = .Binding(error = error)))
+        }
+        const foundationWebParameter1 = foundationParseWebBool($foundationWebParameter1Text, .Header, "X-Enabled") else error {
+            return .Err(.Handler(error = .Binding(error = error)))
+        }
+        const foundationWebParameter2 = foundationHost2.Copy(foundationActiveRequest.Body)
+        discard foundationActiveRequest
+        match CreateUser(foundationWebParameter0, foundationWebParameter1, foundationWebParameter2) {
+            Ok(response): .Ok(response)
+            Err(error): .Err(.Handler(error = .CreateUserFailed(error = error)))
+        }
+    }
+
+    fn Dispatch(
+        &self,
+        $foundationRequest foundationHost0.Request
+    ) Result<foundationHost0.Response, foundationHost0.DispatchError<FoundationWebError>> {
+        var foundationActiveRequest = foundationRequest
+        const foundationMatched = self.foundationRoutes.Match(
+            foundationActiveRequest.Method,
+            foundationActiveRequest.Path
+        ) else error {
+            return match error {
+                NotFound: .Err(.NotFound)
+                MethodNotAllowed: .Err(.MethodNotAllowed)
+            }
+        }
+        const foundationHost0.RouteMatch { Id Params } = foundationMatched
+        const foundationPreviousParams = replace foundationActiveRequest.Params with Params
+        discard foundationPreviousParams
+        if Id == 1 return self.foundationDispatchWebIndex($foundationActiveRequest)
+        if Id == 2 return self.foundationDispatchWebHealth($foundationActiveRequest)
+        if Id == 3 return self.foundationDispatchWebLogin($foundationActiveRequest)
+        if Id == 4 return self.foundationDispatchWebGetUser($foundationActiveRequest)
+        if Id == 5 return self.foundationDispatchWebCreateUser($foundationActiveRequest)
+        discard foundationActiveRequest
+        .Err(.NotFound)
+    }
+}
+
+// foundation:generated application/v1

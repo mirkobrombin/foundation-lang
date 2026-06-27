@@ -1,0 +1,15 @@
+struct Counter {
+    current i32
+
+    fn Next(&self) Option<i32> {
+        .None
+    }
+}
+
+fn main() i32 {
+    var counter = Counter { current = 0 }
+    for &value in counter {
+        discard value
+    }
+    0
+}
