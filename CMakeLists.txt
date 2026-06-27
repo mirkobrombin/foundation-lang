@@ -263,6 +263,10 @@ if(BUILD_TESTING)
         runtime/tests/plugin_sandbox_test.c
     )
     target_link_libraries(foundation_runtime_plugin_sandbox_test PRIVATE foundation_runtime)
+    add_executable(foundation_wasm_plugin_abi_test
+        runtime/tests/wasm_plugin_abi_test.c
+    )
+    target_include_directories(foundation_wasm_plugin_abi_test PRIVATE runtime/include)
     add_executable(foundation_plugin_sandbox_helper
         tests/fixtures/plugin_sandbox_helper.c
     )
@@ -340,6 +344,7 @@ if(BUILD_TESTING)
     )
     set(foundation_plugin_test_targets
         foundation_runtime_plugin_test
+        foundation_wasm_plugin_abi_test
         foundation_plugin_fixture
         foundation_plugin_abi_mismatch
         foundation_plugin_start_fail
@@ -614,10 +619,50 @@ if(BUILD_TESTING)
             $<TARGET_FILE:foundation_plugin_create_failure>
     )
     add_test(NAME runtime.plugin-sandbox COMMAND foundation_runtime_plugin_sandbox_test)
+    add_test(NAME runtime.wasm-plugin-abi COMMAND foundation_wasm_plugin_abi_test)
+    find_program(FOUNDATION_WASM_CLANG NAMES clang)
+    if(FOUNDATION_WASM_CLANG)
+        add_test(
+            NAME abi.wasm-plugin-guest
+            COMMAND ${CMAKE_COMMAND}
+                -DCLANG=${FOUNDATION_WASM_CLANG}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/wasm_plugin_fixture.c
+                -DINCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/wasm-plugin-fixture.wasm
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-wasm-guest.cmake
+        )
+    endif()
     add_test(
         NAME stage0.check.plugins
         COMMAND foundationc check
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugins.fdn
+    )
+    add_test(
+        NAME stage0.check.plugin-wasm-policy
+        COMMAND foundationc check
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-policy.fdn
+    )
+    add_test(
+        NAME stage0.run.plugin-wasm-policy
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-policy.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-policy.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.plugin-wasm-policy-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-policy.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/plugin-wasm-policy.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugin-wasm-policy-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-policy.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
     add_test(
         NAME stage0.run.plugins

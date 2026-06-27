@@ -1,0 +1,172 @@
+import foundation.plugin
+import std.format
+
+fn main() i32 {
+    const invalidName = plugin.NewWasmMetadata("Invalid", "1.0.0", "")
+    const invalidNameFailed = match invalidName {
+        Ok(metadata): unexpectedMetadata($metadata)
+        Err(error): metadataErrorCode(error.Kind) == 1
+    }
+    if !invalidNameFailed return 1
+
+    var metadata = metadataValue(plugin.NewWasmMetadata("fixture", "1.0.0", "sample"))
+    const methodAdded = metadata.AddMethod("echo") else error {
+        discard error
+        return 3
+    }
+    discard methodAdded
+    const duplicateMethod = metadata.AddMethod("echo")
+    const duplicateMethodFailed = match duplicateMethod {
+        Ok(added): unexpectedBool(added)
+        Err(error): metadataErrorCode(error.Kind) == 5
+    }
+    if !duplicateMethodFailed return 4
+
+    const capabilityAdded = metadata.RequireCapability("test.echo") else error {
+        discard error
+        return 5
+    }
+    discard capabilityAdded
+    const duplicateCapability = metadata.RequireCapability("test.echo")
+    const duplicateCapabilityFailed = match duplicateCapability {
+        Ok(added): unexpectedBool(added)
+        Err(error): metadataErrorCode(error.Kind) == 7
+    }
+    if !duplicateCapabilityFailed return 6
+    const firstProperty = metadata.SetProperty("language", "c")
+    const replacedProperty = metadata.SetProperty("language", "foundation")
+    if !firstProperty || replacedProperty return 7
+
+    const invalidLimit = plugin.NewWasmCapabilityPolicyLimited(0)
+    const invalidLimitFailed = match invalidLimit {
+        Ok(policy): unexpectedPolicy($policy)
+        Err(error): metadataErrorCode(error.Kind) == 9
+    }
+    if !invalidLimitFailed return 8
+
+    var policy = policyValue(plugin.NewWasmCapabilityPolicyLimited(4))
+    const denied = metadata.Validate(&policy)
+    const deniedAsExpected = match denied {
+        Ok(valid): unexpectedBool(valid)
+        Err(error): metadataErrorCode(error.Kind) == 8
+    }
+    if !deniedAsExpected return 9
+
+    const granted = policy.Grant("test.echo") else error {
+        discard error
+        return 10
+    }
+    discard granted
+    const duplicateGrant = policy.Grant("test.echo")
+    const duplicateGrantFailed = match duplicateGrant {
+        Ok(added): unexpectedBool(added)
+        Err(error): metadataErrorCode(error.Kind) == 7
+    }
+    if !duplicateGrantFailed return 11
+    const invalidGrant = policy.Grant("Invalid")
+    const invalidGrantFailed = match invalidGrant {
+        Ok(added): unexpectedBool(added)
+        Err(error): metadataErrorCode(error.Kind) == 6
+    }
+    if !invalidGrantFailed return 12
+    const valid = metadata.Validate(&policy) else error {
+        discard error
+        return 13
+    }
+    discard valid
+
+    var methodNames = metadata.Methods()
+    var capabilities = metadata.Capabilities()
+    var properties = metadata.Properties()
+    const property = metadata.Property("language")
+
+    print(metadata.Name())
+    print(metadata.Version())
+    print(stringValue($property))
+    print(format.I32(methodNames.Len()))
+    print(format.I32(capabilities.Len()))
+    print(format.I32(properties.Len()))
+    print(hostStatus(policy.Authorize(&metadata, "test.echo", "read", 4)))
+    print(hostStatus(policy.Authorize(&metadata, "test.echo", "Invalid", 4)))
+    print(hostStatus(policy.Authorize(&metadata, "other", "read", 4)))
+    print(hostStatus(policy.Authorize(&metadata, "test.echo", "read", 5)))
+    0
+}
+
+fn unexpectedMetadata($metadata own plugin.WasmMetadata) bool {
+    discard metadata
+    false
+}
+
+fn unexpectedPolicy($policy own plugin.WasmCapabilityPolicy) bool {
+    discard policy
+    false
+}
+
+fn metadataValue(
+    $value Result<own plugin.WasmMetadata, plugin.WasmMetadataError>
+) own plugin.WasmMetadata {
+    match value {
+        Ok(metadata): metadata
+        Err(error): missingMetadata(error)
+    }
+}
+
+fn missingMetadata(error plugin.WasmMetadataError) own plugin.WasmMetadata {
+    discard error
+    panic("missing WebAssembly metadata")
+}
+
+fn policyValue(
+    $value Result<own plugin.WasmCapabilityPolicy, plugin.WasmMetadataError>
+) own plugin.WasmCapabilityPolicy {
+    match value {
+        Ok(policy): policy
+        Err(error): missingPolicy(error)
+    }
+}
+
+fn missingPolicy(error plugin.WasmMetadataError) own plugin.WasmCapabilityPolicy {
+    discard error
+    panic("missing WebAssembly capability policy")
+}
+
+fn unexpectedBool(value bool) bool {
+    discard value
+    false
+}
+
+fn metadataErrorCode(kind plugin.WasmMetadataErrorKind) i32 {
+    match kind {
+        InvalidPluginName: 1
+        InvalidVersion: 2
+        DescriptionTooLarge: 3
+        InvalidMethod: 4
+        DuplicateMethod: 5
+        InvalidCapability: 6
+        DuplicateCapability: 7
+        CapabilityDenied: 8
+        InvalidPayloadLimit: 9
+    }
+}
+
+fn hostStatus(status plugin.WasmHostStatus) String {
+    match status {
+        Ok: "ok"
+        Denied: "denied"
+        InvalidRequest: "invalid_request"
+        HandlerError: "handler_error"
+        PayloadTooLarge: "payload_too_large"
+    }
+}
+
+fn stringValue($value Option<String>) String {
+    match value {
+        None: missingString()
+        Some(actual): actual
+    }
+}
+
+fn missingString() String {
+    panic("missing WebAssembly metadata value")
+}

@@ -1,0 +1,434 @@
+package foundation.plugin
+
+import std.collections
+import std.text
+
+// Matches the status returned to a WebAssembly guest after a host capability call.
+enum WasmHostStatus {
+    Ok
+    Denied
+    InvalidRequest
+    HandlerError
+    PayloadTooLarge
+}
+
+enum WasmMetadataErrorKind {
+    InvalidPluginName
+    InvalidVersion
+    DescriptionTooLarge
+    InvalidMethod
+    DuplicateMethod
+    InvalidCapability
+    DuplicateCapability
+    CapabilityDenied
+    InvalidPayloadLimit
+}
+
+struct WasmMetadataError {
+    Kind WasmMetadataErrorKind
+    Value String
+}
+
+struct WasmProperty {
+    Key String
+    Value String
+}
+
+struct wasmStringSearch {
+    Values own collections.List<String>
+    Found bool
+}
+
+struct wasmStringCopy {
+    Values own collections.List<String>
+    Copy own collections.List<String>
+}
+
+struct wasmPropertyCopy {
+    Values own collections.List<WasmProperty>
+    Copy own collections.List<WasmProperty>
+}
+
+// Owns validated guest metadata independently from a WebAssembly engine.
+struct WasmMetadata {
+    name String
+    version String
+    description String
+    methodNames own collections.List<String>
+    capabilities own collections.List<String>
+    properties own collections.List<WasmProperty>
+
+    fn Name(self) String {
+        text.Copy(self.name)
+    }
+
+    fn Version(self) String {
+        text.Copy(self.version)
+    }
+
+    fn Description(self) String {
+        text.Copy(self.description)
+    }
+
+    fn AddMethod(&self, name String) Result<bool, WasmMetadataError> {
+        if !validWasmName(name) return .Err(wasmMetadataError(.InvalidMethod, name))
+        if self.HasMethod(name) {
+            return .Err(wasmMetadataError(.DuplicateMethod, name))
+        }
+        self.methodNames.PushFront(text.Copy(name))
+        .Ok(true)
+    }
+
+    fn RequireCapability(&self, name String) Result<bool, WasmMetadataError> {
+        if !validWasmName(name) return .Err(wasmMetadataError(.InvalidCapability, name))
+        if self.RequiresCapability(name) {
+            return .Err(wasmMetadataError(.DuplicateCapability, name))
+        }
+        self.capabilities.PushFront(text.Copy(name))
+        .Ok(true)
+    }
+
+    fn SetProperty(&self, key String, value String) bool {
+        var source = replace self.properties with newWasmProperties()
+        var restored = newWasmProperties()
+        var inserted = true
+        while !source.IsEmpty() {
+            const current = wasmPropertyValue(source.PopFront())
+            const WasmProperty { Key Value } = current
+            if Key == key {
+                restored.PushFront(WasmProperty {
+                    Key = Key
+                    Value = text.Copy(value)
+                })
+                discard Value
+                inserted = false
+            } else {
+                restored.PushFront(WasmProperty { Key = Key Value = Value })
+            }
+        }
+        if inserted {
+            restored.PushFront(WasmProperty {
+                Key = text.Copy(key)
+                Value = text.Copy(value)
+            })
+        }
+        self.properties = reverseWasmProperties($restored)
+        inserted
+    }
+
+    fn HasMethod(&self, expected String) bool {
+        const searched = searchWasmStrings(
+            replace self.methodNames with newWasmStrings(),
+            expected
+        )
+        const wasmStringSearch { Values Found } = searched
+        self.methodNames = Values
+        Found
+    }
+
+    fn RequiresCapability(&self, expected String) bool {
+        const searched = searchWasmStrings(
+            replace self.capabilities with newWasmStrings(),
+            expected
+        )
+        const wasmStringSearch { Values Found } = searched
+        self.capabilities = Values
+        Found
+    }
+
+    fn Property(&self, expected String) Option<String> {
+        var source = replace self.properties with newWasmProperties()
+        var restored = newWasmProperties()
+        var result Option<String> = .None
+        while !source.IsEmpty() {
+            const current = wasmPropertyValue(source.PopFront())
+            if current.Key == expected {
+                result = .Some(text.Copy(current.Value))
+            }
+            restored.PushFront($current)
+        }
+        self.properties = reverseWasmProperties($restored)
+        result
+    }
+
+    fn Methods(&self) own collections.List<String> {
+        const copied = copyWasmStrings(replace self.methodNames with newWasmStrings())
+        const wasmStringCopy { Values Copy } = copied
+        self.methodNames = Values
+        Copy
+    }
+
+    fn Capabilities(&self) own collections.List<String> {
+        const copied = copyWasmStrings(replace self.capabilities with newWasmStrings())
+        const wasmStringCopy { Values Copy } = copied
+        self.capabilities = Values
+        Copy
+    }
+
+    fn Properties(&self) own collections.List<WasmProperty> {
+        const copied = copyWasmProperties(replace self.properties with newWasmProperties())
+        const wasmPropertyCopy { Values Copy } = copied
+        self.properties = Values
+        Copy
+    }
+
+    fn Validate(&self, &policy WasmCapabilityPolicy) Result<bool, WasmMetadataError> {
+        var source = replace self.capabilities with newWasmStrings()
+        var restored = newWasmStrings()
+        var denied = ""
+        while !source.IsEmpty() {
+            const capability = wasmStringValue(source.PopFront())
+            if denied == "" && !policy.Allows(capability) {
+                denied = text.Copy(capability)
+            }
+            restored.PushFront($capability)
+        }
+        self.capabilities = reverseWasmStrings($restored)
+        if denied == "" return .Ok(true)
+        .Err(wasmMetadataError(.CapabilityDenied, denied))
+    }
+}
+
+// Stores the host capabilities granted to one guest configuration.
+struct WasmCapabilityPolicy {
+    grants own collections.List<String>
+    payloadLimit u64
+
+    fn Grant(&self, name String) Result<bool, WasmMetadataError> {
+        if !validWasmName(name) return .Err(wasmMetadataError(.InvalidCapability, name))
+        if self.Allows(name) {
+            return .Err(wasmMetadataError(.DuplicateCapability, name))
+        }
+        self.grants.PushFront(text.Copy(name))
+        .Ok(true)
+    }
+
+    fn Allows(&self, expected String) bool {
+        const searched = searchWasmStrings(
+            replace self.grants with newWasmStrings(),
+            expected
+        )
+        const wasmStringSearch { Values Found } = searched
+        self.grants = Values
+        Found
+    }
+
+    fn PayloadLimit(self) u64 {
+        self.payloadLimit
+    }
+
+    // Applies the same size, name, declaration, and grant order as the host ABI.
+    fn Authorize(
+        &self,
+        &metadata WasmMetadata,
+        capability String,
+        operation String,
+        inputLength u64
+    ) WasmHostStatus {
+        if text.ByteLen(capability) > 128 ||
+            text.ByteLen(operation) > 128 ||
+            inputLength > self.payloadLimit {
+            return .PayloadTooLarge
+        }
+        if !validWasmName(capability) || !validWasmName(operation) {
+            return .InvalidRequest
+        }
+        if !metadata.RequiresCapability(capability) return .Denied
+        if !self.Allows(capability) return .Denied
+        .Ok
+    }
+}
+
+fn NewWasmMetadata(
+    name String,
+    version String,
+    description String
+) Result<own WasmMetadata, WasmMetadataError> {
+    if !validWasmName(name) {
+        return .Err(wasmMetadataError(.InvalidPluginName, name))
+    }
+    if text.ByteLen(version) > 128 || blankWasmVersion(version) {
+        return .Err(wasmMetadataError(.InvalidVersion, version))
+    }
+    if text.ByteLen(description) > 4096 {
+        return .Err(wasmMetadataError(.DescriptionTooLarge, description))
+    }
+    .Ok(own WasmMetadata {
+        name = text.Copy(name)
+        version = text.Copy(version)
+        description = text.Copy(description)
+        methodNames = newWasmStrings()
+        capabilities = newWasmStrings()
+        properties = newWasmProperties()
+    })
+}
+
+fn NewWasmCapabilityPolicy() own WasmCapabilityPolicy {
+    own WasmCapabilityPolicy {
+        grants = newWasmStrings()
+        payloadLimit = 8388608
+    }
+}
+
+fn NewWasmCapabilityPolicyLimited(
+    payloadLimit u64
+) Result<own WasmCapabilityPolicy, WasmMetadataError> {
+    if payloadLimit == 0 || payloadLimit > 2147483647 {
+        return .Err(wasmMetadataError(.InvalidPayloadLimit, "payload limit"))
+    }
+    .Ok(own WasmCapabilityPolicy {
+        grants = newWasmStrings()
+        payloadLimit = payloadLimit
+    })
+}
+
+fn validWasmName(value String) bool {
+    const length = text.ByteLen(value)
+    if length == 0 || length > 128 return false
+    var offset u64 = 0
+    while offset < length {
+        const byte = text.ByteAt(value, offset) else error {
+            discard error
+            return false
+        }
+        if offset == 0 {
+            if byte < 97 || byte > 122 return false
+        } else {
+            if !wasmNameByte(byte) return false
+        }
+        offset = offset + 1
+    }
+    true
+}
+
+fn wasmNameByte(value u64) bool {
+    if value >= 97 && value <= 122 return true
+    if value >= 48 && value <= 57 return true
+    value == 46 || value == 95 || value == 45
+}
+
+fn blankWasmVersion(value String) bool {
+    const length = text.ByteLen(value)
+    if length == 0 return true
+    var offset u64 = 0
+    while offset < length {
+        const byte = text.ByteAt(value, offset) else error {
+            discard error
+            return true
+        }
+        if byte > 32 && byte != 127 return false
+        offset = offset + 1
+    }
+    true
+}
+
+fn wasmMetadataError(kind WasmMetadataErrorKind, value String) WasmMetadataError {
+    WasmMetadataError { Kind = kind Value = text.Copy(value) }
+}
+
+fn searchWasmStrings(
+    $values own collections.List<String>,
+    expected String
+) wasmStringSearch {
+    var source = values
+    var restored = newWasmStrings()
+    var found = false
+    while !source.IsEmpty() {
+        const current = wasmStringValue(source.PopFront())
+        if current == expected {
+            found = true
+        }
+        restored.PushFront($current)
+    }
+    wasmStringSearch {
+        Values = reverseWasmStrings($restored)
+        Found = found
+    }
+}
+
+fn copyWasmStrings($values own collections.List<String>) wasmStringCopy {
+    var source = values
+    var restored = newWasmStrings()
+    var result = newWasmStrings()
+    while !source.IsEmpty() {
+        const current = wasmStringValue(source.PopFront())
+        result.PushFront(text.Copy(current))
+        restored.PushFront($current)
+    }
+    wasmStringCopy {
+        Values = reverseWasmStrings($restored)
+        Copy = result
+    }
+}
+
+fn copyWasmProperties(
+    $values own collections.List<WasmProperty>
+) wasmPropertyCopy {
+    var source = values
+    var restored = newWasmProperties()
+    var result = newWasmProperties()
+    while !source.IsEmpty() {
+        const current = wasmPropertyValue(source.PopFront())
+        result.PushFront(WasmProperty {
+            Key = text.Copy(current.Key)
+            Value = text.Copy(current.Value)
+        })
+        restored.PushFront($current)
+    }
+    wasmPropertyCopy {
+        Values = reverseWasmProperties($restored)
+        Copy = result
+    }
+}
+
+fn reverseWasmStrings(
+    $values own collections.List<String>
+) own collections.List<String> {
+    var source = values
+    var result = newWasmStrings()
+    while !source.IsEmpty() {
+        result.PushFront(wasmStringValue(source.PopFront()))
+    }
+    result
+}
+
+fn reverseWasmProperties(
+    $values own collections.List<WasmProperty>
+) own collections.List<WasmProperty> {
+    var source = values
+    var result = newWasmProperties()
+    while !source.IsEmpty() {
+        result.PushFront(wasmPropertyValue(source.PopFront()))
+    }
+    result
+}
+
+fn newWasmStrings() own collections.List<String> {
+    collections.NewList<String>()
+}
+
+fn newWasmProperties() own collections.List<WasmProperty> {
+    collections.NewList<WasmProperty>()
+}
+
+fn wasmStringValue($value Option<String>) String {
+    match value {
+        None: missingWasmString()
+        Some(item): item
+    }
+}
+
+fn wasmPropertyValue($value Option<WasmProperty>) WasmProperty {
+    match value {
+        None: missingWasmProperty()
+        Some(item): item
+    }
+}
+
+fn missingWasmString() String {
+    panic("WebAssembly metadata string invariant failed")
+}
+
+fn missingWasmProperty() WasmProperty {
+    panic("WebAssembly metadata property invariant failed")
+}
