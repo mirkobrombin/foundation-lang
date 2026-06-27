@@ -14,6 +14,8 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <stdatomic.h>
 #endif
 
 enum {
@@ -58,13 +60,42 @@ struct fdn_channel {
     fdn_task *receive_tail;
 };
 
-static size_t fdn_channel_count;
+#if defined(_WIN32)
+static volatile LONG64 fdn_channel_count;
+#else
+static atomic_size_t fdn_channel_count;
+#endif
 static FDN_CHANNEL_THREAD_LOCAL fdn_channel_select_wait *fdn_select_head;
 static FDN_CHANNEL_THREAD_LOCAL fdn_channel_select_wait *fdn_select_tail;
 
 static bool fdn_channel_select_wake_expired(void);
 static bool fdn_channel_select_next_deadline(uint64_t *deadline_nanoseconds);
 static void fdn_channel_select_sleep_until(uint64_t deadline_nanoseconds);
+
+static void fdn_channel_count_add(void) {
+#if defined(_WIN32)
+    if ((uint64_t)InterlockedIncrement64(&fdn_channel_count) > (uint64_t)SIZE_MAX) {
+        fdn_panic_cstr("channel count overflow");
+    }
+#else
+    if (atomic_fetch_add_explicit(&fdn_channel_count, 1, memory_order_relaxed) ==
+        SIZE_MAX) {
+        fdn_panic_cstr("channel count overflow");
+    }
+#endif
+}
+
+static void fdn_channel_count_remove(void) {
+#if defined(_WIN32)
+    if (InterlockedDecrement64(&fdn_channel_count) < 0) {
+        fdn_panic_cstr("channel count underflow");
+    }
+#else
+    if (atomic_fetch_sub_explicit(&fdn_channel_count, 1, memory_order_relaxed) == 0) {
+        fdn_panic_cstr("channel count underflow");
+    }
+#endif
+}
 
 static unsigned int fdn_channel_select_encode(size_t selected,
                                               fdn_channel_status status) {
@@ -256,7 +287,7 @@ static void fdn_channel_release_if_unused(fdn_channel *channel) {
         channel->receive_head != NULL) {
         fdn_panic_cstr("unused channel still owns state");
     }
-    --fdn_channel_count;
+    fdn_channel_count_remove();
     fdn_dealloc(channel);
 }
 
@@ -311,7 +342,7 @@ void fdn_channel_open(size_t value_size, size_t capacity,
     channel->send_tail = NULL;
     channel->receive_head = NULL;
     channel->receive_tail = NULL;
-    ++fdn_channel_count;
+    fdn_channel_count_add();
     *sender = channel;
     *receiver = channel;
 }
@@ -642,4 +673,10 @@ static void fdn_channel_select_sleep_until(uint64_t deadline_nanoseconds) {
     }
 }
 
-size_t fdn_channel_live_count(void) { return fdn_channel_count; }
+size_t fdn_channel_live_count(void) {
+#if defined(_WIN32)
+    return (size_t)InterlockedCompareExchange64(&fdn_channel_count, 0, 0);
+#else
+    return atomic_load_explicit(&fdn_channel_count, memory_order_relaxed);
+#endif
+}

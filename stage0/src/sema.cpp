@@ -127,7 +127,8 @@ bool isCParameterType(const Type &type, std::string_view symbol,
             (type.arguments.front() == i32Type || type.arguments.front() == u64Type ||
              type.arguments.front() == boolType || type.arguments.front() == stringType)) ||
            (packageName == "foundation.worker" &&
-            symbol == "foundation_runtime_supervisor_adopt" &&
+            (symbol == "foundation_runtime_supervisor_adopt" ||
+             symbol == "foundation_runtime_pool_submit") &&
             type.kind == TypeKind::Task && type.arguments.size() == 1 &&
             type.arguments.front() == voidType);
 }
@@ -462,6 +463,104 @@ class Analyzer {
             }
         }
         return false;
+    }
+
+    bool parallelTransferSafe(const Type &type) const {
+        std::unordered_set<std::string> active;
+        return parallelTransferSafe(type, active);
+    }
+
+    bool parallelTransferSafe(const Type &type,
+                              std::unordered_set<std::string> &active) const {
+        if (type == voidType || type == i32Type || type == u64Type || type == boolType ||
+            type == stringType) {
+            return true;
+        }
+        if (type.kind == TypeKind::Own && type.arguments.size() == 1) {
+            return parallelTransferSafe(type.arguments.front(), active);
+        }
+        if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
+            return parallelTransferSafe(type.arguments.front(), active);
+        }
+        if (type.kind != TypeKind::Struct && type.kind != TypeKind::Enum) {
+            return false;
+        }
+
+        const auto key = semanticTypeKey(type);
+        if (!active.insert(key).second) {
+            return true;
+        }
+        bool safe = true;
+        if (type.kind == TypeKind::Struct) {
+            if (type.declaration >= model_.structs.size() ||
+                (type.declaration < methods_.size() &&
+                 methods_[type.declaration].contains("drop"))) {
+                safe = false;
+            } else {
+                for (const auto &field : model_.structs[type.declaration].fieldTypes) {
+                    if (!parallelTransferSafe(substitute(field, type.arguments), active)) {
+                        safe = false;
+                        break;
+                    }
+                }
+            }
+        } else if (type.declaration >= model_.enums.size()) {
+            safe = false;
+        } else {
+            for (const auto &payload : model_.enums[type.declaration].payloadTypes) {
+                if (payload.has_value() &&
+                    !parallelTransferSafe(substitute(*payload, type.arguments), active)) {
+                    safe = false;
+                    break;
+                }
+            }
+        }
+        active.erase(key);
+        return safe;
+    }
+
+    bool isParallelPoolStart(const Type &base, const Function &function,
+                             std::string_view member) const {
+        return member == "Start" && base.kind == TypeKind::Struct &&
+               base.declaration < program_.structs.size() &&
+               program_.structs[base.declaration].name == "foundation.worker.Pool" &&
+               function.packageName == "foundation.worker" &&
+               function.ownerType == "foundation.worker.Pool";
+    }
+
+    void verifyParallelPoolTask(const MemberExpression &member, SourceSpan span) {
+        if (member.arguments.size() != 1) {
+            return;
+        }
+        const auto argument = member.arguments.front();
+        const auto *spawn =
+            std::get_if<SpawnExpression>(&program_.expressions[argument].value);
+        if (spawn == nullptr) {
+            diagnostics_.error(
+                "FDN2185",
+                "parallel Pool.Start requires a direct spawn expression",
+                program_.expressions[argument].span);
+            return;
+        }
+        const auto *call =
+            std::get_if<CallExpression>(&program_.expressions[spawn->call].value);
+        const auto &target = model_.callTargets[spawn->call];
+        if (call == nullptr || !target.has_value() ||
+            target->kind != CallTargetKind::Function) {
+            return;
+        }
+        for (const auto callArgument : call->arguments) {
+            const auto &type = model_.expressionTypes[callArgument];
+            if (!parallelTransferSafe(type)) {
+                diagnostics_.error(
+                    "FDN2185",
+                    "parallel task argument is not safe to transfer between threads: " +
+                        displayType(type),
+                    program_.expressions[callArgument].span.length == 0
+                        ? span
+                        : program_.expressions[callArgument].span);
+            }
+        }
     }
 
     bool containsNestedBorrow(const Type &type, bool allowRoot) const {
@@ -3692,6 +3791,9 @@ class Analyzer {
             } else {
                 requireSame(expected, arguments[index], span, "method argument");
             }
+        }
+        if (isParallelPoolStart(base, declaration, member.member)) {
+            verifyParallelPoolTask(member, span);
         }
 
         CallTarget target;

@@ -20,6 +20,7 @@ add_library(foundation_runtime STATIC
     runtime/src/cancellation.c
     runtime/src/channel.c
     runtime/src/blocking.c
+    runtime/src/pool.c
     runtime/src/reactor.c
     runtime/src/net.c
 )
@@ -67,6 +68,7 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_RUNTIME_CANCELLATION_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c"
     FOUNDATION_RUNTIME_CHANNEL_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c"
     FOUNDATION_RUNTIME_BLOCKING_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c"
+    FOUNDATION_RUNTIME_POOL_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c"
     FOUNDATION_RUNTIME_REACTOR_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c"
     FOUNDATION_RUNTIME_NET_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c"
     FOUNDATION_STANDARD_LIBRARY="${CMAKE_CURRENT_SOURCE_DIR}/std"
@@ -192,6 +194,8 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_channel_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_blocking_test runtime/tests/blocking_test.c)
     target_link_libraries(foundation_runtime_blocking_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_pool_test runtime/tests/pool_test.c)
+    target_link_libraries(foundation_runtime_pool_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_reactor_test runtime/tests/reactor_test.c)
     target_link_libraries(foundation_runtime_reactor_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_net_test runtime/tests/net_test.c)
@@ -210,6 +214,7 @@ if(BUILD_TESTING)
                 foundation_runtime_cancellation_test
                 foundation_runtime_channel_test
                 foundation_runtime_blocking_test
+                foundation_runtime_pool_test
                 foundation_runtime_reactor_test
                 foundation_runtime_net_test)
             target_compile_options(${runtime_test} PRIVATE -fsanitize=address,undefined)
@@ -229,6 +234,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_cancellation_test PRIVATE /W4)
         target_compile_options(foundation_runtime_channel_test PRIVATE /W4)
         target_compile_options(foundation_runtime_blocking_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_pool_test PRIVATE /W4)
         target_compile_options(foundation_runtime_reactor_test PRIVATE /W4)
         target_compile_options(foundation_runtime_net_test PRIVATE /W4)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
@@ -244,6 +250,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_cancellation_test PRIVATE /WX)
             target_compile_options(foundation_runtime_channel_test PRIVATE /WX)
             target_compile_options(foundation_runtime_blocking_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_pool_test PRIVATE /WX)
             target_compile_options(foundation_runtime_reactor_test PRIVATE /WX)
             target_compile_options(foundation_runtime_net_test PRIVATE /WX)
         endif()
@@ -262,6 +269,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_cancellation_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_channel_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_blocking_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_pool_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_reactor_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_net_test PRIVATE -Wall -Wextra -Wpedantic)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
@@ -277,6 +285,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_cancellation_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_channel_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_blocking_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_pool_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_reactor_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_net_test PRIVATE -Werror)
         endif()
@@ -375,6 +384,7 @@ if(BUILD_TESTING)
     add_test(NAME runtime.cancellation COMMAND foundation_runtime_cancellation_test)
     add_test(NAME runtime.channel COMMAND foundation_runtime_channel_test)
     add_test(NAME runtime.blocking COMMAND foundation_runtime_blocking_test)
+    add_test(NAME runtime.pool COMMAND foundation_runtime_pool_test)
     add_test(NAME runtime.reactor COMMAND foundation_runtime_reactor_test)
     add_test(NAME runtime.net COMMAND foundation_runtime_net_test)
     set_tests_properties(runtime.env PROPERTIES
@@ -501,6 +511,52 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/supervisor-result-task.fdn
+            -DCODE=FDN2011
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.run.worker-pool
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.worker-pool-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/worker-pool.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/worker-pool
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    foreach(worker_pool_case IN ITEMS
+            worker-pool-stored-task
+            worker-pool-channel
+            worker-pool-custom-drop)
+        add_test(
+            NAME stage0.check.${worker_pool_case}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${worker_pool_case}.fdn
+                -DCODE=FDN2185
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
+    add_test(
+        NAME stage0.check.worker-pool-result-task
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/worker-pool-result-task.fdn
             -DCODE=FDN2011
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )

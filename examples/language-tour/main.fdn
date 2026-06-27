@@ -184,6 +184,10 @@ task supervisedMessage() void {
     print("supervised task")
 }
 
+task parallelMessage(message String) void {
+    print(message)
+}
+
 fn apply<T>(value T, operation view fn(T) T) T {
     operation(value)
 }
@@ -371,6 +375,10 @@ fn main(args view [String]) i32 {
     const background = worker.NewSupervisor()
     background.Start(spawn supervisedMessage())
     background.Shutdown()
+    const workers = worker.NewPool(2)
+    workers.Start(spawn parallelMessage("parallel " + "task"))
+    workers.Start(spawn parallelMessage("parallel " + "task"))
+    workers.Shutdown()
     if (inRange(current, 5, 5) || false) && nextByteCount == 11925602364 &&
         platformMatches && pathMatches && jsonMatches && timeMatches && argumentCount == 0 &&
         proxyCounterValue == 2 && dynamicCounterValue == 1 && backgroundValue == 42 &&

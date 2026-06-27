@@ -8,6 +8,7 @@ typedef bool (*fdn_task_idle_wake_fn)(void);
 typedef bool (*fdn_task_idle_deadline_fn)(uint64_t *deadline_nanoseconds);
 typedef void (*fdn_task_idle_sleep_fn)(uint64_t deadline_nanoseconds);
 typedef bool (*fdn_task_external_wake_fn)(void *context);
+typedef bool (*fdn_task_cancel_check_fn)(void *context);
 typedef struct fdn_task_external_source fdn_task_external_source;
 
 struct fdn_task {
@@ -32,6 +33,7 @@ struct fdn_task {
     bool wake_ready;
     bool queued;
     bool ready;
+    bool transferred;
 };
 
 fdn_task *fdn_task_current_get(void);
@@ -46,5 +48,8 @@ fdn_task_external_source *fdn_task_external_source_open(
     fdn_task_external_wake_fn wake, void *context);
 void fdn_task_external_source_notify(fdn_task_external_source *source);
 void fdn_task_external_source_close(fdn_task_external_source *source);
+void fdn_task_transfer_out(fdn_task *task);
+void fdn_task_run_transferred(fdn_task *task, fdn_task_cancel_check_fn cancel,
+                              void *context);
 
 #endif

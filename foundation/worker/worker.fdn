@@ -5,6 +5,11 @@ extern c fn adoptNative(handle u64, pending Task<void>) void as foundation_runti
 extern c fn waitNative(handle u64) void as foundation_runtime_supervisor_wait
 extern c fn cancelNative(handle u64) void as foundation_runtime_supervisor_cancel
 extern c fn releaseNative(handle u64) void as foundation_runtime_supervisor_release
+extern c fn openPoolNative(workers u64) u64 as foundation_runtime_pool_open
+extern c fn submitPoolNative(handle u64, pending Task<void>) void as foundation_runtime_pool_submit
+extern c fn waitPoolNative(handle u64) void as foundation_runtime_pool_wait
+extern c fn cancelPoolNative(handle u64) void as foundation_runtime_pool_cancel
+extern c fn releasePoolNative(handle u64) void as foundation_runtime_pool_release
 
 // Owns detached tasks until an explicit shutdown policy joins them.
 struct Supervisor {
@@ -36,4 +41,37 @@ struct Supervisor {
 
 fn NewSupervisor() own Supervisor {
     own Supervisor { handle = openNative() }
+}
+
+// Runs transferred Foundation tasks on a fixed number of operating-system threads.
+struct Pool {
+    handle u64
+
+    // Transfers one directly spawned task into the parallel worker queue.
+    fn Start(view, pending Task<void>) void {
+        submitPoolNative(self.handle, pending)
+    }
+
+    // Stops accepting work and waits for every submitted task to finish.
+    fn Shutdown(own) void {
+        waitPoolNative(self.handle)
+    }
+
+    // Requests structured cancellation and waits for every submitted task to finish.
+    fn Cancel(own) void {
+        cancelPoolNative(self.handle)
+    }
+
+    fn drop(edit) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            cancelPoolNative(handle)
+            releasePoolNative(handle)
+        }
+    }
+}
+
+// Opens a bounded parallel pool. The worker count must be greater than zero.
+fn NewPool(workers u64) own Pool {
+    own Pool { handle = openPoolNative(workers) }
 }

@@ -31,6 +31,9 @@ static FDN_THREAD_LOCAL fdn_task *fdn_task_current;
 static FDN_THREAD_LOCAL fdn_task_idle_wake_fn fdn_task_timer_wake;
 static FDN_THREAD_LOCAL fdn_task_idle_deadline_fn fdn_task_timer_deadline;
 static FDN_THREAD_LOCAL fdn_task_idle_sleep_fn fdn_task_timer_sleep;
+static FDN_THREAD_LOCAL fdn_task *fdn_task_transfer_target;
+static FDN_THREAD_LOCAL fdn_task_cancel_check_fn fdn_task_transfer_cancel;
+static FDN_THREAD_LOCAL void *fdn_task_transfer_context;
 
 typedef struct fdn_task_external_hub fdn_task_external_hub;
 
@@ -223,6 +226,28 @@ static fdn_task *fdn_task_dequeue(void) {
     return task;
 }
 
+static void fdn_task_remove_queued(fdn_task *task) {
+    fdn_task *previous = NULL;
+    fdn_task *current = fdn_task_queue_head;
+    while (current != NULL && current != task) {
+        previous = current;
+        current = current->next;
+    }
+    if (current == NULL) {
+        fdn_panic_cstr("task is not queued on this executor");
+    }
+    if (previous == NULL) {
+        fdn_task_queue_head = current->next;
+    } else {
+        previous->next = current->next;
+    }
+    if (fdn_task_queue_tail == current) {
+        fdn_task_queue_tail = previous;
+    }
+    current->next = NULL;
+    current->queued = false;
+}
+
 static bool fdn_task_poll_idle_sources(void) {
     bool woke = false;
     if (fdn_task_timer_wake != NULL) {
@@ -253,6 +278,13 @@ static void fdn_task_request_cancellation(fdn_task *task) {
     }
 }
 
+static void fdn_task_poll_transfer_cancellation(void) {
+    if (fdn_task_transfer_target != NULL && fdn_task_transfer_cancel != NULL &&
+        fdn_task_transfer_cancel(fdn_task_transfer_context)) {
+        fdn_task_request_cancellation(fdn_task_transfer_target);
+    }
+}
+
 static void fdn_task_wake_waiter(fdn_task *task) {
     fdn_task *waiter = task->waiter;
     if (waiter == NULL) {
@@ -272,8 +304,23 @@ static void fdn_task_run_one(void) {
     fdn_task_poll result;
     while (task == NULL) {
         uint64_t deadline = 0;
-        const bool has_deadline = fdn_task_timer_deadline != NULL &&
-                                  fdn_task_timer_deadline(&deadline);
+        bool has_deadline = fdn_task_timer_deadline != NULL &&
+                            fdn_task_timer_deadline(&deadline);
+        fdn_task_poll_transfer_cancellation();
+        task = fdn_task_dequeue();
+        if (task != NULL) {
+            break;
+        }
+        if (fdn_task_transfer_target != NULL) {
+            const uint64_t now = fdn_monotonic_nanoseconds();
+            const uint64_t interval = UINT64_C(10000000);
+            const uint64_t cancellation_deadline =
+                now > UINT64_MAX - interval ? UINT64_MAX : now + interval;
+            if (!has_deadline || cancellation_deadline < deadline) {
+                deadline = cancellation_deadline;
+                has_deadline = true;
+            }
+        }
         if (fdn_task_poll_idle_sources()) {
             task = fdn_task_dequeue();
         } else if (fdn_task_external_current != NULL) {
@@ -316,6 +363,7 @@ static void fdn_task_run_one(void) {
 
 static void fdn_task_run_until(fdn_task *target) {
     while (!target->ready) {
+        fdn_task_poll_transfer_cancellation();
         fdn_task_run_one();
     }
 }
@@ -323,7 +371,7 @@ static void fdn_task_run_until(fdn_task *target) {
 static void fdn_task_release(fdn_task *task, void *result, bool move_result) {
     if (!task->ready || task->waiter != NULL || task->waiting_on != NULL ||
         task->cancel_wait != NULL || task->wait_next != NULL || task->wake_ready ||
-        task->supervisor != NULL || task->supervisor_next != NULL) {
+        task->supervisor != NULL || task->supervisor_next != NULL || task->transferred) {
         fdn_panic_cstr("cannot release an incomplete task");
     }
     if (move_result) {
@@ -364,9 +412,50 @@ fdn_task *fdn_task_spawn(void *frame, fdn_task_poll_fn poll,
     task->wake_ready = false;
     task->queued = false;
     task->ready = false;
+    task->transferred = false;
     ++fdn_task_count;
     fdn_task_enqueue(task);
     return task;
+}
+
+void fdn_task_transfer_out(fdn_task *task) {
+    if (task == NULL || !task->queued || task->ready || task->transferred ||
+        task->waiter != NULL || task->waiting_on != NULL || task->cancel_wait != NULL ||
+        task->supervisor != NULL || task->supervisor_next != NULL) {
+        fdn_panic_cstr("invalid parallel task transfer");
+    }
+    if (fdn_task_count == 0) {
+        fdn_panic_cstr("task executor count underflow");
+    }
+    fdn_task_remove_queued(task);
+    --fdn_task_count;
+    task->transferred = true;
+}
+
+void fdn_task_run_transferred(fdn_task *task, fdn_task_cancel_check_fn cancel,
+                              void *context) {
+    if (task == NULL || !task->transferred || cancel == NULL ||
+        fdn_task_queue_head != NULL || fdn_task_queue_tail != NULL ||
+        fdn_task_count != 0 || fdn_task_current != NULL ||
+        fdn_task_transfer_target != NULL || fdn_task_transfer_cancel != NULL ||
+        fdn_task_transfer_context != NULL) {
+        fdn_panic_cstr("invalid transferred task executor");
+    }
+    task->transferred = false;
+    ++fdn_task_count;
+    fdn_task_enqueue(task);
+    fdn_task_transfer_target = task;
+    fdn_task_transfer_cancel = cancel;
+    fdn_task_transfer_context = context;
+    fdn_task_run_until(task);
+    fdn_task_transfer_target = NULL;
+    fdn_task_transfer_cancel = NULL;
+    fdn_task_transfer_context = NULL;
+    fdn_task_release(task, NULL, false);
+    if (fdn_task_count != 0 || fdn_task_queue_head != NULL || fdn_task_queue_tail != NULL ||
+        fdn_task_current != NULL) {
+        fdn_panic_cstr("transferred task left executor work behind");
+    }
 }
 
 bool fdn_task_poll_wait(fdn_task **task, void *result) {

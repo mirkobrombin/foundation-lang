@@ -111,6 +111,7 @@ const staticCompletions = [
     { label: "std.concurrent", kind: "Module", detail: "Structured cancellation values" },
     { label: "foundation.worker", kind: "Module", detail: "Supervised application tasks" },
     { label: "worker.Supervisor", kind: "Struct", detail: "owned supervised task lifetime" },
+    { label: "worker.Pool", kind: "Struct", detail: "bounded parallel task executor" },
     {
         label: "platform.Current",
         kind: "Function",
@@ -323,6 +324,30 @@ const staticCompletions = [
     },
     {
         label: "worker.Supervisor.Cancel",
+        kind: "Method",
+        detail: "fn Cancel(own) void",
+        insertText: "Cancel()"
+    },
+    {
+        label: "worker.NewPool",
+        kind: "Function",
+        detail: "fn NewPool(workers u64) own worker.Pool",
+        insertText: "worker.NewPool(${1:workers})"
+    },
+    {
+        label: "worker.Pool.Start",
+        kind: "Method",
+        detail: "fn Start(view, pending Task<void>) void",
+        insertText: "Start(spawn ${1:work}(${2}))"
+    },
+    {
+        label: "worker.Pool.Shutdown",
+        kind: "Method",
+        detail: "fn Shutdown(own) void",
+        insertText: "Shutdown()"
+    },
+    {
+        label: "worker.Pool.Cancel",
         kind: "Method",
         detail: "fn Cancel(own) void",
         insertText: "Cancel()"

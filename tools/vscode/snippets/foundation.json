@@ -522,6 +522,15 @@
         ],
         "description": "Detach Task<void> under an explicit join policy"
     },
+    "Parallel task pool": {
+        "prefix": "workerpool",
+        "body": [
+            "const ${1:pool} = worker.NewPool(${2:4})",
+            "${1:pool}.Start(spawn ${3:work}(${4}))",
+            "${1:pool}.Shutdown()"
+        ],
+        "description": "Run directly spawned Foundation tasks on a bounded parallel pool"
+    },
     "State machine": {
         "prefix": "statemachine",
         "body": [

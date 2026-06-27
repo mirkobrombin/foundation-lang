@@ -1,0 +1,12 @@
+import foundation.worker
+
+task fail() Result<void, bool> {
+    .Err(false)
+}
+
+fn main() i32 {
+    const pool = worker.NewPool(1)
+    pool.Start(spawn fail())
+    pool.Shutdown()
+    0
+}

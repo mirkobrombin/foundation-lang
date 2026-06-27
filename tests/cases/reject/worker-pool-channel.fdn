@@ -1,0 +1,14 @@
+import foundation.worker
+
+task hold(sender Sender<i32>) void {
+    discard sender
+}
+
+fn main() i32 {
+    const pool = worker.NewPool(1)
+    const Channel { sender receiver } = channel<i32>(1)
+    pool.Start(spawn hold(sender))
+    pool.Shutdown()
+    discard receiver
+    0
+}

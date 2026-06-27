@@ -20,6 +20,7 @@ _Static_assert(sizeof(uintptr_t) <= sizeof(uint64_t), "runtime handles require a
 #include <share.h>
 #include <windows.h>
 #include <wchar.h>
+static SRWLOCK fdn_stdout_lock = SRWLOCK_INIT;
 #else
 #include <dirent.h>
 #include <stdatomic.h>
@@ -36,14 +37,67 @@ static FDN_THREAD_LOCAL fdn_frame *fdn_current_frame;
 static volatile LONG64 fdn_allocation_count;
 static volatile LONG64 fdn_deallocation_count;
 static volatile LONG64 fdn_live_allocation_count;
+static volatile LONG64 fdn_live_file_count;
+static volatile LONG64 fdn_live_directory_count;
+static volatile LONG64 fdn_live_string_builder_count;
 #else
 static atomic_size_t fdn_allocation_count;
 static atomic_size_t fdn_deallocation_count;
 static atomic_size_t fdn_live_allocation_count;
+static atomic_uint_fast64_t fdn_live_file_count;
+static atomic_uint_fast64_t fdn_live_directory_count;
+static atomic_uint_fast64_t fdn_live_string_builder_count;
 #endif
-static uint64_t fdn_live_file_count;
-static uint64_t fdn_live_directory_count;
-static uint64_t fdn_live_string_builder_count;
+
+static void fdn_handle_count_add(
+#if defined(_WIN32)
+    volatile LONG64 *count
+#else
+    atomic_uint_fast64_t *count
+#endif
+) {
+#if defined(_WIN32)
+    if (InterlockedIncrement64(count) <= 0) {
+        fdn_panic_cstr("runtime handle count overflow");
+    }
+#else
+    if (atomic_fetch_add_explicit(count, 1, memory_order_relaxed) == UINT64_MAX) {
+        fdn_panic_cstr("runtime handle count overflow");
+    }
+#endif
+}
+
+static void fdn_handle_count_remove(
+#if defined(_WIN32)
+    volatile LONG64 *count
+#else
+    atomic_uint_fast64_t *count
+#endif
+) {
+#if defined(_WIN32)
+    if (InterlockedDecrement64(count) < 0) {
+        fdn_panic_cstr("runtime handle count underflow");
+    }
+#else
+    if (atomic_fetch_sub_explicit(count, 1, memory_order_relaxed) == 0) {
+        fdn_panic_cstr("runtime handle count underflow");
+    }
+#endif
+}
+
+static uint64_t fdn_handle_count_read(
+#if defined(_WIN32)
+    volatile LONG64 *count
+#else
+    atomic_uint_fast64_t *count
+#endif
+) {
+#if defined(_WIN32)
+    return (uint64_t)InterlockedCompareExchange64(count, 0, 0);
+#else
+    return atomic_load_explicit(count, memory_order_relaxed);
+#endif
+}
 
 static const char *fdn_trace_value(const char *value) {
     return value != NULL ? value : "<unknown>";
@@ -249,10 +303,20 @@ int fdn_string_equal(fdn_string left, fdn_string right) {
 }
 
 void fdn_println(fdn_string value) {
+#if defined(_WIN32)
+    AcquireSRWLockExclusive(&fdn_stdout_lock);
+#else
+    flockfile(stdout);
+#endif
     if (value.data != NULL && value.length != 0) {
         (void)fwrite(value.data, 1, value.length, stdout);
     }
     fputc('\n', stdout);
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&fdn_stdout_lock);
+#else
+    funlockfile(stdout);
+#endif
 }
 
 size_t fdn_bounds_check(int32_t index, size_t length) {
@@ -678,7 +742,7 @@ uint64_t foundation_runtime_string_builder_open(void) {
     builder->data = NULL;
     builder->length = 0;
     builder->capacity = 0;
-    ++fdn_live_string_builder_count;
+    fdn_handle_count_add(&fdn_live_string_builder_count);
     return (uint64_t)(uintptr_t)builder;
 }
 
@@ -744,7 +808,7 @@ fdn_string foundation_runtime_string_builder_finish(uint64_t handle) {
         result.owned = 1;
     }
     fdn_dealloc(builder);
-    --fdn_live_string_builder_count;
+    fdn_handle_count_remove(&fdn_live_string_builder_count);
     return result;
 }
 
@@ -755,11 +819,11 @@ void foundation_runtime_string_builder_close(uint64_t handle) {
     }
     fdn_dealloc(builder->data);
     fdn_dealloc(builder);
-    --fdn_live_string_builder_count;
+    fdn_handle_count_remove(&fdn_live_string_builder_count);
 }
 
 uint64_t foundation_runtime_string_builder_live_handles(void) {
-    return fdn_live_string_builder_count;
+    return fdn_handle_count_read(&fdn_live_string_builder_count);
 }
 
 fdn_string foundation_runtime_format_i32(int32_t value) {
@@ -936,7 +1000,7 @@ int32_t foundation_runtime_fs_open_lines(const fdn_string *path, uint64_t *handl
         return status;
     }
     *handle = (uint64_t)(uintptr_t)file;
-    ++fdn_live_file_count;
+    fdn_handle_count_add(&fdn_live_file_count);
     return 0;
 }
 
@@ -1019,7 +1083,7 @@ int32_t foundation_runtime_fs_close(uint64_t handle) {
         return 0;
     }
     status = fclose(file);
-    --fdn_live_file_count;
+    fdn_handle_count_remove(&fdn_live_file_count);
     return status == 0 ? 0 : 4;
 }
 
@@ -1068,7 +1132,9 @@ int32_t foundation_runtime_fs_size(const fdn_string *path, uint64_t *size) {
     return 0;
 }
 
-uint64_t foundation_runtime_fs_live_handles(void) { return fdn_live_file_count; }
+uint64_t foundation_runtime_fs_live_handles(void) {
+    return fdn_handle_count_read(&fdn_live_file_count);
+}
 
 #if defined(_WIN32)
 typedef struct fdn_directory_handle {
@@ -1184,7 +1250,7 @@ int32_t foundation_runtime_fs_open_directory(const fdn_string *path, uint64_t *h
     }
 #endif
     *handle = (uint64_t)(uintptr_t)state;
-    ++fdn_live_directory_count;
+    fdn_handle_count_add(&fdn_live_directory_count);
     return 0;
 }
 
@@ -1243,7 +1309,7 @@ int32_t foundation_runtime_fs_close_directory(uint64_t handle) {
     status = closedir(state->directory) == 0 ? 0 : 4;
 #endif
     fdn_dealloc(state);
-    --fdn_live_directory_count;
+    fdn_handle_count_remove(&fdn_live_directory_count);
     return status;
 }
 
@@ -1409,4 +1475,6 @@ int32_t foundation_runtime_fs_read_text_limited(const fdn_string *path, uint64_t
     return 0;
 }
 
-uint64_t foundation_runtime_fs_live_directories(void) { return fdn_live_directory_count; }
+uint64_t foundation_runtime_fs_live_directories(void) {
+    return fdn_handle_count_read(&fdn_live_directory_count);
+}

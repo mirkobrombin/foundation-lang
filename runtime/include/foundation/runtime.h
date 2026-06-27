@@ -106,6 +106,12 @@ void foundation_runtime_supervisor_wait(uint64_t handle);
 void foundation_runtime_supervisor_cancel(uint64_t handle);
 void foundation_runtime_supervisor_release(uint64_t handle);
 uint64_t foundation_runtime_supervisor_live_count(void);
+uint64_t foundation_runtime_pool_open(uint64_t workers);
+void foundation_runtime_pool_submit(uint64_t handle, fdn_task *task);
+void foundation_runtime_pool_wait(uint64_t handle);
+void foundation_runtime_pool_cancel(uint64_t handle);
+void foundation_runtime_pool_release(uint64_t handle);
+uint64_t foundation_runtime_pool_live_count(void);
 bool fdn_utf8_valid(const char *value, size_t length);
 bool fdn_blocking_poll(fdn_blocking_job **job, void *context,
                        fdn_blocking_work_fn work);

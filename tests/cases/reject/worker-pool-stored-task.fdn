@@ -1,0 +1,12 @@
+import foundation.worker
+
+task work() void {
+}
+
+fn main() i32 {
+    const pool = worker.NewPool(1)
+    const pending = spawn work()
+    pool.Start(pending)
+    pool.Shutdown()
+    0
+}

@@ -1,0 +1,20 @@
+import foundation.worker
+
+struct Handle {
+    value u64
+
+    fn drop(edit) void {
+        self.value = 0
+    }
+}
+
+task hold(handle Handle) void {
+    discard handle
+}
+
+fn main() i32 {
+    const pool = worker.NewPool(1)
+    pool.Start(spawn hold(Handle { value = 42 }))
+    pool.Shutdown()
+    0
+}

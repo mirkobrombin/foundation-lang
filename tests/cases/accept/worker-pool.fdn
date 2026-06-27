@@ -1,0 +1,37 @@
+import foundation.worker
+import std.concurrent
+
+task calculate(limit i32, message String) void {
+    var current = 0
+    while current < limit {
+        current = current + 1
+    }
+    print(message)
+}
+
+task nested(message String) void {
+    const child = spawn calculate(10000, message)
+    $child.wait()
+}
+
+task observeCancellation() void {
+    const source = concurrent.NewCancellationSource()
+    const cancellation = source.Token()
+    if cancellation.IsRequested() {
+        print("cancelled")
+    }
+}
+
+fn main() i32 {
+    const pool = worker.NewPool(2)
+    pool.Start(spawn calculate(20000, "work" + "er"))
+    pool.Start(spawn calculate(20000, "work" + "er"))
+    pool.Start(spawn nested("worker"))
+    pool.Shutdown()
+    print("done")
+
+    const cancelled = worker.NewPool(1)
+    cancelled.Start(spawn observeCancellation())
+    cancelled.Cancel()
+    0
+}

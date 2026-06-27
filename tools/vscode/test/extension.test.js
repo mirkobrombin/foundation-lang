@@ -115,7 +115,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.44.0");
+    assert.equal(manifest.version, "0.45.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1007,7 +1007,9 @@ test("grammar and completions track compiler keywords", () => {
         "concurrent.CancellationSource.Token", "concurrent.CancellationSource.Cancel",
         "concurrent.Cancellation.IsRequested",
         "foundation.worker", "worker.Supervisor", "worker.NewSupervisor",
-        "worker.Supervisor.Start", "worker.Supervisor.Shutdown", "worker.Supervisor.Cancel"
+        "worker.Supervisor.Start", "worker.Supervisor.Shutdown", "worker.Supervisor.Cancel",
+        "worker.Pool", "worker.NewPool", "worker.Pool.Start", "worker.Pool.Shutdown",
+        "worker.Pool.Cancel"
     ]) {
         assert.ok(completionLabels.has(standard));
     }
@@ -1468,6 +1470,8 @@ test("ships Result handling and panic snippets", () => {
     assert.equal(snippets["Spawn and wait"].prefix, "spawnwait");
     assert.equal(snippets["Channel endpoints"].prefix, "channel");
     assert.equal(snippets["Cancellation source"].prefix, "cancellation");
+    assert.equal(snippets["Task supervisor"].prefix, "supervisor");
+    assert.equal(snippets["Parallel task pool"].prefix, "workerpool");
     assert.equal(snippets["TCP client tasks"].prefix, "tcpclient");
     assert.equal(snippets["State machine"].prefix, "statemachine");
     assert.equal(snippets["Channel select"].prefix, "select");

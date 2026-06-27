@@ -1874,6 +1874,69 @@ void supervisorPackageExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void parallelPoolExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "import foundation.worker\n"
+        "task calculate(value i32) void {\n"
+        "    discard value\n"
+        "}\n"
+        "fn main() i32 {\n"
+        "    const pool = worker.NewPool(2)\n"
+        "    pool.Start(spawn calculate(42))\n"
+        "    pool.Shutdown()\n"
+        "    0\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(151, "hover", 6, 28)) +
+        frame(request(152, "hover", 7, 9)) + frame(request(153, "definition", 6, 28)) +
+        frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto constructorHover = responseFor(transcript, 151);
+    const auto startHover = responseFor(transcript, 152);
+    const auto definition = responseFor(transcript, 153);
+
+    expect(status == 0, "parallel pool language server transcript exits cleanly");
+    expect(errors.str().empty(), "parallel pool requests write no server errors");
+    expect(constructorHover.find("NewPool") != std::string::npos &&
+               constructorHover.find("own Pool") != std::string::npos &&
+               constructorHover.find("greater than zero") != std::string::npos,
+           "parallel pool constructor exposes its bounded worker contract");
+    expect(startHover.find("Start") != std::string::npos &&
+               startHover.find("directly spawned task") != std::string::npos,
+           "parallel pool start hover exposes direct task transfer");
+    expect(definition.find("foundation/worker/worker.fdn") != std::string::npos,
+           "parallel pool constructor navigates to framework source");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 } // namespace
 
 int main() {
@@ -1899,6 +1962,7 @@ int main() {
     blockingImportsExposeEditorDetails();
     callbackImportsExposeEditorDetails();
     supervisorPackageExposesEditorDetails();
+    parallelPoolExposesEditorDetails();
 
     if (failures != 0) {
         std::cerr << failures << " language server assertions failed\n";
