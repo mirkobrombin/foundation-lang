@@ -1,6 +1,8 @@
 package foundation.plugin
 
 import std.collections
+import std.fs
+import std.path
 import std.text
 
 // Matches the status returned to a WebAssembly guest after a host capability call.
@@ -24,9 +26,22 @@ enum WasmMetadataErrorKind {
     InvalidPayloadLimit
 }
 
+enum WasmDiscoveryErrorKind {
+    OpenDirectory
+    ReadDirectory
+    InspectEntry
+    CloseDirectory
+}
+
 struct WasmMetadataError {
     Kind WasmMetadataErrorKind
     Value String
+}
+
+struct WasmDiscoveryError {
+    Kind WasmDiscoveryErrorKind
+    Path String
+    Error fs.Error
 }
 
 struct WasmProperty {
@@ -282,6 +297,40 @@ fn NewWasmCapabilityPolicyLimited(
     })
 }
 
+// Finds non-directory `.wasm` entries in deterministic filename order without loading an engine.
+fn DiscoverWasmPaths(
+    directory String
+) Result<own collections.List<String>, WasmDiscoveryError> {
+    const opened = fs.OpenDir(directory) else error {
+        return .Err(wasmDiscoveryError(.OpenDirectory, directory, error))
+    }
+    var reader = opened
+    var paths = newWasmStrings()
+    while true {
+        const next = reader.Next() else error {
+            discard reader.Close()
+            return .Err(wasmDiscoveryError(.ReadDirectory, directory, error))
+        }
+        const name = wasmDirectoryName($next)
+        if name == "" break
+        if wasmFileName(name) {
+            const candidate = path.Join(directory, name)
+            const isDirectory = fs.IsDirectory(candidate) else error {
+                discard reader.Close()
+                return .Err(wasmDiscoveryError(.InspectEntry, candidate, error))
+            }
+            if !isDirectory {
+                paths.PushFront($candidate)
+            }
+        }
+    }
+    const closed = reader.Close() else error {
+        return .Err(wasmDiscoveryError(.CloseDirectory, directory, error))
+    }
+    discard closed
+    .Ok(collections.Sort<String>($paths, compareWasmPaths))
+}
+
 fn validWasmName(value String) bool {
     const length = text.ByteLen(value)
     if length == 0 || length > 128 return false
@@ -322,8 +371,44 @@ fn blankWasmVersion(value String) bool {
     true
 }
 
+fn wasmFileName(value String) bool {
+    const length = text.ByteLen(value)
+    if length < 5 return false
+    const start = length - 5
+    wasmFileByte(value, start, 46) &&
+        wasmFileByte(value, start + 1, 119) &&
+        wasmFileByte(value, start + 2, 97) &&
+        wasmFileByte(value, start + 3, 115) &&
+        wasmFileByte(value, start + 4, 109)
+}
+
+fn wasmFileByte(value String, index u64, expected u64) bool {
+    const actual = text.ByteAt(value, index) else error {
+        discard error
+        return false
+    }
+    if actual == expected return true
+    expected >= 97 && expected <= 122 && actual == expected - 32
+}
+
+fn compareWasmPaths(left String, right String) i32 {
+    text.Compare(left, right)
+}
+
 fn wasmMetadataError(kind WasmMetadataErrorKind, value String) WasmMetadataError {
     WasmMetadataError { Kind = kind Value = text.Copy(value) }
+}
+
+fn wasmDiscoveryError(
+    kind WasmDiscoveryErrorKind,
+    sourcePath String,
+    error fs.Error
+) WasmDiscoveryError {
+    WasmDiscoveryError {
+        Kind = kind
+        Path = text.Copy(sourcePath)
+        Error = error
+    }
 }
 
 fn searchWasmStrings(
@@ -414,6 +499,13 @@ fn newWasmProperties() own collections.List<WasmProperty> {
 fn wasmStringValue($value Option<String>) String {
     match value {
         None: missingWasmString()
+        Some(item): item
+    }
+}
+
+fn wasmDirectoryName($value Option<String>) String {
+    match value {
+        None: ""
         Some(item): item
     }
 }

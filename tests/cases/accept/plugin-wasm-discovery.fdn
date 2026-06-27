@@ -1,0 +1,78 @@
+import foundation.plugin
+import std.collections
+import std.fs
+import std.format
+import std.path
+
+fn main(args [String]) i32 {
+    if len(args) != 1 return 1
+
+    const discovered = plugin.DiscoverWasmPaths(args[0]) else error {
+        discard error
+        return 2
+    }
+    var paths = discovered
+    const first = pathValue(paths.PopFront(), 3) else code {
+        return code
+    }
+    const second = pathValue(paths.PopFront(), 4) else code {
+        return code
+    }
+    const third = pathValue(paths.PopFront(), 5) else code {
+        return code
+    }
+    if first != path.Join(args[0], "ZETA.WASM") return 6
+    if second != path.Join(args[0], "alpha.wasm") return 7
+    if third != path.Join(args[0], "beta.WaSm") return 8
+
+    print("ZETA.WASM")
+    print("alpha.wasm")
+    print("beta.WaSm")
+    print(format.I32(paths.Len()))
+
+    const missingPath = path.Join(args[0], "missing")
+    const missing = plugin.DiscoverWasmPaths(missingPath)
+    const failedAsExpected = match missing {
+        Ok(found): unexpectedPaths($found)
+        Err(error): expectedOpenError(error, missingPath)
+    }
+    if !failedAsExpected return 9
+    print("open_directory")
+    0
+}
+
+fn pathValue(
+    $value Option<String>,
+    code i32
+) Result<String, i32> {
+    match value {
+        None: .Err(code)
+        Some(valuePath): .Ok(valuePath)
+    }
+}
+
+fn unexpectedPaths($paths own collections.List<String>) bool {
+    discard paths
+    false
+}
+
+fn expectedOpenError(error plugin.WasmDiscoveryError, expected String) bool {
+    if error.Path != expected return false
+    const open = match error.Kind {
+        OpenDirectory: true
+        ReadDirectory: false
+        InspectEntry: false
+        CloseDirectory: false
+    }
+    if !open return false
+    match error.Error {
+        NotFound: true
+        Permission: false
+        InvalidPath: false
+        InvalidUtf8: false
+        LineTooLong: false
+        TooLarge: false
+        Closed: false
+        Io: false
+    }
+}
