@@ -1,0 +1,12 @@
+package test.host.validation.orphan
+
+import foundation.validation
+
+struct Input {
+    @validation.Required()
+    Value String
+}
+
+fn main() i32 {
+    0
+}

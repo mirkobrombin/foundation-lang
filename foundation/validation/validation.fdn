@@ -1,0 +1,123 @@
+package foundation.validation
+
+import std.collections
+import std.text
+
+// Requests compiler-generated validation for one concrete struct.
+attribute Validatable() targets(struct)
+
+// Rejects an empty String or collection field.
+attribute Required() targets(field)
+
+// Rejects an integer field below the inclusive limit.
+attribute Min(value i64) targets(field)
+
+// Rejects an integer field above the inclusive limit.
+attribute Max(value i64) targets(field)
+
+// Rejects a String that does not match the standard email shape.
+attribute Email() targets(field)
+
+enum ErrorKind {
+    Required
+    Min
+    Max
+    Email
+}
+
+struct Error {
+    Kind ErrorKind
+    Field String
+    Message String
+}
+
+struct Errors {
+    values own collections.List<Error>
+
+    fn Add(&self, kind ErrorKind, field String, message String) void {
+        self.values.PushFront(Error {
+            Kind = kind
+            Field = text.Copy(field)
+            Message = text.Copy(message)
+        })
+    }
+
+    fn IsEmpty(self) bool {
+        self.values.IsEmpty()
+    }
+
+    fn Len(self) i32 {
+        self.values.Len()
+    }
+
+    fn TakeFirst(&self) Option<Error> {
+        self.values.PopFront()
+    }
+}
+
+fn NewErrors() own Errors {
+    own Errors { values = collections.NewList<Error>() }
+}
+
+fn IsEmail(value String) bool {
+    const length = text.ByteLen(value)
+    if length < 5 return false
+    var cursor u64 = 0
+    var separator = length
+    while cursor < length {
+        const current = byteAt(value, cursor)
+        if current == 64 {
+            if separator != length || cursor == 0 return false
+            separator = cursor
+            cursor = cursor + 1
+            continue
+        }
+        if separator == length && !emailLocalByte(current) return false
+        cursor = cursor + 1
+    }
+    if separator == length || separator + 3 >= length return false
+    cursor = separator + 1
+    var lastDot = length
+    while cursor < length {
+        const current = byteAt(value, cursor)
+        if current == 46 {
+            lastDot = cursor
+            cursor = cursor + 1
+            continue
+        }
+        if !emailDomainByte(current) return false
+        cursor = cursor + 1
+    }
+    if lastDot == length || lastDot == separator + 1 || lastDot + 2 >= length return false
+    cursor = lastDot + 1
+    while cursor < length {
+        if !asciiLetter(byteAt(value, cursor)) return false
+        cursor = cursor + 1
+    }
+    true
+}
+
+fn byteAt(value String, index u64) u64 {
+    const found = text.ByteAt(value, index) else error {
+        discard error
+        panic("validation byte index invariant failed")
+    }
+    found
+}
+
+fn emailLocalByte(value u64) bool {
+    asciiLetter(value) || asciiDigit(value) || value == 46 || value == 95 ||
+        value == 37 || value == 43 || value == 45
+}
+
+fn emailDomainByte(value u64) bool {
+    asciiLetter(value) || asciiDigit(value) || value == 46 || value == 45
+}
+
+fn asciiLetter(value u64) bool {
+    value >= 65 && value <= 90 || value >= 97 && value <= 122
+}
+
+fn asciiDigit(value u64) bool {
+    value >= 48 && value <= 57
+}

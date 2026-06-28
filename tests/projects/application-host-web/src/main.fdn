@@ -2,6 +2,7 @@ package test.host.web
 
 import foundation.bind
 import foundation.di
+import foundation.validation
 import foundation.web
 import std.collections
 import std.json
@@ -27,18 +28,28 @@ service Prefix {
 }
 
 @bind.Bindable()
+@validation.Validatable()
 struct ProfileInput {
     @bind.JsonName("display_name")
+    @validation.Required()
     DisplayName String
+    @validation.Min(18)
+    @validation.Max(99)
     Age u8
+    @validation.Required()
+    @validation.Email()
+    Email String
     Enabled bool = true
+    @validation.Required()
     Tags own collections.List<String>
 }
 
 @web.Route(.POST, "/profiles")
 fn CreateProfile(@web.Body() $body ProfileInput) web.Response {
-    const ProfileInput { DisplayName Age Enabled Tags } = body
-    const valid = DisplayName == "Ada" && Age == 42 && Enabled && Tags.Len() == 2
+    const ProfileInput { DisplayName Age Email Enabled Tags } = body
+    const valid = DisplayName == "Ada" && Age == 42 &&
+        Email == "ada@example.com" && Enabled && Tags.Len() == 2
+    discard Email
     discard Tags
     if !valid return web.Text(400, "invalid profile")
     web.Json(201, $DisplayName)
@@ -98,6 +109,45 @@ fn takeBody($response web.Response) String {
     Body
 }
 
+fn takeStatus($response web.Response) i32 {
+    const web.Response { Status Headers Body } = response
+    discard Headers
+    discard Body
+    Status
+}
+
+fn mappedStatus(
+    application FoundationApplication,
+    $value Result<web.Response, web.DispatchError<FoundationWebError>>
+) i32 {
+    match value {
+        Ok(response): takeStatus($response)
+        Err(error): mappedDispatchStatus(application, $error)
+    }
+}
+
+fn mappedDispatchStatus(
+    application FoundationApplication,
+    $error web.DispatchError<FoundationWebError>
+) i32 {
+    match error {
+        NotFound: 0
+        MethodNotAllowed: 0
+        Handler(error): mappedHandlerStatus(application, $error)
+    }
+}
+
+fn mappedHandlerStatus(
+    application FoundationApplication,
+    $error FoundationWebError
+) i32 {
+    const response = application.ErrorResponse($error) else preserved {
+        discard preserved
+        return 0
+    }
+    takeStatus($response)
+}
+
 fn dispatchFailure(error web.DispatchError<FoundationWebError>) String {
     discard error
     ""
@@ -142,12 +192,18 @@ fn webBindingFailure(
     match value {
         Binding(error): bindingMatches($error, kind, source, name)
         JSON(error): unexpectedJSONError($error)
+        Validation(errors): unexpectedValidationErrors($errors)
         CreateUserFailed(error): routeFailure(error)
     }
 }
 
 fn unexpectedJSONError($error bind.Error) bool {
     discard error
+    false
+}
+
+fn unexpectedValidationErrors($errors own validation.Errors) bool {
+    discard errors
     false
 }
 
@@ -261,6 +317,7 @@ fn webJSONFailure(
     match value {
         Binding(error): unexpectedBindingError($error)
         JSON(error): bindJSONFailure($error, kind, jsonKind, field, key)
+        Validation(errors): unexpectedValidationErrors($errors)
         CreateUserFailed(error): routeFailure(error)
     }
 }
@@ -311,6 +368,83 @@ fn jsonErrorKindCode(kind json.ErrorKind) i32 {
 fn routeFailure(error RouteError) bool {
     discard error
     false
+}
+
+fn validationFailure(
+    $value Result<web.Response, web.DispatchError<FoundationWebError>>,
+    maximum bool
+) bool {
+    match value {
+        Ok(response): unexpectedResponse($response)
+        Err(error): dispatchValidationFailure($error, maximum)
+    }
+}
+
+fn dispatchValidationFailure(
+    $error web.DispatchError<FoundationWebError>,
+    maximum bool
+) bool {
+    match error {
+        NotFound: false
+        MethodNotAllowed: false
+        Handler(error): webValidationFailure($error, maximum)
+    }
+}
+
+fn webValidationFailure($value FoundationWebError, maximum bool) bool {
+    match value {
+        Binding(error): unexpectedBindingError($error)
+        JSON(error): unexpectedJSONError($error)
+        Validation(errors): selectedValidationErrorsMatch($errors, maximum)
+        CreateUserFailed(error): routeFailure(error)
+    }
+}
+
+fn selectedValidationErrorsMatch(
+    $errors own validation.Errors,
+    maximum bool
+) bool {
+    if maximum return maximumValidationErrorsMatch($errors)
+    validationErrorsMatch($errors)
+}
+
+fn validationErrorsMatch($errors own validation.Errors) bool {
+    var values = errors
+    if values.Len() != 4 return false
+    const displayName = validationError(values.TakeFirst())
+    const age = validationError(values.TakeFirst())
+    const email = validationError(values.TakeFirst())
+    const tags = validationError(values.TakeFirst())
+    displayName.Field == "DisplayName" && displayName.Message == "required" &&
+        validationKindCode(displayName.Kind) == 1 && age.Field == "Age" &&
+        age.Message == "min 18" && validationKindCode(age.Kind) == 2 &&
+        email.Field == "Email" && email.Message == "invalid email" &&
+        validationKindCode(email.Kind) == 4 && tags.Field == "Tags" &&
+        tags.Message == "required" && validationKindCode(tags.Kind) == 1
+}
+
+fn validationError($value Option<validation.Error>) validation.Error {
+    match value {
+        None: panic("missing generated validation error")
+        Some(error): error
+    }
+}
+
+fn validationKindCode(kind validation.ErrorKind) i32 {
+    match kind {
+        Required: 1
+        Min: 2
+        Max: 3
+        Email: 4
+    }
+}
+
+fn maximumValidationErrorsMatch($errors own validation.Errors) bool {
+    var values = errors
+    if values.Len() != 1 return false
+    const age = validationError(values.TakeFirst())
+    age.Field == "Age" && age.Message == "max 99" &&
+        validationKindCode(age.Kind) == 3
 }
 
 fn profileRequest($body String, contentType String) web.Request {
@@ -462,6 +596,7 @@ fn main() i32 {
 
     const acceptedProfile = profileRequest(
         "{\"display_name\":\"Ada\",\"Age\":42," +
+        "\"Email\":\"ada@example.com\"," +
         "\"Tags\":[\"compiler\",\"foundation\"]}",
         "Application/Problem+JSON; charset=\"utf-8\""
     )
@@ -530,6 +665,29 @@ fn main() i32 {
     ) {
         return 12
     }
+
+    const invalidProfile = profileRequest(
+        "{\"display_name\":\"\",\"Age\":12,\"Email\":\"invalid\",\"Tags\":[]}",
+        "application/json"
+    )
+    if !validationFailure($application.Dispatch($invalidProfile), false) return 13
+    const mappedInvalidProfile = profileRequest(
+        "{\"display_name\":\"\",\"Age\":12,\"Email\":\"invalid\",\"Tags\":[]}",
+        "application/json"
+    )
+    if mappedStatus(application, $application.Dispatch($mappedInvalidProfile)) != 422 return 14
+    const maximumProfile = profileRequest(
+        "{\"display_name\":\"Ada\",\"Age\":120," +
+        "\"Email\":\"ada@example.com\",\"Tags\":[\"foundation\"]}",
+        "application/json"
+    )
+    if !validationFailure($application.Dispatch($maximumProfile), true) return 15
+    const mappedMaximumProfile = profileRequest(
+        "{\"display_name\":\"Ada\",\"Age\":120," +
+        "\"Email\":\"ada@example.com\",\"Tags\":[\"foundation\"]}",
+        "application/json"
+    )
+    if mappedStatus(application, $application.Dispatch($mappedMaximumProfile)) != 422 return 16
     discard application
 
     const serverApplication = BuildFoundationApplication()
@@ -563,8 +721,8 @@ fn main() i32 {
     const servedOutcome = $serving.wait()
     const web.ServeOutcome { Server Value } = servedOutcome
     discard Server
-    if !writeAccepted || !served($Value) return 13
-    if status != "HTTP/1.1 415 Unsupported Media Type" return 14
+    if !writeAccepted || !served($Value) return 17
+    if status != "HTTP/1.1 415 Unsupported Media Type" return 18
 
     print("generated web")
     0

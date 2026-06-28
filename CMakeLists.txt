@@ -1576,6 +1576,11 @@ if(BUILD_TESTING)
             "application-host-bind-json-empty-name;FDN2380"
             "application-host-bind-json-duplicate-name;FDN2381"
             "application-host-web-body-uninitialized;FDN2382"
+            "application-host-validation-generic;FDN2384"
+            "application-host-validation-orphan-field;FDN2385"
+            "application-host-validation-method-collision;FDN2386"
+            "application-host-validation-field-type;FDN2387"
+            "application-host-validation-range;FDN2388"
             "application-host-transfer;FDN2333")
         list(GET application_host_case 0 application_host_name)
         list(GET application_host_case 1 application_host_code)

@@ -1,0 +1,16 @@
+package test.host.validation.collision
+
+import foundation.validation
+
+@validation.Validatable()
+struct Input {
+    Value String
+
+    fn Validate(self) own validation.Errors {
+        validation.NewErrors()
+    }
+}
+
+fn main() i32 {
+    0
+}

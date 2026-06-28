@@ -1,0 +1,12 @@
+package test.host.validation.generic
+
+import foundation.validation
+
+@validation.Validatable()
+struct Input<T> {
+    Value T
+}
+
+fn main() i32 {
+    0
+}

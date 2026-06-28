@@ -117,7 +117,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.94.0");
+    assert.equal(manifest.version, "0.95.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1263,6 +1263,9 @@ test("grammar and completions track compiler keywords", () => {
         "bind.Values.Set", "bind.Values.Value", "bind.Values.Contains", "bind.Values.Required",
         "bind.Sources.Set", "bind.Sources.Value", "bind.Sources.CopyInto",
         "json.Object.FirstKey",
+        "foundation.validation", "validation.ErrorKind", "validation.Error",
+        "validation.Errors", "validation.NewErrors", "validation.IsEmail",
+        "validation.Errors.IsEmpty", "validation.Errors.Len", "validation.Errors.TakeFirst",
         "foundation.web", "web.Server", "web.Router", "web.RouteTable", "web.RouteMatch",
         "web.Handler", "web.Application", "web.Request", "web.Response", "web.Method",
         "web.MatchError", "web.DispatchError", "web.ServeOutcome", "web.NewServer",
@@ -1285,6 +1288,10 @@ test("grammar and completions track compiler keywords", () => {
     assert.equal(webInject?.insertText, "@web.Inject()");
     for (const attribute of ["@bind.Bindable()", "@bind.Name(...)", "@bind.Ignore()",
         "@bind.From(...)", "@bind.Default(...)", "@bind.JsonName(...)", "@bind.JSON()"]) {
+        assert.ok(completionLabels.has(attribute));
+    }
+    for (const attribute of ["@validation.Validatable()", "@validation.Required()",
+        "@validation.Min(...)", "@validation.Max(...)", "@validation.Email()"]) {
         assert.ok(completionLabels.has(attribute));
     }
     const bindAppend = staticCompletions.find((completion) =>
@@ -1335,6 +1342,9 @@ test("grammar and completions track compiler keywords", () => {
     }
     assert.ok(completionLabels.has("fn(...) R"));
     const snippets = readJson("snippets/foundation.json");
+    assert.equal(snippets["Validated model"].prefix, "validmodel");
+    assert.match(snippets["Validated model"].body.join("\n"),
+        /@validation\.Validatable\(\)/);
     assert.match(snippets["Target declaration"].body.join("\n"), /@target/);
     assert.match(snippets["Blocking C ABI import"].body.join("\n"), /@blocking/);
     assert.match(snippets["Callback C ABI import"].body.join("\n"), /@callback/);

@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <functional>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -38,6 +40,11 @@ constexpr std::string_view bindFromAttribute = "foundation.bind.From";
 constexpr std::string_view bindDefaultAttribute = "foundation.bind.Default";
 constexpr std::string_view bindJsonNameAttribute = "foundation.bind.JsonName";
 constexpr std::string_view bindJsonAttribute = "foundation.bind.JSON";
+constexpr std::string_view validatableAttribute = "foundation.validation.Validatable";
+constexpr std::string_view validationRequiredAttribute = "foundation.validation.Required";
+constexpr std::string_view validationMinAttribute = "foundation.validation.Min";
+constexpr std::string_view validationMaxAttribute = "foundation.validation.Max";
+constexpr std::string_view validationEmailAttribute = "foundation.validation.Email";
 
 enum class Lifetime {
     Transient,
@@ -122,6 +129,24 @@ struct StructBindingPlan {
     FirStructId type{};
     std::vector<StructBindingFieldPlan> fields;
     std::optional<std::size_t> jsonBodyField;
+};
+
+enum class ValidationRuleKind {
+    Required,
+    Min,
+    Max,
+    Email,
+};
+
+struct ValidationRulePlan {
+    std::size_t field{};
+    ValidationRuleKind kind{ValidationRuleKind::Required};
+    std::int64_t limit{};
+};
+
+struct StructValidationPlan {
+    FirStructId type{};
+    std::vector<ValidationRulePlan> rules;
 };
 
 const char *webBindingSourceName(WebBindingSource source) {
@@ -383,6 +408,13 @@ bool isStringList(const FirProgram &program, const Type &type) {
            value.arguments.size() == 1 && value.arguments.front() == stringType;
 }
 
+bool isList(const FirProgram &program, const Type &type) {
+    const auto value = baseType(type);
+    return value.kind == TypeKind::Struct && value.declaration < program.structs.size() &&
+           program.structs[value.declaration].name == "std.collections.List" &&
+           value.arguments.size() == 1;
+}
+
 std::optional<StructBindingFieldKind> structBindingFieldKind(const FirProgram &program,
                                                              const Type &type) {
     const auto value = baseType(type);
@@ -456,6 +488,29 @@ std::optional<std::string> stringArgument(const FirAttributeUse *use,
         return std::nullopt;
     }
     return use->arguments[index].value.text;
+}
+
+std::optional<std::int64_t> integerArgument(const FirAttributeUse *use,
+                                            std::size_t index = 0) {
+    if (use == nullptr || index >= use->arguments.size() ||
+        use->arguments[index].value.kind != FirAttributeValueKind::Integer) {
+        return std::nullopt;
+    }
+    const auto &value = use->arguments[index].value;
+    if (!value.negative) {
+        if (value.magnitude >
+            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+            return std::nullopt;
+        }
+        return static_cast<std::int64_t>(value.magnitude);
+    }
+    if (value.magnitude > (std::uint64_t{1} << 63)) {
+        return std::nullopt;
+    }
+    if (value.magnitude == (std::uint64_t{1} << 63)) {
+        return std::numeric_limits<std::int64_t>::min();
+    }
+    return -static_cast<std::int64_t>(value.magnitude);
 }
 
 std::string enumCase(const FirProgram &program, const FirAttributeUse *use,
@@ -1124,9 +1179,127 @@ std::string emitApplicationHostSource(const FirProgram &program,
         }
         structBindings.push_back(std::move(binding));
     }
+    std::vector<StructValidationPlan> structValidations;
+    for (FirStructId index = 0; index < program.structs.size(); ++index) {
+        const auto &type = program.structs[index];
+        if (packageName(type.name) != rootPackage || type.sourcePath == generatedSourcePath) {
+            continue;
+        }
+        const auto validatable = hasAttribute(program, type.attributes, validatableAttribute);
+        const auto hasValidationMetadata = std::any_of(
+            type.fields.begin(), type.fields.end(), [&](const auto &field) {
+                return hasAttribute(program, field.attributes, validationRequiredAttribute) ||
+                       hasAttribute(program, field.attributes, validationMinAttribute) ||
+                       hasAttribute(program, field.attributes, validationMaxAttribute) ||
+                       hasAttribute(program, field.attributes, validationEmailAttribute);
+            });
+        if (!validatable) {
+            if (hasValidationMetadata) {
+                diagnostics.error(
+                    "FDN2385",
+                    "validation field metadata requires @validation.Validatable on " +
+                        type.name,
+                    type.sourceSpan);
+            }
+            continue;
+        }
+        if (type.typeParameterCount != 0) {
+            diagnostics.error("FDN2384", "generated validation requires a concrete struct",
+                              type.sourceSpan);
+            continue;
+        }
+        const auto collides = std::find_if(
+            program.functions.begin(), program.functions.end(), [&](const auto &function) {
+                return function.sourcePath != generatedSourcePath &&
+                       ownerName(function) == type.name &&
+                       shortName(function.name) == "Validate";
+            });
+        if (collides != program.functions.end()) {
+            diagnostics.error("FDN2386", "generated validation method already exists for " +
+                                                   type.name,
+                              collides->sourceSpan);
+            continue;
+        }
+
+        StructValidationPlan validation{index, {}};
+        for (std::size_t fieldIndex = 0; fieldIndex < type.fields.size(); ++fieldIndex) {
+            const auto &field = type.fields[fieldIndex];
+            std::optional<std::int64_t> minimum;
+            std::optional<std::int64_t> maximum;
+            for (const auto &attribute : field.attributes) {
+                const auto declaration = attributeDeclaration(program, attribute);
+                if (declaration == nullptr) {
+                    continue;
+                }
+                if (declaration->name == validationRequiredAttribute) {
+                    if (baseType(field.type) != stringType && !isList(program, field.type)) {
+                        diagnostics.error(
+                            "FDN2387",
+                            "@validation.Required requires String or List field: " +
+                                field.name,
+                            type.sourceSpan);
+                        continue;
+                    }
+                    validation.rules.push_back(
+                        {fieldIndex, ValidationRuleKind::Required, 0});
+                    continue;
+                }
+                if (declaration->name == validationEmailAttribute) {
+                    if (baseType(field.type) != stringType) {
+                        diagnostics.error("FDN2387",
+                                          "@validation.Email requires String field: " +
+                                              field.name,
+                                          type.sourceSpan);
+                        continue;
+                    }
+                    validation.rules.push_back({fieldIndex, ValidationRuleKind::Email, 0});
+                    continue;
+                }
+                if (declaration->name != validationMinAttribute &&
+                    declaration->name != validationMaxAttribute) {
+                    continue;
+                }
+                const auto fieldType = baseType(field.type);
+                const auto limit = integerArgument(&attribute);
+                if (!isInteger(fieldType) || !limit.has_value()) {
+                    diagnostics.error(
+                        "FDN2387",
+                        "integer validation limit requires an integer field: " + field.name,
+                        type.sourceSpan);
+                    continue;
+                }
+                if (isUnsignedInteger(fieldType) && *limit < 0) {
+                    diagnostics.error(
+                        "FDN2387",
+                        "unsigned validation limit cannot be negative: " + field.name,
+                        type.sourceSpan);
+                    continue;
+                }
+                const auto kind = declaration->name == validationMinAttribute
+                                      ? ValidationRuleKind::Min
+                                      : ValidationRuleKind::Max;
+                validation.rules.push_back({fieldIndex, kind, *limit});
+                if (kind == ValidationRuleKind::Min) {
+                    minimum = *limit;
+                } else {
+                    maximum = *limit;
+                }
+            }
+            if (minimum.has_value() && maximum.has_value() && *minimum > *maximum) {
+                diagnostics.error("FDN2388", "validation minimum exceeds maximum: " +
+                                                   field.name,
+                                  type.sourceSpan);
+            }
+        }
+        structValidations.push_back(std::move(validation));
+    }
     std::map<FirStructId, const StructBindingPlan *> structBindingsByType;
     for (const auto &binding : structBindings) {
         structBindingsByType.emplace(binding.type, &binding);
+    }
+    std::map<FirStructId, const StructValidationPlan *> structValidationsByType;
+    for (const auto &validation : structValidations) {
+        structValidationsByType.emplace(validation.type, &validation);
     }
     std::set<FirStructId> typedWebBodyTypes;
     for (const auto &route : webRoutes) {
@@ -1540,6 +1713,9 @@ std::string emitApplicationHostSource(const FirProgram &program,
             packages.insert("std.time");
         }
     }
+    if (!structValidations.empty()) {
+        packages.insert("foundation.validation");
+    }
     packages.erase(rootPackage);
     packages.erase("");
 
@@ -1724,6 +1900,12 @@ std::string emitApplicationHostSource(const FirProgram &program,
         qualifiedName("std.collections.NewList", rootPackage, aliases);
     const auto bindNewValuesFunction =
         qualifiedName("foundation.bind.NewValues", rootPackage, aliases);
+    const auto validationErrorsType =
+        qualifiedName("foundation.validation.Errors", rootPackage, aliases);
+    const auto validationNewErrorsFunction =
+        qualifiedName("foundation.validation.NewErrors", rootPackage, aliases);
+    const auto validationEmailFunction =
+        qualifiedName("foundation.validation.IsEmail", rootPackage, aliases);
     const auto usesTypedWebBody = std::any_of(
         webRoutes.begin(), webRoutes.end(), [&](const auto &route) {
             const auto &function = program.functions[route.function];
@@ -1734,6 +1916,20 @@ std::string emitApplicationHostSource(const FirProgram &program,
                                    }
                                    const auto local = function.parameters[parameter.index];
                                    return baseType(function.locals[local].type) != stringType;
+                               });
+        });
+    const auto usesWebValidation = std::any_of(
+        webRoutes.begin(), webRoutes.end(), [&](const auto &route) {
+            const auto &function = program.functions[route.function];
+            return std::any_of(route.parameters.begin(), route.parameters.end(),
+                               [&](const auto &parameter) {
+                                   if (parameter.source != WebBindingSource::Body) {
+                                       return false;
+                                   }
+                                   const auto local = function.parameters[parameter.index];
+                                   const auto type = baseType(function.locals[local].type);
+                                   return type.kind == TypeKind::Struct &&
+                                          structValidationsByType.contains(type.declaration);
                                });
         });
     const auto usesWebBool = std::any_of(
@@ -1792,6 +1988,70 @@ std::string emitApplicationHostSource(const FirProgram &program,
         value << " }";
         return value.str();
     };
+
+    for (const auto &validation : structValidations) {
+        const auto &type = program.structs[validation.type];
+        out << "methods " << qualifiedName(type.name, rootPackage, aliases) << " {\n"
+            << "    fn Validate(self) own " << validationErrorsType << " {\n"
+            << "        var errors = " << validationNewErrorsFunction << "()\n";
+        for (auto rule = validation.rules.rbegin(); rule != validation.rules.rend(); ++rule) {
+            const auto &field = type.fields[rule->field];
+            out << "        if ";
+            switch (rule->kind) {
+            case ValidationRuleKind::Required:
+                out << "!self." << field.name;
+                break;
+            case ValidationRuleKind::Min:
+                out << "self." << field.name << " < " << rule->limit;
+                break;
+            case ValidationRuleKind::Max:
+                out << "self." << field.name << " > " << rule->limit;
+                break;
+            case ValidationRuleKind::Email:
+                out << '!' << validationEmailFunction << "(self." << field.name << ')';
+                break;
+            }
+            out << " {\n"
+                << "            errors.Add(\n"
+                << "                .";
+            switch (rule->kind) {
+            case ValidationRuleKind::Required:
+                out << "Required";
+                break;
+            case ValidationRuleKind::Min:
+                out << "Min";
+                break;
+            case ValidationRuleKind::Max:
+                out << "Max";
+                break;
+            case ValidationRuleKind::Email:
+                out << "Email";
+                break;
+            }
+            out << ",\n                ";
+            emitString(out, field.name);
+            out << ",\n                ";
+            switch (rule->kind) {
+            case ValidationRuleKind::Required:
+                emitString(out, "required");
+                break;
+            case ValidationRuleKind::Min:
+                emitString(out, "min " + std::to_string(rule->limit));
+                break;
+            case ValidationRuleKind::Max:
+                emitString(out, "max " + std::to_string(rule->limit));
+                break;
+            case ValidationRuleKind::Email:
+                emitString(out, "invalid email");
+                break;
+            }
+            out << "\n            )\n"
+                << "        }\n";
+        }
+        out << "        errors\n"
+            << "    }\n"
+            << "}\n\n";
+    }
 
     for (const auto &binding : structBindings) {
         const auto &type = program.structs[binding.type];
@@ -2000,6 +2260,9 @@ std::string emitApplicationHostSource(const FirProgram &program,
         if (usesTypedWebBody) {
             out << "    JSON(error " << bindErrorType << ")\n";
         }
+        if (usesWebValidation) {
+            out << "    Validation(errors own " << validationErrorsType << ")\n";
+        }
         for (const auto &route : webRoutes) {
             if (!route.executionError.has_value()) {
                 continue;
@@ -2180,6 +2443,15 @@ std::string emitApplicationHostSource(const FirProgram &program,
                 << "(400, \"invalid request body\"))\n"
                 << "}\n";
         }
+        if (usesWebValidation) {
+            out << "\nfn foundationWebValidationErrorResponse(\n"
+                << "    $errors own " << validationErrorsType << "\n"
+                << ") Result<" << webResponseType << ", FoundationWebError> {\n"
+                << "    discard errors\n"
+                << "    .Ok(" << webTextFunction
+                << "(422, \"request validation failed\"))\n"
+                << "}\n";
+        }
         out << "\nmethods FoundationApplication {\n";
         for (std::size_t routeIndex = 0; routeIndex < webRoutes.size(); ++routeIndex) {
             const auto &route = webRoutes[routeIndex];
@@ -2227,6 +2499,15 @@ std::string emitApplicationHostSource(const FirProgram &program,
                             << "error)))\n"
                             << "        }\n"
                             << "        discard " << local << "Bound\n";
+                        if (structValidationsByType.contains(parameterType.declaration)) {
+                            out << "        var " << local << "ValidationErrors = "
+                                << local << ".Validate()\n"
+                                << "        if !" << local << "ValidationErrors.IsEmpty() {\n"
+                                << "            return .Err(.Handler(error = .Validation("
+                                << "errors = $" << local << "ValidationErrors)))\n"
+                                << "        }\n"
+                                << "        discard " << local << "ValidationErrors\n";
+                        }
                     }
                     continue;
                 }
@@ -2340,6 +2621,10 @@ std::string emitApplicationHostSource(const FirProgram &program,
             << "            }\n";
         if (usesTypedWebBody) {
             out << "            JSON(error): foundationWebJSONErrorResponse($error)\n";
+        }
+        if (usesWebValidation) {
+            out << "            Validation(errors): "
+                << "foundationWebValidationErrorResponse($errors)\n";
         }
         for (const auto &route : webRoutes) {
             if (!route.executionError.has_value()) {

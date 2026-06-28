@@ -1,0 +1,13 @@
+package test.host.validation.field
+
+import foundation.validation
+
+@validation.Validatable()
+struct Input {
+    @validation.Required()
+    Value i32
+}
+
+fn main() i32 {
+    0
+}

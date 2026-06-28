@@ -101,6 +101,12 @@ At the transport boundary, `Application.ErrorResponse` maps missing, invalid, an
 failures to 400 and unsupported media types to 415. Its default implementation returns the handler
 error unchanged, so manual routers and application-specific failures are not hidden.
 
+A typed body marked `@validation.Validatable()` runs its generated `Validate` method after JSON
+binding and before route execution. Direct dispatch adds a typed `Validation(errors)` variant and
+preserves every structured error. The generated HTTP policy consumes the collection and returns
+422 without exposing field values in the response body. See `docs/framework/validation.md` for the
+rule set and its remaining compatibility gaps.
+
 The compiler rejects invalid paths, exact duplicate routes, ambiguous parameter branches,
 unmatched path parameters, repeated sources, unsupported binding types, missing or ambiguous DI
 providers, non-singleton route injection, and unsupported return types before writing the host.
@@ -121,6 +127,6 @@ The lower-level `web-server.fdn` and `web-routing.fdn` fixtures cover manual han
 method backtracking, integer and alpha constraints, catch-all capture, 404/405 selection, and
 registration failures.
 
-This is not the completed `app/web` compatibility boundary. Declarative request validation, scoped
-route activation, asynchronous route functions, regex constraints, middleware, continuous serving,
-graceful shutdown, TLS, OpenAPI, and the health adapter remain pending.
+This is not the completed `app/web` compatibility boundary. Scoped route activation, asynchronous
+route functions, regex constraints, middleware, continuous serving, graceful shutdown, TLS,
+OpenAPI, and the health adapter remain pending.

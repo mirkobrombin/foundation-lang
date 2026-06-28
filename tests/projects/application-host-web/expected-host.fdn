@@ -1,11 +1,61 @@
 package test.host.web
 
 import foundation.bind as foundationHost0
-import foundation.web as foundationHost1
-import std.collections as foundationHost2
-import std.json as foundationHost3
-import std.parse as foundationHost4
-import std.text as foundationHost5
+import foundation.validation as foundationHost1
+import foundation.web as foundationHost2
+import std.collections as foundationHost3
+import std.json as foundationHost4
+import std.parse as foundationHost5
+import std.text as foundationHost6
+
+methods ProfileInput {
+    fn Validate(self) own foundationHost1.Errors {
+        var errors = foundationHost1.NewErrors()
+        if !self.Tags {
+            errors.Add(
+                .Required,
+                "Tags",
+                "required"
+            )
+        }
+        if !foundationHost1.IsEmail(self.Email) {
+            errors.Add(
+                .Email,
+                "Email",
+                "invalid email"
+            )
+        }
+        if !self.Email {
+            errors.Add(
+                .Required,
+                "Email",
+                "required"
+            )
+        }
+        if self.Age > 99 {
+            errors.Add(
+                .Max,
+                "Age",
+                "max 99"
+            )
+        }
+        if self.Age < 18 {
+            errors.Add(
+                .Min,
+                "Age",
+                "min 18"
+            )
+        }
+        if !self.DisplayName {
+            errors.Add(
+                .Required,
+                "DisplayName",
+                "required"
+            )
+        }
+        errors
+    }
+}
 
 methods ProfileInput {
     fn Bind(
@@ -18,7 +68,7 @@ methods ProfileInput {
         }
         if source.Contains("Age") {
             const value = source.Required("Age")
-            const bindingParsed1 = foundationHost4.U8(value) else error {
+            const bindingParsed1 = foundationHost5.U8(value) else error {
                 const bindingKind1 foundationHost0.ErrorKind = match error {
                     Empty: .Empty
                     Invalid: .Invalid
@@ -33,21 +83,25 @@ methods ProfileInput {
             }
             self.Age = bindingParsed1
         }
+        if source.Contains("Email") {
+            const value = source.Required("Email")
+            self.Email = value
+        }
         if source.Contains("Enabled") {
             const value = source.Required("Enabled")
-            const bindingParsed2 = foundationHost4.Bool(value) else error {
-                const bindingKind2 foundationHost0.ErrorKind = match error {
+            const bindingParsed3 = foundationHost5.Bool(value) else error {
+                const bindingKind3 foundationHost0.ErrorKind = match error {
                     Empty: .Empty
                     Invalid: .Invalid
                 }
                 return .Err(foundationHost0.Error {
-                    Kind = bindingKind2
+                    Kind = bindingKind3
                     Field = "Enabled"
                     Key = "Enabled"
                     Value = value
                 })
             }
-            self.Enabled = bindingParsed2
+            self.Enabled = bindingParsed3
         }
         if source.Contains("Tags") {
             const value = source.Required("Tags")
@@ -60,7 +114,7 @@ methods ProfileInput {
         &self,
         source String
     ) Result<void, foundationHost0.Error> {
-        const bindingJsonRoot = foundationHost3.Parse(source) else error {
+        const bindingJsonRoot = foundationHost4.Parse(source) else error {
             return .Err(foundationHost0.JsonSyntaxError(error))
         }
         const bindingJsonSelected = foundationHost0.JsonObject($bindingJsonRoot) else error {
@@ -88,7 +142,17 @@ methods ProfileInput {
             return .Err(error)
         }
         discard bindingJsonField1
-        const bindingJsonField2 = foundationHost0.CopyJsonBool(
+        const bindingJsonField2 = foundationHost0.CopyJsonText(
+            &bindingJsonObject,
+            &bindingJsonValues,
+            "Email",
+            "Email",
+            "Email"
+        ) else error {
+            return .Err(error)
+        }
+        discard bindingJsonField2
+        const bindingJsonField3 = foundationHost0.CopyJsonBool(
             &bindingJsonObject,
             &bindingJsonValues,
             "Enabled",
@@ -97,8 +161,8 @@ methods ProfileInput {
         ) else error {
             return .Err(error)
         }
-        discard bindingJsonField2
-        const bindingJsonField3 = foundationHost0.CopyJsonTextList(
+        discard bindingJsonField3
+        const bindingJsonField4 = foundationHost0.CopyJsonTextList(
             &bindingJsonObject,
             &self.Tags,
             "Tags",
@@ -106,7 +170,7 @@ methods ProfileInput {
         ) else error {
             return .Err(error)
         }
-        discard bindingJsonField3
+        discard bindingJsonField4
         if bindingJsonObject.Len() != 0 {
             return .Err(foundationHost0.JsonUnknownField(&bindingJsonObject))
         }
@@ -137,16 +201,17 @@ struct FoundationWebBindingError {
 enum FoundationWebError {
     Binding(error FoundationWebBindingError)
     JSON(error foundationHost0.Error)
+    Validation(errors own foundationHost1.Errors)
     CreateUserFailed(error RouteError)
 }
 
-struct FoundationApplication implements foundationHost1.Application<FoundationWebError> {
-    foundationRoutes own foundationHost1.RouteTable
+struct FoundationApplication implements foundationHost2.Application<FoundationWebError> {
+    foundationRoutes own foundationHost2.RouteTable
     foundationPrefix Prefix
 }
 
 fn BuildFoundationApplication() own FoundationApplication {
-    var foundationRoutes = foundationHost1.NewRouteTable()
+    var foundationRoutes = foundationHost2.NewRouteTable()
     foundationRequireWebRoute($foundationRoutes.Add(1, .POST, "/forms"))
     foundationRequireWebRoute($foundationRoutes.Add(2, .POST, "/profiles"))
     foundationRequireWebRoute($foundationRoutes.Add(3, .POST, "/users/{id:alpha}"))
@@ -155,7 +220,7 @@ fn BuildFoundationApplication() own FoundationApplication {
 }
 
 fn foundationRequireWebRoute(
-    $value Result<void, foundationHost1.RegistrationError>
+    $value Result<void, foundationHost2.RegistrationError>
 ) void {
     const accepted = match value {
         Ok: true
@@ -165,7 +230,7 @@ fn foundationRequireWebRoute(
 }
 
 fn foundationWebRouteInvariant(
-    $error foundationHost1.RegistrationError
+    $error foundationHost2.RegistrationError
 ) never {
     discard error
     panic("generated web route invariant failed")
@@ -180,7 +245,7 @@ fn foundationRequireWebValue(
         None: .Err(FoundationWebBindingError {
             Kind = .Missing
             Source = source
-            Name = foundationHost5.Copy(name)
+            Name = foundationHost6.Copy(name)
         })
         Some(found): .Ok(found)
     }
@@ -191,13 +256,13 @@ fn foundationParseWebBool(
     source FoundationWebBindingSource,
     name String
 ) Result<bool, FoundationWebBindingError> {
-    const parsed = foundationHost4.Bool(value) else error {
+    const parsed = foundationHost5.Bool(value) else error {
         discard error
         discard value
         return .Err(FoundationWebBindingError {
             Kind = .Invalid
             Source = source
-            Name = foundationHost5.Copy(name)
+            Name = foundationHost6.Copy(name)
         })
     }
     discard value
@@ -215,16 +280,23 @@ fn foundationRequireWebJSON(
 
 fn foundationWebJSONErrorResponse(
     $error foundationHost0.Error
-) Result<foundationHost1.Response, FoundationWebError> {
+) Result<foundationHost2.Response, FoundationWebError> {
     discard error
-    .Ok(foundationHost1.Text(400, "invalid request body"))
+    .Ok(foundationHost2.Text(400, "invalid request body"))
+}
+
+fn foundationWebValidationErrorResponse(
+    $errors own foundationHost1.Errors
+) Result<foundationHost2.Response, FoundationWebError> {
+    discard errors
+    .Ok(foundationHost2.Text(422, "request validation failed"))
 }
 
 methods FoundationApplication {
     fn foundationDispatchWebSubmitForm(
         &self,
-        $foundationRequest foundationHost1.Request
-    ) Result<foundationHost1.Response, foundationHost1.DispatchError<FoundationWebError>> {
+        $foundationRequest foundationHost2.Request
+    ) Result<foundationHost2.Response, foundationHost2.DispatchError<FoundationWebError>> {
         var foundationActiveRequest = foundationRequest
         const foundationWebParameter0 = foundationRequireWebValue($foundationActiveRequest.Form("name"), .Form, "name") else error {
             return .Err(.Handler(error = .Binding(error = error)))
@@ -235,25 +307,30 @@ methods FoundationApplication {
 
     fn foundationDispatchWebCreateProfile(
         &self,
-        $foundationRequest foundationHost1.Request
-    ) Result<foundationHost1.Response, foundationHost1.DispatchError<FoundationWebError>> {
+        $foundationRequest foundationHost2.Request
+    ) Result<foundationHost2.Response, foundationHost2.DispatchError<FoundationWebError>> {
         var foundationActiveRequest = foundationRequest
         if !foundationActiveRequest.IsJSON() {
             return .Err(.Handler(error = .Binding(error = FoundationWebBindingError { Kind = .UnsupportedMediaType Source = .Body Name = "Content-Type" })))
         }
-        var foundationWebParameter0 = ProfileInput { DisplayName = "" Age = 0 Tags = foundationHost2.NewList<String>() }
+        var foundationWebParameter0 = ProfileInput { DisplayName = "" Age = 0 Email = "" Tags = foundationHost3.NewList<String>() }
         const foundationWebParameter0Bound = foundationRequireWebJSON($foundationWebParameter0.BindJSON(foundationActiveRequest.Body)) else error {
             return .Err(.Handler(error = .JSON(error = error)))
         }
         discard foundationWebParameter0Bound
+        var foundationWebParameter0ValidationErrors = foundationWebParameter0.Validate()
+        if !foundationWebParameter0ValidationErrors.IsEmpty() {
+            return .Err(.Handler(error = .Validation(errors = $foundationWebParameter0ValidationErrors)))
+        }
+        discard foundationWebParameter0ValidationErrors
         discard foundationActiveRequest
         .Ok(CreateProfile($foundationWebParameter0))
     }
 
     fn foundationDispatchWebCreateUser(
         &self,
-        $foundationRequest foundationHost1.Request
-    ) Result<foundationHost1.Response, foundationHost1.DispatchError<FoundationWebError>> {
+        $foundationRequest foundationHost2.Request
+    ) Result<foundationHost2.Response, foundationHost2.DispatchError<FoundationWebError>> {
         var foundationActiveRequest = foundationRequest
         const foundationWebParameter0 = foundationRequireWebValue($foundationActiveRequest.Param("id"), .Path, "id") else error {
             return .Err(.Handler(error = .Binding(error = error)))
@@ -264,7 +341,7 @@ methods FoundationApplication {
         const foundationWebParameter2Text = foundationRequireWebValue($foundationActiveRequest.Query("limit"), .Query, "limit") else error {
             return .Err(.Handler(error = .Binding(error = error)))
         }
-        const foundationWebParameter2 = foundationHost4.I32(foundationWebParameter2Text) else error {
+        const foundationWebParameter2 = foundationHost5.I32(foundationWebParameter2Text) else error {
             discard error
             return .Err(.Handler(error = .Binding(error = FoundationWebBindingError { Kind = .Invalid Source = .Query Name = "limit" })))
         }
@@ -279,7 +356,7 @@ methods FoundationApplication {
         const foundationWebParameter5 = foundationParseWebBool($foundationWebParameter5Text, .Header, "X-Enabled") else error {
             return .Err(.Handler(error = .Binding(error = error)))
         }
-        const foundationWebParameter6 = foundationHost5.Copy(foundationActiveRequest.Body)
+        const foundationWebParameter6 = foundationHost6.Copy(foundationActiveRequest.Body)
         discard foundationActiveRequest
         match CreateUser(foundationWebParameter0, foundationWebParameter1, foundationWebParameter2, $foundationWebParameter3, foundationWebParameter4, foundationWebParameter5, foundationWebParameter6, self.foundationPrefix) {
             Ok(response): .Ok(response)
@@ -289,8 +366,8 @@ methods FoundationApplication {
 
     fn Dispatch(
         &self,
-        $foundationRequest foundationHost1.Request
-    ) Result<foundationHost1.Response, foundationHost1.DispatchError<FoundationWebError>> {
+        $foundationRequest foundationHost2.Request
+    ) Result<foundationHost2.Response, foundationHost2.DispatchError<FoundationWebError>> {
         var foundationActiveRequest = foundationRequest
         const foundationMatched = self.foundationRoutes.Match(
             foundationActiveRequest.Method,
@@ -301,7 +378,7 @@ methods FoundationApplication {
                 MethodNotAllowed: .Err(.MethodNotAllowed)
             }
         }
-        const foundationHost1.RouteMatch { Id Params } = foundationMatched
+        const foundationHost2.RouteMatch { Id Params } = foundationMatched
         const foundationPreviousParams = replace foundationActiveRequest.Params with Params
         discard foundationPreviousParams
         if Id == 1 return self.foundationDispatchWebSubmitForm($foundationActiveRequest)
@@ -314,14 +391,15 @@ methods FoundationApplication {
     fn ErrorResponse(
         self,
         $error FoundationWebError
-    ) Result<foundationHost1.Response, FoundationWebError> {
+    ) Result<foundationHost2.Response, FoundationWebError> {
         match error {
             Binding(error): match error.Kind {
-                Missing: .Ok(foundationHost1.Text(400, "missing request value"))
-                Invalid: .Ok(foundationHost1.Text(400, "invalid request value"))
-                UnsupportedMediaType: .Ok(foundationHost1.Text(415, "unsupported media type"))
+                Missing: .Ok(foundationHost2.Text(400, "missing request value"))
+                Invalid: .Ok(foundationHost2.Text(400, "invalid request value"))
+                UnsupportedMediaType: .Ok(foundationHost2.Text(415, "unsupported media type"))
             }
             JSON(error): foundationWebJSONErrorResponse($error)
+            Validation(errors): foundationWebValidationErrorResponse($errors)
             CreateUserFailed(error): .Err(.CreateUserFailed(error = error))
         }
     }

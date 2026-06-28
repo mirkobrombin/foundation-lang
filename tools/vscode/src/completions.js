@@ -162,6 +162,7 @@ const staticCompletions = [
     { label: "foundation.health", kind: "Module", detail: "Typed deterministic health checks" },
     { label: "foundation.plugin", kind: "Module", detail: "Validated native plugin lifecycle" },
     { label: "foundation.bind", kind: "Module", detail: "Compiler-generated typed struct binding" },
+    { label: "foundation.validation", kind: "Module", detail: "Compiler-generated typed validation" },
     { label: "foundation.web", kind: "Module", detail: "Typed HTTP routing and serving" },
     { label: "foundation.di", kind: "Module", detail: "Static dependency graph metadata" },
     { label: "foundation.actions", kind: "Module", detail: "Typed action dispatch metadata" },
@@ -180,6 +181,11 @@ const staticCompletions = [
     { label: "@bind.Default(...)", kind: "Keyword", detail: "Set a fallback when named sources are absent or empty", insertText: "@bind.Default(\"${1:value}\")" },
     { label: "@bind.JsonName(...)", kind: "Keyword", detail: "Select a strict JSON property name", insertText: "@bind.JsonName(\"${1:name}\")" },
     { label: "@bind.JSON()", kind: "Keyword", detail: "Select the single strict JSON body field", insertText: "@bind.JSON()" },
+    { label: "@validation.Validatable()", kind: "Keyword", detail: "Generate ordered validation for a concrete struct", insertText: "@validation.Validatable()" },
+    { label: "@validation.Required()", kind: "Keyword", detail: "Reject an empty String or List field", insertText: "@validation.Required()" },
+    { label: "@validation.Min(...)", kind: "Keyword", detail: "Set an inclusive integer minimum", insertText: "@validation.Min(${1:value})" },
+    { label: "@validation.Max(...)", kind: "Keyword", detail: "Set an inclusive integer maximum", insertText: "@validation.Max(${1:value})" },
+    { label: "@validation.Email()", kind: "Keyword", detail: "Require the standard email shape", insertText: "@validation.Email()" },
     { label: "@web.Route(...)", kind: "Keyword", detail: "Declare a typed HTTP endpoint", insertText: "@web.Route(${1|.GET,.POST,.PUT,.PATCH,.DELETE,.HEAD,.OPTIONS|}, \"${2:/path}\")" },
     { label: "@web.Path(...)", kind: "Keyword", detail: "Bind a route parameter", insertText: "@web.Path(\"${1:name}\")" },
     { label: "@web.Query(...)", kind: "Keyword", detail: "Bind a query value", insertText: "@web.Query(\"${1:name}\")" },
@@ -223,6 +229,9 @@ const staticCompletions = [
     { label: "plugin.SandboxStopOutcome", kind: "Struct", detail: "process exit and still-owned sandbox" },
     { label: "bind.Values", kind: "Struct", detail: "owned reusable string binding source" },
     { label: "bind.Entry", kind: "Struct", detail: "binding source key and value" },
+    { label: "validation.ErrorKind", kind: "Enum", detail: "typed validation failure kind" },
+    { label: "validation.Error", kind: "Struct", detail: "field validation failure" },
+    { label: "validation.Errors", kind: "Struct", detail: "owned ordered validation failures" },
     { label: "bind.SourceEntry", kind: "Struct", detail: "named binding source, key, and value" },
     { label: "bind.Sources", kind: "Struct", detail: "ordered evaluated named binding sources" },
     { label: "bind.Error", kind: "Struct", detail: "typed binding failure with field, key, value, JSON cause, and offset" },
@@ -582,6 +591,36 @@ const staticCompletions = [
         kind: "Method",
         detail: "fn ServeOne($self) Task<own web.ServeOutcome<E>>",
         insertText: "ServeOne()"
+    },
+    {
+        label: "validation.NewErrors",
+        kind: "Function",
+        detail: "fn NewErrors() own validation.Errors",
+        insertText: "validation.NewErrors()"
+    },
+    {
+        label: "validation.IsEmail",
+        kind: "Function",
+        detail: "fn IsEmail(value String) bool",
+        insertText: "validation.IsEmail(${1:value})"
+    },
+    {
+        label: "validation.Errors.IsEmpty",
+        kind: "Method",
+        detail: "fn IsEmpty(self) bool",
+        insertText: "IsEmpty()"
+    },
+    {
+        label: "validation.Errors.Len",
+        kind: "Method",
+        detail: "fn Len(self) i32",
+        insertText: "Len()"
+    },
+    {
+        label: "validation.Errors.TakeFirst",
+        kind: "Method",
+        detail: "fn TakeFirst(&self) Option<validation.Error>",
+        insertText: "TakeFirst()"
     },
     ...formatScalarCompletions,
     ...parseFloatCompletions,
