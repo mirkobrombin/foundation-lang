@@ -1896,6 +1896,21 @@ void distributedMethodsExposeDocumentationAndParameters() {
         "\"textDocument\":{\"uri\":\"" + appUri +
         "\",\"version\":3},\"contentChanges\":[{\"text\":\"" +
         jsonEscape(associatedCompletionContents) + "\"}]}}";
+    const auto samePackageCompletionContents = userContents + "User.\n";
+    const auto changeForSamePackageCompletion =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" + userUri +
+        "\",\"version\":2},\"contentChanges\":[{\"text\":\"" +
+        jsonEscape(samePackageCompletionContents) + "\"}]}}";
+    const auto restoreApp =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" + appUri +
+        "\",\"version\":4},\"contentChanges\":[{\"text\":\"" +
+        jsonEscape(appContents) + "\"}]}}";
+    const auto samePackageCompletion =
+        "{\"jsonrpc\":\"2.0\",\"id\":98,\"method\":\"textDocument/completion\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" + userUri +
+        "\"},\"position\":{\"line\":6,\"character\":5}}}";
     const auto request = [&appUri](int id, std::string_view method, int character) {
         return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
                ",\"method\":\"textDocument/" + std::string(method) +
@@ -1926,8 +1941,10 @@ void distributedMethodsExposeDocumentationAndParameters() {
                              frame(changeForCompletion) +
                              frame(request(91, "completion", 9)) +
                              frame(changeForAssociatedCompletion) +
-                             frame(request(97, "completion", 17)) + frame(shutdown) +
-                             frame(exit));
+                             frame(request(97, "completion", 17)) +
+                             frame(restoreApp) +
+                             frame(changeForSamePackageCompletion) +
+                             frame(samePackageCompletion) + frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
@@ -1940,6 +1957,7 @@ void distributedMethodsExposeDocumentationAndParameters() {
     const auto userHover = responseFor(transcript, 95);
     const auto codeLenses = responseFor(transcript, 96);
     const auto associatedCompletion = responseFor(transcript, 97);
+    const auto localTypeCompletion = responseFor(transcript, 98);
 
     expect(status == 0, "distributed-method language server transcript exits cleanly");
     expect(errors.str().empty(), "distributed-method requests write no server errors");
@@ -1958,6 +1976,10 @@ void distributedMethodsExposeDocumentationAndParameters() {
                    std::string::npos &&
                associatedCompletion.find("New($${1:name})$0") != std::string::npos,
            "type completion exposes associated functions without instance members");
+    expect(localTypeCompletion.find("\"label\":\"New\"") != std::string::npos &&
+               localTypeCompletion.find("New($${1:name})$0") != std::string::npos &&
+               localTypeCompletion.find("\"label\":\"Rename\"") == std::string::npos,
+           "same-package type completion survives an incomplete top-level access");
     expect(signature.find("\"label\":\"$name String\"") != std::string::npos &&
                signature.find("The new user-facing name.") != std::string::npos &&
                signature.find("Replaces the displayed profile name.") != std::string::npos,

@@ -1985,11 +1985,13 @@ class LanguageServer {
         return result;
     }
 
-    [[nodiscard]] ProjectAnalysis analyzeCompletion(const OpenDocument &document,
-                                                    const CompletionAccess &access) const {
+    [[nodiscard]] ProjectAnalysis analyzeCompletion(
+        const OpenDocument &document, const CompletionAccess &access,
+        std::optional<std::size_t> receiverStart = std::nullopt) const {
         auto source = document.contents;
         const auto end = std::min(access.suffixEnd, source.size());
-        for (auto offset = access.dot; offset < end; ++offset) {
+        const auto start = std::min(receiverStart.value_or(access.dot), end);
+        for (auto offset = start; offset < end; ++offset) {
             if (source[offset] != '\r' && source[offset] != '\n') {
                 source[offset] = ' ';
             }
@@ -4060,7 +4062,26 @@ class LanguageServer {
                         return completionResult(std::move(items));
                     }
                 }
-                const auto completion = analyzeCompletion(document->second, *access);
+                std::optional<std::size_t> eraseReceiver;
+                const auto previousLine = receiver.has_value() && receiver->first != 0
+                                              ? source.contents.rfind('\n', receiver->first - 1)
+                                              : std::string_view::npos;
+                const auto lineStart = previousLine == std::string_view::npos
+                                           ? 0
+                                           : previousLine + 1;
+                const auto firstLineContent =
+                    source.contents.find_first_not_of(" \t\r", lineStart);
+                if (receiver.has_value() &&
+                    (receiver->first == 0 ||
+                     source.contents[receiver->first - 1] != '.') &&
+                    (firstLineContent == std::string_view::npos ||
+                     firstLineContent >= receiver->first) &&
+                    std::isupper(static_cast<unsigned char>(
+                        source.contents[receiver->first])) != 0) {
+                    eraseReceiver = receiver->first;
+                }
+                const auto completion =
+                    analyzeCompletion(document->second, *access, eraseReceiver);
                 const auto completionSource = sourceIdForUri(completion, *uri);
                 if (!completionSource.has_value()) {
                     return Json(Json::Array{});
