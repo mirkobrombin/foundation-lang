@@ -15,7 +15,7 @@ const parseBooleanCompletion = {
     label: "parse.Bool",
     kind: "Function",
     detail: "fn Bool(value String) Result<bool, parse.BooleanError>",
-    documentation: "Parse an ASCII boolean token after trimming ASCII whitespace.",
+    documentation: "Parse an ASCII boolean token after trimming Unicode whitespace.",
     insertText: "parse.Bool(\${1:value})"
 };
 

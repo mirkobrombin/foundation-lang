@@ -20,6 +20,6 @@ The parsers distinguish empty input, non-decimal bytes, and overflow. They accep
 integer range and do not ignore whitespace. Signed parsers accept one leading `-`; unsigned parsers
 reject signs. A leading `+` is not accepted.
 
-`Bool` trims ASCII whitespace and compares ASCII letters without case. It accepts `1`, `t`,
-`true`, `yes`, `y`, and `on` as true. It accepts `0`, `f`, `false`, `no`, `n`, and `off` as false.
-Empty and invalid tokens are distinct errors.
+`Bool` trims Unicode White Space code points and compares ASCII letters without case. It accepts
+`1`, `t`, `true`, `yes`, `y`, and `on` as true. It accepts `0`, `f`, `false`, `no`, `n`, and `off`
+as false. Empty and invalid tokens are distinct errors.

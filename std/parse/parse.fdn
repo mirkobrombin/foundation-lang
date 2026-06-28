@@ -13,15 +13,19 @@ enum BooleanError {
     Invalid
 }
 
-// Parses an ASCII boolean token after trimming ASCII whitespace.
+// Parses an ASCII boolean token after trimming Unicode whitespace.
 fn Bool(value String) Result<bool, BooleanError> {
     var start u64 = 0
     var end = text.ByteLen(value)
-    while start < end && isASCIIWhitespace(byteAt(value, start)) {
-        start = start + 1
+    var width = whitespaceWidthForward(value, start, end)
+    while width != 0 {
+        start = start + width
+        width = whitespaceWidthForward(value, start, end)
     }
-    while end > start && isASCIIWhitespace(byteAt(value, end - 1)) {
-        end = end - 1
+    width = whitespaceWidthBackward(value, start, end)
+    while width != 0 {
+        end = end - width
+        width = whitespaceWidthBackward(value, start, end)
     }
     if start == end {
         return .Err(.Empty)
@@ -218,4 +222,67 @@ fn asciiLower(value u64) u64 {
 
 fn isASCIIWhitespace(value u64) bool {
     value == 32 || (value >= 9 && value <= 13)
+}
+
+fn whitespaceWidthForward(value String, start u64, end u64) u64 {
+    if start >= end {
+        return 0
+    }
+    const first = byteAt(value, start)
+    if isASCIIWhitespace(first) {
+        return 1
+    }
+    const remaining = end - start
+    if remaining >= 2 && first == 194 {
+        const second = byteAt(value, start + 1)
+        if second == 133 || second == 160 {
+            return 2
+        }
+    }
+    if remaining < 3 {
+        return 0
+    }
+    const second = byteAt(value, start + 1)
+    const third = byteAt(value, start + 2)
+    if first == 225 && second == 154 && third == 128 {
+        return 3
+    }
+    if first == 226 && second == 128 &&
+        ((third >= 128 && third <= 138) || third == 168 || third == 169 || third == 175) {
+        return 3
+    }
+    if first == 226 && second == 129 && third == 159 {
+        return 3
+    }
+    3 if first == 227 && second == 128 && third == 128 else 0
+}
+
+fn whitespaceWidthBackward(value String, start u64, end u64) u64 {
+    if end <= start {
+        return 0
+    }
+    const last = byteAt(value, end - 1)
+    if isASCIIWhitespace(last) {
+        return 1
+    }
+    const remaining = end - start
+    if remaining >= 2 && byteAt(value, end - 2) == 194 && (last == 133 || last == 160) {
+        return 2
+    }
+    if remaining < 3 {
+        return 0
+    }
+    const first = byteAt(value, end - 3)
+    const second = byteAt(value, end - 2)
+    if first == 225 && second == 154 && last == 128 {
+        return 3
+    }
+    if first == 226 && second == 128 &&
+        ((last >= 128 && last <= 138) || last == 168 || last == 169 || last == 175) {
+        return 3
+    }
+    if first == 226 && second == 129 && last == 159 {
+        return 3
+    }
+    3 if first == 227 && second == 128 && last == 128 else 0
 }

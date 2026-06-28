@@ -1,4 +1,5 @@
 import std.parse
+import std.text
 
 fn valueOr(value Result<u64, parse.IntegerError>) u64 {
     match value {
@@ -26,6 +27,38 @@ fn boolMatches(value Result<bool, parse.BooleanError>, expected bool) bool {
         Ok(parsed): parsed == expected
         Err(error): false
     }
+}
+
+fn boolMatchesWithWhitespace(codePoint u64) bool {
+    var builder = text.NewBuilder()
+    const opened = builder.WriteCodePoint(codePoint) else error {
+        discard error
+        return false
+    }
+    if !opened {
+        return false
+    }
+    const token = builder.Write("YES") else error {
+        discard error
+        return false
+    }
+    if !token {
+        return false
+    }
+    const closed = builder.WriteCodePoint(codePoint) else error {
+        discard error
+        return false
+    }
+    if !closed {
+        return false
+    }
+    const value = builder.Finish() else error {
+        discard error
+        return false
+    }
+    const matches = boolMatches(parse.Bool(value), true)
+    discard value
+    matches
 }
 
 fn main() i32 {
@@ -105,6 +138,18 @@ fn main() i32 {
     if !enabled || disabled || !boolFailed(parse.Bool("maybe")) ||
         !boolFailed(parse.Bool(" \t")) {
         return 16
+    }
+    if !boolMatchesWithWhitespace(133) || !boolMatchesWithWhitespace(160) ||
+        !boolMatchesWithWhitespace(5760) || !boolMatchesWithWhitespace(8192) ||
+        !boolMatchesWithWhitespace(8193) || !boolMatchesWithWhitespace(8194) ||
+        !boolMatchesWithWhitespace(8195) || !boolMatchesWithWhitespace(8196) ||
+        !boolMatchesWithWhitespace(8197) || !boolMatchesWithWhitespace(8198) ||
+        !boolMatchesWithWhitespace(8199) || !boolMatchesWithWhitespace(8200) ||
+        !boolMatchesWithWhitespace(8201) || !boolMatchesWithWhitespace(8202) ||
+        !boolMatchesWithWhitespace(8232) || !boolMatchesWithWhitespace(8233) ||
+        !boolMatchesWithWhitespace(8239) || !boolMatchesWithWhitespace(8287) ||
+        !boolMatchesWithWhitespace(12288) {
+        return 17
     }
     print("parse ok")
     0

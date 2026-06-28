@@ -2895,7 +2895,7 @@ void parseBoolExposesEditorDetails() {
 
     expect(status == 0, "parse Bool language server transcript exits cleanly");
     expect(errors.str().empty(), "parse Bool requests write no server errors");
-    expect(hover.find("ASCII boolean token") != std::string::npos,
+    expect(hover.find("Unicode whitespace") != std::string::npos,
            "parse Bool hover includes its standard library contract");
     expect(signature.find("fn Bool(value String) Result<bool, BooleanError>") !=
                std::string::npos,
