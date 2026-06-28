@@ -1,0 +1,17 @@
+package test.host.bind.collision
+
+import foundation.bind
+
+@bind.Bindable()
+struct Config {
+    Value String
+
+    fn Bind(&self, &source bind.Values) Result<void, bind.Error> {
+        discard source
+        .Ok
+    }
+}
+
+fn main() i32 {
+    0
+}

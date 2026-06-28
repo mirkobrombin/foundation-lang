@@ -4,7 +4,7 @@ struct FoundationApplication {
 }
 
 fn BuildFoundationApplication() FoundationApplication {
-    FoundationApplication { }
+    FoundationApplication {}
 }
 
 methods FoundationApplication {

@@ -117,7 +117,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.89.0");
+    assert.equal(manifest.version, "0.90.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1255,6 +1255,9 @@ test("grammar and completions track compiler keywords", () => {
         "plugin.StopSandbox", "plugin.FactoryRegistry.Register",
         "plugin.FactoryRegistry.Create", "plugin.ExecSandbox.Argument",
         "plugin.ExecSandbox.IsRunning", "plugin.ExecSandbox.Close",
+        "foundation.bind", "bind.Values", "bind.Entry", "bind.Error", "bind.ErrorKind",
+        "bind.NewValues", "bind.Append", "bind.Values.Set", "bind.Values.Value",
+        "bind.Values.Contains", "bind.Values.Required",
         "foundation.web", "web.Server", "web.Router", "web.RouteTable", "web.RouteMatch",
         "web.Handler", "web.Application", "web.Request", "web.Response", "web.Method",
         "web.MatchError", "web.DispatchError", "web.ServeOutcome", "web.NewServer",
@@ -1274,6 +1277,15 @@ test("grammar and completions track compiler keywords", () => {
     const webInject = staticCompletions.find((completion) =>
         completion.label === "@web.Inject()");
     assert.equal(webInject?.insertText, "@web.Inject()");
+    for (const attribute of ["@bind.Bindable()", "@bind.Name(...)", "@bind.Ignore()"]) {
+        assert.ok(completionLabels.has(attribute));
+    }
+    const bindAppend = staticCompletions.find((completion) =>
+        completion.label === "bind.Append");
+    assert.equal(bindAppend?.insertText, "bind.Append(&${1:values}, \\$${2:value})");
+    const bindSet = staticCompletions.find((completion) =>
+        completion.label === "bind.Values.Set");
+    assert.equal(bindSet?.insertText, "Set(\\$${1:key}, \\$${2:value})");
     const parsedGrammar = JSON.parse(grammar);
     const rawPointer = parsedGrammar.repository.types.patterns[0];
     const rawPointerMatch = new RegExp(rawPointer.match).exec("*const i32");

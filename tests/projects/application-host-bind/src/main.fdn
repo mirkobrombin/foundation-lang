@@ -1,0 +1,144 @@
+package test.host.bind
+
+import foundation.bind
+import std.collections
+import std.format
+import std.time
+
+@bind.Bindable()
+struct Settings {
+    Name String
+
+    @bind.Name("port")
+    Port u16
+
+    Signed8 i8
+    Signed16 i16
+    Signed32 i32
+    Signed64 i64
+    SignedSize isize
+    Unsigned8 u8
+    Unsigned32 u32
+    Unsigned64 u64
+    UnsignedSize usize
+    Enabled bool
+    Ratio f32
+    Scale f64
+    Timeout time.Duration
+    Labels own collections.List<String>
+    Absent i32
+
+    @bind.Ignore()
+    Preserved String
+}
+
+fn isOutOfRange(kind bind.ErrorKind) bool {
+    match kind {
+        Empty: false
+        Invalid: false
+        OutOfRange: true
+    }
+}
+
+fn rejectedBinding($error bind.Error) i32 {
+    print("invalid")
+    print(error.Field)
+    print(error.Key)
+    print(error.Value)
+    if !isOutOfRange(error.Kind) return 3
+    0
+}
+
+fn rejectionCode($result Result<void, bind.Error>) i32 {
+    match result {
+        Ok: 2
+        Err(error): rejectedBinding($error)
+    }
+}
+
+fn labelValue($value Option<String>) String {
+    match value {
+        None: "missing"
+        Some(found): found
+    }
+}
+
+fn acceptanceCode($result Result<void, bind.Error>) i32 {
+    match result {
+        Ok: 0
+        Err(error): rejectedBinding($error) + 10
+    }
+}
+
+fn main() i32 {
+    var settings = Settings {
+        Name = "default"
+        Port = 80
+        Signed8 = 0
+        Signed16 = 0
+        Signed32 = 0
+        Signed64 = 0
+        SignedSize = 0
+        Unsigned8 = 0
+        Unsigned32 = 0
+        Unsigned64 = 0
+        UnsignedSize = 0
+        Enabled = false
+        Ratio = 0.0
+        Scale = 0.0
+        Timeout = time.Zero()
+        Labels = collections.NewList<String>()
+        Absent = 42
+        Preserved = "preserved"
+    }
+    settings.Labels.PushFront("initial")
+    var values = bind.NewValues()
+    values.Set("Name", "shadowed")
+    values.Set("Name", "foundation")
+    values.Set("port", "6400")
+    values.Set("Signed8", "-8")
+    values.Set("Signed16", "-1600")
+    values.Set("Signed32", "-320000")
+    values.Set("Signed64", "-6400000000")
+    values.Set("SignedSize", "-32")
+    values.Set("Unsigned8", "8")
+    values.Set("Unsigned32", "320000")
+    values.Set("Unsigned64", "6400000000")
+    values.Set("UnsignedSize", "32")
+    values.Set("Enabled", "YES")
+    values.Set("Ratio", "1.5")
+    values.Set("Scale", "-2.25")
+    values.Set("Timeout", "-1.5s")
+    values.Set("Labels", "stable")
+
+    const accepted = settings.Bind(&values)
+    const acceptedCode = acceptanceCode($accepted)
+    if acceptedCode != 0 return acceptedCode
+    print(settings.Name)
+    print(format.U16(settings.Port))
+    print(format.I8(settings.Signed8))
+    print(format.I16(settings.Signed16))
+    print(format.I32(settings.Signed32))
+    print(format.I64(settings.Signed64))
+    print(format.Isize(settings.SignedSize))
+    print(format.U8(settings.Unsigned8))
+    print(format.U32(settings.Unsigned32))
+    print(format.U64(settings.Unsigned64))
+    print(format.Usize(settings.UnsignedSize))
+    print(format.Bool(settings.Enabled))
+    print(format.F32(settings.Ratio))
+    print(format.F64(settings.Scale))
+    print(format.I64(settings.Timeout.Nanoseconds()))
+    print(format.I32(settings.Labels.Len()))
+    print(labelValue($settings.Labels.PopFront()))
+    print(labelValue($settings.Labels.PopFront()))
+    print(format.I32(settings.Absent))
+    print(settings.Preserved)
+
+    var invalid = bind.NewValues()
+    invalid.Set("port", "70000")
+    const rejected = settings.Bind(&invalid)
+    const code = rejectionCode($rejected)
+    if code != 0 return code
+    0
+}

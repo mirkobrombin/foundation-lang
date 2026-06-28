@@ -1,0 +1,16 @@
+package test.host.bind.duplicate
+
+import foundation.bind
+
+@bind.Bindable()
+struct Config {
+    @bind.Name("value")
+    First String
+
+    @bind.Name("value")
+    Second String
+}
+
+fn main() i32 {
+    0
+}

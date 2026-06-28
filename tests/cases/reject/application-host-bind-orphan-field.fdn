@@ -1,0 +1,12 @@
+package test.host.bind.orphan
+
+import foundation.bind
+
+struct Config {
+    @bind.Name("value")
+    Value String
+}
+
+fn main() i32 {
+    0
+}

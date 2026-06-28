@@ -1,0 +1,12 @@
+package test.host.bind.generic
+
+import foundation.bind
+
+@bind.Bindable()
+struct Config<T> {
+    Value T
+}
+
+fn main() i32 {
+    0
+}

@@ -1,0 +1,15 @@
+package test.host.bind
+
+import foundation.bind as foundationHost0
+
+methods Settings {
+    fn Bind(
+        &self,
+        &source foundationHost0.Values
+    ) Result<void, foundationHost0.Error> {
+        discard source
+        .Ok
+    }
+}
+
+// foundation:generated application/v1

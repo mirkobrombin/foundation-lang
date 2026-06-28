@@ -1,0 +1,16 @@
+package test.host.bind.unsupported
+
+import foundation.bind
+
+struct Nested {
+    Value String
+}
+
+@bind.Bindable()
+struct Config {
+    Value Nested
+}
+
+fn main() i32 {
+    0
+}

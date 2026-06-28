@@ -1,0 +1,65 @@
+package example.config
+
+import foundation.bind as foundationHost0
+import std.parse as foundationHost1
+import std.time as foundationHost2
+
+methods ServerConfig {
+    fn Bind(
+        &self,
+        &source foundationHost0.Values
+    ) Result<void, foundationHost0.Error> {
+        if source.Contains("Host") {
+            const value = source.Required("Host")
+            self.Host = value
+        }
+        if source.Contains("port") {
+            const value = source.Required("port")
+            const bindingParsed1 = foundationHost1.U16(value) else error {
+                const bindingKind1 foundationHost0.ErrorKind = match error {
+                    Empty: .Empty
+                    Invalid: .Invalid
+                    Overflow: .OutOfRange
+                }
+                return .Err(foundationHost0.Error {
+                    Kind = bindingKind1
+                    Field = "Port"
+                    Key = "port"
+                    Value = value
+                })
+            }
+            self.Port = bindingParsed1
+        }
+        if source.Contains("Timeout") {
+            const value = source.Required("Timeout")
+            const bindingParsed2 = foundationHost2.Duration.Parse(value) else error {
+                const bindingKind2 foundationHost0.ErrorKind = match error {
+                    Empty: .Empty
+                    Invalid: .Invalid
+                    OutOfRange: .OutOfRange
+                }
+                return .Err(foundationHost0.Error {
+                    Kind = bindingKind2
+                    Field = "Timeout"
+                    Key = "Timeout"
+                    Value = value
+                })
+            }
+            self.Timeout = bindingParsed2
+        }
+        if source.Contains("Labels") {
+            const value = source.Required("Labels")
+            foundationHost0.Append(&self.Labels, $value)
+        }
+        .Ok
+    }
+}
+
+struct FoundationApplication {
+}
+
+fn BuildFoundationApplication() FoundationApplication {
+    FoundationApplication {}
+}
+
+// foundation:generated application/v1

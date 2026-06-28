@@ -161,6 +161,7 @@ const staticCompletions = [
     { label: "foundation.hosting", kind: "Module", detail: "Owned application lifecycle" },
     { label: "foundation.health", kind: "Module", detail: "Typed deterministic health checks" },
     { label: "foundation.plugin", kind: "Module", detail: "Validated native plugin lifecycle" },
+    { label: "foundation.bind", kind: "Module", detail: "Compiler-generated typed struct binding" },
     { label: "foundation.web", kind: "Module", detail: "Typed HTTP routing and serving" },
     { label: "foundation.di", kind: "Module", detail: "Static dependency graph metadata" },
     { label: "foundation.actions", kind: "Module", detail: "Typed action dispatch metadata" },
@@ -172,6 +173,9 @@ const staticCompletions = [
     { label: "@actions.Name(...)", kind: "Keyword", detail: "Set an action dispatch name", insertText: "@actions.Name(\"${1:name}\")" },
     { label: "@actions.Key(...)", kind: "Keyword", detail: "Attach an action key binding", insertText: "@actions.Key(\"${1:key}\")" },
     { label: "@actions.Policy(...)", kind: "Keyword", detail: "Require an action policy", insertText: "@actions.Policy(\"${1:policy}\")" },
+    { label: "@bind.Bindable()", kind: "Keyword", detail: "Generate a typed Bind method for a concrete struct", insertText: "@bind.Bindable()" },
+    { label: "@bind.Name(...)", kind: "Keyword", detail: "Select a generated binding source key", insertText: "@bind.Name(\"${1:key}\")" },
+    { label: "@bind.Ignore()", kind: "Keyword", detail: "Exclude a field from generated binding", insertText: "@bind.Ignore()" },
     { label: "@web.Route(...)", kind: "Keyword", detail: "Declare a typed HTTP endpoint", insertText: "@web.Route(${1|.GET,.POST,.PUT,.PATCH,.DELETE,.HEAD,.OPTIONS|}, \"${2:/path}\")" },
     { label: "@web.Path(...)", kind: "Keyword", detail: "Bind a route parameter", insertText: "@web.Path(\"${1:name}\")" },
     { label: "@web.Query(...)", kind: "Keyword", detail: "Bind a query value", insertText: "@web.Query(\"${1:name}\")" },
@@ -213,6 +217,10 @@ const staticCompletions = [
     { label: "plugin.SandboxError", kind: "Struct", detail: "external plugin process failure" },
     { label: "plugin.SandboxStartOutcome", kind: "Struct", detail: "started process and still-owned sandbox" },
     { label: "plugin.SandboxStopOutcome", kind: "Struct", detail: "process exit and still-owned sandbox" },
+    { label: "bind.Values", kind: "Struct", detail: "owned reusable string binding source" },
+    { label: "bind.Entry", kind: "Struct", detail: "binding source key and value" },
+    { label: "bind.Error", kind: "Struct", detail: "typed field, key, value, and conversion failure" },
+    { label: "bind.ErrorKind", kind: "Enum", detail: "empty, invalid, or out-of-range binding failure" },
     { label: "web.Server", kind: "Struct", detail: "owned typed HTTP server" },
     { label: "web.Router", kind: "Struct", detail: "owned deterministic HTTP router" },
     { label: "web.RouteTable", kind: "Struct", detail: "validated handler-free route metadata" },
@@ -370,6 +378,42 @@ const staticCompletions = [
         kind: "Function",
         detail: "task WriteAll(writer own net.TcpWriter, text String) net.WriteOutcome",
         insertText: "net.WriteAll(${1:writer}, ${2:text})"
+    },
+    {
+        label: "bind.NewValues",
+        kind: "Function",
+        detail: "fn NewValues() own bind.Values",
+        insertText: "bind.NewValues()"
+    },
+    {
+        label: "bind.Append",
+        kind: "Function",
+        detail: "fn Append(&values collections.List<String>, $value String) void",
+        insertText: "bind.Append(&${1:values}, \\$${2:value})"
+    },
+    {
+        label: "bind.Values.Set",
+        kind: "Method",
+        detail: "fn Set(&self, $key String, $value String) void",
+        insertText: "Set(\\$${1:key}, \\$${2:value})"
+    },
+    {
+        label: "bind.Values.Value",
+        kind: "Method",
+        detail: "fn Value(&self, key String) Option<String>",
+        insertText: "Value(${1:key})"
+    },
+    {
+        label: "bind.Values.Contains",
+        kind: "Method",
+        detail: "fn Contains(&self, key String) bool",
+        insertText: "Contains(${1:key})"
+    },
+    {
+        label: "bind.Values.Required",
+        kind: "Method",
+        detail: "fn Required(&self, key String) String",
+        insertText: "Required(${1:key})"
     },
     {
         label: "web.NewServer",

@@ -1,0 +1,14 @@
+package test.host.bind.conflicting
+
+import foundation.bind
+
+@bind.Bindable()
+struct Config {
+    @bind.Name("value")
+    @bind.Ignore()
+    Value String
+}
+
+fn main() i32 {
+    0
+}

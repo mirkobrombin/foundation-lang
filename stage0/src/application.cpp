@@ -31,6 +31,9 @@ constexpr std::string_view webHeaderAttribute = "foundation.web.Header";
 constexpr std::string_view webFormAttribute = "foundation.web.Form";
 constexpr std::string_view webBodyAttribute = "foundation.web.Body";
 constexpr std::string_view webInjectAttribute = "foundation.web.Inject";
+constexpr std::string_view bindableAttribute = "foundation.bind.Bindable";
+constexpr std::string_view bindNameAttribute = "foundation.bind.Name";
+constexpr std::string_view bindIgnoreAttribute = "foundation.bind.Ignore";
 
 enum class Lifetime {
     Transient,
@@ -90,6 +93,27 @@ struct WebRoutePlan {
     std::string path;
     std::vector<WebParameterPlan> parameters;
     std::optional<Type> executionError;
+};
+
+enum class StructBindingFieldKind {
+    String,
+    Boolean,
+    Integer,
+    F32,
+    F64,
+    Duration,
+    StringList,
+};
+
+struct StructBindingFieldPlan {
+    std::size_t field{};
+    std::string key;
+    StructBindingFieldKind kind{StructBindingFieldKind::String};
+};
+
+struct StructBindingPlan {
+    FirStructId type{};
+    std::vector<StructBindingFieldPlan> fields;
 };
 
 const char *webBindingSourceName(WebBindingSource source) {
@@ -334,6 +358,61 @@ const char *webIntegerParser(const Type &type) {
     default:
         return "";
     }
+}
+
+Type baseType(Type type);
+
+bool isNamedStruct(const FirProgram &program, const Type &type, std::string_view name) {
+    const auto value = baseType(type);
+    return value.kind == TypeKind::Struct && value.declaration < program.structs.size() &&
+           program.structs[value.declaration].name == name;
+}
+
+bool isStringList(const FirProgram &program, const Type &type) {
+    const auto value = baseType(type);
+    return value.kind == TypeKind::Struct && value.declaration < program.structs.size() &&
+           program.structs[value.declaration].name == "std.collections.List" &&
+           value.arguments.size() == 1 && value.arguments.front() == stringType;
+}
+
+std::optional<StructBindingFieldKind> structBindingFieldKind(const FirProgram &program,
+                                                             const Type &type) {
+    const auto value = baseType(type);
+    if (value == stringType) {
+        return StructBindingFieldKind::String;
+    }
+    if (value == boolType) {
+        return StructBindingFieldKind::Boolean;
+    }
+    if (isInteger(value)) {
+        return StructBindingFieldKind::Integer;
+    }
+    if (value == f32Type) {
+        return StructBindingFieldKind::F32;
+    }
+    if (value == f64Type) {
+        return StructBindingFieldKind::F64;
+    }
+    if (isNamedStruct(program, value, "std.time.Duration")) {
+        return StructBindingFieldKind::Duration;
+    }
+    if (isStringList(program, value)) {
+        return StructBindingFieldKind::StringList;
+    }
+    return std::nullopt;
+}
+
+const char *structBindingParser(const Type &type) {
+    if (type == boolType) {
+        return "Bool";
+    }
+    if (type == f32Type) {
+        return "F32";
+    }
+    if (type == f64Type) {
+        return "F64";
+    }
+    return webIntegerParser(type);
 }
 
 const FirAttributeDeclaration *attributeDeclaration(const FirProgram &program,
@@ -865,6 +944,86 @@ std::string emitApplicationHostSource(const FirProgram &program,
         return {};
     }
     const auto &rootPackage = program.functions[program.main].packageName;
+    std::vector<StructBindingPlan> structBindings;
+    for (FirStructId index = 0; index < program.structs.size(); ++index) {
+        const auto &type = program.structs[index];
+        if (packageName(type.name) != rootPackage || type.sourcePath == generatedSourcePath) {
+            continue;
+        }
+        const auto bindable = hasAttribute(program, type.attributes, bindableAttribute);
+        const auto hasFieldMetadata = std::any_of(
+            type.fields.begin(), type.fields.end(), [&](const auto &field) {
+                return hasAttribute(program, field.attributes, bindNameAttribute) ||
+                       hasAttribute(program, field.attributes, bindIgnoreAttribute);
+            });
+        if (!bindable) {
+            if (hasFieldMetadata) {
+                diagnostics.error(
+                    "FDN2371",
+                    "binding field metadata requires @bind.Bindable on " + type.name,
+                    type.sourceSpan);
+            }
+            continue;
+        }
+        if (type.typeParameterCount != 0) {
+            diagnostics.error("FDN2370", "generated binding requires a concrete struct",
+                              type.sourceSpan);
+            continue;
+        }
+        const auto collides = std::find_if(
+            program.functions.begin(), program.functions.end(), [&](const auto &function) {
+                return function.sourcePath != generatedSourcePath &&
+                       ownerName(function) == type.name && shortName(function.name) == "Bind";
+            });
+        if (collides != program.functions.end()) {
+            diagnostics.error("FDN2375", "generated method Bind already exists for " + type.name,
+                              collides->sourceSpan);
+            continue;
+        }
+
+        StructBindingPlan binding{index, {}};
+        std::set<std::string> keys;
+        for (std::size_t fieldIndex = 0; fieldIndex < type.fields.size(); ++fieldIndex) {
+            const auto &field = type.fields[fieldIndex];
+            const auto ignored = hasAttribute(program, field.attributes, bindIgnoreAttribute);
+            const auto named = findAttribute(program, field.attributes, bindNameAttribute);
+            if (ignored && named != nullptr) {
+                diagnostics.error("FDN2372", "binding field cannot combine @bind.Name and "
+                                                   "@bind.Ignore: " +
+                                                   field.name,
+                                  type.sourceSpan);
+                continue;
+            }
+            if (ignored) {
+                continue;
+            }
+            auto key = stringArgument(named).value_or(field.name);
+            if (key.empty()) {
+                diagnostics.error("FDN2372", "binding field key cannot be empty: " + field.name,
+                                  type.sourceSpan);
+                continue;
+            }
+            if (!keys.insert(key).second) {
+                diagnostics.error("FDN2373", "duplicate binding field key " + key,
+                                  type.sourceSpan);
+                continue;
+            }
+            const auto kind = structBindingFieldKind(program, field.type);
+            if (!kind.has_value()) {
+                diagnostics.error("FDN2374",
+                                  "unsupported generated binding field type " +
+                                      typeName(program, field.type) + " for " + field.name,
+                                  type.sourceSpan);
+                continue;
+            }
+            binding.fields.push_back({fieldIndex, std::move(key), *kind});
+        }
+        structBindings.push_back(std::move(binding));
+    }
+    if (diagnostics.hasErrors()) {
+        return {};
+    }
+
     std::set<FirStructId> buildServices;
     std::function<void(FirStructId)> collectBuildService = [&](const auto service) {
         if (!buildServices.insert(service).second) {
@@ -1187,6 +1346,20 @@ std::string emitApplicationHostSource(const FirProgram &program,
             packages.insert("std.parse");
         }
     }
+    if (!structBindings.empty()) {
+        packages.insert("foundation.bind");
+        packages.insert("std.parse");
+        const auto usesDuration = std::any_of(
+            structBindings.begin(), structBindings.end(), [](const auto &binding) {
+                return std::any_of(binding.fields.begin(), binding.fields.end(),
+                                   [](const auto &field) {
+                                       return field.kind == StructBindingFieldKind::Duration;
+                                   });
+            });
+        if (usesDuration) {
+            packages.insert("std.time");
+        }
+    }
     packages.erase(rootPackage);
     packages.erase("");
 
@@ -1351,6 +1524,14 @@ std::string emitApplicationHostSource(const FirProgram &program,
         qualifiedName("std.text.Copy", rootPackage, aliases);
     const auto parseBoolFunction =
         qualifiedName("std.parse.Bool", rootPackage, aliases);
+    const auto bindValuesType =
+        qualifiedName("foundation.bind.Values", rootPackage, aliases);
+    const auto bindErrorType =
+        qualifiedName("foundation.bind.Error", rootPackage, aliases);
+    const auto bindErrorKindType =
+        qualifiedName("foundation.bind.ErrorKind", rootPackage, aliases);
+    const auto durationType =
+        qualifiedName("std.time.Duration", rootPackage, aliases);
     const auto usesWebBool = std::any_of(
         webRoutes.begin(), webRoutes.end(), [&](const auto &route) {
             const auto &function = program.functions[route.function];
@@ -1361,6 +1542,72 @@ std::string emitApplicationHostSource(const FirProgram &program,
                                           baseType(function.locals[local].type) == boolType;
                                });
         });
+
+    for (const auto &binding : structBindings) {
+        const auto &type = program.structs[binding.type];
+        out << "methods " << qualifiedName(type.name, rootPackage, aliases) << " {\n"
+            << "    fn Bind(\n"
+            << "        &self,\n"
+            << "        &source " << bindValuesType << "\n"
+            << "    ) Result<void, " << bindErrorType << "> {\n";
+        for (std::size_t index = 0; index < binding.fields.size(); ++index) {
+            const auto &fieldPlan = binding.fields[index];
+            const auto &field = type.fields[fieldPlan.field];
+            const auto suffix = std::to_string(index);
+            out << "        if source.Contains(";
+            emitString(out, fieldPlan.key);
+            out << ") {\n"
+                << "            const value = source.Required(";
+            emitString(out, fieldPlan.key);
+            out << ")\n";
+            if (fieldPlan.kind == StructBindingFieldKind::String) {
+                out << "            self." << field.name << " = value\n";
+            } else if (fieldPlan.kind == StructBindingFieldKind::StringList) {
+                out << "            "
+                    << qualifiedName("foundation.bind.Append", rootPackage, aliases)
+                    << "(&self." << field.name << ", $value)\n";
+            } else {
+                std::string parser;
+                if (fieldPlan.kind == StructBindingFieldKind::Duration) {
+                    parser = durationType + ".Parse";
+                } else {
+                    parser = qualifiedName(
+                        "std.parse." +
+                            std::string(structBindingParser(baseType(field.type))),
+                        rootPackage, aliases);
+                }
+                out << "            const bindingParsed" << suffix << " = " << parser
+                    << "(value) else error {\n"
+                    << "                const bindingKind" << suffix << ' '
+                    << bindErrorKindType << " = match error {\n"
+                    << "                    Empty: .Empty\n"
+                    << "                    Invalid: .Invalid\n";
+                if (fieldPlan.kind == StructBindingFieldKind::Integer) {
+                    out << "                    Overflow: .OutOfRange\n";
+                } else if (fieldPlan.kind != StructBindingFieldKind::Boolean) {
+                    out << "                    OutOfRange: .OutOfRange\n";
+                }
+                out << "                }\n"
+                    << "                return .Err(" << bindErrorType << " {\n"
+                    << "                    Kind = bindingKind" << suffix << "\n"
+                    << "                    Field = ";
+                emitString(out, field.name);
+                out << "\n"
+                    << "                    Key = ";
+                emitString(out, fieldPlan.key);
+                out << "\n"
+                    << "                    Value = value\n"
+                    << "                })\n"
+                    << "            }\n"
+                    << "            self." << field.name << " = bindingParsed" << suffix
+                    << "\n";
+            }
+            out << "        }\n";
+        }
+        out << "        .Ok\n"
+            << "    }\n"
+            << "}\n\n";
+    }
 
     if (!webRoutes.empty()) {
         out << "enum FoundationWebBindingSource {\n"
@@ -1476,16 +1723,19 @@ std::string emitApplicationHostSource(const FirProgram &program,
         out << "own ";
     }
     out << "FoundationApplication {";
+    auto hasApplicationField = false;
     if (!webRoutes.empty()) {
         out << " foundationRoutes = foundationRoutes";
+        hasApplicationField = true;
     }
     for (const auto service : order) {
         if (plans.at(service).lifetime != Lifetime::Singleton) {
             continue;
         }
         out << ' ' << fields.at(service) << " = " << fields.at(service);
+        hasApplicationField = true;
     }
-    out << " }";
+    out << (hasApplicationField ? " }" : "}");
     if (startupError.has_value()) {
         out << ')';
     }

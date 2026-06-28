@@ -1,0 +1,56 @@
+package example.config
+
+import foundation.bind
+import std.collections
+import std.format
+import std.time
+
+@bind.Bindable()
+struct ServerConfig {
+    Host String
+
+    @bind.Name("port")
+    Port u16
+
+    Timeout time.Duration
+    Labels own collections.List<String>
+
+    @bind.Ignore()
+    Source String
+}
+
+fn accepted($result Result<void, bind.Error>) bool {
+    match result {
+        Ok: true
+        Err(error): reject($error)
+    }
+}
+
+fn reject($error bind.Error) bool {
+    discard error
+    false
+}
+
+fn main() i32 {
+    var config = ServerConfig {
+        Host = "127.0.0.1"
+        Port = 8080
+        Timeout = time.Zero()
+        Labels = collections.NewList<String>()
+        Source = "defaults"
+    }
+    config.Labels.PushFront("local")
+
+    var values = bind.NewValues()
+    values.Set("port", "9000")
+    values.Set("Timeout", "1.5s")
+    values.Set("Labels", "generated")
+    if !accepted($config.Bind(&values)) return 1
+
+    print(config.Host)
+    print(format.U16(config.Port))
+    print(format.I64(config.Timeout.Nanoseconds()))
+    print(format.I32(config.Labels.Len()))
+    print(config.Source)
+    0
+}

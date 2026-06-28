@@ -1277,6 +1277,14 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.config-binding-example
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/config-binding
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/config-binding/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
         NAME stage0.run.web-app-example
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -1436,6 +1444,23 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
     add_test(
+        NAME stage0.emit.application-host-bind
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-bind
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-bind
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-bind/src/zz_foundation.fdn
+            -DGENERATED_C=${CMAKE_CURRENT_BINARY_DIR}/application-host-bind.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/application-host-bind-allocations
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-bind/expected.out
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-bind.cmake
+    )
+    add_test(
         NAME stage0.emit.application-host-web-stale
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -1518,6 +1543,12 @@ if(BUILD_TESTING)
             "application-host-web-path-binding;FDN2367"
             "application-host-web-body-type;FDN2368"
             "application-host-web-ambiguous-route;FDN2369"
+            "application-host-bind-generic;FDN2370"
+            "application-host-bind-orphan-field;FDN2371"
+            "application-host-bind-conflicting-field;FDN2372"
+            "application-host-bind-duplicate-key;FDN2373"
+            "application-host-bind-unsupported-field;FDN2374"
+            "application-host-bind-method-collision;FDN2375"
             "application-host-transfer;FDN2333")
         list(GET application_host_case 0 application_host_name)
         list(GET application_host_case 1 application_host_code)

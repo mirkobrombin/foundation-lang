@@ -1,0 +1,124 @@
+package foundation.bind
+
+import std.collections
+import std.text
+
+// Requests a compiler-generated binder for one concrete struct.
+attribute Bindable() targets(struct)
+
+// Selects the source key used for one bindable field.
+attribute Name(value String) targets(field)
+
+// Excludes one field from a generated binder.
+attribute Ignore() targets(field)
+
+enum ErrorKind {
+    Empty
+    Invalid
+    OutOfRange
+}
+
+struct Error {
+    Kind ErrorKind
+    Field String
+    Key String
+    Value String
+}
+
+struct Entry {
+    Key String
+    Value String
+}
+
+struct Values {
+    entries own collections.List<Entry>
+
+    // Adds or shadows one source value. The most recent value wins.
+    fn Set(&self, $key String, $value String) void {
+        self.entries.PushFront(Entry { Key = key Value = value })
+    }
+
+    // Copies the most recent value for a key without consuming the source.
+    fn Value(&self, key String) Option<String> {
+        var active = replace self.entries with collections.NewList<Entry>()
+        var restored = collections.NewList<Entry>()
+        var result Option<String> = .None
+        var found = false
+        while !active.IsEmpty() {
+            const entry = entryValue(active.PopFront())
+            if !found && entry.Key == key {
+                result = .Some(text.Copy(entry.Value))
+                found = true
+            }
+            restored.PushFront($entry)
+        }
+        self.entries = reverseEntries($restored)
+        result
+    }
+
+    // Reports whether a key is present, including when its value is empty.
+    fn Contains(&self, key String) bool {
+        const value = self.Value(key)
+        match value {
+            None: false
+            Some(found): discardFound($found)
+        }
+    }
+
+    // Copies a known value or panics when the preceding Contains result was ignored.
+    fn Required(&self, key String) String {
+        requiredValue($self.Value(key))
+    }
+}
+
+fn NewValues() own Values {
+    own Values { entries = collections.NewList<Entry>() }
+}
+
+// Appends one string while preserving the existing list order.
+fn Append(&values collections.List<String>, $value String) void {
+    var reversed = collections.NewList<String>()
+    while !values.IsEmpty() {
+        reversed.PushFront(requiredValue($values.PopFront()))
+    }
+    values.PushFront($value)
+    while !reversed.IsEmpty() {
+        values.PushFront(requiredValue($reversed.PopFront()))
+    }
+}
+
+fn entryValue($value Option<Entry>) Entry {
+    match value {
+        None: missingEntry()
+        Some(entry): entry
+    }
+}
+
+fn missingEntry() Entry {
+    panic("binding entry invariant failed")
+}
+
+fn discardFound($value String) bool {
+    discard value
+    true
+}
+
+fn requiredValue($value Option<String>) String {
+    match value {
+        None: missingValue()
+        Some(found): found
+    }
+}
+
+fn missingValue() String {
+    panic("binding source invariant failed")
+}
+
+fn reverseEntries($values own collections.List<Entry>) own collections.List<Entry> {
+    var source = values
+    var result = collections.NewList<Entry>()
+    while !source.IsEmpty() {
+        result.PushFront(entryValue(source.PopFront()))
+    }
+    result
+}
