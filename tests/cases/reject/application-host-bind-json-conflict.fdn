@@ -1,0 +1,19 @@
+package test.host.bind.json_conflict
+
+import foundation.bind
+
+@bind.Bindable()
+struct Body {
+    Name String
+}
+
+@bind.Bindable()
+struct Request {
+    @bind.JSON()
+    @bind.JsonName("body")
+    Body Body
+}
+
+fn main() i32 {
+    0
+}

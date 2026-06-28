@@ -18,8 +18,22 @@ initial
 stable
 42
 77
+55
+query
+10
 preserved
 invalid
 Port
 port
 70000
+request-1
+Ada
+42
+true
+1.25
+2
+compiler
+foundation
+Grace
+42
+json strict

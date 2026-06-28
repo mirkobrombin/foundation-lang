@@ -1,0 +1,13 @@
+package test.host.bind.json_body_type
+
+import foundation.bind
+
+@bind.Bindable()
+struct Request {
+    @bind.JSON()
+    Body String
+}
+
+fn main() i32 {
+    0
+}

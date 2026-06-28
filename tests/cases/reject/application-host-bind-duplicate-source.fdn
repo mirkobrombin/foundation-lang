@@ -1,0 +1,14 @@
+package test.host.bind.duplicate.source
+
+import foundation.bind
+
+@bind.Bindable()
+struct Config {
+    @bind.From("query", "value")
+    @bind.From("query", "value")
+    Value String
+}
+
+fn main() i32 {
+    0
+}

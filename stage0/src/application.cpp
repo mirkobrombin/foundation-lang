@@ -34,6 +34,10 @@ constexpr std::string_view webInjectAttribute = "foundation.web.Inject";
 constexpr std::string_view bindableAttribute = "foundation.bind.Bindable";
 constexpr std::string_view bindNameAttribute = "foundation.bind.Name";
 constexpr std::string_view bindIgnoreAttribute = "foundation.bind.Ignore";
+constexpr std::string_view bindFromAttribute = "foundation.bind.From";
+constexpr std::string_view bindDefaultAttribute = "foundation.bind.Default";
+constexpr std::string_view bindJsonNameAttribute = "foundation.bind.JsonName";
+constexpr std::string_view bindJsonAttribute = "foundation.bind.JSON";
 
 enum class Lifetime {
     Transient,
@@ -108,12 +112,16 @@ enum class StructBindingFieldKind {
 struct StructBindingFieldPlan {
     std::size_t field{};
     std::string key;
+    std::string jsonKey;
     StructBindingFieldKind kind{StructBindingFieldKind::String};
+    std::vector<std::pair<std::string, std::string>> sources;
+    std::optional<std::string> defaultValue;
 };
 
 struct StructBindingPlan {
     FirStructId type{};
     std::vector<StructBindingFieldPlan> fields;
+    std::optional<std::size_t> jsonBodyField;
 };
 
 const char *webBindingSourceName(WebBindingSource source) {
@@ -954,7 +962,11 @@ std::string emitApplicationHostSource(const FirProgram &program,
         const auto hasFieldMetadata = std::any_of(
             type.fields.begin(), type.fields.end(), [&](const auto &field) {
                 return hasAttribute(program, field.attributes, bindNameAttribute) ||
-                       hasAttribute(program, field.attributes, bindIgnoreAttribute);
+                       hasAttribute(program, field.attributes, bindIgnoreAttribute) ||
+                       hasAttribute(program, field.attributes, bindFromAttribute) ||
+                       hasAttribute(program, field.attributes, bindDefaultAttribute) ||
+                       hasAttribute(program, field.attributes, bindJsonNameAttribute) ||
+                       hasAttribute(program, field.attributes, bindJsonAttribute);
             });
         if (!bindable) {
             if (hasFieldMetadata) {
@@ -973,16 +985,21 @@ std::string emitApplicationHostSource(const FirProgram &program,
         const auto collides = std::find_if(
             program.functions.begin(), program.functions.end(), [&](const auto &function) {
                 return function.sourcePath != generatedSourcePath &&
-                       ownerName(function) == type.name && shortName(function.name) == "Bind";
+                       ownerName(function) == type.name &&
+                       (shortName(function.name) == "Bind" ||
+                        shortName(function.name) == "BindSources" ||
+                        shortName(function.name) == "BindJSON");
             });
         if (collides != program.functions.end()) {
-            diagnostics.error("FDN2375", "generated method Bind already exists for " + type.name,
+            diagnostics.error("FDN2375", "generated binding method already exists for " +
+                                               type.name,
                               collides->sourceSpan);
             continue;
         }
 
-        StructBindingPlan binding{index, {}};
+        StructBindingPlan binding{index, {}, std::nullopt};
         std::set<std::string> keys;
+        std::set<std::string> jsonKeys;
         for (std::size_t fieldIndex = 0; fieldIndex < type.fields.size(); ++fieldIndex) {
             const auto &field = type.fields[fieldIndex];
             if (!field.exported) {
@@ -990,14 +1007,48 @@ std::string emitApplicationHostSource(const FirProgram &program,
             }
             const auto ignored = hasAttribute(program, field.attributes, bindIgnoreAttribute);
             const auto named = findAttribute(program, field.attributes, bindNameAttribute);
-            if (ignored && named != nullptr) {
-                diagnostics.error("FDN2372", "binding field cannot combine @bind.Name and "
-                                                   "@bind.Ignore: " +
-                                                   field.name,
+            const auto defaulted =
+                findAttribute(program, field.attributes, bindDefaultAttribute);
+            const auto jsonNamed =
+                findAttribute(program, field.attributes, bindJsonNameAttribute);
+            const auto jsonBody = hasAttribute(program, field.attributes, bindJsonAttribute);
+            const auto hasSources =
+                hasAttribute(program, field.attributes, bindFromAttribute);
+            if (ignored && (named != nullptr || defaulted != nullptr || jsonNamed != nullptr ||
+                            jsonBody || hasSources)) {
+                diagnostics.error("FDN2372", "binding field cannot combine @bind.Ignore with "
+                                                   "other binding metadata: " + field.name,
                                   type.sourceSpan);
                 continue;
             }
             if (ignored) {
+                continue;
+            }
+            if (jsonBody) {
+                if (named != nullptr || defaulted != nullptr || jsonNamed != nullptr ||
+                    hasSources) {
+                    diagnostics.error("FDN2378", "JSON body field cannot combine with other "
+                                                       "binding metadata: " + field.name,
+                                      type.sourceSpan);
+                    continue;
+                }
+                if (binding.jsonBodyField.has_value()) {
+                    diagnostics.error("FDN2378", "binding type has more than one JSON body field",
+                                      type.sourceSpan);
+                    continue;
+                }
+                const auto bodyType = baseType(field.type);
+                if (bodyType.kind != TypeKind::Struct ||
+                    bodyType.declaration >= program.structs.size() ||
+                    !hasAttribute(program, program.structs[bodyType.declaration].attributes,
+                                  bindableAttribute) ||
+                    packageName(program.structs[bodyType.declaration].name) != rootPackage) {
+                    diagnostics.error("FDN2379", "JSON body field requires a local concrete "
+                                                       "@bind.Bindable struct: " + field.name,
+                                      type.sourceSpan);
+                    continue;
+                }
+                binding.jsonBodyField = fieldIndex;
                 continue;
             }
             auto key = stringArgument(named).value_or(field.name);
@@ -1011,6 +1062,18 @@ std::string emitApplicationHostSource(const FirProgram &program,
                                   type.sourceSpan);
                 continue;
             }
+            auto jsonKey = stringArgument(jsonNamed).value_or(field.name);
+            if (jsonKey.empty()) {
+                diagnostics.error("FDN2380", "JSON binding field key cannot be empty: " +
+                                                   field.name,
+                                  type.sourceSpan);
+                continue;
+            }
+            if (!jsonKeys.insert(jsonKey).second) {
+                diagnostics.error("FDN2381", "duplicate JSON binding field key " + jsonKey,
+                                  type.sourceSpan);
+                continue;
+            }
             const auto kind = structBindingFieldKind(program, field.type);
             if (!kind.has_value()) {
                 diagnostics.error("FDN2374",
@@ -1019,7 +1082,31 @@ std::string emitApplicationHostSource(const FirProgram &program,
                                   type.sourceSpan);
                 continue;
             }
-            binding.fields.push_back({fieldIndex, std::move(key), *kind});
+            std::vector<std::pair<std::string, std::string>> sources;
+            std::set<std::pair<std::string, std::string>> sourceKeys;
+            for (const auto &attribute : field.attributes) {
+                const auto declaration = attributeDeclaration(program, attribute);
+                if (declaration == nullptr || declaration->name != bindFromAttribute) {
+                    continue;
+                }
+                auto source = stringArgument(&attribute, 0).value_or("");
+                auto sourceKey = stringArgument(&attribute, 1).value_or("");
+                if (source.empty() || sourceKey.empty()) {
+                    diagnostics.error("FDN2376", "binding source and key cannot be empty: " +
+                                                       field.name,
+                                      type.sourceSpan);
+                    continue;
+                }
+                if (!sourceKeys.emplace(source, sourceKey).second) {
+                    diagnostics.error("FDN2377", "duplicate binding source " + source + ":" +
+                                                       sourceKey + " for " + field.name,
+                                      type.sourceSpan);
+                    continue;
+                }
+                sources.emplace_back(std::move(source), std::move(sourceKey));
+            }
+            binding.fields.push_back({fieldIndex, std::move(key), std::move(jsonKey), *kind,
+                                      std::move(sources), stringArgument(defaulted)});
         }
         structBindings.push_back(std::move(binding));
     }
@@ -1351,6 +1438,7 @@ std::string emitApplicationHostSource(const FirProgram &program,
     }
     if (!structBindings.empty()) {
         packages.insert("foundation.bind");
+        packages.insert("std.json");
         packages.insert("std.parse");
         const auto usesDuration = std::any_of(
             structBindings.begin(), structBindings.end(), [](const auto &binding) {
@@ -1529,12 +1617,18 @@ std::string emitApplicationHostSource(const FirProgram &program,
         qualifiedName("std.parse.Bool", rootPackage, aliases);
     const auto bindValuesType =
         qualifiedName("foundation.bind.Values", rootPackage, aliases);
+    const auto bindSourcesType =
+        qualifiedName("foundation.bind.Sources", rootPackage, aliases);
     const auto bindErrorType =
         qualifiedName("foundation.bind.Error", rootPackage, aliases);
     const auto bindErrorKindType =
         qualifiedName("foundation.bind.ErrorKind", rootPackage, aliases);
+    const auto jsonParseFunction =
+        qualifiedName("std.json.Parse", rootPackage, aliases);
     const auto durationType =
         qualifiedName("std.time.Duration", rootPackage, aliases);
+    const auto bindNewValuesFunction =
+        qualifiedName("foundation.bind.NewValues", rootPackage, aliases);
     const auto usesWebBool = std::any_of(
         webRoutes.begin(), webRoutes.end(), [&](const auto &route) {
             const auto &function = program.functions[route.function];
@@ -1608,8 +1702,126 @@ std::string emitApplicationHostSource(const FirProgram &program,
             out << "        }\n";
         }
         out << "        .Ok\n"
-            << "    }\n"
-            << "}\n\n";
+            << "    }\n";
+
+        const auto hasSources = std::any_of(
+            binding.fields.begin(), binding.fields.end(), [](const auto &field) {
+                return !field.sources.empty() || field.defaultValue.has_value();
+            });
+        if (hasSources) {
+            out << "\n"
+                << "    fn BindSources(\n"
+                << "        &self,\n"
+                << "        &sources " << bindSourcesType << "\n"
+                << "    ) Result<void, " << bindErrorType << "> {\n"
+                << "        var bindingValues = " << bindNewValuesFunction << "()\n";
+            for (std::size_t index = 0; index < binding.fields.size(); ++index) {
+                const auto &field = binding.fields[index];
+                if (field.sources.empty() && !field.defaultValue.has_value()) {
+                    continue;
+                }
+                const auto suffix = std::to_string(index);
+                out << "        var bindingSourceFound" << suffix << " = false\n";
+                for (const auto &[source, key] : field.sources) {
+                    out << "        if !bindingSourceFound" << suffix << " {\n"
+                        << "            bindingSourceFound" << suffix
+                        << " = sources.CopyInto(\n"
+                        << "                &bindingValues,\n"
+                        << "                ";
+                    emitString(out, source);
+                    out << ",\n"
+                        << "                ";
+                    emitString(out, key);
+                    out << ",\n"
+                        << "                ";
+                    emitString(out, field.key);
+                    out << "\n"
+                        << "            )\n"
+                        << "        }\n";
+                }
+                if (field.defaultValue.has_value()) {
+                    out << "        if !bindingSourceFound" << suffix << " {\n"
+                        << "            bindingValues.Set(";
+                    emitString(out, field.key);
+                    out << ", ";
+                    emitString(out, *field.defaultValue);
+                    out << ")\n"
+                        << "        }\n";
+                }
+            }
+            out << "        self.Bind(&bindingValues)\n"
+                << "    }\n";
+        }
+        out << "\n"
+            << "    fn BindJSON(\n"
+            << "        &self,\n"
+            << "        source String\n"
+            << "    ) Result<void, " << bindErrorType << "> {\n";
+        if (binding.jsonBodyField.has_value()) {
+            out << "        self." << type.fields[*binding.jsonBodyField].name
+                << ".BindJSON(source)\n";
+        } else {
+            out << "        const bindingJsonRoot = " << jsonParseFunction
+                << "(source) else error {\n"
+                << "            return .Err("
+                << qualifiedName("foundation.bind.JsonSyntaxError", rootPackage, aliases)
+                << "(error))\n"
+                << "        }\n"
+                << "        const bindingJsonSelected = "
+                << qualifiedName("foundation.bind.JsonObject", rootPackage, aliases)
+                << "($bindingJsonRoot) else error {\n"
+                << "            return .Err(error)\n"
+                << "        }\n"
+                << "        var bindingJsonObject = bindingJsonSelected\n"
+                << "        var bindingJsonValues = " << bindNewValuesFunction << "()\n";
+            for (std::size_t index = 0; index < binding.fields.size(); ++index) {
+                const auto &fieldPlan = binding.fields[index];
+                const auto &field = type.fields[fieldPlan.field];
+                std::string helper;
+                if (fieldPlan.kind == StructBindingFieldKind::Boolean) {
+                    helper = "foundation.bind.CopyJsonBool";
+                } else if (fieldPlan.kind == StructBindingFieldKind::Integer ||
+                           fieldPlan.kind == StructBindingFieldKind::F32 ||
+                           fieldPlan.kind == StructBindingFieldKind::F64) {
+                    helper = "foundation.bind.CopyJsonNumber";
+                } else if (fieldPlan.kind == StructBindingFieldKind::StringList) {
+                    helper = "foundation.bind.CopyJsonTextList";
+                } else {
+                    helper = "foundation.bind.CopyJsonText";
+                }
+                out << "        const bindingJsonField" << index << " = "
+                    << qualifiedName(helper, rootPackage, aliases) << "(\n"
+                    << "            &bindingJsonObject,\n";
+                if (fieldPlan.kind == StructBindingFieldKind::StringList) {
+                    out << "            &self." << field.name << ",\n";
+                } else {
+                    out << "            &bindingJsonValues,\n";
+                }
+                out << "            ";
+                emitString(out, fieldPlan.jsonKey);
+                out << ",\n";
+                if (fieldPlan.kind != StructBindingFieldKind::StringList) {
+                    out << "            ";
+                    emitString(out, fieldPlan.key);
+                    out << ",\n";
+                }
+                out << "            ";
+                emitString(out, field.name);
+                out << "\n"
+                    << "        ) else error {\n"
+                    << "            return .Err(error)\n"
+                    << "        }\n"
+                    << "        discard bindingJsonField" << index << "\n";
+            }
+            out << "        if bindingJsonObject.Len() != 0 {\n"
+                << "            return .Err("
+                << qualifiedName("foundation.bind.JsonUnknownField", rootPackage, aliases)
+                << "(&bindingJsonObject))\n"
+                << "        }\n"
+                << "        self.Bind(&bindingJsonValues)\n";
+        }
+        out << "    }\n";
+        out << "}\n\n";
     }
 
     if (!webRoutes.empty()) {

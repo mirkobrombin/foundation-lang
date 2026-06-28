@@ -176,6 +176,10 @@ const staticCompletions = [
     { label: "@bind.Bindable()", kind: "Keyword", detail: "Generate a typed Bind method for a concrete struct", insertText: "@bind.Bindable()" },
     { label: "@bind.Name(...)", kind: "Keyword", detail: "Select a generated binding source key", insertText: "@bind.Name(\"${1:key}\")" },
     { label: "@bind.Ignore()", kind: "Keyword", detail: "Exclude a field from generated binding", insertText: "@bind.Ignore()" },
+    { label: "@bind.From(...)", kind: "Keyword", detail: "Select a named binding source and key", insertText: "@bind.From(\"${1:source}\", \"${2:key}\")" },
+    { label: "@bind.Default(...)", kind: "Keyword", detail: "Set a fallback when named sources are absent or empty", insertText: "@bind.Default(\"${1:value}\")" },
+    { label: "@bind.JsonName(...)", kind: "Keyword", detail: "Select a strict JSON property name", insertText: "@bind.JsonName(\"${1:name}\")" },
+    { label: "@bind.JSON()", kind: "Keyword", detail: "Select the single strict JSON body field", insertText: "@bind.JSON()" },
     { label: "@web.Route(...)", kind: "Keyword", detail: "Declare a typed HTTP endpoint", insertText: "@web.Route(${1|.GET,.POST,.PUT,.PATCH,.DELETE,.HEAD,.OPTIONS|}, \"${2:/path}\")" },
     { label: "@web.Path(...)", kind: "Keyword", detail: "Bind a route parameter", insertText: "@web.Path(\"${1:name}\")" },
     { label: "@web.Query(...)", kind: "Keyword", detail: "Bind a query value", insertText: "@web.Query(\"${1:name}\")" },
@@ -219,8 +223,10 @@ const staticCompletions = [
     { label: "plugin.SandboxStopOutcome", kind: "Struct", detail: "process exit and still-owned sandbox" },
     { label: "bind.Values", kind: "Struct", detail: "owned reusable string binding source" },
     { label: "bind.Entry", kind: "Struct", detail: "binding source key and value" },
-    { label: "bind.Error", kind: "Struct", detail: "typed field, key, value, and conversion failure" },
-    { label: "bind.ErrorKind", kind: "Enum", detail: "empty, invalid, or out-of-range binding failure" },
+    { label: "bind.SourceEntry", kind: "Struct", detail: "named binding source, key, and value" },
+    { label: "bind.Sources", kind: "Struct", detail: "ordered evaluated named binding sources" },
+    { label: "bind.Error", kind: "Struct", detail: "typed binding failure with field, key, value, JSON cause, and offset" },
+    { label: "bind.ErrorKind", kind: "Enum", detail: "conversion, JSON syntax, shape, or unknown-field failure" },
     { label: "web.Server", kind: "Struct", detail: "owned typed HTTP server" },
     { label: "web.Router", kind: "Struct", detail: "owned deterministic HTTP router" },
     { label: "web.RouteTable", kind: "Struct", detail: "validated handler-free route metadata" },
@@ -386,10 +392,58 @@ const staticCompletions = [
         insertText: "bind.NewValues()"
     },
     {
+        label: "bind.NewSources",
+        kind: "Function",
+        detail: "fn NewSources() own bind.Sources",
+        insertText: "bind.NewSources()"
+    },
+    {
         label: "bind.Append",
         kind: "Function",
         detail: "fn Append(&values collections.List<String>, $value String) void",
         insertText: "bind.Append(&${1:values}, \\$${2:value})"
+    },
+    {
+        label: "bind.JsonObject",
+        kind: "Function",
+        detail: "fn JsonObject($value json.Value) Result<own json.Object, bind.Error>",
+        insertText: "bind.JsonObject(\\$${1:value})"
+    },
+    {
+        label: "bind.JsonSyntaxError",
+        kind: "Function",
+        detail: "fn JsonSyntaxError(error json.Error) bind.Error",
+        insertText: "bind.JsonSyntaxError(${1:error})"
+    },
+    {
+        label: "bind.JsonUnknownField",
+        kind: "Function",
+        detail: "fn JsonUnknownField(&source json.Object) bind.Error",
+        insertText: "bind.JsonUnknownField(&${1:source})"
+    },
+    {
+        label: "bind.CopyJsonText",
+        kind: "Function",
+        detail: "fn CopyJsonText(&source json.Object, &target bind.Values, jsonKey String, targetKey String, field String) Result<bool, bind.Error>",
+        insertText: "bind.CopyJsonText(&${1:source}, &${2:target}, ${3:jsonKey}, ${4:targetKey}, ${5:field})"
+    },
+    {
+        label: "bind.CopyJsonBool",
+        kind: "Function",
+        detail: "fn CopyJsonBool(&source json.Object, &target bind.Values, jsonKey String, targetKey String, field String) Result<bool, bind.Error>",
+        insertText: "bind.CopyJsonBool(&${1:source}, &${2:target}, ${3:jsonKey}, ${4:targetKey}, ${5:field})"
+    },
+    {
+        label: "bind.CopyJsonNumber",
+        kind: "Function",
+        detail: "fn CopyJsonNumber(&source json.Object, &target bind.Values, jsonKey String, targetKey String, field String) Result<bool, bind.Error>",
+        insertText: "bind.CopyJsonNumber(&${1:source}, &${2:target}, ${3:jsonKey}, ${4:targetKey}, ${5:field})"
+    },
+    {
+        label: "bind.CopyJsonTextList",
+        kind: "Function",
+        detail: "fn CopyJsonTextList(&source json.Object, &target collections.List<String>, jsonKey String, field String) Result<bool, bind.Error>",
+        insertText: "bind.CopyJsonTextList(&${1:source}, &${2:target}, ${3:jsonKey}, ${4:field})"
     },
     {
         label: "bind.Values.Set",
@@ -414,6 +468,30 @@ const staticCompletions = [
         kind: "Method",
         detail: "fn Required(&self, key String) String",
         insertText: "Required(${1:key})"
+    },
+    {
+        label: "bind.Sources.Set",
+        kind: "Method",
+        detail: "fn Set(&self, $source String, $key String, $value String) void",
+        insertText: "Set(\\$${1:source}, \\$${2:key}, \\$${3:value})"
+    },
+    {
+        label: "json.Object.FirstKey",
+        kind: "Method",
+        detail: "fn FirstKey(&self) Option<String>",
+        insertText: "FirstKey()"
+    },
+    {
+        label: "bind.Sources.Value",
+        kind: "Method",
+        detail: "fn Value(&self, source String, key String) Option<String>",
+        insertText: "Value(${1:source}, ${2:key})"
+    },
+    {
+        label: "bind.Sources.CopyInto",
+        kind: "Method",
+        detail: "fn CopyInto(&self, &target bind.Values, source String, key String, targetKey String) bool",
+        insertText: "CopyInto(&${1:target}, ${2:source}, ${3:key}, ${4:targetKey})"
     },
     {
         label: "web.NewServer",

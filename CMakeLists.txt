@@ -1008,6 +1008,7 @@ if(BUILD_TESTING)
             workflow-chain-mismatch:FDN2011
             saga-compensation-result:FDN2011
             saga-without-compensation:FDN1237
+            workflow-malformed-header:FDN1215
             workflow-retry-range:FDN1230)
         string(REPLACE ":" ";" workflow_reject_parts ${workflow_reject})
         list(GET workflow_reject_parts 0 workflow_reject_name)
@@ -1549,6 +1550,12 @@ if(BUILD_TESTING)
             "application-host-bind-duplicate-key;FDN2373"
             "application-host-bind-unsupported-field;FDN2374"
             "application-host-bind-method-collision;FDN2375"
+            "application-host-bind-empty-source;FDN2376"
+            "application-host-bind-duplicate-source;FDN2377"
+            "application-host-bind-json-conflict;FDN2378"
+            "application-host-bind-json-body-type;FDN2379"
+            "application-host-bind-json-empty-name;FDN2380"
+            "application-host-bind-json-duplicate-name;FDN2381"
             "application-host-transfer;FDN2333")
         list(GET application_host_case 0 application_host_name)
         list(GET application_host_case 1 application_host_code)

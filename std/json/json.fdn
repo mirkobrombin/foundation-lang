@@ -170,6 +170,15 @@ struct Object {
         self.length
     }
 
+    // Copies the first remaining key without removing its value.
+    fn FirstKey(&self) Option<String> {
+        const selected = replace self.fields with .None
+        match selected {
+            None: .None
+            Some(node): restoreFirstField(&self, $node)
+        }
+    }
+
     fn pushFront(&self, $key String, $value Value) void {
         const previous = replace self.fields with .None
         self.fields = .Some(own field { key = key value = value next = previous })
@@ -228,6 +237,13 @@ struct Object {
         }
         value
     }
+}
+
+fn restoreFirstField(&object Object, $node own field) Option<String> {
+    const field { key value next } = node
+    const result = text.Copy(key)
+    object.fields = .Some(own field { key = key value = value next = next })
+    .Some(result)
 }
 
 enum Value {

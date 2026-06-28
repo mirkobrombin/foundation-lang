@@ -1,6 +1,7 @@
 package foundation.bind
 
 import std.collections
+import std.json
 import std.text
 
 // Requests a compiler-generated binder for one concrete struct.
@@ -12,10 +13,25 @@ attribute Name(value String) targets(field)
 // Excludes one field from a generated binder.
 attribute Ignore() targets(field)
 
+// Selects one named source and key. Attribute order defines fallback precedence.
+attribute From(source String, key String) targets(field) repeatable
+
+// Supplies a field value when every named source is absent or empty.
+attribute Default(value String) targets(field)
+
+// Selects a JSON property name independently from named string sources.
+attribute JsonName(value String) targets(field)
+
+// Selects the single field that receives a strict typed JSON body.
+attribute JSON() targets(field)
+
 enum ErrorKind {
     Empty
     Invalid
     OutOfRange
+    JsonSyntax
+    JsonType
+    JsonUnknownField
 }
 
 struct Error {
@@ -23,9 +39,17 @@ struct Error {
     Field String
     Key String
     Value String
+    Offset u64 = 0
+    JsonKind json.ErrorKind = .UnexpectedEnd
 }
 
 struct Entry {
+    Key String
+    Value String
+}
+
+struct SourceEntry {
+    Source String
     Key String
     Value String
 }
@@ -71,8 +95,146 @@ struct Values {
     }
 }
 
+struct Sources {
+    entries own collections.List<SourceEntry>
+
+    // Registers one source value. The first value registered for a source key wins.
+    fn Set(&self, $source String, $key String, $value String) void {
+        self.entries.PushFront(SourceEntry {
+            Source = source
+            Key = key
+            Value = value
+        })
+    }
+
+    // Copies the first non-empty value registered for a source key.
+    fn Value(&self, source String, key String) Option<String> {
+        var active = replace self.entries with collections.NewList<SourceEntry>()
+        var restored = collections.NewList<SourceEntry>()
+        var result Option<String> = .None
+        while !active.IsEmpty() {
+            const entry = sourceEntryValue(active.PopFront())
+            if entry.Source == source && entry.Key == key && entry.Value != "" {
+                const previous = replace result with .None
+                discard previous
+                result = .Some(text.Copy(entry.Value))
+            }
+            restored.PushFront($entry)
+        }
+        self.entries = reverseSourceEntries($restored)
+        result
+    }
+
+    // Copies a selected source value into a flat binding set.
+    fn CopyInto(
+        &self,
+        &target Values,
+        source String,
+        key String,
+        targetKey String
+    ) bool {
+        const value = self.Value(source, key)
+        match value {
+            None: false
+            Some(found): copySourceValue(&target, targetKey, $found)
+        }
+    }
+}
+
 fn NewValues() own Values {
     own Values { entries = collections.NewList<Entry>() }
+}
+
+fn NewSources() own Sources {
+    own Sources { entries = collections.NewList<SourceEntry>() }
+}
+
+// Converts a parsed JSON root into an object or returns a typed shape error.
+fn JsonObject($value json.Value) Result<own json.Object, Error> {
+    match value {
+        Object(fields): .Ok(fields)
+        Null: .Err(jsonTypeError("", ""))
+        Bool(flag): .Err(jsonTypeError("", ""))
+        Number(number): .Err(jsonTypeError("", ""))
+        Text(content): .Err(jsonTypeError("", ""))
+        Array(items): .Err(jsonTypeError("", ""))
+    }
+}
+
+// Preserves the parser offset when strict JSON syntax is invalid.
+fn JsonSyntaxError(error json.Error) Error {
+    Error {
+        Kind = .JsonSyntax
+        Field = ""
+        Key = ""
+        Value = ""
+        Offset = error.Offset
+        JsonKind = error.Kind
+    }
+}
+
+// Reports the first property not consumed by a generated decoder.
+fn JsonUnknownField(&source json.Object) Error {
+    const key = source.FirstKey()
+    match key {
+        None: missingJsonField()
+        Some(found): unknownJsonField($found)
+    }
+}
+
+fn CopyJsonText(
+    &source json.Object,
+    &target Values,
+    jsonKey String,
+    targetKey String,
+    field String
+) Result<bool, Error> {
+    const selected = source.Take(jsonKey)
+    match selected {
+        None: .Ok(true)
+        Some(value): copyJsonTextValue(&target, targetKey, field, jsonKey, $value)
+    }
+}
+
+fn CopyJsonBool(
+    &source json.Object,
+    &target Values,
+    jsonKey String,
+    targetKey String,
+    field String
+) Result<bool, Error> {
+    const selected = source.Take(jsonKey)
+    match selected {
+        None: .Ok(true)
+        Some(value): copyJsonBoolValue(&target, targetKey, field, jsonKey, $value)
+    }
+}
+
+fn CopyJsonNumber(
+    &source json.Object,
+    &target Values,
+    jsonKey String,
+    targetKey String,
+    field String
+) Result<bool, Error> {
+    const selected = source.Take(jsonKey)
+    match selected {
+        None: .Ok(true)
+        Some(value): copyJsonNumberValue(&target, targetKey, field, jsonKey, $value)
+    }
+}
+
+fn CopyJsonTextList(
+    &source json.Object,
+    &target collections.List<String>,
+    jsonKey String,
+    field String
+) Result<bool, Error> {
+    const selected = source.Take(jsonKey)
+    match selected {
+        None: .Ok(true)
+        Some(value): copyJsonTextListValue(&target, field, jsonKey, $value)
+    }
 }
 
 // Appends one string while preserving the existing list order.
@@ -94,13 +256,192 @@ fn entryValue($value Option<Entry>) Entry {
     }
 }
 
+fn sourceEntryValue($value Option<SourceEntry>) SourceEntry {
+    match value {
+        None: missingSourceEntry()
+        Some(entry): entry
+    }
+}
+
 fn missingEntry() Entry {
     panic("binding entry invariant failed")
+}
+
+fn missingSourceEntry() SourceEntry {
+    panic("binding source entry invariant failed")
 }
 
 fn discardFound($value String) bool {
     discard value
     true
+}
+
+fn copySourceValue(
+    &target Values,
+    targetKey String,
+    $value String
+) bool {
+    target.Set(text.Copy(targetKey), $value)
+    true
+}
+
+fn copyJsonTextValue(
+    &target Values,
+    targetKey String,
+    field String,
+    jsonKey String,
+    $value json.Value
+) Result<bool, Error> {
+    match value {
+        Text(found): setJsonValue(&target, targetKey, $found)
+        Null: .Err(jsonTypeError(field, jsonKey))
+        Bool(flag): .Err(jsonTypeError(field, jsonKey))
+        Number(number): .Err(jsonTypeError(field, jsonKey))
+        Array(items): .Err(jsonTypeError(field, jsonKey))
+        Object(fields): .Err(jsonTypeError(field, jsonKey))
+    }
+}
+
+fn copyJsonBoolValue(
+    &target Values,
+    targetKey String,
+    field String,
+    jsonKey String,
+    $value json.Value
+) Result<bool, Error> {
+    match value {
+        Bool(found): setJsonBool(&target, targetKey, found)
+        Null: .Err(jsonTypeError(field, jsonKey))
+        Number(number): .Err(jsonTypeError(field, jsonKey))
+        Text(content): .Err(jsonTypeError(field, jsonKey))
+        Array(items): .Err(jsonTypeError(field, jsonKey))
+        Object(fields): .Err(jsonTypeError(field, jsonKey))
+    }
+}
+
+fn copyJsonNumberValue(
+    &target Values,
+    targetKey String,
+    field String,
+    jsonKey String,
+    $value json.Value
+) Result<bool, Error> {
+    match value {
+        Number(found): setJsonValue(&target, targetKey, $found)
+        Null: .Err(jsonTypeError(field, jsonKey))
+        Bool(flag): .Err(jsonTypeError(field, jsonKey))
+        Text(content): .Err(jsonTypeError(field, jsonKey))
+        Array(items): .Err(jsonTypeError(field, jsonKey))
+        Object(fields): .Err(jsonTypeError(field, jsonKey))
+    }
+}
+
+fn copyJsonTextListValue(
+    &target collections.List<String>,
+    field String,
+    jsonKey String,
+    $value json.Value
+) Result<bool, Error> {
+    match value {
+        Array(items): replaceJsonTextList(&target, field, jsonKey, $items)
+        Null: .Err(jsonTypeError(field, jsonKey))
+        Bool(flag): .Err(jsonTypeError(field, jsonKey))
+        Number(number): .Err(jsonTypeError(field, jsonKey))
+        Text(content): .Err(jsonTypeError(field, jsonKey))
+        Object(fields): .Err(jsonTypeError(field, jsonKey))
+    }
+}
+
+fn replaceJsonTextList(
+    &target collections.List<String>,
+    field String,
+    jsonKey String,
+    $items own json.Array
+) Result<bool, Error> {
+    var source = items
+    var reversed = collections.NewList<String>()
+    while source.Len() != 0 {
+        const value = requiredJsonArrayValue($source.PopFront())
+        const textValue = jsonTextValue(field, jsonKey, $value) else error {
+            return .Err(error)
+        }
+        reversed.PushFront($textValue)
+    }
+    discard source
+    while !target.IsEmpty() {
+        discard requiredValue($target.PopFront())
+    }
+    while !reversed.IsEmpty() {
+        target.PushFront(requiredValue($reversed.PopFront()))
+    }
+    .Ok(true)
+}
+
+fn jsonTextValue(
+    field String,
+    jsonKey String,
+    $value json.Value
+) Result<String, Error> {
+    match value {
+        Text(found): .Ok(found)
+        Null: .Err(jsonTypeError(field, jsonKey))
+        Bool(flag): .Err(jsonTypeError(field, jsonKey))
+        Number(number): .Err(jsonTypeError(field, jsonKey))
+        Array(items): .Err(jsonTypeError(field, jsonKey))
+        Object(fields): .Err(jsonTypeError(field, jsonKey))
+    }
+}
+
+fn setJsonValue(
+    &target Values,
+    targetKey String,
+    $value String
+) Result<bool, Error> {
+    target.Set(text.Copy(targetKey), $value)
+    .Ok(true)
+}
+
+fn setJsonBool(
+    &target Values,
+    targetKey String,
+    value bool
+) Result<bool, Error> {
+    const encoded = "true" if value else "false"
+    target.Set(text.Copy(targetKey), text.Copy(encoded))
+    .Ok(true)
+}
+
+fn requiredJsonArrayValue($value Option<json.Value>) json.Value {
+    match value {
+        None: missingJsonArrayValue()
+        Some(found): found
+    }
+}
+
+fn missingJsonArrayValue() json.Value {
+    panic("JSON array invariant failed")
+}
+
+fn jsonTypeError(field String, key String) Error {
+    Error {
+        Kind = .JsonType
+        Field = text.Copy(field)
+        Key = text.Copy(key)
+        Value = ""
+    }
+}
+
+fn unknownJsonField($key String) Error {
+    Error {
+        Kind = .JsonUnknownField
+        Field = ""
+        Key = key
+        Value = ""
+    }
+}
+
+fn missingJsonField() Error {
+    panic("JSON object invariant failed")
 }
 
 fn requiredValue($value Option<String>) String {
@@ -119,6 +460,17 @@ fn reverseEntries($values own collections.List<Entry>) own collections.List<Entr
     var result = collections.NewList<Entry>()
     while !source.IsEmpty() {
         result.PushFront(entryValue(source.PopFront()))
+    }
+    result
+}
+
+fn reverseSourceEntries(
+    $values own collections.List<SourceEntry>
+) own collections.List<SourceEntry> {
+    var source = values
+    var result = collections.NewList<SourceEntry>()
+    while !source.IsEmpty() {
+        result.PushFront(sourceEntryValue(source.PopFront()))
     }
     result
 }

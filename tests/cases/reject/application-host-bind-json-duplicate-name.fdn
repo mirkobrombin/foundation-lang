@@ -1,0 +1,16 @@
+package test.host.bind.json_duplicate_name
+
+import foundation.bind
+
+@bind.Bindable()
+struct Body {
+    @bind.JsonName("name")
+    First String
+
+    @bind.JsonName("name")
+    Second String
+}
+
+fn main() i32 {
+    0
+}

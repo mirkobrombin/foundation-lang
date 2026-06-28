@@ -3,6 +3,7 @@ package test.host.bind
 import foundation.bind
 import std.collections
 import std.format
+import std.json
 import std.time
 
 @bind.Bindable()
@@ -29,8 +30,38 @@ struct Settings {
     Absent i32
     internal i32
 
+    @bind.From("path", "id")
+    SourceId i32
+
+    @bind.From("query", "name")
+    @bind.From("header", "X-Name")
+    SourceName String
+
+    @bind.From("query", "limit")
+    @bind.Default("10")
+    Limit u16
+
     @bind.Ignore()
     Preserved String
+}
+
+@bind.Bindable()
+struct ProfileInput {
+    @bind.JsonName("display_name")
+    DisplayName String
+
+    Age u8
+    Active bool
+    Score f64
+    Tags own collections.List<String>
+}
+
+@bind.Bindable()
+struct RequestInput {
+    RequestId String
+
+    @bind.JSON()
+    Body ProfileInput
 }
 
 fn isOutOfRange(kind bind.ErrorKind) bool {
@@ -38,6 +69,64 @@ fn isOutOfRange(kind bind.ErrorKind) bool {
         Empty: false
         Invalid: false
         OutOfRange: true
+        JsonSyntax: false
+        JsonType: false
+        JsonUnknownField: false
+    }
+}
+
+fn bindingErrorCode(kind bind.ErrorKind) i32 {
+    match kind {
+        Empty: 1
+        Invalid: 2
+        OutOfRange: 3
+        JsonSyntax: 4
+        JsonType: 5
+        JsonUnknownField: 6
+    }
+}
+
+fn matchesJsonError(
+    $result Result<void, bind.Error>,
+    expected bind.ErrorKind,
+    field String,
+    key String
+) bool {
+    match result {
+        Ok: false
+        Err(error): bindingErrorCode(error.Kind) == bindingErrorCode(expected) &&
+            error.Field == field && error.Key == key
+    }
+}
+
+fn jsonErrorCode(kind json.ErrorKind) i32 {
+    match kind {
+        UnexpectedEnd: 1
+        UnexpectedToken: 2
+        InvalidString: 3
+        InvalidEscape: 4
+        InvalidNumber: 5
+        DuplicateKey: 6
+        DepthLimit: 7
+        TrailingData: 8
+    }
+}
+
+fn matchesJsonSyntax(
+    $result Result<void, bind.Error>,
+    expected json.ErrorKind
+) bool {
+    match result {
+        Ok: false
+        Err(error): bindingErrorCode(error.Kind) == 4 &&
+            jsonErrorCode(error.JsonKind) == jsonErrorCode(expected) && error.Offset != 0
+    }
+}
+
+fn requiredLabel($value Option<String>) String {
+    match value {
+        None: panic("missing JSON label")
+        Some(found): found
     }
 }
 
@@ -91,6 +180,9 @@ fn main() i32 {
         Labels = collections.NewList<String>()
         Absent = 42
         internal = 77
+        SourceId = 0
+        SourceName = "unset"
+        Limit = 0
         Preserved = "preserved"
     }
     settings.Labels.PushFront("initial")
@@ -117,6 +209,17 @@ fn main() i32 {
     const accepted = settings.Bind(&values)
     const acceptedCode = acceptanceCode($accepted)
     if acceptedCode != 0 return acceptedCode
+
+    var sources = bind.NewSources()
+    sources.Set("path", "id", "55")
+    sources.Set("path", "id", "66")
+    sources.Set("header", "X-Name", "header")
+    sources.Set("query", "name", "query")
+    sources.Set("query", "limit", "")
+    const sourcesAccepted = settings.BindSources(&sources)
+    const sourcesCode = acceptanceCode($sourcesAccepted)
+    if sourcesCode != 0 return sourcesCode
+
     print(settings.Name)
     print(format.U16(settings.Port))
     print(format.I8(settings.Signed8))
@@ -137,6 +240,9 @@ fn main() i32 {
     print(labelValue($settings.Labels.PopFront()))
     print(format.I32(settings.Absent))
     print(format.I32(settings.internal))
+    print(format.I32(settings.SourceId))
+    print(settings.SourceName)
+    print(format.U16(settings.Limit))
     print(settings.Preserved)
 
     var invalid = bind.NewValues()
@@ -144,5 +250,74 @@ fn main() i32 {
     const rejected = settings.Bind(&invalid)
     const code = rejectionCode($rejected)
     if code != 0 return code
+
+    var jsonTags = collections.NewList<String>()
+    jsonTags.PushFront("old")
+    var request = RequestInput {
+        RequestId = "request-1"
+        Body = ProfileInput {
+            DisplayName = "unset"
+            Age = 0
+            Active = false
+            Score = 0.0
+            Tags = jsonTags
+        }
+    }
+    const jsonAccepted = request.BindJSON(
+        "{\"display_name\":\"Ada\",\"Age\":42,\"Active\":true," +
+        "\"Score\":1.25,\"Tags\":[\"compiler\",\"foundation\"]}"
+    )
+    if acceptanceCode($jsonAccepted) != 0 return 4
+    print(request.RequestId)
+    print(request.Body.DisplayName)
+    print(format.U8(request.Body.Age))
+    print(format.Bool(request.Body.Active))
+    print(format.F64(request.Body.Score))
+    print(format.I32(request.Body.Tags.Len()))
+    print(requiredLabel($request.Body.Tags.PopFront()))
+    print(requiredLabel($request.Body.Tags.PopFront()))
+
+    const jsonPartial = request.BindJSON("{\"display_name\":\"Grace\"}")
+    if acceptanceCode($jsonPartial) != 0 return 5
+    print(request.Body.DisplayName)
+    print(format.U8(request.Body.Age))
+
+    if !matchesJsonError(
+        request.BindJSON("{\"display_name\":\"Ada\",\"extra\":true}"),
+        .JsonUnknownField,
+        "",
+        "extra"
+    ) {
+        return 6
+    }
+    if !matchesJsonError(
+        request.BindJSON("{\"Age\":\"forty-two\"}"),
+        .JsonType,
+        "Age",
+        "Age"
+    ) {
+        return 7
+    }
+    if !matchesJsonSyntax(
+        request.BindJSON("{\"Age\":1}{\"Age\":2}"),
+        .TrailingData
+    ) {
+        return 8
+    }
+    if !matchesJsonSyntax(
+        request.BindJSON("{\"Age\":1,\"Age\":2}"),
+        .DuplicateKey
+    ) {
+        return 9
+    }
+    if !matchesJsonError(
+        request.BindJSON("[]"),
+        .JsonType,
+        "",
+        ""
+    ) {
+        return 10
+    }
+    print("json strict")
     0
 }

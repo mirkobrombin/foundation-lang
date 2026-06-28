@@ -66,3 +66,80 @@ targets are `String`, `bool`, every fixed-width or pointer-width integer, `f32`,
 duplicate keys, generic bindable structs, and collisions with a hand-written `Bind` method are
 compile-time diagnostics. Use `@bind.Ignore()` when a field is intentionally outside the binding
 surface.
+
+## Named sources and defaults
+
+`@bind.From(source, key)` maps a field to a named source. It is repeatable; attribute order is the
+static fallback order. `@bind.Default(value)` applies only when every source is absent or empty.
+
+```foundation
+@bind.Bindable()
+struct RequestOptions {
+    @bind.From("path", "id")
+    Id u64
+
+    @bind.From("query", "page")
+    @bind.Default("1")
+    Page u32
+}
+```
+
+The generator adds a second method when a field has source metadata:
+
+```foundation
+fn BindSources(&self, &sources bind.Sources) Result<void, bind.Error>
+```
+
+`Sources.Set` registers evaluated values. The first non-empty value registered for the same source
+and key wins. This keeps source acquisition outside the binder, so request adapters and custom
+callbacks do not become stored closures with hidden lifetimes.
+
+```foundation
+var sources = bind.NewSources()
+sources.Set("path", "id", "42")
+sources.Set("query", "page", "")
+
+const result = options.BindSources(&sources)
+```
+
+## Strict JSON
+
+Every bindable struct receives a generated `BindJSON` method:
+
+```foundation
+fn BindJSON(&self, source String) Result<void, bind.Error>
+```
+
+The method accepts one JSON object, preserves fields absent from the object, and decodes each
+present property according to its declared Foundation type. `@bind.JsonName(...)` changes only the
+JSON property name; it does not change keys used by `Bind` or `BindSources`. String lists require a
+JSON array of strings and replace their previous contents.
+
+Parsing is strict. Duplicate properties, trailing data or a second JSON value, non-object roots,
+wrong property types, and unknown properties return typed `bind.Error` values. Syntax errors retain
+the underlying `json.ErrorKind` and parser offset. Unknown-field errors retain the first
+unconsumed property name.
+
+To preserve the request body-field boundary, mark one local bindable field with `@bind.JSON()`:
+
+```foundation
+@bind.Bindable()
+struct CreateProfile {
+    @bind.JsonName("display_name")
+    DisplayName String
+
+    Age u8
+}
+
+@bind.Bindable()
+struct RequestInput {
+    RequestId String
+
+    @bind.JSON()
+    Body CreateProfile
+}
+```
+
+`RequestInput.BindJSON` delegates to `Body.BindJSON`; other request fields remain unchanged. The
+compiler rejects multiple JSON body fields, non-bindable body types, empty JSON names, duplicate
+JSON names, and hand-written method collisions before generating source.

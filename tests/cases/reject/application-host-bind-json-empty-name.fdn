@@ -1,0 +1,13 @@
+package test.host.bind.json_empty_name
+
+import foundation.bind
+
+@bind.Bindable()
+struct Body {
+    @bind.JsonName("")
+    Name String
+}
+
+fn main() i32 {
+    0
+}

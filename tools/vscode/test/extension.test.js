@@ -117,7 +117,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.91.0");
+    assert.equal(manifest.version, "0.93.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1255,9 +1255,14 @@ test("grammar and completions track compiler keywords", () => {
         "plugin.StopSandbox", "plugin.FactoryRegistry.Register",
         "plugin.FactoryRegistry.Create", "plugin.ExecSandbox.Argument",
         "plugin.ExecSandbox.IsRunning", "plugin.ExecSandbox.Close",
-        "foundation.bind", "bind.Values", "bind.Entry", "bind.Error", "bind.ErrorKind",
-        "bind.NewValues", "bind.Append", "bind.Values.Set", "bind.Values.Value",
-        "bind.Values.Contains", "bind.Values.Required",
+        "foundation.bind", "bind.Values", "bind.Entry", "bind.SourceEntry", "bind.Sources",
+        "bind.Error", "bind.ErrorKind", "bind.NewValues", "bind.NewSources", "bind.Append",
+        "bind.JsonObject", "bind.JsonSyntaxError", "bind.JsonUnknownField",
+        "bind.CopyJsonText", "bind.CopyJsonBool", "bind.CopyJsonNumber",
+        "bind.CopyJsonTextList",
+        "bind.Values.Set", "bind.Values.Value", "bind.Values.Contains", "bind.Values.Required",
+        "bind.Sources.Set", "bind.Sources.Value", "bind.Sources.CopyInto",
+        "json.Object.FirstKey",
         "foundation.web", "web.Server", "web.Router", "web.RouteTable", "web.RouteMatch",
         "web.Handler", "web.Application", "web.Request", "web.Response", "web.Method",
         "web.MatchError", "web.DispatchError", "web.ServeOutcome", "web.NewServer",
@@ -1277,7 +1282,8 @@ test("grammar and completions track compiler keywords", () => {
     const webInject = staticCompletions.find((completion) =>
         completion.label === "@web.Inject()");
     assert.equal(webInject?.insertText, "@web.Inject()");
-    for (const attribute of ["@bind.Bindable()", "@bind.Name(...)", "@bind.Ignore()"]) {
+    for (const attribute of ["@bind.Bindable()", "@bind.Name(...)", "@bind.Ignore()",
+        "@bind.From(...)", "@bind.Default(...)", "@bind.JsonName(...)", "@bind.JSON()"]) {
         assert.ok(completionLabels.has(attribute));
     }
     const bindAppend = staticCompletions.find((completion) =>
@@ -1286,6 +1292,10 @@ test("grammar and completions track compiler keywords", () => {
     const bindSet = staticCompletions.find((completion) =>
         completion.label === "bind.Values.Set");
     assert.equal(bindSet?.insertText, "Set(\\$${1:key}, \\$${2:value})");
+    const bindSourcesSet = staticCompletions.find((completion) =>
+        completion.label === "bind.Sources.Set");
+    assert.equal(bindSourcesSet?.insertText,
+        "Set(\\$${1:source}, \\$${2:key}, \\$${3:value})");
     const parsedGrammar = JSON.parse(grammar);
     const rawPointer = parsedGrammar.repository.types.patterns[0];
     const rawPointerMatch = new RegExp(rawPointer.match).exec("*const i32");

@@ -1084,7 +1084,12 @@ void Parser::workflowDeclaration(WorkflowKind kind) {
     const auto token = kind == WorkflowKind::Pipeline ? TokenKind::Pipeline : TokenKind::Saga;
     const auto word = kind == WorkflowKind::Pipeline ? "pipeline" : "saga";
     const auto start = expect(token, "FDN1214", "expected workflow declaration");
-    const auto name = expect(TokenKind::Identifier, "FDN1215", "expected workflow name");
+    if (!check(TokenKind::Identifier)) {
+        static_cast<void>(
+            expect(TokenKind::Identifier, "FDN1215", "expected workflow name"));
+        return;
+    }
+    const auto name = advance();
     auto typeParameters = this->typeParameters();
     expect(TokenKind::LeftParen, "FDN1216", "expected ( after workflow name");
     std::vector<Parameter> parameters;
@@ -1118,6 +1123,7 @@ void Parser::workflowDeclaration(WorkflowKind kind) {
         return value;
     };
     while (!check(TokenKind::RightBrace) && !atEnd()) {
+        const auto stepStart = current_;
         const auto step = contextual("step", "FDN1221", "expected step in workflow");
         const auto stepName =
             expect(TokenKind::Identifier, "FDN1222", "expected workflow step name");
@@ -1163,6 +1169,9 @@ void Parser::workflowDeclaration(WorkflowKind kind) {
             stepNames.push_back(stepName.text);
         }
         steps.push_back(std::move(workflowStep));
+        if (current_ == stepStart) {
+            advance();
+        }
     }
     expect(TokenKind::RightBrace, "FDN1234", "expected } after workflow");
     if (parameters.size() != 1) {

@@ -10,6 +10,50 @@ methods Settings {
         discard source
         .Ok
     }
+
+    fn BindSources(
+        &self,
+        &sources foundationHost0.Sources
+    ) Result<void, foundationHost0.Error> {
+        discard sources
+        .Ok
+    }
+}
+
+methods ProfileInput {
+    fn Bind(
+        &self,
+        &source foundationHost0.Values
+    ) Result<void, foundationHost0.Error> {
+        discard source
+        .Ok
+    }
+
+    fn BindJSON(
+        &self,
+        source String
+    ) Result<void, foundationHost0.Error> {
+        discard source
+        .Ok
+    }
+}
+
+methods RequestInput {
+    fn Bind(
+        &self,
+        &source foundationHost0.Values
+    ) Result<void, foundationHost0.Error> {
+        discard source
+        .Ok
+    }
+
+    fn BindJSON(
+        &self,
+        source String
+    ) Result<void, foundationHost0.Error> {
+        discard source
+        .Ok
+    }
 }
 
 // foundation:generated application/v1

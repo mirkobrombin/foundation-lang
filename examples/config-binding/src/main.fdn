@@ -10,10 +10,18 @@ struct ServerConfig {
     Host String
 
     @bind.Name("port")
+    @bind.JsonName("port")
     Port u16
 
     Timeout time.Duration
     Labels own collections.List<String>
+
+    @bind.From("environment", "MODE")
+    Mode String
+
+    @bind.From("environment", "WORKERS")
+    @bind.Default("4")
+    Workers u16
 
     @bind.Ignore()
     Source String
@@ -37,6 +45,8 @@ fn main() i32 {
         Port = 8080
         Timeout = time.Zero()
         Labels = collections.NewList<String>()
+        Mode = "local"
+        Workers = 0
         Source = "defaults"
     }
     config.Labels.PushFront("local")
@@ -47,10 +57,23 @@ fn main() i32 {
     values.Set("Labels", "generated")
     if !accepted($config.Bind(&values)) return 1
 
+    var sources = bind.NewSources()
+    sources.Set("environment", "MODE", "production")
+    sources.Set("environment", "WORKERS", "")
+    if !accepted($config.BindSources(&sources)) return 1
+
+    const jsonBound = config.BindJSON(
+        "{\"Host\":\"0.0.0.0\",\"port\":9443,\"Timeout\":\"2s\"," +
+        "\"Labels\":[\"api\",\"production\"],\"Mode\":\"json\"}"
+    )
+    if !accepted($jsonBound) return 1
+
     print(config.Host)
     print(format.U16(config.Port))
     print(format.I64(config.Timeout.Nanoseconds()))
     print(format.I32(config.Labels.Len()))
+    print(config.Mode)
+    print(format.U16(config.Workers))
     print(config.Source)
     0
 }

@@ -1,0 +1,13 @@
+package test.host.bind.empty.source
+
+import foundation.bind
+
+@bind.Bindable()
+struct Config {
+    @bind.From("", "value")
+    Value String
+}
+
+fn main() i32 {
+    0
+}

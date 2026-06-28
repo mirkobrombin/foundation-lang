@@ -1,8 +1,9 @@
 package example.config
 
 import foundation.bind as foundationHost0
-import std.parse as foundationHost1
-import std.time as foundationHost2
+import std.json as foundationHost1
+import std.parse as foundationHost2
+import std.time as foundationHost3
 
 methods ServerConfig {
     fn Bind(
@@ -15,7 +16,7 @@ methods ServerConfig {
         }
         if source.Contains("port") {
             const value = source.Required("port")
-            const bindingParsed1 = foundationHost1.U16(value) else error {
+            const bindingParsed1 = foundationHost2.U16(value) else error {
                 const bindingKind1 foundationHost0.ErrorKind = match error {
                     Empty: .Empty
                     Invalid: .Invalid
@@ -32,7 +33,7 @@ methods ServerConfig {
         }
         if source.Contains("Timeout") {
             const value = source.Required("Timeout")
-            const bindingParsed2 = foundationHost2.Duration.Parse(value) else error {
+            const bindingParsed2 = foundationHost3.Duration.Parse(value) else error {
                 const bindingKind2 foundationHost0.ErrorKind = match error {
                     Empty: .Empty
                     Invalid: .Invalid
@@ -51,7 +52,134 @@ methods ServerConfig {
             const value = source.Required("Labels")
             foundationHost0.Append(&self.Labels, $value)
         }
+        if source.Contains("Mode") {
+            const value = source.Required("Mode")
+            self.Mode = value
+        }
+        if source.Contains("Workers") {
+            const value = source.Required("Workers")
+            const bindingParsed5 = foundationHost2.U16(value) else error {
+                const bindingKind5 foundationHost0.ErrorKind = match error {
+                    Empty: .Empty
+                    Invalid: .Invalid
+                    Overflow: .OutOfRange
+                }
+                return .Err(foundationHost0.Error {
+                    Kind = bindingKind5
+                    Field = "Workers"
+                    Key = "Workers"
+                    Value = value
+                })
+            }
+            self.Workers = bindingParsed5
+        }
         .Ok
+    }
+
+    fn BindSources(
+        &self,
+        &sources foundationHost0.Sources
+    ) Result<void, foundationHost0.Error> {
+        var bindingValues = foundationHost0.NewValues()
+        var bindingSourceFound4 = false
+        if !bindingSourceFound4 {
+            bindingSourceFound4 = sources.CopyInto(
+                &bindingValues,
+                "environment",
+                "MODE",
+                "Mode"
+            )
+        }
+        var bindingSourceFound5 = false
+        if !bindingSourceFound5 {
+            bindingSourceFound5 = sources.CopyInto(
+                &bindingValues,
+                "environment",
+                "WORKERS",
+                "Workers"
+            )
+        }
+        if !bindingSourceFound5 {
+            bindingValues.Set("Workers", "4")
+        }
+        self.Bind(&bindingValues)
+    }
+
+    fn BindJSON(
+        &self,
+        source String
+    ) Result<void, foundationHost0.Error> {
+        const bindingJsonRoot = foundationHost1.Parse(source) else error {
+            return .Err(foundationHost0.JsonSyntaxError(error))
+        }
+        const bindingJsonSelected = foundationHost0.JsonObject($bindingJsonRoot) else error {
+            return .Err(error)
+        }
+        var bindingJsonObject = bindingJsonSelected
+        var bindingJsonValues = foundationHost0.NewValues()
+        const bindingJsonField0 = foundationHost0.CopyJsonText(
+            &bindingJsonObject,
+            &bindingJsonValues,
+            "Host",
+            "Host",
+            "Host"
+        ) else error {
+            return .Err(error)
+        }
+        discard bindingJsonField0
+        const bindingJsonField1 = foundationHost0.CopyJsonNumber(
+            &bindingJsonObject,
+            &bindingJsonValues,
+            "port",
+            "port",
+            "Port"
+        ) else error {
+            return .Err(error)
+        }
+        discard bindingJsonField1
+        const bindingJsonField2 = foundationHost0.CopyJsonText(
+            &bindingJsonObject,
+            &bindingJsonValues,
+            "Timeout",
+            "Timeout",
+            "Timeout"
+        ) else error {
+            return .Err(error)
+        }
+        discard bindingJsonField2
+        const bindingJsonField3 = foundationHost0.CopyJsonTextList(
+            &bindingJsonObject,
+            &self.Labels,
+            "Labels",
+            "Labels"
+        ) else error {
+            return .Err(error)
+        }
+        discard bindingJsonField3
+        const bindingJsonField4 = foundationHost0.CopyJsonText(
+            &bindingJsonObject,
+            &bindingJsonValues,
+            "Mode",
+            "Mode",
+            "Mode"
+        ) else error {
+            return .Err(error)
+        }
+        discard bindingJsonField4
+        const bindingJsonField5 = foundationHost0.CopyJsonNumber(
+            &bindingJsonObject,
+            &bindingJsonValues,
+            "Workers",
+            "Workers",
+            "Workers"
+        ) else error {
+            return .Err(error)
+        }
+        discard bindingJsonField5
+        if bindingJsonObject.Len() != 0 {
+            return .Err(foundationHost0.JsonUnknownField(&bindingJsonObject))
+        }
+        self.Bind(&bindingJsonValues)
     }
 }
 
