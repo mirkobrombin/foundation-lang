@@ -15,6 +15,7 @@ enum FoundationWebBindingSource {
 enum FoundationWebBindingKind {
     Missing
     Invalid
+    UnsupportedMediaType
 }
 
 struct FoundationWebBindingError {
@@ -195,6 +196,20 @@ methods FoundationApplication {
         if Id == 5 return self.foundationDispatchWebCreateUser($foundationActiveRequest)
         discard foundationActiveRequest
         .Err(.NotFound)
+    }
+
+    fn ErrorResponse(
+        self,
+        $error FoundationWebError
+    ) Result<foundationHost0.Response, FoundationWebError> {
+        match error {
+            Binding(error): match error.Kind {
+                Missing: .Ok(foundationHost0.Text(400, "missing request value"))
+                Invalid: .Ok(foundationHost0.Text(400, "invalid request value"))
+                UnsupportedMediaType: .Ok(foundationHost0.Text(415, "unsupported media type"))
+            }
+            CreateUserFailed(error): .Err(.CreateUserFailed(error = error))
+        }
     }
 }
 

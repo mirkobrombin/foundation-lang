@@ -44,7 +44,9 @@ encoding are rejected before dispatch. Closing the stream before the declared bo
 exposing owned request storage. Query and form lookup use the first matching key, decode `+` and
 percent-encoded UTF-8, and ignore malformed unrelated keys. Header lookup is ASCII
 case-insensitive and returns the first field value. `Request.Body` contains the bounded raw UTF-8
-body for JSON or another explicit decoder.
+body. `Request.IsJSON` parses the media type instead of matching a prefix. It accepts
+`application/json`, structured `+json` subtypes, and valid MIME parameters case-insensitively. A
+malformed parameter list is not a JSON content type.
 
 `@Route`, `@Path`, `@Query`, `@Header`, `@Form`, `@Body`, and `@Inject` are typed package
 attributes consumed by `foundationc emit-app-host`. A route is a free, non-generic synchronous
@@ -68,10 +70,36 @@ fn CreateUser(
 Path, query, header, and form sources accept `String`, `Option<String>`, `bool`, and every integer
 machine type. Required sources produce a generated `FoundationWebBindingError` when absent.
 `Option<String>` receives `.None` instead. Invalid boolean and integer text produces an explicit
-`Invalid` binding error with the source and binding name. Raw `@web.Body()` currently accepts one
-`String`; it cannot be repeated or combined with form binding. `@web.Inject()` resolves the unique
-singleton provider for the parameter type from the same generated application graph used by every
-route.
+`Invalid` binding error with the source and binding name. `@web.Body()` accepts either raw `String`
+or a local concrete struct marked `@bind.Bindable()`. Typed bodies require a valid JSON content
+type and use the same generated `BindJSON` method as configuration binding. JSON syntax errors
+retain their parser kind and offset. Duplicate keys, trailing values, wrong JSON shapes, wrong
+field types, and unknown fields are rejected. The host initializes generated binding fields with
+their typed zero value and preserves declared field defaults. An ignored or private field without
+a source default is rejected because the host cannot invent its application value. Body binding
+cannot be repeated or combined with form binding. `@web.Inject()` resolves the unique singleton
+provider for the parameter type from the same generated application graph used by every route.
+
+```foundation
+@bind.Bindable()
+struct ProfileInput {
+    @bind.JsonName("display_name")
+    DisplayName String
+    Age u8
+    Enabled bool = true
+}
+
+@web.Route(.POST, "/profiles")
+fn CreateProfile(@web.Body() $body ProfileInput) web.Response {
+    discard body
+    web.Text(201, "created")
+}
+```
+
+Direct `Dispatch` calls preserve generated `Binding`, `JSON`, and route execution error variants.
+At the transport boundary, `Application.ErrorResponse` maps missing, invalid, and JSON binding
+failures to 400 and unsupported media types to 415. Its default implementation returns the handler
+error unchanged, so manual routers and application-specific failures are not hidden.
 
 The compiler rejects invalid paths, exact duplicate routes, ambiguous parameter branches,
 unmatched path parameters, repeated sources, unsupported binding types, missing or ambiguous DI
@@ -82,17 +110,17 @@ older marked host as declarations only, so a changed route signature can replace
 without deleting the generated file first. Normal `check`, `build`, and `run` remain strict.
 
 The executable fixture `tests/projects/application-host-web` generates an application, converts
-typed path, query, header, form, and body inputs, resolves a singleton service, maps route failures,
-and serves a real loopback request. It also proves missing and invalid binding errors. A separate
-regression changes an `i32` route parameter to `i64` while leaving the old generated host in place,
-then regenerates, checks, and runs the application. Negative fixtures pin the `FDN2350` through
-`FDN2369` declaration failures except the internal missing-runtime invariant.
+typed path, query, header, form, raw body, and JSON model inputs, resolves a singleton service, maps
+route failures, and serves a real loopback request. It proves strict JSON failures, MIME parsing,
+missing and invalid binding errors, and a real HTTP 415 response. A separate regression changes an
+`i32` route parameter to `i64` while leaving the old generated host in place, then regenerates,
+checks, and runs the application. Negative fixtures pin the web declaration and typed-body
+initialization failures except the internal missing-runtime invariant.
 
 The lower-level `web-server.fdn` and `web-routing.fdn` fixtures cover manual handlers, precedence,
 method backtracking, integer and alpha constraints, catch-all capture, 404/405 selection, and
 registration failures.
 
-This is not the completed `app/web` compatibility boundary. Typed JSON body decoding, content-type
-validation, request validation, scoped route activation, asynchronous route functions, regex
-constraints, middleware, continuous serving, graceful shutdown, TLS, OpenAPI, and the health
-adapter remain pending.
+This is not the completed `app/web` compatibility boundary. Declarative request validation, scoped
+route activation, asynchronous route functions, regex constraints, middleware, continuous serving,
+graceful shutdown, TLS, OpenAPI, and the health adapter remain pending.

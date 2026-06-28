@@ -185,7 +185,7 @@ const staticCompletions = [
     { label: "@web.Query(...)", kind: "Keyword", detail: "Bind a query value", insertText: "@web.Query(\"${1:name}\")" },
     { label: "@web.Header(...)", kind: "Keyword", detail: "Bind a request header", insertText: "@web.Header(\"${1:name}\")" },
     { label: "@web.Form(...)", kind: "Keyword", detail: "Bind a form value", insertText: "@web.Form(\"${1:name}\")" },
-    { label: "@web.Body()", kind: "Keyword", detail: "Bind the request body", insertText: "@web.Body()" },
+    { label: "@web.Body()", kind: "Keyword", detail: "Bind raw String or a strict @bind.Bindable JSON body", insertText: "@web.Body()" },
     { label: "@web.Inject()", kind: "Keyword", detail: "Resolve the unique singleton service for a parameter type", insertText: "@web.Inject()" },
     { label: "worker.Supervisor", kind: "Struct", detail: "owned supervised task lifetime" },
     { label: "worker.Group", kind: "Struct", detail: "bounded typed task completion group" },
@@ -564,6 +564,18 @@ const staticCompletions = [
         kind: "Method",
         detail: "fn Form(name String) Option<String>",
         insertText: "Form(${1:name})"
+    },
+    {
+        label: "web.Request.IsJSON",
+        kind: "Method",
+        detail: "fn IsJSON(&self) bool",
+        insertText: "IsJSON()"
+    },
+    {
+        label: "web.Application.ErrorResponse",
+        kind: "Method",
+        detail: "fn ErrorResponse(self, $error E) Result<web.Response, E>",
+        insertText: "ErrorResponse(\$${1:error})"
     },
     {
         label: "web.Server.ServeOne",

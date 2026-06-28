@@ -104,6 +104,22 @@
         ],
         "description": "Read a typed router parameter"
     },
+    "Typed JSON HTTP route": {
+        "prefix": "webroutejson",
+        "body": [
+            "@bind.Bindable()",
+            "struct ${1:Input} {",
+            "    ${2:Value} ${3:String}",
+            "}",
+            "",
+            "@web.Route(${4:.POST}, \"${5:/items}\")",
+            "fn ${6:CreateItem}(@web.Body() \\$${7:body} ${1:Input}) web.Response {",
+            "    discard ${7:body}",
+            "    ${8:web.Text(201, \"created\")}",
+            "}"
+        ],
+        "description": "Declare a strict typed JSON route"
+    },
     "HTTP request sources": {
         "prefix": "webrequest",
         "body": [

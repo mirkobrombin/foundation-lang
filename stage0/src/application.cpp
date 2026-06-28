@@ -736,6 +736,20 @@ std::string packageName(std::string_view name) {
                                                : std::string(name.substr(0, separator));
 }
 
+bool webBodyTypeSupported(const FirProgram &program, const Type &type,
+                          std::string_view routePackage) {
+    const auto value = baseType(type);
+    if (value == stringType) {
+        return true;
+    }
+    return value.kind == TypeKind::Struct && value.declaration < program.structs.size() &&
+           value.arguments.empty() &&
+           program.structs[value.declaration].typeParameterCount == 0 &&
+           packageName(program.structs[value.declaration].name) == routePackage &&
+           hasAttribute(program, program.structs[value.declaration].attributes,
+                        bindableAttribute);
+}
+
 std::string hostIdentifier(std::string_view value, bool exported) {
     std::string result;
     auto capitalize = true;
@@ -1110,6 +1124,76 @@ std::string emitApplicationHostSource(const FirProgram &program,
         }
         structBindings.push_back(std::move(binding));
     }
+    std::map<FirStructId, const StructBindingPlan *> structBindingsByType;
+    for (const auto &binding : structBindings) {
+        structBindingsByType.emplace(binding.type, &binding);
+    }
+    std::set<FirStructId> typedWebBodyTypes;
+    for (const auto &route : webRoutes) {
+        const auto &function = program.functions[route.function];
+        for (const auto &parameter : route.parameters) {
+            if (parameter.source != WebBindingSource::Body) {
+                continue;
+            }
+            const auto local = function.parameters[parameter.index];
+            const auto type = baseType(function.locals[local].type);
+            if (type.kind == TypeKind::Struct && type.declaration < program.structs.size()) {
+                typedWebBodyTypes.insert(type.declaration);
+            }
+        }
+    }
+    std::set<FirStructId> checkedWebBodyTypes;
+    std::set<FirStructId> activeWebBodyTypes;
+    std::function<bool(FirStructId)> validateWebBodyInitializer = [&](const auto typeId) {
+        if (checkedWebBodyTypes.contains(typeId)) {
+            return true;
+        }
+        if (!activeWebBodyTypes.insert(typeId).second) {
+            diagnostics.error("FDN2383", "recursive typed web body cannot be initialized",
+                              program.structs[typeId].sourceSpan);
+            return false;
+        }
+        const auto plan = structBindingsByType.find(typeId);
+        if (plan == structBindingsByType.end()) {
+            activeWebBodyTypes.erase(typeId);
+            return false;
+        }
+        const auto &type = program.structs[typeId];
+        auto valid = true;
+        for (std::size_t fieldIndex = 0; fieldIndex < type.fields.size(); ++fieldIndex) {
+            const auto &field = type.fields[fieldIndex];
+            if (field.hasDefault) {
+                continue;
+            }
+            const auto bound = std::any_of(
+                plan->second->fields.begin(), plan->second->fields.end(),
+                [&](const auto &candidate) { return candidate.field == fieldIndex; });
+            if (bound) {
+                continue;
+            }
+            if (plan->second->jsonBodyField == fieldIndex) {
+                const auto nested = baseType(field.type);
+                if (nested.kind == TypeKind::Struct &&
+                    validateWebBodyInitializer(nested.declaration)) {
+                    continue;
+                }
+            }
+            diagnostics.error(
+                "FDN2382",
+                "typed web body field requires a default or generated binding value: " +
+                    type.name + "." + field.name,
+                type.sourceSpan);
+            valid = false;
+        }
+        activeWebBodyTypes.erase(typeId);
+        if (valid) {
+            checkedWebBodyTypes.insert(typeId);
+        }
+        return valid;
+    };
+    for (const auto type : typedWebBodyTypes) {
+        validateWebBodyInitializer(type);
+    }
     if (diagnostics.hasErrors()) {
         return {};
     }
@@ -1440,6 +1524,11 @@ std::string emitApplicationHostSource(const FirProgram &program,
         packages.insert("foundation.bind");
         packages.insert("std.json");
         packages.insert("std.parse");
+        for (const auto &binding : structBindings) {
+            for (const auto &field : program.structs[binding.type].fields) {
+                collectTypePackages(program, field.type, packages);
+            }
+        }
         const auto usesDuration = std::any_of(
             structBindings.begin(), structBindings.end(), [](const auto &binding) {
                 return std::any_of(binding.fields.begin(), binding.fields.end(),
@@ -1611,6 +1700,8 @@ std::string emitApplicationHostSource(const FirProgram &program,
         qualifiedName("foundation.web.RouteMatch", rootPackage, aliases);
     const auto webRouteTableType =
         qualifiedName("foundation.web.RouteTable", rootPackage, aliases);
+    const auto webTextFunction =
+        qualifiedName("foundation.web.Text", rootPackage, aliases);
     const auto textCopyFunction =
         qualifiedName("std.text.Copy", rootPackage, aliases);
     const auto parseBoolFunction =
@@ -1627,8 +1718,24 @@ std::string emitApplicationHostSource(const FirProgram &program,
         qualifiedName("std.json.Parse", rootPackage, aliases);
     const auto durationType =
         qualifiedName("std.time.Duration", rootPackage, aliases);
+    const auto durationZeroFunction =
+        qualifiedName("std.time.Zero", rootPackage, aliases);
+    const auto collectionsNewListFunction =
+        qualifiedName("std.collections.NewList", rootPackage, aliases);
     const auto bindNewValuesFunction =
         qualifiedName("foundation.bind.NewValues", rootPackage, aliases);
+    const auto usesTypedWebBody = std::any_of(
+        webRoutes.begin(), webRoutes.end(), [&](const auto &route) {
+            const auto &function = program.functions[route.function];
+            return std::any_of(route.parameters.begin(), route.parameters.end(),
+                               [&](const auto &parameter) {
+                                   if (parameter.source != WebBindingSource::Body) {
+                                       return false;
+                                   }
+                                   const auto local = function.parameters[parameter.index];
+                                   return baseType(function.locals[local].type) != stringType;
+                               });
+        });
     const auto usesWebBool = std::any_of(
         webRoutes.begin(), webRoutes.end(), [&](const auto &route) {
             const auto &function = program.functions[route.function];
@@ -1639,6 +1746,52 @@ std::string emitApplicationHostSource(const FirProgram &program,
                                           baseType(function.locals[local].type) == boolType;
                                });
         });
+
+    std::function<std::string(FirStructId)> webBodyInitializer = [&](const auto typeId) {
+        const auto &type = program.structs[typeId];
+        const auto &binding = *structBindingsByType.at(typeId);
+        std::ostringstream value;
+        value << sourceTypeName(program, Type{TypeKind::Struct, typeId}, rootPackage, aliases)
+              << " {";
+        for (std::size_t fieldIndex = 0; fieldIndex < type.fields.size(); ++fieldIndex) {
+            const auto &field = type.fields[fieldIndex];
+            if (field.hasDefault) {
+                continue;
+            }
+            value << ' ' << field.name << " = ";
+            const auto planned = std::find_if(
+                binding.fields.begin(), binding.fields.end(),
+                [&](const auto &candidate) { return candidate.field == fieldIndex; });
+            if (planned != binding.fields.end()) {
+                switch (planned->kind) {
+                case StructBindingFieldKind::String:
+                    value << "\"\"";
+                    break;
+                case StructBindingFieldKind::Boolean:
+                    value << "false";
+                    break;
+                case StructBindingFieldKind::Integer:
+                    value << '0';
+                    break;
+                case StructBindingFieldKind::F32:
+                case StructBindingFieldKind::F64:
+                    value << "0.0";
+                    break;
+                case StructBindingFieldKind::Duration:
+                    value << durationZeroFunction << "()";
+                    break;
+                case StructBindingFieldKind::StringList:
+                    value << collectionsNewListFunction << "<String>()";
+                    break;
+                }
+            } else {
+                const auto nested = baseType(field.type);
+                value << webBodyInitializer(nested.declaration);
+            }
+        }
+        value << " }";
+        return value.str();
+    };
 
     for (const auto &binding : structBindings) {
         const auto &type = program.structs[binding.type];
@@ -1835,6 +1988,7 @@ std::string emitApplicationHostSource(const FirProgram &program,
             << "enum FoundationWebBindingKind {\n"
             << "    Missing\n"
             << "    Invalid\n"
+            << "    UnsupportedMediaType\n"
             << "}\n\n"
             << "struct FoundationWebBindingError {\n"
             << "    Kind FoundationWebBindingKind\n"
@@ -1843,6 +1997,9 @@ std::string emitApplicationHostSource(const FirProgram &program,
             << "}\n\n"
             << "enum FoundationWebError {\n"
             << "    Binding(error FoundationWebBindingError)\n";
+        if (usesTypedWebBody) {
+            out << "    JSON(error " << bindErrorType << ")\n";
+        }
         for (const auto &route : webRoutes) {
             if (!route.executionError.has_value()) {
                 continue;
@@ -2006,6 +2163,23 @@ std::string emitApplicationHostSource(const FirProgram &program,
                 << "    .Ok(parsed)\n"
                 << "}\n";
         }
+        if (usesTypedWebBody) {
+            out << "\nfn foundationRequireWebJSON(\n"
+                << "    $value Result<void, " << bindErrorType << ">\n"
+                << ") Result<bool, " << bindErrorType << "> {\n"
+                << "    match value {\n"
+                << "        Ok: .Ok(true)\n"
+                << "        Err(error): .Err(error)\n"
+                << "    }\n"
+                << "}\n\n"
+                << "fn foundationWebJSONErrorResponse(\n"
+                << "    $error " << bindErrorType << "\n"
+                << ") Result<" << webResponseType << ", FoundationWebError> {\n"
+                << "    discard error\n"
+                << "    .Ok(" << webTextFunction
+                << "(400, \"invalid request body\"))\n"
+                << "}\n";
+        }
         out << "\nmethods FoundationApplication {\n";
         for (std::size_t routeIndex = 0; routeIndex < webRoutes.size(); ++routeIndex) {
             const auto &route = webRoutes[routeIndex];
@@ -2034,9 +2208,26 @@ std::string emitApplicationHostSource(const FirProgram &program,
                                         parameterMode(function, parameter.index))) +
                                     local);
                 if (parameter.source == WebBindingSource::Body) {
-                    out << "        const " << local
-                        << " = " << textCopyFunction
-                        << "(foundationActiveRequest.Body)\n";
+                    if (parameterType == stringType) {
+                        out << "        const " << local
+                            << " = " << textCopyFunction
+                            << "(foundationActiveRequest.Body)\n";
+                    } else {
+                        out << "        if !foundationActiveRequest.IsJSON() {\n"
+                            << "            return .Err(.Handler(error = .Binding(error = "
+                            << "FoundationWebBindingError { Kind = .UnsupportedMediaType "
+                            << "Source = .Body Name = \"Content-Type\" })))\n"
+                            << "        }\n"
+                            << "        var " << local << " = "
+                            << webBodyInitializer(parameterType.declaration) << "\n"
+                            << "        const " << local
+                            << "Bound = foundationRequireWebJSON($" << local
+                            << ".BindJSON(foundationActiveRequest.Body)) else error {\n"
+                            << "            return .Err(.Handler(error = .JSON(error = "
+                            << "error)))\n"
+                            << "        }\n"
+                            << "        discard " << local << "Bound\n";
+                    }
                     continue;
                 }
                 const auto accessor = parameter.source == WebBindingSource::Path
@@ -2133,6 +2324,32 @@ std::string emitApplicationHostSource(const FirProgram &program,
         }
         out << "        discard foundationActiveRequest\n"
             << "        .Err(.NotFound)\n"
+            << "    }\n\n"
+            << "    fn ErrorResponse(\n"
+            << "        self,\n"
+            << "        $error FoundationWebError\n"
+            << "    ) Result<" << webResponseType << ", FoundationWebError> {\n"
+            << "        match error {\n"
+            << "            Binding(error): match error.Kind {\n"
+            << "                Missing: .Ok(" << webTextFunction
+            << "(400, \"missing request value\"))\n"
+            << "                Invalid: .Ok(" << webTextFunction
+            << "(400, \"invalid request value\"))\n"
+            << "                UnsupportedMediaType: .Ok(" << webTextFunction
+            << "(415, \"unsupported media type\"))\n"
+            << "            }\n";
+        if (usesTypedWebBody) {
+            out << "            JSON(error): foundationWebJSONErrorResponse($error)\n";
+        }
+        for (const auto &route : webRoutes) {
+            if (!route.executionError.has_value()) {
+                continue;
+            }
+            const auto method = webMethods.at(route.function);
+            out << "            " << method << "Failed(error): .Err(." << method
+                << "Failed(error = error))\n";
+        }
+        out << "        }\n"
             << "    }\n"
             << "}\n";
     }
@@ -2897,16 +3114,19 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
                     diagnostics.error("FDN2356", "web source binding cannot use edit access",
                                       function.sourceSpan);
                 }
-                if (!webSourceTypeSupported(program, value.type)) {
+                if (binding.source != WebBindingSource::Body &&
+                    !webSourceTypeSupported(program, value.type)) {
                     diagnostics.error(
                         "FDN2359",
                         "web source binding requires String, Option<String>, bool, or integer",
                         function.sourceSpan);
                 }
                 if (binding.source == WebBindingSource::Body &&
-                    baseType(value.type) != stringType) {
-                    diagnostics.error("FDN2368", "raw body binding requires String",
-                                      function.sourceSpan);
+                    !webBodyTypeSupported(program, value.type, function.packageName)) {
+                    diagnostics.error(
+                        "FDN2368",
+                        "body binding requires String or a local concrete @bind.Bindable struct",
+                        function.sourceSpan);
                 }
                 if (binding.source != WebBindingSource::Body) {
                     binding.name = stringArgument(bindings.front().second).value_or("");

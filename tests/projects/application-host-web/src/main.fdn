@@ -1,8 +1,10 @@
 package test.host.web
 
+import foundation.bind
 import foundation.di
 import foundation.web
 import std.collections
+import std.json
 import std.net
 import std.text
 
@@ -22,6 +24,24 @@ service Prefix {
     fn Value(self) String {
         text.Copy(self.value)
     }
+}
+
+@bind.Bindable()
+struct ProfileInput {
+    @bind.JsonName("display_name")
+    DisplayName String
+    Age u8
+    Enabled bool = true
+    Tags own collections.List<String>
+}
+
+@web.Route(.POST, "/profiles")
+fn CreateProfile(@web.Body() $body ProfileInput) web.Response {
+    const ProfileInput { DisplayName Age Enabled Tags } = body
+    const valid = DisplayName == "Ada" && Age == 42 && Enabled && Tags.Len() == 2
+    discard Tags
+    if !valid return web.Text(400, "invalid profile")
+    web.Json(201, $DisplayName)
 }
 
 @web.Route(.POST, "/users/{id:alpha}")
@@ -121,8 +141,14 @@ fn webBindingFailure(
 ) bool {
     match value {
         Binding(error): bindingMatches($error, kind, source, name)
+        JSON(error): unexpectedJSONError($error)
         CreateUserFailed(error): routeFailure(error)
     }
+}
+
+fn unexpectedJSONError($error bind.Error) bool {
+    discard error
+    false
 }
 
 fn bindingMatches(
@@ -140,10 +166,17 @@ fn sameBindingKind(left FoundationWebBindingKind, right FoundationWebBindingKind
         Missing: match right {
             Missing: true
             Invalid: false
+            UnsupportedMediaType: false
         }
         Invalid: match right {
             Missing: false
             Invalid: true
+            UnsupportedMediaType: false
+        }
+        UnsupportedMediaType: match right {
+            Missing: false
+            Invalid: false
+            UnsupportedMediaType: true
         }
     }
 }
@@ -191,9 +224,117 @@ fn sameBindingSource(
     }
 }
 
+fn jsonFailure(
+    $value Result<web.Response, web.DispatchError<FoundationWebError>>,
+    kind bind.ErrorKind,
+    jsonKind json.ErrorKind,
+    field String,
+    key String
+) bool {
+    match value {
+        Ok(response): unexpectedResponse($response)
+        Err(error): dispatchJSONFailure($error, kind, jsonKind, field, key)
+    }
+}
+
+fn dispatchJSONFailure(
+    $error web.DispatchError<FoundationWebError>,
+    kind bind.ErrorKind,
+    jsonKind json.ErrorKind,
+    field String,
+    key String
+) bool {
+    match error {
+        NotFound: false
+        MethodNotAllowed: false
+        Handler(error): webJSONFailure($error, kind, jsonKind, field, key)
+    }
+}
+
+fn webJSONFailure(
+    $value FoundationWebError,
+    kind bind.ErrorKind,
+    jsonKind json.ErrorKind,
+    field String,
+    key String
+) bool {
+    match value {
+        Binding(error): unexpectedBindingError($error)
+        JSON(error): bindJSONFailure($error, kind, jsonKind, field, key)
+        CreateUserFailed(error): routeFailure(error)
+    }
+}
+
+fn unexpectedBindingError($error FoundationWebBindingError) bool {
+    discard error
+    false
+}
+
+fn bindJSONFailure(
+    $error bind.Error,
+    kind bind.ErrorKind,
+    jsonKind json.ErrorKind,
+    field String,
+    key String
+) bool {
+    const same = bindErrorKindCode(error.Kind) == bindErrorKindCode(kind) &&
+        error.Field == field && error.Key == key
+    if !same return false
+    if bindErrorKindCode(kind) != 4 return true
+    jsonErrorKindCode(error.JsonKind) == jsonErrorKindCode(jsonKind) && error.Offset != 0
+}
+
+fn bindErrorKindCode(kind bind.ErrorKind) i32 {
+    match kind {
+        Empty: 1
+        Invalid: 2
+        OutOfRange: 3
+        JsonSyntax: 4
+        JsonType: 5
+        JsonUnknownField: 6
+    }
+}
+
+fn jsonErrorKindCode(kind json.ErrorKind) i32 {
+    match kind {
+        UnexpectedEnd: 1
+        UnexpectedToken: 2
+        InvalidString: 3
+        InvalidEscape: 4
+        InvalidNumber: 5
+        DuplicateKey: 6
+        DepthLimit: 7
+        TrailingData: 8
+    }
+}
+
 fn routeFailure(error RouteError) bool {
     discard error
     false
+}
+
+fn profileRequest($body String, contentType String) web.Request {
+    var value = request(.POST, "/profiles", "/profiles")
+    value.ContentLength = text.ByteLen(body)
+    value.Body = body
+    if contentType != "" {
+        value.Headers.PushFront(web.HeaderValue {
+            Name = "Content-Type"
+            Value = text.Copy(contentType)
+        })
+    }
+    value
+}
+
+fn lineOr($value Result<Option<String>, net.Error>) String {
+    const line = value else error {
+        discard error
+        panic("generated HTTP response read failed")
+    }
+    match line {
+        None: panic("generated HTTP response ended early")
+        Some(found): found
+    }
 }
 
 fn serverOr(
@@ -318,6 +459,77 @@ fn main() i32 {
     var formRequest = request(.POST, "/forms", "/forms")
     formRequest.Body = "name=Ada+Lovelace"
     if responseBody($application.Dispatch($formRequest)) != "Ada Lovelace" return 5
+
+    const acceptedProfile = profileRequest(
+        "{\"display_name\":\"Ada\",\"Age\":42," +
+        "\"Tags\":[\"compiler\",\"foundation\"]}",
+        "Application/Problem+JSON; charset=\"utf-8\""
+    )
+    if responseBody($application.Dispatch($acceptedProfile)) != "Ada" return 6
+
+    const missingContentType = profileRequest("{}", "")
+    if !bindingFailure(
+        $application.Dispatch($missingContentType),
+        .UnsupportedMediaType,
+        .Body,
+        "Content-Type"
+    ) {
+        return 7
+    }
+
+    const malformedContentType = profileRequest("{}", "application/json; charset")
+    if !bindingFailure(
+        $application.Dispatch($malformedContentType),
+        .UnsupportedMediaType,
+        .Body,
+        "Content-Type"
+    ) {
+        return 8
+    }
+
+    const unknownField = profileRequest("{\"extra\":true}", "application/json")
+    if !jsonFailure(
+        $application.Dispatch($unknownField),
+        .JsonUnknownField,
+        .UnexpectedEnd,
+        "",
+        "extra"
+    ) {
+        return 9
+    }
+
+    const wrongType = profileRequest("{\"Age\":\"forty-two\"}", "application/json")
+    if !jsonFailure(
+        $application.Dispatch($wrongType),
+        .JsonType,
+        .UnexpectedEnd,
+        "Age",
+        "Age"
+    ) {
+        return 10
+    }
+
+    const duplicateField = profileRequest("{\"Age\":1,\"Age\":2}", "application/json")
+    if !jsonFailure(
+        $application.Dispatch($duplicateField),
+        .JsonSyntax,
+        .DuplicateKey,
+        "",
+        ""
+    ) {
+        return 11
+    }
+
+    const trailingData = profileRequest("{\"Age\":1}{\"Age\":2}", "application/json")
+    if !jsonFailure(
+        $application.Dispatch($trailingData),
+        .JsonSyntax,
+        .TrailingData,
+        "",
+        ""
+    ) {
+        return 12
+    }
     discard application
 
     const serverApplication = BuildFoundationApplication()
@@ -332,10 +544,9 @@ fn main() i32 {
     const connection = connectionOr($connecting.wait())
     const pair = pairOr(connection.Split())
     const net.StreamPair { Reader Writer } = pair
-    discard Reader
     const writing = spawn net.WriteAll(
         $Writer,
-        "POST /users/Ada?source=test&limit=7 HTTP/1.1\r\nHost: localhost\r\nX-Trace: trace-id\r\nX-Enabled: ON\r\nContent-Length: 7\r\n\r\npayload"
+        "POST /profiles HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}"
     )
     const written = $writing.wait()
     const net.WriteOutcome { Writer as writerAfter Value as writeResult } = written
@@ -344,10 +555,16 @@ fn main() i32 {
         Ok: true
         Err(error): false
     }
+    const statusReading = spawn net.ReadLine($Reader)
+    const statusOutcome = $statusReading.wait()
+    const net.ReadLineOutcome { Reader as readerAfter Value as statusResult } = statusOutcome
+    const status = lineOr($statusResult)
+    discard readerAfter
     const servedOutcome = $serving.wait()
     const web.ServeOutcome { Server Value } = servedOutcome
     discard Server
-    if !writeAccepted || !served($Value) return 6
+    if !writeAccepted || !served($Value) return 13
+    if status != "HTTP/1.1 415 Unsupported Media Type" return 14
 
     print("generated web")
     0

@@ -556,6 +556,7 @@ struct FirStructField {
     Type type{invalidType};
     bool exported{};
     std::vector<FirAttributeUse> attributes;
+    bool hasDefault{};
 };
 
 struct FirStruct {

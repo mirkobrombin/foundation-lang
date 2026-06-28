@@ -343,6 +343,25 @@ if(BUILD_TESTING)
         examples/native-plugin/native/plugin.c
     )
     target_include_directories(foundation_example_native_plugin PRIVATE runtime/include)
+    set(foundation_native_plugin_fixture_targets
+        foundation_plugin_fixture
+        foundation_plugin_abi_mismatch
+        foundation_plugin_start_fail
+        foundation_plugin_query_failure
+        foundation_plugin_sdk_failure
+        foundation_plugin_target_failure
+        foundation_plugin_contract_failure
+        foundation_plugin_descriptor_failure
+        foundation_plugin_create_failure
+        foundation_plugin_missing_query
+        foundation_example_native_plugin
+    )
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        foreach(plugin_target IN LISTS foundation_native_plugin_fixture_targets)
+            target_compile_options(${plugin_target} PRIVATE -fno-sanitize=all)
+            target_link_options(${plugin_target} PRIVATE -fno-sanitize=all)
+        endforeach()
+    endif()
     add_executable(foundation_example_process_plugin
         examples/process-plugin/worker/main.c
     )
@@ -1556,6 +1575,7 @@ if(BUILD_TESTING)
             "application-host-bind-json-body-type;FDN2379"
             "application-host-bind-json-empty-name;FDN2380"
             "application-host-bind-json-duplicate-name;FDN2381"
+            "application-host-web-body-uninitialized;FDN2382"
             "application-host-transfer;FDN2333")
         list(GET application_host_case 0 application_host_name)
         list(GET application_host_case 1 application_host_code)

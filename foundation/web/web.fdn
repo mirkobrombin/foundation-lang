@@ -97,6 +97,15 @@ struct Request {
         self.Headers = reverseHeaders($reversed)
         result
     }
+
+    // Reports whether Content-Type selects JSON, including parameters.
+    fn IsJSON(&self) bool {
+        const contentType = self.Header("Content-Type")
+        match contentType {
+            None: false
+            Some(value): jsonContentType($value)
+        }
+    }
 }
 
 struct Response {
@@ -163,6 +172,11 @@ contract Handler<E> {
 // Dispatches one request through a reusable application graph.
 contract Application<E> {
     fn Dispatch(&self, $request Request) Result<Response, DispatchError<E>>
+
+    // Converts a handler error into a response or preserves it for the caller.
+    fn ErrorResponse(self, $error E) Result<Response, E> {
+        .Err(error)
+    }
 }
 
 struct RouteMatch {
@@ -540,7 +554,7 @@ task dispatchRequest<E>(
 ) own ConnectionOutcome<E> {
     var activeRouter = router
     const dispatched = activeRouter.Dispatch($request)
-    const response = responseForDispatch($dispatched) else error {
+    const response = responseForDispatch(activeRouter, $dispatched) else error {
         return finishHandlerError<E>($activeRouter, $writer, $error)
     }
     const writing = spawn writeResponse<E>($activeRouter, $writer, $response)
@@ -561,6 +575,7 @@ fn finishHandlerError<E>(
 }
 
 fn responseForDispatch<E>(
+    application Application<E>,
     $value Result<Response, DispatchError<E>>
 ) Result<Response, E> {
     match value {
@@ -568,7 +583,7 @@ fn responseForDispatch<E>(
         Err(error): match error {
             NotFound: .Ok(Text(404, "not found"))
             MethodNotAllowed: .Ok(Text(405, "method not allowed"))
-            Handler(error): .Err(error)
+            Handler(error): application.ErrorResponse($error)
         }
     }
 }
@@ -1060,6 +1075,102 @@ fn equalFoldAscii(left String, right String) bool {
         offset = offset + 1
     }
     true
+}
+
+fn jsonContentType($value String) bool {
+    const length = text.ByteLen(value)
+    var cursor = skipAsciiWhitespace(value, 0)
+    const typeStart = cursor
+    while cursor < length && mimeTokenByte(byteAt(value, cursor)) {
+        cursor = cursor + 1
+    }
+    if cursor == typeStart || cursor >= length || byteAt(value, cursor) != 47 return false
+    cursor = cursor + 1
+    const subtypeStart = cursor
+    while cursor < length && mimeTokenByte(byteAt(value, cursor)) {
+        cursor = cursor + 1
+    }
+    if cursor == subtypeStart return false
+    const mediaEnd = cursor
+    cursor = skipAsciiWhitespace(value, cursor)
+    const mediaType = slice(value, typeStart, mediaEnd)
+    const mediaLength = text.ByteLen(mediaType)
+    const jsonSelected = equalFoldAscii(mediaType, "application/json") ||
+        mediaLength >= 5 && equalFoldAscii(
+            slice(mediaType, mediaLength - 5, mediaLength),
+            "+json"
+        )
+    if !jsonSelected return false
+    validMediaParameters(value, cursor)
+}
+
+fn asciiWhitespace(value u64) bool {
+    value == 32 || value == 9
+}
+
+fn skipAsciiWhitespace(value String, offset u64) u64 {
+    const length = text.ByteLen(value)
+    var cursor = offset
+    while cursor < length && asciiWhitespace(byteAt(value, cursor)) {
+        cursor = cursor + 1
+    }
+    cursor
+}
+
+fn validMediaParameters(value String, offset u64) bool {
+    const length = text.ByteLen(value)
+    var cursor = offset
+    while cursor < length {
+        if byteAt(value, cursor) != 59 return false
+        cursor = skipAsciiWhitespace(value, cursor + 1)
+        const nameStart = cursor
+        while cursor < length && mimeTokenByte(byteAt(value, cursor)) {
+            cursor = cursor + 1
+        }
+        if cursor == nameStart return false
+        cursor = skipAsciiWhitespace(value, cursor)
+        if cursor >= length || byteAt(value, cursor) != 61 return false
+        cursor = skipAsciiWhitespace(value, cursor + 1)
+        if cursor >= length return false
+        if byteAt(value, cursor) == 34 {
+            cursor = quotedMediaValueEnd(value, cursor + 1)
+            if cursor == 0 return false
+        } else {
+            const valueStart = cursor
+            while cursor < length && mimeTokenByte(byteAt(value, cursor)) {
+                cursor = cursor + 1
+            }
+            if cursor == valueStart return false
+        }
+        cursor = skipAsciiWhitespace(value, cursor)
+    }
+    true
+}
+
+fn quotedMediaValueEnd(value String, offset u64) u64 {
+    const length = text.ByteLen(value)
+    var cursor = offset
+    while cursor < length {
+        const current = byteAt(value, cursor)
+        if current == 34 return cursor + 1
+        if current == 92 {
+            cursor = cursor + 1
+            if cursor >= length return 0
+            cursor = cursor + 1
+            continue
+        }
+        if current < 32 || current == 127 return 0
+        cursor = cursor + 1
+    }
+    0
+}
+
+fn mimeTokenByte(value u64) bool {
+    if value <= 32 || value >= 127 return false
+    value != 40 && value != 41 && value != 60 && value != 62 && value != 64 &&
+        value != 44 && value != 59 && value != 58 && value != 92 && value != 34 &&
+        value != 47 && value != 91 && value != 93 && value != 63 && value != 61 &&
+        value != 123 && value != 125
 }
 
 fn lowerAscii(value u64) u64 {

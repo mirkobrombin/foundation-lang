@@ -1,0 +1,22 @@
+package test.web.reject
+
+import foundation.bind
+import foundation.web
+
+@bind.Bindable()
+struct Input {
+    Name String
+
+    @bind.Ignore()
+    Preserved String
+}
+
+@web.Route(.POST, "/items")
+fn CreateItem(@web.Body() $input Input) web.Response {
+    discard input
+    web.Text(200, "item")
+}
+
+fn main() i32 {
+    0
+}

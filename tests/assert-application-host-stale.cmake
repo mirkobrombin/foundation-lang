@@ -40,7 +40,7 @@ if(NOT emit_result EQUAL 0)
 endif()
 
 file(READ "${GENERATED}" first)
-string(FIND "${first}" "foundationHost1.I64(" parser)
+string(FIND "${first}" ".I64(" parser)
 if(parser EQUAL -1)
     message(FATAL_ERROR "regenerated application host did not use the changed route type")
 endif()

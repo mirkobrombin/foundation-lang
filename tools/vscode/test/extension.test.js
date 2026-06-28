@@ -117,7 +117,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.93.0");
+    assert.equal(manifest.version, "0.94.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1268,7 +1268,8 @@ test("grammar and completions track compiler keywords", () => {
         "web.MatchError", "web.DispatchError", "web.ServeOutcome", "web.NewServer",
         "web.NewRouter", "web.NewRouteTable", "web.Text", "web.Json", "web.Router.Map",
         "web.RouteTable.Add", "web.RouteTable.Match", "web.Request.Param", "web.Request.Query",
-        "web.Request.Header", "web.Request.Form", "web.Server.ServeOne",
+        "web.Request.Header", "web.Request.Form", "web.Request.IsJSON",
+        "web.Application.ErrorResponse", "web.Server.ServeOne",
         "foundation.worker", "worker.Supervisor", "worker.NewSupervisor",
         "worker.Supervisor.Start", "worker.Supervisor.Shutdown", "worker.Supervisor.Cancel",
         "worker.Group", "worker.GroupNext", "worker.GroupWait", "worker.GroupWake",

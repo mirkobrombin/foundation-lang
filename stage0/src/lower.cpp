@@ -147,7 +147,9 @@ class Lowerer {
                 type.fields.push_back({program_.structs[index].fields[field].name,
                                        model_.structs[index].fieldTypes[field],
                                        program_.structs[index].fields[field].exported,
-                                       model_.structs[index].fieldAttributes[field]});
+                                       model_.structs[index].fieldAttributes[field],
+                                       program_.structs[index].fields[field]
+                                           .defaultFunction.has_value()});
             }
             result.structs.push_back(std::move(type));
         }
