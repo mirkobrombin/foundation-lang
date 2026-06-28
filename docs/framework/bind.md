@@ -5,9 +5,9 @@ Foundation source. It does not expose runtime reflection, `any`, or string tags.
 
 ## Declaring a binder
 
-Apply `@bind.Bindable()` to a concrete struct. Every field uses its Foundation name by default.
-`@bind.Name(...)` selects another key and `@bind.Ignore()` preserves a field without reading the
-source.
+Apply `@bind.Bindable()` to a concrete struct. Every exported field uses its Foundation name by
+default. Package-internal fields are never part of the binding surface. `@bind.Name(...)` selects
+another key and `@bind.Ignore()` preserves an exported field without reading the source.
 
 ```foundation
 import foundation.bind

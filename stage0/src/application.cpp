@@ -985,6 +985,9 @@ std::string emitApplicationHostSource(const FirProgram &program,
         std::set<std::string> keys;
         for (std::size_t fieldIndex = 0; fieldIndex < type.fields.size(); ++fieldIndex) {
             const auto &field = type.fields[fieldIndex];
+            if (!field.exported) {
+                continue;
+            }
             const auto ignored = hasAttribute(program, field.attributes, bindIgnoreAttribute);
             const auto named = findAttribute(program, field.attributes, bindNameAttribute);
             if (ignored && named != nullptr) {

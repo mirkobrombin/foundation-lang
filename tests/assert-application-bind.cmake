@@ -40,6 +40,11 @@ foreach(fragment IN ITEMS
     endif()
 endforeach()
 
+string(FIND "${first}" "self.internal" private_field_position)
+if(NOT private_field_position EQUAL -1)
+    message(FATAL_ERROR "generated binding host exposes a package-internal field")
+endif()
+
 execute_process(
     COMMAND "${COMPILER}" emit-app-host "${PROJECT}" -o "${GENERATED}"
     RESULT_VARIABLE second_result

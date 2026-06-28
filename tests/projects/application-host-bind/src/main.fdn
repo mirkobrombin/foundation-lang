@@ -27,6 +27,7 @@ struct Settings {
     Timeout time.Duration
     Labels own collections.List<String>
     Absent i32
+    internal i32
 
     @bind.Ignore()
     Preserved String
@@ -89,6 +90,7 @@ fn main() i32 {
         Timeout = time.Zero()
         Labels = collections.NewList<String>()
         Absent = 42
+        internal = 77
         Preserved = "preserved"
     }
     settings.Labels.PushFront("initial")
@@ -110,6 +112,7 @@ fn main() i32 {
     values.Set("Scale", "-2.25")
     values.Set("Timeout", "-1.5s")
     values.Set("Labels", "stable")
+    values.Set("internal", "99")
 
     const accepted = settings.Bind(&values)
     const acceptedCode = acceptanceCode($accepted)
@@ -133,6 +136,7 @@ fn main() i32 {
     print(labelValue($settings.Labels.PopFront()))
     print(labelValue($settings.Labels.PopFront()))
     print(format.I32(settings.Absent))
+    print(format.I32(settings.internal))
     print(settings.Preserved)
 
     var invalid = bind.NewValues()
