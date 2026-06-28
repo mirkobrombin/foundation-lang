@@ -14,6 +14,20 @@ fn failed(value Result<u64, parse.IntegerError>) bool {
     }
 }
 
+fn boolFailed(value Result<bool, parse.BooleanError>) bool {
+    match value {
+        Ok(parsed): false
+        Err(error): true
+    }
+}
+
+fn boolMatches(value Result<bool, parse.BooleanError>, expected bool) bool {
+    match value {
+        Ok(parsed): parsed == expected
+        Err(error): false
+    }
+}
+
 fn main() i32 {
     const maximum = "18446744073709551615"
     const overflow = "18446744073709551616"
@@ -69,6 +83,28 @@ fn main() i32 {
     }
     if !tooSmallFailed || !tooLargeFailed || !failed(unsignedSign) {
         return 11
+    }
+    if !boolMatches(parse.Bool("1"), true) || !boolMatches(parse.Bool("t"), true) ||
+        !boolMatches(parse.Bool("true"), true) || !boolMatches(parse.Bool("yes"), true) ||
+        !boolMatches(parse.Bool("y"), true) || !boolMatches(parse.Bool("on"), true) {
+        return 12
+    }
+    if !boolMatches(parse.Bool("0"), false) || !boolMatches(parse.Bool("f"), false) ||
+        !boolMatches(parse.Bool("false"), false) || !boolMatches(parse.Bool("no"), false) ||
+        !boolMatches(parse.Bool("n"), false) || !boolMatches(parse.Bool("off"), false) {
+        return 13
+    }
+    const enabled = parse.Bool(" YES\t") else error {
+        discard error
+        return 14
+    }
+    const disabled = parse.Bool("\nOff ") else error {
+        discard error
+        return 15
+    }
+    if !enabled || disabled || !boolFailed(parse.Bool("maybe")) ||
+        !boolFailed(parse.Bool(" \t")) {
+        return 16
     }
     print("parse ok")
     0

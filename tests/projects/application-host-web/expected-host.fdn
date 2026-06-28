@@ -78,20 +78,17 @@ fn foundationParseWebBool(
     source FoundationWebBindingSource,
     name String
 ) Result<bool, FoundationWebBindingError> {
-    if value == "true" {
+    const parsed = foundationHost1.Bool(value) else error {
+        discard error
         discard value
-        return .Ok(true)
-    }
-    if value == "false" {
-        discard value
-        return .Ok(false)
+        return .Err(FoundationWebBindingError {
+            Kind = .Invalid
+            Source = source
+            Name = foundationHost2.Copy(name)
+        })
     }
     discard value
-    .Err(FoundationWebBindingError {
-        Kind = .Invalid
-        Source = source
-        Name = foundationHost2.Copy(name)
-    })
+    .Ok(parsed)
 }
 
 methods FoundationApplication {

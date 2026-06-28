@@ -11,6 +11,14 @@ const parseIntegerCompletions = [
     insertText: `parse.${name}(\${1:value})`
 }));
 
+const parseBooleanCompletion = {
+    label: "parse.Bool",
+    kind: "Function",
+    detail: "fn Bool(value String) Result<bool, parse.BooleanError>",
+    documentation: "Parse an ASCII boolean token after trimming ASCII whitespace.",
+    insertText: "parse.Bool(\${1:value})"
+};
+
 const formatScalarCompletions = [
     ["Bool", "bool"], ["I8", "i8"], ["I16", "i16"], ["I32", "i32"],
     ["I64", "i64"], ["Isize", "isize"], ["U8", "u8"], ["U16", "u16"],
@@ -255,6 +263,7 @@ const staticCompletions = [
         detail: "fn Join(left String, right String) String",
         insertText: "path.Join(view ${1:left}, view ${2:right})"
     },
+    parseBooleanCompletion,
     ...parseIntegerCompletions,
     {
         label: "fs.OpenLines",

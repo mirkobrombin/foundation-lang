@@ -304,7 +304,7 @@ fn main() i32 {
     })
     invalidBoolRequest.Headers.PushFront(web.HeaderValue {
         Name = "X-Enabled"
-        Value = "yes"
+        Value = "maybe"
     })
     if !bindingFailure(
         $application.Dispatch($invalidBoolRequest),
@@ -325,7 +325,7 @@ fn main() i32 {
         "127.0.0.1",
         0,
         $serverApplication
-    ))
+        ))
     const port = server.Port()
     const serving = server.ServeOne()
     const connecting = spawn net.Connect("127.0.0.1", port)
@@ -335,7 +335,7 @@ fn main() i32 {
     discard Reader
     const writing = spawn net.WriteAll(
         $Writer,
-        "POST /users/Ada?source=test&limit=7 HTTP/1.1\r\nHost: localhost\r\nX-Trace: trace-id\r\nX-Enabled: true\r\nContent-Length: 7\r\n\r\npayload"
+        "POST /users/Ada?source=test&limit=7 HTTP/1.1\r\nHost: localhost\r\nX-Trace: trace-id\r\nX-Enabled: ON\r\nContent-Length: 7\r\n\r\npayload"
     )
     const written = $writing.wait()
     const net.WriteOutcome { Writer as writerAfter Value as writeResult } = written

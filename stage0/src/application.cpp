@@ -1349,6 +1349,8 @@ std::string emitApplicationHostSource(const FirProgram &program,
         qualifiedName("foundation.web.RouteTable", rootPackage, aliases);
     const auto textCopyFunction =
         qualifiedName("std.text.Copy", rootPackage, aliases);
+    const auto parseBoolFunction =
+        qualifiedName("std.parse.Bool", rootPackage, aliases);
     const auto usesWebBool = std::any_of(
         webRoutes.begin(), webRoutes.end(), [&](const auto &route) {
             const auto &function = program.functions[route.function];
@@ -1525,20 +1527,18 @@ std::string emitApplicationHostSource(const FirProgram &program,
                 << "    source FoundationWebBindingSource,\n"
                 << "    name String\n"
                 << ") Result<bool, FoundationWebBindingError> {\n"
-                << "    if value == \"true\" {\n"
+                << "    const parsed = " << parseBoolFunction
+                << "(value) else error {\n"
+                << "        discard error\n"
                 << "        discard value\n"
-                << "        return .Ok(true)\n"
-                << "    }\n"
-                << "    if value == \"false\" {\n"
-                << "        discard value\n"
-                << "        return .Ok(false)\n"
+                << "        return .Err(FoundationWebBindingError {\n"
+                << "            Kind = .Invalid\n"
+                << "            Source = source\n"
+                << "            Name = " << textCopyFunction << "(name)\n"
+                << "        })\n"
                 << "    }\n"
                 << "    discard value\n"
-                << "    .Err(FoundationWebBindingError {\n"
-                << "        Kind = .Invalid\n"
-                << "        Source = source\n"
-                << "        Name = " << textCopyFunction << "(name)\n"
-                << "    })\n"
+                << "    .Ok(parsed)\n"
                 << "}\n";
         }
         out << "\nmethods FoundationApplication {\n";

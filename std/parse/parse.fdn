@@ -8,6 +8,37 @@ enum IntegerError {
     Overflow
 }
 
+enum BooleanError {
+    Empty
+    Invalid
+}
+
+// Parses an ASCII boolean token after trimming ASCII whitespace.
+fn Bool(value String) Result<bool, BooleanError> {
+    var start u64 = 0
+    var end = text.ByteLen(value)
+    while start < end && isASCIIWhitespace(byteAt(value, start)) {
+        start = start + 1
+    }
+    while end > start && isASCIIWhitespace(byteAt(value, end - 1)) {
+        end = end - 1
+    }
+    if start == end {
+        return .Err(.Empty)
+    }
+    if tokenEquals(value, start, end, "1") || tokenEquals(value, start, end, "t") ||
+        tokenEquals(value, start, end, "true") || tokenEquals(value, start, end, "yes") ||
+        tokenEquals(value, start, end, "y") || tokenEquals(value, start, end, "on") {
+        return .Ok(true)
+    }
+    if tokenEquals(value, start, end, "0") || tokenEquals(value, start, end, "f") ||
+        tokenEquals(value, start, end, "false") || tokenEquals(value, start, end, "no") ||
+        tokenEquals(value, start, end, "n") || tokenEquals(value, start, end, "off") {
+        return .Ok(false)
+    }
+    .Err(.Invalid)
+}
+
 fn U64(value String) Result<u64, IntegerError> {
     const length = text.ByteLen(value)
     if length == 0 {
@@ -156,4 +187,35 @@ fn Usize(value String) Result<usize, IntegerError> {
         return .Err(error)
     }
     .Ok(usize.From(parsed))
+}
+
+fn tokenEquals(value String, start u64, end u64, expected String) bool {
+    const length = end - start
+    if length != text.ByteLen(expected) {
+        return false
+    }
+    var offset u64 = 0
+    while offset < length {
+        if asciiLower(byteAt(value, start + offset)) != byteAt(expected, offset) {
+            return false
+        }
+        offset = offset + 1
+    }
+    true
+}
+
+fn byteAt(value String, index u64) u64 {
+    const byte = text.ByteAt(value, index) else error {
+        discard error
+        panic("boolean parser byte invariant failed")
+    }
+    byte
+}
+
+fn asciiLower(value u64) u64 {
+    value + 32 if value >= 65 && value <= 90 else value
+}
+
+fn isASCIIWhitespace(value u64) bool {
+    value == 32 || (value >= 9 && value <= 13)
 }

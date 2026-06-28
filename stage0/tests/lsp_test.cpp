@@ -2850,6 +2850,61 @@ void preludeUUIDExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void parseBoolExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "import std.parse\n"
+        "fn main() i32 {\n"
+        "    const enabled = parse.Bool(\"yes\") else error {\n"
+        "        discard error\n"
+        "        return 1\n"
+        "    }\n"
+        "    0 if enabled else 1\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(196, "hover", 3, 28)) +
+        frame(request(197, "signatureHelp", 3, 34)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto hover = responseFor(transcript, 196);
+    const auto signature = responseFor(transcript, 197);
+
+    expect(status == 0, "parse Bool language server transcript exits cleanly");
+    expect(errors.str().empty(), "parse Bool requests write no server errors");
+    expect(hover.find("ASCII boolean token") != std::string::npos,
+           "parse Bool hover includes its standard library contract");
+    expect(signature.find("fn Bool(value String) Result<bool, BooleanError>") !=
+               std::string::npos,
+           "parse Bool calls receive compiler-backed signature help");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void emptyTestsExposeResolvedMeaning() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fdn";
@@ -3169,6 +3224,7 @@ int main() {
     selectExposesEditorDetails();
     forLoopsExposeEditorDetails();
     compilerBuiltinsExposeEditorDetails();
+    parseBoolExposesEditorDetails();
     preludeUUIDExposesEditorDetails();
     emptyTestsExposeResolvedMeaning();
     blockingImportsExposeEditorDetails();
