@@ -117,7 +117,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.88.0");
+    assert.equal(manifest.version, "0.89.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1215,7 +1215,7 @@ test("grammar and completions track compiler keywords", () => {
         "std.env", "env.Get", "env.Home",
         "std.text", "text.ByteLen", "text.Contains", "text.NewBuilder",
         "std.path", "path.Join",
-        "std.parse", "parse.Bool", "parse.I8", "parse.I16", "parse.I32", "parse.I64",
+        "std.parse", "parse.Bool", "parse.F32", "parse.F64", "parse.I8", "parse.I16", "parse.I32", "parse.I64",
         "parse.Isize", "parse.U8", "parse.U16", "parse.U32", "parse.U64",
         "parse.Usize",
         "std.fs", "fs.OpenLines", "fs.ReadText", "fs.ReadTextLimited", "fs.OpenDir", "fs.Size", "fs.Modified",
@@ -1228,7 +1228,8 @@ test("grammar and completions track compiler keywords", () => {
         "std.json", "json.Parse",
         "std.time", "time.Now", "time.FromUnix", "time.MonotonicNow",
         "time.Nanoseconds", "time.Milliseconds", "time.Seconds",
-        "time.Duration.Nanoseconds", "time.Instant.FormatUtc",
+        "time.Duration.Parse", "time.Duration.Seconds", "time.Duration.Nanoseconds",
+        "time.Duration.IsNegative", "time.Instant.FormatUtc",
         "std.concurrent", "concurrent.NewCancellationSource",
         "concurrent.CancellationSource.Token", "concurrent.CancellationSource.Cancel",
         "concurrent.Cancellation.IsRequested",

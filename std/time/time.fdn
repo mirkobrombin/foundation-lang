@@ -3,27 +3,44 @@ package std.time
 extern c fn nowNative() u64 as foundation_runtime_time_unix_seconds
 extern c fn monotonicNative() u64 as foundation_runtime_time_monotonic_nanoseconds
 extern c fn formatUtcNative(seconds u64, &result String) i32 as foundation_runtime_time_format_utc
+extern c fn parseDurationNative(value String, &result i64) i32 as foundation_runtime_time_parse_duration
 
 enum Error {
     BeforeReference
     OutOfRange
 }
 
-struct Duration {
-    seconds u64
-    nanoseconds u64
+enum DurationError {
+    Empty
+    Invalid
+    OutOfRange
+}
 
-    fn Seconds(self) u64 {
-        self.seconds
+struct Duration {
+    nanoseconds i64
+
+    fn Seconds(self) i64 {
+        self.nanoseconds / 1000000000
     }
 
-    fn Nanoseconds(self) u64 {
-        if self.seconds > 18446744073 return 18446744073709551615
-        const whole = self.seconds * 1000000000
-        if self.nanoseconds > 18446744073709551615 - whole {
-            return 18446744073709551615
-        }
-        whole + self.nanoseconds
+    fn Nanoseconds(self) i64 {
+        self.nanoseconds
+    }
+
+    fn IsNegative(self) bool {
+        self.nanoseconds < 0
+    }
+}
+
+methods Duration {
+    // Parses a signed sequence of decimal values with ns, us, microsecond, ms, s, m, or h units.
+    fn Parse(value String) Result<Duration, DurationError> {
+        var nanoseconds i64 = 0
+        const status = parseDurationNative(value, &nanoseconds)
+        if status == 0 return .Ok(Duration { nanoseconds = nanoseconds })
+        if status == 1 return .Err(.Empty)
+        if status == 3 return .Err(.OutOfRange)
+        .Err(.Invalid)
     }
 }
 
@@ -57,10 +74,7 @@ struct Instant {
         if self.unixSeconds < earlier.unixSeconds {
             return .Err(.BeforeReference)
         }
-        .Ok(Duration {
-            seconds = self.unixSeconds - earlier.unixSeconds
-            nanoseconds = 0
-        })
+        .Ok(fromSeconds(self.unixSeconds - earlier.unixSeconds))
     }
 
     fn FormatUtc(self) Result<String, Error> {
@@ -85,7 +99,7 @@ fn MonotonicNow() MonotonicInstant {
 }
 
 fn Zero() Duration {
-    Duration { seconds = 0 nanoseconds = 0 }
+    Duration { nanoseconds = 0 }
 }
 
 fn Nanoseconds(value u64) Duration {
@@ -93,22 +107,28 @@ fn Nanoseconds(value u64) Duration {
 }
 
 fn Milliseconds(value u64) Duration {
-    if value > 18446744073709 {
-        return Duration {
-            seconds = 18446744073
-            nanoseconds = 709551615
-        }
-    }
+    if value > 9223372036854 return maximumDuration()
     fromNanoseconds(value * 1000000)
 }
 
 fn Seconds(value u64) Duration {
-    Duration { seconds = value nanoseconds = 0 }
+    if value > 9223372036 return maximumDuration()
+    fromNanoseconds(value * 1000000000)
 }
 
 fn fromNanoseconds(value u64) Duration {
-    Duration {
-        seconds = value / 1000000000
-        nanoseconds = value % 1000000000
+    const converted = i64.From(value) else error {
+        discard error
+        return maximumDuration()
     }
+    Duration { nanoseconds = converted }
+}
+
+fn fromSeconds(value u64) Duration {
+    if value > 9223372036 return maximumDuration()
+    fromNanoseconds(value * 1000000000)
+}
+
+fn maximumDuration() Duration {
+    Duration { nanoseconds = 9223372036854775807 }
 }

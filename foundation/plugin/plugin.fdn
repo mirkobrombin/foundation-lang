@@ -444,7 +444,7 @@ task StartSandbox(
     var detail = ""
     const status = startSandboxNative(
         active.handle,
-        deadline.Nanoseconds(),
+        deadlineNanoseconds(deadline),
         &ready,
         &detail
     )
@@ -483,23 +483,28 @@ task StopSandbox(
     var exitCode i32 = 0
     const status = stopSandboxNative(
         active.handle,
-        deadline.Nanoseconds(),
+        deadlineNanoseconds(deadline),
         &exitCode,
         &detail
     )
     active.running = false
     if status != 0 {
+        const failure = sandboxExitCode(status, exitCode)
         return SandboxStopOutcome {
             Sandbox = active
-            Value = .Err(sandboxErrorFor(
-                status,
-                $detail,
-                sandboxExitCode(status, exitCode)
-            ))
+            Value = .Err(sandboxErrorFor(status, $detail, failure))
         }
     }
     discard detail
     SandboxStopOutcome { Sandbox = active Value = .Ok(exitCode) }
+}
+
+fn deadlineNanoseconds(deadline time.Duration) u64 {
+    const converted = u64.From(deadline.Nanoseconds()) else error {
+        discard error
+        return 0
+    }
+    converted
 }
 
 fn errorFor(status i32, $detail String) Error {

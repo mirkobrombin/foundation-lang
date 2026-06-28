@@ -21,7 +21,11 @@ fn main(args [String]) i32 {
         discard error
         return 5
     }
-    if elapsed.Seconds() > now.Unix() {
+    const elapsedSeconds = u64.From(elapsed.Seconds()) else error {
+        discard error
+        return 6
+    }
+    if elapsedSeconds > now.Unix() {
         return 6
     }
     print("time ok")

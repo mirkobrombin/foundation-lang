@@ -16,6 +16,7 @@ option(FOUNDATION_BUILD_FUZZERS "Build Clang libFuzzer targets" OFF)
 
 add_library(foundation_runtime STATIC
     runtime/src/runtime.c
+    runtime/src/parse.c
     runtime/src/task.c
     runtime/src/cancellation.c
     runtime/src/channel.c
@@ -69,6 +70,7 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_C_COMPILER_ID="${CMAKE_C_COMPILER_ID}"
     FOUNDATION_RUNTIME_INCLUDE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/include"
     FOUNDATION_RUNTIME_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c"
+    FOUNDATION_RUNTIME_PARSE_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c"
     FOUNDATION_RUNTIME_TASK_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c"
     FOUNDATION_RUNTIME_CANCELLATION_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c"
     FOUNDATION_RUNTIME_CHANNEL_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c"
@@ -235,6 +237,8 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_string_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_u64_test runtime/tests/u64_test.c)
     target_link_libraries(foundation_runtime_u64_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_parse_test runtime/tests/parse_test.c)
+    target_link_libraries(foundation_runtime_parse_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_env_test runtime/tests/env_test.c)
     target_link_libraries(foundation_runtime_env_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_fs_test runtime/tests/fs_test.c)
@@ -394,6 +398,7 @@ if(BUILD_TESTING)
                 foundation_runtime_counter_test
                 foundation_runtime_string_test
                 foundation_runtime_u64_test
+                foundation_runtime_parse_test
                 foundation_runtime_env_test
                 foundation_runtime_fs_test
                 foundation_runtime_time_test
@@ -415,6 +420,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_counter_test PRIVATE /W4)
         target_compile_options(foundation_runtime_string_test PRIVATE /W4)
         target_compile_options(foundation_runtime_u64_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_parse_test PRIVATE /W4)
         target_compile_options(foundation_runtime_env_test PRIVATE /W4)
         target_compile_options(foundation_runtime_fs_test PRIVATE /W4)
         target_compile_options(foundation_runtime_time_test PRIVATE /W4)
@@ -432,6 +438,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_counter_test PRIVATE /WX)
             target_compile_options(foundation_runtime_string_test PRIVATE /WX)
             target_compile_options(foundation_runtime_u64_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_parse_test PRIVATE /WX)
             target_compile_options(foundation_runtime_env_test PRIVATE /WX)
             target_compile_options(foundation_runtime_fs_test PRIVATE /WX)
             target_compile_options(foundation_runtime_time_test PRIVATE /WX)
@@ -452,6 +459,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_counter_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_string_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_u64_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_parse_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_env_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_fs_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_time_test PRIVATE -Wall -Wextra -Wpedantic)
@@ -469,6 +477,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_counter_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_string_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_u64_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_parse_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_env_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_fs_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_time_test PRIVATE -Werror)
@@ -594,6 +603,7 @@ if(BUILD_TESTING)
     )
     add_test(NAME runtime.string COMMAND foundation_runtime_string_test)
     add_test(NAME runtime.u64 COMMAND foundation_runtime_u64_test)
+    add_test(NAME runtime.parse COMMAND foundation_runtime_parse_test)
     add_test(NAME runtime.env COMMAND foundation_runtime_env_test)
     add_test(NAME runtime.time COMMAND foundation_runtime_time_test)
     add_test(NAME runtime.uuid COMMAND foundation_runtime_uuid_test)
@@ -2028,6 +2038,7 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/parse-values
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
@@ -3240,6 +3251,20 @@ if(BUILD_TESTING)
         )
     endforeach()
     if(FOUNDATION_BUILD_FUZZERS)
+        add_test(
+            NAME stage0.run.parse-values-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/parse-values-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/parse-values-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
         add_test(
             NAME stage0.run.ownership-sanitized
             COMMAND ${CMAKE_COMMAND}

@@ -11,6 +11,7 @@ import std.fs
 import std.json
 import std.path
 import std.platform
+import std.parse
 import std.text
 import std.time
 
@@ -401,7 +402,16 @@ fn main(args [String]) i32 {
         discard error
         return 1
     }
-    const timeMatches = epochText == "1970-01-01T00:00:00Z"
+    const parsedFloat = parse.F64("0x1.5p+5") else error {
+        discard error
+        return 1
+    }
+    const parsedDuration = time.Duration.Parse("1m30.5s") else error {
+        discard error
+        return 1
+    }
+    const timeMatches = epochText == "1970-01-01T00:00:00Z" && parsedFloat == 42.0 &&
+        parsedDuration.Nanoseconds() == 90500000000
     const canonicalUUID = "01890f47-9b5a-7cc1-98f2-b6b9c317d28a"
     const parsedUUID = UUID.Parse(canonicalUUID) else error {
         discard error

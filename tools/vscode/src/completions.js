@@ -19,6 +19,16 @@ const parseBooleanCompletion = {
     insertText: "parse.Bool(\${1:value})"
 };
 
+const parseFloatCompletions = [
+    ["F32", "f32"], ["F64", "f64"]
+].map(([name, type]) => ({
+    label: `parse.${name}`,
+    kind: "Function",
+    detail: `fn ${name}(value String) Result<${type}, parse.FloatError>`,
+    documentation: `Parse a locale-independent IEEE 754 ${type} value.`,
+    insertText: `parse.${name}(\${1:value})`
+}));
+
 const formatScalarCompletions = [
     ["Bool", "bool"], ["I8", "i8"], ["I16", "i16"], ["I32", "i32"],
     ["I64", "i64"], ["Isize", "isize"], ["U8", "u8"], ["U16", "u16"],
@@ -440,6 +450,7 @@ const staticCompletions = [
         insertText: "ServeOne()"
     },
     ...formatScalarCompletions,
+    ...parseFloatCompletions,
     {
         label: "json.Parse",
         kind: "Function",
@@ -483,10 +494,29 @@ const staticCompletions = [
         insertText: "time.Seconds(${1:value})"
     },
     {
+        label: "time.Duration.Parse",
+        kind: "Function",
+        detail: "fn Parse(value String) Result<time.Duration, time.DurationError>",
+        documentation: "Parse a signed composite duration with nanosecond precision.",
+        insertText: "time.Duration.Parse(${1:value})"
+    },
+    {
+        label: "time.Duration.Seconds",
+        kind: "Method",
+        detail: "fn Seconds(self) i64",
+        insertText: "Seconds()"
+    },
+    {
         label: "time.Duration.Nanoseconds",
         kind: "Method",
-        detail: "fn Nanoseconds(self) u64",
+        detail: "fn Nanoseconds(self) i64",
         insertText: "Nanoseconds()"
+    },
+    {
+        label: "time.Duration.IsNegative",
+        kind: "Method",
+        detail: "fn IsNegative(self) bool",
+        insertText: "IsNegative()"
     },
     {
         label: "time.Instant.FormatUtc",
