@@ -76,6 +76,3 @@ binding and before its route function runs. Direct dispatch preserves
 consumes that error and returns status 422 with a generic body. Binding syntax and type failures
 remain 400, while an unsupported media type remains 415.
 
-The remaining v2 compatibility work is the shared behavioral fixture and migration guide. The Lang
-surface intentionally replaces reflection tags and the mutable custom-rule registry with typed
-compile-time declarations.

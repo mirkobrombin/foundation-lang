@@ -1,0 +1,9 @@
+valid	ok
+required	Name:Required
+minimum	Age:Min
+maximum	Age:Max
+email	Email:Email
+pattern	Code:Pattern
+float-minimum	Score:Min
+float-maximum	Score:Max
+multiple	Name:Required,Age:Min,Email:Email,Code:Pattern,Score:Min

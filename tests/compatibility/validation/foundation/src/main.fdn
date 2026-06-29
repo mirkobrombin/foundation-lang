@@ -1,0 +1,172 @@
+package test.compatibility.validation
+
+import foundation.validation
+import std.fs
+import std.parse
+import std.text
+
+@validation.Validatable()
+struct Profile {
+    @validation.Required()
+    Name String
+
+    @validation.Min(18)
+    @validation.Max(99)
+    Age i32
+
+    @validation.Email()
+    Email String
+
+    @validation.Pattern("^[A-Z][a-z]+$")
+    Code String
+
+    @validation.Min(-10.5)
+    @validation.Max(10.5)
+    Score f64
+}
+
+struct validationCase {
+    Name String
+    Profile Profile
+}
+
+struct columnCursor {
+    position u64
+}
+
+fn main(args [String]) i32 {
+    if len(args) != 1 return 1
+    const opened = fs.OpenLines(args[0]) else error {
+        discard error
+        return 2
+    }
+    var reader = opened
+    var finished = false
+    while !finished {
+        const next = reader.Next() else error {
+            discard error
+            return 3
+        }
+        finished = match next {
+            None: true
+            Some(line): processCase(line)
+        }
+    }
+    discard reader.Close()
+    0
+}
+
+fn processCase(line String) bool {
+    const current = parseCase(line)
+    var errors = current.Profile.Validate()
+    print(report(current.Name, &errors))
+    false
+}
+
+fn parseCase(line String) validationCase {
+    var cursor = columnCursor { position = 0 }
+    const name = column(line, &cursor)
+    const profileName = column(line, &cursor)
+    const ageText = column(line, &cursor)
+    const email = column(line, &cursor)
+    const code = column(line, &cursor)
+    const scoreText = column(line, &cursor)
+    const age = parse.I32(ageText) else error {
+        discard error
+        panic("invalid compatibility fixture age")
+    }
+    const score = parse.F64(scoreText) else error {
+        discard error
+        panic("invalid compatibility fixture score")
+    }
+    validationCase {
+        Name = name
+        Profile = Profile {
+            Name = profileName
+            Age = age
+            Email = email
+            Code = code
+            Score = score
+        }
+    }
+}
+
+fn column(line String, &cursor columnCursor) String {
+    const length = text.ByteLen(line)
+    var end = cursor.position
+    while end < length && byteAt(line, end) != 9 {
+        end = end + 1
+    }
+    const value = text.Slice(line, cursor.position, end) else error {
+        discard error
+        panic("invalid compatibility fixture column")
+    }
+    cursor.position = end + 1 if end < length else end
+    value
+}
+
+fn report(name String, &errors validation.Errors) String {
+    var builder = text.NewBuilder()
+    write(&builder, name)
+    write(&builder, "\t")
+    if errors.IsEmpty() {
+        write(&builder, "ok")
+    } else {
+        var first = true
+        while !errors.IsEmpty() {
+            const current = errors.TakeFirst()
+            first = match current {
+                None: panic("validation compatibility error count changed")
+                Some(error): appendError(&builder, first, $error)
+            }
+        }
+    }
+    const result = builder.Finish() else error {
+        discard error
+        panic("validation compatibility report builder is closed")
+    }
+    result
+}
+
+fn appendError(
+    &builder text.Builder,
+    first bool,
+    $error validation.Error
+) bool {
+    if !first {
+        write(&builder, ",")
+    }
+    const validation.Error { Kind Field Message } = error
+    discard Message
+    write(&builder, Field)
+    write(&builder, ":")
+    write(&builder, kindName(Kind))
+    false
+}
+
+fn kindName(kind validation.ErrorKind) String {
+    match kind {
+        Required: "Required"
+        Min: "Min"
+        Max: "Max"
+        Email: "Email"
+        Pattern: "Pattern"
+        Custom: "Custom"
+    }
+}
+
+fn write(&builder text.Builder, value String) void {
+    const written = builder.Write(value) else error {
+        discard error
+        panic("validation compatibility report builder is closed")
+    }
+    discard written
+}
+
+fn byteAt(value String, index u64) u64 {
+    const found = text.ByteAt(value, index) else error {
+        discard error
+        panic("validation compatibility byte index failed")
+    }
+    found
+}

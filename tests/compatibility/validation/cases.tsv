@@ -1,0 +1,9 @@
+valid	Ada	25	ada@example.com	Ada	0
+required		25	ada@example.com	Ada	0
+minimum	Ada	17	ada@example.com	Ada	0
+maximum	Ada	100	ada@example.com	Ada	0
+email	Ada	25	invalid	Ada	0
+pattern	Ada	25	ada@example.com	invalid	0
+float-minimum	Ada	25	ada@example.com	Ada	-10.75
+float-maximum	Ada	25	ada@example.com	Ada	10.75
+multiple		17	invalid	invalid	-10.75
