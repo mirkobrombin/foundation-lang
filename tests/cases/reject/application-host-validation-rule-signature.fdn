@@ -1,0 +1,17 @@
+package test.host.validation.rule.signature
+
+import foundation.validation
+
+@validation.Validatable()
+struct Input {
+    Value String
+}
+
+methods Input {
+    @validation.Rule()
+    fn invalid(self) void {}
+}
+
+fn main() i32 {
+    0
+}

@@ -1588,6 +1588,9 @@ if(BUILD_TESTING)
             "application-host-validation-method-collision;FDN2386"
             "application-host-validation-field-type;FDN2387"
             "application-host-validation-range;FDN2388"
+            "application-host-validation-rule-signature;FDN2392"
+            "application-host-validation-nested-cycle;FDN2390"
+            "application-host-validation-pattern;FDN2391"
             "application-host-transfer;FDN2333")
         list(GET application_host_case 0 application_host_name)
         list(GET application_host_case 1 application_host_code)
@@ -2041,6 +2044,28 @@ if(BUILD_TESTING)
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/text-builder-format.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/text-builder-format
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-builder-format.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.pattern
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pattern.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pattern.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.pattern-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pattern.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/pattern.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/pattern
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pattern.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake

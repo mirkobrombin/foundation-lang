@@ -2961,8 +2961,9 @@ class Analyzer {
         const auto &expression = program_.expressions[id];
         auto type = invalidType;
         if (const auto *integer = std::get_if<IntegerExpression>(&expression.value)) {
-            type = expected.has_value() && isInteger(*expected) ? *expected : i32Type;
-            if (!integerLiteralFits(type, integer->magnitude, integer->negative)) {
+            type = expected.has_value() && isNumeric(*expected) ? *expected : i32Type;
+            if (isInteger(type) &&
+                !integerLiteralFits(type, integer->magnitude, integer->negative)) {
                 diagnostics_.error("FDN2005",
                                    "integer literal does not fit " +
                                        std::string(typeName(type)),

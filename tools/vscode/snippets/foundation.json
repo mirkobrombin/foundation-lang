@@ -135,6 +135,25 @@
         ],
         "description": "Declare a compiler-validated model"
     },
+    "Validation rule method": {
+        "prefix": "validrule",
+        "body": [
+            "methods ${1:Input} {",
+            "    @validation.Rule()",
+            "    fn ${2:businessRules}(self, &${3:errors} validation.Errors) void {",
+            "        if ${4:condition} {",
+            "            ${3:errors}.Add(.Custom, \"${5:Field}\", \"${6:message}\")",
+            "        }",
+            "    }",
+            "}"
+        ],
+        "description": "Declare a typed custom validation rule"
+    },
+    "Bounded pattern match": {
+        "prefix": "patternmatch",
+        "body": "pattern.Matches(${1:value}, \"${2:^[A-Z][a-z]+$}\")",
+        "description": "Match text with the portable bounded pattern engine"
+    },
     "HTTP request sources": {
         "prefix": "webrequest",
         "body": [

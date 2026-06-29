@@ -157,6 +157,7 @@ const staticCompletions = [
     { label: "std.json", kind: "Module", detail: "Owned JSON values and parsing" },
     { label: "std.time", kind: "Module", detail: "Unix time values" },
     { label: "std.concurrent", kind: "Module", detail: "Structured cancellation values" },
+    { label: "std.pattern", kind: "Module", detail: "Portable bounded pattern matching" },
     { label: "foundation.worker", kind: "Module", detail: "Supervised application tasks" },
     { label: "foundation.hosting", kind: "Module", detail: "Owned application lifecycle" },
     { label: "foundation.health", kind: "Module", detail: "Typed deterministic health checks" },
@@ -183,9 +184,12 @@ const staticCompletions = [
     { label: "@bind.JSON()", kind: "Keyword", detail: "Select the single strict JSON body field", insertText: "@bind.JSON()" },
     { label: "@validation.Validatable()", kind: "Keyword", detail: "Generate ordered validation for a concrete struct", insertText: "@validation.Validatable()" },
     { label: "@validation.Required()", kind: "Keyword", detail: "Reject an empty String or List field", insertText: "@validation.Required()" },
-    { label: "@validation.Min(...)", kind: "Keyword", detail: "Set an inclusive integer minimum", insertText: "@validation.Min(${1:value})" },
-    { label: "@validation.Max(...)", kind: "Keyword", detail: "Set an inclusive integer maximum", insertText: "@validation.Max(${1:value})" },
+    { label: "@validation.Min(...)", kind: "Keyword", detail: "Set an inclusive numeric minimum", insertText: "@validation.Min(${1:value})" },
+    { label: "@validation.Max(...)", kind: "Keyword", detail: "Set an inclusive numeric maximum", insertText: "@validation.Max(${1:value})" },
     { label: "@validation.Email()", kind: "Keyword", detail: "Require the standard email shape", insertText: "@validation.Email()" },
+    { label: "@validation.Pattern(...)", kind: "Keyword", detail: "Require a portable bounded pattern", insertText: "@validation.Pattern(\"${1:^.+$}\")" },
+    { label: "@validation.Nested()", kind: "Keyword", detail: "Validate a nested model and prefix its field paths", insertText: "@validation.Nested()" },
+    { label: "@validation.Rule()", kind: "Keyword", detail: "Mark a typed custom validation method", insertText: "@validation.Rule()" },
     { label: "@web.Route(...)", kind: "Keyword", detail: "Declare a typed HTTP endpoint", insertText: "@web.Route(${1|.GET,.POST,.PUT,.PATCH,.DELETE,.HEAD,.OPTIONS|}, \"${2:/path}\")" },
     { label: "@web.Path(...)", kind: "Keyword", detail: "Bind a route parameter", insertText: "@web.Path(\"${1:name}\")" },
     { label: "@web.Query(...)", kind: "Keyword", detail: "Bind a query value", insertText: "@web.Query(\"${1:name}\")" },
@@ -603,6 +607,24 @@ const staticCompletions = [
         kind: "Function",
         detail: "fn IsEmail(value String) bool",
         insertText: "validation.IsEmail(${1:value})"
+    },
+    {
+        label: "validation.IsPattern",
+        kind: "Function",
+        detail: "fn IsPattern(value String, expression String) bool",
+        insertText: "validation.IsPattern(${1:value}, \"${2:^.+$}\")"
+    },
+    {
+        label: "pattern.Matches",
+        kind: "Function",
+        detail: "fn Matches(value String, expression String) bool",
+        insertText: "pattern.Matches(${1:value}, \"${2:^.+$}\")"
+    },
+    {
+        label: "validation.Errors.Add",
+        kind: "Method",
+        detail: "fn Add(&self, kind validation.ErrorKind, field String, message String) void",
+        insertText: "Add(${1:.Custom}, \"${2:Field}\", \"${3:message}\")"
     },
     {
         label: "validation.Errors.IsEmpty",

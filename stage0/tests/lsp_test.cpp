@@ -3041,6 +3041,9 @@ void derivedValidationExposesEditorDetails() {
         "struct Profile {\n"
         "    @validation.Required()\n"
         "    Name String\n"
+        "\n"
+        "    @validation.Pattern(\"^[A-Z][a-z]+$\")\n"
+        "    Code String\n"
         "}\n"
         "\n"
         "fn inspect(profile Profile) i32 {\n"
@@ -3049,7 +3052,7 @@ void derivedValidationExposesEditorDetails() {
         "}\n"
         "\n"
         "fn main() i32 {\n"
-        "    inspect(Profile { Name = \"Ada\" })\n"
+        "    inspect(Profile { Name = \"Ada\" Code = \"Ada\" })\n"
         "}\n";
     writeFile(source, contents);
     const auto sourceUri = fileUri(source);
@@ -3072,9 +3075,11 @@ void derivedValidationExposesEditorDetails() {
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
     std::istringstream input(
-        frame(initialize) + frame(open) + frame(request(211, "hover", 11, 29)) +
-        frame(request(212, "signatureHelp", 11, 36)) +
-        frame(request(213, "definition", 11, 29)) + frame(shutdown) + frame(exit));
+        frame(initialize) + frame(open) + frame(request(211, "hover", 14, 29)) +
+        frame(request(212, "signatureHelp", 14, 36)) +
+        frame(request(213, "definition", 14, 29)) +
+        frame(request(214, "hover", 9, 20)) +
+        frame(request(215, "signatureHelp", 9, 32)) + frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
@@ -3082,6 +3087,8 @@ void derivedValidationExposesEditorDetails() {
     const auto hover = responseFor(transcript, 211);
     const auto signature = responseFor(transcript, 212);
     const auto definition = responseFor(transcript, 213);
+    const auto patternHover = responseFor(transcript, 214);
+    const auto patternSignature = responseFor(transcript, 215);
 
     expect(status == 0, "derived validation language server transcript exits cleanly");
     expect(errors.str().empty(), "derived validation requests write no server errors");
@@ -3092,6 +3099,12 @@ void derivedValidationExposesEditorDetails() {
     expect(definition.find(sourceUri) != std::string::npos &&
                definition.find(".foundation.generated.fdn") == std::string::npos,
            "derived validation definition returns to its source struct");
+    expect(patternHover.find("attribute Pattern(expression String)") != std::string::npos &&
+               patternHover.find("portable safe pattern") != std::string::npos,
+           "validation pattern hover exposes its signature and documentation");
+    expect(patternSignature.find("attribute Pattern(expression String)") !=
+               std::string::npos,
+           "validation pattern arguments receive signature help");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);

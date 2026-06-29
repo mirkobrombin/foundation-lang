@@ -16,6 +16,25 @@ struct Registration {
     @validation.Required()
     @validation.Email()
     Email String
+
+    @validation.Pattern("^[A-Z][a-z]+$")
+    Code String
+
+    @validation.Nested()
+    Address Address
+
+    @validation.Min(-10.5)
+    @validation.Max(10.5)
+    Score f64
+}
+
+methods Registration {
+    @validation.Rule()
+    fn businessRules(self, &errors validation.Errors) void {
+        if self.Name == self.Email {
+            errors.Add(.Custom, "Email", "must differ from name")
+        }
+    }
 }
 ```
 
@@ -25,17 +44,31 @@ libraries without `main`, services, routes, or an application host, including th
 checkout where callers of `Validate` are already present. The language server consumes the same
 derived symbols as `check`, `test`, and `build`.
 
-Rules run in source field and attribute order. A successful validation keeps the error list empty
-and does not allocate an error node. Each failure records a typed `ErrorKind`, the field name, and
-the stable message. `Errors.Len`, `IsEmpty`, and `TakeFirst` preserve explicit ownership when
-callers inspect or forward the collection.
+Field rules run in source field and attribute order, followed by custom rule methods in declaration
+order. A successful validation keeps the error list empty and does not allocate an error node. Each
+failure records a typed `ErrorKind`, the field path, and the stable message. `Errors.Add`, `Len`,
+`IsEmpty`, and `TakeFirst` preserve source order and explicit ownership when callers inspect or
+forward the collection.
 
 `Required` accepts `String` and `List<T>` fields because those types have an unambiguous empty state.
 It is rejected on numeric and boolean fields. This deliberately avoids pretending that zero means
 "missing", which is ambiguous. `Min` and `Max` accept
-integer fields and inclusive `i64` limits; a negative limit is rejected for unsigned fields and a
-minimum above the maximum is a compile-time error. `Email` accepts `String` and follows the ASCII
-shape used by the v2 built-in rule.
+every integer and floating-point field. Integer limits must be integral and fit the field type;
+floating-point limits retain their source literal. A minimum above the maximum is a compile-time
+error. `Email` accepts `String` and follows a bounded ASCII shape.
+
+`Pattern` accepts `String` fields and uses the same portable bounded syntax as `std.pattern`:
+start and end anchors, `.`, escaped literals, character classes and ranges, negated classes, and
+the `?`, `*`, and `+` quantifiers. Unsupported grouping, alternation, and counted repetition are
+compile-time errors. Matching has a fixed upper work budget, so an application cannot introduce an
+unbounded regular-expression search through validation metadata. Patterns are limited to 1,024
+bytes.
+
+`Nested` requires another concrete `@Validatable` struct. Its errors are merged at the field's
+position and receive paths such as `Address.City`. Compile-time cycle detection prevents recursive
+validation. `Rule` requires exactly `fn name(self, &errors validation.Errors) void`; generic,
+asynchronous, consuming, or otherwise mismatched methods are rejected. The method can inspect
+multiple fields and report typed `.Custom` errors without a mutable global registry.
 
 A typed `@web.Body()` model marked `@validation.Validatable()` is validated after strict JSON
 binding and before its route function runs. Direct dispatch preserves
@@ -43,6 +76,6 @@ binding and before its route function runs. Direct dispatch preserves
 consumes that error and returns status 422 with a generic body. Binding syntax and type failures
 remain 400, while an unsupported media type remains 415.
 
-The current package is not the completed v2 compatibility boundary. Floating-point limits,
-portable pattern rules, custom rule contracts, nested model validation, and shared behavioral
-fixtures against v2 remain pending.
+The remaining v2 compatibility work is the shared behavioral fixture and migration guide. The Lang
+surface intentionally replaces reflection tags and the mutable custom-rule registry with typed
+compile-time declarations.

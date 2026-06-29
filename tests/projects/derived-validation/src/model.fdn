@@ -3,6 +3,12 @@ package test.derived.validation
 import foundation.validation
 
 @validation.Validatable()
+struct Address {
+    @validation.Required()
+    City String
+}
+
+@validation.Validatable()
 struct Profile {
     @validation.Required()
     Name String
@@ -13,4 +19,23 @@ struct Profile {
 
     @validation.Email()
     Email String
+
+    @validation.Pattern("^[A-Z][a-z]+$")
+    Code String
+
+    @validation.Nested()
+    Address Address
+
+    @validation.Min(-10.5)
+    @validation.Max(10.5)
+    Score f64
+}
+
+methods Profile {
+    @validation.Rule()
+    fn businessRule(self, &errors validation.Errors) void {
+        if self.Age == 17 {
+            errors.Add(.Custom, "Profile", "reserved test age")
+        }
+    }
 }

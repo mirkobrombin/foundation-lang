@@ -1,11 +1,39 @@
 package test.derived.validation
 
+import foundation.validation
+
 test "package validation generation works without main" {
     const profile = Profile {
         Name = ""
         Age = 17
         Email = "invalid"
+        Code = "invalid"
+        Address = Address { City = "" }
+        Score = -11.0
     }
-    const errors = profile.Validate()
-    expect(errors.Len() == 3)
+    var errors = profile.Validate()
+    expect(errors.Len() == 7)
+    expect(takeField(&errors) == "Name")
+    expect(takeField(&errors) == "Age")
+    expect(takeField(&errors) == "Email")
+    expect(takeField(&errors) == "Code")
+    expect(takeField(&errors) == "Address.City")
+    expect(takeField(&errors) == "Score")
+    expect(takeField(&errors) == "Profile")
+    expect(errors.IsEmpty())
+}
+
+fn takeField(&errors validation.Errors) String {
+    const current = errors.TakeFirst()
+    match current {
+        None: panic("missing validation error")
+        Some(error): errorField($error)
+    }
+}
+
+fn errorField($error validation.Error) String {
+    const validation.Error { Kind Field Message } = error
+    discard Kind
+    discard Message
+    Field
 }

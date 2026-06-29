@@ -11,10 +11,31 @@ import std.text as foundationHost6
 methods ProfileInput {
     fn Validate(self) own foundationHost1.Errors {
         var errors = foundationHost1.NewErrors()
-        if !self.Tags {
+        if !self.DisplayName {
             errors.Add(
                 .Required,
-                "Tags",
+                "DisplayName",
+                "required"
+            )
+        }
+        if self.Age < 18 {
+            errors.Add(
+                .Min,
+                "Age",
+                "min 18"
+            )
+        }
+        if self.Age > 99 {
+            errors.Add(
+                .Max,
+                "Age",
+                "max 99"
+            )
+        }
+        if !self.Email {
+            errors.Add(
+                .Required,
+                "Email",
                 "required"
             )
         }
@@ -25,31 +46,10 @@ methods ProfileInput {
                 "invalid email"
             )
         }
-        if !self.Email {
+        if !self.Tags {
             errors.Add(
                 .Required,
-                "Email",
-                "required"
-            )
-        }
-        if self.Age > 99 {
-            errors.Add(
-                .Max,
-                "Age",
-                "max 99"
-            )
-        }
-        if self.Age < 18 {
-            errors.Add(
-                .Min,
-                "Age",
-                "min 18"
-            )
-        }
-        if !self.DisplayName {
-            errors.Add(
-                .Required,
-                "DisplayName",
+                "Tags",
                 "required"
             )
         }

@@ -1,0 +1,13 @@
+package test.host.validation.pattern
+
+import foundation.validation
+
+@validation.Validatable()
+struct Input {
+    @validation.Pattern("(unsupported)")
+    Value String
+}
+
+fn main() i32 {
+    0
+}

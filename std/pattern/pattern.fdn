@@ -1,0 +1,274 @@
+package std.pattern
+
+import std.text
+
+struct matchBudget {
+    used u64
+    limit u64
+}
+
+// Matches a String with Foundation's portable bounded pattern syntax.
+fn Matches(value String, expression String) bool {
+    const valueLength = text.ByteLen(value)
+    const patternLength = text.ByteLen(expression)
+    if patternLength > 1024 return false
+    var patternStart u64 = 0
+    var patternEnd = patternLength
+    var anchoredStart = false
+    var anchoredEnd = false
+
+    if patternStart < patternEnd && byteAt(expression, patternStart) == 94 {
+        anchoredStart = true
+        patternStart = patternStart + 1
+    }
+    if finalAnchor(expression, patternStart, patternEnd) {
+        anchoredEnd = true
+        patternEnd = patternEnd - 1
+    }
+    if !validPattern(expression, patternStart, patternEnd) return false
+
+    var limit u64 = 1024
+    if valueLength <= 10000 && patternLength <= 1000 {
+        limit = (valueLength + 1) * (patternLength + 1) * 8
+        if limit < 1024 {
+            limit = 1024
+        }
+    }
+    if limit > 1000000 {
+        limit = 1000000
+    }
+
+    var budget = matchBudget { used = 0 limit = limit }
+    if anchoredStart {
+        return matchFrom(
+            value,
+            0,
+            valueLength,
+            expression,
+            patternStart,
+            patternEnd,
+            anchoredEnd,
+            &budget
+        )
+    }
+
+    var start u64 = 0
+    while start <= valueLength {
+        if matchFrom(
+            value,
+            start,
+            valueLength,
+            expression,
+            patternStart,
+            patternEnd,
+            anchoredEnd,
+            &budget
+        ) {
+            return true
+        }
+        if budget.used >= budget.limit return false
+        start = start + 1
+    }
+    false
+}
+
+fn matchFrom(
+    value String,
+    valuePosition u64,
+    valueLength u64,
+    pattern String,
+    patternPosition u64,
+    patternEnd u64,
+    anchoredEnd bool,
+    &budget matchBudget
+) bool {
+    if budget.used >= budget.limit return false
+    budget.used = budget.used + 1
+    if patternPosition >= patternEnd {
+        return !anchoredEnd || valuePosition == valueLength
+    }
+
+    const nextAtom = atomEnd(pattern, patternPosition, patternEnd)
+    var nextPattern = nextAtom
+    var minimum u64 = 1
+    var repeating = false
+    if nextAtom < patternEnd {
+        const quantifier = byteAt(pattern, nextAtom)
+        if quantifier == 42 || quantifier == 43 || quantifier == 63 {
+            repeating = true
+            nextPattern = nextAtom + 1
+            if quantifier == 42 || quantifier == 63 {
+                minimum = 0
+            }
+        }
+    }
+
+    if !repeating {
+        if valuePosition >= valueLength return false
+        if !atomMatches(pattern, patternPosition, patternEnd, byteAt(value, valuePosition)) {
+            return false
+        }
+        return matchFrom(
+            value,
+            valuePosition + 1,
+            valueLength,
+            pattern,
+            nextPattern,
+            patternEnd,
+            anchoredEnd,
+            &budget
+        )
+    }
+
+    var maximum = valuePosition
+    const quantifier = byteAt(pattern, nextAtom)
+    while maximum < valueLength &&
+        atomMatches(pattern, patternPosition, patternEnd, byteAt(value, maximum)) {
+        maximum = maximum + 1
+        if quantifier == 63 break
+    }
+    const required = valuePosition + minimum
+    if maximum < required return false
+    var candidate = maximum
+    while candidate >= required {
+        if matchFrom(
+            value,
+            candidate,
+            valueLength,
+            pattern,
+            nextPattern,
+            patternEnd,
+            anchoredEnd,
+            &budget
+        ) {
+            return true
+        }
+        if candidate == required return false
+        candidate = candidate - 1
+    }
+    false
+}
+
+fn atomEnd(pattern String, position u64, end u64) u64 {
+    const current = byteAt(pattern, position)
+    if current == 92 {
+        if position + 1 < end return position + 2
+        return end
+    }
+    if current != 91 return position + 1
+    var cursor = position + 1
+    while cursor < end {
+        const value = byteAt(pattern, cursor)
+        if value == 92 {
+            cursor = cursor + 2
+            continue
+        }
+        if value == 93 return cursor + 1
+        cursor = cursor + 1
+    }
+    end
+}
+
+fn atomMatches(pattern String, position u64, end u64, value u64) bool {
+    const current = byteAt(pattern, position)
+    if current == 46 return true
+    if current == 92 {
+        return position + 1 < end && byteAt(pattern, position + 1) == value
+    }
+    if current == 91 return classMatches(pattern, position, end, value)
+    current == value
+}
+
+fn classMatches(pattern String, position u64, end u64, value u64) bool {
+    const close = atomEnd(pattern, position, end) - 1
+    var cursor = position + 1
+    var negated = false
+    if cursor < close && byteAt(pattern, cursor) == 94 {
+        negated = true
+        cursor = cursor + 1
+    }
+    var matched = false
+    while cursor < close {
+        var first = byteAt(pattern, cursor)
+        if first == 92 {
+            cursor = cursor + 1
+            first = byteAt(pattern, cursor)
+        }
+        cursor = cursor + 1
+        if cursor + 1 < close && byteAt(pattern, cursor) == 45 {
+            cursor = cursor + 1
+            var last = byteAt(pattern, cursor)
+            if last == 92 {
+                cursor = cursor + 1
+                last = byteAt(pattern, cursor)
+            }
+            cursor = cursor + 1
+            if value >= first && value <= last {
+                matched = true
+            }
+            continue
+        }
+        if value == first {
+            matched = true
+        }
+    }
+    !matched if negated else matched
+}
+
+fn validPattern(pattern String, start u64, end u64) bool {
+    var cursor = start
+    while cursor < end {
+        const current = byteAt(pattern, cursor)
+        if unsupported(current) return false
+        if current == 92 {
+            cursor = cursor + 2
+            if cursor > end return false
+        } else {
+            if current == 91 {
+                const close = atomEnd(pattern, cursor, end)
+                if close == end && byteAt(pattern, end - 1) != 93 return false
+                var contents = cursor + 1
+                if contents < close - 1 && byteAt(pattern, contents) == 94 {
+                    contents = contents + 1
+                }
+                if contents >= close - 1 return false
+                cursor = close
+            } else {
+                cursor = cursor + 1
+            }
+        }
+        if cursor < end && quantifier(byteAt(pattern, cursor)) {
+            cursor = cursor + 1
+            if cursor < end && quantifier(byteAt(pattern, cursor)) return false
+        }
+    }
+    true
+}
+
+fn unsupported(value u64) bool {
+    quantifier(value) || value == 36 || value == 94 || value == 40 || value == 41 ||
+        value == 124 || value == 123 || value == 125
+}
+
+fn quantifier(value u64) bool {
+    value == 42 || value == 43 || value == 63
+}
+
+fn finalAnchor(pattern String, start u64, end u64) bool {
+    if end <= start || byteAt(pattern, end - 1) != 36 return false
+    var cursor = end - 1
+    var escapes u64 = 0
+    while cursor > start && byteAt(pattern, cursor - 1) == 92 {
+        cursor = cursor - 1
+        escapes = escapes + 1
+    }
+    escapes % 2 == 0
+}
+
+fn byteAt(value String, index u64) u64 {
+    const found = text.ByteAt(value, index) else error {
+        discard error
+        panic("pattern byte index invariant failed")
+    }
+    found
+}

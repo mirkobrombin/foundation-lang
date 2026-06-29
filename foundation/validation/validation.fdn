@@ -1,6 +1,7 @@
 package foundation.validation
 
 import std.collections
+import std.pattern
 import std.text
 
 // Requests compiler-generated validation for one concrete struct.
@@ -9,20 +10,31 @@ attribute Validatable() targets(struct)
 // Rejects an empty String or collection field.
 attribute Required() targets(field)
 
-// Rejects an integer field below the inclusive limit.
-attribute Min(value i64) targets(field)
+// Rejects a numeric field below the inclusive limit.
+attribute Min(value f64) targets(field)
 
-// Rejects an integer field above the inclusive limit.
-attribute Max(value i64) targets(field)
+// Rejects a numeric field above the inclusive limit.
+attribute Max(value f64) targets(field)
 
 // Rejects a String that does not match the standard email shape.
 attribute Email() targets(field)
+
+// Rejects a String that does not match a portable safe pattern.
+attribute Pattern(expression String) targets(field)
+
+// Validates a field through its generated Validate method.
+attribute Nested() targets(field)
+
+// Marks a typed model method as a custom validation rule.
+attribute Rule() targets(method)
 
 enum ErrorKind {
     Required
     Min
     Max
     Email
+    Pattern
+    Custom
 }
 
 struct Error {
@@ -35,11 +47,26 @@ struct Errors {
     values own collections.List<Error>
 
     fn Add(&self, kind ErrorKind, field String, message String) void {
+        var reversed = collections.NewList<Error>()
+        while !self.values.IsEmpty() {
+            const current = self.values.PopFront()
+            match current {
+                None: panic("validation error order invariant failed")
+                Some(error): reversed.PushFront($error)
+            }
+        }
         self.values.PushFront(Error {
             Kind = kind
             Field = text.Copy(field)
             Message = text.Copy(message)
         })
+        while !reversed.IsEmpty() {
+            const current = reversed.PopFront()
+            match current {
+                None: panic("validation error order invariant failed")
+                Some(error): self.values.PushFront($error)
+            }
+        }
     }
 
     fn IsEmpty(self) bool {
@@ -53,10 +80,46 @@ struct Errors {
     fn TakeFirst(&self) Option<Error> {
         self.values.PopFront()
     }
+
+    fn AddNested(&self, prefix String, $nested own Errors) void {
+        var remaining = nested
+        while !remaining.IsEmpty() {
+            const current = remaining.TakeFirst()
+            match current {
+                None: panic("nested validation error invariant failed")
+                Some(error): self.addNested(prefix, $error)
+            }
+        }
+    }
+
+    fn addNested(&self, prefix String, $error Error) void {
+        const Error { Kind Field Message } = error
+        self.Add(Kind, nestedField(prefix, Field), Message)
+    }
 }
 
 fn NewErrors() own Errors {
     own Errors { values = collections.NewList<Error>() }
+}
+
+fn nestedField(prefix String, field String) String {
+    var builder = text.NewBuilder()
+    writeText(&builder, prefix)
+    writeText(&builder, ".")
+    writeText(&builder, field)
+    const result = builder.Finish() else error {
+        discard error
+        panic("nested validation field builder is closed")
+    }
+    result
+}
+
+fn writeText(&builder text.Builder, value String) void {
+    const written = builder.Write(value) else error {
+        discard error
+        panic("nested validation field builder is closed")
+    }
+    discard written
 }
 
 fn IsEmail(value String) bool {
@@ -95,6 +158,10 @@ fn IsEmail(value String) bool {
         cursor = cursor + 1
     }
     true
+}
+
+fn IsPattern(value String, expression String) bool {
+    pattern.Matches(value, expression)
 }
 
 fn byteAt(value String, index u64) u64 {

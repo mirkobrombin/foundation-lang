@@ -1,0 +1,13 @@
+package test.host.validation.nested.cycle
+
+import foundation.validation
+
+@validation.Validatable()
+struct Input {
+    @validation.Nested()
+    Child own Input
+}
+
+fn main() i32 {
+    0
+}

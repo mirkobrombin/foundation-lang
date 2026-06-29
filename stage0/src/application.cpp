@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -45,6 +47,9 @@ constexpr std::string_view validationRequiredAttribute = "foundation.validation.
 constexpr std::string_view validationMinAttribute = "foundation.validation.Min";
 constexpr std::string_view validationMaxAttribute = "foundation.validation.Max";
 constexpr std::string_view validationEmailAttribute = "foundation.validation.Email";
+constexpr std::string_view validationPatternAttribute = "foundation.validation.Pattern";
+constexpr std::string_view validationNestedAttribute = "foundation.validation.Nested";
+constexpr std::string_view validationRuleAttribute = "foundation.validation.Rule";
 
 enum class Lifetime {
     Transient,
@@ -136,17 +141,21 @@ enum class ValidationRuleKind {
     Min,
     Max,
     Email,
+    Pattern,
+    Nested,
 };
 
 struct ValidationRulePlan {
     std::size_t field{};
     ValidationRuleKind kind{ValidationRuleKind::Required};
-    std::int64_t limit{};
+    std::optional<std::string> argument;
+    long double numericLimit{};
 };
 
 struct StructValidationPlan {
     FirStructId type{};
     std::vector<ValidationRulePlan> rules;
+    std::vector<FirFunctionId> customRules;
 };
 
 const char *webBindingSourceName(WebBindingSource source) {
@@ -490,27 +499,164 @@ std::optional<std::string> stringArgument(const FirAttributeUse *use,
     return use->arguments[index].value.text;
 }
 
-std::optional<std::int64_t> integerArgument(const FirAttributeUse *use,
-                                            std::size_t index = 0) {
-    if (use == nullptr || index >= use->arguments.size() ||
-        use->arguments[index].value.kind != FirAttributeValueKind::Integer) {
+struct NumericAttributeArgument {
+    std::string literal;
+    long double value{};
+    bool integer{};
+    std::uint64_t magnitude{};
+    bool negative{};
+};
+
+std::optional<NumericAttributeArgument> numericArgument(const FirAttributeUse *use,
+                                                        std::size_t index = 0) {
+    if (use == nullptr || index >= use->arguments.size()) {
         return std::nullopt;
     }
     const auto &value = use->arguments[index].value;
-    if (!value.negative) {
-        if (value.magnitude >
-            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
-            return std::nullopt;
+    if (value.kind == FirAttributeValueKind::Integer) {
+        auto literal = std::to_string(value.magnitude);
+        auto numeric = static_cast<long double>(value.magnitude);
+        if (value.negative) {
+            literal.insert(literal.begin(), '-');
+            numeric = -numeric;
         }
-        return static_cast<std::int64_t>(value.magnitude);
+        return NumericAttributeArgument{std::move(literal), numeric, true, value.magnitude,
+                                        value.negative};
     }
-    if (value.magnitude > (std::uint64_t{1} << 63)) {
+    if (value.kind != FirAttributeValueKind::Floating) {
         return std::nullopt;
     }
-    if (value.magnitude == (std::uint64_t{1} << 63)) {
-        return std::numeric_limits<std::int64_t>::min();
+    double numeric{};
+    const auto conversion = std::from_chars(value.text.data(),
+                                            value.text.data() + value.text.size(), numeric);
+    if (conversion.ec != std::errc{} ||
+        conversion.ptr != value.text.data() + value.text.size() || !std::isfinite(numeric)) {
+        return std::nullopt;
     }
-    return -static_cast<std::int64_t>(value.magnitude);
+    return NumericAttributeArgument{value.text, static_cast<long double>(numeric), false, 0,
+                                    false};
+}
+
+bool validationIntegerFits(const Type &type, const NumericAttributeArgument &value) {
+    if (!value.integer) {
+        return false;
+    }
+    if (isUnsignedInteger(type)) {
+        if (value.negative) {
+            return false;
+        }
+        switch (type.kind) {
+        case TypeKind::U8:
+            return value.magnitude <= UINT8_MAX;
+        case TypeKind::U16:
+            return value.magnitude <= UINT16_MAX;
+        case TypeKind::U32:
+            return value.magnitude <= UINT32_MAX;
+        case TypeKind::U64:
+            return true;
+        case TypeKind::Usize:
+            return value.magnitude <= std::numeric_limits<std::size_t>::max();
+        default:
+            return false;
+        }
+    }
+    std::uint64_t maximum{};
+    switch (type.kind) {
+    case TypeKind::I8:
+        maximum = INT8_MAX;
+        break;
+    case TypeKind::I16:
+        maximum = INT16_MAX;
+        break;
+    case TypeKind::I32:
+        maximum = INT32_MAX;
+        break;
+    case TypeKind::I64:
+        maximum = INT64_MAX;
+        break;
+    case TypeKind::Isize:
+        maximum = static_cast<std::uint64_t>(std::numeric_limits<std::intptr_t>::max());
+        break;
+    default:
+        return false;
+    }
+    return value.magnitude <= maximum + (value.negative ? UINT64_C(1) : UINT64_C(0));
+}
+
+bool escapedPatternByte(std::string_view pattern, std::size_t index) {
+    auto escapes = std::size_t{};
+    while (index > 0 && pattern[index - 1] == '\\') {
+        --index;
+        ++escapes;
+    }
+    return escapes % 2 != 0;
+}
+
+bool validValidationPattern(std::string_view pattern) {
+    if (pattern.size() > 1024) {
+        return false;
+    }
+    auto cursor = std::size_t{};
+    auto end = pattern.size();
+    if (cursor < end && pattern[cursor] == '^') {
+        ++cursor;
+    }
+    if (end > cursor && pattern[end - 1] == '$' &&
+        !escapedPatternByte(pattern, end - 1)) {
+        --end;
+    }
+    while (cursor < end) {
+        const auto current = pattern[cursor];
+        if (current == '*' || current == '+' || current == '?' || current == '$' ||
+            current == '^' || current == '(' || current == ')' || current == '|' ||
+            current == '{' || current == '}') {
+            return false;
+        }
+        if (current == '\\') {
+            cursor += 2;
+            if (cursor > end) {
+                return false;
+            }
+        } else if (current == '[') {
+            ++cursor;
+            if (cursor < end && pattern[cursor] == '^') {
+                ++cursor;
+            }
+            const auto contents = cursor;
+            auto closed = false;
+            while (cursor < end) {
+                if (pattern[cursor] == '\\') {
+                    cursor += 2;
+                    if (cursor > end) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (pattern[cursor] == ']') {
+                    closed = true;
+                    break;
+                }
+                ++cursor;
+            }
+            if (!closed || cursor == contents) {
+                return false;
+            }
+            ++cursor;
+        } else {
+            ++cursor;
+        }
+        if (cursor < end &&
+            (pattern[cursor] == '*' || pattern[cursor] == '+' ||
+             pattern[cursor] == '?')) {
+            ++cursor;
+            if (cursor < end &&
+                (pattern[cursor] == '*' || pattern[cursor] == '+' ||
+                 pattern[cursor] == '?')) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 std::string enumCase(const FirProgram &program, const FirAttributeUse *use,
@@ -1184,14 +1330,22 @@ std::string emitApplicationHostSource(const FirProgram &program,
                 return hasAttribute(program, field.attributes, validationRequiredAttribute) ||
                        hasAttribute(program, field.attributes, validationMinAttribute) ||
                        hasAttribute(program, field.attributes, validationMaxAttribute) ||
-                       hasAttribute(program, field.attributes, validationEmailAttribute);
-            });
+                       hasAttribute(program, field.attributes, validationEmailAttribute) ||
+                       hasAttribute(program, field.attributes, validationPatternAttribute) ||
+                       hasAttribute(program, field.attributes, validationNestedAttribute);
+            }) ||
+            std::any_of(program.functions.begin(), program.functions.end(),
+                        [&](const auto &function) {
+                            return function.sourcePath != generatedSourcePath &&
+                                   ownerName(function) == type.name &&
+                                   hasAttribute(program, function.attributes,
+                                                validationRuleAttribute);
+                        });
         if (!validatable) {
             if (hasValidationMetadata) {
                 diagnostics.error(
                     "FDN2385",
-                    "validation field metadata requires @validation.Validatable on " +
-                        type.name,
+                    "validation metadata requires @validation.Validatable on " + type.name,
                     type.sourceSpan);
             }
             continue;
@@ -1214,11 +1368,11 @@ std::string emitApplicationHostSource(const FirProgram &program,
             continue;
         }
 
-        StructValidationPlan validation{index, {}};
+        StructValidationPlan validation{index, {}, {}};
         for (std::size_t fieldIndex = 0; fieldIndex < type.fields.size(); ++fieldIndex) {
             const auto &field = type.fields[fieldIndex];
-            std::optional<std::int64_t> minimum;
-            std::optional<std::int64_t> maximum;
+            std::optional<long double> minimum;
+            std::optional<long double> maximum;
             for (const auto &attribute : field.attributes) {
                 const auto declaration = attributeDeclaration(program, attribute);
                 if (declaration == nullptr) {
@@ -1234,7 +1388,7 @@ std::string emitApplicationHostSource(const FirProgram &program,
                         continue;
                     }
                     validation.rules.push_back(
-                        {fieldIndex, ValidationRuleKind::Required, 0});
+                        {fieldIndex, ValidationRuleKind::Required, std::nullopt, 0});
                     continue;
                 }
                 if (declaration->name == validationEmailAttribute) {
@@ -1245,7 +1399,46 @@ std::string emitApplicationHostSource(const FirProgram &program,
                                           type.sourceSpan);
                         continue;
                     }
-                    validation.rules.push_back({fieldIndex, ValidationRuleKind::Email, 0});
+                    validation.rules.push_back(
+                        {fieldIndex, ValidationRuleKind::Email, std::nullopt, 0});
+                    continue;
+                }
+                if (declaration->name == validationPatternAttribute) {
+                    const auto expression = stringArgument(&attribute);
+                    if (baseType(field.type) != stringType) {
+                        diagnostics.error("FDN2387",
+                                          "@validation.Pattern requires String field: " +
+                                              field.name,
+                                          type.sourceSpan);
+                        continue;
+                    }
+                    if (!expression.has_value() || !validValidationPattern(*expression)) {
+                        diagnostics.error(
+                            "FDN2391",
+                            "validation pattern uses invalid or unsupported syntax: " +
+                                field.name,
+                            type.sourceSpan);
+                        continue;
+                    }
+                    validation.rules.push_back(
+                        {fieldIndex, ValidationRuleKind::Pattern, *expression, 0});
+                    continue;
+                }
+                if (declaration->name == validationNestedAttribute) {
+                    const auto nested = baseType(field.type);
+                    if (nested.kind != TypeKind::Struct ||
+                        nested.declaration >= program.structs.size() ||
+                        !hasAttribute(program, program.structs[nested.declaration].attributes,
+                                      validatableAttribute)) {
+                        diagnostics.error(
+                            "FDN2387",
+                            "@validation.Nested requires a concrete @validation.Validatable "
+                            "struct field: " + field.name,
+                            type.sourceSpan);
+                        continue;
+                    }
+                    validation.rules.push_back(
+                        {fieldIndex, ValidationRuleKind::Nested, std::nullopt, 0});
                     continue;
                 }
                 if (declaration->name != validationMinAttribute &&
@@ -1253,29 +1446,37 @@ std::string emitApplicationHostSource(const FirProgram &program,
                     continue;
                 }
                 const auto fieldType = baseType(field.type);
-                const auto limit = integerArgument(&attribute);
-                if (!isInteger(fieldType) || !limit.has_value()) {
+                const auto limit = numericArgument(&attribute);
+                if (!isNumeric(fieldType) || !limit.has_value()) {
                     diagnostics.error(
                         "FDN2387",
-                        "integer validation limit requires an integer field: " + field.name,
+                        "numeric validation limit requires a numeric field: " + field.name,
                         type.sourceSpan);
                     continue;
                 }
-                if (isUnsignedInteger(fieldType) && *limit < 0) {
+                if (isInteger(fieldType) && !validationIntegerFits(fieldType, *limit)) {
                     diagnostics.error(
                         "FDN2387",
-                        "unsigned validation limit cannot be negative: " + field.name,
+                        "validation limit does not fit integer field: " + field.name,
                         type.sourceSpan);
+                    continue;
+                }
+                if (fieldType == f32Type &&
+                    std::fabs(limit->value) > std::numeric_limits<float>::max()) {
+                    diagnostics.error("FDN2387",
+                                      "validation limit does not fit f32 field: " + field.name,
+                                      type.sourceSpan);
                     continue;
                 }
                 const auto kind = declaration->name == validationMinAttribute
                                       ? ValidationRuleKind::Min
                                       : ValidationRuleKind::Max;
-                validation.rules.push_back({fieldIndex, kind, *limit});
+                validation.rules.push_back(
+                    {fieldIndex, kind, limit->literal, limit->value});
                 if (kind == ValidationRuleKind::Min) {
-                    minimum = *limit;
+                    minimum = limit->value;
                 } else {
-                    maximum = *limit;
+                    maximum = limit->value;
                 }
             }
             if (minimum.has_value() && maximum.has_value() && *minimum > *maximum) {
@@ -1284,7 +1485,69 @@ std::string emitApplicationHostSource(const FirProgram &program,
                                   type.sourceSpan);
             }
         }
+        for (FirFunctionId functionIndex = 0; functionIndex < program.functions.size();
+             ++functionIndex) {
+            const auto &function = program.functions[functionIndex];
+            if (function.sourcePath == generatedSourcePath || ownerName(function) != type.name ||
+                !hasAttribute(program, function.attributes, validationRuleAttribute)) {
+                continue;
+            }
+            auto validRule = function.receiver == FirReceiverKind::View && !function.generic &&
+                             !function.task && !function.blocking && !function.callback &&
+                             !function.action && function.returnType == voidType &&
+                             function.parameters.size() == 2;
+            if (validRule) {
+                const auto errorsLocal = function.parameters[1];
+                validRule = errorsLocal < function.locals.size() &&
+                            function.locals[errorsLocal].type.kind == TypeKind::Edit &&
+                            isNamedStruct(program, function.locals[errorsLocal].type,
+                                          "foundation.validation.Errors");
+            }
+            if (!validRule) {
+                diagnostics.error(
+                    "FDN2392",
+                    "@validation.Rule requires fn name(self, &errors "
+                    "validation.Errors) void",
+                    function.sourceSpan);
+                continue;
+            }
+            validation.customRules.push_back(functionIndex);
+        }
         structValidations.push_back(std::move(validation));
+    }
+    std::map<FirStructId, std::size_t> validationIndexes;
+    for (std::size_t index = 0; index < structValidations.size(); ++index) {
+        validationIndexes.emplace(structValidations[index].type, index);
+    }
+    std::vector<unsigned char> validationStates(structValidations.size());
+    std::function<void(std::size_t)> visitValidation = [&](const std::size_t index) {
+        validationStates[index] = 1;
+        const auto &validation = structValidations[index];
+        const auto &type = program.structs[validation.type];
+        for (const auto &rule : validation.rules) {
+            if (rule.kind != ValidationRuleKind::Nested) {
+                continue;
+            }
+            const auto nested = baseType(type.fields[rule.field].type);
+            const auto found = validationIndexes.find(nested.declaration);
+            if (found == validationIndexes.end()) {
+                continue;
+            }
+            if (validationStates[found->second] == 1) {
+                diagnostics.error("FDN2390", "nested validation cycle through " + type.name,
+                                  type.sourceSpan);
+                continue;
+            }
+            if (validationStates[found->second] == 0) {
+                visitValidation(found->second);
+            }
+        }
+        validationStates[index] = 2;
+    };
+    for (std::size_t index = 0; index < structValidations.size(); ++index) {
+        if (validationStates[index] == 0) {
+            visitValidation(index);
+        }
     }
     std::map<FirStructId, const StructBindingPlan *> structBindingsByType;
     for (const auto &binding : structBindings) {
@@ -1899,6 +2162,8 @@ std::string emitApplicationHostSource(const FirProgram &program,
         qualifiedName("foundation.validation.NewErrors", rootPackage, aliases);
     const auto validationEmailFunction =
         qualifiedName("foundation.validation.IsEmail", rootPackage, aliases);
+    const auto validationPatternFunction =
+        qualifiedName("foundation.validation.IsPattern", rootPackage, aliases);
     const auto usesTypedWebBody = std::any_of(
         webRoutes.begin(), webRoutes.end(), [&](const auto &route) {
             const auto &function = program.functions[route.function];
@@ -1987,27 +2252,40 @@ std::string emitApplicationHostSource(const FirProgram &program,
         out << "methods " << qualifiedName(type.name, rootPackage, aliases) << " {\n"
             << "    fn Validate(self) own " << validationErrorsType << " {\n"
             << "        var errors = " << validationNewErrorsFunction << "()\n";
-        for (auto rule = validation.rules.rbegin(); rule != validation.rules.rend(); ++rule) {
-            const auto &field = type.fields[rule->field];
+        for (const auto &rule : validation.rules) {
+            const auto &field = type.fields[rule.field];
+            if (rule.kind == ValidationRuleKind::Nested) {
+                out << "        errors.AddNested(\n            ";
+                emitString(out, field.name);
+                out << ",\n            $self." << field.name << ".Validate()\n        )\n";
+                continue;
+            }
             out << "        if ";
-            switch (rule->kind) {
+            switch (rule.kind) {
             case ValidationRuleKind::Required:
                 out << "!self." << field.name;
                 break;
             case ValidationRuleKind::Min:
-                out << "self." << field.name << " < " << rule->limit;
+                out << "self." << field.name << " < " << *rule.argument;
                 break;
             case ValidationRuleKind::Max:
-                out << "self." << field.name << " > " << rule->limit;
+                out << "self." << field.name << " > " << *rule.argument;
                 break;
             case ValidationRuleKind::Email:
                 out << '!' << validationEmailFunction << "(self." << field.name << ')';
+                break;
+            case ValidationRuleKind::Pattern:
+                out << '!' << validationPatternFunction << "(self." << field.name << ", ";
+                emitString(out, *rule.argument);
+                out << ')';
+                break;
+            case ValidationRuleKind::Nested:
                 break;
             }
             out << " {\n"
                 << "            errors.Add(\n"
                 << "                .";
-            switch (rule->kind) {
+            switch (rule.kind) {
             case ValidationRuleKind::Required:
                 out << "Required";
                 break;
@@ -2020,26 +2298,40 @@ std::string emitApplicationHostSource(const FirProgram &program,
             case ValidationRuleKind::Email:
                 out << "Email";
                 break;
+            case ValidationRuleKind::Pattern:
+                out << "Pattern";
+                break;
+            case ValidationRuleKind::Nested:
+                break;
             }
             out << ",\n                ";
             emitString(out, field.name);
             out << ",\n                ";
-            switch (rule->kind) {
+            switch (rule.kind) {
             case ValidationRuleKind::Required:
                 emitString(out, "required");
                 break;
             case ValidationRuleKind::Min:
-                emitString(out, "min " + std::to_string(rule->limit));
+                emitString(out, "min " + *rule.argument);
                 break;
             case ValidationRuleKind::Max:
-                emitString(out, "max " + std::to_string(rule->limit));
+                emitString(out, "max " + *rule.argument);
                 break;
             case ValidationRuleKind::Email:
                 emitString(out, "invalid email");
                 break;
+            case ValidationRuleKind::Pattern:
+                emitString(out, "pattern " + *rule.argument);
+                break;
+            case ValidationRuleKind::Nested:
+                break;
             }
             out << "\n            )\n"
                 << "        }\n";
+        }
+        for (const auto function : validation.customRules) {
+            out << "        self." << shortName(program.functions[function].name)
+                << "(&errors)\n";
         }
         out << "        errors\n"
             << "    }\n"

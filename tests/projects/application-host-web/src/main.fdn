@@ -436,6 +436,8 @@ fn validationKindCode(kind validation.ErrorKind) i32 {
         Min: 2
         Max: 3
         Email: 4
+        Pattern: 5
+        Custom: 6
     }
 }
 

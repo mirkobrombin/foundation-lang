@@ -2083,6 +2083,15 @@ AstExpressionId Parser::unary() {
                 std::get_if<IntegerExpression>(&program_.expressions[operand].value)) {
             result = addExpression(
                 IntegerExpression{integer->magnitude, !integer->negative}, start);
+        } else if (const auto *floating =
+                       std::get_if<FloatingExpression>(&program_.expressions[operand].value)) {
+            auto text = floating->text;
+            if (!text.empty() && text.front() == '-') {
+                text.erase(text.begin());
+            } else {
+                text.insert(text.begin(), '-');
+            }
+            result = addExpression(FloatingExpression{std::move(text)}, start);
         } else {
             result = addExpression(UnaryExpression{UnaryOperator::Negate, operand}, start);
         }
