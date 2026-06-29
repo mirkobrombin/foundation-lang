@@ -5,6 +5,7 @@ endif()
 
 file(REMOVE_RECURSE "${PROJECT}")
 file(COPY "${SOURCE}/" DESTINATION "${PROJECT}")
+file(REMOVE "${GENERATED}")
 
 set(application "${PROJECT}/src/main.fdn")
 file(READ "${application}" source)

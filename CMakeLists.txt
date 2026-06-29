@@ -1381,7 +1381,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/services
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-project
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-project/src/zz_foundation.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-project-inspection.fdn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/application-host.fdn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/examples/services/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
@@ -1392,7 +1392,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/web-app-host
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-app-host/src/zz_foundation.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-app-host-inspection.fdn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1402,7 +1402,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-packages
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-packages
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-packages/app/src/zz_foundation.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-packages-inspection.fdn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-packages/expected-host.fdn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-packages/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host-packages.cmake
@@ -1413,7 +1413,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-fallible
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-fallible
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-fallible/src/zz_foundation.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-fallible-inspection.fdn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-fallible/expected-host.fdn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-fallible/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
@@ -1424,7 +1424,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient/src/zz_foundation.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient-inspection.fdn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient/expected-host.fdn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
@@ -1435,7 +1435,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-scope
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-scope
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-scope/src/zz_foundation.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-scope-inspection.fdn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-scope/expected-host.fdn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-scope/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
@@ -1446,7 +1446,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-di
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-di
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-di/src/zz_foundation.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-di-inspection.fdn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-di/expected-host.fdn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-di/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
@@ -1457,7 +1457,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web/src/zz_foundation.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-inspection.fdn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web/expected-host.fdn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
@@ -1468,7 +1468,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-bind
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-bind
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-bind/src/zz_foundation.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-bind-inspection.fdn
             -DGENERATED_C=${CMAKE_CURRENT_BINARY_DIR}/application-host-bind.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/application-host-bind-allocations
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-bind/expected.out
@@ -1493,7 +1493,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-stale
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-stale/src/zz_foundation.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-stale-inspection.fdn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host-stale.cmake
     )
@@ -1503,7 +1503,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient-fallible
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient-fallible
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient-fallible/src/zz_foundation.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient-fallible-inspection.fdn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient-fallible/expected-host.fdn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient-fallible/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
@@ -1514,7 +1514,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-dispatcher
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-dispatcher
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-dispatcher/src/zz_foundation.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-dispatcher-inspection.fdn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-dispatcher/expected-host.fdn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-dispatcher/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
@@ -1525,7 +1525,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-task-dispatcher
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-task-dispatcher
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-task-dispatcher/src/zz_foundation.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-task-dispatcher-inspection.fdn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-task-dispatcher/expected-host.fdn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-task-dispatcher/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
@@ -1536,7 +1536,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-events
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-events
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-events/src/zz_foundation.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-events-inspection.fdn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-events/expected-host.fdn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-events/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
