@@ -3029,6 +3029,74 @@ void servicesAndActionsExposeEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void derivedValidationExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "\n"
+        "import foundation.validation\n"
+        "\n"
+        "@validation.Validatable()\n"
+        "struct Profile {\n"
+        "    @validation.Required()\n"
+        "    Name String\n"
+        "}\n"
+        "\n"
+        "fn inspect(profile Profile) i32 {\n"
+        "    const errors = profile.Validate()\n"
+        "    errors.Len()\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    inspect(Profile { Name = \"Ada\" })\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(211, "hover", 11, 29)) +
+        frame(request(212, "signatureHelp", 11, 36)) +
+        frame(request(213, "definition", 11, 29)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto hover = responseFor(transcript, 211);
+    const auto signature = responseFor(transcript, 212);
+    const auto definition = responseFor(transcript, 213);
+
+    expect(status == 0, "derived validation language server transcript exits cleanly");
+    expect(errors.str().empty(), "derived validation requests write no server errors");
+    expect(hover.find("fn Validate(self) own Errors") != std::string::npos,
+           "derived validation exposes compiler-backed hover");
+    expect(signature.find("fn Validate(self) own Errors") != std::string::npos,
+           "derived validation exposes compiler-backed signature help");
+    expect(definition.find(sourceUri) != std::string::npos &&
+               definition.find(".foundation.generated.fdn") == std::string::npos,
+           "derived validation definition returns to its source struct");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void stateMachinesExposeEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fdn";
@@ -3235,6 +3303,7 @@ int main() {
     parallelPoolExposesEditorDetails();
     rawPointersExposeEditorDetails();
     servicesAndActionsExposeEditorDetails();
+    derivedValidationExposesEditorDetails();
     stateMachinesExposeEditorDetails();
     workflowsExposeEditorDetails();
 

@@ -1,0 +1,16 @@
+package test.derived.validation
+
+import foundation.validation
+
+@validation.Validatable()
+struct Profile {
+    @validation.Required()
+    Name String
+
+    @validation.Min(18)
+    @validation.Max(99)
+    Age i32
+
+    @validation.Email()
+    Email String
+}

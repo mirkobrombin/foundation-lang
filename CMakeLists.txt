@@ -1393,7 +1393,6 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/web-app-host
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-app-host/src/zz_foundation.fdn
-            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app/src/zz_foundation.fdn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1479,6 +1478,14 @@ if(BUILD_TESTING)
             -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-bind.cmake
+    )
+    add_test(
+        NAME stage0.derive.package-validation
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/derived-validation
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/derived-validation
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-derived-validation.cmake
     )
     add_test(
         NAME stage0.emit.application-host-web-stale

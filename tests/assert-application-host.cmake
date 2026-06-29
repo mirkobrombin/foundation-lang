@@ -1,5 +1,5 @@
 if(NOT DEFINED COMPILER OR NOT DEFINED SOURCE OR NOT DEFINED PROJECT OR
-   NOT DEFINED GENERATED OR NOT DEFINED EXPECTED OR NOT DEFINED EXPECTED_OUTPUT)
+   NOT DEFINED GENERATED OR NOT DEFINED EXPECTED_OUTPUT)
     message(FATAL_ERROR "application host assertion is missing an input")
 endif()
 
@@ -27,10 +27,12 @@ if(NOT second_result EQUAL 0)
     message(FATAL_ERROR "second application host emission failed:\n${second_output}${second_error}")
 endif()
 
-file(READ "${EXPECTED}" expected)
 file(READ "${GENERATED}" second)
-if(NOT first STREQUAL expected)
-    message(FATAL_ERROR "application host does not match ${EXPECTED}")
+if(DEFINED EXPECTED)
+    file(READ "${EXPECTED}" expected)
+    if(NOT first STREQUAL expected)
+        message(FATAL_ERROR "application host does not match ${EXPECTED}")
+    endif()
 endif()
 if(NOT second STREQUAL first)
     message(FATAL_ERROR "repeated application host emission produced different output")

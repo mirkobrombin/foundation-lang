@@ -27,13 +27,8 @@ struct ServerConfig {
 }
 ```
 
-Run the package generator after changing binding metadata:
-
-```text
-foundationc emit-app-host . -o src/zz_foundation.fdn
-```
-
-The generated file adds a typed method to the package-owned struct:
+The compiler adds typed methods directly to the package-owned struct. There is no generation step
+or project file to maintain:
 
 ```foundation
 fn Bind(&self, &source bind.Values) Result<void, bind.Error>

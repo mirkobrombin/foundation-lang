@@ -1011,16 +1011,9 @@ std::string emitApplicationHostSource(const FirProgram &program,
                                       const std::vector<ActionPlan> &actions,
                                       const std::vector<WebRoutePlan> &webRoutes,
                                       Diagnostics &diagnostics,
-                                      std::string_view generatedSourcePath) {
-    if (program.main >= program.functions.size() ||
-        program.functions[program.main].packageName.empty()) {
-        diagnostics.error("FDN2330", "application host requires a project package",
-                          program.main < program.functions.size()
-                              ? program.functions[program.main].sourceSpan
-                              : SourceSpan{});
-        return {};
-    }
-    const auto &rootPackage = program.functions[program.main].packageName;
+                                      const std::string &rootPackage,
+                                      std::string_view generatedSourcePath,
+                                      bool includeApplicationHost) {
     std::vector<StructBindingPlan> structBindings;
     for (FirStructId index = 0; index < program.structs.size(); ++index) {
         const auto &type = program.structs[index];
@@ -2235,6 +2228,11 @@ std::string emitApplicationHostSource(const FirProgram &program,
         }
         out << "    }\n";
         out << "}\n\n";
+    }
+
+    if (!includeApplicationHost) {
+        out << "// foundation:generated package/v1\n";
+        return out.str();
     }
 
     if (!webRoutes.empty()) {
@@ -3753,8 +3751,17 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
         return {};
     }
     if (host) {
+        if (program.main >= program.functions.size() ||
+            program.functions[program.main].packageName.empty()) {
+            diagnostics.error("FDN2330", "application host requires a project package",
+                              program.main < program.functions.size()
+                                  ? program.functions[program.main].sourceSpan
+                                  : SourceSpan{});
+            return {};
+        }
         return emitApplicationHostSource(program, plans, order, actions, webRoutes, diagnostics,
-                                         generatedSourcePath);
+                                         program.functions[program.main].packageName,
+                                         generatedSourcePath, true);
     }
 
     std::ostringstream out;
@@ -3850,6 +3857,18 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
 
 std::string emitApplicationPlan(const FirProgram &program, Diagnostics &diagnostics) {
     return emitApplicationArtifact(program, diagnostics, false, {});
+}
+
+std::string emitPackageSource(const FirProgram &program, Diagnostics &diagnostics,
+                              std::string_view rootPackage,
+                              std::string_view generatedSourcePath) {
+    if (rootPackage.empty()) {
+        diagnostics.error("FDN2389", "package generation requires a project package", {});
+        return {};
+    }
+    return emitApplicationHostSource(program, {}, {}, {}, {}, diagnostics,
+                                     std::string(rootPackage),
+                                     generatedSourcePath, false);
 }
 
 std::string emitApplicationHost(const FirProgram &program, Diagnostics &diagnostics,

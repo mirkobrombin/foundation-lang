@@ -19,11 +19,16 @@ struct Registration {
 }
 ```
 
-`foundationc emit-app-host` generates `Validate(self) own validation.Errors`. Rules run in source
-field and attribute order. A successful validation keeps the error list empty and does not allocate
-an error node. Each failure records a typed `ErrorKind`, the field name, and the stable message.
-`Errors.Len`, `IsEmpty`, and `TakeFirst` preserve explicit ownership when callers inspect or forward
-the collection.
+The compiler synthesizes `Validate(self) own validation.Errors` directly into the package semantic
+model. No generated Foundation file or generator command is part of the project. This works in
+libraries without `main`, services, routes, or an application host, including the first clean
+checkout where callers of `Validate` are already present. The language server consumes the same
+derived symbols as `check`, `test`, and `build`.
+
+Rules run in source field and attribute order. A successful validation keeps the error list empty
+and does not allocate an error node. Each failure records a typed `ErrorKind`, the field name, and
+the stable message. `Errors.Len`, `IsEmpty`, and `TakeFirst` preserve explicit ownership when
+callers inspect or forward the collection.
 
 `Required` accepts `String` and `List<T>` fields because those types have an unambiguous empty state.
 It is rejected on numeric and boolean fields. This deliberately avoids pretending that zero means
@@ -39,5 +44,5 @@ consumes that error and returns status 422 with a generic body. Binding syntax a
 remain 400, while an unsupported media type remains 415.
 
 The current package is not the completed v2 compatibility boundary. Floating-point limits,
-portable pattern rules, custom rule contracts, standalone generation outside an application host,
-nested model validation, and shared behavioral fixtures against v2 remain pending.
+portable pattern rules, custom rule contracts, nested model validation, and shared behavioral
+fixtures against v2 remain pending.

@@ -26,11 +26,6 @@ curl -X POST -H 'X-Enabled: true' --data 'profile body' http://127.0.0.1:8080/us
 curl -X POST --data 'username=Ada+Lovelace' http://127.0.0.1:8080/login
 ```
 
-Regenerate the ordinary Foundation host source after changing routes or services:
-
-```sh
-foundationc emit-app-host examples/web-app -o examples/web-app/src/zz_foundation.fdn
-```
-
-The generated source is checked in so navigation, hover, generated API discovery, and C11
-lowering all see the same application graph.
+Routes, binding adapters, validation, and the application host are derived by the compiler. No
+generated Foundation source is stored in the example; the language server and C11 backend consume
+the same semantic graph.

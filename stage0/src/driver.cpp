@@ -479,6 +479,79 @@ int buildCompilation(const std::filesystem::path &source, const std::filesystem:
 
 } // namespace
 
+namespace {
+
+bool hasAttribute(const FirProgram &program, const std::vector<FirAttributeUse> &attributes,
+                  std::string_view name) {
+    return std::any_of(attributes.begin(), attributes.end(), [&](const auto &attribute) {
+        return attribute.declaration < program.attributeDeclarations.size() &&
+               program.attributeDeclarations[attribute.declaration].name == name;
+    });
+}
+
+bool requiresApplicationHost(const FirProgram &program) {
+    if (program.main >= program.functions.size() ||
+        program.functions[program.main].name != "main") {
+        return false;
+    }
+    return std::any_of(program.functions.begin(), program.functions.end(),
+                       [&](const auto &function) {
+                           return hasAttribute(program, function.attributes,
+                                               "foundation.web.Route") ||
+                                  hasAttribute(program, function.attributes,
+                                               "foundation.di.Inject");
+                       });
+}
+
+bool generatedSourceHasDeclarations(std::string_view source) {
+    return source.find("\nmethods ") != std::string_view::npos ||
+           source.find("\nstruct FoundationApplication") != std::string_view::npos;
+}
+
+bool generatedFoundationSource(std::string_view contents) {
+    return contents.find("// foundation:generated package/v1") != std::string_view::npos ||
+           contents.find("// foundation:generated application/v1") != std::string_view::npos;
+}
+
+std::optional<SourceOverlay> deriveProjectSource(const ProjectAnalysis &analysis,
+                                                 Diagnostics &diagnostics) {
+    if (analysis.sources.empty() || analysis.sources.front().packageName.empty()) {
+        return std::nullopt;
+    }
+    if (std::any_of(analysis.sources.begin(), analysis.sources.end(), [](const auto &source) {
+            return generatedFoundationSource(source.contents);
+        })) {
+        return std::nullopt;
+    }
+
+    auto declarations = analysis.program;
+    for (auto &function : declarations.functions) {
+        function.hasBody = false;
+    }
+    Diagnostics declarationDiagnostics;
+    const auto semantic = analyze(
+        declarations, declarationDiagnostics,
+        AnalyzeOptions{.requireMain = false, .retainInvalidModel = true});
+    if (!semantic.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto fir = lower(declarations, *semantic);
+    const auto generated = requiresApplicationHost(fir)
+                               ? emitApplicationHost(fir, diagnostics)
+                               : emitPackageSource(fir, diagnostics,
+                                                   analysis.sources.front().packageName);
+    if (diagnostics.hasErrors() || !generatedSourceHasDeclarations(generated)) {
+        return std::nullopt;
+    }
+
+    const auto sourcePath = std::filesystem::path(analysis.sources.front().identity)
+                                .parent_path() / ".foundation.generated.fdn";
+    return SourceOverlay{sourcePath, generated};
+}
+
+} // namespace
+
 ProjectAnalysis analyzeProject(const std::filesystem::path &path,
                                const std::vector<SourceOverlay> &overlays,
                                AnalyzeOptions options) {
@@ -491,6 +564,24 @@ ProjectAnalysis analyzeProject(const std::filesystem::path &path,
     analysis.program = std::move(loaded->program);
     if (analysis.diagnostics.hasErrors()) {
         return analysis;
+    }
+
+    const auto generated = deriveProjectSource(analysis, analysis.diagnostics);
+    if (analysis.diagnostics.hasErrors()) {
+        return analysis;
+    }
+    if (generated.has_value()) {
+        auto completeOverlays = overlays;
+        completeOverlays.push_back(*generated);
+        loaded = loadProject(path, analysis.diagnostics, completeOverlays);
+        if (!loaded.has_value()) {
+            return analysis;
+        }
+        analysis.sources = std::move(loaded->sources);
+        analysis.program = std::move(loaded->program);
+        if (analysis.diagnostics.hasErrors()) {
+            return analysis;
+        }
     }
     analysis.semantic = analyze(analysis.program, analysis.diagnostics, options);
     return analysis;
@@ -624,14 +715,15 @@ int emitApplicationPlanFile(const std::filesystem::path &source,
     return report(source, result);
 }
 
-int emitApplicationHostFile(const std::filesystem::path &source,
-                            const std::filesystem::path &output) {
+namespace {
+
+int emitApplicationHostSourceFile(const std::filesystem::path &source,
+                                  const std::filesystem::path &output) {
     if (output.extension() != ".fdn") {
-        std::cerr << "foundationc: application host output must use the .fdn extension\n";
+        std::cerr << "foundationc: generated source output must use the .fdn extension\n";
         return 2;
     }
 
-    constexpr std::string_view marker = "// foundation:generated application/v1";
     std::error_code error;
     const auto status = std::filesystem::symlink_status(output, error);
     const auto exists = !error && status.type() != std::filesystem::file_type::not_found;
@@ -648,7 +740,7 @@ int emitApplicationHostFile(const std::filesystem::path &source,
         if (!contents.has_value()) {
             return 1;
         }
-        if (contents->find(marker) == std::string::npos) {
+        if (!generatedFoundationSource(*contents)) {
             std::cerr << "foundationc: refusing to replace non-generated source "
                       << output.string() << '\n';
             return 1;
@@ -664,7 +756,6 @@ int emitApplicationHostFile(const std::filesystem::path &source,
     }
     analysis.sources = std::move(loaded->sources);
     analysis.program = std::move(loaded->program);
-
     std::string generatedSourcePath;
     if (exists) {
         const auto identity = sourceIdentity(output).generic_string();
@@ -674,7 +765,7 @@ int emitApplicationHostFile(const std::filesystem::path &source,
                     return true;
                 }
                 return std::filesystem::path(candidate.path).filename() == output.filename() &&
-                       candidate.contents.find(marker) != std::string::npos;
+                       generatedFoundationSource(candidate.contents);
             });
         if (found != analysis.sources.end()) {
             generatedSourcePath = found->path;
@@ -685,8 +776,14 @@ int emitApplicationHostFile(const std::filesystem::path &source,
             }
         }
     }
+    for (auto &function : analysis.program.functions) {
+        function.hasBody = false;
+    }
     if (!analysis.diagnostics.hasErrors()) {
-        analysis.semantic = analyze(analysis.program, analysis.diagnostics);
+        Diagnostics declarationDiagnostics;
+        analysis.semantic = analyze(
+            analysis.program, declarationDiagnostics,
+            AnalyzeOptions{.requireMain = false, .retainInvalidModel = true});
     }
     if (analysis.semantic.has_value()) {
         const auto fir = lower(analysis.program, *analysis.semantic);
@@ -704,6 +801,13 @@ int emitApplicationHostFile(const std::filesystem::path &source,
     result.sources = std::move(analysis.sources);
     result.diagnostics = std::move(analysis.diagnostics);
     return report(source, result);
+}
+
+} // namespace
+
+int emitApplicationHostFile(const std::filesystem::path &source,
+                            const std::filesystem::path &output) {
+    return emitApplicationHostSourceFile(source, output);
 }
 
 int buildFile(const std::filesystem::path &source, const std::filesystem::path &output,

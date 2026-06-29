@@ -1037,6 +1037,14 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
                                   {0, 0, 1, 1});
                 return std::nullopt;
             }
+            for (const auto &overlay : overlays) {
+                const auto identity = sourceIdentity(overlay.path);
+                const auto relative = identity.lexically_relative(source.sourceRoot);
+                if (overlay.path.extension() == ".fdn" && !relative.empty() &&
+                    *relative.begin() != "..") {
+                    sourcePaths.push_back(overlay.path);
+                }
+            }
             std::sort(sourcePaths.begin(), sourcePaths.end(), [&](const auto &left,
                                                                   const auto &right) {
                 return left.lexically_relative(source.packageRoot).generic_string() <

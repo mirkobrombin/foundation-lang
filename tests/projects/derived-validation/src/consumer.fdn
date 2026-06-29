@@ -1,0 +1,11 @@
+package test.derived.validation
+
+test "package validation generation works without main" {
+    const profile = Profile {
+        Name = ""
+        Age = 17
+        Email = "invalid"
+    }
+    const errors = profile.Validate()
+    expect(errors.Len() == 3)
+}

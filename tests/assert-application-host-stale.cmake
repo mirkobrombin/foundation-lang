@@ -21,12 +21,15 @@ file(WRITE "${application}" "${changed}")
 
 execute_process(
     COMMAND "${COMPILER}" check "${PROJECT}"
-    RESULT_VARIABLE stale_result
-    OUTPUT_VARIABLE stale_output
-    ERROR_VARIABLE stale_error
+    RESULT_VARIABLE derived_result
+    OUTPUT_VARIABLE derived_output
+    ERROR_VARIABLE derived_error
 )
-if(stale_result EQUAL 0)
-    message(FATAL_ERROR "stale application host unexpectedly passed before regeneration")
+if(NOT derived_result EQUAL 0)
+    message(FATAL_ERROR "changed route was not derived automatically:\n${derived_output}${derived_error}")
+endif()
+if(EXISTS "${GENERATED}")
+    message(FATAL_ERROR "automatic host derivation wrote a project source")
 endif()
 
 execute_process(
@@ -84,4 +87,4 @@ if(NOT run_output STREQUAL expected_output)
 endif()
 
 file(SHA256 "${GENERATED}" application_host_hash)
-message(STATUS "stale application host regenerated: ${application_host_hash}")
+message(STATUS "changed route derived without project files: ${application_host_hash}")

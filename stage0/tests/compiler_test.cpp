@@ -1953,10 +1953,10 @@ void applicationHostEmitsTypedFoundationSource() {
     }
     const auto generatedSource = std::find_if(
         analysis.sources.begin(), analysis.sources.end(), [](const auto &candidate) {
-            return candidate.path.ends_with("zz_foundation.fdn");
+            return candidate.path.ends_with(".foundation.generated.fdn");
         });
     expect(generatedSource != analysis.sources.end(),
-           "application host example includes its generated source");
+           "application host example includes its compiler-derived source");
     if (generatedSource == analysis.sources.end()) {
         return;
     }

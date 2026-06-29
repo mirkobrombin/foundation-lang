@@ -41,8 +41,9 @@ types. FIR retains the resolved values, and `emit-metadata` writes the determini
 Service implementations and method receivers also remain explicit in FIR. `emit-app-plan` uses
 that typed model to write `foundation.application/v1`, including construction order, lifetimes,
 boundary inputs, contract providers, action signatures, names, keys, and policies. The planner
-reports graph errors before any host source is generated. `emit-app-host` turns the validated
-application subset into ordinary Foundation source. The generated application stores
+reports graph errors before application symbols are derived. Binding, validation, DI, actions, and
+web host types are synthesized into the compiler semantic model and FIR without writing project
+source. The derived application stores
 singleton services, reconstructs transient action graphs for each invocation, and exposes typed
 action methods without runtime reflection. `FoundationScope` owns scoped services, builds them once
 per `NewScope` call, and releases them in reverse dependency order through ordinary value drop.

@@ -1,13 +1,12 @@
 # Typed configuration binding
 
-This example preserves explicit defaults while applying named string values through a generated,
-typed `ServerConfig.Bind` method. It demonstrates a renamed key, signed duration parsing, string
-list append, named source precedence, an empty-source default, strict JSON decoding, and an ignored
-field without runtime reflection.
+`ServerConfig.Bind` turns named string values into a typed configuration without runtime
+reflection. The example starts with explicit defaults, applies multiple named sources in order,
+and shows how renamed or ignored fields affect binding. It also covers the parsing rules used for
+durations, string lists, and strict JSON input.
 
-Regenerate and run it with:
+Run it directly with:
 
 ```sh
-foundationc emit-app-host . -o src/zz_foundation.fdn
 foundationc run .
 ```

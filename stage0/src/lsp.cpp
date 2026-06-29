@@ -2683,9 +2683,28 @@ class LanguageServer {
         if (symbol == nullptr || symbol->definition.source >= analysis->sources.size()) {
             return Json(nullptr);
         }
-        const auto &source = analysis->sources[symbol->definition.source];
+        auto target = symbol;
+        const auto &definitionSource = analysis->sources[target->definition.source];
+        if (definitionSource.path.ends_with(".foundation.generated.fdn") &&
+            target->id.kind == LanguageSymbolKind::Method &&
+            target->id.owner < analysis->program.functions.size()) {
+            const auto &owner = analysis->program.functions[target->id.owner].ownerType;
+            const auto declaration = std::find_if(
+                analysis->program.structs.begin(), analysis->program.structs.end(),
+                [&](const auto &type) { return type.name == owner; });
+            if (declaration != analysis->program.structs.end()) {
+                const auto id = static_cast<std::size_t>(
+                    std::distance(analysis->program.structs.begin(), declaration));
+                if (const auto *type = index.symbol(
+                        {LanguageSymbolKind::Struct, id, 0});
+                    type != nullptr) {
+                    target = type;
+                }
+            }
+        }
+        const auto &source = analysis->sources[target->definition.source];
         return Json::object({{"uri", pathToFileUri(source.identity)},
-                             {"range", lspRange(source.contents, symbol->definition)}});
+                             {"range", lspRange(source.contents, target->definition)}});
     }
 
     [[nodiscard]] Json provideTypeDefinition(const Json *params) const {

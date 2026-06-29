@@ -49,9 +49,9 @@ body. `Request.IsJSON` parses the media type instead of matching a prefix. It ac
 malformed parameter list is not a JSON content type.
 
 `@Route`, `@Path`, `@Query`, `@Header`, `@Form`, `@Body`, and `@Inject` are typed package
-attributes consumed by `foundationc emit-app-host`. A route is a free, non-generic synchronous
-function that returns `web.Response` or `Result<web.Response, E>`. Each parameter has exactly one
-binding attribute.
+attributes consumed by the compiler host derivation pass. A route is a free, non-generic
+synchronous function that returns `web.Response` or `Result<web.Response, E>`. Each parameter has
+exactly one binding attribute.
 
 ```foundation
 @web.Route(.POST, "/users/{id:alpha}")
@@ -109,18 +109,17 @@ rule set and its remaining compatibility gaps.
 
 The compiler rejects invalid paths, exact duplicate routes, ambiguous parameter branches,
 unmatched path parameters, repeated sources, unsupported binding types, missing or ambiguous DI
-providers, non-singleton route injection, and unsupported return types before writing the host.
-The generated host contains deterministic route IDs, one signature-specific adapter per route,
-closed binding and handler error variants, and a `Dispatch` implementation. Regeneration treats an
-older marked host as declarations only, so a changed route signature can replace its stale adapter
-without deleting the generated file first. Normal `check`, `build`, and `run` remain strict.
+providers, non-singleton route injection, and unsupported return types before deriving the host.
+The derived host contains deterministic route IDs, one signature-specific adapter per route,
+closed binding and handler error variants, and a `Dispatch` implementation. No host file is written
+by normal `check`, `build`, `run`, or language-server operation.
 
 The executable fixture `tests/projects/application-host-web` generates an application, converts
 typed path, query, header, form, raw body, and JSON model inputs, resolves a singleton service, maps
 route failures, and serves a real loopback request. It proves strict JSON failures, MIME parsing,
 missing and invalid binding errors, and a real HTTP 415 response. A separate regression changes an
-`i32` route parameter to `i64` while leaving the old generated host in place, then regenerates,
-checks, and runs the application. Negative fixtures pin the web declaration and typed-body
+`i32` route parameter to `i64` and proves that an explicit inspection artifact can be replaced
+without affecting normal compilation. Negative fixtures pin the web declaration and typed-body
 initialization failures except the internal missing-runtime invariant.
 
 The lower-level `web-server.fdn` and `web-routing.fdn` fixtures cover manual handlers, precedence,
