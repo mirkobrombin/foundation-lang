@@ -1463,6 +1463,16 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
     add_test(
+        NAME stage0.emit.application-host-web-regex
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-regex
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-regex
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-regex-inspection.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-regex/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
+    )
+    add_test(
         NAME stage0.emit.application-host-bind
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -1565,6 +1575,7 @@ if(BUILD_TESTING)
             "application-host-web-return;FDN2362"
             "application-host-web-transient-inject;FDN2363"
             "application-host-web-invalid-path;FDN2364"
+            "application-host-web-invalid-regex;FDN2364"
             "application-host-web-duplicate-binding;FDN2365"
             "application-host-web-body-form;FDN2366"
             "application-host-web-path-binding;FDN2367"

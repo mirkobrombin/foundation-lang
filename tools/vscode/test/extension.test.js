@@ -117,7 +117,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.97.0");
+    assert.equal(manifest.version, "0.98.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1233,6 +1233,7 @@ test("grammar and completions track compiler keywords", () => {
         "std.concurrent", "concurrent.NewCancellationSource",
         "concurrent.CancellationSource.Token", "concurrent.CancellationSource.Cancel",
         "concurrent.Cancellation.IsRequested",
+        "std.pattern", "pattern.IsValid", "pattern.Matches",
         "foundation.hosting", "hosting.Host", "hosting.HostedService",
         "hosting.BackgroundService", "hosting.RunReport", "hosting.RunReason", "hosting.State",
         "hosting.NewHost", "hosting.Run", "hosting.Host.Add",

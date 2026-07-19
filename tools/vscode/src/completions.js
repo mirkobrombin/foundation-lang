@@ -615,6 +615,12 @@ const staticCompletions = [
         insertText: "validation.IsPattern(${1:value}, \"${2:^.+$}\")"
     },
     {
+        label: "pattern.IsValid",
+        kind: "Function",
+        detail: "fn IsValid(expression String) bool",
+        insertText: "pattern.IsValid(\"${1:^.+$}\")"
+    },
+    {
         label: "pattern.Matches",
         kind: "Function",
         detail: "fn Matches(value String, expression String) bool",

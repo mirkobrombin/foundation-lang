@@ -1,0 +1,13 @@
+package test.web.reject
+
+import foundation.web
+import std.text
+
+@web.Route(.GET, "/files/{name:regex([)}")
+fn File(@web.Path("name") name String) web.Response {
+    web.Text(200, text.Copy(name))
+}
+
+fn main() i32 {
+    0
+}

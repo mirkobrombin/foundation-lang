@@ -191,9 +191,19 @@ bool webIdentifier(std::string_view value) {
     });
 }
 
+bool validValidationPattern(std::string_view pattern);
+
 bool validWebConstraints(std::string_view value) {
     if (value.empty()) {
         return true;
+    }
+    constexpr auto regexPrefix = std::string_view{"regex("};
+    if (value.starts_with(regexPrefix)) {
+        if (!value.ends_with(')')) {
+            return false;
+        }
+        return validValidationPattern(
+            value.substr(regexPrefix.size(), value.size() - regexPrefix.size() - 1));
     }
     std::size_t start{};
     while (start <= value.size()) {

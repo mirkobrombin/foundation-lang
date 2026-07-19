@@ -7,11 +7,27 @@ struct matchBudget {
     limit u64
 }
 
+// Reports whether an expression uses Foundation's portable bounded pattern syntax.
+fn IsValid(expression String) bool {
+    const patternLength = text.ByteLen(expression)
+    if patternLength > 1024 return false
+    var patternStart u64 = 0
+    var patternEnd = patternLength
+
+    if patternStart < patternEnd && byteAt(expression, patternStart) == 94 {
+        patternStart = patternStart + 1
+    }
+    if finalAnchor(expression, patternStart, patternEnd) {
+        patternEnd = patternEnd - 1
+    }
+    validPattern(expression, patternStart, patternEnd)
+}
+
 // Matches a String with Foundation's portable bounded pattern syntax.
 fn Matches(value String, expression String) bool {
     const valueLength = text.ByteLen(value)
     const patternLength = text.ByteLen(expression)
-    if patternLength > 1024 return false
+    if !IsValid(expression) return false
     var patternStart u64 = 0
     var patternEnd = patternLength
     var anchoredStart = false
@@ -25,7 +41,6 @@ fn Matches(value String, expression String) bool {
         anchoredEnd = true
         patternEnd = patternEnd - 1
     }
-    if !validPattern(expression, patternStart, patternEnd) return false
 
     var limit u64 = 1024
     if valueLength <= 10000 && patternLength <= 1000 {

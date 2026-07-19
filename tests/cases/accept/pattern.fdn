@@ -3,17 +3,20 @@ package test.pattern
 import std.pattern
 
 fn main() i32 {
-    if !pattern.Matches("Ada", "^[A-Z][a-z]+$") return 1
-    if pattern.Matches("ada", "^[A-Z][a-z]+$") return 2
-    if !pattern.Matches("session-42", "session-[0-9]+") return 3
-    if !pattern.Matches("color", "^colou?r$") return 4
-    if !pattern.Matches("colour", "^colou?r$") return 5
-    if pattern.Matches("colouur", "^colou?r$") return 6
-    if !pattern.Matches("abc", "^[^0-9]+$") return 7
-    if pattern.Matches("abc1", "^[^0-9]+$") return 8
-    if !pattern.Matches("a*b", "^a\\*b$") return 9
-    if pattern.Matches("value", "[") return 10
-    if pattern.Matches("value", "a**") return 11
+    if !pattern.IsValid("^[A-Z][a-z]+$") return 1
+    if pattern.IsValid("[") return 2
+    if pattern.IsValid("a**") return 3
+    if !pattern.Matches("Ada", "^[A-Z][a-z]+$") return 4
+    if pattern.Matches("ada", "^[A-Z][a-z]+$") return 5
+    if !pattern.Matches("session-42", "session-[0-9]+") return 6
+    if !pattern.Matches("color", "^colou?r$") return 7
+    if !pattern.Matches("colour", "^colou?r$") return 8
+    if pattern.Matches("colouur", "^colou?r$") return 9
+    if !pattern.Matches("abc", "^[^0-9]+$") return 10
+    if pattern.Matches("abc1", "^[^0-9]+$") return 11
+    if !pattern.Matches("a*b", "^a\\*b$") return 12
+    if pattern.Matches("value", "[") return 13
+    if pattern.Matches("value", "a**") return 14
     print("pattern ok")
     0
 }

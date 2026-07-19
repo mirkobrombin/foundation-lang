@@ -215,6 +215,13 @@ fn main() i32 {
     if registrationCode($router.Map(.POST, "/methods/{id}", parameterHandler("id"))) != 0 {
         return 7
     }
+    if registrationCode($router.Map(
+        .GET,
+        "/files/{name:regex(^[a-z]+\\.txt$)}",
+        parameterHandler("name")
+        )) != 0 {
+        return 34
+    }
 
     if responseBody($router.Dispatch(request(.GET, "/users/42"))) != "42" return 8
     if dispatchCode($router.Dispatch(request(.GET, "/users/nope"))) != 1 return 9
@@ -226,6 +233,10 @@ fn main() i32 {
     if responseBody($router.Dispatch(request(.GET, "/priority/static"))) != "literal" return 13
     if responseBody($router.Dispatch(request(.POST, "/methods/static"))) != "static" return 14
     if dispatchCode($router.Dispatch(request(.POST, "/users/42"))) != 2 return 15
+    if responseBody($router.Dispatch(request(.GET, "/files/readme.txt"))) != "readme.txt" {
+        return 35
+    }
+    if dispatchCode($router.Dispatch(request(.GET, "/files/README.TXT"))) != 1 return 36
 
     if registrationCode($router.Map(.POST, "/users/{name:int}", parameterHandler("name"))) != 9 {
         return 16
@@ -239,8 +250,11 @@ fn main() i32 {
     if registrationCode($router.Map(.GET, "/bad/{id:innt}", textHandler("bad"))) != 6 {
         return 19
     }
-    if registrationCode($router.Map(.GET, "/bad/{id:regex(^x$)}", textHandler("bad"))) != 7 {
-        return 20
+    if registrationCode($router.Map(.GET, "/bad/{id:regex([)}", textHandler("bad"))) != 6 {
+        return 37
+    }
+    if registrationCode($router.Map(.GET, "/bad/{*rest:int}", textHandler("bad"))) != 7 {
+        return 38
     }
 
     var bindingRequest = request(

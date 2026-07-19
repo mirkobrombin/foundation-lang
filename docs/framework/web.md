@@ -24,13 +24,14 @@ contract and transfers each owned `Handler<E>` through `Map`. A generated
 handler-free `RouteTable`. Both paths preserve the typed handler error `E` without converting it to
 a string or exception.
 
-Route patterns accept literal segments, `{name}`, `{name:int}`, `{name:alpha}`, and a final
-`{*rest}` catch-all. Literal branches take precedence over parameters, which take precedence over
-catch-all branches. Lookup still backtracks when the most specific path has no handler for the
-requested method. `Request.Param` returns a copied value without exposing the router's owned
-parameter storage. Registration rejects malformed names, duplicate parameters, unknown
-constraints, ambiguous parameter branches, and parameter/catch-all conflicts. `regex(...)` is
-recognized but rejected until the standard library has a portable regex contract.
+Route patterns accept literal segments, `{name}`, `{name:int}`, `{name:alpha}`,
+`{name:regex(expression)}`, and a final `{*rest}` catch-all. Regex constraints use the portable
+bounded syntax from `std.pattern`; registration and generated routes reject invalid expressions.
+Literal branches take precedence over parameters, which take precedence over catch-all branches.
+Lookup still backtracks when the most specific path has no handler for the requested method.
+`Request.Param` returns a copied value without exposing the router's owned parameter storage.
+Registration rejects malformed names, duplicate parameters, unknown constraints, ambiguous
+parameter branches, and parameter/catch-all conflicts.
 
 `ServeOne` accepts one connection, parses one HTTP/1.1 request, dispatches it, writes a response,
 closes the connection, and returns the still-owned server in `ServeOutcome<E>`. Request lines and
@@ -123,9 +124,9 @@ without affecting normal compilation. Negative fixtures pin the web declaration 
 initialization failures except the internal missing-runtime invariant.
 
 The lower-level `web-server.fdn` and `web-routing.fdn` fixtures cover manual handlers, precedence,
-method backtracking, integer and alpha constraints, catch-all capture, 404/405 selection, and
-registration failures.
+method backtracking, integer, alpha, and portable regex constraints, catch-all capture, 404/405
+selection, and registration failures.
 
 This is not the completed `app/web` compatibility boundary. Scoped route activation, asynchronous
-route functions, regex constraints, middleware, continuous serving, graceful shutdown, TLS,
-OpenAPI, and the health adapter remain pending.
+route functions, middleware, continuous serving, graceful shutdown, TLS, OpenAPI, and the health
+adapter remain pending.

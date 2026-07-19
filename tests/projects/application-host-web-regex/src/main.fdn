@@ -1,0 +1,65 @@
+package test.host.web.regex
+
+import foundation.web
+import std.collections
+import std.text
+
+@web.Route(.GET, "/files/{name:regex(^[a-z]+\\.txt$)}")
+fn File(@web.Path("name") name String) web.Response {
+    web.Text(200, text.Copy(name))
+}
+
+fn request($path String) web.Request {
+    web.Request {
+        Method = .GET
+        Target = text.Copy(path)
+        Path = path
+        Version = "HTTP/1.1"
+        Headers = collections.NewList<web.HeaderValue>()
+        Params = collections.NewList<web.Parameter>()
+    }
+}
+
+fn rejected(
+    $value Result<web.Response, web.DispatchError<FoundationWebError>>
+) bool {
+    match value {
+        Ok(response): unexpectedResponse($response)
+        Err(error): dispatchRejected($error)
+    }
+}
+
+fn unexpectedResponse($response web.Response) bool {
+    discard response
+    false
+}
+
+fn dispatchRejected($error web.DispatchError<FoundationWebError>) bool {
+    match error {
+        NotFound: true
+        MethodNotAllowed: false
+        Handler(error): unexpectedHandlerError($error)
+    }
+}
+
+fn unexpectedHandlerError($error FoundationWebError) bool {
+    discard error
+    false
+}
+
+fn main() i32 {
+    var application = BuildFoundationApplication()
+    const accepted = application.Dispatch(request("/files/readme.txt")) else error {
+        discard error
+        return 1
+    }
+    const web.Response { Status Headers Body } = accepted
+    discard Headers
+    if Status != 200 || Body != "readme.txt" return 2
+
+    if !rejected($application.Dispatch(request("/files/README.TXT"))) return 3
+
+    discard application
+    print("web regex")
+    0
+}

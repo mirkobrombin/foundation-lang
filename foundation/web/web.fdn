@@ -4,6 +4,7 @@ import std.collections
 import std.format
 import std.net
 import std.parse
+import std.pattern as portablePattern
 import std.text
 
 // Declares one statically discoverable HTTP endpoint.
@@ -1097,9 +1098,9 @@ fn jsonContentType($value String) bool {
     const mediaLength = text.ByteLen(mediaType)
     const jsonSelected = equalFoldAscii(mediaType, "application/json") ||
         mediaLength >= 5 && equalFoldAscii(
-            slice(mediaType, mediaLength - 5, mediaLength),
-            "+json"
-        )
+        slice(mediaType, mediaLength - 5, mediaLength),
+        "+json"
+    )
     if !jsonSelected return false
     validMediaParameters(value, cursor)
 }
@@ -1257,7 +1258,9 @@ fn validateConstraints(value String) Result<bool, RegistrationError> {
     if value == "" return .Ok(true)
     if text.StartsWith(value, "regex(") {
         if !text.EndsWith(value, ")") return .Err(.UnknownConstraint)
-        return .Err(.UnsupportedConstraint)
+        const expression = slice(value, 6, text.ByteLen(value) - 1)
+        if !portablePattern.IsValid(expression) return .Err(.UnknownConstraint)
+        return .Ok(true)
     }
 
     const length = text.ByteLen(value)
@@ -1573,6 +1576,9 @@ fn completePathMatch(
 
 fn constraintsMatch(constraints String, value String) bool {
     if constraints == "" return true
+    if text.StartsWith(constraints, "regex(") {
+        return constraintMatches(constraints, value)
+    }
     const length = text.ByteLen(constraints)
     var start u64 = 0
     while start <= length {
@@ -1590,6 +1596,10 @@ fn constraintsMatch(constraints String, value String) bool {
 fn constraintMatches(constraint String, value String) bool {
     if constraint == "int" return integerConstraintMatches(value)
     if constraint == "alpha" return alphaConstraintMatches(value)
+    if text.StartsWith(constraint, "regex(") && text.EndsWith(constraint, ")") {
+        const expression = slice(constraint, 6, text.ByteLen(constraint) - 1)
+        return portablePattern.Matches(value, expression)
+    }
     false
 }
 

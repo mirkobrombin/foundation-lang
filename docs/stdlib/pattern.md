@@ -8,6 +8,10 @@ import std.pattern
 if pattern.Matches("Ada", "^[A-Z][a-z]+$") {
     print("valid")
 }
+
+if !pattern.IsValid("[unfinished") {
+    print("invalid expression")
+}
 ```
 
 The supported syntax is deliberately smaller than a platform regex engine:
@@ -24,4 +28,5 @@ syntax and expressions above 1,024 bytes return `false`. Each match has a work b
 unbounded search on hostile input.
 
 `foundation.validation.Pattern` statically validates constant patterns before generated validation
-calls this matcher.
+calls this matcher. `foundation.web` uses the same syntax for `regex(...)` route constraints, so a
+route has identical behavior on every supported C toolchain.
