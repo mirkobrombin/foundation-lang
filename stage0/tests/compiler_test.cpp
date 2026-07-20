@@ -1,6 +1,7 @@
 #include "foundation/application.hpp"
 #include "foundation/codegen.hpp"
 #include "foundation/diagnostic.hpp"
+#include "foundation/documentation.hpp"
 #include "foundation/driver.hpp"
 #include "foundation/lexer.hpp"
 #include "foundation/lower.hpp"
@@ -2104,6 +2105,99 @@ void standardLibrarySourceIsLoadedOnce() {
            "relative standard library source has no duplicate functions");
 }
 
+void documentationUsesCompilerSymbols() {
+    constexpr std::string_view source = R"(
+package sample.docs
+
+// Marks public operations.
+attribute PublicTag(value String) targets(fn, method) repeatable
+
+// Supplies a visible name.
+contract Named {
+    // Prints the visible name.
+    fn Display(self) void
+}
+
+// Stores one documented user.
+struct User implements Named {
+    // The visible name.
+    Name String
+    secret i32
+
+    // Prints the visible name.
+    fn Display(self) void {
+        print(self.Name)
+    }
+
+    fn hidden(self) i32 {
+        self.secret
+    }
+}
+
+// Describes an operation result.
+enum Outcome {
+    // The operation succeeded.
+    Ready
+    hidden
+}
+
+// Creates a user.
+@PublicTag("factory")
+fn NewUser(
+    // The visible name.
+    $name String
+) User {
+    User { Name = name secret = 0 }
+}
+
+fn helper() i32 { 1 }
+fn main() i32 { 0 }
+)";
+    auto checked = check(source);
+    expect(!checked.diagnostics.hasErrors(), "documentation fixture is valid");
+    for (auto &declaration : checked.program.structs) {
+        declaration.packageName = "sample.docs";
+    }
+    for (auto &declaration : checked.program.enums) {
+        declaration.packageName = "sample.docs";
+    }
+    for (auto &declaration : checked.program.contracts) {
+        declaration.packageName = "sample.docs";
+    }
+    for (auto &declaration : checked.program.attributeDeclarations) {
+        declaration.packageName = "sample.docs";
+    }
+    for (auto &function : checked.program.functions) {
+        function.packageName = "sample.docs";
+    }
+    foundation::ProjectAnalysis analysis;
+    analysis.sources.emplace_back("api.fdn", std::string(source), "api.fdn", "sample.docs");
+    analysis.program = std::move(checked.program);
+    analysis.semantic = std::move(checked.semantic);
+    const auto first = foundation::emitDocumentation(analysis);
+    const auto second = foundation::emitDocumentation(analysis);
+    expect(first == second, "documentation emission is deterministic");
+    expect(first.find("## Package `sample.docs`") != std::string::npos &&
+               first.find("#### `User`") != std::string::npos &&
+               first.find("Stores one documented user.") != std::string::npos &&
+               first.find("Implements: `Named`.") != std::string::npos,
+           "documentation emits exported type facts and prose");
+    expect(first.find("- `Name String`\n\n  The visible name.") != std::string::npos &&
+               first.find("###### `Display`") != std::string::npos,
+           "documentation emits exported fields and methods");
+    expect(first.find("#### `NewUser`") != std::string::npos &&
+               first.find("- `name`\n\n  The visible name.") != std::string::npos,
+           "documentation emits callable and optional parameter prose");
+    expect(first.find("#### `@PublicTag`") != std::string::npos &&
+               first.find("Targets: `function`, `method`. Repeatable.") != std::string::npos,
+           "documentation emits typed attribute targets");
+    expect(first.find("helper") == std::string::npos &&
+               first.find("secret") == std::string::npos &&
+               first.find("hidden") == std::string::npos &&
+               first.find("main") == std::string::npos,
+           "documentation omits internal declarations and members");
+}
+
 } // namespace
 
 int main() {
@@ -2145,6 +2239,7 @@ int main() {
     applicationHostEmitsTypedFoundationSource();
     projectDiagnosticsRetainTheirSource();
     standardLibrarySourceIsLoadedOnce();
+    documentationUsesCompilerSymbols();
 
     if (failures != 0) {
         std::cerr << failures << " test assertions failed\n";

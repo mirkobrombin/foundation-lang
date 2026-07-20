@@ -1770,4 +1770,8 @@ std::string languageParameterDocumentation(const ProjectAnalysis &analysis,
     return parameterDocumentation(analysis, parameter);
 }
 
+std::string languageTypeSyntax(const TypeSyntax &type) {
+    return displayTypeSyntax(type);
+}
+
 } // namespace foundation

@@ -14,6 +14,7 @@ namespace foundation {
 
 struct ProjectAnalysis;
 struct Parameter;
+struct TypeSyntax;
 
 enum class LanguageSymbolKind {
     Function,
@@ -105,6 +106,7 @@ class LanguageIndex {
                                                 SourceSpan definition);
 [[nodiscard]] std::string languageParameterDocumentation(
     const ProjectAnalysis &analysis, const Parameter &parameter);
+[[nodiscard]] std::string languageTypeSyntax(const TypeSyntax &type);
 
 } // namespace foundation
 

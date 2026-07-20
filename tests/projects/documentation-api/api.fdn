@@ -1,0 +1,37 @@
+package docs.fixture
+
+// Marks a documented operation.
+attribute Operation(label String) targets(fn, method) repeatable
+
+// Supplies a visible name.
+contract Named {
+    // Prints the visible name.
+    fn Display(self) void
+}
+
+// Stores one user record.
+struct User implements Named {
+    // The visible name.
+    Name String
+    score i32
+}
+
+// Describes the current user state.
+enum Status {
+    // The user is ready.
+    Ready
+    failed
+}
+
+// Creates a user record.
+@Operation("factory")
+fn NewUser(
+    // The visible name.
+    //
+    // Used by **display** output.
+    $name String
+) User {
+    User { Name = name score = 0 }
+}
+
+fn helper() i32 { 1 }

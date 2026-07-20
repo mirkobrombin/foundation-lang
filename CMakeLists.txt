@@ -37,6 +37,7 @@ add_library(foundation_compiler STATIC
     stage0/src/application.cpp
     stage0/src/codegen.cpp
     stage0/src/diagnostic.cpp
+    stage0/src/documentation.cpp
     stage0/src/driver.cpp
     stage0/src/formatter.cpp
     stage0/src/language_service.cpp
@@ -599,6 +600,15 @@ if(BUILD_TESTING)
             -DINVALID=${CMAKE_CURRENT_SOURCE_DIR}/tests/formatter/invalid.fdn
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/formatter-project
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-format.cmake
+    )
+    add_test(
+        NAME tooling.documentation.cli
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/documentation-api
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/documentation-api/expected.md
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/documentation-test
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-documentation.cmake
     )
     add_executable(foundation_package_tests
         stage0/tests/package_test.cpp

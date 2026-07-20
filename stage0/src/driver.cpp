@@ -2,6 +2,7 @@
 
 #include "foundation/application.hpp"
 #include "foundation/codegen.hpp"
+#include "foundation/documentation.hpp"
 #include "foundation/formatter.hpp"
 #include "foundation/lower.hpp"
 #include "foundation/metadata.hpp"
@@ -702,6 +703,46 @@ int emitMetadataFile(const std::filesystem::path &source, const std::filesystem:
         return status;
     }
     return writeFile(output, compilation.generatedMetadata) ? 0 : 1;
+}
+
+int emitDocumentationFile(const std::filesystem::path &source,
+                          const std::filesystem::path &output) {
+    if (output.extension() != ".md") {
+        std::cerr << "foundationc: documentation output must use the .md extension\n";
+        return 2;
+    }
+    auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false});
+    Compilation result;
+    result.sources = analysis.sources;
+    result.diagnostics = analysis.diagnostics;
+    if (const auto status = report(source, result); status != 0) {
+        return status;
+    }
+    std::vector<std::size_t> projectSources;
+    std::error_code error;
+    const auto sourceStatus = std::filesystem::status(source, error);
+    if (!error && std::filesystem::is_regular_file(sourceStatus)) {
+        const auto identity = sourceIdentity(source).generic_string();
+        for (std::size_t index = 0; index < analysis.sources.size(); ++index) {
+            if (analysis.sources[index].identity == identity) {
+                projectSources.push_back(index);
+                break;
+            }
+        }
+    } else if (!error && std::filesystem::is_directory(sourceStatus)) {
+        const auto root = sourceIdentity(source);
+        for (std::size_t index = 0; index < analysis.sources.size(); ++index) {
+            const auto &input = analysis.sources[index];
+            if (input.path.starts_with("packages/")) {
+                continue;
+            }
+            const auto relative = std::filesystem::path(input.identity).lexically_relative(root);
+            if (!relative.empty() && *relative.begin() != "..") {
+                projectSources.push_back(index);
+            }
+        }
+    }
+    return writeFile(output, emitDocumentation(analysis, projectSources)) ? 0 : 1;
 }
 
 int emitApplicationPlanFile(const std::filesystem::path &source,

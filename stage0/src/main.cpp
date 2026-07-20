@@ -18,6 +18,7 @@ void printUsage(std::ostream &output) {
            << "  foundationc emit-c <source-or-project> -o <output.c>\n"
            << "  foundationc emit-c-header <source-or-project> -o <output.h>\n"
            << "  foundationc emit-metadata <source-or-project> -o <output.json>\n"
+           << "  foundationc documentation <source-or-project> -o <output.md>\n"
            << "  foundationc emit-app-plan <source-or-project> -o <output.json>\n"
            << "  foundationc emit-app-host <source-or-project> -o <output.fdn>\n"
            << "  foundationc build <source-or-project> -o <executable> [--native <input>]...\n"
@@ -114,6 +115,10 @@ int main(int argc, char **argv) {
         if (command == "emit-metadata" && outputArgumentsAreValid(argc, argv)) {
             return foundation::emitMetadataFile(std::filesystem::path(argv[2]),
                                                 std::filesystem::path(argv[4]));
+        }
+        if (command == "documentation" && outputArgumentsAreValid(argc, argv)) {
+            return foundation::emitDocumentationFile(std::filesystem::path(argv[2]),
+                                                     std::filesystem::path(argv[4]));
         }
         if (command == "emit-app-plan" && outputArgumentsAreValid(argc, argv)) {
             return foundation::emitApplicationPlanFile(std::filesystem::path(argv[2]),

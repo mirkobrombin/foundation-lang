@@ -49,6 +49,8 @@ enum class FormatMode {
                                   const std::filesystem::path &output);
 [[nodiscard]] int emitMetadataFile(const std::filesystem::path &source,
                                    const std::filesystem::path &output);
+[[nodiscard]] int emitDocumentationFile(const std::filesystem::path &source,
+                                        const std::filesystem::path &output);
 [[nodiscard]] int emitApplicationPlanFile(const std::filesystem::path &source,
                                           const std::filesystem::path &output);
 [[nodiscard]] int emitApplicationHostFile(const std::filesystem::path &source,
