@@ -3211,6 +3211,99 @@ void webActivationExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void manualWebMiddlewareExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "\n"
+        "import foundation.web\n"
+        "\n"
+        "enum AppError {\n"
+        "    Failed\n"
+        "}\n"
+        "\n"
+        "fn pass(\n"
+        "    $request web.Request,\n"
+        "    next fn(\n"
+        "        $web.Request\n"
+        "    ) Result<web.Response, web.DispatchError<AppError>>\n"
+        ") Result<web.Response, web.DispatchError<AppError>> {\n"
+        "    next($request)\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    var router = web.NewRouter<AppError>()\n"
+        "    const registered = router.Use(10, $pass)\n"
+        "    discard registered\n"
+        "    0\n"
+        "}\n";
+    const std::string incomplete =
+        "package sample\n"
+        "import foundation.web\n"
+        "enum AppError { Failed }\n"
+        "fn main() i32 {\n"
+        "    var router = web.NewRouter<AppError>()\n"
+        "    router.\n"
+        "    0\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{"
+        "\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto change =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":2},\"contentChanges\":[{\"text\":\"" +
+        jsonEscape(incomplete) + "\"}]}}";
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(223, "hover", 19, 31)) +
+        frame(request(224, "signatureHelp", 19, 39)) + frame(change) +
+        frame(request(225, "completion", 5, 11)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto hover = responseFor(transcript, 223);
+    const auto signature = responseFor(transcript, 224);
+    const auto completion = responseFor(transcript, 225);
+
+    expect(status == 0, "manual middleware language server transcript exits cleanly");
+    expect(errors.str().empty(), "manual middleware requests write no server errors");
+    expect(hover.find("fn Use") != std::string::npos &&
+               hover.find("MiddlewareRegistrationError") != std::string::npos,
+           "manual middleware exposes compiler-backed hover");
+    expect(signature.find("fn Use") != std::string::npos &&
+               signature.find("MiddlewareRegistrationError") != std::string::npos,
+           "manual middleware exposes compiler-backed signature help");
+    expect(completion.find("\"label\":\"Map\"") != std::string::npos &&
+               completion.find("\"label\":\"Use\"") != std::string::npos &&
+               completion.find("\"label\":\"UseGroup\"") != std::string::npos &&
+               completion.find("\"label\":\"UseRoute\"") != std::string::npos &&
+               completion.find("\"label\":\"middleware\"") == std::string::npos,
+           "manual router completion exposes public methods and hides storage");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void stateMachinesExposeEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fdn";
@@ -3419,6 +3512,7 @@ int main() {
     servicesAndActionsExposeEditorDetails();
     derivedValidationExposesEditorDetails();
     webActivationExposesEditorDetails();
+    manualWebMiddlewareExposesEditorDetails();
     stateMachinesExposeEditorDetails();
     workflowsExposeEditorDetails();
 

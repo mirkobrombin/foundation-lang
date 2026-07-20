@@ -177,6 +177,49 @@ void keepsTaskOwnershipCompact() {
            "task formatting is idempotent");
 }
 
+void formatsNestedCallableSignatures() {
+    constexpr std::string_view source =
+        "fn chain<E>(\n"
+        "$callback fn(\n"
+        "$i32,\n"
+        "fn($i32)Result<i32,E>\n"
+        ")Result<i32,E>\n"
+        ")Result<i32,E>{\n"
+        "const seed=1\n"
+        "callback(\n"
+        "1,\n"
+        "fn(value i32)Result<i32,E>capture seed{\n"
+        ".Ok(value+seed)\n"
+        "}\n"
+        ")\n"
+        "}\n";
+    constexpr std::string_view expected =
+        "fn chain<E>(\n"
+        "    $callback fn(\n"
+        "        $i32,\n"
+        "        fn($i32) Result<i32, E>\n"
+        "    ) Result<i32, E>\n"
+        ") Result<i32, E> {\n"
+        "    const seed = 1\n"
+        "    callback(\n"
+        "        1,\n"
+        "        fn(value i32) Result<i32, E> capture seed {\n"
+        "            .Ok(value + seed)\n"
+        "        }\n"
+        "    )\n"
+        "}\n";
+
+    const auto formatted = foundation::formatSource(source);
+    expect(!formatted.diagnostics.hasErrors(), "nested callable source formats");
+    if (formatted.contents != expected) {
+        std::cerr << formatted.contents;
+    }
+    expect(formatted.contents == expected,
+           "nested callable types and captures retain type spacing and indentation");
+    expect(foundation::formatSource(formatted.contents).contents == formatted.contents,
+           "nested callable formatting is idempotent");
+}
+
 void formatsWorkflowCompensation() {
     constexpr std::string_view source =
         "fn reserve(value i32)Result<void,bool>{\n"
@@ -281,6 +324,7 @@ int main() {
     preservesLineSensitiveSyntax();
     preservesLineAndNestedBlockComments();
     keepsTaskOwnershipCompact();
+    formatsNestedCallableSignatures();
     formatsWorkflowCompensation();
     rejectsInvalidSourceWithoutChangingIt();
     preservesEstablishedFoundationStyle();

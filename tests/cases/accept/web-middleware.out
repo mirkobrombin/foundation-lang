@@ -1,0 +1,4 @@
+global-outer>captured>global-inner>api>v1>route>handler<route<v1<api<global-inner<captured<global-outer
+global-outer>captured>global-inner>api>v1>route>handler<route<v1<api<global-inner<captured<global-outer
+global:not-found
+global-outer>captured>global-inner>api>stopped<api<global-inner<captured<global-outer

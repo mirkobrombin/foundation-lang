@@ -254,6 +254,7 @@ const staticCompletions = [
     { label: "web.Method", kind: "Enum", detail: "supported HTTP request method" },
     { label: "web.MatchError", kind: "Enum", detail: "not found or method not allowed route result" },
     { label: "web.DispatchError", kind: "Enum", detail: "transport or typed handler dispatch failure" },
+    { label: "web.MiddlewareRegistrationError", kind: "Enum", detail: "invalid manual middleware scope or duplicate order" },
     { label: "web.ServeOutcome", kind: "Struct", detail: "served request and reusable server" },
     {
         label: "platform.Current",
@@ -542,8 +543,26 @@ const staticCompletions = [
     {
         label: "web.Router.Map",
         kind: "Method",
-        detail: "fn Map(&self, method web.Method, path String, $handler own web.Handler<E>) Result<void, web.RegistrationError>",
-        insertText: "Map(${1:.GET}, ${2:path}, ${3:handler})"
+        detail: "fn Map(&self, method web.Method, $path String, $handler own web.Handler<E>) Result<void, web.RegistrationError>",
+        insertText: "Map(${1:.GET}, \"${2:/path}\", \\$${3:handler})"
+    },
+    {
+        label: "web.Router.Use",
+        kind: "Method",
+        detail: "fn Use(&self, order i32, $middleware fn($web.Request, fn($web.Request) Result<web.Response, web.DispatchError<E>>) Result<web.Response, web.DispatchError<E>>) Result<void, web.MiddlewareRegistrationError>",
+        insertText: "Use(${1:10}, \\$${2:middleware})"
+    },
+    {
+        label: "web.Router.UseGroup",
+        kind: "Method",
+        detail: "fn UseGroup(&self, $prefix String, order i32, $middleware fn($web.Request, fn($web.Request) Result<web.Response, web.DispatchError<E>>) Result<web.Response, web.DispatchError<E>>) Result<void, web.MiddlewareRegistrationError>",
+        insertText: "UseGroup(\"${1:/api}\", ${2:10}, \\$${3:middleware})"
+    },
+    {
+        label: "web.Router.UseRoute",
+        kind: "Method",
+        detail: "fn UseRoute(&self, method web.Method, $path String, order i32, $middleware fn($web.Request, fn($web.Request) Result<web.Response, web.DispatchError<E>>) Result<web.Response, web.DispatchError<E>>) Result<void, web.MiddlewareRegistrationError>",
+        insertText: "UseRoute(${1:.GET}, \"${2:/path}\", ${3:10}, \\$${4:middleware})"
     },
     {
         label: "web.RouteTable.Add",

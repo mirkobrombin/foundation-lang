@@ -117,6 +117,24 @@ opposite order. Duplicate orders in one scope are rejected, as are group prefixe
 route and route middleware that targets no exact method and path pair. The derived chain is part
 of the virtual application source and never creates a project source file.
 
+The manual `Router<E>` exposes the same function signature through `Use`, `UseGroup`, and
+`UseRoute`. Routes are mapped before group or route middleware is registered. This lets
+registration reject an unmatched static prefix or exact method and pattern immediately. Numeric
+orders remain local to one scope: the same order may be reused by a global middleware, a group,
+and a route, but not twice inside the same scope.
+
+```foundation
+var router = web.NewRouter<AppError>()
+discard router.Map(.GET, "/api/users", own UsersHandler {})
+discard router.Use(10, $requestLog)
+discard router.UseGroup("/api", 10, $requireApiKey)
+discard router.UseRoute(.GET, "/api/users", 10, $auditUsers)
+```
+
+The manual chain is reusable across dispatches and owns captured middleware closures. A global
+middleware may replace the request before lookup or map `NotFound` and `MethodNotAllowed` into a
+response. Group and route selection is fixed after lookup, matching generated applications.
+
 Path, query, header, and form sources accept `String`, `Option<String>`, `bool`, and every integer
 machine type. Required sources produce a generated `FoundationWebBindingError` when absent.
 `Option<String>` receives `.None` instead. Invalid boolean and integer text produces an explicit
@@ -194,5 +212,5 @@ lower-level `web-server.fdn` and `web-routing.fdn` fixtures cover manual handler
 method backtracking, integer, alpha, and portable regex constraints, catch-all capture, 404/405
 selection, and registration failures.
 
-This is not the completed `app/web` compatibility boundary. Manual-router middleware, continuous
-serving, graceful shutdown, TLS, OpenAPI, and the health adapter remain pending.
+This is not the completed `app/web` compatibility boundary. Continuous serving, graceful
+shutdown, TLS, OpenAPI, and the health adapter remain pending.

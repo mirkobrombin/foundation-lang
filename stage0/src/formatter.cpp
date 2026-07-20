@@ -138,6 +138,16 @@ std::unordered_set<std::size_t> typeStarts(const Program &program) {
     return starts;
 }
 
+std::unordered_set<std::size_t> closureBlockStarts(const Program &program) {
+    std::unordered_set<std::size_t> starts;
+    for (const auto &function : program.functions) {
+        if (function.closure && function.body < program.blocks.size()) {
+            starts.insert(program.blocks[function.body].span.offset);
+        }
+    }
+    return starts;
+}
+
 std::vector<bool> typeOpeningBrackets(const std::vector<Token> &tokens,
                                       const std::unordered_set<std::size_t> &starts) {
     std::vector<bool> result(tokens.size());
@@ -236,6 +246,7 @@ std::vector<bool> genericDelimiters(const std::vector<Token> &tokens) {
                               next.kind == TokenKind::RightBracket ||
                               next.kind == TokenKind::RightBrace ||
                               next.kind == TokenKind::Equal ||
+                              next.kind == TokenKind::Capture ||
                               next.kind == TokenKind::Implements ||
                               next.kind == TokenKind::Extends;
         if (accepted) {
@@ -256,6 +267,7 @@ class Writer {
     [[nodiscard]] std::string format(const std::vector<Token> &tokens, const Program &program) {
         const auto angleDelimiters = genericDelimiters(tokens);
         const auto starts = typeStarts(program);
+        const auto closureBlocks = closureBlockStarts(program);
         const auto typeBrackets = typeOpeningBrackets(tokens, starts);
         for (const auto &function : program.functions) {
             if (!function.workflow.has_value()) {
@@ -288,7 +300,8 @@ class Writer {
             const auto raw = source_.substr(token.span.offset, token.span.length);
             output_.append(raw);
             lineStart_ = !raw.empty() && (raw.back() == '\n' || raw.back() == '\r');
-            updateDepth(token.kind, angleDelimiters[index]);
+            updateDepth(token.kind, angleDelimiters[index],
+                        closureBlocks.contains(token.span.offset));
             previousEnd = token.span.offset + token.span.length;
         }
         return output_;
@@ -398,13 +411,23 @@ class Writer {
         const auto bracketCount = bracketBraceDepths_.size() -
                                   (next == TokenKind::RightBracket &&
                                    !bracketBraceDepths_.empty());
-        const auto nested =
-            std::any_of(parenBraceDepths_.begin(), parenBraceDepths_.begin() + parenCount,
-                        [threshold](std::size_t depth) { return depth >= threshold; }) ||
-            std::any_of(bracketBraceDepths_.begin(),
-                        bracketBraceDepths_.begin() + bracketCount,
-                        [threshold](std::size_t depth) { return depth >= threshold; });
-        output_.append((braces + (nested ? 1 : 0)) * 4, ' ');
+        const auto nestedParens = std::count_if(
+            parenBraceDepths_.begin(), parenBraceDepths_.begin() + parenCount,
+            [threshold](std::size_t depth) { return depth >= threshold; });
+        const auto nestedBrackets = std::count_if(
+            bracketBraceDepths_.begin(), bracketBraceDepths_.begin() + bracketCount,
+            [threshold](std::size_t depth) { return depth >= threshold; });
+        const auto nested = nestedParens != 0 || nestedBrackets != 0;
+        const auto nestedFunctions = nestedParens + nestedBrackets > 1
+                                         ? std::count(parenFunctions_.begin(),
+                                                      parenFunctions_.begin() + parenCount,
+                                                      true)
+                                         : std::size_t{};
+        const auto braceCount = braceClosureExtras_.size();
+        const auto closureExtras = std::count(braceClosureExtras_.begin(),
+                                              braceClosureExtras_.begin() + braceCount, true);
+        output_.append(
+            (braces + (nested ? 1 : 0) + nestedFunctions + closureExtras) * 4, ' ');
         if (continuation_ && !nested) {
             output_.append(4, ' ');
         }
@@ -415,15 +438,19 @@ class Writer {
         continuation_ = false;
     }
 
-    void updateDepth(TokenKind kind, bool genericDelimiter) {
+    void updateDepth(TokenKind kind, bool genericDelimiter, bool closureBlock) {
         if (kind == TokenKind::LeftBrace) {
             ++braceDepth_;
+            braceClosureExtras_.push_back(closureBlock && !parenBraceDepths_.empty());
         } else if (kind == TokenKind::RightBrace && braceDepth_ != 0) {
             --braceDepth_;
+            braceClosureExtras_.pop_back();
         } else if (kind == TokenKind::LeftParen) {
             parenBraceDepths_.push_back(braceDepth_);
+            parenFunctions_.push_back(lastToken_ == TokenKind::Fn);
         } else if (kind == TokenKind::RightParen && !parenBraceDepths_.empty()) {
             parenBraceDepths_.pop_back();
+            parenFunctions_.pop_back();
         } else if (kind == TokenKind::LeftBracket) {
             bracketBraceDepths_.push_back(braceDepth_);
         } else if (kind == TokenKind::RightBracket && !bracketBraceDepths_.empty()) {
@@ -436,7 +463,9 @@ class Writer {
     std::string_view source_;
     std::string output_;
     std::size_t braceDepth_{};
+    std::vector<bool> braceClosureExtras_;
     std::vector<std::size_t> parenBraceDepths_;
+    std::vector<bool> parenFunctions_;
     std::vector<std::size_t> bracketBraceDepths_;
     std::unordered_set<std::size_t> compensationLines_;
     TokenKind lastToken_{TokenKind::Eof};

@@ -1,0 +1,229 @@
+package test.web_middleware
+
+import foundation.web
+import std.collections
+import std.text
+
+enum AppError {
+    Failed
+}
+
+struct TextHandler implements web.Handler<AppError> {
+    value String
+}
+
+methods TextHandler {
+    fn Handle(self, $request web.Request) Result<web.Response, AppError> {
+        discard request
+        .Ok(web.Text(200, text.Copy(self.value)))
+    }
+}
+
+fn surround(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<AppError>>,
+    prefix String,
+    suffix String
+) Result<web.Response, web.DispatchError<AppError>> {
+    const result = next($request)
+    match result {
+        Ok(response): surroundResponse($response, prefix, suffix)
+        Err(error): .Err(error)
+    }
+}
+
+fn rewriteAlias(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<AppError>>
+) Result<web.Response, web.DispatchError<AppError>> {
+    var active = request
+    if active.Path == "/alias" {
+        active.Path = "/api/v1/value"
+        active.Target = "/api/v1/value"
+    }
+    next($active)
+}
+
+fn globalOuter(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<AppError>>
+) Result<web.Response, web.DispatchError<AppError>> {
+    const result = next($request)
+    match result {
+        Ok(response): surroundResponse($response, "global-outer>", "<global-outer")
+        Err(error): match error {
+            NotFound: .Ok(web.Text(404, "global:not-found"))
+            MethodNotAllowed: .Err(.MethodNotAllowed)
+            Handler(error): .Err(.Handler(error = error))
+        }
+    }
+}
+
+fn globalInner(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<AppError>>
+) Result<web.Response, web.DispatchError<AppError>> {
+    surround($request, next, "global-inner>", "<global-inner")
+}
+
+fn api(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<AppError>>
+) Result<web.Response, web.DispatchError<AppError>> {
+    surround($request, next, "api>", "<api")
+}
+
+fn version(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<AppError>>
+) Result<web.Response, web.DispatchError<AppError>> {
+    var active = request
+    const stopped = match active.Header("X-Stop") {
+        None: false
+        Some(value): value == "true"
+    }
+    if stopped {
+        discard active
+        return .Ok(web.Text(403, "stopped"))
+    }
+    surround($active, next, "v1>", "<v1")
+}
+
+fn routeOnly(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<AppError>>
+) Result<web.Response, web.DispatchError<AppError>> {
+    surround($request, next, "route>", "<route")
+}
+
+fn pass(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<AppError>>
+) Result<web.Response, web.DispatchError<AppError>> {
+    next($request)
+}
+
+fn surroundResponse(
+    $response web.Response,
+    prefix String,
+    suffix String
+) Result<web.Response, web.DispatchError<AppError>> {
+    const web.Response { Status Headers Body } = response
+    discard Headers
+    .Ok(web.Text(Status, prefix + Body + suffix))
+}
+
+fn request($path String) web.Request {
+    web.Request {
+        Method = .GET
+        Target = text.Copy(path)
+        Path = path
+        Version = "HTTP/1.1"
+        Headers = collections.NewList<web.HeaderValue>()
+        Params = collections.NewList<web.Parameter>()
+    }
+}
+
+fn body($value Result<web.Response, web.DispatchError<AppError>>) String {
+    match value {
+        Ok(response): takeBody($response)
+        Err(error): failureBody($error)
+    }
+}
+
+fn takeBody($response web.Response) String {
+    const web.Response { Status Headers Body } = response
+    discard Status
+    discard Headers
+    Body
+}
+
+fn failureBody($error web.DispatchError<AppError>) String {
+    discard error
+    "error"
+}
+
+fn middlewareErrorCode(
+    $value Result<void, web.MiddlewareRegistrationError>
+) i32 {
+    match value {
+        Ok: 0
+        Err(error): match error {
+            InvalidGroup: 1
+            UnknownGroup: 2
+            UnknownRoute: 3
+            DuplicateOrder: 4
+        }
+    }
+}
+
+fn routeAccepted($value Result<void, web.RegistrationError>) bool {
+    match value {
+        Ok: true
+        Err(error): rejectedRoute(error)
+    }
+}
+
+fn rejectedRoute(error web.RegistrationError) bool {
+    discard error
+    false
+}
+
+fn textHandler($value String) own web.Handler<AppError> {
+    own TextHandler { value = value }
+}
+
+fn main() i32 {
+    var router = web.NewRouter<AppError>()
+    const mappedValue = router.Map(
+        .GET,
+        "/api/v1/value",
+        textHandler("handler")
+    )
+    if !routeAccepted($mappedValue) return 1
+    if !routeAccepted($router.Map(.GET, "/outside", textHandler("outside"))) {
+        return 2
+    }
+
+    if middlewareErrorCode($router.Use(20, $globalInner)) != 0 return 3
+    if middlewareErrorCode($router.Use(5, $rewriteAlias)) != 0 return 4
+    if middlewareErrorCode($router.Use(10, $globalOuter)) != 0 return 5
+    const capturedPrefix = "captured>"
+    const captured = fn(
+        $request web.Request,
+        next fn($web.Request) Result<web.Response, web.DispatchError<AppError>>
+    ) Result<web.Response, web.DispatchError<AppError>> capture $capturedPrefix {
+        surround($request, next, capturedPrefix, "<captured")
+    }
+    if middlewareErrorCode($router.Use(15, $captured)) != 0 return 6
+    if middlewareErrorCode($router.UseGroup("/api/v1", 10, $version)) != 0 return 7
+    if middlewareErrorCode($router.UseGroup("/api", 10, $api)) != 0 return 8
+    const routeMiddleware = router.UseRoute(
+        .GET,
+        "/api/v1/value",
+        10,
+        $routeOnly
+    )
+    if middlewareErrorCode($routeMiddleware) != 0 return 9
+
+    if middlewareErrorCode($router.Use(10, $pass)) != 4 return 10
+    if middlewareErrorCode($router.UseGroup("/api/", 30, $pass)) != 1 return 11
+    if middlewareErrorCode($router.UseGroup("/missing", 30, $pass)) != 2 return 12
+    if middlewareErrorCode($router.UseRoute(.GET, "/missing", 30, $pass)) != 3 return 13
+    if middlewareErrorCode($router.UseGroup("/api", 10, $pass)) != 4 return 14
+    const duplicateRoute = router.UseRoute(
+        .GET,
+        "/api/v1/value",
+        10,
+        $pass
+    )
+    if middlewareErrorCode($duplicateRoute) != 4 return 15
+
+    print(body($router.Dispatch(request("/api/v1/value"))))
+    print(body($router.Dispatch(request("/alias"))))
+    print(body($router.Dispatch(request("/missing"))))
+    var stopped = request("/api/v1/value")
+    stopped.Headers.PushFront(web.HeaderValue { Name = "X-Stop" Value = "true" })
+    print(body($router.Dispatch($stopped)))
+    0
+}

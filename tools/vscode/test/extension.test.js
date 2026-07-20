@@ -117,7 +117,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.101.0");
+    assert.equal(manifest.version, "0.102.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1269,8 +1269,10 @@ test("grammar and completions track compiler keywords", () => {
         "validation.Errors.IsEmpty", "validation.Errors.Len", "validation.Errors.TakeFirst",
         "foundation.web", "web.Server", "web.Router", "web.RouteTable", "web.RouteMatch",
         "web.Handler", "web.Application", "web.Request", "web.Response", "web.Method",
-        "web.MatchError", "web.DispatchError", "web.ServeOutcome", "web.NewServer",
+        "web.MatchError", "web.DispatchError", "web.MiddlewareRegistrationError",
+        "web.ServeOutcome", "web.NewServer",
         "web.NewRouter", "web.NewRouteTable", "web.Text", "web.Json", "web.Router.Map",
+        "web.Router.Use", "web.Router.UseGroup", "web.Router.UseRoute",
         "web.RouteTable.Add", "web.RouteTable.Match", "web.Request.Param", "web.Request.Query",
         "web.Request.Header", "web.Request.Form", "web.Request.IsJSON",
         "web.Application.ErrorResponse", "web.Server.ServeOne",

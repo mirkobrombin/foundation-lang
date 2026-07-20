@@ -138,6 +138,13 @@ enum RegistrationError {
     DuplicateId
 }
 
+enum MiddlewareRegistrationError {
+    InvalidGroup
+    UnknownGroup
+    UnknownRoute
+    DuplicateOrder
+}
+
 enum ProtocolError {
     Closed
     RequestLineTooLong
@@ -255,6 +262,24 @@ struct route<E> {
     handler own Handler<E>
 }
 
+enum middlewareScope {
+    Global
+    Group
+    Route
+}
+
+struct routerMiddleware<E> {
+    scope middlewareScope
+    method Method
+    path String
+    order i32
+    sequence u64
+    handler fn(
+        $Request,
+        fn($Request) Result<Response, DispatchError<E>>
+    ) Result<Response, DispatchError<E>>
+}
+
 struct pathCursor {
     value String
     offset u64
@@ -339,6 +364,8 @@ struct routeSearch {
 
 struct Router<E> implements Application<E> {
     routes own collections.List<own route<E>>
+    middleware own collections.List<routerMiddleware<E>>
+    nextMiddlewareSequence u64
 
     // Registers a unique method and path pair.
     fn Map(
@@ -365,24 +392,181 @@ struct Router<E> implements Application<E> {
         .Ok
     }
 
+    // Wraps route lookup with one typed middleware function.
+    fn Use(
+        &self,
+        order i32,
+        $middleware fn(
+            $Request,
+            fn($Request) Result<Response, DispatchError<E>>
+        ) Result<Response, DispatchError<E>>
+    ) Result<void, MiddlewareRegistrationError> {
+        registerRouterMiddleware(
+            &self,
+            .Global,
+            .GET,
+            "",
+            order,
+            $middleware
+        )
+    }
+
+    // Wraps every mapped route below one static path prefix.
+    fn UseGroup(
+        &self,
+        $prefix String,
+        order i32,
+        $middleware fn(
+            $Request,
+            fn($Request) Result<Response, DispatchError<E>>
+        ) Result<Response, DispatchError<E>>
+    ) Result<void, MiddlewareRegistrationError> {
+        if !validMiddlewareGroup(prefix) return .Err(.InvalidGroup)
+        if !routerScopeExists(&self, .Group, .GET, prefix) return .Err(.UnknownGroup)
+        registerRouterMiddleware(
+            &self,
+            .Group,
+            .GET,
+            $prefix,
+            order,
+            $middleware
+        )
+    }
+
+    // Wraps one exact mapped method and route pattern.
+    fn UseRoute(
+        &self,
+        method Method,
+        $path String,
+        order i32,
+        $middleware fn(
+            $Request,
+            fn($Request) Result<Response, DispatchError<E>>
+        ) Result<Response, DispatchError<E>>
+    ) Result<void, MiddlewareRegistrationError> {
+        if !routerScopeExists(&self, .Route, method, path) return .Err(.UnknownRoute)
+        registerRouterMiddleware(
+            &self,
+            .Route,
+            method,
+            $path,
+            order,
+            $middleware
+        )
+    }
+
     // Dispatches one owned request and preserves every registered handler.
     fn Dispatch(
         &self,
         $request Request
     ) Result<Response, DispatchError<E>> {
-        const selected = findRoute(&self, request.Method, request.Path)
-        const routeSearch { found pathSeen pattern params rank } = selected
-        discard rank
-        if !found {
-            discard params
-            if pathSeen return .Err(.MethodNotAllowed)
-            return .Err(.NotFound)
-        }
-        var activeRequest = request
-        const previousParams = replace activeRequest.Params with params
-        discard previousParams
-        dispatchRoute(&self, activeRequest.Method, pattern, $activeRequest)
+        dispatchGlobalMiddleware(&self, $request)
     }
+}
+
+fn dispatchGlobalMiddleware<E>(
+    &router Router<E>,
+    $request Request
+) Result<Response, DispatchError<E>> {
+    if router.middleware.IsEmpty() return dispatchMatchedRoute(&router, $request)
+
+    const current = middlewareValue(router.middleware.PopFront())
+    const routerMiddleware { scope method path order sequence handler } = current
+    if middlewareScopeScore(scope) != 0 {
+        router.middleware.PushFront(routerMiddleware<E> {
+            scope = scope
+            method = method
+            path = path
+            order = order
+            sequence = sequence
+            handler = handler
+        })
+        return dispatchMatchedRoute(&router, $request)
+    }
+
+    const handled = handler(
+        $request,
+        fn(
+            $nextRequest Request
+        ) Result<Response, DispatchError<E>> capture &router {
+            dispatchGlobalMiddleware(&router, $nextRequest)
+        }
+    )
+    router.middleware.PushFront(routerMiddleware<E> {
+        scope = scope
+        method = method
+        path = path
+        order = order
+        sequence = sequence
+        handler = handler
+    })
+    handled
+}
+
+fn dispatchMatchedRoute<E>(
+    &router Router<E>,
+    $request Request
+) Result<Response, DispatchError<E>> {
+    const selected = findRoute(&router, request.Method, request.Path)
+    const routeSearch { found pathSeen pattern params rank } = selected
+    discard rank
+    if !found {
+        discard params
+        if pathSeen return .Err(.MethodNotAllowed)
+        return .Err(.NotFound)
+    }
+    var activeRequest = request
+    const previousParams = replace activeRequest.Params with params
+    discard previousParams
+    dispatchScopedMiddleware(
+        &router,
+        activeRequest.Method,
+        pattern,
+        $activeRequest
+    )
+}
+
+fn dispatchScopedMiddleware<E>(
+    &router Router<E>,
+    expectedMethod Method,
+    pattern String,
+    $request Request
+) Result<Response, DispatchError<E>> {
+    if router.middleware.IsEmpty() {
+        return dispatchRoute(&router, expectedMethod, pattern, $request)
+    }
+
+    const current = middlewareValue(router.middleware.PopFront())
+    const routerMiddleware { scope method path order sequence handler } = current
+    const applies = middlewareApplies(scope, method, path, expectedMethod, pattern)
+    const nextPattern = text.Copy(pattern)
+    const handled = if applies {
+        handler(
+            $request,
+            fn(
+                $nextRequest Request
+            ) Result<Response, DispatchError<E>> capture &router, expectedMethod, $nextPattern {
+                dispatchScopedMiddleware(
+                    &router,
+                    expectedMethod,
+                    nextPattern,
+                    $nextRequest
+                )
+            }
+        )
+    } else {
+        discard nextPattern
+        dispatchScopedMiddleware(&router, expectedMethod, pattern, $request)
+    }
+    router.middleware.PushFront(routerMiddleware<E> {
+        scope = scope
+        method = method
+        path = path
+        order = order
+        sequence = sequence
+        handler = handler
+    })
+    handled
 }
 
 fn dispatchRoute<E>(
@@ -453,7 +637,11 @@ struct ConnectionOutcome<E> {
 
 // Creates an empty router whose handlers share one explicit error type.
 fn NewRouter<E>() own Router<E> {
-    own Router<E> { routes = newRouteList<E>() }
+    own Router<E> {
+        routes = newRouteList<E>()
+        middleware = newMiddlewareList<E>()
+        nextMiddlewareSequence = 0
+    }
 }
 
 // Creates an empty route table for compiler-generated application dispatch.
@@ -1204,6 +1392,43 @@ fn methodCode(method Method) i32 {
     }
 }
 
+fn middlewareScopeScore(scope middlewareScope) i32 {
+    match scope {
+        Global: 0
+        Group: 1
+        Route: 2
+    }
+}
+
+fn validMiddlewareGroup(prefix String) bool {
+    const length = text.ByteLen(prefix)
+    if length == 0 || byteAt(prefix, 0) != 47 return false
+    if length > 1 && byteAt(prefix, length - 1) == 47 return false
+    !text.Contains(prefix, "{") && !text.Contains(prefix, "}") &&
+        !text.Contains(prefix, "?") && !text.Contains(prefix, "#")
+}
+
+fn routeInMiddlewareGroup(routePath String, prefix String) bool {
+    if prefix == "/" return text.StartsWith(routePath, "/")
+    if routePath == prefix return true
+    const length = text.ByteLen(prefix)
+    text.StartsWith(routePath, prefix) && text.ByteLen(routePath) > length &&
+        byteAt(routePath, length) == 47
+}
+
+fn middlewareApplies(
+    scope middlewareScope,
+    method Method,
+    path String,
+    expectedMethod Method,
+    pattern String
+) bool {
+    const score = middlewareScopeScore(scope)
+    if score == 1 return routeInMiddlewareGroup(pattern, path)
+    if score == 2 return methodEqual(method, expectedMethod) && path == pattern
+    false
+}
+
 fn newPathCursor(value String) pathCursor {
     const length = text.ByteLen(value)
     var start u64 = 0
@@ -1318,6 +1543,130 @@ fn registrationConflict<E>(
         None: .Ok(true)
         Some(error): .Err(error)
     }
+}
+
+fn routerScopeExists<E>(
+    &router Router<E>,
+    scope middlewareScope,
+    method Method,
+    path String
+) bool {
+    var active = replace router.routes with newRouteList<E>()
+    var reversed = newRouteList<E>()
+    var found = false
+    while !active.IsEmpty() {
+        const current = routeValue(active.PopFront())
+        const route { method as currentMethod path as currentPath handler } = current
+        if middlewareScopeScore(scope) == 1 {
+            if routeInMiddlewareGroup(currentPath, path) {
+                found = true
+            }
+        } else {
+            if currentPath == path && methodEqual(currentMethod, method) {
+                found = true
+            }
+        }
+        reversed.PushFront(own route<E> {
+            method = currentMethod
+            path = currentPath
+            handler = handler
+        })
+    }
+    router.routes = reverseRoutes($reversed)
+    found
+}
+
+fn registerRouterMiddleware<E>(
+    &router Router<E>,
+    scope middlewareScope,
+    method Method,
+    $path String,
+    order i32,
+    $handler fn(
+        $Request,
+        fn($Request) Result<Response, DispatchError<E>>
+    ) Result<Response, DispatchError<E>>
+) Result<void, MiddlewareRegistrationError> {
+    if middlewareOrderExists(&router, scope, method, path, order) {
+        return .Err(.DuplicateOrder)
+    }
+    var values = replace router.middleware with newMiddlewareList<E>()
+    values.PushFront(routerMiddleware<E> {
+        scope = scope
+        method = method
+        path = path
+        order = order
+        sequence = router.nextMiddlewareSequence
+        handler = handler
+    })
+    router.nextMiddlewareSequence = router.nextMiddlewareSequence + 1
+    const compare fn(routerMiddleware<E>, routerMiddleware<E>) i32 = compareRouterMiddleware
+    router.middleware = collections.Sort($values, compare)
+    .Ok
+}
+
+fn middlewareOrderExists<E>(
+    &router Router<E>,
+    scope middlewareScope,
+    method Method,
+    path String,
+    order i32
+) bool {
+    var active = replace router.middleware with newMiddlewareList<E>()
+    var reversed = newMiddlewareList<E>()
+    var found = false
+    while !active.IsEmpty() {
+        const current = middlewareValue(active.PopFront())
+        const routerMiddleware {
+            scope as currentScope
+            method as currentMethod
+            path as currentPath
+            order as currentOrder
+            sequence
+            handler
+        } = current
+        if middlewareScopeScore(currentScope) == middlewareScopeScore(scope) &&
+            currentPath == path && methodEqual(currentMethod, method) && currentOrder == order {
+            found = true
+        }
+        reversed.PushFront(routerMiddleware<E> {
+            scope = currentScope
+            method = currentMethod
+            path = currentPath
+            order = currentOrder
+            sequence = sequence
+            handler = handler
+        })
+    }
+    router.middleware = reverseMiddlewares($reversed)
+    found
+}
+
+fn compareRouterMiddleware<E>(
+    left routerMiddleware<E>,
+    right routerMiddleware<E>
+) i32 {
+    const leftScope = middlewareScopeScore(left.scope)
+    const rightScope = middlewareScopeScore(right.scope)
+    if leftScope < rightScope return -1
+    if leftScope > rightScope return 1
+    if leftScope == 1 {
+        const leftLength = text.ByteLen(left.path)
+        const rightLength = text.ByteLen(right.path)
+        if leftLength < rightLength return -1
+        if leftLength > rightLength return 1
+    }
+    const pathOrder = text.Compare(left.path, right.path)
+    if pathOrder != 0 return pathOrder
+    const leftMethod = methodCode(left.method)
+    const rightMethod = methodCode(right.method)
+    if leftMethod < rightMethod return -1
+    if leftMethod > rightMethod return 1
+    if left.order < right.order return -1
+    if left.order > right.order return 1
+    if left.sequence < right.sequence return -1
+    if left.sequence > right.sequence return 1
+    0
 }
 
 fn tableRegistrationConflict(
@@ -1729,6 +2078,17 @@ fn reverseRoutes<E>(
     result
 }
 
+fn reverseMiddlewares<E>(
+    $values own collections.List<routerMiddleware<E>>
+) own collections.List<routerMiddleware<E>> {
+    var source = values
+    var result = newMiddlewareList<E>()
+    while !source.IsEmpty() {
+        result.PushFront(middlewareValue(source.PopFront()))
+    }
+    result
+}
+
 fn reverseRoutePatterns(
     $values own collections.List<routePattern>
 ) own collections.List<routePattern> {
@@ -1766,6 +2126,10 @@ fn newRouteList<E>() own collections.List<own route<E>> {
     collections.NewList<own route<E>>()
 }
 
+fn newMiddlewareList<E>() own collections.List<routerMiddleware<E>> {
+    collections.NewList<routerMiddleware<E>>()
+}
+
 fn newRoutePatternList() own collections.List<routePattern> {
     collections.NewList<routePattern>()
 }
@@ -1773,6 +2137,15 @@ fn newRoutePatternList() own collections.List<routePattern> {
 fn routeValue<E>($value Option<own route<E>>) own route<E> {
     match value {
         None: missingRoute<E>()
+        Some(current): current
+    }
+}
+
+fn middlewareValue<E>(
+    $value Option<routerMiddleware<E>>
+) routerMiddleware<E> {
+    match value {
+        None: missingMiddleware<E>()
         Some(current): current
     }
 }
@@ -1786,6 +2159,10 @@ fn routePatternValue($value Option<routePattern>) routePattern {
 
 fn missingRoute<E>() own route<E> {
     panic("HTTP router entry invariant failed")
+}
+
+fn missingMiddleware<E>() routerMiddleware<E> {
+    panic("HTTP middleware entry invariant failed")
 }
 
 fn missingRoutePattern() routePattern {
