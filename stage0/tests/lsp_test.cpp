@@ -3264,6 +3264,89 @@ void openAPIAttributesExposeEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void authenticationPackagesExposeEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "\n"
+        "import foundation.auth\n"
+        "import std.bytes\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    const secret = bytes.FromText(\"0123456789abcdef0123456789abcdef\")\n"
+        "    const payload = auth.Payload { Sub = \"editor\" Exp = 4102444800 }\n"
+        "    const token = auth.SignToken(payload, secret) else error {\n"
+        "        discard error\n"
+        "        return 1\n"
+        "    }\n"
+        "    const verified = auth.VerifyToken(token, secret) else error {\n"
+        "        discard error\n"
+        "        return 2\n"
+        "    }\n"
+        "    discard verified\n"
+        "    const claims = auth.StandardClaims { Sub = \"editor\" Exp = 4102444800 }\n"
+        "    discard claims\n"
+        "    0\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(221, "hover", 6, 27)) +
+        frame(request(222, "hover", 8, 29)) +
+        frame(request(223, "signatureHelp", 8, 48)) +
+        frame(request(224, "definition", 12, 31)) +
+        frame(request(225, "hover", 17, 30)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto bytesHover = responseFor(transcript, 221);
+    const auto authHover = responseFor(transcript, 222);
+    const auto authSignature = responseFor(transcript, 223);
+    const auto definition = responseFor(transcript, 224);
+    const auto claimsHover = responseFor(transcript, 225);
+
+    expect(status == 0, "authentication language server transcript exits cleanly");
+    expect(errors.str().empty(), "authentication requests write no server errors");
+    expect(bytesHover.find("fn FromText(value String) own Bytes") != std::string::npos &&
+               bytesHover.find("owned byte sequence") != std::string::npos,
+           "bytes hover exposes ownership and documentation");
+    expect(authHover.find("fn SignToken(payload Payload, secret Bytes)") !=
+                   std::string::npos &&
+               authHover.find("HMAC-SHA256") != std::string::npos,
+           "auth hover exposes the typed signature and documentation");
+    expect(authSignature.find("fn SignToken(payload Payload, secret Bytes)") !=
+               std::string::npos,
+           "auth calls receive compiler-backed signature help");
+    expect(definition.find("auth.fdn") != std::string::npos,
+           "auth functions navigate to their SDK declaration");
+    expect(claimsHover.find("struct StandardClaims") != std::string::npos &&
+               claimsHover.find("common claims used by services") != std::string::npos,
+           "standard claims hover exposes its structure and documentation");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void webActivationExposesEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fdn";
@@ -3758,6 +3841,7 @@ int main() {
     servicesAndActionsExposeEditorDetails();
     derivedValidationExposesEditorDetails();
     openAPIAttributesExposeEditorDetails();
+    authenticationPackagesExposeEditorDetails();
     webActivationExposesEditorDetails();
     manualWebMiddlewareExposesEditorDetails();
     stateMachinesExposeEditorDetails();

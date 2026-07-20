@@ -450,6 +450,7 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
         sdkAsset("runtime/include", std::filesystem::path{FOUNDATION_RUNTIME_INCLUDE});
     const std::vector<std::filesystem::path> runtimeSources{
         sdkAsset("runtime/src/runtime.c", std::filesystem::path{FOUNDATION_RUNTIME_SOURCE}),
+        sdkAsset("runtime/src/crypto.c", std::filesystem::path{FOUNDATION_RUNTIME_CRYPTO_SOURCE}),
         sdkAsset("runtime/src/parse.c", std::filesystem::path{FOUNDATION_RUNTIME_PARSE_SOURCE}),
         sdkAsset("runtime/src/task.c", std::filesystem::path{FOUNDATION_RUNTIME_TASK_SOURCE}),
         sdkAsset("runtime/src/cancellation.c",

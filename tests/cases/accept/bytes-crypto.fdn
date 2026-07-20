@@ -1,0 +1,41 @@
+import std.bytes
+import std.text
+
+fn main() i32 {
+    const source = bytes.FromText("foundation")
+    const copied = source.Copy() else error {
+        discard error
+        return 1
+    }
+    if !bytes.ConstantTimeEqual(source, copied) return 2
+
+    const encoded = bytes.EncodeBase64URL(source) else error {
+        discard error
+        return 3
+    }
+    if !text.Equal(encoded, "Zm91bmRhdGlvbg") return 4
+
+    const decoded = bytes.DecodeBase64URL(encoded) else error {
+        discard error
+        return 5
+    }
+    const decodedText = decoded.Text() else error {
+        discard error
+        return 6
+    }
+    if !text.Equal(decodedText, "foundation") return 7
+
+    const key = bytes.FromText("0123456789abcdef0123456789abcdef")
+    const digest = bytes.HmacSha256(key, source) else error {
+        discard error
+        return 8
+    }
+    const digestText = bytes.EncodeBase64URL(digest) else error {
+        discard error
+        return 9
+    }
+    if !text.Equal(digestText, "Tx82HG20ntCsQ5iRYF8plw1MY6ebaFsPRORaQYxBWTc") return 10
+
+    print("bytes crypto ok")
+    0
+}

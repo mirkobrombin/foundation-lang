@@ -1,0 +1,71 @@
+package example.auth.web
+
+import foundation.auth
+import foundation.auth.web as authWeb
+import foundation.web
+import std.bytes
+import std.collections
+import std.time
+
+enum AppError {
+    ProfileUnavailable
+}
+
+struct Profile implements authWeb.AuthenticatedHandler<AppError> {
+    fn Handle(
+        self,
+        $request web.Request,
+        $payload auth.Payload
+    ) Result<web.Response, AppError> {
+        discard request
+        const auth.Payload { Sub Exp } = payload
+        discard Exp
+        .Ok(web.Text(200, $Sub))
+    }
+}
+
+fn request($token String) web.Request {
+    var headers = collections.NewList<web.HeaderValue>()
+    headers.PushFront(web.HeaderValue {
+        Name = "Authorization"
+        Value = "Bearer " + token
+    })
+    web.Request {
+        Method = .GET
+        Target = "/profile"
+        Path = "/profile"
+        Version = "HTTP/1.1"
+        Headers = headers
+        Params = collections.NewList<web.Parameter>()
+    }
+}
+
+fn main() i32 {
+    const signingKey = bytes.FromText("0123456789abcdef0123456789abcdef")
+    const verificationKey = bytes.FromText("0123456789abcdef0123456789abcdef")
+    const expiration = i64.From(time.Now().Unix() + 300) else error {
+        discard error
+        return 1
+    }
+    const token = auth.SignToken(auth.Payload {
+        Sub = "profile:mirko"
+        Exp = expiration
+    }, signingKey) else error {
+        discard error
+        return 2
+    }
+    const protected = authWeb.Protect<AppError>(
+        $verificationKey,
+        own Profile {}
+    ) else error {
+        discard error
+        return 3
+    }
+    var handler = protected
+    const response = handler.Handle($request($token)) else error {
+        discard error
+        return 4
+    }
+    print(response.Body)
+    0
+}

@@ -16,6 +16,7 @@ option(FOUNDATION_BUILD_FUZZERS "Build Clang libFuzzer targets" OFF)
 
 add_library(foundation_runtime STATIC
     runtime/src/runtime.c
+    runtime/src/crypto.c
     runtime/src/parse.c
     runtime/src/task.c
     runtime/src/cancellation.c
@@ -73,6 +74,7 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_C_COMPILER_ID="${CMAKE_C_COMPILER_ID}"
     FOUNDATION_RUNTIME_INCLUDE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/include"
     FOUNDATION_RUNTIME_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c"
+    FOUNDATION_RUNTIME_CRYPTO_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c"
     FOUNDATION_RUNTIME_PARSE_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c"
     FOUNDATION_RUNTIME_TASK_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c"
     FOUNDATION_RUNTIME_CANCELLATION_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c"
@@ -257,6 +259,8 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_u64_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_parse_test runtime/tests/parse_test.c)
     target_link_libraries(foundation_runtime_parse_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_crypto_test runtime/tests/crypto_test.c)
+    target_link_libraries(foundation_runtime_crypto_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_env_test runtime/tests/env_test.c)
     target_link_libraries(foundation_runtime_env_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_fs_test runtime/tests/fs_test.c)
@@ -436,6 +440,7 @@ if(BUILD_TESTING)
                 foundation_runtime_string_test
                 foundation_runtime_u64_test
                 foundation_runtime_parse_test
+                foundation_runtime_crypto_test
                 foundation_runtime_env_test
                 foundation_runtime_fs_test
                 foundation_runtime_time_test
@@ -660,6 +665,7 @@ if(BUILD_TESTING)
     add_test(NAME runtime.string COMMAND foundation_runtime_string_test)
     add_test(NAME runtime.u64 COMMAND foundation_runtime_u64_test)
     add_test(NAME runtime.parse COMMAND foundation_runtime_parse_test)
+    add_test(NAME runtime.crypto COMMAND foundation_runtime_crypto_test)
     add_test(NAME runtime.env COMMAND foundation_runtime_env_test)
     add_test(NAME runtime.time COMMAND foundation_runtime_time_test)
     add_test(NAME runtime.uuid COMMAND foundation_runtime_uuid_test)
@@ -1355,6 +1361,23 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app/expected.out
+            -DASSERT_ALLOCATIONS=1
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.auth-web-example
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/auth-web
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/auth-web/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.auth-web-example-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/auth-web
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/auth-web/expected.out
             -DASSERT_ALLOCATIONS=1
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2135,6 +2158,75 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-path.fdn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-path.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.bytes-crypto
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/bytes-crypto.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/bytes-crypto.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.bytes-crypto-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/bytes-crypto.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/bytes-crypto.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/bytes-crypto
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/bytes-crypto.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.auth-hs256
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-hs256.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-hs256.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.auth-hs256-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-hs256.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/auth-hs256.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/auth-hs256
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-hs256.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.auth-web
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-web.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-web.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.auth-web-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-web.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/auth-web.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/auth-web
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-web.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
     add_test(
         NAME stage0.run.text-path-allocations
@@ -3693,6 +3785,22 @@ if(BUILD_TESTING)
         )
     endforeach()
     if(FOUNDATION_BUILD_FUZZERS)
+        foreach(crypto_case IN ITEMS bytes-crypto auth-hs256 auth-web)
+            add_test(
+                NAME stage0.run.${crypto_case}-sanitized
+                COMMAND ${CMAKE_COMMAND}
+                    -DCOMPILER=$<TARGET_FILE:foundationc>
+                    -DC_COMPILER=${CMAKE_C_COMPILER}
+                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${crypto_case}.fdn
+                    -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/${crypto_case}-sanitized.c
+                    -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${crypto_case}-sanitized
+                    -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${crypto_case}.out
+                    -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                    -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+                    -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+            )
+        endforeach()
         add_test(
             NAME stage0.run.options-migration-sanitized
             COMMAND ${CMAKE_COMMAND}

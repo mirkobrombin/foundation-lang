@@ -1,0 +1,127 @@
+import foundation.auth
+import foundation.auth.web as authWeb
+import foundation.web
+import std.bytes
+import std.collections
+import std.text
+import std.time
+
+enum AppError {
+    Failed
+}
+
+struct ProfileHandler implements authWeb.AuthenticatedHandler<AppError> {
+    fn Handle(
+        self,
+        $request web.Request,
+        $payload auth.Payload
+    ) Result<web.Response, AppError> {
+        discard request
+        const auth.Payload { Sub Exp } = payload
+        discard Exp
+        .Ok(web.Text(200, $Sub))
+    }
+}
+
+fn request($authorization String) web.Request {
+    var headers = collections.NewList<web.HeaderValue>()
+    headers.PushFront(web.HeaderValue {
+        Name = "Authorization"
+        Value = authorization
+    })
+    web.Request {
+        Method = .GET
+        Target = "/profile"
+        Path = "/profile"
+        Version = "HTTP/1.1"
+        Headers = headers
+        Params = collections.NewList<web.Parameter>()
+    }
+}
+
+fn requestWithoutAuthorization() web.Request {
+    web.Request {
+        Method = .GET
+        Target = "/profile"
+        Path = "/profile"
+        Version = "HTTP/1.1"
+        Headers = collections.NewList<web.HeaderValue>()
+        Params = collections.NewList<web.Parameter>()
+    }
+}
+
+fn body($result Result<web.Response, authWeb.BearerError<AppError>>) String {
+    match result {
+        Ok(response): takeBody($response)
+        Err(error): "error"
+    }
+}
+
+fn takeBody($response web.Response) String {
+    const web.Response { Status Headers Body } = response
+    discard Status
+    discard Headers
+    Body
+}
+
+fn tokenErrorCode(error auth.Error) i32 {
+    match error {
+        InvalidToken: 1
+        InvalidSignature: 2
+        Expired: 3
+        SecretTooShort: 4
+        InvalidPayload: 5
+        TooLarge: 6
+        EmptyKeyID: 7
+        DuplicateKeyID: 8
+        UnknownKeyID: 9
+    }
+}
+
+fn unexpectedSuccess($response web.Response) i32 {
+    discard response
+    0
+}
+
+fn failureCode($result Result<web.Response, authWeb.BearerError<AppError>>) i32 {
+    match result {
+        Ok(response): unexpectedSuccess($response)
+        Err(error): match error {
+            MissingAuthorization: 1
+            InvalidAuthorization: 2
+            Token(tokenError): 10 + tokenErrorCode(tokenError)
+            Handler(handlerError): 30
+        }
+    }
+}
+
+fn main() i32 {
+    const signingSecret = bytes.FromText("0123456789abcdef0123456789abcdef")
+    const expiration = i64.From(time.Now().Unix() + 60) else error {
+        discard error
+        return 1
+    }
+    const simple = auth.SignToken(auth.Payload {
+        Sub = "authenticated-user"
+        Exp = expiration
+    }, signingSecret) else error {
+        discard error
+        return 2
+    }
+    const verificationSecret = bytes.FromText("0123456789abcdef0123456789abcdef")
+    const protectedHandler = authWeb.Protect<AppError>(
+        $verificationSecret,
+        own ProfileHandler {}
+    ) else error {
+        discard error
+        return 3
+    }
+    var protected = protectedHandler
+    const response = protected.Handle($request("bEaReR " + simple))
+    if !text.Equal(body($response), "authenticated-user") return 4
+    if failureCode(protected.Handle($requestWithoutAuthorization())) != 1 return 5
+    if failureCode(protected.Handle($request("Basic " + simple))) != 2 return 6
+    if failureCode(protected.Handle($request("Bearer " + simple + "A"))) != 12 return 7
+    print("auth web ok")
+    0
+}

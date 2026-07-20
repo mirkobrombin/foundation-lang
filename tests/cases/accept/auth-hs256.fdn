@@ -1,0 +1,174 @@
+import foundation.auth
+import std.bytes
+import std.text
+import std.time
+
+fn errorCode(error auth.Error) i32 {
+    match error {
+        InvalidToken: 1
+        InvalidSignature: 2
+        Expired: 3
+        SecretTooShort: 4
+        InvalidPayload: 5
+        TooLarge: 6
+        EmptyKeyID: 7
+        DuplicateKeyID: 8
+        UnknownKeyID: 9
+    }
+}
+
+fn failedAs($result Result<auth.Payload, auth.Error>, code i32) bool {
+    match result {
+        Ok(value): false
+        Err(error): errorCode(error) == code
+    }
+}
+
+fn failedServiceAs($result Result<auth.StandardClaims, auth.Error>, code i32) bool {
+    match result {
+        Ok(value): false
+        Err(error): errorCode(error) == code
+    }
+}
+
+fn failedAddAs($result Result<void, auth.Error>, code i32) bool {
+    match result {
+        Ok: false
+        Err(error): errorCode(error) == code
+    }
+}
+
+fn failedSignAs($result Result<String, auth.Error>, code i32) bool {
+    match result {
+        Ok(value): false
+        Err(error): errorCode(error) == code
+    }
+}
+
+fn signedRaw(payload String, secret bytes.Bytes) String {
+    const payloadBytes = bytes.FromText(payload)
+    const encoded = bytes.EncodeBase64URL(payloadBytes) else error {
+        discard error
+        panic("auth test payload encoding failed")
+    }
+    const digest = bytes.HmacSha256(secret, payloadBytes) else error {
+        discard error
+        panic("auth test signing failed")
+    }
+    const signature = bytes.EncodeBase64URL(digest) else error {
+        discard error
+        panic("auth test signature encoding failed")
+    }
+    encoded + "." + signature
+}
+
+fn main() i32 {
+    const secret = bytes.FromText("0123456789abcdef0123456789abcdef")
+    const expiration = i64.From(time.Now().Unix() + 60) else error {
+        discard error
+        return 1
+    }
+    const token = auth.SignToken(auth.Payload {
+        Sub = "Mirko \"Foundation\""
+        Exp = expiration
+    }, secret) else error {
+        return 10 + errorCode(error)
+    }
+    const payload = auth.VerifyToken(token, secret) else error {
+        return 20 + errorCode(error)
+    }
+    if !text.Equal(payload.Sub, "Mirko \"Foundation\"") return 30
+    if payload.Exp != expiration return 31
+
+    const wrong = bytes.FromText("abcdef0123456789abcdef0123456789")
+    if !failedAs(auth.VerifyToken(token, wrong), 2) return 32
+
+    const expired = auth.SignToken(auth.Payload { Sub = "old" Exp = 1 }, secret) else error {
+        return 40 + errorCode(error)
+    }
+    if !failedAs(auth.VerifyToken(expired, secret), 3) return 50
+
+    const short = bytes.FromText("short")
+    const shortPayload = auth.Payload {
+        Sub = "short"
+        Exp = expiration
+    }
+    if !failedSignAs(auth.SignToken(shortPayload, short), 4) return 52
+    if !failedAs(auth.VerifyToken("", secret), 1) return 53
+    if !failedAs(auth.VerifyToken("a.b.c", secret), 1) return 54
+    if !failedAs(auth.VerifyToken(signedRaw("not-json", secret), secret), 5) return 55
+
+    const primarySecret = bytes.FromText("primary-0123456789abcdef012345678")
+    const fallbackSecret = bytes.FromText("fallback-0123456789abcdef01234567")
+    const oldSecret = bytes.FromText("fallback-0123456789abcdef01234567")
+    const primary = auth.NewHMACKey("current", $primarySecret) else error {
+        return 60 + errorCode(error)
+    }
+    const fallback = auth.NewHMACKey("previous", $fallbackSecret) else error {
+        return 70 + errorCode(error)
+    }
+    const oldKey = auth.NewHMACKey("previous", $oldSecret) else error {
+        return 75 + errorCode(error)
+    }
+    var oldKeyring = auth.NewService($oldKey)
+    const oldSigned = oldKeyring.Sign(auth.StandardClaims {
+        Sub = "from-previous"
+        Exp = expiration
+        Iat = 1700000000
+        Jti = "previous-id"
+        Iss = "foundation"
+        Aud = "developers"
+    }) else error {
+        return 76 + errorCode(error)
+    }
+    var keyring = auth.NewService($primary)
+    keyring.AddKey($fallback) else error {
+        return 80 + errorCode(error)
+    }
+    const signed = keyring.Sign(auth.StandardClaims {
+        Sub = "rotated"
+        Exp = expiration
+        Iat = 1700000001
+        Jti = "current-id"
+        Iss = "foundation"
+        Aud = "developers"
+    }) else error {
+        return 90 + errorCode(error)
+    }
+    if !text.Equal(signed.KeyID, "current") return 100
+    const rotated = keyring.Verify(signed.Token) else error {
+        return 110 + errorCode(error)
+    }
+    if !text.Equal(rotated.Sub, "rotated") return 120
+    if rotated.Iat != 1700000001 return 121
+    if !text.Equal(rotated.Jti, "current-id") return 122
+    if !text.Equal(rotated.Iss, "foundation") return 123
+    if !text.Equal(rotated.Aud, "developers") return 124
+
+    const previous = keyring.Verify(oldSigned.Token) else error {
+        return 130 + errorCode(error)
+    }
+    if !text.Equal(previous.Sub, "from-previous") return 140
+
+    const duplicateSecret = bytes.FromText("duplicate-0123456789abcdef0123456")
+    const duplicate = auth.NewHMACKey("previous", $duplicateSecret) else error {
+        return 150 + errorCode(error)
+    }
+    if !failedAddAs(keyring.AddKey($duplicate), 8) return 160
+
+    const unknownSecret = bytes.FromText("unknown--0123456789abcdef01234567")
+    const unknownKey = auth.NewHMACKey("unknown", $unknownSecret) else error {
+        return 170 + errorCode(error)
+    }
+    var unknownKeyring = auth.NewService($unknownKey)
+    const unknownToken = unknownKeyring.Sign(auth.StandardClaims {
+        Sub = "unknown"
+        Exp = expiration
+    }) else error {
+        return 180 + errorCode(error)
+    }
+    if !failedServiceAs(keyring.Verify(unknownToken.Token), 9) return 190
+
+    print("auth hs256 ok")
+    0
+}

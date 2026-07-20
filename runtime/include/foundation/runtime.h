@@ -221,6 +221,18 @@ fdn_string foundation_runtime_format_f32(float value);
 fdn_string foundation_runtime_format_f64(double value);
 int32_t foundation_runtime_parse_f32(const fdn_string *value, float *result);
 int32_t foundation_runtime_parse_f64(const fdn_string *value, double *result);
+uint64_t foundation_runtime_bytes_from_text(const fdn_string *value);
+int32_t foundation_runtime_bytes_copy(uint64_t handle, uint64_t *result);
+int32_t foundation_runtime_bytes_length(uint64_t handle, uint64_t *result);
+int32_t foundation_runtime_bytes_at(uint64_t handle, uint64_t index, uint64_t *result);
+int32_t foundation_runtime_bytes_to_text(uint64_t handle, fdn_string *result);
+void foundation_runtime_bytes_close(uint64_t *handle);
+int32_t foundation_runtime_base64url_encode(uint64_t handle, fdn_string *result);
+int32_t foundation_runtime_base64url_decode(const fdn_string *value, uint64_t *result);
+int32_t foundation_runtime_hmac_sha256(uint64_t key_handle, uint64_t value_handle,
+                                       uint64_t *result);
+bool foundation_runtime_bytes_constant_time_equal(uint64_t left_handle,
+                                                  uint64_t right_handle);
 uint64_t foundation_runtime_time_unix_seconds(void);
 uint64_t foundation_runtime_time_monotonic_nanoseconds(void);
 int32_t foundation_runtime_time_format_utc(uint64_t unix_seconds, fdn_string *result);

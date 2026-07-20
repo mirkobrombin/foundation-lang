@@ -1,0 +1,122 @@
+package test.compatibility.auth
+
+import foundation.auth
+import std.bytes
+import std.format
+import std.text
+
+fn isError($result Result<auth.Payload, auth.Error>, expected auth.Error) bool {
+    match result {
+        Ok(payload): false
+        Err(error): errorCode(error) == errorCode(expected)
+    }
+}
+
+fn errorCode(error auth.Error) i32 {
+    match error {
+        InvalidToken: 1
+        InvalidSignature: 2
+        Expired: 3
+        SecretTooShort: 4
+        InvalidPayload: 5
+        TooLarge: 6
+        EmptyKeyID: 7
+        DuplicateKeyID: 8
+        UnknownKeyID: 9
+    }
+}
+
+fn compatibilitySubject() String {
+    var builder = text.NewBuilder()
+    const prefix = builder.Write("alice<&>") else error {
+        discard error
+        panic("compatibility subject prefix failed")
+    }
+    if !prefix {
+        panic("compatibility subject prefix was rejected")
+    }
+    const separator = builder.WriteCodePoint(8232) else error {
+        discard error
+        panic("compatibility subject separator failed")
+    }
+    if !separator {
+        panic("compatibility subject separator was rejected")
+    }
+    const suffix = builder.Write("end") else error {
+        discard error
+        panic("compatibility subject suffix failed")
+    }
+    if !suffix {
+        panic("compatibility subject suffix was rejected")
+    }
+    const result = builder.Finish() else error {
+        discard error
+        panic("compatibility subject finish failed")
+    }
+    result
+}
+
+fn main() i32 {
+    const secret = bytes.FromText("0123456789abcdef0123456789abcdef")
+    const subject = compatibilitySubject()
+    const payload = auth.Payload { Sub = text.Copy(subject) Exp = 4102444800 }
+    const token = auth.SignToken(payload, secret) else error {
+        discard error
+        return 1
+    }
+    print(token)
+
+    const verified = auth.VerifyToken(token, secret) else error {
+        discard error
+        return 2
+    }
+    if !text.Equal(verified.Sub, subject) return 11
+    print("verified subject " + format.I64(verified.Exp))
+
+    if !isError(auth.VerifyToken(token + "A", secret), .InvalidSignature) return 3
+    print("tampered invalid-signature")
+
+    const expired = auth.SignToken(auth.Payload { Sub = "old" Exp = 1 }, secret) else error {
+        discard error
+        return 4
+    }
+    if !isError(auth.VerifyToken(expired, secret), .Expired) return 5
+    print("expired expired")
+
+    const short = bytes.FromText("short")
+    const rejected = auth.SignToken(payload, short)
+    match rejected {
+        Ok(value): 6
+        Err(error): if errorCode(error) == 4 {
+            print("short secret-too-short")
+            const serviceSecret = bytes.FromText("0123456789abcdef0123456789abcdef")
+            const primary = auth.NewHMACKey("primary", $serviceSecret) else keyError {
+                discard keyError
+                return 8
+            }
+            var tokenService = auth.NewService($primary)
+            const signed = tokenService.Sign(auth.StandardClaims {
+                Sub = text.Copy(subject)
+                Exp = 4102444800
+                Iat = 1700000000
+                Jti = "session-1"
+                Iss = "foundation"
+                Aud = "developers"
+            }) else signError {
+                discard signError
+                return 9
+            }
+            print(signed.Token)
+            const claims = tokenService.Verify(signed.Token) else verifyError {
+                discard verifyError
+                return 10
+            }
+            if !text.Equal(claims.Sub, subject) return 12
+            print("service subject " + format.I64(claims.Exp) + " " +
+                format.I64(claims.Iat) + " " + claims.Jti + " " + claims.Iss + " " + claims.Aud)
+            0
+        } else {
+            7
+        }
+    }
+}

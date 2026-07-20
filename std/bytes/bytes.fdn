@@ -1,0 +1,134 @@
+package std.bytes
+
+// Classifies failures while reading or transforming owned binary data.
+enum Error {
+    Closed
+    OutOfBounds
+    InvalidUTF8
+    InvalidEncoding
+    TooLarge
+}
+
+extern c fn fromTextNative(value String) u64 as foundation_runtime_bytes_from_text
+extern c fn copyNative(handle u64, &result u64) i32 as foundation_runtime_bytes_copy
+extern c fn lengthNative(handle u64, &result u64) i32 as foundation_runtime_bytes_length
+extern c fn atNative(handle u64, index u64, &result u64) i32 as foundation_runtime_bytes_at
+extern c fn toTextNative(handle u64, &result String) i32 as foundation_runtime_bytes_to_text
+extern c fn closeNative(&handle u64) void as foundation_runtime_bytes_close
+extern c fn encodeBase64URLNative(
+    handle u64,
+    &result String
+) i32 as foundation_runtime_base64url_encode
+extern c fn decodeBase64URLNative(
+    value String,
+    &result u64
+) i32 as foundation_runtime_base64url_decode
+extern c fn hmacSha256Native(key u64, value u64, &result u64) i32 as foundation_runtime_hmac_sha256
+extern c fn constantTimeEqualNative(
+    left u64,
+    right u64
+) bool as foundation_runtime_bytes_constant_time_equal
+
+// Owns arbitrary bytes and clears their storage before release.
+struct Bytes {
+    handle u64
+
+    // Copies the complete byte sequence into independent owned storage.
+    fn Copy(self) Result<own Bytes, Error> {
+        var result u64 = 0
+        if copyNative(self.handle, &result) != 0 {
+            return .Err(.Closed)
+        }
+        .Ok(own Bytes { handle = result })
+    }
+
+    // Returns the number of bytes in this value.
+    fn Len(self) Result<u64, Error> {
+        var result u64 = 0
+        if lengthNative(self.handle, &result) != 0 {
+            return .Err(.Closed)
+        }
+        .Ok(result)
+    }
+
+    // Returns one byte without exposing the backing storage.
+    fn At(self, index u64) Result<u64, Error> {
+        var result u64 = 0
+        const status = atNative(self.handle, index, &result)
+        if status == 0 {
+            return .Ok(result)
+        }
+        if status == 1 {
+            return .Err(.Closed)
+        }
+        .Err(.OutOfBounds)
+    }
+
+    // Copies these bytes into a String after validating UTF-8.
+    fn Text(self) Result<String, Error> {
+        var result = ""
+        const status = toTextNative(self.handle, &result)
+        if status == 0 {
+            return .Ok(result)
+        }
+        if status == 1 {
+            return .Err(.Closed)
+        }
+        .Err(.InvalidUTF8)
+    }
+
+    // Releases and clears this byte sequence exactly once.
+    fn Close(&self) bool {
+        if self.handle == 0 {
+            return false
+        }
+        closeNative(&self.handle)
+        true
+    }
+
+    fn drop(&self) void {
+        closeNative(&self.handle)
+    }
+}
+
+// Copies UTF-8 text into an owned byte sequence.
+fn FromText(value String) own Bytes {
+    own Bytes { handle = fromTextNative(value) }
+}
+
+// Encodes bytes with the unpadded RFC 4648 URL alphabet.
+fn EncodeBase64URL(value Bytes) Result<String, Error> {
+    var result = ""
+    const status = encodeBase64URLNative(value.handle, &result)
+    if status == 0 {
+        return .Ok(result)
+    }
+    if status == 1 {
+        return .Err(.Closed)
+    }
+    .Err(.TooLarge)
+}
+
+// Decodes canonical unpadded RFC 4648 URL text.
+fn DecodeBase64URL(value String) Result<own Bytes, Error> {
+    var result u64 = 0
+    const status = decodeBase64URLNative(value, &result)
+    if status == 0 {
+        return .Ok(own Bytes { handle = result })
+    }
+    .Err(.InvalidEncoding)
+}
+
+// Computes HMAC-SHA256 without exposing key or digest storage.
+fn HmacSha256(key Bytes, value Bytes) Result<own Bytes, Error> {
+    var result u64 = 0
+    if hmacSha256Native(key.handle, value.handle, &result) != 0 {
+        return .Err(.Closed)
+    }
+    .Ok(own Bytes { handle = result })
+}
+
+// Compares complete byte sequences without data-dependent early exit.
+fn ConstantTimeEqual(left Bytes, right Bytes) bool {
+    constantTimeEqualNative(left.handle, right.handle)
+}

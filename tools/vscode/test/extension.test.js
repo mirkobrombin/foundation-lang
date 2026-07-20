@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.110.0");
+    assert.equal(manifest.version, "0.111.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1283,6 +1283,10 @@ test("grammar and completions track compiler keywords", () => {
         "std.concurrent", "concurrent.NewCancellationSource",
         "concurrent.CancellationSource.Token", "concurrent.CancellationSource.Cancel",
         "concurrent.Cancellation.IsRequested",
+        "std.bytes", "bytes.Bytes", "bytes.Error", "bytes.FromText",
+        "bytes.EncodeBase64URL", "bytes.DecodeBase64URL", "bytes.HmacSha256",
+        "bytes.ConstantTimeEqual", "bytes.Bytes.Copy", "bytes.Bytes.Len",
+        "bytes.Bytes.At", "bytes.Bytes.Text", "bytes.Bytes.Close",
         "std.pattern", "pattern.IsValid", "pattern.Matches",
         "foundation.hosting", "hosting.Host", "hosting.HostedService",
         "hosting.BackgroundService", "hosting.RunReport", "hosting.RunReason", "hosting.State",
@@ -1327,6 +1331,12 @@ test("grammar and completions track compiler keywords", () => {
         "web.Request.Header", "web.Request.Form", "web.Request.IsJSON",
         "web.Response.Header", "web.Response.SetHeader", "web.Response.AddHeader",
         "web.Application.ErrorResponse", "web.Server.ConfigureCORS", "web.Server.ServeOne",
+        "foundation.auth", "auth.Payload", "auth.Claims", "auth.StandardClaims", "auth.Error", "auth.Key", "auth.Service",
+        "auth.SignedToken", "auth.SignToken", "auth.VerifyToken",
+        "auth.ValidateHMACSecret", "auth.NewHMACKey", "auth.NewService",
+        "auth.Service.AddKey", "auth.Service.Sign", "auth.Service.Verify",
+        "foundation.auth.web", "authWeb.AuthenticatedHandler", "authWeb.Bearer",
+        "authWeb.BearerError", "authWeb.Protect",
         "foundation.worker", "worker.Supervisor", "worker.NewSupervisor",
         "worker.Supervisor.Start", "worker.Supervisor.Shutdown", "worker.Supervisor.Cancel",
         "worker.Group", "worker.GroupNext", "worker.GroupWait", "worker.GroupWake",

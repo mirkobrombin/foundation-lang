@@ -1,0 +1,128 @@
+package foundation.auth.web
+
+import foundation.auth
+import foundation.web
+import std.bytes
+import std.text
+
+// Classifies Bearer transport failures separately from application failures.
+enum BearerError<E> {
+    MissingAuthorization
+    InvalidAuthorization
+    Token(error auth.Error)
+    Handler(error E)
+}
+
+// Handles one request together with its verified authentication payload.
+contract AuthenticatedHandler<E> {
+    fn Handle(
+        self,
+        $request web.Request,
+        $payload auth.Payload
+    ) Result<web.Response, E>
+}
+
+// Adapts an authenticated handler to the standard web handler contract.
+struct Bearer<E> implements web.Handler<BearerError<E>> {
+    secret own bytes.Bytes
+    handler own AuthenticatedHandler<E>
+
+    fn Handle(
+        self,
+        $request web.Request
+    ) Result<web.Response, BearerError<E>> {
+        var activeRequest = request
+        const token = bearerToken<E>(activeRequest.Header("Authorization")) else error {
+            return .Err(error)
+        }
+        const payload = auth.VerifyToken(token, self.secret) else error {
+            return .Err(.Token(error = error))
+        }
+        const handled = self.handler.Handle($activeRequest, $payload)
+        match handled {
+            Ok(response): .Ok(response)
+            Err(error): .Err(.Handler(error = error))
+        }
+    }
+}
+
+// Creates a typed Bearer boundary that passes verified claims to its handler.
+fn Protect<E>(
+    $secret own bytes.Bytes,
+    $handler own AuthenticatedHandler<E>
+) Result<own Bearer<E>, auth.Error> {
+    auth.ValidateHMACSecret(secret) else error {
+        discard secret
+        discard handler
+        return .Err(error)
+    }
+    .Ok(own Bearer<E> { secret = secret handler = handler })
+}
+
+fn bearerToken<E>($header Option<String>) Result<String, BearerError<E>> {
+    match header {
+        None: .Err(.MissingAuthorization)
+        Some(value): parseBearer<E>($value)
+    }
+}
+
+fn parseBearer<E>($value String) Result<String, BearerError<E>> {
+    const length = text.ByteLen(value)
+    const offset = requiredSpace<E>(text.Find(value, " ")) else error {
+        return .Err(error)
+    }
+    if offset == 0 || offset + 1 >= length {
+        return invalidAuthorization<E>()
+    }
+    const scheme = slice(value, 0, offset)
+    if !equalFoldASCII(scheme, "bearer") {
+        return invalidAuthorization<E>()
+    }
+    .Ok(slice(value, offset + 1, length))
+}
+
+fn invalidAuthorization<E>() Result<String, BearerError<E>> {
+    .Err(.InvalidAuthorization)
+}
+
+fn requiredSpace<E>(value Option<u64>) Result<u64, BearerError<E>> {
+    match value {
+        None: .Err(.InvalidAuthorization)
+        Some(offset): .Ok(offset)
+    }
+}
+
+fn equalFoldASCII(left String, right String) bool {
+    const length = text.ByteLen(left)
+    if length != text.ByteLen(right) {
+        return false
+    }
+    var offset u64 = 0
+    while offset < length {
+        if lower(byteAt(left, offset)) != lower(byteAt(right, offset)) {
+            return false
+        }
+        offset = offset + 1
+    }
+    true
+}
+
+fn lower(value u64) u64 {
+    value + 32 if value >= 65 && value <= 90 else value
+}
+
+fn byteAt(value String, offset u64) u64 {
+    const byte = text.ByteAt(value, offset) else error {
+        discard error
+        panic("Bearer header byte invariant failed")
+    }
+    byte
+}
+
+fn slice(value String, start u64, end u64) String {
+    const selected = text.Slice(value, start, end) else error {
+        discard error
+        panic("Bearer header slice invariant failed")
+    }
+    selected
+}

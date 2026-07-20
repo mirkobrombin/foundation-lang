@@ -1,0 +1,700 @@
+package foundation.auth
+
+import std.bytes
+import std.collections
+import std.format
+import std.json
+import std.parse
+import std.text
+import std.time
+
+// Classifies token validation and signing failures without hidden exceptions.
+enum Error {
+    // Reports an empty, malformed, oversized, or unreadable compact token.
+    InvalidToken
+    // Reports a signature that does not match the selected key.
+    InvalidSignature
+    // Reports claims whose expiration is at or before the current Unix second.
+    Expired
+    // Reports HMAC key material shorter than 32 bytes.
+    SecretTooShort
+    // Reports signed bytes that do not form supported typed claims.
+    InvalidPayload
+    // Reports an encoded token or byte operation above its fixed limit.
+    TooLarge
+    // Reports a key created without an identifier.
+    EmptyKeyID
+    // Reports a key identifier already present in the service.
+    DuplicateKeyID
+    // Reports a token whose key identifier is absent from the service.
+    UnknownKeyID
+}
+
+// Defines validation shared by values accepted as authentication claims.
+contract Claims {
+    // Validates the semantic constraints of a claims value.
+    fn Validate(self) Result<void, Error>
+}
+
+// Holds the subject and absolute Unix expiration used by simple signed tokens.
+struct Payload implements Claims {
+    // Identifies the subject represented by the token.
+    Sub String
+    // Sets the absolute expiration as a signed Unix second.
+    Exp i64
+
+    // Rejects expiration at or before the current Unix second.
+    fn Validate(self) Result<void, Error> {
+        if self.Exp <= 0 {
+            return .Err(.Expired)
+        }
+        const expiration = u64.From(self.Exp) else conversionError {
+            discard conversionError
+            return .Err(.Expired)
+        }
+        if time.Now().Unix() >= expiration {
+            return .Err(.Expired)
+        }
+        .Ok
+    }
+}
+
+// Holds the common claims used by services with key rotation.
+struct StandardClaims implements Claims {
+    // Identifies the subject represented by the token.
+    Sub String = ""
+    // Sets the absolute expiration as a signed Unix second.
+    Exp i64 = 0
+    // Records when the token was issued as a signed Unix second.
+    Iat i64 = 0
+    // Identifies one token or session for revocation and auditing.
+    Jti String = ""
+    // Identifies the authority that issued the token.
+    Iss String = ""
+    // Identifies the service expected to accept the token.
+    Aud String = ""
+
+    // Rejects expiration at or before the current Unix second.
+    fn Validate(self) Result<void, Error> {
+        if self.Exp <= 0 {
+            return .Err(.Expired)
+        }
+        const expiration = u64.From(self.Exp) else conversionError {
+            discard conversionError
+            return .Err(.Expired)
+        }
+        if time.Now().Unix() >= expiration {
+            return .Err(.Expired)
+        }
+        .Ok
+    }
+}
+
+// Owns one validated HMAC-SHA256 key used by a token service.
+struct Key {
+    id String
+    secret own bytes.Bytes
+}
+
+// Describes a service token and the exact payload text that was signed.
+struct SignedToken {
+    // Contains the complete compact token presented to verifiers.
+    Token String
+    // Names the key selected to sign this token.
+    KeyID String
+    // Contains the exact JSON text covered by the signature.
+    Payload String
+    // Preserves the complete compact representation without interpretation.
+    Raw String
+}
+
+// Owns an ordered key ring whose first key signs new tokens.
+struct Service {
+    keys own collections.List<own Key>
+
+    // Appends a fallback verification key without changing the signing key.
+    fn AddKey(&self, $key own Key) Result<void, Error> {
+        var active = replace self.keys with collections.NewList<own Key>()
+        var reversed = collections.NewList<own Key>()
+        var duplicate = false
+        while !active.IsEmpty() {
+            const current = keyValue(active.PopFront())
+            if current.id == key.id {
+                duplicate = true
+            }
+            reversed.PushFront($current)
+        }
+        if duplicate {
+            self.keys = reverseKeys($reversed)
+            discard key
+            return .Err(.DuplicateKeyID)
+        }
+        reversed.PushFront($key)
+        self.keys = reverseKeys($reversed)
+        .Ok
+    }
+
+    // Signs with the first configured key and includes its key ID.
+    fn Sign(&self, claims StandardClaims) Result<SignedToken, Error> {
+        const key = keyValue(self.keys.PopFront())
+        const result = signWithKey(claims, key)
+        self.keys.PushFront($key)
+        result
+    }
+
+    // Selects the declared key ID, verifies the signature, and validates claims.
+    fn Verify(&self, token String) Result<StandardClaims, Error> {
+        const selected = splitServiceToken(token) else error {
+            return .Err(error)
+        }
+        const serviceToken { keyID compact } = selected
+        var active = replace self.keys with collections.NewList<own Key>()
+        var reversed = collections.NewList<own Key>()
+        var result Option<Result<StandardClaims, Error>> = .None
+        var found = false
+        while !active.IsEmpty() {
+            const key = keyValue(active.PopFront())
+            if key.id == keyID && !found {
+                result = .Some(verifyStandardToken(compact, key.secret))
+                found = true
+            }
+            reversed.PushFront($key)
+        }
+        self.keys = reverseKeys($reversed)
+        match result {
+            None: .Err(.UnknownKeyID)
+            Some(verified): verified
+        }
+    }
+}
+
+struct serviceToken {
+    keyID String
+    compact String
+}
+
+// Validates and owns one HMAC-SHA256 key.
+fn NewHMACKey($id String, $secret own bytes.Bytes) Result<own Key, Error> {
+    if text.IsEmpty(id) {
+        discard secret
+        return .Err(.EmptyKeyID)
+    }
+    validateSecret(secret) else error {
+        discard secret
+        return .Err(error)
+    }
+    .Ok(own Key { id = id secret = secret })
+}
+
+// Creates a key ring whose primary key signs every new token.
+fn NewService($primary own Key) own Service {
+    var keys = collections.NewList<own Key>()
+    keys.PushFront($primary)
+    own Service { keys = keys }
+}
+
+// Signs a compact payload token with HMAC-SHA256.
+fn SignToken(payload Payload, secret bytes.Bytes) Result<String, Error> {
+    signText(encodePayload(payload), secret)
+}
+
+// Verifies, decodes, and validates a compact HMAC-SHA256 payload token.
+fn VerifyToken(token String, secret bytes.Bytes) Result<Payload, Error> {
+    const payloadText = verifyText(token, secret) else error {
+        return .Err(error)
+    }
+    const parsed = json.Parse(payloadText) else error {
+        discard error
+        return .Err(.InvalidPayload)
+    }
+    const payload = decodePayload($parsed) else error {
+        return .Err(error)
+    }
+    payload.Validate() else error {
+        return .Err(error)
+    }
+    .Ok(payload)
+}
+
+fn signText(payloadText String, secret bytes.Bytes) Result<String, Error> {
+    validateSecret(secret) else error {
+        return .Err(error)
+    }
+    const payloadBytes = bytes.FromText(payloadText)
+    const encodedPayload = bytes.EncodeBase64URL(payloadBytes) else error {
+        discard error
+        return .Err(.TooLarge)
+    }
+    const digest = bytes.HmacSha256(secret, payloadBytes) else error {
+        discard error
+        return .Err(.InvalidToken)
+    }
+    const encodedSignature = bytes.EncodeBase64URL(digest) else error {
+        discard error
+        return .Err(.TooLarge)
+    }
+    const token = encodedPayload + "." + encodedSignature
+    if text.ByteLen(token) > maxTokenSize() {
+        return .Err(.TooLarge)
+    }
+    .Ok(token)
+}
+
+fn verifyText(token String, secret bytes.Bytes) Result<String, Error> {
+    validateSecret(secret) else error {
+        return .Err(error)
+    }
+    const length = text.ByteLen(token)
+    if length == 0 || length > maxTokenSize() {
+        return .Err(.InvalidToken)
+    }
+    const offset = requiredOffset(text.Find(token, ".")) else error {
+        return .Err(error)
+    }
+    if offset == 0 || offset + 1 >= length {
+        return .Err(.InvalidToken)
+    }
+    const encodedPayload = slice(token, 0, offset)
+    const encodedSignature = slice(token, offset + 1, length)
+    if hasValue(text.Find(encodedSignature, ".")) {
+        return .Err(.InvalidToken)
+    }
+
+    const payloadBytes = bytes.DecodeBase64URL(encodedPayload) else error {
+        discard error
+        return .Err(.InvalidToken)
+    }
+    const signature = bytes.DecodeBase64URL(encodedSignature) else error {
+        discard error
+        return .Err(.InvalidToken)
+    }
+    const expected = bytes.HmacSha256(secret, payloadBytes) else error {
+        discard error
+        return .Err(.InvalidToken)
+    }
+    if !bytes.ConstantTimeEqual(signature, expected) {
+        return .Err(.InvalidSignature)
+    }
+    const payloadText = payloadBytes.Text() else error {
+        discard error
+        return .Err(.InvalidPayload)
+    }
+    .Ok(payloadText)
+}
+
+// Checks the 32-byte minimum required for HMAC-SHA256 keys.
+fn ValidateHMACSecret(secret bytes.Bytes) Result<void, Error> {
+    validateSecret(secret)
+}
+
+fn signWithKey(claims StandardClaims, key Key) Result<SignedToken, Error> {
+    const compact = signStandardToken(claims, key.secret) else error {
+        return .Err(error)
+    }
+    const keyBytes = bytes.FromText(key.id)
+    const encodedKey = bytes.EncodeBase64URL(keyBytes) else error {
+        discard error
+        return .Err(.TooLarge)
+    }
+    const token = encodedKey + "." + compact
+    if text.ByteLen(token) > maxTokenSize() {
+        return .Err(.TooLarge)
+    }
+    const raw = text.Copy(token)
+    .Ok(SignedToken {
+        Token = token
+        KeyID = text.Copy(key.id)
+        Payload = encodeStandardClaims(claims)
+        Raw = raw
+    })
+}
+
+fn signStandardToken(claims StandardClaims, secret bytes.Bytes) Result<String, Error> {
+    const payloadText = encodeStandardClaims(claims)
+    signText(payloadText, secret)
+}
+
+fn verifyStandardToken(token String, secret bytes.Bytes) Result<StandardClaims, Error> {
+    const payloadText = verifyText(token, secret) else error {
+        return .Err(error)
+    }
+    const parsed = json.Parse(payloadText) else error {
+        discard error
+        return .Err(.InvalidPayload)
+    }
+    const claims = decodeStandardClaims($parsed) else error {
+        return .Err(error)
+    }
+    claims.Validate() else error {
+        return .Err(error)
+    }
+    .Ok(claims)
+}
+
+fn splitServiceToken(token String) Result<serviceToken, Error> {
+    const length = text.ByteLen(token)
+    if length == 0 || length > maxTokenSize() {
+        return .Err(.InvalidToken)
+    }
+    const offset = requiredOffset(text.Find(token, ".")) else error {
+        return .Err(error)
+    }
+    if offset == 0 || offset + 1 >= length {
+        return .Err(.InvalidToken)
+    }
+    const encodedKey = slice(token, 0, offset)
+    const compact = slice(token, offset + 1, length)
+    const keyBytes = bytes.DecodeBase64URL(encodedKey) else error {
+        discard error
+        return .Err(.InvalidToken)
+    }
+    const keyID = keyBytes.Text() else error {
+        discard error
+        return .Err(.InvalidToken)
+    }
+    if text.IsEmpty(keyID) {
+        return .Err(.InvalidToken)
+    }
+    .Ok(serviceToken { keyID = keyID compact = compact })
+}
+
+fn reverseKeys($source own collections.List<own Key>) own collections.List<own Key> {
+    var active = source
+    var result = collections.NewList<own Key>()
+    while !active.IsEmpty() {
+        result.PushFront(keyValue(active.PopFront()))
+    }
+    result
+}
+
+fn keyValue($value Option<own Key>) own Key {
+    match value {
+        None: missingKey()
+        Some(key): key
+    }
+}
+
+fn missingKey() own Key {
+    panic("auth key ring invariant failed")
+}
+
+fn validateSecret(secret bytes.Bytes) Result<void, Error> {
+    const length = secret.Len() else error {
+        discard error
+        return .Err(.InvalidToken)
+    }
+    if length < 32 {
+        return .Err(.SecretTooShort)
+    }
+    .Ok
+}
+
+fn maxTokenSize() u64 {
+    16384
+}
+
+fn requiredOffset(value Option<u64>) Result<u64, Error> {
+    match value {
+        None: .Err(.InvalidToken)
+        Some(offset): .Ok(offset)
+    }
+}
+
+fn hasValue(value Option<u64>) bool {
+    match value {
+        None: false
+        Some(offset): true
+    }
+}
+
+fn encodePayload(payload Payload) String {
+    var builder = text.NewBuilder()
+    write(&builder, "{\"sub\":\"")
+    writeEscaped(&builder, payload.Sub)
+    write(&builder, "\",\"exp\":")
+    write(&builder, format.I64(payload.Exp))
+    write(&builder, "}")
+    const result = builder.Finish() else error {
+        discard error
+        panic("auth payload builder invariant failed")
+    }
+    result
+}
+
+fn encodeStandardClaims(claims StandardClaims) String {
+    var builder = text.NewBuilder()
+    write(&builder, "{\"sub\":\"")
+    writeEscaped(&builder, claims.Sub)
+    write(&builder, "\",\"exp\":")
+    write(&builder, format.I64(claims.Exp))
+    if claims.Iat != 0 {
+        write(&builder, ",\"iat\":")
+        write(&builder, format.I64(claims.Iat))
+    }
+    if !text.IsEmpty(claims.Jti) {
+        write(&builder, ",\"jti\":\"")
+        writeEscaped(&builder, claims.Jti)
+        write(&builder, "\"")
+    }
+    if !text.IsEmpty(claims.Iss) {
+        write(&builder, ",\"iss\":\"")
+        writeEscaped(&builder, claims.Iss)
+        write(&builder, "\"")
+    }
+    if !text.IsEmpty(claims.Aud) {
+        write(&builder, ",\"aud\":\"")
+        writeEscaped(&builder, claims.Aud)
+        write(&builder, "\"")
+    }
+    write(&builder, "}")
+    const result = builder.Finish() else error {
+        discard error
+        panic("auth standard claims builder invariant failed")
+    }
+    result
+}
+
+fn writeEscaped(&builder text.Builder, value String) void {
+    const length = text.ByteLen(value)
+    var offset u64 = 0
+    var segment u64 = 0
+    while offset < length {
+        const byte = byteAt(value, offset)
+        if offset + 2 < length && byte == 226 && byteAt(value, offset + 1) == 128 {
+            const suffix = byteAt(value, offset + 2)
+            if suffix == 168 || suffix == 169 {
+                writeRange(&builder, value, segment, offset)
+                write(&builder, "\\u2028" if suffix == 168 else "\\u2029")
+                offset = offset + 3
+                segment = offset
+                continue
+            }
+        }
+        if needsJSONEscape(byte) {
+            writeRange(&builder, value, segment, offset)
+            writeEscape(&builder, byte)
+            segment = offset + 1
+        }
+        offset = offset + 1
+    }
+    writeRange(&builder, value, segment, length)
+}
+
+fn needsJSONEscape(value u64) bool {
+    value == 34 || value == 92 || value < 32 || value == 38 || value == 60 || value == 62
+}
+
+fn writeEscape(&builder text.Builder, value u64) void {
+    if value == 34 {
+        write(&builder, "\\\"")
+        return
+    }
+    if value == 92 {
+        write(&builder, "\\\\")
+        return
+    }
+    if value == 8 {
+        write(&builder, "\\b")
+        return
+    }
+    if value == 9 {
+        write(&builder, "\\t")
+        return
+    }
+    if value == 10 {
+        write(&builder, "\\n")
+        return
+    }
+    if value == 12 {
+        write(&builder, "\\f")
+        return
+    }
+    if value == 13 {
+        write(&builder, "\\r")
+        return
+    }
+    const hex = "0123456789abcdef"
+    write(&builder, "\\u00")
+    writeByte(&builder, byteAt(hex, value / 16))
+    writeByte(&builder, byteAt(hex, value % 16))
+}
+
+fn writeRange(&builder text.Builder, value String, start u64, end u64) void {
+    if start == end {
+        return
+    }
+    write(&builder, slice(value, start, end))
+}
+
+fn write(&builder text.Builder, value String) void {
+    const written = builder.Write(value) else error {
+        discard error
+        panic("auth payload builder write invariant failed")
+    }
+    if !written {
+        panic("auth payload builder rejected text")
+    }
+}
+
+fn writeByte(&builder text.Builder, value u64) void {
+    const written = builder.WriteCodePoint(value) else error {
+        discard error
+        panic("auth payload builder byte invariant failed")
+    }
+    if !written {
+        panic("auth payload builder rejected byte")
+    }
+}
+
+fn decodePayload($value json.Value) Result<Payload, Error> {
+    match value {
+        Object(object): decodeObject($object)
+        Null: .Err(.InvalidPayload)
+        Bool(flag): .Err(.InvalidPayload)
+        Number(number): .Err(.InvalidPayload)
+        Text(content): .Err(.InvalidPayload)
+        Array(items): .Err(.InvalidPayload)
+    }
+}
+
+fn decodeStandardClaims($value json.Value) Result<StandardClaims, Error> {
+    match value {
+        Object(object): decodeStandardObject($object)
+        Null: .Err(.InvalidPayload)
+        Bool(flag): .Err(.InvalidPayload)
+        Number(number): .Err(.InvalidPayload)
+        Text(content): .Err(.InvalidPayload)
+        Array(items): .Err(.InvalidPayload)
+    }
+}
+
+fn decodeStandardObject($object own json.Object) Result<StandardClaims, Error> {
+    var fields = object
+    const sub = takeOptionalText(fields.Take("sub")) else error {
+        return .Err(error)
+    }
+    const expiration = takeOptionalI64(fields.Take("exp")) else error {
+        return .Err(error)
+    }
+    const issuedAt = takeOptionalI64(fields.Take("iat")) else error {
+        return .Err(error)
+    }
+    const tokenID = takeOptionalText(fields.Take("jti")) else error {
+        return .Err(error)
+    }
+    const issuer = takeOptionalText(fields.Take("iss")) else error {
+        return .Err(error)
+    }
+    const audience = takeOptionalText(fields.Take("aud")) else error {
+        return .Err(error)
+    }
+    if fields.Len() != 0 {
+        return .Err(.InvalidPayload)
+    }
+    .Ok(StandardClaims {
+        Sub = sub
+        Exp = expiration
+        Iat = issuedAt
+        Jti = tokenID
+        Iss = issuer
+        Aud = audience
+    })
+}
+
+fn decodeObject($object own json.Object) Result<Payload, Error> {
+    var fields = object
+    const sub = takeText(fields.Take("sub")) else error {
+        return .Err(error)
+    }
+    const expirationText = takeNumber(fields.Take("exp")) else error {
+        return .Err(error)
+    }
+    const expiration = parse.I64(expirationText) else error {
+        discard error
+        return .Err(.InvalidPayload)
+    }
+    if fields.Len() != 0 {
+        return .Err(.InvalidPayload)
+    }
+    .Ok(Payload { Sub = sub Exp = expiration })
+}
+
+fn takeText($value Option<json.Value>) Result<String, Error> {
+    match value {
+        None: .Err(.InvalidPayload)
+        Some(actual): match actual {
+            Text(content): .Ok(content)
+            Null: .Err(.InvalidPayload)
+            Bool(flag): .Err(.InvalidPayload)
+            Number(number): .Err(.InvalidPayload)
+            Array(items): .Err(.InvalidPayload)
+            Object(fields): .Err(.InvalidPayload)
+        }
+    }
+}
+
+fn takeNumber($value Option<json.Value>) Result<String, Error> {
+    match value {
+        None: .Err(.InvalidPayload)
+        Some(actual): match actual {
+            Number(number): .Ok(number)
+            Null: .Err(.InvalidPayload)
+            Bool(flag): .Err(.InvalidPayload)
+            Text(content): .Err(.InvalidPayload)
+            Array(items): .Err(.InvalidPayload)
+            Object(fields): .Err(.InvalidPayload)
+        }
+    }
+}
+
+fn takeOptionalText($value Option<json.Value>) Result<String, Error> {
+    match value {
+        None: .Ok("")
+        Some(actual): match actual {
+            Text(content): .Ok(content)
+            Null: .Err(.InvalidPayload)
+            Bool(flag): .Err(.InvalidPayload)
+            Number(number): .Err(.InvalidPayload)
+            Array(items): .Err(.InvalidPayload)
+            Object(fields): .Err(.InvalidPayload)
+        }
+    }
+}
+
+fn takeOptionalI64($value Option<json.Value>) Result<i64, Error> {
+    match value {
+        None: .Ok(0)
+        Some(actual): match actual {
+            Number(number): parseI64(number)
+            Null: .Err(.InvalidPayload)
+            Bool(flag): .Err(.InvalidPayload)
+            Text(content): .Err(.InvalidPayload)
+            Array(items): .Err(.InvalidPayload)
+            Object(fields): .Err(.InvalidPayload)
+        }
+    }
+}
+
+fn parseI64(value String) Result<i64, Error> {
+    const parsed = parse.I64(value) else error {
+        discard error
+        return .Err(.InvalidPayload)
+    }
+    .Ok(parsed)
+}
+
+fn byteAt(value String, offset u64) u64 {
+    const byte = text.ByteAt(value, offset) else error {
+        discard error
+        panic("auth text byte invariant failed")
+    }
+    byte
+}
+
+fn slice(value String, start u64, end u64) String {
+    const selected = text.Slice(value, start, end) else error {
+        discard error
+        panic("auth text slice invariant failed")
+    }
+    selected
+}

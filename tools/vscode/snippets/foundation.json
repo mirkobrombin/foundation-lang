@@ -839,6 +839,30 @@
         "body": "${1:values}[${2:index}] = ${3:value}",
         "description": "Replace an indexed element"
     },
+    "Authenticated web handler": {
+        "prefix": "authhandler",
+        "body": [
+            "struct ${1:Handler} implements authWeb.AuthenticatedHandler<${2:AppError}> {",
+            "    fn Handle(",
+            "        self,",
+            "        \\$request web.Request,",
+            "        \\$payload auth.Payload",
+            "    ) Result<web.Response, ${2:AppError}> {",
+            "        const auth.Payload { Sub Exp } = payload",
+            "        discard Exp",
+            "        ${3:.Ok(web.Text(200, \\$Sub))}",
+            "    }",
+            "}",
+            "",
+            "const ${4:protected} = authWeb.Protect<${2:AppError}>(",
+            "    \\$${5:secret},",
+            "    own ${1:Handler} {}",
+            ") else ${6:error} {",
+            "    ${7:return .Err(error)}",
+            "}"
+        ],
+        "description": "Create a typed Bearer boundary with verified payload claims"
+    },
     "Print": {
         "prefix": "print",
         "body": "print(${1:\"message\"})",
