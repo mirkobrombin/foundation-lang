@@ -1,6 +1,6 @@
 fn main() i32 {
     var total = 20
-    const add = fn(value i32) i32 capture(&total) {
+    const add fn(i32) i32 = fn(value) capture(&total) {
         total = total + value
         total
     }

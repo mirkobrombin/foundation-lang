@@ -1,0 +1,7 @@
+fn main() i32 {
+    const callback = fn(value) {
+        value
+    }
+    discard callback
+    0
+}

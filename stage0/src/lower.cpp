@@ -363,11 +363,16 @@ class Lowerer {
         } else if (const auto *expression = std::get_if<ExpressionStatement>(&source.value)) {
             value = FirExpressionStatement{lowerExpression(expression->expression)};
         } else if (const auto *returned = std::get_if<ReturnStatement>(&source.value)) {
-            std::optional<FirExpressionId> result;
-            if (returned->value.has_value()) {
-                result = lowerExpression(*returned->value);
+            if (returned->tail && current_->returnType == voidType &&
+                returned->value.has_value()) {
+                value = FirExpressionStatement{lowerExpression(*returned->value)};
+            } else {
+                std::optional<FirExpressionId> result;
+                if (returned->value.has_value()) {
+                    result = lowerExpression(*returned->value);
+                }
+                value = FirReturnStatement{result, model_.statementDrops[id]};
             }
-            value = FirReturnStatement{result, model_.statementDrops[id]};
         } else if (const auto *discarded = std::get_if<DiscardStatement>(&source.value)) {
             value = FirDiscardStatement{lowerExpression(discarded->value)};
         } else if (std::holds_alternative<BreakStatement>(source.value)) {

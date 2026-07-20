@@ -117,7 +117,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.104.0");
+    assert.equal(manifest.version, "0.105.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1538,6 +1538,11 @@ test("tracks function values and explicit closure captures", () => {
     assert.equal(byLabel.get("capture").kind, "Keyword");
     assert.equal(byLabel.get("Callback").insertText, "Callback { call = ${1:call} }");
     assert.match(grammar.repository.functionTypes.patterns[0].begin, /fn/);
+    const inferred = grammar.repository.inferredClosureParameters.patterns[0];
+    const inferredBegin = new RegExp(inferred.begin);
+    assert.match("fn(value) capture(factor) {", inferredBegin);
+    assert.match("fn(&counter) {", inferredBegin);
+    assert.doesNotMatch("fn(i32) i32", inferredBegin);
     assert.match(grammar.repository.captureClauses.patterns[0].begin, /capture/);
     assert.ok(grammar.repository.captureClauses.patterns[0].begin.includes("\\("));
     assert.equal(grammar.repository.captureClauses.patterns[0].end, "\\)");
@@ -1547,6 +1552,7 @@ test("tracks function values and explicit closure captures", () => {
     ).name, /capture/);
     assert.equal(snippets["Function value type"].prefix, "fntype");
     assert.equal(snippets.Closure.prefix, "closure");
+    assert.equal(snippets["Contextually inferred closure"].prefix, "closureinfer");
     assert.equal(snippets["Owning closure"].prefix, "closureown");
 });
 

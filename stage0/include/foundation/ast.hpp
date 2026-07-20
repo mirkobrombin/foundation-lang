@@ -261,6 +261,7 @@ struct ResultElseStatement {
 
 struct ReturnStatement {
     std::optional<AstExpressionId> value;
+    bool tail{};
 };
 
 struct DiscardStatement {
@@ -338,6 +339,7 @@ struct Parameter {
     SourceSpan span;
     std::vector<AttributeApplication> attributes;
     ParameterMode mode{ParameterMode::Bootstrap};
+    bool inferredType{};
 };
 
 struct Capture {
@@ -401,6 +403,7 @@ struct Function {
     bool action{};
     std::optional<StateTransitionFunction> stateTransition;
     std::optional<WorkflowFunction> workflow;
+    bool inferredReturn{};
 };
 
 enum class StructKind {

@@ -2362,6 +2362,8 @@ void functionValuesExposeTargetOwnershipModes() {
         "    const ready = check(label)\n"
         "    editor(&value)\n"
         "    const size = consumer($payload)\n"
+        "    const plus fn(i32) i32 = fn(number) { number + 1 }\n"
+        "    const answer = plus(41)\n"
         "    if ready { return size }\n"
         "    value.count\n"
         "}\n";
@@ -2386,6 +2388,7 @@ void functionValuesExposeTargetOwnershipModes() {
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
     std::istringstream input(frame(initialize) + frame(open) + frame(request(141, 12, 20)) +
                              frame(request(142, 13, 6)) + frame(request(143, 14, 19)) +
+                             frame(request(144, 15, 34)) + frame(request(145, 16, 21)) +
                              frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
@@ -2394,6 +2397,8 @@ void functionValuesExposeTargetOwnershipModes() {
     const auto checkHover = responseFor(transcript, 141);
     const auto editorHover = responseFor(transcript, 142);
     const auto consumerHover = responseFor(transcript, 143);
+    const auto inferredParameterHover = responseFor(transcript, 144);
+    const auto inferredFunctionHover = responseFor(transcript, 145);
 
     expect(status == 0, "function value hover transcript exits cleanly");
     expect(errors.str().empty(), "function value hover requests write no server errors");
@@ -2403,6 +2408,10 @@ void functionValuesExposeTargetOwnershipModes() {
            "&function values use target type syntax");
     expect(consumerHover.find("consumer fn($String) i32") != std::string::npos,
            "transfer function values use target type syntax");
+    expect(inferredParameterHover.find("number i32") != std::string::npos,
+           "inferred closure parameters expose their semantic type");
+    expect(inferredFunctionHover.find("plus fn(i32) i32") != std::string::npos,
+           "inferred closures expose their complete contextual signature");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);

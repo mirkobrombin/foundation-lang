@@ -449,6 +449,15 @@
         ],
         "description": "Create a closure with explicit captures"
     },
+    "Contextually inferred closure": {
+        "prefix": "closureinfer",
+        "body": [
+            "const ${1:operation} fn(${2:i32}) ${3:i32} = fn(${4:value}) capture(${5:captured}) {",
+            "    ${6:value}",
+            "}"
+        ],
+        "description": "Create a closure whose signature comes from its binding"
+    },
     "Owning closure": {
         "prefix": "closureown",
         "body": [

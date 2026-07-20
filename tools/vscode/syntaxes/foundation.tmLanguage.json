@@ -15,6 +15,7 @@
         { "include": "#structDefinitions" },
         { "include": "#enumDefinitions" },
         { "include": "#functionDefinitions" },
+        { "include": "#inferredClosureParameters" },
         { "include": "#functionTypes" },
         { "include": "#captureClauses" },
         { "include": "#structPatterns" },
@@ -507,6 +508,38 @@
                         { "include": "#types" },
                         { "include": "#typeParameters" },
                         { "include": "#nominalTypes" },
+                        { "include": "#punctuation" }
+                    ]
+                }
+            ]
+        },
+        "inferredClosureParameters": {
+            "patterns": [
+                {
+                    "name": "meta.function.expression.foundation",
+                    "begin": "\\b(fn)\\s*(\\()(?=[^()\\n]*\\)\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?)\\s*)?(?:capture\\s*\\(|\\{))",
+                    "beginCaptures": {
+                        "1": { "name": "keyword.declaration.function.foundation" },
+                        "2": { "name": "punctuation.section.parens.begin.foundation" }
+                    },
+                    "end": "\\)",
+                    "endCaptures": {
+                        "0": { "name": "punctuation.section.parens.end.foundation" }
+                    },
+                    "patterns": [
+                        { "include": "#comments" },
+                        {
+                            "name": "variable.parameter.foundation",
+                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+(?:(?:own|view|edit)\\s+)?(?:\\[[^,()\\n]+\\]|[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?)\\s*(?:,|\\)))"
+                        },
+                        { "include": "#ownership" },
+                        { "include": "#types" },
+                        { "include": "#typeParameters" },
+                        { "include": "#nominalTypes" },
+                        {
+                            "name": "variable.parameter.foundation",
+                            "match": "\\b[_a-z][A-Za-z0-9_]*\\b(?=\\s*(?:,|\\)))"
+                        },
                         { "include": "#punctuation" }
                     ]
                 }

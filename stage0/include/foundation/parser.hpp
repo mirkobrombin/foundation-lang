@@ -62,7 +62,7 @@ class Parser {
     ContractMethod contractMethod(const std::string &owner,
                                   const std::vector<std::string> &typeParameters);
     ReceiverKind receiver(const char *code, const char *message);
-    Parameter parameter();
+    Parameter parameter(bool allowInferredType = false);
     AstBlockId block(bool tailResult = false);
     AstStatementId statement();
     AstStatementId variableStatement(const Token &start, bool mutableBinding);

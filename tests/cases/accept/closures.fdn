@@ -56,7 +56,7 @@ fn invokeBorrowed(&counter BorrowCounter) i32 {
 
 fn main() i32 {
     const factor = 2
-    const scale = fn(value i32) i32 capture(factor) {
+    const scale fn(i32) i32 = fn(value) capture(factor) {
         value * factor
     }
     const base = 2

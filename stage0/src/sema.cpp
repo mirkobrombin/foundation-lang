@@ -1443,7 +1443,8 @@ class Analyzer {
             auto &semantic = model_.functions[index];
             setTypeParameters(function.typeParameters, function.span);
             semantic.typeParameterCount = function.typeParameters.size();
-            semantic.returnType = resolveType(function.returnType);
+            semantic.returnType = function.inferredReturn ? invalidType
+                                                          : resolveType(function.returnType);
             if (function.blocking) {
                 const auto count = static_cast<std::size_t>(std::count_if(
                     function.attributes.begin(), function.attributes.end(),
@@ -1539,14 +1540,20 @@ class Analyzer {
             if (function.task && semantic.returnType == neverType) {
                 diagnostics_.error("FDN2016", "task cannot return never", function.returnType.span);
             }
-            if (containsBorrow(semantic.returnType) ||
-                containsBareSlice(semantic.returnType) ||
-                containsBareContract(semantic.returnType)) {
+            if (!function.inferredReturn &&
+                (containsBorrow(semantic.returnType) ||
+                 containsBareSlice(semantic.returnType) ||
+                 containsBareContract(semantic.returnType))) {
                 diagnostics_.error("FDN2063", "borrow cannot be returned from a function",
                                    function.returnType.span);
             }
             for (const auto &parameter : function.parameters) {
-                const auto type = resolveParameterType(parameter);
+                const auto type = parameter.inferredType ? invalidType
+                                                         : resolveParameterType(parameter);
+                semantic.parameterTypes.push_back(type);
+                if (parameter.inferredType) {
+                    continue;
+                }
                 if (type == voidType || type == neverType) {
                     diagnostics_.error("FDN2016", "parameter cannot have type void or never",
                                        parameter.span);
@@ -1564,7 +1571,6 @@ class Analyzer {
                                        "contract value requires view, edit, or own",
                                        parameter.span);
                 }
-                semantic.parameterTypes.push_back(type);
                 if (function.task && containsBorrow(type)) {
                     diagnostics_.error("FDN2165", "task parameter cannot borrow from its caller",
                                        parameter.span);
@@ -2512,6 +2518,24 @@ class Analyzer {
                 reportOutstanding(statement.span);
                 model_.statementDrops[id] = activeDrops();
                 return true;
+            }
+            if (returned->tail && expected == voidType) {
+                const auto type = analyzeExpression(*returned->value);
+                if (isResult(type)) {
+                    diagnostics_.error("FDN2051", "Result value must be handled or discarded",
+                                       statement.span);
+                }
+                if (requiresDrop(type)) {
+                    diagnostics_.error("FDN2076", "owned value must be handled or discarded",
+                                       statement.span);
+                }
+                const auto &target = model_.callTargets[*returned->value];
+                if (type == neverType ||
+                    (target.has_value() && target->kind == CallTargetKind::Panic)) {
+                    std::fill(resultOutstanding_.begin(), resultOutstanding_.end(), false);
+                    return true;
+                }
+                return false;
             }
             const auto value = analyzeExpression(*returned->value, expected);
             if (*returned->value < model_.expressionBorrowedClosures.size() &&
@@ -3468,7 +3492,97 @@ class Analyzer {
 
         const auto closureId = expression.function;
         const auto &closure = program_.functions[closureId];
-        const auto &signature = signatures_[closureId];
+        auto &semantic = model_.functions[closureId];
+        auto &signature = signatures_[closureId];
+        auto contextual = expected;
+        if (contextual.has_value() &&
+            (contextual->kind == TypeKind::View || contextual->kind == TypeKind::Edit) &&
+            contextual->arguments.size() == 1) {
+            contextual = contextual->arguments.front();
+        }
+        const auto needsInference = closure.inferredReturn ||
+                                    std::any_of(closure.parameters.begin(),
+                                                closure.parameters.end(),
+                                                [](const auto &parameter) {
+                                                    return parameter.inferredType;
+                                                });
+        if (needsInference) {
+            if (!contextual.has_value() || contextual->kind != TypeKind::Function) {
+                diagnostics_.error(
+                    "FDN2184",
+                    "anonymous function signature requires an expected function type", span);
+                return invalidType;
+            }
+            if (contextual->arguments.size() != closure.parameters.size() + 1) {
+                diagnostics_.error(
+                    "FDN2184",
+                    "anonymous function parameter count does not match expected function type",
+                    span);
+                return invalidType;
+            }
+            if (closure.inferredReturn) {
+                semantic.returnType = contextual->arguments.front();
+            }
+            auto modeMismatch = false;
+            for (std::size_t index = 0; index < closure.parameters.size(); ++index) {
+                if (!closure.parameters[index].inferredType) {
+                    continue;
+                }
+                const auto target = contextual->arguments[index + 1];
+                auto inferred = target;
+                const auto mode = closure.parameters[index].mode;
+                if (mode == ParameterMode::Read && target.kind == TypeKind::View &&
+                    target.declaration == 1 && target.arguments.size() == 1) {
+                    inferred = Type{TypeKind::View, 0, {target.arguments.front()}};
+                } else if (mode == ParameterMode::Read && !isCopyParameterType(target)) {
+                    inferred = invalidType;
+                    modeMismatch = true;
+                } else if (mode == ParameterMode::Edit && target.kind != TypeKind::Edit) {
+                    inferred = invalidType;
+                    modeMismatch = true;
+                } else if (mode == ParameterMode::Transfer &&
+                           (target.kind == TypeKind::View || target.kind == TypeKind::Edit)) {
+                    inferred = invalidType;
+                    modeMismatch = true;
+                }
+                semantic.parameterTypes[index] = inferred;
+            }
+            if (modeMismatch) {
+                diagnostics_.error(
+                    "FDN2011",
+                    "anonymous parameter mode does not match expected function type", span);
+                return invalidType;
+            }
+            signature = {semantic.returnType, semantic.parameterTypes};
+        }
+        if (closure.inferredReturn &&
+            (containsBorrow(semantic.returnType) || containsBareSlice(semantic.returnType) ||
+             containsBareContract(semantic.returnType))) {
+            diagnostics_.error("FDN2063", "borrow cannot be returned from a function",
+                               closure.span);
+        }
+        for (std::size_t index = 0; index < closure.parameters.size(); ++index) {
+            if (!closure.parameters[index].inferredType) {
+                continue;
+            }
+            const auto type = semantic.parameterTypes[index];
+            if (type == voidType || type == neverType) {
+                diagnostics_.error("FDN2016", "parameter cannot have type void or never",
+                                   closure.parameters[index].span);
+            }
+            if (containsBareSlice(type)) {
+                diagnostics_.error("FDN2080", "slice parameter requires view or edit",
+                                   closure.parameters[index].span);
+            }
+            if (containsNestedBorrow(type, true)) {
+                diagnostics_.error("FDN2064", "parameter contains a nested borrow",
+                                   closure.parameters[index].span);
+            }
+            if (containsBareContract(type)) {
+                diagnostics_.error("FDN2099", "contract value requires view, edit, or own",
+                                   closure.parameters[index].span);
+            }
+        }
         std::vector<Type> parts;
         parts.reserve(signature.parameters.size() + 1);
         parts.push_back(signature.returnType);
@@ -3479,14 +3593,8 @@ class Analyzer {
             parts.push_back(functionValueParameterType(signature.parameters[index], mode));
         }
         const Type closureType{TypeKind::Function, 0, std::move(parts)};
-        if (expected.has_value()) {
-            auto target = *expected;
-            if ((target.kind == TypeKind::View || target.kind == TypeKind::Edit) &&
-                target.arguments.size() == 1) {
-                const auto borrowed = target.arguments.front();
-                target = borrowed;
-            }
-            requireSame(target, closureType, span, "closure signature");
+        if (contextual.has_value()) {
+            requireSame(*contextual, closureType, span, "closure signature");
         }
 
         std::unordered_set<std::string> captureNames;
@@ -3610,7 +3718,6 @@ class Analyzer {
         loanStates_.clear();
         closureOuterNames_ = std::move(outerNames);
         setTypeParameters(closure.typeParameters, closure.span);
-        auto &semantic = model_.functions[closureId];
         for (std::size_t index = 0; index < captureTypes.size(); ++index) {
             const auto local = addLocal(closure.captures[index].name, captureTypes[index],
                                         captureModes[index] == CaptureMode::Edit,

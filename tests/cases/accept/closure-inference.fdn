@@ -1,0 +1,78 @@
+import std.format
+
+struct Counter {
+    value i32
+}
+
+struct Transform {
+    operation fn(i32) i32
+}
+
+enum TransformChoice {
+    Missing
+    Ready(fn(i32) i32)
+}
+
+fn apply(value i32, operation fn(i32) i32) i32 {
+    operation(value)
+}
+
+fn invoke(operation fn(i32) void) void {
+    operation(7)
+}
+
+fn main() i32 {
+    const factor = 3
+    const scale fn(i32) i32 = fn(value) capture(factor) {
+        value * factor
+    }
+    const increment fn(i32) i32 = fn(value i32) {
+        value + 1
+    }
+    const addTwo fn(i32) i32 = fn(value) i32 {
+        value + 2
+    }
+    const direct = apply(5, fn(value) {
+        value * 2
+    })
+    const bump fn(&Counter) void = fn(&counter) {
+        counter.value = counter.value + 1
+    }
+    const measure fn($String) usize = fn($value) {
+        len(value)
+    }
+    var counter = Counter { value = 41 }
+    bump(&counter)
+    const label = "owned"
+    const length = measure($label)
+    if counter.value != 42 || length != 5 return 1
+    const boxed = Transform {
+        operation = fn(value) {
+            value + 3
+        }
+    }
+    discard boxed
+    const selected = TransformChoice.Ready(fn(value) {
+        value + 4
+    })
+    discard selected
+    const branch fn(i32) i32 = if true {
+        fn(value) {
+            value + 5
+        }
+    } else {
+        fn(value) {
+            value - 5
+        }
+    }
+    if branch(5) != 10 return 1
+
+    invoke(fn(value) {
+        print(format.I32(value))
+    })
+    print(format.I32(scale(14)))
+    print(format.I32(increment(9)))
+    print(format.I32(addTwo(8)))
+    print(format.I32(direct))
+    0
+}

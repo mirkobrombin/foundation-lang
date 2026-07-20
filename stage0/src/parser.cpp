@@ -1523,7 +1523,7 @@ ReceiverKind Parser::receiver(const char *code, const char *message) {
     return ReceiverKind::View;
 }
 
-Parameter Parser::parameter() {
+Parameter Parser::parameter(bool allowInferredType) {
     auto parsedAttributes = attributes(false);
     const auto start = current().span;
     auto mode = ParameterMode::Read;
@@ -1533,7 +1533,10 @@ Parameter Parser::parameter() {
         mode = ParameterMode::Transfer;
     }
     const auto name = expect(TokenKind::Identifier, "FDN1026", "expected parameter name");
-    auto type = typeSyntax("FDN1028", "expected parameter type");
+    const auto inferredType = allowInferredType &&
+                              (check(TokenKind::Comma) || check(TokenKind::RightParen));
+    auto type = inferredType ? TypeSyntax{"", {}, name.span}
+                             : typeSyntax("FDN1028", "expected parameter type");
     if (mode == ParameterMode::Read &&
         (type.name == "own" || type.name == "view" || type.name == "edit")) {
         const auto replacement = type.name == "edit" ? "&" + name.text
@@ -1551,7 +1554,8 @@ Parameter Parser::parameter() {
         span.line = start.line;
         span.column = start.column;
     }
-    return {name.text, std::move(type), span, std::move(parsedAttributes.applications), mode};
+    return {name.text, std::move(type), span, std::move(parsedAttributes.applications), mode,
+            inferredType};
 }
 
 AstBlockId Parser::block(bool tailResult) {
@@ -1577,7 +1581,7 @@ AstBlockId Parser::block(bool tailResult) {
     if (tailResult && !result.statements.empty()) {
         auto &last = program_.statements[result.statements.back()];
         if (const auto *expression = std::get_if<ExpressionStatement>(&last.value)) {
-            last.value = ReturnStatement{expression->expression};
+            last.value = ReturnStatement{expression->expression, true};
         }
     }
     --blockDepth_;
@@ -2421,11 +2425,13 @@ AstExpressionId Parser::functionExpression(const Token &start) {
     std::vector<Parameter> parameters;
     if (!check(TokenKind::RightParen)) {
         do {
-            parameters.push_back(parameter());
+            parameters.push_back(parameter(true));
         } while (match(TokenKind::Comma));
     }
     expect(TokenKind::RightParen, "FDN1125", "expected ) after closure parameters");
-    auto returnType = typeSyntax("FDN1126", "expected closure return type");
+    const auto inferredReturn = check(TokenKind::Capture) || check(TokenKind::LeftBrace);
+    auto returnType = inferredReturn ? TypeSyntax{"", {}, current().span}
+                                     : typeSyntax("FDN1126", "expected closure return type");
 
     std::vector<Capture> captures;
     if (match(TokenKind::Capture)) {
@@ -2462,7 +2468,8 @@ AstExpressionId Parser::functionExpression(const Token &start) {
         expect(TokenKind::RightParen, "FDN1129", "expected ) after capture list");
     }
 
-    const auto tailResult = returnType.name != "void" || !returnType.arguments.empty();
+    const auto tailResult = inferredReturn || returnType.name != "void" ||
+                            !returnType.arguments.empty();
     const auto body = block(tailResult);
     Function function;
     function.name = "$closure_" + std::to_string(program_.functions.size());
@@ -2473,6 +2480,7 @@ AstExpressionId Parser::functionExpression(const Token &start) {
     function.span = start.span;
     function.closure = true;
     function.captures = std::move(captures);
+    function.inferredReturn = inferredReturn;
     program_.functions.push_back(std::move(function));
     return addExpression(FunctionExpression{program_.functions.size() - 1}, start.span);
 }

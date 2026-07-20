@@ -304,7 +304,7 @@ fn main(args [String]) i32 {
     var current = first
     const typedIdentity fn(i32) i32 = identity<i32>
     const copied = 2
-    const copyCallback = fn(value i32) i32 capture(copied) {
+    const copyCallback fn(i32) i32 = fn(value) capture(copied) {
         value + copied
     }
     const base = 3
