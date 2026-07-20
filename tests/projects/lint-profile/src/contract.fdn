@@ -1,0 +1,7 @@
+package lint.contracts
+
+// Defines the documented contract used to verify package-qualified lint ownership.
+contract User {
+    // Reads the visible value.
+    fn Read(self) i32
+}

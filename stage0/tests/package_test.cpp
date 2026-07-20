@@ -68,6 +68,7 @@ void manifestsRoundTripCanonically() {
 name sample.app
 version 1.0.0
 sdk ^0.1.0
+fcs strict
 source src
 test_source tests
 dependency sample.local 2.0.0 path "../local package"
@@ -89,6 +90,20 @@ dependency sample.platform ~3.1.0 registry default scope test target linux
     expect(rendered.find("test_source tests") != std::string::npos &&
                rendered.find("target linux scope test") != std::string::npos,
            "test sources and dependency scopes render canonically");
+    expect(rendered.find("fcs strict") != std::string::npos &&
+               parsed.value->codeStandard == foundation::CodeStandardProfile::Strict,
+           "FCS profile renders canonically");
+
+    constexpr std::string_view legacy = R"(format foundation.package/v1
+name sample.legacy
+version 1.0.0
+sdk ^0.1.0
+source src
+)";
+    const auto legacyParsed = foundation::parsePackageManifest("foundation.package", legacy);
+    expect(legacyParsed.value.has_value() &&
+               foundation::renderPackageManifest(*legacyParsed.value) == legacy,
+           "implicit Standard profile preserves legacy manifest bytes");
 }
 
 void manifestsRequireSeparatedTestSources() {
@@ -129,6 +144,18 @@ unknown value
     expect(hasCode(parsed.errors, "FDN4008") && hasCode(parsed.errors, "FDN4011") &&
                hasCode(parsed.errors, "FDN4012"),
            "manifest errors identify traversal, duplicates, and unknown directives");
+
+    constexpr std::string_view profile = R"(format foundation.package/v1
+name sample.app
+version 1.0.0
+sdk ^0.1.0
+fcs custom
+fcs strict
+source src
+)";
+    expect(hasCode(foundation::parsePackageManifest("foundation.package", profile).errors,
+                   "FDN4014"),
+           "manifest rejects invalid or duplicate FCS profiles");
 }
 
 void locksRoundTripCanonically() {

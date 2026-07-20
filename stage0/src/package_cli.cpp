@@ -214,6 +214,7 @@ int initialize(const std::filesystem::path &project, std::string_view name) {
     value.name = std::string(name);
     value.version = *parsePackageVersion("0.1.0");
     value.sdk = *parsePackageRequirement("^0.1.0");
+    value.codeStandardExplicit = true;
     value.source = "src";
 
     static std::atomic<unsigned long> sequence{};

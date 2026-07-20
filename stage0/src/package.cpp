@@ -603,6 +603,7 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
     auto nameSeen = false;
     auto versionSeen = false;
     auto sdkSeen = false;
+    auto codeStandardSeen = false;
     auto sourceSeen = false;
     auto testSourceSeen = false;
     lines(path, source, result.errors, [&](const auto &tokens, std::size_t line) {
@@ -641,6 +642,18 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
                 manifest.sdk = *parsed;
             }
             sdkSeen = true;
+        } else if (directive == "fcs") {
+            const auto parsed = tokens.size() == 2
+                                    ? parseCodeStandardProfile(tokens[1])
+                                    : std::nullopt;
+            if (!parsed.has_value() || codeStandardSeen) {
+                addError(result.errors, path, line, 1, "FDN4014",
+                         "expected at most one FCS profile: valid, standard, or strict");
+            } else {
+                manifest.codeStandard = *parsed;
+                manifest.codeStandardExplicit = true;
+            }
+            codeStandardSeen = true;
         } else if (directive == "source") {
             if (tokens.size() != 2 || !relativeSource(tokens[1]) || sourceSeen) {
                 addError(result.errors, path, line, 1, "FDN4008",
@@ -766,8 +779,11 @@ std::string renderPackageManifest(const PackageManifest &manifest) {
     output << "format foundation.package/v1\n"
            << "name " << manifest.name << '\n'
            << "version " << manifest.version.string() << '\n'
-           << "sdk " << manifest.sdk.string() << '\n'
-           << "source " << quote(manifest.source.generic_string()) << '\n';
+           << "sdk " << manifest.sdk.string() << '\n';
+    if (manifest.codeStandardExplicit) {
+        output << "fcs " << codeStandardProfileName(manifest.codeStandard) << '\n';
+    }
+    output << "source " << quote(manifest.source.generic_string()) << '\n';
     if (manifest.testSource.has_value()) {
         output << "test_source " << quote(manifest.testSource->generic_string()) << '\n';
     }

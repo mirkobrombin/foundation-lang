@@ -1,6 +1,7 @@
 #ifndef FOUNDATION_PACKAGE_HPP
 #define FOUNDATION_PACKAGE_HPP
 
+#include "foundation/code_standard.hpp"
 #include "foundation/target.hpp"
 
 #include <compare>
@@ -72,6 +73,8 @@ struct PackageManifest {
     std::string name;
     PackageVersion version;
     PackageRequirement sdk;
+    CodeStandardProfile codeStandard{CodeStandardProfile::Standard};
+    bool codeStandardExplicit{};
     std::filesystem::path source;
     std::optional<std::filesystem::path> testSource;
     std::vector<PackageDependency> dependencies;

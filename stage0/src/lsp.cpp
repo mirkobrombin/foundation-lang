@@ -4,6 +4,7 @@
 #include "foundation/formatter.hpp"
 #include "foundation/language_service.hpp"
 #include "foundation/lexer.hpp"
+#include "foundation/lint.hpp"
 #include "foundation/package.hpp"
 
 #include <algorithm>
@@ -2124,6 +2125,20 @@ class LanguageServer {
         auto analysis = analyzeProject(root, overlays(),
                                        AnalyzeOptions{.requireMain = false},
                                        ProjectMode::Test);
+        if (!analysis.diagnostics.hasErrors()) {
+            auto profile = CodeStandardProfile::Standard;
+            if (const auto manifestPath = discoverPackageManifest(root);
+                manifestPath.has_value()) {
+                const auto manifest = readPackageManifest(*manifestPath);
+                if (manifest.value.has_value()) {
+                    profile = manifest.value->codeStandard;
+                }
+            }
+            const auto findings = lintProject(analysis, profile);
+            for (const auto &finding : findings.all()) {
+                analysis.diagnostics.warning(finding.code, finding.message, finding.span);
+            }
+        }
         const auto inserted = analysisCache_.emplace(
             key, CachedAnalysis{std::move(analysis), std::nullopt});
         return inserted.first->second.project;
@@ -5158,10 +5173,11 @@ class LanguageServer {
             }
         }
         for (const auto &diagnostic : analysis.diagnostics.all()) {
+            const auto severity = diagnostic.severity == DiagnosticSeverity::Error ? 1 : 2;
             if (diagnostic.span.source >= analysis.sources.size()) {
                 grouped[requestedUri].push_back(
                     Json::object({{"range", lspRange(requested->second.contents, diagnostic.span)},
-                                  {"severity", 1},
+                                  {"severity", severity},
                                   {"code", diagnostic.code},
                                   {"source", "foundation"},
                                   {"message", diagnostic.message}}));
@@ -5171,7 +5187,7 @@ class LanguageServer {
             const auto uri = source.identity.empty() ? requestedUri : sourceUri(source.identity);
             grouped[uri].push_back(
                 Json::object({{"range", lspRange(source.contents, diagnostic.span)},
-                              {"severity", 1},
+                              {"severity", severity},
                               {"code", diagnostic.code},
                               {"source", "foundation"},
                               {"message", diagnostic.message}}));

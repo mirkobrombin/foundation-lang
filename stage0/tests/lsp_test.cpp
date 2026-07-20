@@ -3598,6 +3598,56 @@ void workflowsExposeEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void codeStandardWarningsFollowTheManifestProfile() {
+    const auto root = temporaryRoot();
+    const auto source = root / "src" / "api.fdn";
+    const std::string contents =
+        "package sample\n"
+        "\n"
+        "fn MissingDocumentation() i32 { 42 }\n";
+    writeFile(source, contents);
+    writeFile(root / "foundation.package",
+              "format foundation.package/v1\n"
+              "name sample\n"
+              "version 1.0.0\n"
+              "sdk ^0.1.0\n"
+              "fcs strict\n"
+              "source src\n");
+    writeFile(root / "foundation.lock",
+              "format foundation.lock/v1\n"
+              "root sample 1.0.0\n"
+              "target " + std::string(foundation::targetPlatformName(
+                                  foundation::hostTargetPlatform())) +
+                  "\n");
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" + sourceUri +
+        "\",\"languageId\":\"foundation\",\"version\":1,\"text\":\"" +
+        jsonEscape(contents) + "\"}}}";
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(frame(initialize) + frame(open) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+
+    expect(status == 0, "FCS language server transcript exits cleanly");
+    expect(errors.str().empty(), "FCS diagnostics write no server errors");
+    expect(transcript.find("\"severity\":2") != std::string::npos &&
+               transcript.find("FCS2001") != std::string::npos,
+           "strict manifest profile publishes compiler-backed warnings");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 } // namespace
 
 int main() {
@@ -3645,6 +3695,7 @@ int main() {
     manualWebMiddlewareExposesEditorDetails();
     stateMachinesExposeEditorDetails();
     workflowsExposeEditorDetails();
+    codeStandardWarningsFollowTheManifestProfile();
 
     if (failures != 0) {
         std::cerr << failures << " language server assertions failed\n";

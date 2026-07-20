@@ -29,19 +29,29 @@ struct DiagnosticSource {
           identity(std::move(identityValue)), packageName(std::move(packageNameValue)) {}
 };
 
+enum class DiagnosticSeverity {
+    Error,
+    Warning,
+};
+
 struct Diagnostic {
     std::string code;
     std::string message;
     SourceSpan span;
+    DiagnosticSeverity severity{DiagnosticSeverity::Error};
 };
 
 class Diagnostics {
   public:
     void error(std::string code, std::string message, SourceSpan span);
+    void warning(std::string code, std::string message, SourceSpan span);
     [[nodiscard]] bool hasErrors() const;
+    [[nodiscard]] bool empty() const;
     [[nodiscard]] const std::vector<Diagnostic> &all() const;
 
   private:
+    void add(DiagnosticSeverity severity, std::string code, std::string message,
+             SourceSpan span);
     std::vector<Diagnostic> diagnostics_;
 };
 

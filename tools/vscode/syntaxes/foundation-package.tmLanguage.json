@@ -9,6 +9,7 @@
         { "include": "#name" },
         { "include": "#version" },
         { "include": "#sdk" },
+        { "include": "#fcs" },
         { "include": "#source" },
         { "include": "#testSource" },
         { "include": "#strings" }
@@ -63,6 +64,17 @@
                     "captures": {
                         "1": { "name": "keyword.declaration.sdk.foundation.package" },
                         "2": { "name": "constant.numeric.requirement.foundation.package" }
+                    }
+                }
+            ]
+        },
+        "fcs": {
+            "patterns": [
+                {
+                    "match": "^\\s*(fcs)\\s+(valid|standard|strict)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.fcs.foundation.package" },
+                        "2": { "name": "constant.language.profile.foundation.package" }
                     }
                 }
             ]

@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.108.0");
+    assert.equal(manifest.version, "0.109.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -179,6 +179,9 @@ test("recognizes package and lock directives with dedicated scopes", () => {
     const testSource = new RegExp(packageGrammar.repository.testSource.patterns[0].match)
         .exec("test_source tests");
     assert.deepEqual(testSource?.slice(1), ["test_source", "tests"]);
+    const fcs = new RegExp(packageGrammar.repository.fcs.patterns[0].match)
+        .exec("fcs strict");
+    assert.deepEqual(fcs?.slice(1), ["fcs", "strict"]);
     assert.equal(lockGrammar.scopeName, "source.foundation.lock");
     assert.match(lockGrammar.repository.format.patterns[0].match,
         /foundation\\\.lock/);

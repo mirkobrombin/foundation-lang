@@ -4,6 +4,7 @@
 #include "foundation/codegen.hpp"
 #include "foundation/documentation.hpp"
 #include "foundation/formatter.hpp"
+#include "foundation/lint.hpp"
 #include "foundation/lower.hpp"
 #include "foundation/metadata.hpp"
 #include "foundation/package.hpp"
@@ -123,6 +124,48 @@ std::filesystem::path sourceIdentity(const std::filesystem::path &path) {
     }
     const auto canonical = std::filesystem::weakly_canonical(result, error);
     return error ? result.lexically_normal() : canonical;
+}
+
+std::vector<std::size_t> rootProjectSources(const std::filesystem::path &source,
+                                            const ProjectAnalysis &analysis) {
+    std::vector<std::size_t> result;
+    std::error_code error;
+    const auto sourceStatus = std::filesystem::status(source, error);
+    if (!error && std::filesystem::is_regular_file(sourceStatus)) {
+        const auto identity = sourceIdentity(source).generic_string();
+        for (std::size_t index = 0; index < analysis.sources.size(); ++index) {
+            if (analysis.sources[index].identity == identity) {
+                result.push_back(index);
+                break;
+            }
+        }
+        return result;
+    }
+    if (error || !std::filesystem::is_directory(sourceStatus)) {
+        return result;
+    }
+    const auto root = sourceIdentity(source);
+    for (std::size_t index = 0; index < analysis.sources.size(); ++index) {
+        const auto &input = analysis.sources[index];
+        if (input.path.starts_with("packages/")) {
+            continue;
+        }
+        const auto relative = std::filesystem::path(input.identity).lexically_relative(root);
+        if (!relative.empty() && *relative.begin() != "..") {
+            result.push_back(index);
+        }
+    }
+    return result;
+}
+
+CodeStandardProfile projectCodeStandard(const std::filesystem::path &source) {
+    const auto manifestPath = discoverPackageManifest(source);
+    if (!manifestPath.has_value()) {
+        return CodeStandardProfile::Standard;
+    }
+    const auto manifest = readPackageManifest(*manifestPath);
+    return manifest.value.has_value() ? manifest.value->codeStandard
+                                      : CodeStandardProfile::Standard;
 }
 
 long processId() {
@@ -718,31 +761,28 @@ int emitDocumentationFile(const std::filesystem::path &source,
     if (const auto status = report(source, result); status != 0) {
         return status;
     }
-    std::vector<std::size_t> projectSources;
-    std::error_code error;
-    const auto sourceStatus = std::filesystem::status(source, error);
-    if (!error && std::filesystem::is_regular_file(sourceStatus)) {
-        const auto identity = sourceIdentity(source).generic_string();
-        for (std::size_t index = 0; index < analysis.sources.size(); ++index) {
-            if (analysis.sources[index].identity == identity) {
-                projectSources.push_back(index);
-                break;
-            }
-        }
-    } else if (!error && std::filesystem::is_directory(sourceStatus)) {
-        const auto root = sourceIdentity(source);
-        for (std::size_t index = 0; index < analysis.sources.size(); ++index) {
-            const auto &input = analysis.sources[index];
-            if (input.path.starts_with("packages/")) {
-                continue;
-            }
-            const auto relative = std::filesystem::path(input.identity).lexically_relative(root);
-            if (!relative.empty() && *relative.begin() != "..") {
-                projectSources.push_back(index);
-            }
-        }
+    return writeFile(output, emitDocumentation(analysis, rootProjectSources(source, analysis)))
+               ? 0
+               : 1;
+}
+
+int lintFile(const std::filesystem::path &source,
+             std::optional<CodeStandardProfile> profile) {
+    auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false},
+                                   ProjectMode::Test);
+    Compilation result;
+    result.sources = analysis.sources;
+    result.diagnostics = analysis.diagnostics;
+    if (const auto status = report(source, result); status != 0) {
+        return status;
     }
-    return writeFile(output, emitDocumentation(analysis, projectSources)) ? 0 : 1;
+    const auto selected = profile.value_or(projectCodeStandard(source));
+    auto findings = lintProject(analysis, selected, rootProjectSources(source, analysis));
+    if (findings.empty()) {
+        return 0;
+    }
+    std::cerr << renderDiagnostics(analysis.sources, findings);
+    return 1;
 }
 
 int emitApplicationPlanFile(const std::filesystem::path &source,

@@ -2,6 +2,7 @@
 #define FOUNDATION_DRIVER_HPP
 
 #include "foundation/ast.hpp"
+#include "foundation/code_standard.hpp"
 #include "foundation/diagnostic.hpp"
 #include "foundation/project.hpp"
 #include "foundation/sema.hpp"
@@ -42,6 +43,9 @@ enum class FormatMode {
 [[nodiscard]] Compilation compile(const std::filesystem::path &path,
                                   const std::vector<SourceOverlay> &overlays = {});
 [[nodiscard]] int checkFile(const std::filesystem::path &path);
+[[nodiscard]] int lintFile(
+    const std::filesystem::path &path,
+    std::optional<CodeStandardProfile> profile = std::nullopt);
 [[nodiscard]] int formatPath(const std::filesystem::path &path, FormatMode mode);
 [[nodiscard]] int emitCFile(const std::filesystem::path &source,
                             const std::filesystem::path &output);

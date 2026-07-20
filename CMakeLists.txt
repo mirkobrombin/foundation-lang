@@ -35,6 +35,7 @@ endif()
 
 add_library(foundation_compiler STATIC
     stage0/src/application.cpp
+    stage0/src/code_standard.cpp
     stage0/src/codegen.cpp
     stage0/src/diagnostic.cpp
     stage0/src/documentation.cpp
@@ -42,6 +43,7 @@ add_library(foundation_compiler STATIC
     stage0/src/formatter.cpp
     stage0/src/language_service.cpp
     stage0/src/lexer.cpp
+    stage0/src/lint.cpp
     stage0/src/lsp.cpp
     stage0/src/lower.cpp
     stage0/src/metadata.cpp
@@ -609,6 +611,16 @@ if(BUILD_TESTING)
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/documentation-api/expected.md
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/documentation-test
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-documentation.cmake
+    )
+    add_test(
+        NAME tooling.lint.cli
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/lint-profile
+            -DINVALID=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/unknown-associated-function.fdn
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/lint-project
+            -DTARGET=${CMAKE_SYSTEM_NAME}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-lint.cmake
     )
     add_executable(foundation_package_tests
         stage0/tests/package_test.cpp

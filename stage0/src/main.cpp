@@ -12,6 +12,7 @@ namespace {
 void printUsage(std::ostream &output) {
     output << "usage:\n"
            << "  foundationc check <source-or-project>\n"
+           << "  foundationc lint <source-or-project> [--profile <valid|standard|strict>]\n"
            << "  foundationc format <source>\n"
            << "  foundationc format --check <source-or-project>\n"
            << "  foundationc format --write <source-or-project>\n"
@@ -88,6 +89,17 @@ int main(int argc, char **argv) {
         }
         if (command == "check" && argc == 3) {
             return foundation::checkFile(std::filesystem::path(argv[2]));
+        }
+        if (command == "lint" && argc == 3) {
+            return foundation::lintFile(std::filesystem::path(argv[2]));
+        }
+        if (command == "lint" && argc == 5 && std::string_view(argv[3]) == "--profile") {
+            const auto profile = foundation::parseCodeStandardProfile(argv[4]);
+            if (!profile.has_value()) {
+                printUsage(std::cerr);
+                return 2;
+            }
+            return foundation::lintFile(std::filesystem::path(argv[2]), profile);
         }
         if (command == "format" && argc == 3) {
             return foundation::formatPath(std::filesystem::path(argv[2]),

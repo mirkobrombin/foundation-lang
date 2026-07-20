@@ -1,0 +1,13 @@
+package lint.fixture
+
+// Stores a user score.
+struct User {
+    // The visible score.
+    Score i32
+}
+
+methods User {
+    fn MissingMethod(self) i32 {
+        self.Score
+    }
+}

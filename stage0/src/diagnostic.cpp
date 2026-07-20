@@ -15,18 +15,33 @@ constexpr std::size_t maxDiagnostics = 100;
 
 } // namespace
 
-void Diagnostics::error(std::string code, std::string message, SourceSpan span) {
+void Diagnostics::add(DiagnosticSeverity severity, std::string code, std::string message,
+                      SourceSpan span) {
     if (diagnostics_.size() > maxDiagnostics) {
         return;
     }
     if (diagnostics_.size() == maxDiagnostics) {
-        diagnostics_.push_back({"FDN0000", "too many errors", span});
+        diagnostics_.push_back({"FDN0000", "too many diagnostics", span, severity});
         return;
     }
-    diagnostics_.push_back({std::move(code), std::move(message), span});
+    diagnostics_.push_back({std::move(code), std::move(message), span, severity});
 }
 
-bool Diagnostics::hasErrors() const { return !diagnostics_.empty(); }
+void Diagnostics::error(std::string code, std::string message, SourceSpan span) {
+    add(DiagnosticSeverity::Error, std::move(code), std::move(message), span);
+}
+
+void Diagnostics::warning(std::string code, std::string message, SourceSpan span) {
+    add(DiagnosticSeverity::Warning, std::move(code), std::move(message), span);
+}
+
+bool Diagnostics::hasErrors() const {
+    return std::any_of(diagnostics_.begin(), diagnostics_.end(), [](const auto &diagnostic) {
+        return diagnostic.severity == DiagnosticSeverity::Error;
+    });
+}
+
+bool Diagnostics::empty() const { return diagnostics_.empty(); }
 
 const std::vector<Diagnostic> &Diagnostics::all() const { return diagnostics_; }
 
@@ -35,8 +50,10 @@ std::string renderDiagnostics(std::string_view path, std::string_view source,
     std::ostringstream out;
 
     for (const auto &diagnostic : diagnostics.all()) {
-        out << path << ':' << diagnostic.span.line << ':' << diagnostic.span.column << ": error["
-            << diagnostic.code << "]: " << diagnostic.message << '\n';
+        const auto severity =
+            diagnostic.severity == DiagnosticSeverity::Error ? "error" : "warning";
+        out << path << ':' << diagnostic.span.line << ':' << diagnostic.span.column << ": "
+            << severity << '[' << diagnostic.code << "]: " << diagnostic.message << '\n';
 
         const auto boundedOffset = std::min(diagnostic.span.offset, source.size());
         const auto start = boundedOffset == 0 ? std::string_view::npos
@@ -82,13 +99,19 @@ std::string renderDiagnostics(const std::vector<DiagnosticSource> &sources,
     for (const auto &diagnostic : diagnostics.all()) {
         if (diagnostic.span.source < sources.size()) {
             Diagnostics current;
-            current.error(diagnostic.code, diagnostic.message, diagnostic.span);
+            if (diagnostic.severity == DiagnosticSeverity::Error) {
+                current.error(diagnostic.code, diagnostic.message, diagnostic.span);
+            } else {
+                current.warning(diagnostic.code, diagnostic.message, diagnostic.span);
+            }
             const auto &source = sources[diagnostic.span.source];
             out << renderDiagnostics(source.path, source.contents, current);
             continue;
         }
-        out << "<project>:" << diagnostic.span.line << ':' << diagnostic.span.column
-            << ": error[" << diagnostic.code << "]: " << diagnostic.message << '\n';
+        const auto severity =
+            diagnostic.severity == DiagnosticSeverity::Error ? "error" : "warning";
+        out << "<project>:" << diagnostic.span.line << ':' << diagnostic.span.column << ": "
+            << severity << '[' << diagnostic.code << "]: " << diagnostic.message << '\n';
     }
     return out.str();
 }

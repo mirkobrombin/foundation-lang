@@ -1,0 +1,12 @@
+package lint.fixture
+
+// Stores one documented value.
+struct Documented {
+    // The visible value.
+    Value i32
+}
+
+fn MissingDocumentation() i32 {
+    // This implementation comment exceeds eighty columns but stays below the Standard limit.
+    42
+}
