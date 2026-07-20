@@ -69,8 +69,9 @@ name sample.app
 version 1.0.0
 sdk ^0.1.0
 source src
+test_source tests
 dependency sample.local 2.0.0 path "../local package"
-dependency sample.platform ~3.1.0 registry default target linux
+dependency sample.platform ~3.1.0 registry default scope test target linux
 )";
     const auto parsed = foundation::parsePackageManifest("foundation.package", source);
     expect(parsed.value.has_value() && parsed.errors.empty(), "valid package manifest parses");
@@ -85,6 +86,32 @@ dependency sample.platform ~3.1.0 registry default target linux
     expect(rendered.find("sample.local 2.0.0 path \"../local package\"") !=
                std::string::npos,
            "quoted dependency locations round trip");
+    expect(rendered.find("test_source tests") != std::string::npos &&
+               rendered.find("target linux scope test") != std::string::npos,
+           "test sources and dependency scopes render canonically");
+}
+
+void manifestsRequireSeparatedTestSources() {
+    constexpr std::string_view missing = R"(format foundation.package/v1
+name sample.app
+version 1.0.0
+sdk ^0.1.0
+source src
+dependency sample.test 1.0.0 registry default scope test
+)";
+    constexpr std::string_view overlapping = R"(format foundation.package/v1
+name sample.app
+version 1.0.0
+sdk ^0.1.0
+source src
+test_source src/tests
+)";
+    expect(hasCode(foundation::parsePackageManifest("foundation.package", missing).errors,
+                   "FDN4013"),
+           "test dependencies require test_source");
+    expect(hasCode(foundation::parsePackageManifest("foundation.package", overlapping).errors,
+                   "FDN4013"),
+           "production and test source roots cannot overlap");
 }
 
 void manifestsRejectAmbiguousInput() {
@@ -114,12 +141,15 @@ void locksRoundTripCanonically() {
     lock.packages.push_back({"sample.lib", *foundation::parsePackageVersion("2.0.0"),
                              std::string(digest), foundation::PackageLocationKind::Registry,
                              "default"});
-    lock.edges.push_back({"sample.app", "sample.lib"});
+    lock.edges.push_back(
+        {"sample.app", "sample.lib", foundation::PackageDependencyScope::Test});
     const auto rendered = foundation::renderPackageLock(lock);
     const auto parsed = foundation::parsePackageLock("foundation.lock", rendered);
     expect(parsed.value.has_value() && parsed.errors.empty(), "valid package lock parses");
     expect(parsed.value.has_value() && foundation::renderPackageLock(*parsed.value) == rendered,
            "package lock serialization is canonical");
+    expect(rendered.find("edge sample.app sample.lib scope test") != std::string::npos,
+           "test dependency scope is retained in the lock");
 }
 
 void locksRejectIncoherentGraphs() {
@@ -144,6 +174,11 @@ void locksRejectIncoherentGraphs() {
         "foundation.lock", prefix + "edge sample.unknown sample.lib\n");
     expect(hasCode(unknown.errors, "FDN4027"),
            "locked edges cannot name unknown parents");
+
+    const auto transitiveTest = foundation::parsePackageLock(
+        "foundation.lock", prefix + "edge sample.lib sample.lib scope test\n");
+    expect(hasCode(transitiveTest.errors, "FDN4027"),
+           "test-scoped lock edges can originate only at the root");
 }
 
 } // namespace
@@ -162,6 +197,7 @@ int main() {
     requirementsUseBoundedRanges();
     manifestsRoundTripCanonically();
     manifestsRejectAmbiguousInput();
+    manifestsRequireSeparatedTestSources();
     locksRoundTripCanonically();
     locksRejectIncoherentGraphs();
     failures += runPackageCacheTests();

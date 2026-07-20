@@ -43,6 +43,12 @@ foundation::PackageDependency dependency(std::string name, std::string_view vers
             "default", target};
 }
 
+foundation::PackageDependency testDependency(std::string name, std::string_view version) {
+    auto result = dependency(std::move(name), version);
+    result.scope = foundation::PackageDependencyScope::Test;
+    return result;
+}
+
 foundation::PackageCandidate candidate(foundation::PackageManifest value,
                                        std::string digest) {
     digest = "sha256:" + foundation::sha256Hex(digest);
@@ -163,6 +169,31 @@ void malformedCatalogCandidateIsRejected() {
            "malformed catalog digest has a stable diagnostic");
 }
 
+void testDependenciesAreRootScoped() {
+    auto root = manifest("sample.app", "1.0.0");
+    root.testSource = "tests";
+    root.dependencies.push_back(testDependency("sample.tests", "1.0.0"));
+    auto tests = manifest("sample.tests", "1.0.0");
+    tests.dependencies.push_back(dependency("sample.runtime", "1.0.0"));
+    tests.dependencies.push_back(testDependency("sample.internal-tests", "1.0.0"));
+    std::vector<foundation::PackageCandidate> catalog{
+        candidate(tests, "tests"),
+        candidate(manifest("sample.runtime", "1.0.0"), "runtime")};
+    const auto resolved = foundation::resolvePackageGraph(
+        "foundation.package", root, *foundation::parsePackageVersion("0.1.0"),
+        foundation::TargetPlatform::Linux, catalog);
+    expect(resolved.value.has_value() && resolved.value->lock.packages.size() == 2,
+           "root test dependencies resolve with their runtime graph");
+    if (!resolved.value.has_value()) {
+        return;
+    }
+    const auto lock = foundation::renderPackageLock(resolved.value->lock);
+    expect(lock.find("edge sample.app sample.tests scope test") != std::string::npos &&
+               lock.find("edge sample.tests sample.runtime\n") != std::string::npos &&
+               lock.find("sample.internal-tests") == std::string::npos,
+           "dependency package test scopes do not leak into the root graph");
+}
+
 } // namespace
 
 int runPackageResolverTests() {
@@ -171,5 +202,6 @@ int runPackageResolverTests() {
     cyclesAndSdkMismatchAreRejected();
     cyclesAcrossPreviouslySelectedPackagesAreRejected();
     malformedCatalogCandidateIsRejected();
+    testDependenciesAreRootScoped();
     return failures;
 }

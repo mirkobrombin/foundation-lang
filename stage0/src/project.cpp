@@ -987,7 +987,8 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
 
 std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
                                          Diagnostics &diagnostics,
-                                         const std::vector<SourceOverlay> &overlays) {
+                                         const std::vector<SourceOverlay> &overlays,
+                                         ProjectMode mode) {
     std::error_code error;
     std::unordered_map<std::string, std::string> overlayContents;
     for (const auto &overlay : overlays) {
@@ -1007,7 +1008,8 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
     if (packageInput) {
         const auto sdk = *parsePackageVersion("0.1.0");
         const auto package = loadLockedPackageProject(
-            *packageManifest, sdk, hostTargetPlatform(), defaultPackageCachePath());
+            *packageManifest, sdk, hostTargetPlatform(), defaultPackageCachePath(),
+            mode == ProjectMode::Test);
         if (!package.value.has_value()) {
             for (const auto &packageError : package.errors) {
                 diagnostics.error(packageError.code,
@@ -1020,29 +1022,41 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
         projectRoot = package.value->projectRoot;
         std::unordered_set<std::string> seen;
         for (std::size_t sourceIndex = 0; sourceIndex < package.value->sources.size();
-             ++sourceIndex) {
+            ++sourceIndex) {
             const auto &source = package.value->sources[sourceIndex];
+            if (mode == ProjectMode::Production &&
+                source.scope == PackageDependencyScope::Test) {
+                continue;
+            }
+            std::vector<std::filesystem::path> sourceRoots{source.sourceRoot};
+            if (mode == ProjectMode::Test && sourceIndex == 0 &&
+                source.manifest.testSource.has_value()) {
+                sourceRoots.push_back(source.packageRoot / *source.manifest.testSource);
+            }
             std::vector<std::filesystem::path> sourcePaths;
-            std::filesystem::recursive_directory_iterator iterator(source.sourceRoot, error);
-            const std::filesystem::recursive_directory_iterator end;
-            while (!error && iterator != end) {
-                if (iterator->is_regular_file(error) && !error &&
-                    iterator->path().extension() == ".fdn") {
-                    sourcePaths.push_back(iterator->path());
+            for (const auto &sourceRoot : sourceRoots) {
+                error.clear();
+                std::filesystem::recursive_directory_iterator iterator(sourceRoot, error);
+                const std::filesystem::recursive_directory_iterator end;
+                while (!error && iterator != end) {
+                    if (iterator->is_regular_file(error) && !error &&
+                        iterator->path().extension() == ".fdn") {
+                        sourcePaths.push_back(iterator->path());
+                    }
+                    iterator.increment(error);
                 }
-                iterator.increment(error);
-            }
-            if (error) {
-                diagnostics.error("FDN3001", "cannot discover locked package sources",
-                                  {0, 0, 1, 1});
-                return std::nullopt;
-            }
-            for (const auto &overlay : overlays) {
-                const auto identity = sourceIdentity(overlay.path);
-                const auto relative = identity.lexically_relative(source.sourceRoot);
-                if (overlay.path.extension() == ".fdn" && !relative.empty() &&
-                    *relative.begin() != "..") {
-                    sourcePaths.push_back(overlay.path);
+                if (error) {
+                    diagnostics.error("FDN3001", "cannot discover locked package sources",
+                                      {0, 0, 1, 1});
+                    return std::nullopt;
+                }
+                for (const auto &overlay : overlays) {
+                    const auto identity = sourceIdentity(overlay.path);
+                    const auto relative = identity.lexically_relative(sourceRoot);
+                    if (overlay.path.extension() == ".fdn" && !relative.empty() &&
+                        *relative.begin() != "..") {
+                        sourcePaths.push_back(overlay.path);
+                    }
                 }
             }
             std::sort(sourcePaths.begin(), sourcePaths.end(), [&](const auto &left,

@@ -21,9 +21,15 @@ struct SourceOverlay {
     std::string contents;
 };
 
+enum class ProjectMode {
+    Production,
+    Test,
+};
+
 [[nodiscard]] std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
                                                        Diagnostics &diagnostics,
-                                                       const std::vector<SourceOverlay> &overlays = {});
+                                                       const std::vector<SourceOverlay> &overlays = {},
+                                                       ProjectMode mode = ProjectMode::Production);
 
 } // namespace foundation
 

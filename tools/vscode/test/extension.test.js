@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.106.0");
+    assert.equal(manifest.version, "0.107.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -154,13 +154,31 @@ test("recognizes package and lock directives with dedicated scopes", () => {
         packageGrammar.repository.dependency.patterns[0].captures[7].name,
         "constant.language.target.foundation.package"
     );
-    const dependency = new RegExp(
+    assert.equal(
+        packageGrammar.repository.dependency.patterns[0].captures[9].name,
+        "constant.language.scope.foundation.package"
+    );
+    assert.equal(
+        packageGrammar.repository.testSource.patterns[0].captures[1].name,
+        "keyword.declaration.test-source.foundation.package"
+    );
+    const dependencyTargetScope = new RegExp(
         packageGrammar.repository.dependency.patterns[0].match
-    ).exec("dependency example.profile ^1.2.3 path ../profile target linux");
-    assert.deepEqual(dependency?.slice(1), [
+    ).exec("dependency example.profile ^1.2.3 path ../profile target linux scope test");
+    assert.deepEqual(dependencyTargetScope?.slice(1), [
         "dependency", "example.profile", "^1.2.3", "path", "../profile",
-        "target", "linux"
+        "target", "linux", "scope", "test"
     ]);
+    const dependencyScopeTarget = new RegExp(
+        packageGrammar.repository.dependency.patterns[1].match
+    ).exec("dependency example.profile ^1.2.3 path ../profile scope test target linux");
+    assert.deepEqual(dependencyScopeTarget?.slice(1), [
+        "dependency", "example.profile", "^1.2.3", "path", "../profile",
+        "scope", "test", "target", "linux"
+    ]);
+    const testSource = new RegExp(packageGrammar.repository.testSource.patterns[0].match)
+        .exec("test_source tests");
+    assert.deepEqual(testSource?.slice(1), ["test_source", "tests"]);
     assert.equal(lockGrammar.scopeName, "source.foundation.lock");
     assert.match(lockGrammar.repository.format.patterns[0].match,
         /foundation\\\.lock/);
@@ -175,7 +193,15 @@ test("recognizes package and lock directives with dedicated scopes", () => {
         "package", "example.profile", "1.2.3", `sha256:${digest}`,
         "registry", "default"
     ]);
-    assert.match(lockGrammar.repository.edge.patterns[0].match, /edge/);
+    assert.equal(
+        lockGrammar.repository.edge.patterns[0].captures[5].name,
+        "constant.language.scope.foundation.lock"
+    );
+    const edge = new RegExp(lockGrammar.repository.edge.patterns[0].match)
+        .exec("edge example.app example.profile scope test");
+    assert.deepEqual(edge?.slice(1), [
+        "edge", "example.app", "example.profile", "scope", "test"
+    ]);
 });
 
 test("prefers the bundled platform language server", () => {

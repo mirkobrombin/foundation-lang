@@ -55,16 +55,24 @@ std::optional<std::string> lockedLocation(const PackageDependency &dependency,
     return relative.generic_string();
 }
 
-bool validateLockedGraph(const LockedPackageProject &project,
+bool validateLockedGraph(const LockedPackageProject &project, bool includeTestDependencies,
                          std::vector<PackageError> &errors) {
     std::map<std::string, const LockedPackage *> packages;
     for (const auto &package : project.lock.packages) {
         packages.emplace(package.name, &package);
     }
-    std::set<std::pair<std::string, std::string>> expectedEdges;
+    std::set<std::tuple<std::string, std::string, PackageDependencyScope>> expectedEdges;
     for (const auto &source : project.sources) {
         for (const auto &dependency : source.manifest.dependencies) {
             if (!active(dependency, project.lock.target)) {
+                continue;
+            }
+            if (!includeTestDependencies &&
+                dependency.scope == PackageDependencyScope::Test) {
+                continue;
+            }
+            if (dependency.scope == PackageDependencyScope::Test &&
+                source.name != project.manifest.name) {
                 continue;
             }
             const auto locked = packages.find(dependency.name);
@@ -79,12 +87,19 @@ bool validateLockedGraph(const LockedPackageProject &project,
                              dependency.name);
                 return false;
             }
-            expectedEdges.emplace(source.name, dependency.name);
+            expectedEdges.emplace(source.name, dependency.name, dependency.scope);
         }
     }
-    std::set<std::pair<std::string, std::string>> actualEdges;
+    std::set<std::tuple<std::string, std::string, PackageDependencyScope>> actualEdges;
     for (const auto &edge : project.lock.edges) {
-        actualEdges.emplace(edge.parent, edge.dependency);
+        if (!includeTestDependencies &&
+            (edge.scope == PackageDependencyScope::Test ||
+             (edge.parent != project.manifest.name &&
+              std::none_of(project.sources.begin(), project.sources.end(),
+                           [&](const auto &source) { return source.name == edge.parent; })))) {
+            continue;
+        }
+        actualEdges.emplace(edge.parent, edge.dependency, edge.scope);
     }
     if (actualEdges != expectedEdges) {
         addError(errors, project.manifestPath, "FDN4113",
@@ -126,7 +141,8 @@ discoverPackageManifest(const std::filesystem::path &input) {
 PackageParseResult<LockedPackageProject>
 loadLockedPackageProject(const std::filesystem::path &manifestPath,
                          const PackageVersion &sdk, TargetPlatform target,
-                         const std::optional<std::filesystem::path> &cacheRoot) {
+                         const std::optional<std::filesystem::path> &cacheRoot,
+                         bool includeTestDependencies) {
     PackageParseResult<LockedPackageProject> result;
     const auto projectRoot = canonicalDirectory(manifestPath.parent_path());
     if (!projectRoot.has_value()) {
@@ -178,15 +194,41 @@ loadLockedPackageProject(const std::filesystem::path &manifestPath,
     project.projectRoot = *projectRoot;
     project.manifest = *manifest.value;
     project.lock = *lock.value;
-    const auto rootSnapshot = inspectPackageSource(*projectRoot, project.manifest);
+    auto inspectedRoot = project.manifest;
+    if (!includeTestDependencies) {
+        inspectedRoot.testSource.reset();
+    }
+    const auto rootSnapshot = inspectPackageSource(*projectRoot, inspectedRoot);
     if (!rootSnapshot.value.has_value()) {
         result.errors = rootSnapshot.errors;
         return result;
     }
     project.sources.push_back({project.manifest.name, *projectRoot,
-                               *projectRoot / project.manifest.source, project.manifest});
+                               *projectRoot / project.manifest.source, project.manifest,
+                               PackageDependencyScope::Runtime});
+
+    std::map<std::string, std::vector<std::string>> runtimeGraph;
+    for (const auto &edge : project.lock.edges) {
+        if (edge.scope == PackageDependencyScope::Runtime) {
+            runtimeGraph[edge.parent].push_back(edge.dependency);
+        }
+    }
+    std::set<std::string> runtimePackages;
+    std::vector<std::string> pending{project.manifest.name};
+    while (!pending.empty()) {
+        auto current = std::move(pending.back());
+        pending.pop_back();
+        for (const auto &dependency : runtimeGraph[current]) {
+            if (runtimePackages.insert(dependency).second) {
+                pending.push_back(dependency);
+            }
+        }
+    }
 
     for (const auto &package : project.lock.packages) {
+        if (!includeTestDependencies && !runtimePackages.contains(package.name)) {
+            continue;
+        }
         std::filesystem::path packageRoot;
         if (package.kind == PackageLocationKind::Registry) {
             if (!cacheRoot.has_value()) {
@@ -236,9 +278,12 @@ loadLockedPackageProject(const std::filesystem::path &manifestPath,
         }
         project.sources.push_back({package.name, packageRoot,
                                    packageRoot / dependencyManifest.value->source,
-                                   *dependencyManifest.value});
+                                   *dependencyManifest.value,
+                                   runtimePackages.contains(package.name)
+                                       ? PackageDependencyScope::Runtime
+                                       : PackageDependencyScope::Test});
     }
-    if (!validateLockedGraph(project, result.errors)) {
+    if (!validateLockedGraph(project, includeTestDependencies, result.errors)) {
         return result;
     }
     result.value = std::move(project);

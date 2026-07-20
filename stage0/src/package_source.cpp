@@ -100,67 +100,80 @@ inspectPackageSource(const std::filesystem::path &packageDirectory,
         return result;
     }
 
-    const auto sourceDirectory = packageDirectory / manifest.source;
-    const auto sourceStatus = std::filesystem::symlink_status(sourceDirectory, error);
-    if (error || !std::filesystem::is_directory(sourceStatus) ||
-        std::filesystem::is_symlink(sourceStatus)) {
-        addError(result.errors, sourceDirectory, "FDN4031",
-                 "package source must be a real directory");
-        return result;
+    std::vector<std::filesystem::path> sourceDirectories{packageDirectory / manifest.source};
+    if (manifest.testSource.has_value()) {
+        sourceDirectories.push_back(packageDirectory / *manifest.testSource);
     }
-
     std::set<std::string> foldedPaths;
-    std::filesystem::recursive_directory_iterator iterator(sourceDirectory, error);
-    const std::filesystem::recursive_directory_iterator end;
-    while (!error && iterator != end) {
-        const auto path = iterator->path();
-        const auto status = iterator->symlink_status(error);
-        if (error) {
-            break;
-        }
-        if (iterator.depth() >= maxSourceDepth) {
-            addError(result.errors, path, "FDN4032", "package source exceeds depth limit");
+    for (const auto &sourceDirectory : sourceDirectories) {
+        error.clear();
+        const auto sourceStatus = std::filesystem::symlink_status(sourceDirectory, error);
+        if (error || !std::filesystem::is_directory(sourceStatus) ||
+            std::filesystem::is_symlink(sourceStatus)) {
+            addError(result.errors, sourceDirectory, "FDN4031",
+                     "package source must be a real directory");
             return result;
         }
-        if (std::filesystem::is_symlink(status)) {
-            addError(result.errors, path, "FDN4033", "package source cannot contain symlinks");
-            return result;
-        }
-        if (std::filesystem::is_directory(status)) {
+
+        std::filesystem::recursive_directory_iterator iterator(sourceDirectory, error);
+        const std::filesystem::recursive_directory_iterator end;
+        while (!error && iterator != end) {
+            const auto path = iterator->path();
+            const auto status = iterator->symlink_status(error);
+            if (error) {
+                break;
+            }
+            if (iterator.depth() >= maxSourceDepth) {
+                addError(result.errors, path, "FDN4032",
+                         "package source exceeds depth limit");
+                return result;
+            }
+            if (std::filesystem::is_symlink(status)) {
+                addError(result.errors, path, "FDN4033",
+                         "package source cannot contain symlinks");
+                return result;
+            }
+            if (std::filesystem::is_directory(status)) {
+                iterator.increment(error);
+                continue;
+            }
+            if (!std::filesystem::is_regular_file(status)) {
+                addError(result.errors, path, "FDN4034",
+                         "package source can contain only regular files");
+                return result;
+            }
+            const auto relative = path.lexically_relative(packageDirectory).lexically_normal();
+            if (!portablePath(relative)) {
+                addError(result.errors, path, "FDN4035",
+                         "package source path is not portable");
+                return result;
+            }
+            if (!foldedPaths.insert(folded(relative.generic_string())).second) {
+                addError(result.errors, path, "FDN4036",
+                         "package source paths collide without case sensitivity");
+                return result;
+            }
+            const auto size = std::filesystem::file_size(path, error);
+            if (error || size > maxSourceFileBytes ||
+                snapshot.totalBytes > maxSourceBytes - size) {
+                addError(result.errors, path, "FDN4037",
+                         "package source exceeds size limit");
+                return result;
+            }
+            if (snapshot.files.size() == maxSourceFiles) {
+                addError(result.errors, path, "FDN4038",
+                         "package source exceeds file limit");
+                return result;
+            }
+            snapshot.files.push_back({relative, size});
+            snapshot.totalBytes += size;
             iterator.increment(error);
-            continue;
         }
-        if (!std::filesystem::is_regular_file(status)) {
-            addError(result.errors, path, "FDN4034",
-                     "package source can contain only regular files");
+        if (error) {
+            addError(result.errors, sourceDirectory, "FDN4039",
+                     "cannot inspect package source");
             return result;
         }
-        const auto relative = path.lexically_relative(packageDirectory).lexically_normal();
-        if (!portablePath(relative)) {
-            addError(result.errors, path, "FDN4035", "package source path is not portable");
-            return result;
-        }
-        if (!foldedPaths.insert(folded(relative.generic_string())).second) {
-            addError(result.errors, path, "FDN4036",
-                     "package source paths collide without case sensitivity");
-            return result;
-        }
-        const auto size = std::filesystem::file_size(path, error);
-        if (error || size > maxSourceFileBytes || snapshot.totalBytes > maxSourceBytes - size) {
-            addError(result.errors, path, "FDN4037", "package source exceeds size limit");
-            return result;
-        }
-        if (snapshot.files.size() == maxSourceFiles) {
-            addError(result.errors, path, "FDN4038", "package source exceeds file limit");
-            return result;
-        }
-        snapshot.files.push_back({relative, size});
-        snapshot.totalBytes += size;
-        iterator.increment(error);
-    }
-    if (error) {
-        addError(result.errors, sourceDirectory, "FDN4039", "cannot inspect package source");
-        return result;
     }
     std::sort(snapshot.files.begin(), snapshot.files.end(), [](const auto &left,
                                                                const auto &right) {

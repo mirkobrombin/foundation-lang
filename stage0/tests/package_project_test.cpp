@@ -1,5 +1,7 @@
 #include "foundation/package.hpp"
+#include "foundation/project.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -126,11 +128,62 @@ void lockedProjectsRejectLockSymlinks() {
            "locked project loader does not follow a lock symlink");
 }
 
+void testSourcesStayOutOfProductionProjects() {
+    Fixture fixture;
+    std::filesystem::create_directories(fixture.app / "tests");
+    std::ofstream(fixture.app / "foundation.package", std::ios::binary)
+        << "format foundation.package/v1\n"
+        << "name sample.app\n"
+        << "version 1.0.0\n"
+        << "sdk ^0.1.0\n"
+        << "source src\n"
+        << "test_source tests\n"
+        << "dependency sample.lib 1.0.0 path ../dependency scope test\n";
+    std::ofstream(fixture.app / "tests" / "check.fdn", std::ios::binary)
+        << "package sample.app\n";
+    const auto resolution = fixture.resolve();
+    const auto written = foundation::writePackageLockAtomically(
+        fixture.app / "foundation.lock", resolution.lock);
+    expect(written.errors.empty(), "test scope fixture lock writes");
+    const auto locked = foundation::loadLockedPackageProject(
+        fixture.app / "foundation.package", *foundation::parsePackageVersion("0.1.0"),
+        foundation::TargetPlatform::Linux, fixture.cache);
+    expect(locked.value.has_value() && locked.value->sources.size() == 2 &&
+               locked.value->sources[1].scope == foundation::PackageDependencyScope::Test,
+           "locked project classifies test-only packages");
+
+    foundation::Diagnostics productionDiagnostics;
+    const auto production = foundation::loadProject(
+        fixture.app, productionDiagnostics, {}, foundation::ProjectMode::Production);
+    foundation::Diagnostics testDiagnostics;
+    const auto test = foundation::loadProject(fixture.app, testDiagnostics, {},
+                                              foundation::ProjectMode::Test);
+    const auto contains = [](const auto &project, std::string_view suffix) {
+        return project.has_value() &&
+               std::any_of(project->sources.begin(), project->sources.end(),
+                           [&](const auto &source) { return source.path.ends_with(suffix); });
+    };
+    expect(production.has_value() && !contains(production, "tests/check.fdn") &&
+               !contains(production, "packages/sample.lib/src/main.fdn"),
+           "production analysis excludes test sources and test dependencies");
+    expect(test.has_value() && contains(test, "tests/check.fdn") &&
+               contains(test, "packages/sample.lib/src/main.fdn"),
+           "test analysis includes root tests and test dependencies");
+
+    std::filesystem::remove_all(fixture.dependency);
+    foundation::Diagnostics isolatedDiagnostics;
+    const auto isolated = foundation::loadProject(
+        fixture.app, isolatedDiagnostics, {}, foundation::ProjectMode::Production);
+    expect(isolated.has_value() && !isolatedDiagnostics.hasErrors(),
+           "production analysis does not require test-only package content");
+}
+
 } // namespace
 
 int runPackageProjectTests() {
     lockedProjectsLoadVerifiedSources();
     lockedProjectsRejectChangedPathsAndTargets();
     lockedProjectsRejectLockSymlinks();
+    testSourcesStayOutOfProductionProjects();
     return failures;
 }

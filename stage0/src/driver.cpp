@@ -290,7 +290,7 @@ std::optional<std::vector<std::filesystem::path>> formatterSources(
         return std::nullopt;
     }
 
-    auto sourceRoot = input;
+    std::vector<std::filesystem::path> sourceRoots{input};
     if (const auto manifest = discoverPackageManifest(input); manifest.has_value()) {
         const auto absoluteInput = std::filesystem::absolute(input, error);
         if (error) {
@@ -308,41 +308,49 @@ std::optional<std::vector<std::filesystem::path>> formatterSources(
         if (sameProject) {
             const auto sdk = *parsePackageVersion("0.1.0");
             const auto project = loadLockedPackageProject(
-                *manifest, sdk, hostTargetPlatform(), defaultPackageCachePath());
+                *manifest, sdk, hostTargetPlatform(), defaultPackageCachePath(), false);
             if (!project.value.has_value()) {
                 for (const auto &packageError : project.errors) {
                     std::cerr << renderPackageError(packageError);
                 }
                 return std::nullopt;
             }
-            sourceRoot = project.value->sources.front().sourceRoot;
+            sourceRoots = {project.value->sources.front().sourceRoot};
+            if (project.value->manifest.testSource.has_value()) {
+                sourceRoots.push_back(project.value->projectRoot /
+                                      *project.value->manifest.testSource);
+            }
         }
     }
 
     std::vector<std::filesystem::path> sources;
-    std::filesystem::recursive_directory_iterator current(sourceRoot, error);
-    const std::filesystem::recursive_directory_iterator end;
-    while (!error && current != end) {
-        const auto &entry = *current;
-        const auto name = entry.path().filename().string();
-        if (entry.is_directory(error) && (name == "build" || (!name.empty() && name[0] == '.'))) {
-            current.disable_recursion_pending();
-        } else if (!error && entry.is_regular_file(error) && entry.path().extension() == ".fdn") {
-            sources.push_back(entry.path());
+    for (const auto &sourceRoot : sourceRoots) {
+        error.clear();
+        std::filesystem::recursive_directory_iterator current(sourceRoot, error);
+        const std::filesystem::recursive_directory_iterator end;
+        while (!error && current != end) {
+            const auto &entry = *current;
+            const auto name = entry.path().filename().string();
+            if (entry.is_directory(error) &&
+                (name == "build" || (!name.empty() && name[0] == '.'))) {
+                current.disable_recursion_pending();
+            } else if (!error && entry.is_regular_file(error) &&
+                       entry.path().extension() == ".fdn") {
+                sources.push_back(entry.path());
+            }
+            current.increment(error);
         }
-        current.increment(error);
-    }
-    if (error) {
-        std::cerr << "foundationc: cannot walk " << sourceRoot.string() << ": "
-                  << error.message()
-                  << '\n';
-        return std::nullopt;
+        if (error) {
+            std::cerr << "foundationc: cannot walk " << sourceRoot.string() << ": "
+                      << error.message() << '\n';
+            return std::nullopt;
+        }
     }
     std::sort(sources.begin(), sources.end(), [](const auto &left, const auto &right) {
         return left.generic_string() < right.generic_string();
     });
     if (sources.empty()) {
-        std::cerr << "foundationc: no .fdn source files found under " << sourceRoot.string()
+        std::cerr << "foundationc: no .fdn source files found under " << input.string()
                   << '\n';
         return std::nullopt;
     }
@@ -554,9 +562,10 @@ std::optional<SourceOverlay> deriveProjectSource(const ProjectAnalysis &analysis
 
 ProjectAnalysis analyzeProject(const std::filesystem::path &path,
                                const std::vector<SourceOverlay> &overlays,
-                               AnalyzeOptions options) {
+                               AnalyzeOptions options,
+                               ProjectMode mode) {
     ProjectAnalysis analysis;
-    auto loaded = loadProject(path, analysis.diagnostics, overlays);
+    auto loaded = loadProject(path, analysis.diagnostics, overlays, mode);
     if (!loaded.has_value()) {
         return analysis;
     }
@@ -573,7 +582,7 @@ ProjectAnalysis analyzeProject(const std::filesystem::path &path,
     if (generated.has_value()) {
         auto completeOverlays = overlays;
         completeOverlays.push_back(*generated);
-        loaded = loadProject(path, analysis.diagnostics, completeOverlays);
+        loaded = loadProject(path, analysis.diagnostics, completeOverlays, mode);
         if (!loaded.has_value()) {
             return analysis;
         }
@@ -844,7 +853,8 @@ int runFile(const std::filesystem::path &source,
 
 int runTests(const std::filesystem::path &source,
              const std::vector<std::filesystem::path> &nativeInputs) {
-    auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false});
+    auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false},
+                                   ProjectMode::Test);
     if (analysis.diagnostics.hasErrors()) {
         if (analysis.sources.empty()) {
             std::cerr << renderDiagnostics(source.string(), {}, analysis.diagnostics);

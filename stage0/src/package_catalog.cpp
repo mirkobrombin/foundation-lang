@@ -186,7 +186,8 @@ collectPackageCatalog(const std::filesystem::path &rootManifestPath,
                 continue;
             }
             for (const auto &child : candidate.manifest.dependencies) {
-                if (active(child, target)) {
+                if (active(child, target) &&
+                    child.scope == PackageDependencyScope::Runtime) {
                     pending.push_back(child);
                 }
             }

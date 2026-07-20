@@ -2092,7 +2092,8 @@ class LanguageServer {
         }
         return analyzeProject(analysisRoot(document), inputs,
                               AnalyzeOptions{.requireMain = false,
-                                             .retainInvalidModel = true});
+                                             .retainInvalidModel = true},
+                              ProjectMode::Test);
     }
 
     [[nodiscard]] std::string sourceUri(const std::filesystem::path &path) const {
@@ -2114,7 +2115,9 @@ class LanguageServer {
         if (found != analysisCache_.end()) {
             return found->second.project;
         }
-        auto analysis = analyzeProject(root, overlays(), AnalyzeOptions{.requireMain = false});
+        auto analysis = analyzeProject(root, overlays(),
+                                       AnalyzeOptions{.requireMain = false},
+                                       ProjectMode::Test);
         const auto inserted = analysisCache_.emplace(
             key, CachedAnalysis{std::move(analysis), std::nullopt});
         return inserted.first->second.project;

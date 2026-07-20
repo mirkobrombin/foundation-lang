@@ -33,7 +33,7 @@ struct Constraint {
 struct SolverState {
     std::map<std::string, std::vector<Constraint>> constraints;
     std::map<std::string, std::size_t> selected;
-    std::set<std::pair<std::string, std::string>> edges;
+    std::set<std::tuple<std::string, std::string, PackageDependencyScope>> edges;
 };
 
 struct Failure {
@@ -92,9 +92,10 @@ std::string conflictMessage(std::string_view name,
 }
 
 std::optional<std::vector<std::string>> dependencyCycle(
-    const std::set<std::pair<std::string, std::string>> &edges) {
+    const std::set<std::tuple<std::string, std::string, PackageDependencyScope>> &edges) {
     std::map<std::string, std::vector<std::string>> graph;
-    for (const auto &[parent, dependency] : edges) {
+    for (const auto &[parent, dependency, scope] : edges) {
+        static_cast<void>(scope);
         graph[parent].push_back(dependency);
         graph.try_emplace(dependency);
     }
@@ -184,7 +185,8 @@ bool solve(const std::vector<PackageCandidate> &catalog, const PackageVersion &s
         next.selected.emplace(unresolved->first, choice);
         auto valid = true;
         for (const auto &dependency : catalog[choice].manifest.dependencies) {
-            if (!active(dependency, target)) {
+            if (!active(dependency, target) ||
+                dependency.scope == PackageDependencyScope::Test) {
                 continue;
             }
             auto path = origin->path;
@@ -203,7 +205,8 @@ bool solve(const std::vector<PackageCandidate> &catalog, const PackageVersion &s
             }
             path.push_back(dependency.name);
             next.constraints[dependency.name].push_back({dependency, std::move(path)});
-            next.edges.emplace(unresolved->first, dependency.name);
+            next.edges.emplace(unresolved->first, dependency.name,
+                               PackageDependencyScope::Runtime);
         }
         if (!valid) {
             continue;
@@ -279,7 +282,7 @@ resolvePackageGraph(const std::filesystem::path &rootManifestPath,
         }
         state.constraints[dependency.name].push_back(
             {dependency, {root.name, dependency.name}});
-        state.edges.emplace(root.name, dependency.name);
+        state.edges.emplace(root.name, dependency.name, dependency.scope);
     }
     std::optional<Failure> failure;
     if (!solve(catalog, sdk, target, state, failure)) {
@@ -299,8 +302,8 @@ resolvePackageGraph(const std::filesystem::path &rootManifestPath,
                                             candidate.kind, candidate.location});
         resolution.packages.push_back(candidate);
     }
-    for (const auto &[parent, dependency] : state.edges) {
-        resolution.lock.edges.push_back({parent, dependency});
+    for (const auto &[parent, dependency, scope] : state.edges) {
+        resolution.lock.edges.push_back({parent, dependency, scope});
     }
     result.value = std::move(resolution);
     return result;

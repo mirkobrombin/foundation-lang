@@ -89,10 +89,28 @@ void snapshotsRejectSymlinksAndCaseCollisions() {
     }
 }
 
+void snapshotsIncludeTestSources() {
+    Fixture fixture;
+    std::filesystem::create_directories(fixture.root / "tests");
+    fixture.write("src/main.fdn", "package sample.package\n");
+    auto withTests = manifest();
+    withTests.testSource = "tests";
+    fixture.write("tests/main.fdn", "package sample.package\n");
+    const auto first = foundation::inspectPackageSource(fixture.root, withTests);
+    fixture.write("tests/main.fdn", "package sample.changed\n");
+    const auto changed = foundation::inspectPackageSource(fixture.root, withTests);
+    expect(first.value.has_value() && first.value->files.size() == 2,
+           "package snapshot inventories production and test sources");
+    expect(first.value.has_value() && changed.value.has_value() &&
+               first.value->digest != changed.value->digest,
+           "package digest changes with test source content");
+}
+
 } // namespace
 
 int runPackageSourceTests() {
     snapshotsAreDeterministicAndSensitive();
     snapshotsRejectSymlinksAndCaseCollisions();
+    snapshotsIncludeTestSources();
     return failures;
 }

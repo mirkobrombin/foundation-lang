@@ -10,6 +10,7 @@
         { "include": "#version" },
         { "include": "#sdk" },
         { "include": "#source" },
+        { "include": "#testSource" },
         { "include": "#strings" }
     ],
     "repository": {
@@ -77,10 +78,21 @@
                 }
             ]
         },
+        "testSource": {
+            "patterns": [
+                {
+                    "match": "^\\s*(test_source)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.test-source.foundation.package" },
+                        "2": { "name": "string.unquoted.path.foundation.package" }
+                    }
+                }
+            ]
+        },
         "dependency": {
             "patterns": [
                 {
-                    "match": "^\\s*(dependency)\\s+([A-Za-z][A-Za-z0-9_.-]*)\\s+([*]|[~^]?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s+(path|registry)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)(?:\\s+(target)\\s+(linux|macos|windows))?\\s*(?=#|$)",
+                    "match": "^\\s*(dependency)\\s+([A-Za-z][A-Za-z0-9_.-]*)\\s+([*]|[~^]?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s+(path|registry)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)(?:\\s+(target)\\s+(linux|macos|windows))?(?:\\s+(scope)\\s+(test))?\\s*(?=#|$)",
                     "captures": {
                         "1": { "name": "keyword.declaration.dependency.foundation.package" },
                         "2": { "name": "entity.name.namespace.dependency.foundation.package" },
@@ -88,7 +100,23 @@
                         "4": { "name": "storage.modifier.location.foundation.package" },
                         "5": { "name": "string.unquoted.location.foundation.package" },
                         "6": { "name": "keyword.other.target.foundation.package" },
-                        "7": { "name": "constant.language.target.foundation.package" }
+                        "7": { "name": "constant.language.target.foundation.package" },
+                        "8": { "name": "keyword.other.scope.foundation.package" },
+                        "9": { "name": "constant.language.scope.foundation.package" }
+                    }
+                },
+                {
+                    "match": "^\\s*(dependency)\\s+([A-Za-z][A-Za-z0-9_.-]*)\\s+([*]|[~^]?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s+(path|registry)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)\\s+(scope)\\s+(test)\\s+(target)\\s+(linux|macos|windows)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.dependency.foundation.package" },
+                        "2": { "name": "entity.name.namespace.dependency.foundation.package" },
+                        "3": { "name": "constant.numeric.requirement.foundation.package" },
+                        "4": { "name": "storage.modifier.location.foundation.package" },
+                        "5": { "name": "string.unquoted.location.foundation.package" },
+                        "6": { "name": "keyword.other.scope.foundation.package" },
+                        "7": { "name": "constant.language.scope.foundation.package" },
+                        "8": { "name": "keyword.other.target.foundation.package" },
+                        "9": { "name": "constant.language.target.foundation.package" }
                     }
                 }
             ]

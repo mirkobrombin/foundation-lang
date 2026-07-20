@@ -54,12 +54,18 @@ enum class PackageLocationKind {
     Registry,
 };
 
+enum class PackageDependencyScope {
+    Runtime,
+    Test,
+};
+
 struct PackageDependency {
     std::string name;
     PackageRequirement requirement;
     PackageLocationKind kind{PackageLocationKind::Registry};
     std::string location;
     std::optional<TargetPlatform> target;
+    PackageDependencyScope scope{PackageDependencyScope::Runtime};
 };
 
 struct PackageManifest {
@@ -67,6 +73,7 @@ struct PackageManifest {
     PackageVersion version;
     PackageRequirement sdk;
     std::filesystem::path source;
+    std::optional<std::filesystem::path> testSource;
     std::vector<PackageDependency> dependencies;
 };
 
@@ -81,6 +88,7 @@ struct LockedPackage {
 struct PackageEdge {
     std::string parent;
     std::string dependency;
+    PackageDependencyScope scope{PackageDependencyScope::Runtime};
 };
 
 struct PackageLock {
@@ -130,6 +138,7 @@ struct LockedPackageSource {
     std::filesystem::path packageRoot;
     std::filesystem::path sourceRoot;
     PackageManifest manifest;
+    PackageDependencyScope scope{PackageDependencyScope::Runtime};
 };
 
 struct LockedPackageProject {
@@ -188,7 +197,8 @@ discoverPackageManifest(const std::filesystem::path &input);
 [[nodiscard]] PackageParseResult<LockedPackageProject>
 loadLockedPackageProject(const std::filesystem::path &manifestPath,
                          const PackageVersion &sdk, TargetPlatform target,
-                         const std::optional<std::filesystem::path> &cacheRoot);
+                         const std::optional<std::filesystem::path> &cacheRoot,
+                         bool includeTestDependencies = true);
 [[nodiscard]] PackageParseResult<std::vector<PackageCandidate>>
 readLocalPackageRegistry(const std::filesystem::path &registryRoot,
                          std::string_view identity, std::string_view packageName);

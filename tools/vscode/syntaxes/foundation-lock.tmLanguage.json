@@ -73,11 +73,13 @@
         "edge": {
             "patterns": [
                 {
-                    "match": "^\\s*(edge)\\s+([A-Za-z][A-Za-z0-9_.-]*)\\s+([A-Za-z][A-Za-z0-9_.-]*)\\s*(?=#|$)",
+                    "match": "^\\s*(edge)\\s+([A-Za-z][A-Za-z0-9_.-]*)\\s+([A-Za-z][A-Za-z0-9_.-]*)(?:\\s+(scope)\\s+(test))?\\s*(?=#|$)",
                     "captures": {
                         "1": { "name": "keyword.declaration.edge.foundation.lock" },
                         "2": { "name": "entity.name.namespace.parent.foundation.lock" },
-                        "3": { "name": "entity.name.namespace.dependency.foundation.lock" }
+                        "3": { "name": "entity.name.namespace.dependency.foundation.lock" },
+                        "4": { "name": "keyword.other.scope.foundation.lock" },
+                        "5": { "name": "constant.language.scope.foundation.lock" }
                     }
                 }
             ]

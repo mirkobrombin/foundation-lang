@@ -280,6 +280,23 @@ std::string locationName(PackageLocationKind kind) {
     return kind == PackageLocationKind::Path ? "path" : "registry";
 }
 
+std::string scopeName(PackageDependencyScope scope) {
+    return scope == PackageDependencyScope::Test ? "test" : "runtime";
+}
+
+bool nestedSource(const std::filesystem::path &left, const std::filesystem::path &right) {
+    const auto normalizedLeft = left.lexically_normal();
+    const auto normalizedRight = right.lexically_normal();
+    auto leftPart = normalizedLeft.begin();
+    auto rightPart = normalizedRight.begin();
+    while (leftPart != normalizedLeft.end() && rightPart != normalizedRight.end() &&
+           *leftPart == *rightPart) {
+        ++leftPart;
+        ++rightPart;
+    }
+    return leftPart == normalizedLeft.end() || rightPart == normalizedRight.end();
+}
+
 std::optional<TargetPlatform> target(std::string_view value) {
     if (value == "linux") {
         return TargetPlatform::Linux;
@@ -344,6 +361,8 @@ bool validateLockGraph(const std::filesystem::path &path, const PackageLock &loc
     for (const auto &edge : lock.edges) {
         if ((edge.parent != lock.rootName && !packages.contains(edge.parent)) ||
             !packages.contains(edge.dependency) ||
+            (edge.scope == PackageDependencyScope::Test &&
+             edge.parent != lock.rootName) ||
             !uniqueEdges.emplace(edge.parent, edge.dependency).second) {
             addError(errors, path, 1, 1, "FDN4027",
                      "lock contains an unknown or duplicate package edge");
@@ -585,6 +604,7 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
     auto versionSeen = false;
     auto sdkSeen = false;
     auto sourceSeen = false;
+    auto testSourceSeen = false;
     lines(path, source, result.errors, [&](const auto &tokens, std::size_t line) {
         const auto &directive = tokens.front();
         if (directive == "format") {
@@ -629,8 +649,16 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
                 manifest.source = tokens[1];
             }
             sourceSeen = true;
+        } else if (directive == "test_source") {
+            if (tokens.size() != 2 || !relativeSource(tokens[1]) || testSourceSeen) {
+                addError(result.errors, path, line, 1, "FDN4013",
+                         "expected at most one relative test source directory without ..");
+            } else {
+                manifest.testSource = tokens[1];
+            }
+            testSourceSeen = true;
         } else if (directive == "dependency") {
-            if (tokens.size() != 5 && tokens.size() != 7) {
+            if (tokens.size() != 5 && tokens.size() != 7 && tokens.size() != 9) {
                 addError(result.errors, path, line, 1, "FDN4009",
                          "dependency requires name, version, source kind, and location");
                 return;
@@ -638,12 +666,24 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
             const auto requirement = parsePackageRequirement(tokens[2]);
             const auto kind = locationKind(tokens[3]);
             std::optional<TargetPlatform> dependencyTarget;
-            if (tokens.size() == 7 && tokens[5] == "target") {
-                dependencyTarget = target(tokens[6]);
+            auto dependencyScope = PackageDependencyScope::Runtime;
+            auto validQualifiers = true;
+            auto scopeSeen = false;
+            for (std::size_t index = 5; index < tokens.size(); index += 2) {
+                if (tokens[index] == "target" && !dependencyTarget.has_value()) {
+                    dependencyTarget = target(tokens[index + 1]);
+                    validQualifiers = validQualifiers && dependencyTarget.has_value();
+                } else if (tokens[index] == "scope" && !scopeSeen &&
+                           tokens[index + 1] == "test") {
+                    dependencyScope = PackageDependencyScope::Test;
+                    scopeSeen = true;
+                } else {
+                    validQualifiers = false;
+                }
             }
             if (!identifier(tokens[1]) || !requirement.has_value() || !kind.has_value() ||
                 (kind.has_value() && !validLocation(*kind, tokens[4])) ||
-                (tokens.size() == 7 && !dependencyTarget.has_value())) {
+                !validQualifiers) {
                 addError(result.errors, path, line, 1, "FDN4009",
                          "invalid package dependency");
                 return;
@@ -665,7 +705,8 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
                 return;
             }
             manifest.dependencies.push_back(
-                {tokens[1], *requirement, *kind, tokens[4], dependencyTarget});
+                {tokens[1], *requirement, *kind, tokens[4], dependencyTarget,
+                 dependencyScope});
         } else {
             addError(result.errors, path, line, 1, "FDN4012",
                      "unknown package directive " + directive);
@@ -685,6 +726,19 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
     }
     if (!sourceSeen) {
         addError(result.errors, path, 1, 1, "FDN4008", "missing source directory");
+    }
+    if (manifest.testSource.has_value() &&
+        nestedSource(manifest.source, *manifest.testSource)) {
+        addError(result.errors, path, 1, 1, "FDN4013",
+                 "source and test_source directories cannot overlap");
+    }
+    if (!manifest.testSource.has_value() &&
+        std::any_of(manifest.dependencies.begin(), manifest.dependencies.end(),
+                    [](const auto &dependency) {
+                        return dependency.scope == PackageDependencyScope::Test;
+                    })) {
+        addError(result.errors, path, 1, 1, "FDN4013",
+                 "test dependencies require a test_source directory");
     }
     if (result.errors.empty()) {
         std::sort(manifest.dependencies.begin(), manifest.dependencies.end(),
@@ -714,6 +768,9 @@ std::string renderPackageManifest(const PackageManifest &manifest) {
            << "version " << manifest.version.string() << '\n'
            << "sdk " << manifest.sdk.string() << '\n'
            << "source " << quote(manifest.source.generic_string()) << '\n';
+    if (manifest.testSource.has_value()) {
+        output << "test_source " << quote(manifest.testSource->generic_string()) << '\n';
+    }
     auto dependencies = manifest.dependencies;
     std::sort(dependencies.begin(), dependencies.end(), [](const auto &left, const auto &right) {
         return std::tie(left.name, left.target) < std::tie(right.name, right.target);
@@ -723,6 +780,9 @@ std::string renderPackageManifest(const PackageManifest &manifest) {
                << ' ' << locationName(dependency.kind) << ' ' << quote(dependency.location);
         if (dependency.target.has_value()) {
             output << " target " << targetPlatformName(*dependency.target);
+        }
+        if (dependency.scope == PackageDependencyScope::Test) {
+            output << " scope " << scopeName(dependency.scope);
         }
         output << '\n';
     }
@@ -786,11 +846,18 @@ parsePackageLock(const std::filesystem::path &path, std::string_view source) {
             }
             lock.packages.push_back({tokens[1], *version, tokens[3], *kind, tokens[5]});
         } else if (directive == "edge") {
-            if (tokens.size() != 3 || !identifier(tokens[1]) || !identifier(tokens[2])) {
+            auto scope = PackageDependencyScope::Runtime;
+            const auto validScope = tokens.size() == 3 ||
+                                    (tokens.size() == 5 && tokens[3] == "scope" &&
+                                     tokens[4] == "test");
+            if (!validScope || !identifier(tokens[1]) || !identifier(tokens[2])) {
                 addError(result.errors, path, line, 1, "FDN4025", "invalid package edge");
                 return;
             }
-            lock.edges.push_back({tokens[1], tokens[2]});
+            if (tokens.size() == 5) {
+                scope = PackageDependencyScope::Test;
+            }
+            lock.edges.push_back({tokens[1], tokens[2], scope});
         } else {
             addError(result.errors, path, line, 1, "FDN4026",
                      "unknown lock directive " + directive);
@@ -811,8 +878,8 @@ parsePackageLock(const std::filesystem::path &path, std::string_view source) {
             return left.name < right.name;
         });
         std::sort(lock.edges.begin(), lock.edges.end(), [](const auto &left, const auto &right) {
-            return std::tie(left.parent, left.dependency) <
-                   std::tie(right.parent, right.dependency);
+            return std::tie(left.parent, left.dependency, left.scope) <
+                   std::tie(right.parent, right.dependency, right.scope);
         });
         result.value = std::move(lock);
     }
@@ -844,11 +911,15 @@ std::string renderPackageLock(const PackageLock &lock) {
     }
     auto edges = lock.edges;
     std::sort(edges.begin(), edges.end(), [](const auto &left, const auto &right) {
-        return std::tie(left.parent, left.dependency) <
-               std::tie(right.parent, right.dependency);
+        return std::tie(left.parent, left.dependency, left.scope) <
+               std::tie(right.parent, right.dependency, right.scope);
     });
     for (const auto &edge : edges) {
-        output << "edge " << edge.parent << ' ' << edge.dependency << '\n';
+        output << "edge " << edge.parent << ' ' << edge.dependency;
+        if (edge.scope == PackageDependencyScope::Test) {
+            output << " scope test";
+        }
+        output << '\n';
     }
     return output.str();
 }

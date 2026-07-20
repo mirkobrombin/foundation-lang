@@ -37,7 +37,8 @@ enum class FormatMode {
 [[nodiscard]] ProjectAnalysis analyzeProject(
     const std::filesystem::path &path,
     const std::vector<SourceOverlay> &overlays = {},
-    AnalyzeOptions options = {});
+    AnalyzeOptions options = {},
+    ProjectMode mode = ProjectMode::Production);
 [[nodiscard]] Compilation compile(const std::filesystem::path &path,
                                   const std::vector<SourceOverlay> &overlays = {});
 [[nodiscard]] int checkFile(const std::filesystem::path &path);
