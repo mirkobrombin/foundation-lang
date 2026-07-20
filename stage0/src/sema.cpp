@@ -3520,13 +3520,14 @@ class Analyzer {
                 diagnostics_.error("FDN2127", "borrowed closure cannot be captured",
                                    capture.span);
             }
-            if (containsBorrow(type)) {
-                diagnostics_.error("FDN2123", "capture cannot contain an existing borrow",
-                                   capture.span);
-            }
             auto captureMode = capture.mode;
             if (captureMode == CaptureMode::Copy && requiresDrop(type)) {
                 captureMode = CaptureMode::View;
+            }
+            if (containsBorrow(type) && captureMode != CaptureMode::View &&
+                captureMode != CaptureMode::Edit) {
+                diagnostics_.error("FDN2123", "capture cannot own an existing borrow",
+                                   capture.span);
             }
             if (captureMode == CaptureMode::Copy) {
                 // Copyable captures are stored directly in the closure environment.

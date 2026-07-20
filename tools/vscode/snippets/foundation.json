@@ -93,6 +93,45 @@
         ],
         "description": "Declare a compiler-generated typed HTTP route"
     },
+    "Global HTTP middleware": {
+        "prefix": "webmiddlewareglobal",
+        "body": [
+            "@web.GlobalMiddleware(${1:10})",
+            "fn ${2:requestMiddleware}<E>(",
+            "    \\$${3:request} web.Request,",
+            "    ${4:next} fn(\\$web.Request) Result<web.Response, web.DispatchError<E>>",
+            ") Result<web.Response, web.DispatchError<E>> {",
+            "    ${4:next}(\\$${3:request})",
+            "}"
+        ],
+        "description": "Declare typed global middleware for a generated HTTP application"
+    },
+    "Group HTTP middleware": {
+        "prefix": "webmiddlewaregroup",
+        "body": [
+            "@web.GroupMiddleware(\"${1:/api}\", ${2:10})",
+            "fn ${3:apiMiddleware}<E>(",
+            "    \\$${4:request} web.Request,",
+            "    ${5:next} fn(\\$web.Request) Result<web.Response, web.DispatchError<E>>",
+            ") Result<web.Response, web.DispatchError<E>> {",
+            "    ${5:next}(\\$${4:request})",
+            "}"
+        ],
+        "description": "Declare typed middleware for a generated HTTP route group"
+    },
+    "Route HTTP middleware": {
+        "prefix": "webmiddlewareroute",
+        "body": [
+            "@web.RouteMiddleware(${1|.GET,.POST,.PUT,.PATCH,.DELETE,.HEAD,.OPTIONS|}, \"${2:/items}\", ${3:10})",
+            "fn ${4:itemMiddleware}<E>(",
+            "    \\$${5:request} web.Request,",
+            "    ${6:next} fn(\\$web.Request) Result<web.Response, web.DispatchError<E>>",
+            ") Result<web.Response, web.DispatchError<E>> {",
+            "    ${6:next}(\\$${5:request})",
+            "}"
+        ],
+        "description": "Declare typed middleware for one generated HTTP route"
+    },
     "HTTP parameter route": {
         "prefix": "webrouteparam",
         "body": [

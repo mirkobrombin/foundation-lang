@@ -13,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -35,6 +36,12 @@ constexpr std::string_view webHeaderAttribute = "foundation.web.Header";
 constexpr std::string_view webFormAttribute = "foundation.web.Form";
 constexpr std::string_view webBodyAttribute = "foundation.web.Body";
 constexpr std::string_view webInjectAttribute = "foundation.web.Inject";
+constexpr std::string_view webGlobalMiddlewareAttribute =
+    "foundation.web.GlobalMiddleware";
+constexpr std::string_view webGroupMiddlewareAttribute =
+    "foundation.web.GroupMiddleware";
+constexpr std::string_view webRouteMiddlewareAttribute =
+    "foundation.web.RouteMiddleware";
 constexpr std::string_view bindableAttribute = "foundation.bind.Bindable";
 constexpr std::string_view bindNameAttribute = "foundation.bind.Name";
 constexpr std::string_view bindIgnoreAttribute = "foundation.bind.Ignore";
@@ -111,6 +118,20 @@ struct WebRoutePlan {
     bool task{};
     std::optional<Type> executionError;
     std::optional<Type> activationError;
+};
+
+enum class WebMiddlewareScope {
+    Global,
+    Group,
+    Route,
+};
+
+struct WebMiddlewarePlan {
+    FirFunctionId function{};
+    WebMiddlewareScope scope{WebMiddlewareScope::Global};
+    std::string method;
+    std::string path;
+    std::int64_t order{};
 };
 
 enum class StructBindingFieldKind {
@@ -281,6 +302,23 @@ bool validateWebRoutePath(std::string_view path, std::string &reason) {
     return true;
 }
 
+bool validateWebGroupPrefix(std::string_view prefix) {
+    if (prefix.empty() || prefix.front() != '/' ||
+        (prefix.size() > 1 && prefix.back() == '/')) {
+        return false;
+    }
+    return prefix.find_first_of("{}?#") == std::string_view::npos;
+}
+
+bool webRouteInGroup(std::string_view route, std::string_view prefix) {
+    if (prefix == "/") {
+        return route.starts_with('/');
+    }
+    return route == prefix ||
+           (route.size() > prefix.size() && route.starts_with(prefix) &&
+            route[prefix.size()] == '/');
+}
+
 std::vector<std::string_view> webRouteSegments(std::string_view path) {
     std::vector<std::string_view> segments;
     std::size_t start = 1;
@@ -420,6 +458,12 @@ bool isNamedStruct(const FirProgram &program, const Type &type, std::string_view
     const auto value = baseType(type);
     return value.kind == TypeKind::Struct && value.declaration < program.structs.size() &&
            program.structs[value.declaration].name == name;
+}
+
+bool isNamedEnum(const FirProgram &program, const Type &type, std::string_view name) {
+    const auto value = baseType(type);
+    return value.kind == TypeKind::Enum && value.declaration < program.enums.size() &&
+           program.enums[value.declaration].name == name;
 }
 
 bool isStringList(const FirProgram &program, const Type &type) {
@@ -688,6 +732,30 @@ std::string enumCase(const FirProgram &program, const FirAttributeUse *use,
     return type.variants[value.variant].name;
 }
 
+std::optional<std::int64_t> signedIntegerArgument(const FirAttributeUse *use,
+                                                  std::size_t index) {
+    if (use == nullptr || index >= use->arguments.size()) {
+        return std::nullopt;
+    }
+    const auto &value = use->arguments[index].value;
+    if (value.kind != FirAttributeValueKind::Integer) {
+        return std::nullopt;
+    }
+    constexpr auto minimumMagnitude = std::uint64_t{INT64_MAX} + 1;
+    if (value.negative) {
+        if (value.magnitude > minimumMagnitude) {
+            return std::nullopt;
+        }
+        return value.magnitude == minimumMagnitude
+                   ? INT64_MIN
+                   : -static_cast<std::int64_t>(value.magnitude);
+    }
+    if (value.magnitude > INT64_MAX) {
+        return std::nullopt;
+    }
+    return static_cast<std::int64_t>(value.magnitude);
+}
+
 Lifetime serviceLifetime(const FirProgram &program, const FirStruct &service) {
     const auto value = enumCase(program, findAttribute(program, service.attributes,
                                                        scopeAttribute));
@@ -744,6 +812,38 @@ ParameterMode parameterMode(const FirFunction &function, std::size_t index) {
         return ParameterMode::Read;
     }
     return ParameterMode::Transfer;
+}
+
+bool webMiddlewareSignature(const FirProgram &program, const FirFunction &function) {
+    if (!function.generic || function.typeParameterCount != 1 || function.parameters.size() != 2) {
+        return false;
+    }
+    const auto requestLocal = function.parameters[0];
+    const auto nextLocal = function.parameters[1];
+    if (parameterMode(function, 0) != ParameterMode::Transfer ||
+        parameterMode(function, 1) != ParameterMode::Read ||
+        !isNamedStruct(program, function.locals[requestLocal].type,
+                       "foundation.web.Request")) {
+        return false;
+    }
+    const auto next = baseType(function.locals[nextLocal].type);
+    if (next.kind != TypeKind::Function || next.arguments.size() != 2 ||
+        next.arguments.front() != function.returnType ||
+        !isNamedStruct(program, next.arguments[1], "foundation.web.Request")) {
+        return false;
+    }
+    if (!isNamedEnum(program, function.returnType, "Result") ||
+        function.returnType.arguments.size() != 2 ||
+        !program.enums[baseType(function.returnType).declaration].builtin ||
+        !isNamedStruct(program, function.returnType.arguments[0],
+                       "foundation.web.Response")) {
+        return false;
+    }
+    const auto dispatchError = baseType(function.returnType.arguments[1]);
+    return isNamedEnum(program, dispatchError, "foundation.web.DispatchError") &&
+           dispatchError.arguments.size() == 1 &&
+           dispatchError.arguments.front().kind == TypeKind::Parameter &&
+           dispatchError.arguments.front().declaration == 0;
 }
 
 const char *parameterModeName(ParameterMode mode) {
@@ -1168,6 +1268,7 @@ std::string emitApplicationHostSource(const FirProgram &program,
                                       const std::vector<FirStructId> &order,
                                       const std::vector<ActionPlan> &actions,
                                       const std::vector<WebRoutePlan> &webRoutes,
+                                      const std::vector<WebMiddlewarePlan> &webMiddlewares,
                                       Diagnostics &diagnostics,
                                       const std::string &rootPackage,
                                       std::string_view generatedSourcePath,
@@ -1955,6 +2056,16 @@ std::string emitApplicationHostSource(const FirProgram &program,
                 const auto local = function.parameters[parameter.index];
                 const auto type = baseType(function.locals[local].type);
                 usesParse = usesParse || type == boolType || isInteger(type);
+            }
+        }
+        for (const auto &middleware : webMiddlewares) {
+            const auto &function = program.functions[middleware.function];
+            if (!function.packageName.empty()) {
+                packages.insert(function.packageName);
+            }
+            collectTypePackages(program, function.returnType, packages);
+            for (const auto parameter : function.parameters) {
+                collectTypePackages(program, function.locals[parameter].type, packages);
             }
         }
         if (usesParse) {
@@ -2947,7 +3058,72 @@ std::string emitApplicationHostSource(const FirProgram &program,
             out << "    }\n\n";
         }
 
-        out << "    fn Dispatch(\n"
+        const auto emitMiddlewareMethod = [&](std::string_view methodName,
+                                              const WebMiddlewarePlan &middleware,
+                                              std::string_view nextMethod) {
+            const auto &function = program.functions[middleware.function];
+            out << "    fn " << methodName << "(\n"
+                << "        &self,\n"
+                << "        $foundationRequest " << webRequestType << "\n"
+                << "    ) Result<" << webResponseType << ", " << webDispatchErrorType
+                << "<FoundationWebError>> {\n"
+                << "        " << functionName(function, rootPackage, aliases)
+                << "<FoundationWebError>(\n"
+                << "            $foundationRequest,\n"
+                << "            fn(\n"
+                << "                $foundationNextRequest " << webRequestType << "\n"
+                << "            ) Result<" << webResponseType << ", "
+                << webDispatchErrorType << "<FoundationWebError>> capture &self {\n"
+                << "                self." << nextMethod
+                << "($foundationNextRequest)\n"
+                << "            }\n"
+                << "        )\n"
+                << "    }\n\n";
+        };
+
+        for (const auto &route : webRoutes) {
+            std::vector<const WebMiddlewarePlan *> selected;
+            for (const auto &middleware : webMiddlewares) {
+                if ((middleware.scope == WebMiddlewareScope::Group &&
+                     webRouteInGroup(route.path, middleware.path)) ||
+                    (middleware.scope == WebMiddlewareScope::Route &&
+                     middleware.method == route.method && middleware.path == route.path)) {
+                    selected.push_back(&middleware);
+                }
+            }
+            const auto method = webMethods.at(route.function);
+            for (std::size_t index = selected.size(); index != 0; --index) {
+                const auto position = index - 1;
+                const auto name = "foundationDispatchWeb" + method + "Middleware" +
+                                  std::to_string(position);
+                const auto next = position + 1 == selected.size()
+                                      ? "foundationDispatchWeb" + method
+                                      : "foundationDispatchWeb" + method + "Middleware" +
+                                            std::to_string(position + 1);
+                emitMiddlewareMethod(name, *selected[position], next);
+            }
+        }
+
+        std::vector<const WebMiddlewarePlan *> globalMiddlewares;
+        for (const auto &middleware : webMiddlewares) {
+            if (middleware.scope == WebMiddlewareScope::Global) {
+                globalMiddlewares.push_back(&middleware);
+            }
+        }
+        for (std::size_t index = globalMiddlewares.size(); index != 0; --index) {
+            const auto position = index - 1;
+            const auto name = "foundationDispatchWebMiddleware" +
+                              std::to_string(position);
+            const auto next = position + 1 == globalMiddlewares.size()
+                                  ? "foundationDispatchWebRoutes"
+                                  : "foundationDispatchWebMiddleware" +
+                                        std::to_string(position + 1);
+            emitMiddlewareMethod(name, *globalMiddlewares[position], next);
+        }
+
+        out << "    fn "
+            << (webMiddlewares.empty() ? "Dispatch" : "foundationDispatchWebRoutes")
+            << "(\n"
             << "        &self,\n"
             << "        $foundationRequest " << webRequestType << "\n"
             << "    ) Result<" << webResponseType << ", " << webDispatchErrorType
@@ -2968,15 +3144,42 @@ std::string emitApplicationHostSource(const FirProgram &program,
             << "foundationActiveRequest.Params with Params\n"
             << "        discard foundationPreviousParams\n";
         for (std::size_t routeIndex = 0; routeIndex < webRoutes.size(); ++routeIndex) {
+            const auto &route = webRoutes[routeIndex];
+            const auto method = webMethods.at(route.function);
+            const auto hasScopedMiddleware = std::any_of(
+                webMiddlewares.begin(), webMiddlewares.end(), [&](const auto &middleware) {
+                    return (middleware.scope == WebMiddlewareScope::Group &&
+                            webRouteInGroup(route.path, middleware.path)) ||
+                           (middleware.scope == WebMiddlewareScope::Route &&
+                            middleware.method == route.method &&
+                            middleware.path == route.path);
+                });
             out << "        if Id == " << (routeIndex + 1)
-                << " return self.foundationDispatchWeb"
-                << webMethods.at(webRoutes[routeIndex].function)
-                << "($foundationActiveRequest)\n";
+                << " return self.foundationDispatchWeb" << method;
+            if (hasScopedMiddleware) {
+                out << "Middleware0";
+            }
+            out << "($foundationActiveRequest)\n";
         }
         out << "        discard foundationActiveRequest\n"
             << "        .Err(.NotFound)\n"
-            << "    }\n\n"
-            << "    fn ErrorResponse(\n"
+            << "    }\n\n";
+        if (!webMiddlewares.empty()) {
+            out << "    fn Dispatch(\n"
+                << "        &self,\n"
+                << "        $foundationRequest " << webRequestType << "\n"
+                << "    ) Result<" << webResponseType << ", " << webDispatchErrorType
+                << "<FoundationWebError>> {\n"
+                << "        self.";
+            if (globalMiddlewares.empty()) {
+                out << "foundationDispatchWebRoutes";
+            } else {
+                out << "foundationDispatchWebMiddleware0";
+            }
+            out << "($foundationRequest)\n"
+                << "    }\n\n";
+        }
+        out << "    fn ErrorResponse(\n"
             << "        self,\n"
             << "        $error FoundationWebError\n"
             << "    ) Result<" << webResponseType << ", FoundationWebError> {\n"
@@ -3637,6 +3840,7 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
     }
 
     std::vector<WebRoutePlan> webRoutes;
+    std::vector<WebMiddlewarePlan> webMiddlewares;
     std::map<std::pair<std::string, std::string>, FirFunctionId> webRouteKeys;
     std::vector<std::pair<std::string, std::string>> webRoutePatterns;
     std::vector<std::vector<FirFunctionId>> constructors(program.structs.size());
@@ -3667,6 +3871,65 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
         }
         if (function.action && owner != servicesByName.end()) {
             pending.insert(owner->second);
+        }
+
+        for (const auto &attribute : function.attributes) {
+            const auto declaration = attributeDeclaration(program, attribute);
+            if (declaration == nullptr ||
+                (declaration->name != webGlobalMiddlewareAttribute &&
+                 declaration->name != webGroupMiddlewareAttribute &&
+                 declaration->name != webRouteMiddlewareAttribute)) {
+                continue;
+            }
+            if (function.method || function.task || !webMiddlewareSignature(program, function)) {
+                diagnostics.error(
+                    "FDN2397",
+                    "web middleware requires a generic free function with signature "
+                    "fn<E>($web.Request, fn($web.Request) "
+                    "Result<web.Response, web.DispatchError<E>>) "
+                    "Result<web.Response, web.DispatchError<E>>",
+                    function.sourceSpan);
+                continue;
+            }
+            const auto orderIndex = declaration->name == webGlobalMiddlewareAttribute
+                                        ? 0
+                                        : declaration->name == webGroupMiddlewareAttribute ? 1
+                                                                                           : 2;
+            const auto orderValue = signedIntegerArgument(&attribute, orderIndex);
+            if (!orderValue.has_value()) {
+                diagnostics.error("FDN2398", "invalid web middleware order",
+                                  function.sourceSpan);
+                continue;
+            }
+            WebMiddlewarePlan middleware;
+            middleware.function = index;
+            middleware.order = *orderValue;
+            if (declaration->name == webGlobalMiddlewareAttribute) {
+                middleware.scope = WebMiddlewareScope::Global;
+            } else if (declaration->name == webGroupMiddlewareAttribute) {
+                middleware.scope = WebMiddlewareScope::Group;
+                middleware.path = stringArgument(&attribute, 0).value_or("");
+                if (!validateWebGroupPrefix(middleware.path)) {
+                    diagnostics.error(
+                        "FDN2398",
+                        "web middleware group prefix must be an absolute static path without "
+                        "a trailing slash",
+                        function.sourceSpan);
+                    continue;
+                }
+            } else {
+                middleware.scope = WebMiddlewareScope::Route;
+                middleware.method = enumCase(program, &attribute, 0);
+                middleware.path = stringArgument(&attribute, 1).value_or("");
+                std::string reason;
+                if (middleware.method.empty() ||
+                    !validateWebRoutePath(middleware.path, reason)) {
+                    diagnostics.error("FDN2398", "invalid web middleware route scope",
+                                      function.sourceSpan);
+                    continue;
+                }
+            }
+            webMiddlewares.push_back(std::move(middleware));
         }
 
         const auto routeUse = findAttribute(program, function.attributes, webRouteAttribute);
@@ -3852,6 +4115,51 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
         }
         webRoutes.push_back(std::move(route));
     }
+    std::map<std::tuple<WebMiddlewareScope, std::string, std::string, std::int64_t>,
+             FirFunctionId>
+        webMiddlewareOrders;
+    for (const auto &middleware : webMiddlewares) {
+        const auto key = std::make_tuple(middleware.scope, middleware.method, middleware.path,
+                                         middleware.order);
+        if (!webMiddlewareOrders.emplace(key, middleware.function).second) {
+            diagnostics.error("FDN2399", "duplicate web middleware order in one scope",
+                              program.functions[middleware.function].sourceSpan);
+        }
+        if (middleware.scope == WebMiddlewareScope::Route &&
+            !webRouteKeys.contains({middleware.method, middleware.path})) {
+            diagnostics.error("FDN2400", "web middleware targets an unknown route " +
+                                               middleware.method + " " + middleware.path,
+                              program.functions[middleware.function].sourceSpan);
+        }
+        if (middleware.scope == WebMiddlewareScope::Group &&
+            std::none_of(webRoutes.begin(), webRoutes.end(), [&](const auto &route) {
+                return webRouteInGroup(route.path, middleware.path);
+            })) {
+            diagnostics.error("FDN2400", "web middleware group matches no route " +
+                                               middleware.path,
+                              program.functions[middleware.function].sourceSpan);
+        }
+    }
+    std::sort(webMiddlewares.begin(), webMiddlewares.end(), [&](const auto &left,
+                                                               const auto &right) {
+        if (left.scope != right.scope) {
+            return left.scope < right.scope;
+        }
+        if (left.scope == WebMiddlewareScope::Group &&
+            left.path.size() != right.path.size()) {
+            return left.path.size() < right.path.size();
+        }
+        if (left.path != right.path) {
+            return left.path < right.path;
+        }
+        if (left.method != right.method) {
+            return left.method < right.method;
+        }
+        if (left.order != right.order) {
+            return left.order < right.order;
+        }
+        return program.functions[left.function].name < program.functions[right.function].name;
+    });
     for (FirStructId index = 0; index < program.structs.size(); ++index) {
         if (program.structs[index].service &&
             (hasAttribute(program, program.structs[index].attributes, scopeAttribute) ||
@@ -4195,7 +4503,8 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
                                   : SourceSpan{});
             return {};
         }
-        return emitApplicationHostSource(program, plans, order, actions, webRoutes, diagnostics,
+        return emitApplicationHostSource(program, plans, order, actions, webRoutes,
+                                         webMiddlewares, diagnostics,
                                          program.functions[program.main].packageName,
                                          generatedSourcePath, true);
     }
@@ -4287,6 +4596,43 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
         }
         out << "]}";
     }
+    out << "],\"routes\":[";
+    for (std::size_t index = 0; index < webRoutes.size(); ++index) {
+        if (index != 0) {
+            out << ',';
+        }
+        const auto &route = webRoutes[index];
+        out << "{\"method\":";
+        emitString(out, route.method);
+        out << ",\"path\":";
+        emitString(out, route.path);
+        out << ",\"handler\":";
+        emitString(out, program.functions[route.function].name);
+        out << ",\"task\":" << (route.task ? "true" : "false") << '}';
+    }
+    out << "],\"middleware\":[";
+    for (std::size_t index = 0; index < webMiddlewares.size(); ++index) {
+        if (index != 0) {
+            out << ',';
+        }
+        const auto &middleware = webMiddlewares[index];
+        out << "{\"scope\":";
+        emitString(out, middleware.scope == WebMiddlewareScope::Global
+                            ? "global"
+                            : middleware.scope == WebMiddlewareScope::Group ? "group"
+                                                                           : "route");
+        if (!middleware.method.empty()) {
+            out << ",\"method\":";
+            emitString(out, middleware.method);
+        }
+        if (!middleware.path.empty()) {
+            out << ",\"path\":";
+            emitString(out, middleware.path);
+        }
+        out << ",\"order\":" << middleware.order << ",\"handler\":";
+        emitString(out, program.functions[middleware.function].name);
+        out << '}';
+    }
     out << "]}\n";
     return out.str();
 }
@@ -4302,7 +4648,7 @@ std::string emitPackageSource(const FirProgram &program, Diagnostics &diagnostic
         diagnostics.error("FDN2389", "package generation requires a project package", {});
         return {};
     }
-    return emitApplicationHostSource(program, {}, {}, {}, {}, diagnostics,
+    return emitApplicationHostSource(program, {}, {}, {}, {}, {}, diagnostics,
                                      std::string(rootPackage),
                                      generatedSourcePath, false);
 }

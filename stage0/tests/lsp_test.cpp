@@ -3155,6 +3155,14 @@ void webActivationExposesEditorDetails() {
         "    }\n"
         "}\n"
         "\n"
+        "@web.GlobalMiddleware(10)\n"
+        "fn trace<E>(\n"
+        "    $request web.Request,\n"
+        "    next fn($web.Request) Result<web.Response, web.DispatchError<E>>\n"
+        ") Result<web.Response, web.DispatchError<E>> {\n"
+        "    next($request)\n"
+        "}\n"
+        "\n"
         "fn main() i32 {\n"
         "    const application = BuildFoundationApplication()\n"
         "    discard application\n"
@@ -3174,20 +3182,30 @@ void webActivationExposesEditorDetails() {
         "{\"jsonrpc\":\"2.0\",\"id\":221,\"method\":\"textDocument/hover\","
         "\"params\":{\"textDocument\":{\"uri\":\"" +
         sourceUri + "\"},\"position\":{\"line\":26,\"character\":12}}}";
+    const auto middlewareHover =
+        "{\"jsonrpc\":\"2.0\",\"id\":222,\"method\":\"textDocument/hover\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\"},\"position\":{\"line\":41,\"character\":8}}}";
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
     std::istringstream input(
-        frame(initialize) + frame(open) + frame(hover) + frame(shutdown) + frame(exit));
+        frame(initialize) + frame(open) + frame(hover) + frame(middlewareHover) +
+        frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
     const auto response = responseFor(output.str(), 221);
+    const auto middlewareResponse = responseFor(output.str(), 222);
 
     expect(status == 0, "web activation language server transcript exits cleanly");
     expect(errors.str().empty(), "web activation requests write no server errors");
     expect(response.find("FailActivationFailed(error ActivationError)") != std::string::npos,
            "web activation exposes the typed derived error variant");
+    expect(middlewareResponse.find("attribute GlobalMiddleware(order i32)") !=
+                   std::string::npos &&
+               middlewareResponse.find("complete generated application") != std::string::npos,
+           "web middleware hover exposes its typed signature and documentation");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);

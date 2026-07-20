@@ -1,0 +1,20 @@
+package test.web.reject
+
+import foundation.web
+
+@web.RouteMiddleware(.GET, "/missing", 10)
+fn MissingRoute<E>(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+) Result<web.Response, web.DispatchError<E>> {
+    next($request)
+}
+
+@web.Route(.GET, "/items")
+fn Items() web.Response {
+    web.Text(200, "items")
+}
+
+fn main() i32 {
+    0
+}

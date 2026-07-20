@@ -117,7 +117,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.100.0");
+    assert.equal(manifest.version, "0.101.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1293,6 +1293,10 @@ test("grammar and completions track compiler keywords", () => {
     }
     for (const attribute of ["@validation.Validatable()", "@validation.Required()",
         "@validation.Min(...)", "@validation.Max(...)", "@validation.Email()"]) {
+        assert.ok(completionLabels.has(attribute));
+    }
+    for (const attribute of ["@web.GlobalMiddleware(...)",
+        "@web.GroupMiddleware(...)", "@web.RouteMiddleware(...)"]) {
         assert.ok(completionLabels.has(attribute));
     }
     const bindAppend = staticCompletions.find((completion) =>

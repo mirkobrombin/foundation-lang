@@ -28,6 +28,15 @@ attribute Form(name String) targets(parameter)
 // Resolves one application service for a handler parameter.
 attribute Inject() targets(parameter)
 
+// Places one typed middleware around the complete generated application.
+attribute GlobalMiddleware(order i32) targets(fn)
+
+// Places one typed middleware around routes below a static path prefix.
+attribute GroupMiddleware(prefix String, order i32) targets(fn) repeatable
+
+// Places one typed middleware around a single generated route.
+attribute RouteMiddleware(method Method, path String, order i32) targets(fn) repeatable
+
 enum Method {
     GET
     POST

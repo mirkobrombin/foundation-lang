@@ -1,0 +1,20 @@
+package test.web.reject
+
+import foundation.web
+
+@web.GroupMiddleware("api/", 10)
+fn InvalidPrefix<E>(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+) Result<web.Response, web.DispatchError<E>> {
+    next($request)
+}
+
+@web.Route(.GET, "/api/items")
+fn Items() web.Response {
+    web.Text(200, "items")
+}
+
+fn main() i32 {
+    0
+}

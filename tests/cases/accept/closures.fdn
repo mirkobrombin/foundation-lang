@@ -42,6 +42,18 @@ enum Branch {
     Second
 }
 
+struct BorrowCounter {
+    value i32
+}
+
+fn invokeBorrowed(&counter BorrowCounter) i32 {
+    const invoke = fn() i32 capture &counter {
+        counter.value = counter.value + 1
+        counter.value
+    }
+    invoke()
+}
+
 fn main() i32 {
     const factor = 2
     const scale = fn(value i32) i32 capture factor {
@@ -103,8 +115,10 @@ fn main() i32 {
             branchTotal
         }
     }
+    var borrowedCounter = BorrowCounter { value = 41 }
+    const borrowedValue = invokeBorrowed(&borrowedCounter)
     if join("right") == "leftright" && keptText == "value" && directText == "direct" &&
-        selectedText == "selected" {
+        selectedText == "selected" && borrowedValue == 42 && borrowedCounter.value == 42 {
         return scale(20) + bump(2) + read(0) + composed(21) + selected(2) - 130
     } else {
         return 1

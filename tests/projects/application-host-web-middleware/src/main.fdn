@@ -1,0 +1,130 @@
+package test.host.web.middleware
+
+import foundation.web
+import std.collections
+import std.text
+
+fn surround<E>(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<E>>,
+    prefix String,
+    suffix String
+) Result<web.Response, web.DispatchError<E>> {
+    const result = next($request)
+    match result {
+        Ok(response): surroundResponse<E>($response, prefix, suffix)
+        Err(error): .Err(error)
+    }
+}
+
+@web.GlobalMiddleware(10)
+fn GlobalOuter<E>(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+) Result<web.Response, web.DispatchError<E>> {
+    const result = next($request)
+    match result {
+        Ok(response): surroundResponse<E>($response, "global-outer>", "<global-outer")
+        Err(error): match error {
+            NotFound: .Ok(web.Text(404, "global:not-found"))
+            MethodNotAllowed: .Err(.MethodNotAllowed)
+            Handler(error): .Err(.Handler(error = error))
+        }
+    }
+}
+
+@web.GlobalMiddleware(20)
+fn GlobalInner<E>(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+) Result<web.Response, web.DispatchError<E>> {
+    surround<E>($request, next, "global-inner>", "<global-inner")
+}
+
+@web.GroupMiddleware("/api", 10)
+fn Api<E>(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+) Result<web.Response, web.DispatchError<E>> {
+    surround<E>($request, next, "api>", "<api")
+}
+
+@web.GroupMiddleware("/api/v1", 10)
+fn V1<E>(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+) Result<web.Response, web.DispatchError<E>> {
+    var active = request
+    const stopped = match active.Header("X-Stop") {
+        None: false
+        Some(value): value == "true"
+    }
+    if stopped {
+        discard active
+        return .Ok(web.Text(403, "stopped"))
+    }
+    surround<E>($active, next, "v1>", "<v1")
+}
+
+@web.RouteMiddleware(.GET, "/api/v1/value", 10)
+fn RouteOnly<E>(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+) Result<web.Response, web.DispatchError<E>> {
+    surround<E>($request, next, "route>", "<route")
+}
+
+fn surroundResponse<E>(
+    $response web.Response,
+    prefix String,
+    suffix String
+) Result<web.Response, web.DispatchError<E>> {
+    const web.Response { Status Headers Body } = response
+    discard Headers
+    .Ok(web.Text(Status, prefix + Body + suffix))
+}
+
+@web.Route(.GET, "/api/v1/value")
+fn Value() web.Response {
+    web.Text(200, "handler")
+}
+
+fn request($path String) web.Request {
+    web.Request {
+        Method = .GET
+        Target = text.Copy(path)
+        Path = path
+        Version = "HTTP/1.1"
+        Headers = collections.NewList<web.HeaderValue>()
+        Params = collections.NewList<web.Parameter>()
+    }
+}
+
+fn body($value Result<web.Response, web.DispatchError<FoundationWebError>>) String {
+    match value {
+        Ok(response): takeBody($response)
+        Err(error): failureBody($error)
+    }
+}
+
+fn takeBody($response web.Response) String {
+    const web.Response { Status Headers Body } = response
+    discard Status
+    discard Headers
+    Body
+}
+
+fn failureBody<E>($error web.DispatchError<E>) String {
+    discard error
+    "error"
+}
+
+fn main() i32 {
+    var application = BuildFoundationApplication()
+    print(body($application.Dispatch(request("/api/v1/value"))))
+    print(body($application.Dispatch(request("/missing"))))
+    var stopped = request("/api/v1/value")
+    stopped.Headers.PushFront(web.HeaderValue { Name = "X-Stop" Value = "true" })
+    print(body($application.Dispatch($stopped)))
+    0
+}

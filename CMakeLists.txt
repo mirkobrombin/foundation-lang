@@ -1483,6 +1483,26 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
     add_test(
+        NAME stage0.emit.application-host-web-middleware
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-middleware
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-middleware
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-middleware-inspection.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-middleware/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
+    )
+    add_test(
+        NAME stage0.emit.application-host-web-middleware-plan
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-middleware
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-middleware/expected-plan.json
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-middleware-plan-first.json
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-middleware-plan-second.json
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-plan.cmake
+    )
+    add_test(
         NAME stage0.emit.application-host-bind
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -1614,6 +1634,11 @@ if(BUILD_TESTING)
             "application-host-web-activation-errors;FDN2394"
             "application-host-web-task-singleton-transfer;FDN2395"
             "application-host-web-task-owned-duplicate;FDN2396"
+            "application-host-web-middleware-signature;FDN2397"
+            "application-host-web-middleware-prefix;FDN2398"
+            "application-host-web-middleware-order;FDN2399"
+            "application-host-web-middleware-route;FDN2400"
+            "application-host-web-middleware-group;FDN2400"
             "application-host-transfer;FDN2333")
         list(GET application_host_case 0 application_host_name)
         list(GET application_host_case 1 application_host_code)
@@ -3303,6 +3328,7 @@ if(BUILD_TESTING)
             "closure-implicit-capture;FDN2120"
             "closure-duplicate-capture;FDN2121"
             "closure-capture-parameter;FDN2122"
+            "closure-own-existing-borrow;FDN2123"
             "closure-edit-immutable;FDN2124"
             "closure-conflicting-capture;FDN2125"
             "closure-capture-consume;FDN2126"
@@ -3685,6 +3711,24 @@ if(BUILD_TESTING)
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-activation-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-activation-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-activation/expected.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.application-host-web-middleware-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-middleware
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-middleware-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-middleware-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-middleware/expected.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                 -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c

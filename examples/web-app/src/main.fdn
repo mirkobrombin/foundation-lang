@@ -56,6 +56,51 @@ service UserPresenter {
     }
 }
 
+@web.GlobalMiddleware(10)
+fn responseMetadata<E>(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+) Result<web.Response, web.DispatchError<E>> {
+    addServerHeader<E>($next($request))
+}
+
+@web.GroupMiddleware("/users", 10)
+fn requireApiKey<E>(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+) Result<web.Response, web.DispatchError<E>> {
+    var active = request
+    const apiKey = active.Header("X-Api-Key")
+    const accepted = match apiKey {
+        None: false
+        Some(value): value == "foundation-demo"
+    }
+    if !accepted {
+        discard active
+        return .Ok(web.Text(401, "missing api key"))
+    }
+    next($active)
+}
+
+fn addServerHeader<E>(
+    $value Result<web.Response, web.DispatchError<E>>
+) Result<web.Response, web.DispatchError<E>> {
+    match value {
+        Ok(response): .Ok(withServerHeader($response))
+        Err(error): .Err(error)
+    }
+}
+
+fn withServerHeader($response web.Response) web.Response {
+    const web.Response { Status Headers Body } = response
+    var activeHeaders = Headers
+    activeHeaders.PushFront(web.HeaderValue {
+        Name = "Server"
+        Value = "Foundation"
+    })
+    web.Response { Status = Status Headers = activeHeaders Body = Body }
+}
+
 @web.Route(.GET, "/")
 fn Index(@web.Inject() info AppInfo) web.Response {
     web.Text(200, info.Label())
@@ -189,11 +234,21 @@ fn selfTest() i32 {
         Name = "X-Trace"
         Value = "local"
     })
+    lookup.Headers.PushFront(web.HeaderValue {
+        Name = "X-Api-Key"
+        Value = "foundation-demo"
+    })
     const lookupResponse = responseOr($application.Dispatch($lookup))
     if bodyOf($lookupResponse) !=
         "Foundation Web 0.1.0 user=Ada limit=10 note=demo trace=local" {
         return 1
     }
+
+    const unauthorized = newRequest(.GET, "/users/Ada?limit=10", "/users/Ada")
+    const unauthorizedResponse = responseOr($application.Dispatch($unauthorized))
+    const web.Response { Status Headers Body } = unauthorizedResponse
+    discard Headers
+    if Status != 401 || Body != "missing api key" return 2
 
     var create = newRequest(.POST, "/users/Ada", "/users/Ada")
     create.Body = "profile body"
@@ -201,13 +256,17 @@ fn selfTest() i32 {
         Name = "X-Enabled"
         Value = "true"
     })
+    create.Headers.PushFront(web.HeaderValue {
+        Name = "X-Api-Key"
+        Value = "foundation-demo"
+    })
     const createResponse = responseOr($application.Dispatch($create))
-    if bodyOf($createResponse) != "created Ada: profile body" return 2
+    if bodyOf($createResponse) != "created Ada: profile body" return 3
 
     var login = newRequest(.POST, "/login", "/login")
     login.Body = "username=Ada+Lovelace"
     const loginResponse = responseOr($application.Dispatch($login))
-    if bodyOf($loginResponse) != "welcome Ada Lovelace" return 3
+    if bodyOf($loginResponse) != "welcome Ada Lovelace" return 4
 
     print("web app example ok")
     0

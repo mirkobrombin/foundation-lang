@@ -69,6 +69,54 @@ fn CreateUser(
 }
 ```
 
+Generated applications support typed middleware without erasing the application error. A
+middleware is a generic free function. It owns each request, receives a non-escaping `next`
+function, and returns the same `Result` type. It may return a response before calling `next`,
+replace the request passed to `next`, or inspect and replace the returned response or error.
+
+```foundation
+@web.GlobalMiddleware(10)
+fn requestLog<E>(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+) Result<web.Response, web.DispatchError<E>> {
+    print(request.Path)
+    next($request)
+}
+
+@web.GroupMiddleware("/api", 20)
+fn requireApiKey<E>(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+) Result<web.Response, web.DispatchError<E>> {
+    var active = request
+    const authorized = match active.Header("X-Api-Key") {
+        None: false
+        Some(value): value == "expected"
+    }
+    if !authorized {
+        discard active
+        return .Ok(web.Text(401, "missing api key"))
+    }
+    next($active)
+}
+
+@web.RouteMiddleware(.POST, "/api/users", 30)
+fn auditCreate<E>(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+) Result<web.Response, web.DispatchError<E>> {
+    next($request)
+}
+```
+
+Global middleware wraps route lookup, so it observes `NotFound` and `MethodNotAllowed`. Matching
+groups then run from the broadest prefix to the narrowest prefix. Route middleware runs last,
+before the handler. Within one scope, lower `order` values are outer. Completion unwinds in the
+opposite order. Duplicate orders in one scope are rejected, as are group prefixes that match no
+route and route middleware that targets no exact method and path pair. The derived chain is part
+of the virtual application source and never creates a project source file.
+
 Path, query, header, and form sources accept `String`, `Option<String>`, `bool`, and every integer
 machine type. Required sources produce a generated `FoundationWebBindingError` when absent.
 `Option<String>` receives `.None` instead. Invalid boolean and integer text produces an explicit
@@ -140,9 +188,11 @@ The `application-host-web-activation` fixture proves one scoped construction per
 transient construction per injection, joined task-route execution with an owned transient, typed
 constructor failures, and zero live allocations. The runtime task fixture proves cancellation
 forwarding across the adapter's nested synchronous wait. The
+`application-host-web-middleware` fixture proves global, nested group, and route ordering plus
+global handling of an unmatched route. The
 lower-level `web-server.fdn` and `web-routing.fdn` fixtures cover manual handlers, precedence,
 method backtracking, integer, alpha, and portable regex constraints, catch-all capture, 404/405
 selection, and registration failures.
 
-This is not the completed `app/web` compatibility boundary. Middleware, continuous serving,
-graceful shutdown, TLS, OpenAPI, and the health adapter remain pending.
+This is not the completed `app/web` compatibility boundary. Manual-router middleware, continuous
+serving, graceful shutdown, TLS, OpenAPI, and the health adapter remain pending.

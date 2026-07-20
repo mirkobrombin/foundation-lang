@@ -1,0 +1,14 @@
+fn invoke(callback fn() i32) i32 {
+    callback()
+}
+
+fn invalid(&value i32) i32 {
+    invoke(fn() i32 capture $value {
+        value
+    })
+}
+
+fn main() i32 {
+    var value = 42
+    invalid(&value)
+}

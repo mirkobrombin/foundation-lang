@@ -1,0 +1,18 @@
+package test.web.reject
+
+import foundation.web
+
+@web.GlobalMiddleware(10)
+fn Invalid($request web.Request) web.Response {
+    discard request
+    web.Text(200, "invalid")
+}
+
+@web.Route(.GET, "/items")
+fn Items() web.Response {
+    web.Text(200, "items")
+}
+
+fn main() i32 {
+    0
+}

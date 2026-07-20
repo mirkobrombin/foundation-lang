@@ -1,0 +1,28 @@
+package test.web.reject
+
+import foundation.web
+
+@web.GlobalMiddleware(10)
+fn First<E>(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+) Result<web.Response, web.DispatchError<E>> {
+    next($request)
+}
+
+@web.GlobalMiddleware(10)
+fn Second<E>(
+    $request web.Request,
+    next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+) Result<web.Response, web.DispatchError<E>> {
+    next($request)
+}
+
+@web.Route(.GET, "/items")
+fn Items() web.Response {
+    web.Text(200, "items")
+}
+
+fn main() i32 {
+    0
+}
