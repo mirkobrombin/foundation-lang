@@ -1,0 +1,72 @@
+package example.ringBuffer
+
+import std.ring
+
+fn requireBuffer(
+    $value Result<own ring.Buffer<String>, ring.ConfigurationError>
+) own ring.Buffer<String> {
+    match value {
+        Ok(buffer): buffer
+        Err(error): invalidConfiguration(error)
+    }
+}
+
+fn invalidConfiguration(error ring.ConfigurationError) never {
+    discard error
+    panic("ring capacity must be positive")
+}
+
+fn accepted($value Result<void, ring.PushError<String>>) bool {
+    match value {
+        Ok: true
+        Err(error): unexpectedFull($error)
+    }
+}
+
+fn unexpectedFull($error ring.PushError<String>) bool {
+    discard error
+    false
+}
+
+fn returned($value Result<void, ring.PushError<String>>) String {
+    match value {
+        Ok: panic("ring unexpectedly accepted a full value")
+        Err(error): returnedValue($error)
+    }
+}
+
+fn returnedValue($error ring.PushError<String>) String {
+    match error {
+        Full(value): value
+    }
+}
+
+fn showNext(value String) void {
+    print("queued: " + value)
+}
+
+fn process($value Option<String>) bool {
+    match value {
+        None: false
+        Some(job): printJob($job)
+    }
+}
+
+fn printJob($job String) bool {
+    print("processing: " + job)
+    true
+}
+
+fn main() i32 {
+    var jobs = requireBuffer(ring.New<String>(2))
+    if !accepted(jobs.Push("compile")) return 1
+    if !accepted(jobs.Push("test")) return 2
+
+    const deferred = returned(jobs.Push("deploy"))
+    print("full: " + deferred)
+    discard jobs.Peek(showNext)
+
+    if !process(jobs.Pop()) return 3
+    if !process(jobs.Pop()) return 4
+    0
+}

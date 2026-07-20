@@ -1,0 +1,134 @@
+package test.compatibility.ring
+
+import std.format
+import std.ring
+
+fn requireBuffer(
+    $value Result<own ring.Buffer<i32>, ring.ConfigurationError>
+) own ring.Buffer<i32> {
+    match value {
+        Ok(buffer): buffer
+        Err(error): invalidConfiguration(error)
+    }
+}
+
+fn requireBytes(
+    $value Result<own ring.ByteBuffer, ring.ConfigurationError>
+) own ring.ByteBuffer {
+    match value {
+        Ok(buffer): buffer
+        Err(error): invalidConfiguration(error)
+    }
+}
+
+fn invalidConfiguration(error ring.ConfigurationError) never {
+    discard error
+    panic("ring compatibility configuration failed")
+}
+
+fn accepted($value Result<void, ring.PushError<i32>>) bool {
+    match value {
+        Ok: true
+        Err(error): rejected(error)
+    }
+}
+
+fn rejected(error ring.PushError<i32>) bool {
+    discard error
+    false
+}
+
+fn returned($value Result<void, ring.PushError<i32>>) i32 {
+    match value {
+        Ok: -1
+        Err(error): returnedValue(error)
+    }
+}
+
+fn returnedValue(error ring.PushError<i32>) i32 {
+    match error {
+        Full(value): value
+    }
+}
+
+fn value($item Option<i32>) i32 {
+    match item {
+        None: -1
+        Some(found): found
+    }
+}
+
+fn rejectsZero(
+    $value Result<own ring.Buffer<i32>, ring.ConfigurationError>
+) bool {
+    match value {
+        Ok(buffer): unexpectedBuffer($buffer)
+        Err(error): expectedConfigurationError(error)
+    }
+}
+
+fn unexpectedBuffer($buffer own ring.Buffer<i32>) bool {
+    discard buffer
+    false
+}
+
+fn expectedConfigurationError(error ring.ConfigurationError) bool {
+    discard error
+    true
+}
+
+fn printI32(value i32) void {
+    print(format.I32(value))
+}
+
+fn printU8(value u8) void {
+    print(format.U8(value))
+}
+
+fn printUsize(value usize) void {
+    print(format.Usize(value))
+}
+
+fn main() i32 {
+    var buffer = requireBuffer(ring.New<i32>(3))
+    printI32(buffer.Cap())
+    printI32(buffer.Len())
+    printI32(buffer.Space())
+    print(format.Bool(accepted(buffer.Push(1))))
+    print(format.Bool(accepted(buffer.Push(2))))
+    print(format.Bool(accepted(buffer.Push(3))))
+    printI32(returned(buffer.Push(4)))
+    discard buffer.Peek(printI32)
+    printI32(buffer.Len())
+    printI32(value(buffer.Pop()))
+    print(format.Bool(accepted(buffer.Push(4))))
+
+    var drained = buffer.Drain()
+    printI32(value(drained.Dequeue()))
+    printI32(value(drained.Dequeue()))
+    printI32(value(drained.Dequeue()))
+    printI32(value(drained.Dequeue()))
+    print(format.Bool(rejectsZero(ring.New<i32>(0))))
+
+    var bytes = requireBytes(ring.NewBytes(4))
+    const source [5]u8 = [104, 101, 108, 108, 111]
+    printUsize(bytes.Write(source))
+    printI32(bytes.Len())
+    var first [3]u8 = [0, 0, 0]
+    printUsize(bytes.Read(&first))
+    printU8(first[0])
+    printU8(first[1])
+    printU8(first[2])
+    const suffix [2]u8 = [33, 33]
+    printUsize(bytes.Write(suffix))
+    var second [4]u8 = [0, 0, 0, 0]
+    printUsize(bytes.Read(&second))
+    printU8(second[0])
+    printU8(second[1])
+    printU8(second[2])
+    bytes.Reset()
+    printI32(bytes.Len())
+    printI32(bytes.Space())
+    print("ring compatibility ok")
+    0
+}

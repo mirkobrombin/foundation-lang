@@ -1,0 +1,4 @@
+full: deploy
+queued: compile
+processing: compile
+processing: test

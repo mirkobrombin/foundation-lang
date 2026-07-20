@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.113.0");
+    assert.equal(manifest.version, "0.114.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1348,6 +1348,11 @@ test("grammar and completions track compiler keywords", () => {
         "resiliency.Bulkhead", "resiliency.NewBulkhead",
         "rateWeb.RateLimit",
         "rateWeb.RateLimitWithPolicy",
+        "std.ring", "ring.Buffer", "ring.ByteBuffer", "ring.ConfigurationError",
+        "ring.PushError", "ring.New", "ring.NewBytes", "ring.Buffer.Cap",
+        "ring.Buffer.Len", "ring.Buffer.Space", "ring.Buffer.IsEmpty", "ring.Buffer.Push",
+        "ring.Buffer.Pop", "ring.Buffer.Peek", "ring.Buffer.Drain", "ring.Buffer.Reset",
+        "ring.ByteBuffer.Write", "ring.ByteBuffer.Read", "ring.ByteBuffer.Reset",
         "foundation.worker", "worker.Supervisor", "worker.NewSupervisor",
         "worker.Supervisor.Start", "worker.Supervisor.Shutdown", "worker.Supervisor.Cancel",
         "worker.Group", "worker.GroupNext", "worker.GroupWait", "worker.GroupWake",

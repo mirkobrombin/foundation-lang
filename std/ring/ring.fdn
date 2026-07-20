@@ -1,0 +1,338 @@
+package std.ring
+
+import std.collections
+
+// Classifies invalid ring construction.
+enum ConfigurationError {
+    // The requested capacity was less than one.
+    ZeroCapacity
+}
+
+// Returns an unaccepted value when a bounded ring is full.
+enum PushError<T> {
+    // Keeps the value rejected by a full ring.
+    Full(value T)
+}
+
+struct slot<T> {
+    value Option<T>
+    next Option<own slot<T>>
+}
+
+struct slotList<T> {
+    head Option<own slot<T>>
+    length i32
+
+    fn Len(self) i32 {
+        self.length
+    }
+
+    fn IsEmpty(self) bool {
+        self.length == 0
+    }
+
+    fn push(&self, $node own slot<T>) void {
+        var current = node
+        current.next = replace self.head with .None
+        self.head = .Some(current)
+        self.length = self.length + 1
+    }
+
+    fn pop(&self) Option<own slot<T>> {
+        const selected = replace self.head with .None
+        match selected {
+            None: .None
+            Some(node): someSlot(&self, $node)
+        }
+    }
+
+    fn visitFirst(&self, operation fn(T) void) bool {
+        const selected = self.pop()
+        match selected {
+            None: false
+            Some(node): visitSlot(&self, $node, operation)
+        }
+    }
+
+    fn clear(&self) void {
+        while self.length > 0 {
+            discard self.pop()
+        }
+    }
+
+    fn drop(&self) void {
+        self.clear()
+    }
+}
+
+// Stores a bounded FIFO sequence without implicit element copies.
+struct Buffer<T> {
+    capacity i32
+    front own slotList<T>
+    back own slotList<T>
+    free own slotList<T>
+
+    // Returns the maximum number of stored elements.
+    fn Cap(self) i32 {
+        self.capacity
+    }
+
+    // Returns the number of stored elements.
+    fn Len(self) i32 {
+        self.front.Len() + self.back.Len()
+    }
+
+    // Returns the remaining number of elements accepted by Push.
+    fn Space(self) i32 {
+        self.free.Len()
+    }
+
+    // Reports whether the ring contains no elements.
+    fn IsEmpty(self) bool {
+        self.Len() == 0
+    }
+
+    // Transfers one value into the ring or returns it unchanged when full.
+    fn Push(&self, $value T) Result<void, PushError<T>> {
+        const selected = self.free.pop()
+        match selected {
+            None: .Err(.Full(value))
+            Some(node): storeValue(&self, $node, $value)
+        }
+    }
+
+    // Transfers the oldest element out of the ring.
+    fn Pop(&self) Option<T> {
+        if self.front.IsEmpty() {
+            self.rotate()
+        }
+        const selected = self.front.pop()
+        match selected {
+            None: .None
+            Some(node): takeValue(&self, $node)
+        }
+    }
+
+    // Visits the oldest element without copying or removing it.
+    fn Peek(&self, operation fn(T) void) bool {
+        if self.front.IsEmpty() {
+            self.rotate()
+        }
+        self.front.visitFirst(operation)
+    }
+
+    // Transfers every element into a FIFO queue and clears the ring.
+    fn Drain(&self) own collections.Queue<T> {
+        var values = collections.NewQueue<T>()
+        while !self.IsEmpty() {
+            values.Enqueue(requiredValue(self.Pop()))
+        }
+        values
+    }
+
+    // Removes every element and keeps the configured capacity.
+    fn Reset(&self) void {
+        while !self.IsEmpty() {
+            discard self.Pop()
+        }
+    }
+
+    fn drop(&self) void {
+        self.Reset()
+    }
+
+    fn rotate(&self) void {
+        while !self.back.IsEmpty() {
+            self.front.push(requiredSlot(self.back.pop()))
+        }
+    }
+}
+
+// Creates a bounded ring or rejects a zero or negative capacity.
+fn New<T>(capacity i32) Result<own Buffer<T>, ConfigurationError> {
+    if capacity < 1 {
+        return .Err(.ZeroCapacity)
+    }
+    var free = newSlotList<T>()
+    var remaining = capacity
+    while remaining > 0 {
+        free.push(own slot<T> { value = .None next = .None })
+        remaining = remaining - 1
+    }
+    .Ok(own Buffer<T> {
+        capacity = capacity
+        front = newSlotList<T>()
+        back = newSlotList<T>()
+        free = free
+    })
+}
+
+fn newSlotList<T>() own slotList<T> {
+    own slotList<T> { head = .None length = 0 }
+}
+
+fn popSlot<T>(&list slotList<T>, $node own slot<T>) own slot<T> {
+    var current = node
+    list.head = replace current.next with .None
+    list.length = list.length - 1
+    current
+}
+
+fn someSlot<T>(
+    &list slotList<T>,
+    $node own slot<T>
+) Option<own slot<T>> {
+    .Some(popSlot(&list, $node))
+}
+
+fn visitSlot<T>(
+    &list slotList<T>,
+    $node own slot<T>,
+    operation fn(T) void
+) bool {
+    var current = node
+    const selected = replace current.value with .None
+    match selected {
+        None: restoreEmptySlot(&list, $current)
+        Some(value): restoreVisitedSlot(&list, $current, $value, operation)
+    }
+}
+
+fn restoreEmptySlot<T>(&list slotList<T>, $node own slot<T>) bool {
+    list.push($node)
+    false
+}
+
+fn restoreVisitedSlot<T>(
+    &list slotList<T>,
+    $node own slot<T>,
+    $value T,
+    operation fn(T) void
+) bool {
+    operation(value)
+    var current = node
+    current.value = .Some(value)
+    list.push($current)
+    true
+}
+
+fn storeValue<T>(
+    &buffer Buffer<T>,
+    $node own slot<T>,
+    $value T
+) Result<void, PushError<T>> {
+    var current = node
+    current.value = .Some(value)
+    buffer.back.push($current)
+    .Ok
+}
+
+fn takeValue<T>(&buffer Buffer<T>, $node own slot<T>) Option<T> {
+    var current = node
+    const selected = replace current.value with .None
+    buffer.free.push($current)
+    selected
+}
+
+fn requiredSlot<T>($value Option<own slot<T>>) own slot<T> {
+    match value {
+        None: missingSlot<T>()
+        Some(node): node
+    }
+}
+
+fn missingSlot<T>() own slot<T> {
+    panic("ring slot invariant failed")
+}
+
+fn requiredValue<T>($value Option<T>) T {
+    match value {
+        None: missingValue<T>()
+        Some(item): item
+    }
+}
+
+fn missingValue<T>() T {
+    panic("ring value invariant failed")
+}
+
+// Provides bounded partial reads and writes for byte sequences.
+struct ByteBuffer {
+    buffer own Buffer<u8>
+
+    // Returns the maximum number of stored bytes.
+    fn Cap(self) i32 {
+        self.buffer.Cap()
+    }
+
+    // Returns the number of stored bytes.
+    fn Len(self) i32 {
+        self.buffer.Len()
+    }
+
+    // Returns the remaining number of bytes accepted by Write.
+    fn Space(self) i32 {
+        self.buffer.Space()
+    }
+
+    // Writes bytes until the source ends or the buffer is full.
+    fn Write(&self, source [u8]) usize {
+        var written usize = 0
+        for value in source {
+            if !acceptedByte(self.buffer.Push(value)) return written
+            written = written + 1
+        }
+        written
+    }
+
+    // Reads bytes until the destination is full or the buffer is empty.
+    fn Read(&self, &destination [u8]) usize {
+        var read usize = 0
+        while read < len(destination) {
+            if !readByte(self.buffer.Pop(), &destination, read) return read
+            read = read + 1
+        }
+        read
+    }
+
+    // Removes every byte and keeps the configured capacity.
+    fn Reset(&self) void {
+        self.buffer.Reset()
+    }
+
+    fn drop(&self) void {
+        self.buffer.Reset()
+    }
+}
+
+// Creates a bounded byte buffer or rejects a zero or negative capacity.
+fn NewBytes(capacity i32) Result<own ByteBuffer, ConfigurationError> {
+    match New<u8>(capacity) {
+        Ok(buffer): .Ok(own ByteBuffer { buffer = buffer })
+        Err(error): .Err(error)
+    }
+}
+
+fn acceptedByte($result Result<void, PushError<u8>>) bool {
+    match result {
+        Ok: true
+        Err(error): rejectedByte(error)
+    }
+}
+
+fn rejectedByte(error PushError<u8>) bool {
+    discard error
+    false
+}
+
+fn readByte($value Option<u8>, &destination [u8], index usize) bool {
+    match value {
+        None: false
+        Some(byte): assignByte(byte, &destination, index)
+    }
+}
+
+fn assignByte(value u8, &destination [u8], index usize) bool {
+    destination[index] = value
+    true
+}

@@ -3457,6 +3457,69 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(
+        NAME stage0.run.ring-values
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.fdn
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ring_native.c
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
+    )
+    add_test(
+        NAME stage0.run.ring-values-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/ring-values.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/ring-values
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.out
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ring_native.c
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.ring-push-result
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/ring-push-result.fdn
+            -DCODE=FDN2051
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.emit.ring-values-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.fdn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/ring-values-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/ring-values-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.run.ring-buffer-example
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/ring-buffer
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/ring-buffer/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.ring-buffer-example-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/ring-buffer
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/ring-buffer-example.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/ring-buffer-example
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/ring-buffer/expected.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
         NAME stage0.run.events
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -4029,6 +4092,20 @@ if(BUILD_TESTING)
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/collections-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/collections-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/collections-stress/expected.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.ring-values-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/ring-values-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/ring-values-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.out
+                -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ring_native.c
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake

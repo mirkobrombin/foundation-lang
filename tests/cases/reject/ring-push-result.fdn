@@ -1,0 +1,21 @@
+import std.ring
+
+fn requireBuffer(
+    $value Result<own ring.Buffer<i32>, ring.ConfigurationError>
+) own ring.Buffer<i32> {
+    match value {
+        Ok(buffer): buffer
+        Err(error): invalidConfiguration(error)
+    }
+}
+
+fn invalidConfiguration(error ring.ConfigurationError) never {
+    discard error
+    panic("ring configuration failed")
+}
+
+fn main() i32 {
+    var buffer = requireBuffer(ring.New<i32>(1))
+    buffer.Push(1)
+    0
+}

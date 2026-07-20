@@ -1,0 +1,202 @@
+import std.format
+import std.ring
+
+extern c fn totalAllocations() usize as foundation_ring_total_allocations
+
+struct Token {
+    value i32
+}
+
+fn requireBuffer(
+    $value Result<own ring.Buffer<i32>, ring.ConfigurationError>
+) own ring.Buffer<i32> {
+    match value {
+        Ok(buffer): buffer
+        Err(error): invalidConfiguration(error)
+    }
+}
+
+fn requireBytes(
+    $value Result<own ring.ByteBuffer, ring.ConfigurationError>
+) own ring.ByteBuffer {
+    match value {
+        Ok(buffer): buffer
+        Err(error): invalidConfiguration(error)
+    }
+}
+
+fn requireTokenBuffer(
+    $value Result<own ring.Buffer<Token>, ring.ConfigurationError>
+) own ring.Buffer<Token> {
+    match value {
+        Ok(buffer): buffer
+        Err(error): invalidConfiguration(error)
+    }
+}
+
+fn invalidConfiguration(error ring.ConfigurationError) never {
+    discard error
+    panic("ring configuration failed")
+}
+
+fn rejectsConfiguration(
+    $value Result<own ring.Buffer<i32>, ring.ConfigurationError>
+) bool {
+    match value {
+        Ok(buffer): unexpectedBuffer($buffer)
+        Err(error): rejectedConfiguration(error)
+    }
+}
+
+fn unexpectedBuffer($buffer own ring.Buffer<i32>) bool {
+    discard buffer
+    false
+}
+
+fn rejectedConfiguration(error ring.ConfigurationError) bool {
+    discard error
+    true
+}
+
+fn accepted($value Result<void, ring.PushError<i32>>) bool {
+    match value {
+        Ok: true
+        Err(error): rejected(error)
+    }
+}
+
+fn rejected(error ring.PushError<i32>) bool {
+    discard error
+    false
+}
+
+fn returned($value Result<void, ring.PushError<i32>>) i32 {
+    match value {
+        Ok: -1
+        Err(error): returnedValue(error)
+    }
+}
+
+fn returnedValue(error ring.PushError<i32>) i32 {
+    match error {
+        Full(value): value
+    }
+}
+
+fn value($item Option<i32>) i32 {
+    match item {
+        None: -1
+        Some(found): found
+    }
+}
+
+fn observe(value i32) void {
+    print(format.I32(value))
+}
+
+fn ignoreValue(value i32) void {
+    discard value
+}
+
+fn observeToken(value Token) void {
+    print(format.I32(value.value))
+}
+
+fn returnedToken(
+    $value Result<void, ring.PushError<Token>>
+) Token {
+    match value {
+        Ok: missingToken()
+        Err(error): returnedTokenValue($error)
+    }
+}
+
+fn returnedTokenValue($error ring.PushError<Token>) Token {
+    match error {
+        Full(value): value
+    }
+}
+
+fn missingToken() Token {
+    panic("ring unexpectedly accepted a full value")
+}
+
+fn main() i32 {
+    if !rejectsConfiguration(ring.New<i32>(0)) return 1
+    if !rejectsConfiguration(ring.New<i32>(-1)) return 2
+    var buffer = requireBuffer(ring.New<i32>(3))
+    if buffer.Cap() != 3 || buffer.Len() != 0 || buffer.Space() != 3 return 3
+    if !accepted(buffer.Push(1)) || !accepted(buffer.Push(2)) return 4
+    if !accepted(buffer.Push(3)) || returned(buffer.Push(4)) != 4 return 5
+
+    if !buffer.Peek(observe) return 6
+    if buffer.Len() != 3 || value(buffer.Pop()) != 1 return 7
+    if !accepted(buffer.Push(4)) return 8
+
+    var drained = buffer.Drain()
+    if buffer.Len() != 0 || buffer.Space() != 3 return 9
+    if value(drained.Dequeue()) != 2 return 10
+    if value(drained.Dequeue()) != 3 return 11
+    if value(drained.Dequeue()) != 4 || !drained.IsEmpty() return 12
+
+    if !accepted(buffer.Push(5)) return 13
+    buffer.Reset()
+    if !buffer.IsEmpty() || buffer.Space() != 3 return 14
+
+    var stable = requireBuffer(ring.New<i32>(2))
+    const stableAllocations = totalAllocations()
+    if !accepted(stable.Push(10)) || !accepted(stable.Push(11)) return 15
+    if returned(stable.Push(12)) != 12 || !stable.Peek(ignoreValue) return 16
+    if value(stable.Pop()) != 10 || !accepted(stable.Push(12)) return 17
+    stable.Reset()
+    if totalAllocations() != stableAllocations return 18
+
+    var tokens = requireTokenBuffer(ring.New<Token>(1))
+    const firstToken = new Token { value = 7 }
+    if !acceptedToken(tokens.Push($firstToken)) return 19
+    if !tokens.Peek(observeToken) return 20
+    const secondToken = new Token { value = 8 }
+    const returnedOwner = returnedToken(tokens.Push($secondToken))
+    if returnedOwner.value != 8 return 21
+    discard returnedOwner
+    const poppedOwner = tokenValue(tokens.Pop())
+    if poppedOwner.value != 7 return 22
+    discard poppedOwner
+
+    var bytes = requireBytes(ring.NewBytes(4))
+    const byteAllocations = totalAllocations()
+    const source [5]u8 = [104, 101, 108, 108, 111]
+    if bytes.Write(source) != 4 || bytes.Len() != 4 return 23
+    var first [3]u8 = [0, 0, 0]
+    if bytes.Read(&first) != 3 return 24
+    if first[0] != 104 || first[1] != 101 || first[2] != 108 return 25
+    const suffix [2]u8 = [33, 33]
+    if bytes.Write(suffix) != 2 return 26
+    var second [4]u8 = [0, 0, 0, 0]
+    if bytes.Read(&second) != 3 return 27
+    if second[0] != 108 || second[1] != 33 || second[2] != 33 return 28
+    bytes.Reset()
+    if totalAllocations() != byteAllocations return 29
+
+    print("ring ok")
+    0
+}
+
+fn acceptedToken($value Result<void, ring.PushError<Token>>) bool {
+    match value {
+        Ok: true
+        Err(error): rejectedToken($error)
+    }
+}
+
+fn rejectedToken($error ring.PushError<Token>) bool {
+    discard error
+    false
+}
+
+fn tokenValue($value Option<Token>) Token {
+    match value {
+        None: missingToken()
+        Some(token): token
+    }
+}

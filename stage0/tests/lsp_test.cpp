@@ -3453,6 +3453,106 @@ void resiliencyPackagesExposeEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void ringPackageExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string completeContents =
+        "package sample\n"
+        "\n"
+        "import std.ring\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    const created = ring.New<i32>(4) else error {\n"
+        "        discard error\n"
+        "        return 1\n"
+        "    }\n"
+        "    var buffer = created\n"
+        "    const pushed = buffer.Push(42)\n"
+        "    discard pushed\n"
+        "    buffer.Reset()\n"
+        "    0\n"
+        "}\n";
+    const std::string completionContents =
+        "package sample\n"
+        "\n"
+        "import std.ring\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    const created = ring.New<i32>(4) else error {\n"
+        "        discard error\n"
+        "        return 1\n"
+        "    }\n"
+        "    var buffer = created\n"
+        "    const pushed = buffer.Push(42)\n"
+        "    discard pushed\n"
+        "    buffer.\n"
+        "    0\n"
+        "}\n";
+    writeFile(source, completeContents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(completeContents) +
+        "\"}}}";
+    const auto change =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":2},\"contentChanges\":[{\"text\":\"" +
+        jsonEscape(completionContents) + "\"}]}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(241, "hover", 5, 27)) +
+        frame(request(242, "signatureHelp", 5, 34)) +
+        frame(request(243, "definition", 5, 27)) +
+        frame(request(244, "hover", 10, 29)) +
+        frame(change) + frame(request(245, "completion", 12, 11)) + frame(shutdown) +
+        frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto newHover = responseFor(transcript, 241);
+    const auto newSignature = responseFor(transcript, 242);
+    const auto newDefinition = responseFor(transcript, 243);
+    const auto pushHover = responseFor(transcript, 244);
+    const auto members = responseFor(transcript, 245);
+
+    expect(status == 0, "ring language server transcript exits cleanly");
+    expect(errors.str().empty(), "ring requests write no server errors");
+    expect(newHover.find("fn New<T>(capacity i32)") != std::string::npos &&
+               newHover.find("zero or negative capacity") != std::string::npos,
+           "ring constructor hover exposes its typed contract");
+    expect(newSignature.find("fn New<T>(capacity i32)") != std::string::npos,
+           "ring construction receives compiler-backed signature help");
+    expect(newDefinition.find("ring.fdn") != std::string::npos,
+           "ring functions navigate to their SDK declaration");
+    expect(pushHover.find("fn Push") != std::string::npos &&
+               pushHover.find("returns it unchanged when full") != std::string::npos,
+           "ring push hover exposes ownership on full");
+    expect(members.find("\"label\":\"Push\"") != std::string::npos &&
+               members.find("\"label\":\"Pop\"") != std::string::npos &&
+               members.find("\"label\":\"Peek\"") != std::string::npos &&
+               members.find("\"label\":\"Drain\"") != std::string::npos,
+           "ring member completion exposes the bounded FIFO surface");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void webActivationExposesEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fdn";
@@ -3948,6 +4048,7 @@ int main() {
     derivedValidationExposesEditorDetails();
     openAPIAttributesExposeEditorDetails();
     authenticationPackagesExposeEditorDetails();
+    ringPackageExposesEditorDetails();
     resiliencyPackagesExposeEditorDetails();
     webActivationExposesEditorDetails();
     manualWebMiddlewareExposesEditorDetails();
