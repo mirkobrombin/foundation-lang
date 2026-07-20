@@ -515,6 +515,24 @@
         ],
         "description": "Unwrap a Result with an explicit error path"
     },
+    "Result binding without error": {
+        "prefix": "constelseignore",
+        "body": [
+            "const ${1:value} = ${2:result} else {",
+            "    ${3:return}",
+            "}"
+        ],
+        "description": "Unwrap a Result while intentionally ignoring its error payload"
+    },
+    "Result expression without error": {
+        "prefix": "resultelseignore",
+        "body": [
+            "${1:result} else {",
+            "    ${2:return}",
+            "}"
+        ],
+        "description": "Handle a Result expression while intentionally ignoring its error payload"
+    },
     "Discard value": {
         "prefix": "discard",
         "body": "discard ${1:value}",

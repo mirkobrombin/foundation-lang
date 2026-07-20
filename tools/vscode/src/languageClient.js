@@ -235,6 +235,9 @@ class FoundationLanguageClient {
                     }
                 });
             }),
+            this.vscode.workspace.registerTextDocumentContentProvider("foundation-builtin", {
+                provideTextDocumentContent: (uri) => this.builtinDocument(uri)
+            }),
             this.vscode.languages.registerDocumentSymbolProvider("foundation", {
                 provideDocumentSymbols: (document, token) => this.documentSymbols(document, token)
             }),
@@ -796,6 +799,16 @@ class FoundationLanguageClient {
             }
             return item;
         });
+    }
+
+    async builtinDocument(uri) {
+        const filename = uri.path.split("/").pop() || "";
+        const name = filename.endsWith(".fdn") ? filename.slice(0, -4) : "";
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+            return "";
+        }
+        const result = await this.request("foundation/builtinDocument", { name });
+        return typeof result?.contents === "string" ? result.contents : "";
     }
 
     async signatureHelp(document, position, token) {

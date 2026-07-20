@@ -2764,13 +2764,18 @@ void compilerBuiltinsExposeEditorDetails() {
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
     std::istringstream input(
-        frame(initialize) + frame(open) + frame(request(180, "hover", 1, 6)) +
+        frame(initialize) + frame(open) + frame(request(179, "completion", 1, 4)) +
+        frame(request(180, "hover", 1, 6)) +
         frame(request(181, "hover", 2, 21)) + frame(request(182, "hover", 3, 23)) +
         frame(request(183, "hover", 4, 43)) +
         frame(request(184, "signatureHelp", 1, 16)) +
         frame(request(185, "signatureHelp", 2, 29)) +
         frame(request(186, "signatureHelp", 3, 39)) +
-        frame(request(187, "signatureHelp", 4, 57)) + frame(shutdown) + frame(exit));
+        frame(request(187, "signatureHelp", 4, 57)) +
+        frame(request(188, "definition", 1, 6)) +
+        frame("{\"jsonrpc\":\"2.0\",\"id\":189,\"method\":\"foundation/builtinDocument\","
+              "\"params\":{\"name\":\"print\"}}") +
+        frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
@@ -2778,6 +2783,12 @@ void compilerBuiltinsExposeEditorDetails() {
 
     expect(status == 0, "builtin language server transcript exits cleanly");
     expect(errors.str().empty(), "builtin requests write no server errors");
+    const auto completion = responseFor(transcript, 179);
+    for (const auto builtin : {"print", "panic", "len", "null", "isNull", "channel"}) {
+        expect(completion.find("\"label\":\"" + std::string(builtin) + "\"") !=
+                   std::string::npos,
+               "compiler builtin completion is available from the shared editor catalog");
+    }
     expect(responseFor(transcript, 180).find("fn print(value String) void") !=
                std::string::npos,
            "print hover exposes its typed signature");
@@ -2791,12 +2802,23 @@ void compilerBuiltinsExposeEditorDetails() {
            "channel hover exposes its generic endpoint result");
     expect(responseFor(transcript, 184).find("value String") != std::string::npos,
            "print calls receive parameter signature help");
+    expect(responseFor(transcript, 184).find("\"activeParameter\":0") !=
+               std::string::npos,
+           "builtin signature help marks the active parameter");
     expect(responseFor(transcript, 185).find("String | [N]T | [T]") != std::string::npos,
            "len calls receive supported sequence signature help");
     expect(responseFor(transcript, 186).find("message String") != std::string::npos,
            "panic calls receive parameter signature help");
     expect(responseFor(transcript, 187).find("capacity u64") != std::string::npos,
            "channel calls receive capacity signature help");
+    expect(responseFor(transcript, 188).find("foundation-builtin://foundation/print.fdn") !=
+               std::string::npos,
+           "builtin definition opens its compiler-provided virtual document");
+    expect(responseFor(transcript, 189).find("fn print(value String) void") !=
+               std::string::npos &&
+               responseFor(transcript, 189).find("Built into the Foundation compiler") !=
+                   std::string::npos,
+           "builtin virtual document uses the shared compiler catalog");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);

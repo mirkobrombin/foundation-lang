@@ -7,6 +7,7 @@
 #include "foundation/package.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -82,6 +83,85 @@ class Json {
   private:
     std::variant<std::nullptr_t, bool, double, std::string, Array, Object> value_{nullptr};
 };
+
+struct BuiltinEditorInfo {
+    std::string_view name;
+    std::string_view signature;
+    std::string_view insertText;
+    std::string_view documentation;
+    std::string_view parameter;
+};
+
+constexpr std::array builtinEditorInfos{
+    BuiltinEditorInfo{
+        "print",
+        "fn print(value String) void",
+        "print(${1:value})",
+        "Writes one UTF-8 String followed by a newline. The call reads its argument without "
+        "consuming an owned String.",
+        "value String",
+    },
+    BuiltinEditorInfo{
+        "panic",
+        "fn panic(message String) never",
+        "panic(${1:message})",
+        "Terminates the program with a complete Foundation source trace. Panic does not unwind "
+        "or run drop glue; recoverable failures use `Result<T, E>`.",
+        "message String",
+    },
+    BuiltinEditorInfo{
+        "len",
+        "fn len(value String | [N]T | [T]) usize",
+        "len(${1:value})",
+        "Returns the encoded byte length of a String or the element count of an array or slice. "
+        "The call reads its argument without consuming it.",
+        "value String | [N]T | [T]",
+    },
+    BuiltinEditorInfo{
+        "null",
+        "fn null<P>() P",
+        "null<${1:*void}>()",
+        "Constructs a null raw pointer of the explicit pointer type, for example "
+        "`null<*void>()`. This is available only inside `unsafe`.",
+        "",
+    },
+    BuiltinEditorInfo{
+        "isNull",
+        "fn isNull(pointer P) bool",
+        "isNull(${1:pointer})",
+        "Checks a raw pointer without dereferencing it and is safe outside `unsafe`.",
+        "pointer P",
+    },
+    BuiltinEditorInfo{
+        "channel",
+        "fn channel<T>(capacity u64) Channel<T>",
+        "channel<${1:T}>(${2:capacity})",
+        "Creates owned directional sender and receiver endpoints. Capacity zero creates a "
+        "rendezvous channel; a positive capacity creates a bounded FIFO.",
+        "capacity u64",
+    },
+};
+
+[[nodiscard]] const BuiltinEditorInfo *builtinEditorInfo(std::string_view name) {
+    const auto found = std::find_if(
+        builtinEditorInfos.begin(), builtinEditorInfos.end(),
+        [name](const BuiltinEditorInfo &candidate) { return candidate.name == name; });
+    return found == builtinEditorInfos.end() ? nullptr : &*found;
+}
+
+[[nodiscard]] std::string builtinHoverDocumentation(const BuiltinEditorInfo &builtin) {
+    return "```foundation\n" + std::string(builtin.signature) + "\n```\n\n" +
+           std::string(builtin.documentation);
+}
+
+[[nodiscard]] std::string builtinDefinitionUri(const BuiltinEditorInfo &builtin) {
+    return "foundation-builtin://foundation/" + std::string(builtin.name) + ".fdn";
+}
+
+[[nodiscard]] std::string builtinVirtualDocument(const BuiltinEditorInfo &builtin) {
+    return "// Built into the Foundation compiler.\n// " + std::string(builtin.documentation) +
+           "\n\n" + std::string(builtin.signature) + "\n";
+}
 
 void appendUtf8(std::string &output, std::uint32_t codePoint) {
     if (codePoint <= 0x7fU) {
@@ -1719,6 +1799,8 @@ class LanguageServer {
             sendMessage(output_, response(*id, provideCodeLenses(message.find("params"))));
         } else if (*method == "foundation/compositeType" && id != nullptr) {
             sendMessage(output_, response(*id, provideCompositeType(message.find("params"))));
+        } else if (*method == "foundation/builtinDocument" && id != nullptr) {
+            sendMessage(output_, response(*id, provideBuiltinDocument(message.find("params"))));
         } else if (*method == "textDocument/prepareTypeHierarchy" && id != nullptr) {
             sendMessage(output_, response(*id, prepareTypeHierarchy(message.find("params"))));
         } else if (*method == "typeHierarchy/supertypes" && id != nullptr) {
@@ -2359,6 +2441,13 @@ class LanguageServer {
             if (const auto found = wordAt(source.contents, *position, *sourceId);
                 found.has_value()) {
                 const auto keyword = source.contents.substr(found->offset, found->length);
+                if (const auto *builtin = builtinEditorInfo(keyword); builtin != nullptr) {
+                    return Json::object(
+                        {{"contents",
+                          Json::object({{"kind", "markdown"},
+                                        {"value", builtinHoverDocumentation(*builtin)}})},
+                         {"range", lspRange(source.contents, *found)}});
+                }
                 std::string documentation;
                 if (keyword == "select") {
                     documentation =
@@ -2395,35 +2484,6 @@ class LanguageServer {
                         "pointer construction, arithmetic, dereference, slice storage access, "
                         "and C ABI calls whose signature contains a raw pointer. Type checking "
                         "and ownership rules remain active.";
-                } else if (keyword == "null") {
-                    documentation =
-                        "```foundation\nfn null<P>() P\n```\n\nConstructs a null raw pointer "
-                        "of the explicit pointer type, for example `null<*void>()`. This is "
-                        "available only inside `unsafe`.";
-                } else if (keyword == "isNull") {
-                    documentation =
-                        "```foundation\nfn isNull(pointer P) bool\n```\n\nChecks a raw pointer "
-                        "without dereferencing it and is safe outside `unsafe`.";
-                } else if (keyword == "print") {
-                    documentation =
-                        "```foundation\nfn print(value String) void\n```\n\nWrites one UTF-8 "
-                        "String followed by a newline. The call reads its argument without "
-                        "consuming an owned String.";
-                } else if (keyword == "panic") {
-                    documentation =
-                        "```foundation\nfn panic(message String) never\n```\n\nTerminates the "
-                        "program with a complete Foundation source trace. Panic does not unwind "
-                        "or run drop glue; recoverable failures use `Result<T, E>`.";
-                } else if (keyword == "len") {
-                    documentation =
-                        "```foundation\nfn len(value String | [N]T | [T]) usize\n```\n\nReturns "
-                        "the encoded byte length of a String or the element count of an array or "
-                        "slice. The call reads its argument without consuming it.";
-                } else if (keyword == "channel") {
-                    documentation =
-                        "```foundation\nfn channel<T>(capacity u64) Channel<T>\n```\n\nCreates "
-                        "owned directional sender and receiver endpoints. Capacity zero creates "
-                        "a rendezvous channel; a positive capacity creates a bounded FIFO.";
                 }
                 if (!documentation.empty()) {
                     return Json::object(
@@ -2675,6 +2735,22 @@ class LanguageServer {
             if (imported != nullptr) {
                 return packageLocations(*analysis, *imported);
             }
+            if (const auto word = wordAt(source.contents, *position, *sourceId);
+                word.has_value()) {
+                const auto name = source.contents.substr(word->offset, word->length);
+                if (const auto *builtin = builtinEditorInfo(name); builtin != nullptr) {
+                    const auto start = 3;
+                    const auto end = start + static_cast<int>(builtin->name.size());
+                    return Json::object(
+                        {{"uri", builtinDefinitionUri(*builtin)},
+                         {"range",
+                          Json::object(
+                              {{"start", Json::object({{"line", 3}, {"character", start}})},
+                               {"end",
+                                Json::object(
+                                    {{"line", 3}, {"character", end}})}})}});
+                }
+            }
         }
         SourceSpan word;
         const auto &index = languageIndex(*analysis);
@@ -2705,6 +2781,17 @@ class LanguageServer {
         const auto &source = analysis->sources[target->definition.source];
         return Json::object({{"uri", pathToFileUri(source.identity)},
                              {"range", lspRange(source.contents, target->definition)}});
+    }
+
+    [[nodiscard]] Json provideBuiltinDocument(const Json *params) const {
+        const auto name = stringField(params, "name");
+        const auto *builtin = name.has_value() ? builtinEditorInfo(*name) : nullptr;
+        if (builtin == nullptr) {
+            return Json(nullptr);
+        }
+        return Json::object(
+            {{"languageId", "foundation"},
+             {"contents", builtinVirtualDocument(*builtin)}});
     }
 
     [[nodiscard]] Json provideTypeDefinition(const Json *params) const {
@@ -4193,26 +4280,12 @@ class LanguageServer {
                                     "NumberError", "Task", "Channel", "Sender", "Receiver"}) {
                 addCompletion(items, type, 25);
             }
-            addCompletion(items, "print", 3, "fn print(value String) void",
-                          "print(${1:value})",
-                          "Writes one String followed by a newline without consuming it.");
-            addCompletion(items, "panic", 3, "fn panic(message String) never",
-                          "panic(${1:message})",
-                          "Terminates with a complete Foundation source trace.");
-            addCompletion(items, "len", 3,
-                          "fn len(value String | [N]T | [T]) usize",
-                          "len(${1:value})",
-                          "Returns a String byte length or an array or slice element count.");
-            addCompletion(items, "null", 3, "fn null<P>() P",
-                          "null<${1:*void}>()",
-                          "Constructs an explicitly typed null raw pointer inside unsafe.");
-            addCompletion(items, "isNull", 3, "fn isNull(pointer P) bool",
-                          "isNull(${1:pointer})",
-                          "Checks a raw pointer without dereferencing it.");
-            addCompletion(items, "channel", 3,
-                          "fn channel<T>(capacity u64) Channel<T>",
-                          "channel<${1:T}>(${2:capacity})",
-                          "Creates owned directional channel endpoints.");
+            for (const auto &builtin : builtinEditorInfos) {
+                addCompletion(items, std::string(builtin.name), 3,
+                              std::string(builtin.signature),
+                              std::string(builtin.insertText),
+                              std::string(builtin.documentation));
+            }
             addCompletion(items, "range", 3,
                           "fn range(start i32, stop i32, step i32) Range",
                           "range(${1:start}, ${2:stop}, step = ${3:1})");
@@ -4415,71 +4488,24 @@ class LanguageServer {
             return Json(nullptr);
         }
         const auto name = source.substr(start, nameEnd - start);
-        const auto builtinSignature = [](std::string label, std::string documentation,
-                                         std::string parameter) {
+        const auto builtinSignature = [](const BuiltinEditorInfo &builtin) {
             Json::Object signature{
-                {"label", std::move(label)},
+                {"label", std::string(builtin.signature)},
                 {"documentation",
                  Json::object({{"kind", "markdown"},
-                               {"value", std::move(documentation)}})}};
-            if (!parameter.empty()) {
+                               {"value", std::string(builtin.documentation)}})}};
+            if (!builtin.parameter.empty()) {
                 signature.emplace(
                     "parameters",
-                    Json::array({Json::object({{"label", std::move(parameter)}})}));
+                    Json::array({Json::object({{"label", std::string(builtin.parameter)}})}));
             }
             return Json::object(
                 {{"signatures", Json::array({Json(std::move(signature))})},
                  {"activeSignature", 0},
                  {"activeParameter", 0}});
         };
-        if (name == "print") {
-            return builtinSignature(
-                "fn print(value String) void",
-                "Writes one String followed by a newline without consuming it.",
-                "value String");
-        }
-        if (name == "panic") {
-            return builtinSignature(
-                "fn panic(message String) never",
-                "Terminates with a complete Foundation source trace. Recoverable failures use "
-                "`Result<T, E>`.",
-                "message String");
-        }
-        if (name == "len") {
-            return builtinSignature(
-                "fn len(value String | [N]T | [T]) usize",
-                "Returns a String byte length or an array or slice element count without "
-                "consuming the value.",
-                "value String | [N]T | [T]");
-        }
-        if (name == "channel") {
-            return builtinSignature(
-                "fn channel<T>(capacity u64) Channel<T>",
-                "Creates owned directional channel endpoints.", "capacity u64");
-        }
-        if (name == "null") {
-            return Json::object(
-                {{"signatures",
-                  Json::array({Json::object(
-                      {{"label", "fn null<P>() P"},
-                       {"documentation",
-                        Json::object({{"kind", "markdown"},
-                                      {"value", "Constructs an explicitly typed null raw "
-                                                "pointer inside `unsafe`."}})}})})},
-                 {"activeSignature", 0}, {"activeParameter", 0}});
-        }
-        if (name == "isNull") {
-            return Json::object(
-                {{"signatures",
-                  Json::array({Json::object(
-                      {{"label", "fn isNull(pointer P) bool"},
-                       {"documentation",
-                        Json::object({{"kind", "markdown"},
-                                      {"value", "Checks a raw pointer without dereferencing "
-                                                "it."}})},
-                       {"parameters",
-                        Json::array({Json::object({{"label", "pointer P"}})})}})})},
-                 {"activeSignature", 0}, {"activeParameter", 0}});
+        if (const auto *builtin = builtinEditorInfo(name); builtin != nullptr) {
+            return builtinSignature(*builtin);
         }
         const auto &index = languageIndex(*analysis);
         const auto *occurrence = index.occurrenceAt(*sourceId, start);

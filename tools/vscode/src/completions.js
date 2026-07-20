@@ -1140,12 +1140,6 @@ const staticCompletions = [
     { label: "NumberError.NonFinite", kind: "EnumMember", insertText: "NumberError.NonFinite" },
     { label: "NumberError.PrecisionLoss", kind: "EnumMember", insertText: "NumberError.PrecisionLoss" },
     {
-        label: "channel",
-        kind: "Function",
-        detail: "builtin fn channel<T>(capacity u64) Channel<T>",
-        insertText: "channel<${1:T}>(${2:capacity})"
-    },
-    {
         label: "send",
         kind: "Method",
         detail: "fn send(value T) Result<void, ChannelError>",
@@ -1162,24 +1156,6 @@ const staticCompletions = [
         kind: "Method",
         detail: "fn clone() Sender<T>",
         insertText: "clone()"
-    },
-    {
-        label: "len",
-        kind: "Function",
-        detail: "builtin fn len(value String | array | slice) usize",
-        insertText: "len(${1:value})"
-    },
-    {
-        label: "null",
-        kind: "Function",
-        detail: "builtin fn null<P>() P",
-        insertText: "null<${1:*void}>()"
-    },
-    {
-        label: "isNull",
-        kind: "Function",
-        detail: "builtin fn isNull(pointer P) bool",
-        insertText: "isNull(${1:pointer})"
     },
     {
         label: "range",
@@ -1204,18 +1180,6 @@ const staticCompletions = [
         kind: "Function",
         detail: "fn pass() void",
         insertText: "pass()"
-    },
-    {
-        label: "print",
-        kind: "Function",
-        detail: "builtin fn print(value String) void",
-        insertText: "print(${1:value})"
-    },
-    {
-        label: "panic",
-        kind: "Function",
-        detail: "builtin fn panic(value String) never",
-        insertText: "panic(${1:message})"
     }
 ];
 

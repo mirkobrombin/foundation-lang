@@ -82,6 +82,8 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /registerDocumentSymbolProvider/);
     assert.match(languageClient, /registerWorkspaceSymbolProvider/);
     assert.match(languageClient, /registerCompletionItemProvider/);
+    assert.match(languageClient, /registerTextDocumentContentProvider\("foundation-builtin"/);
+    assert.match(languageClient, /foundation\/builtinDocument/);
     assert.match(languageClient, /registerSignatureHelpProvider/);
     assert.match(languageClient, /registerHoverProvider/);
     assert.match(languageClient, /registerDeclarationProvider/);
@@ -117,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.105.0");
+    assert.equal(manifest.version, "0.106.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -234,6 +236,24 @@ test("shows the language server state and output command", () => {
     client.setStatus("ready", "/extension/bin/foundation-ls");
     assert.equal(status.text, "$(check) Foundation: Ready");
     assert.match(status.tooltip, /foundation-ls/);
+});
+
+test("renders compiler-provided builtin documents", async () => {
+    const client = Object.create(FoundationLanguageClient.prototype);
+    const requests = [];
+    client.request = async (method, params) => {
+        requests.push({ method, params });
+        return { contents: "// Built into the Foundation compiler.\n\nfn print(value String) void\n" };
+    };
+
+    const document = await client.builtinDocument({ path: "/print.fdn" });
+    assert.equal(document, "// Built into the Foundation compiler.\n\nfn print(value String) void\n");
+    assert.deepEqual(requests, [{
+        method: "foundation/builtinDocument",
+        params: { name: "print" }
+    }]);
+    assert.equal(await client.builtinDocument({ path: "/not a builtin.fdn" }), "");
+    assert.equal(requests.length, 1);
 });
 
 test("frames language server messages across stream chunks", () => {
@@ -1169,8 +1189,8 @@ test("grammar and completions track compiler keywords", () => {
 
     for (const type of [
         "i32", "u64", "bool", "String", "void", "Option", "Result", "ChannelError",
-        "Task", "Channel", "Sender", "Receiver", "channel", "send", "receive", "clone", "len",
-        "TcpConnection", "TcpListener", "TcpReader", "TcpWriter", "StreamPair", "print", "panic"
+        "Task", "Channel", "Sender", "Receiver", "send", "receive", "clone",
+        "TcpConnection", "TcpListener", "TcpReader", "TcpWriter", "StreamPair"
     ]) {
         assert.match(grammar, new RegExp(`\\b${type}\\b`));
         assert.ok(completionLabels.has(type));
@@ -1197,9 +1217,10 @@ test("grammar and completions track compiler keywords", () => {
     assert.match(builtinPattern, /\brange\b/);
     assert.match(builtinPattern, /null/);
     assert.match(builtinPattern, /isNull/);
+    for (const builtin of ["print", "panic", "len", "null", "isNull", "channel"]) {
+        assert.equal(completionLabels.has(builtin), false);
+    }
     assert.ok(completionLabels.has("range"));
-    assert.ok(completionLabels.has("null"));
-    assert.ok(completionLabels.has("isNull"));
     assert.ok(completionLabels.has("expect"));
     assert.ok(completionLabels.has("fail"));
     assert.ok(completionLabels.has("pass"));
@@ -1657,7 +1678,7 @@ test("tracks generic syntax used by the language tour", () => {
         "utf8"
     );
 
-    for (const label of ["TourResult", "TourState", "Option", "Result", "identity", "panic"]) {
+    for (const label of ["TourResult", "TourState", "Option", "Result", "identity"]) {
         assert.ok(labels.has(label));
     }
     assert.match(grammar, /entity\.name\.type\.parameter\.foundation/);
@@ -1819,6 +1840,18 @@ test("ships Result handling and panic snippets", () => {
     const snippets = readJson("snippets/foundation.json");
 
     assert.equal(snippets["Result binding"].prefix, "constelse");
+    assert.deepEqual(snippets["Result binding without error"].body, [
+        "const ${1:value} = ${2:result} else {",
+        "    ${3:return}",
+        "}"
+    ]);
+    assert.deepEqual(snippets["Result expression without error"].body, [
+        "${1:result} else {",
+        "    ${2:return}",
+        "}"
+    ]);
+    assert.match(readJson("syntaxes/foundation.tmLanguage.json").repository.keywords.patterns[3].match,
+        /else/);
     assert.equal(snippets["Discard value"].prefix, "discard");
     assert.equal(snippets.Panic.prefix, "panic");
     assert.equal(snippets["New owned value"].prefix, "new");
