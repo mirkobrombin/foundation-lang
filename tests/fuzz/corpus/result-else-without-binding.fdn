@@ -1,0 +1,17 @@
+fn value() Result<i32, String> {
+    .Err("ignored")
+}
+
+fn effect() Result<void, String> {
+    .Err("ignored")
+}
+
+fn main() i32 {
+    const number = value() else {
+        return 0
+    }
+    effect() else {
+        return number
+    }
+    number
+}

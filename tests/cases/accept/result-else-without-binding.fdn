@@ -1,0 +1,49 @@
+fn maybeValue(value i32, $message String, fail bool) Result<i32, String> {
+    if fail {
+        .Err(message + " value")
+    } else {
+        .Ok(value)
+    }
+}
+
+fn maybeEffect($message String, fail bool) Result<void, String> {
+    if fail {
+        .Err(message + " effect")
+    } else {
+        .Ok
+    }
+}
+
+fn nestedFailure() Result<i32, Result<String, String>> {
+    .Err(.Err("nested" + " error"))
+}
+
+fn valueCode(fail bool) i32 {
+    const value = maybeValue(32, "ignored", fail) else {
+        return 10
+    }
+    value
+}
+
+fn effectCode(fail bool) i32 {
+    maybeEffect("ignored", fail) else {
+        return 10
+    }
+    5
+}
+
+fn nestedCode() i32 {
+    const value = nestedFailure() else {
+        return 42
+    }
+    value
+}
+
+fn main() i32 {
+    if valueCode(false) == 32 && valueCode(true) == 10 && effectCode(false) == 5 &&
+        effectCode(true) == 10 && nestedCode() == 42 {
+        print("else ok")
+        return 0
+    }
+    1
+}

@@ -1545,6 +1545,35 @@ fn main() i32 {
     expect(hasCode(fallingThroughElse.diagnostics, "FDN2054"),
            "falling-through const else reports FDN2054");
 
+    const auto omittedErrorBinding = check(R"(
+fn value() Result<i32, String> { .Err("ignored") }
+fn effect() Result<void, String> { .Err("ignored") }
+fn main() i32 {
+    const number = value() else {
+        return 0
+    }
+    effect() else {
+        return number
+    }
+    number
+}
+)");
+    expect(!omittedErrorBinding.diagnostics.hasErrors(),
+           "Result else accepts an omitted error binding");
+
+    const auto absentErrorBinding = check(R"(
+fn value() Result<i32, String> { .Err("ignored") }
+fn main() i32 {
+    const number = value() else {
+        discard error
+        return 0
+    }
+    number
+}
+)");
+    expect(hasCode(absentErrorBinding.diagnostics, "FDN2004"),
+           "Result else without a binding exposes no implicit error name");
+
     const auto panicElse = check(R"(
 fn failure() Result<i32, String> { .Err("failed") }
 fn main() i32 {

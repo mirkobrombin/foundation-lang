@@ -255,7 +255,7 @@ struct ExpressionStatement {
 
 struct ResultElseStatement {
     AstExpressionId expression{};
-    std::string errorBinding;
+    std::optional<std::string> errorBinding;
     AstBlockId elseBlock{};
 };
 

@@ -30,6 +30,13 @@ fn expectedPlatform() String {
     "windows"
 }
 
+fn ignoredResultFailure() i32 {
+    const value = Result<i32, String>.Err("ignored") else {
+        return 42
+    }
+    value
+}
+
 // A blocking bodyless C ABI declaration imports its explicit symbol. It is unused here so the
 // tour remains runnable without a native input while still checking the annotation.
 @blocking
@@ -428,7 +435,7 @@ fn main(args [String]) i32 {
         0
     }
     const postfixValue = 42 if conditionalValue == 42 else 0
-    discard Result<i32, bool>.Err(false)
+    const ignoredFailureValue = ignoredResultFailure()
     const movedCounter = counter
     discard movedCounter
     const platformMatches = platform.Name(platform.Current()) == expectedPlatform()
@@ -493,7 +500,8 @@ fn main(args [String]) i32 {
         nestedBackgroundValue == 42 && iteratedValue == 3 && editedSequence &&
         !beforeCancellation && afterCancellation && channelMatches && postfixValue == 42 &&
         widened == 120 && narrowed == 4 && decimal64 == 1.5 && emptyStringMatches &&
-        emptyListMatches && workflowValue == 42 && pipelineValue == 41 && sagaValue == 42 {
+        emptyListMatches && workflowValue == 42 && pipelineValue == 41 && sagaValue == 42 &&
+        ignoredFailureValue == 42 {
         return match state {
             Running: resultOr(verified, 0) + counterValue + directCounterValue +
                 sequenceValue + callbackValue - 20

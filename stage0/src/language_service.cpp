@@ -970,7 +970,8 @@ class IndexBuilder {
                 }
             } else if (const auto *resultElse =
                            std::get_if<ResultElseStatement>(&sourceStatement.value)) {
-                if (semantic_->statementElseLocals[statement].has_value()) {
+                if (resultElse->errorBinding.has_value() &&
+                    semantic_->statementElseLocals[statement].has_value()) {
                     auto start = sourceStatement.span.offset;
                     if (const auto *value = source(sourceStatement.span); value != nullptr) {
                         const auto found = value->contents.find("else", start);
@@ -981,7 +982,7 @@ class IndexBuilder {
                     declareLocal(function, *semantic_->statementElseLocals[statement],
                                  LanguageSymbolKind::Local,
                                  identifierSpan(analysis_, sourceStatement.span,
-                                                resultElse->errorBinding, start));
+                                                *resultElse->errorBinding, start));
                 }
             } else if (const auto *destructure =
                            std::get_if<StructDestructureStatement>(&sourceStatement.value)) {

@@ -2173,9 +2173,12 @@ class Analyzer {
                     const auto successMoves = moveStates_;
                     const auto successLoans = loanStates_;
                     scopes_.emplace_back();
-                    const auto errorLocal = addLocal(*variable->elseBinding,
-                                                     initializer.arguments[1], false,
-                                                     statement.span);
+                    const auto errorLocal = addLocal(
+                        variable->elseBinding.value_or("$constElseError" + std::to_string(id)),
+                        initializer.arguments[1], false, statement.span);
+                    if (!variable->elseBinding.has_value()) {
+                        resultOutstanding_[errorLocal] = false;
+                    }
                     model_.statementElseLocals[id] = errorLocal;
                     const auto exits = analyzeBlock(*variable->elseBlock, false);
                     reportScope(scopes_.back());
@@ -2467,8 +2470,12 @@ class Analyzer {
             const auto successMoves = moveStates_;
             const auto successLoans = loanStates_;
             scopes_.emplace_back();
-            const auto errorLocal =
-                addLocal(resultElse->errorBinding, result.arguments[1], false, statement.span);
+            const auto errorLocal = addLocal(
+                resultElse->errorBinding.value_or("$resultElseError" + std::to_string(id)),
+                result.arguments[1], false, statement.span);
+            if (!resultElse->errorBinding.has_value()) {
+                resultOutstanding_[errorLocal] = false;
+            }
             model_.statementElseLocals[id] = errorLocal;
             const auto exits = analyzeBlock(resultElse->elseBlock, false);
             reportScope(scopes_.back());

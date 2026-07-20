@@ -3987,9 +3987,10 @@ class LanguageServer {
                     }
                 } else if (const auto *resultElse =
                                std::get_if<ResultElseStatement>(&statement.value)) {
-                    if (std::find(path.begin(), path.end(), resultElse->elseBlock) !=
-                        path.end()) {
-                        setCompletion(items, resultElse->errorBinding, 6,
+                    if (resultElse->errorBinding.has_value() &&
+                        std::find(path.begin(), path.end(), resultElse->elseBlock) !=
+                            path.end()) {
+                        setCompletion(items, *resultElse->errorBinding, 6,
                                       "Foundation error binding");
                     }
                 } else if (const auto *destructure =

@@ -1704,8 +1704,12 @@ AstStatementId Parser::variableStatement(const Token &start, bool mutableBinding
         if (mutableBinding) {
             diagnostics_.error("FDN1067", "var binding cannot use else", start.span);
         }
-        elseBinding =
-            expect(TokenKind::Identifier, "FDN1066", "expected error binding after else").text;
+        if (check(TokenKind::Identifier)) {
+            elseBinding = advance().text;
+        } else if (!check(TokenKind::LeftBrace)) {
+            diagnostics_.error("FDN1066", "expected error binding or { after else",
+                               current().span);
+        }
         elseBlock = block();
     }
     return addStatement(VariableStatement{mutableBinding, name.text, std::move(type), initializer,
@@ -1931,9 +1935,14 @@ AstStatementId Parser::expressionStatement() {
         return addStatement(AssignmentStatement{value, expression()}, start);
     }
     if (match(TokenKind::Else)) {
-        const auto binding = expect(TokenKind::Identifier, "FDN1214",
-                                    "expected error binding after else");
-        return addStatement(ResultElseStatement{value, binding.text, block()}, start);
+        std::optional<std::string> binding;
+        if (check(TokenKind::Identifier)) {
+            binding = advance().text;
+        } else if (!check(TokenKind::LeftBrace)) {
+            diagnostics_.error("FDN1214", "expected error binding or { after else",
+                               current().span);
+        }
+        return addStatement(ResultElseStatement{value, std::move(binding), block()}, start);
     }
     return addStatement(ExpressionStatement{value}, start);
 }

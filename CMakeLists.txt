@@ -196,6 +196,11 @@ if(FOUNDATION_BUILD_FUZZERS)
         COPYONLY
     )
     configure_file(
+        tests/fuzz/corpus/result-else-without-binding.fdn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/result-else-without-binding.fdn"
+        COPYONLY
+    )
+    configure_file(
         tests/fuzz/corpus/network.fdn
         "${FOUNDATION_FUZZ_CORPUS_DIR}/network.fdn"
         COPYONLY
@@ -3272,6 +3277,37 @@ if(BUILD_TESTING)
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.result-else-without-binding
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/result-else-without-binding.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/result-else-without-binding.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.result-else-without-binding-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/result-else-without-binding.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/result-else-without-binding-allocations.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/result-else-without-binding-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/result-else-without-binding.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.result-else-without-binding-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/result-else-without-binding.fdn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/result-else-without-binding-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/result-else-without-binding-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
     )
     add_test(
         NAME stage0.emit.closures-deterministic
