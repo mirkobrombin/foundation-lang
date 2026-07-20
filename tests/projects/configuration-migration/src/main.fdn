@@ -1,0 +1,122 @@
+package test.configuration.migration
+
+import foundation.bind
+import std.env
+import std.format
+import std.fs
+import std.text
+
+@bind.Bindable()
+struct Settings {
+    @bind.JsonName("host")
+    Host String
+
+    @bind.JsonName("port")
+    Port u16
+}
+
+fn read($path String) Result<String, fs.Error> {
+    const reading = spawn fs.ReadText($path)
+    $reading.wait()
+}
+
+fn isNotFound($value Result<String, fs.Error>) bool {
+    match value {
+        Ok(contents): false
+        Err(error): match error {
+            NotFound: true
+            Permission: false
+            InvalidPath: false
+            InvalidUtf8: false
+            LineTooLong: false
+            TooLarge: false
+            Closed: false
+            Io: false
+        }
+    }
+}
+
+fn accepted($value Result<void, bind.Error>) bool {
+    match value {
+        Ok: true
+        Err(error): rejected($error)
+    }
+}
+
+fn rejected($error bind.Error) bool {
+    discard error
+    false
+}
+
+fn isJsonSyntax($value Result<void, bind.Error>) bool {
+    match value {
+        Ok: false
+        Err(error): match error.Kind {
+            JsonSyntax: true
+            Empty: false
+            Invalid: false
+            OutOfRange: false
+            JsonType: false
+            JsonUnknownField: false
+        }
+    }
+}
+
+fn isOutOfRange($value Result<void, bind.Error>) bool {
+    match value {
+        Ok: false
+        Err(error): match error.Kind {
+            OutOfRange: true
+            Empty: false
+            Invalid: false
+            JsonSyntax: false
+            JsonType: false
+            JsonUnknownField: false
+        }
+    }
+}
+
+fn applyEnvironment(&target bind.Values, $value Option<String>) bool {
+    match value {
+        None: false
+        Some(found): setEnvironment(&target, $found)
+    }
+}
+
+fn setEnvironment(&target bind.Values, $value String) bool {
+    target.Set("Host", $value)
+    true
+}
+
+fn main(args [String]) i32 {
+    const content = read(text.Copy(args[0])) else error {
+        discard error
+        return 1
+    }
+    var settings = Settings { Host = "default" Port = 80 }
+    if !accepted(settings.BindJSON(content)) return 2
+
+    var override = bind.NewValues()
+    const name = "FOUNDATION_CONFIGURATION_HOST"
+    const value = env.Get(name) else error {
+        discard error
+        return 3
+    }
+    if !applyEnvironment(&override, $value) return 4
+    if !accepted(settings.Bind(&override)) return 5
+
+    if settings.Host != "environment.example" return 6
+    if settings.Port != 8080 return 7
+
+    var invalid = bind.NewValues()
+    invalid.Set("Port", "70000")
+    if !isOutOfRange(settings.Bind(&invalid)) return 8
+    if !isNotFound(read(text.Copy(args[1]))) return 9
+
+    var malformed = Settings { Host = "default" Port = 80 }
+    if !isJsonSyntax(malformed.BindJSON("{")) return 10
+
+    print(settings.Host)
+    print(format.U16(settings.Port))
+    0
+}

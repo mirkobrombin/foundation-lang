@@ -1530,6 +1530,30 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-bind.cmake
     )
     add_test(
+        NAME stage0.emit.configuration-migration
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/configuration-migration
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/configuration-migration
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/configuration-migration-inspection.fdn
+            -DGENERATED_C=${CMAKE_CURRENT_BINARY_DIR}/configuration-migration.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/configuration-migration-allocations
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/configuration-migration/expected.out
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-configuration-migration.cmake
+    )
+    set_tests_properties(
+        stage0.emit.configuration-migration
+        PROPERTIES ENVIRONMENT "FOUNDATION_CONFIGURATION_HOST=environment.example"
+    )
+    add_test(
         NAME stage0.derive.package-validation
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
