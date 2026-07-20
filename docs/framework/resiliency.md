@@ -42,4 +42,5 @@ The router also preserves stateless function middleware through `Use`. Stateful 
 implements `web.Middleware<E>` and receives an editable receiver, so mutable policy remains owned
 by the application graph instead of escaping through a borrowed closure.
 
-`Bulkhead` remains pending in this package.
+Structured equivalents of the v2 blocking `RateLimiter.Wait`, `Bulkhead`, `CircuitBreaker`, and
+`Retry` remain pending in this package.
