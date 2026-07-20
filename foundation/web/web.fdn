@@ -62,6 +62,8 @@ struct Request {
     Target String
     Path String
     Version String
+    // Carries a validated client UUID or a generated UUIDv7.
+    RequestID UUID = UUID.Nil()
     Body String = ""
     ContentLength u64 = 0
     hasContentLength bool = false
@@ -122,6 +124,67 @@ struct Response {
     Status i32
     Headers own collections.List<HeaderValue>
     Body String
+
+    // Returns the first response header using ASCII case-insensitive matching.
+    fn Header(&self, name String) Option<String> {
+        var active = replace self.Headers with collections.NewList<HeaderValue>()
+        var reversed = collections.NewList<HeaderValue>()
+        var result Option<String> = .None
+        var found = false
+        while !active.IsEmpty() {
+            const header = headerValue(active.PopFront())
+            if !found && equalFoldAscii(header.Name, name) {
+                result = .Some(text.Copy(header.Value))
+                found = true
+            }
+            reversed.PushFront($header)
+        }
+        self.Headers = reverseHeaders($reversed)
+        result
+    }
+
+    // Replaces every matching response header with one canonical value.
+    fn SetHeader(&self, name String, value String) void {
+        var active = replace self.Headers with collections.NewList<HeaderValue>()
+        var reversed = collections.NewList<HeaderValue>()
+        var replaced = false
+        while !active.IsEmpty() {
+            const header = headerValue(active.PopFront())
+            if equalFoldAscii(header.Name, name) {
+                if !replaced {
+                    reversed.PushFront(HeaderValue {
+                        Name = text.Copy(name)
+                        Value = text.Copy(value)
+                    })
+                    replaced = true
+                }
+                discard header
+            } else {
+                reversed.PushFront($header)
+            }
+        }
+        if !replaced {
+            reversed.PushFront(HeaderValue {
+                Name = text.Copy(name)
+                Value = text.Copy(value)
+            })
+        }
+        self.Headers = reverseHeaders($reversed)
+    }
+
+    // Appends one response header without replacing existing values.
+    fn AddHeader(&self, name String, value String) void {
+        var active = replace self.Headers with collections.NewList<HeaderValue>()
+        var reversed = collections.NewList<HeaderValue>()
+        while !active.IsEmpty() {
+            reversed.PushFront(headerValue(active.PopFront()))
+        }
+        reversed.PushFront(HeaderValue {
+            Name = text.Copy(name)
+            Value = text.Copy(value)
+        })
+        self.Headers = reverseHeaders($reversed)
+    }
 }
 
 enum RegistrationError {
@@ -606,12 +669,24 @@ fn dispatchRoute<E>(
     .Err(.NotFound)
 }
 
+struct corsPolicy {
+    enabled bool
+    allowAny bool
+    origins String
+}
+
 struct Server<E> {
     listener own net.TcpListener
     router own Application<E>
+    cors corsPolicy
 
     fn Port(self) u64 {
         self.listener.Port
+    }
+
+    // Enables transport-level CORS for the configured origin set.
+    fn ConfigureCORS(&self, allowOrigins [String]) void {
+        self.cors = corsPolicyFrom(allowOrigins)
     }
 
     // Accepts and serves one HTTP/1.1 request, then returns the reusable server.
@@ -632,6 +707,7 @@ struct ReadOutcome {
 
 struct ConnectionOutcome<E> {
     Router own Application<E>
+    cors corsPolicy
     Value Result<void, ServeError<E>>
 }
 
@@ -658,7 +734,19 @@ fn NewServer<E>(
     const listener = net.Listen($address, port) else error {
         return .Err(error)
     }
-    .Ok(own Server<E> { listener = listener router = application })
+    .Ok(own Server<E> {
+        listener = listener
+        router = application
+        cors = disabledCORS()
+    })
+}
+
+fn Empty(status i32) Response {
+    Response {
+        Status = status
+        Headers = collections.NewList<HeaderValue>()
+        Body = ""
+    }
 }
 
 fn Text(status i32, $body String) Response {
@@ -680,17 +768,21 @@ fn Json(status i32, $body String) Response {
 }
 
 task serveOne<E>($server own Server<E>) own ServeOutcome<E> {
-    const Server { listener router } = server
+    const Server { listener router cors } = server
     const accepting = spawn net.Accept($listener)
     const accepted = $accepting.wait()
     const net.AcceptOutcome { Listener Value } = accepted
     const connection = Value else error {
         return own ServeOutcome<E> {
-            Server = own Server<E> { listener = Listener router = router }
+            Server = own Server<E> {
+                listener = Listener
+                router = router
+                cors = cors
+            }
             Value = .Err(.Network(error = error))
         }
     }
-    const finishing = spawn finishAccepted<E>($Listener, $router, $connection)
+    const finishing = spawn finishAccepted<E>($Listener, $router, $cors, $connection)
     const result = $finishing.wait()
     result
 }
@@ -698,24 +790,31 @@ task serveOne<E>($server own Server<E>) own ServeOutcome<E> {
 task finishAccepted<E>(
     $listener own net.TcpListener,
     $router own Application<E>,
+    $cors corsPolicy,
     $connection own net.TcpConnection
 ) own ServeOutcome<E> {
-    const handling = spawn handleConnection<E>($router, $connection)
+    const handling = spawn handleConnection<E>($router, $cors, $connection)
     const handled = $handling.wait()
-    const ConnectionOutcome { Router Value } = handled
+    const ConnectionOutcome { Router cors as nextCORS Value } = handled
     own ServeOutcome<E> {
-        Server = own Server<E> { listener = listener router = Router }
+        Server = own Server<E> {
+            listener = listener
+            router = Router
+            cors = nextCORS
+        }
         Value = Value
     }
 }
 
 task handleConnection<E>(
     $router own Application<E>,
+    $cors corsPolicy,
     $connection own net.TcpConnection
 ) own ConnectionOutcome<E> {
     const pair = connection.Split() else error {
         return own ConnectionOutcome<E> {
             Router = router
+            cors = cors
             Value = .Err(.Network(error = error))
         }
     }
@@ -725,15 +824,16 @@ task handleConnection<E>(
     const ReadOutcome { Reader as readerAfter Value as read } = readOutcome
     discard readerAfter
     const request = read else error {
-        return finishReadError<E>($router, $Writer, $error)
+        return finishReadError<E>($router, $cors, $Writer, $error)
     }
-    const dispatching = spawn dispatchRequest<E>($router, $Writer, $request)
+    const dispatching = spawn dispatchRequest<E>($router, $cors, $Writer, $request)
     const result = $dispatching.wait()
     result
 }
 
 fn finishReadError<E>(
     $router own Application<E>,
+    $cors corsPolicy,
     $writer own net.TcpWriter,
     $error ReadError
 ) own ConnectionOutcome<E> {
@@ -742,32 +842,128 @@ fn finishReadError<E>(
         Network(error): .Network(error = error)
         Protocol(error): .Protocol(error = error)
     }
-    own ConnectionOutcome<E> { Router = router Value = .Err(mapped) }
+    own ConnectionOutcome<E> {
+        Router = router
+        cors = cors
+        Value = .Err(mapped)
+    }
 }
 
 task dispatchRequest<E>(
     $router own Application<E>,
+    $cors corsPolicy,
     $writer own net.TcpWriter,
     $request Request
 ) own ConnectionOutcome<E> {
     var activeRouter = router
-    const dispatched = activeRouter.Dispatch($request)
-    const response = responseForDispatch(activeRouter, $dispatched) else error {
-        return finishHandlerError<E>($activeRouter, $writer, $error)
+    var preparedRequest = request
+    const id = requestID(&preparedRequest)
+    const origin = requestOrigin(&preparedRequest)
+    preparedRequest.RequestID = id
+    if cors.enabled && methodEqual(preparedRequest.Method, .OPTIONS) {
+        var preflight = Empty(204)
+        applyTransportHeaders(&preflight, cors, origin, id)
+        const preflightWriting = spawn writeResponse<E>(
+            $activeRouter,
+            $cors,
+            $writer,
+            $preflight
+        )
+        const preflightResult = $preflightWriting.wait()
+        return preflightResult
     }
-    const writing = spawn writeResponse<E>($activeRouter, $writer, $response)
+    const dispatched = activeRouter.Dispatch($preparedRequest)
+    const response = responseForDispatch(activeRouter, $dispatched) else error {
+        return finishHandlerError<E>($activeRouter, $cors, $writer, $error)
+    }
+    var preparedResponse = response
+    applyTransportHeaders(&preparedResponse, cors, origin, id)
+    const writing = spawn writeResponse<E>($activeRouter, $cors, $writer, $preparedResponse)
     const result = $writing.wait()
     result
 }
 
+fn requestID(&request Request) UUID {
+    const supplied = request.Header("X-Request-ID")
+    match supplied {
+        None: UUID.NewV7()
+        Some(value): match UUID.Parse(value) {
+            Ok(id): if id.IsNil() { UUID.NewV7() } else { id }
+            Err(error): invalidRequestID(error)
+        }
+    }
+}
+
+fn invalidRequestID(error UUIDError) UUID {
+    discard error
+    UUID.NewV7()
+}
+
+fn requestOrigin(&request Request) String {
+    match request.Header("Origin") {
+        None: ""
+        Some(origin): origin
+    }
+}
+
+fn applyTransportHeaders(
+    &response Response,
+    policy corsPolicy,
+    origin String,
+    id UUID
+) void {
+    response.SetHeader("X-Request-ID", id.String())
+    if !policy.enabled return
+    if policy.allowAny {
+        response.SetHeader("Access-Control-Allow-Origin", "*")
+    } else {
+        const exact = "\n" + origin + "\n"
+        if origin != "" && text.Contains(policy.origins, exact) {
+            response.SetHeader("Access-Control-Allow-Origin", origin)
+            response.AddHeader("Vary", "Origin")
+        }
+    }
+    response.SetHeader(
+        "Access-Control-Allow-Methods",
+        "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS"
+    )
+    response.SetHeader(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization"
+    )
+}
+
+fn corsPolicyFrom(allowOrigins [String]) corsPolicy {
+    var allowAny = len(allowOrigins) == 0
+    var origins = "\n"
+    for origin in allowOrigins {
+        if origin == "*" {
+            allowAny = true
+        } else {
+            origins = origins + origin + "\n"
+        }
+    }
+    corsPolicy {
+        enabled = true
+        allowAny = allowAny
+        origins = origins
+    }
+}
+
+fn disabledCORS() corsPolicy {
+    corsPolicy { enabled = false allowAny = false origins = "\n" }
+}
+
 fn finishHandlerError<E>(
     $router own Application<E>,
+    $cors corsPolicy,
     $writer own net.TcpWriter,
     $error E
 ) own ConnectionOutcome<E> {
     discard writer
     own ConnectionOutcome<E> {
         Router = router
+        cors = cors
         Value = .Err(.Handler(error = error))
     }
 }
@@ -788,6 +984,7 @@ fn responseForDispatch<E>(
 
 task writeResponse<E>(
     $router own Application<E>,
+    $cors corsPolicy,
     $writer own net.TcpWriter,
     $response Response
 ) own ConnectionOutcome<E> {
@@ -800,7 +997,11 @@ task writeResponse<E>(
         Ok: .Ok
         Err(error): .Err(.Network(error = error))
     }
-    own ConnectionOutcome<E> { Router = router Value = result }
+    own ConnectionOutcome<E> {
+        Router = router
+        cors = cors
+        Value = result
+    }
 }
 
 task readRequest($reader own net.TcpReader) ReadOutcome {

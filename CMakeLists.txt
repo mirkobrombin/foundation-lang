@@ -2323,6 +2323,33 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
     add_test(
+        NAME stage0.run.web-cors
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.web-cors-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-cors.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-cors
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+            -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+            -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
         NAME stage0.run.web-routing
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -3702,6 +3729,24 @@ if(BUILD_TESTING)
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-server-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-server-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.web-cors-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-cors-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-cors-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                 -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c

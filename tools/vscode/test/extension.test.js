@@ -117,7 +117,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.102.0");
+    assert.equal(manifest.version, "0.103.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1271,11 +1271,12 @@ test("grammar and completions track compiler keywords", () => {
         "web.Handler", "web.Application", "web.Request", "web.Response", "web.Method",
         "web.MatchError", "web.DispatchError", "web.MiddlewareRegistrationError",
         "web.ServeOutcome", "web.NewServer",
-        "web.NewRouter", "web.NewRouteTable", "web.Text", "web.Json", "web.Router.Map",
+        "web.NewRouter", "web.NewRouteTable", "web.Empty", "web.Text", "web.Json", "web.Router.Map",
         "web.Router.Use", "web.Router.UseGroup", "web.Router.UseRoute",
         "web.RouteTable.Add", "web.RouteTable.Match", "web.Request.Param", "web.Request.Query",
         "web.Request.Header", "web.Request.Form", "web.Request.IsJSON",
-        "web.Application.ErrorResponse", "web.Server.ServeOne",
+        "web.Response.Header", "web.Response.SetHeader", "web.Response.AddHeader",
+        "web.Application.ErrorResponse", "web.Server.ConfigureCORS", "web.Server.ServeOne",
         "foundation.worker", "worker.Supervisor", "worker.NewSupervisor",
         "worker.Supervisor.Start", "worker.Supervisor.Shutdown", "worker.Supervisor.Cancel",
         "worker.Group", "worker.GroupNext", "worker.GroupWait", "worker.GroupWake",
@@ -1311,6 +1312,54 @@ test("grammar and completions track compiler keywords", () => {
         completion.label === "bind.Sources.Set");
     assert.equal(bindSourcesSet?.insertText,
         "Set(\\$${1:source}, \\$${2:key}, \\$${3:value})");
+    const webEmpty = staticCompletions.find((completion) =>
+        completion.label === "web.Empty");
+    assert.deepEqual(webEmpty, {
+        label: "web.Empty",
+        kind: "Function",
+        detail: "fn Empty(status i32) web.Response",
+        insertText: "web.Empty(${1:204})"
+    });
+    const webResponseHeader = staticCompletions.find((completion) =>
+        completion.label === "web.Response.Header");
+    assert.deepEqual(webResponseHeader, {
+        label: "web.Response.Header",
+        kind: "Method",
+        detail: "fn Header(&self, name String) Option<String>",
+        insertText: "Header(${1:name})"
+    });
+    const webResponseSetHeader = staticCompletions.find((completion) =>
+        completion.label === "web.Response.SetHeader");
+    assert.deepEqual(webResponseSetHeader, {
+        label: "web.Response.SetHeader",
+        kind: "Method",
+        detail: "fn SetHeader(&self, name String, value String) void",
+        insertText: "SetHeader(${1:name}, ${2:value})"
+    });
+    const webResponseAddHeader = staticCompletions.find((completion) =>
+        completion.label === "web.Response.AddHeader");
+    assert.deepEqual(webResponseAddHeader, {
+        label: "web.Response.AddHeader",
+        kind: "Method",
+        detail: "fn AddHeader(&self, name String, value String) void",
+        insertText: "AddHeader(${1:name}, ${2:value})"
+    });
+    const webServerCORS = staticCompletions.find((completion) =>
+        completion.label === "web.Server.ConfigureCORS");
+    assert.deepEqual(webServerCORS, {
+        label: "web.Server.ConfigureCORS",
+        kind: "Method",
+        detail: "fn ConfigureCORS(&self, allowOrigins [String]) void",
+        insertText: "ConfigureCORS(${1:allowOrigins})"
+    });
+    const webServerServeOne = staticCompletions.find((completion) =>
+        completion.label === "web.Server.ServeOne");
+    assert.deepEqual(webServerServeOne, {
+        label: "web.Server.ServeOne",
+        kind: "Method",
+        detail: "fn ServeOne($self) Task<own web.ServeOutcome<E>>",
+        insertText: "ServeOne()"
+    });
     const parsedGrammar = JSON.parse(grammar);
     const rawPointer = parsedGrammar.repository.types.patterns[0];
     const rawPointerMatch = new RegExp(rawPointer.match).exec("*const i32");

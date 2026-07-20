@@ -1,0 +1,324 @@
+package test.web_cors
+
+import foundation.web
+import std.net
+import std.text
+
+enum AppError {
+    Failed
+}
+
+struct ResourceHandler implements web.Handler<AppError> {}
+
+methods ResourceHandler {
+    fn Handle(self, $request web.Request) Result<web.Response, AppError> {
+        discard request
+        .Ok(web.Text(200, "ok"))
+    }
+}
+
+struct ErrorApplication implements web.Application<AppError> {}
+
+methods ErrorApplication {
+    fn Dispatch(
+        &self,
+        $request web.Request
+    ) Result<web.Response, web.DispatchError<AppError>> {
+        discard request
+        .Err(.Handler(error = .Failed))
+    }
+
+    fn ErrorResponse(self, $error AppError) Result<web.Response, AppError> {
+        discard self
+        discard error
+        .Ok(web.Text(503, "mapped error"))
+    }
+}
+
+struct HeaderBlock {
+    reader own net.TcpReader
+    value String
+}
+
+struct ExchangeOutcome {
+    server own web.Server<AppError>
+    accepted bool
+    status String
+    headers String
+    body String
+}
+
+fn serverOr(
+    $value Result<own web.Server<AppError>, net.Error>
+) own web.Server<AppError> {
+    const server = value else error {
+        discard error
+        panic("CORS server bind failed")
+    }
+    server
+}
+
+fn connectionOr(
+    $value Result<own net.TcpConnection, net.Error>
+) own net.TcpConnection {
+    const connection = value else error {
+        discard error
+        panic("CORS client connection failed")
+    }
+    connection
+}
+
+fn pairOr($value Result<net.StreamPair, net.Error>) net.StreamPair {
+    const pair = value else error {
+        discard error
+        panic("CORS client split failed")
+    }
+    pair
+}
+
+fn lineOr($value Result<Option<String>, net.Error>) String {
+    match value {
+        Ok(optional): match optional {
+            None: ""
+            Some(line): line
+        }
+        Err(error): ""
+    }
+}
+
+fn writeAccepted($value Result<void, net.Error>) bool {
+    match value {
+        Ok: true
+        Err(error): false
+    }
+}
+
+fn served($value Result<void, web.ServeError<AppError>>) bool {
+    match value {
+        Ok: true
+        Err(error): false
+    }
+}
+
+fn registrationAccepted($value Result<void, web.RegistrationError>) bool {
+    match value {
+        Ok: true
+        Err(error): false
+    }
+}
+
+task readHeaderBlock(
+    $reader own net.TcpReader,
+    $value String
+) HeaderBlock {
+    const reading = spawn net.ReadLine($reader)
+    const outcome = $reading.wait()
+    const net.ReadLineOutcome { Reader Value } = outcome
+    const line = lineOr($Value)
+    if line == "" return HeaderBlock { reader = Reader value = value }
+    const next = spawn readHeaderBlock($Reader, value + line + "\n")
+    const result = $next.wait()
+    result
+}
+
+task exchange(
+    $server own web.Server<AppError>,
+    $requestText String
+) own ExchangeOutcome {
+    const port = server.Port()
+    const serving = server.ServeOne()
+    const connecting = spawn net.Connect("127.0.0.1", port)
+    const connected = $connecting.wait()
+    const connection = connectionOr($connected)
+    const pair = pairOr(connection.Split())
+    const net.StreamPair { Reader Writer } = pair
+
+    const writing = spawn net.WriteAll($Writer, $requestText)
+    const written = $writing.wait()
+    const net.WriteOutcome { Writer as writerAfter Value as writeResult } = written
+    const writeSucceeded = writeAccepted($writeResult)
+    discard writerAfter
+
+    const statusReading = spawn net.ReadLine($Reader)
+    const statusOutcome = $statusReading.wait()
+    const net.ReadLineOutcome { Reader as headerReader Value as statusResult } = statusOutcome
+    const status = lineOr($statusResult)
+    const headerReading = spawn readHeaderBlock($headerReader, "")
+    const headerOutcome = $headerReading.wait()
+    const HeaderBlock { reader as bodyReader value as headers } = headerOutcome
+    const bodyReading = spawn net.ReadLine($bodyReader)
+    const bodyOutcome = $bodyReading.wait()
+    const net.ReadLineOutcome { Reader as readerAfter Value as bodyResult } = bodyOutcome
+    const body = lineOr($bodyResult)
+    discard readerAfter
+
+    const serveOutcome = $serving.wait()
+    const web.ServeOutcome { Server as serverAfter Value as serveResult } = serveOutcome
+    own ExchangeOutcome {
+        server = serverAfter
+        accepted = writeSucceeded && served($serveResult)
+        status = status
+        headers = headers
+        body = body
+    }
+}
+
+fn hasHeader(headers String, name String, value String) bool {
+    text.Contains(headers, name + ": " + value + "\n")
+}
+
+fn main() i32 {
+    var router = web.NewRouter<AppError>()
+    const registered = router.Map(
+        .GET,
+        "/resource",
+        own ResourceHandler {}
+    )
+    if !registrationAccepted($registered) return 1
+    var server = serverOr(web.NewServer<AppError>("127.0.0.1", 0, $router))
+    const origins = ["https://one.example", "https://two.example"]
+    server.ConfigureCORS(origins)
+
+    const requestID = "01890f47-9b5a-7cc1-98f2-b6b9c317d28a"
+    const allowedRunning = spawn exchange(
+        $server,
+        "GET /resource HTTP/1.1\r\nHost: localhost\r\nOrigin: https://two.example\r\n" +
+        "X-Request-ID: " + requestID + "\r\n\r\n"
+    )
+    const allowedOutcome = $allowedRunning.wait()
+    const ExchangeOutcome {
+        server as allowedServer
+        accepted as allowedAccepted
+        status as allowedStatus
+        headers as allowedHeaders
+        body as allowedBody
+    } = allowedOutcome
+    if !allowedAccepted || allowedStatus != "HTTP/1.1 200 OK" || allowedBody != "ok" {
+        return 2
+    }
+    if !hasHeader(allowedHeaders, "Access-Control-Allow-Origin", "https://two.example") ||
+        !hasHeader(allowedHeaders, "Vary", "Origin") ||
+        !hasHeader(allowedHeaders, "X-Request-ID", requestID) {
+        return 3
+    }
+
+    const preflightRunning = spawn exchange(
+        $allowedServer,
+        "OPTIONS /missing HTTP/1.1\r\nHost: localhost\r\n" +
+        "Origin: https://one.example\r\n\r\n"
+    )
+    const preflightOutcome = $preflightRunning.wait()
+    const ExchangeOutcome {
+        server as preflightServer
+        accepted as preflightAccepted
+        status as preflightStatus
+        headers as preflightHeaders
+        body as preflightBody
+    } = preflightOutcome
+    if !preflightAccepted || preflightStatus != "HTTP/1.1 204 No Content" ||
+        preflightBody != "" {
+        return 4
+    }
+    if !hasHeader(preflightHeaders, "Access-Control-Allow-Origin", "https://one.example") ||
+        !hasHeader(preflightHeaders, "Content-Length", "0") ||
+        !hasHeader(
+        preflightHeaders,
+        "Access-Control-Allow-Methods",
+        "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS"
+    ) ||
+        !hasHeader(
+        preflightHeaders,
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization"
+    ) {
+        return 5
+    }
+
+    const notFoundRunning = spawn exchange(
+        $preflightServer,
+        "GET /missing HTTP/1.1\r\nHost: localhost\r\n" +
+        "Origin: https://one.example\r\n\r\n"
+    )
+    const notFoundOutcome = $notFoundRunning.wait()
+    const ExchangeOutcome {
+        server as notFoundServer
+        accepted as notFoundAccepted
+        status as notFoundStatus
+        headers as notFoundHeaders
+        body as notFoundBody
+    } = notFoundOutcome
+    if !notFoundAccepted || notFoundStatus != "HTTP/1.1 404 Not Found" ||
+        notFoundBody != "not found" ||
+        !hasHeader(notFoundHeaders, "Access-Control-Allow-Origin", "https://one.example") {
+        return 6
+    }
+
+    const methodRunning = spawn exchange(
+        $notFoundServer,
+        "POST /resource HTTP/1.1\r\nHost: localhost\r\n" +
+        "Origin: https://two.example\r\nContent-Length: 0\r\n\r\n"
+    )
+    const methodOutcome = $methodRunning.wait()
+    const ExchangeOutcome {
+        server as methodServer
+        accepted as methodAccepted
+        status as methodStatus
+        headers as methodHeaders
+        body as methodBody
+    } = methodOutcome
+    if !methodAccepted || methodStatus != "HTTP/1.1 405 Method Not Allowed" ||
+        methodBody != "method not allowed" ||
+        !hasHeader(methodHeaders, "Access-Control-Allow-Origin", "https://two.example") {
+        return 7
+    }
+
+    const rejectedRunning = spawn exchange(
+        $methodServer,
+        "GET /resource HTTP/1.1\r\nHost: localhost\r\nOrigin: https://evil.example\r\n\r\n"
+    )
+    const rejectedOutcome = $rejectedRunning.wait()
+    const ExchangeOutcome {
+        server as finalServer
+        accepted as rejectedAccepted
+        status as rejectedStatus
+        headers as rejectedHeaders
+        body as rejectedBody
+    } = rejectedOutcome
+    if !rejectedAccepted || rejectedStatus != "HTTP/1.1 200 OK" || rejectedBody != "ok" {
+        return 8
+    }
+    if text.Contains(rejectedHeaders, "Access-Control-Allow-Origin:") ||
+        text.Contains(rejectedHeaders, "Vary: Origin") {
+        return 9
+    }
+    discard finalServer
+
+    var errorServer = serverOr(web.NewServer<AppError>(
+        "127.0.0.1",
+        0,
+        own ErrorApplication {}
+        ))
+    errorServer.ConfigureCORS(["*"])
+    const errorRunning = spawn exchange(
+        $errorServer,
+        "GET /error HTTP/1.1\r\nHost: localhost\r\n" +
+        "Origin: https://one.example\r\n\r\n"
+    )
+    const errorOutcome = $errorRunning.wait()
+    const ExchangeOutcome {
+        server as completedServer
+        accepted as errorAccepted
+        status as errorStatus
+        headers as errorHeaders
+        body as errorBody
+    } = errorOutcome
+    discard completedServer
+    if !errorAccepted || errorStatus != "HTTP/1.1 503 Service Unavailable" ||
+        errorBody != "mapped error" ||
+        !hasHeader(errorHeaders, "Access-Control-Allow-Origin", "*") {
+        return 10
+    }
+
+    print("cors ok")
+    0
+}

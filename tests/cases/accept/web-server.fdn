@@ -24,12 +24,14 @@ methods HelloHandler {
             None: false
             Some(trace): trace == "trace-id"
         }
+        const requestIDMatched = !active.RequestID.IsNil()
+        const requestID = active.RequestID.String()
         const bodyMatched = active.Body == "ping" && active.ContentLength == 4
         discard active
-        if !nameMatched || !sourceMatched || !traceMatched || !bodyMatched {
+        if !nameMatched || !sourceMatched || !traceMatched || !requestIDMatched || !bodyMatched {
             return .Err(.Failed)
         }
-        .Ok(web.Text(200, "hello from Foundation"))
+        .Ok(web.Text(200, $requestID))
     }
 }
 
@@ -92,37 +94,34 @@ fn served($value Result<void, web.ServeError<AppError>>) bool {
     }
 }
 
-fn main() i32 {
-    var router = web.NewRouter<AppError>()
-    const handler = own HelloHandler {}
-    const registered = router.Map(
-        .POST,
-        "/hello/{name:alpha}",
-        $handler
-    )
-    if !registrationAccepted($registered) {
-        return 1
-    }
-    var server = serverOr(web.NewServer<AppError>("127.0.0.1", 0, $router))
+struct ExchangeOutcome {
+    server own web.Server<AppError>
+    accepted bool
+    status String
+    contentType String
+    requestIDHeader String
+    contentLength String
+    connectionHeader String
+    separator String
+    body String
+}
 
+task exchange(
+    $server own web.Server<AppError>,
+    $requestText String
+) own ExchangeOutcome {
     const port = server.Port()
     const serving = server.ServeOne()
     const connecting = spawn net.Connect("127.0.0.1", port)
-    const connection = connectionOr($connecting.wait())
+    const connected = $connecting.wait()
+    const connection = connectionOr($connected)
     const pair = pairOr(connection.Split())
     const net.StreamPair { Reader Writer } = pair
 
-    const headerWriting = spawn net.WriteAll(
-        $Writer,
-        "POST /hello/Foundation?source=network+path HTTP/1.1\r\nHost: localhost\r\nX-Trace: trace-id\r\nContent-Length: 4\r\n\r\n"
-    )
-    const headerWritten = $headerWriting.wait()
-    const net.WriteOutcome { Writer as bodyWriter Value as headerResult } = headerWritten
-    const headerAccepted = writeAccepted($headerResult)
-    const bodyWriting = spawn net.WriteAll($bodyWriter, "ping")
-    const bodyWritten = $bodyWriting.wait()
-    const net.WriteOutcome { Writer as writerAfter Value as bodyWriteResult } = bodyWritten
-    const bodyAccepted = writeAccepted($bodyWriteResult)
+    const writing = spawn net.WriteAll($Writer, $requestText)
+    const written = $writing.wait()
+    const net.WriteOutcome { Writer as writerAfter Value as writeResult } = written
+    const writeSucceeded = writeAccepted($writeResult)
     discard writerAfter
 
     const statusReading = spawn net.ReadLine($Reader)
@@ -133,19 +132,23 @@ fn main() i32 {
     const contentTypeOutcome = $contentTypeReading.wait()
     const net.ReadLineOutcome { Reader as reader2 Value as contentTypeResult } = contentTypeOutcome
     const contentType = lineOr($contentTypeResult)
-    const contentLengthReading = spawn net.ReadLine($reader2)
+    const requestIDReading = spawn net.ReadLine($reader2)
+    const requestIDOutcome = $requestIDReading.wait()
+    const net.ReadLineOutcome { Reader as reader3 Value as requestIDResult } = requestIDOutcome
+    const requestIDHeader = lineOr($requestIDResult)
+    const contentLengthReading = spawn net.ReadLine($reader3)
     const contentLengthOutcome = $contentLengthReading.wait()
-    const net.ReadLineOutcome { Reader as reader3 Value as contentLengthResult } = contentLengthOutcome
+    const net.ReadLineOutcome { Reader as reader4 Value as contentLengthResult } = contentLengthOutcome
     const contentLength = lineOr($contentLengthResult)
-    const connectionReading = spawn net.ReadLine($reader3)
+    const connectionReading = spawn net.ReadLine($reader4)
     const connectionOutcome = $connectionReading.wait()
-    const net.ReadLineOutcome { Reader as reader4 Value as connectionResult } = connectionOutcome
+    const net.ReadLineOutcome { Reader as reader5 Value as connectionResult } = connectionOutcome
     const connectionHeader = lineOr($connectionResult)
-    const separatorReading = spawn net.ReadLine($reader4)
+    const separatorReading = spawn net.ReadLine($reader5)
     const separatorOutcome = $separatorReading.wait()
-    const net.ReadLineOutcome { Reader as reader5 Value as separatorResult } = separatorOutcome
+    const net.ReadLineOutcome { Reader as reader6 Value as separatorResult } = separatorOutcome
     const separator = lineOr($separatorResult)
-    const bodyReading = spawn net.ReadLine($reader5)
+    const bodyReading = spawn net.ReadLine($reader6)
     const bodyOutcome = $bodyReading.wait()
     const net.ReadLineOutcome { Reader as readerAfter Value as bodyResult } = bodyOutcome
     const body = lineOr($bodyResult)
@@ -153,26 +156,156 @@ fn main() i32 {
 
     const serveOutcome = $serving.wait()
     const web.ServeOutcome { Server as serverAfter Value as serveResult } = serveOutcome
-    discard serverAfter
+    own ExchangeOutcome {
+        server = serverAfter
+        accepted = writeSucceeded && served($serveResult)
+        status = status
+        contentType = contentType
+        requestIDHeader = requestIDHeader
+        contentLength = contentLength
+        connectionHeader = connectionHeader
+        separator = separator
+        body = body
+    }
+}
 
-    if !headerAccepted || !bodyAccepted || !served($serveResult) {
+fn validExchange(
+    accepted bool,
+    status String,
+    contentType String,
+    requestIDHeader String,
+    contentLength String,
+    connectionHeader String,
+    separator String,
+    body String
+) bool {
+    const requestIDValid = match UUID.Parse(body) {
+        Ok(id): !id.IsNil()
+        Err(error): false
+    }
+    accepted && status == "HTTP/1.1 200 OK" &&
+        contentType == "Content-Type: text/plain; charset=utf-8" &&
+        requestIDHeader == "X-Request-ID: " + body &&
+        contentLength == "Content-Length: 36" &&
+        connectionHeader == "Connection: close" && separator == "" && requestIDValid
+}
+
+fn main() i32 {
+    var headerResponse = web.Text(200, "headers")
+    headerResponse.SetHeader("X-Value", "first")
+    headerResponse.SetHeader("x-value", "second")
+    const headerReplaced = match headerResponse.Header("X-VALUE") {
+        None: false
+        Some(value): value == "second"
+    }
+    const contentTypePreserved = match headerResponse.Header("Content-Type") {
+        None: false
+        Some(value): value == "text/plain; charset=utf-8"
+    }
+    discard headerResponse
+    if !headerReplaced || !contentTypePreserved return 1
+
+    var router = web.NewRouter<AppError>()
+    const handler = own HelloHandler {}
+    const registered = router.Map(
+        .POST,
+        "/hello/{name:alpha}",
+        $handler
+    )
+    if !registrationAccepted($registered) {
         return 2
     }
-    if status != "HTTP/1.1 200 OK" {
+    const server = serverOr(web.NewServer<AppError>("127.0.0.1", 0, $router))
+    const baseRequest =
+        "POST /hello/Foundation?source=network+path HTTP/1.1\r\nHost: localhost\r\n" +
+        "X-Trace: trace-id\r\nContent-Length: 4\r\n"
+
+    const generatedRunning = spawn exchange($server, baseRequest + "\r\nping")
+    const generatedOutcome = $generatedRunning.wait()
+    const ExchangeOutcome {
+        server as generatedServer
+        accepted as generatedAccepted
+        status as generatedStatus
+        contentType as generatedContentType
+        requestIDHeader as generatedHeader
+        contentLength as generatedLength
+        connectionHeader as generatedConnection
+        separator as generatedSeparator
+        body as generatedID
+    } = generatedOutcome
+    if !validExchange(
+        generatedAccepted,
+        generatedStatus,
+        generatedContentType,
+        generatedHeader,
+        generatedLength,
+        generatedConnection,
+        generatedSeparator,
+        generatedID
+    ) {
         return 3
     }
-    if contentType != "Content-Type: text/plain; charset=utf-8" {
+
+    const suppliedID = "01890f47-9b5a-7cc1-98f2-b6b9c317d28a"
+    const suppliedRunning = spawn exchange(
+        $generatedServer,
+        baseRequest + "X-Request-ID: " + suppliedID + "\r\n\r\nping"
+    )
+    const suppliedOutcome = $suppliedRunning.wait()
+    const ExchangeOutcome {
+        server as suppliedServer
+        accepted as suppliedAccepted
+        status as suppliedStatus
+        contentType as suppliedContentType
+        requestIDHeader as suppliedHeader
+        contentLength as suppliedLength
+        connectionHeader as suppliedConnection
+        separator as suppliedSeparator
+        body as returnedSuppliedID
+    } = suppliedOutcome
+    if !validExchange(
+        suppliedAccepted,
+        suppliedStatus,
+        suppliedContentType,
+        suppliedHeader,
+        suppliedLength,
+        suppliedConnection,
+        suppliedSeparator,
+        returnedSuppliedID
+    ) || returnedSuppliedID != suppliedID {
         return 4
     }
-    if contentLength != "Content-Length: 21" {
+
+    const invalidRunning = spawn exchange(
+        $suppliedServer,
+        baseRequest + "X-Request-ID: invalid\r\n\r\nping"
+    )
+    const invalidOutcome = $invalidRunning.wait()
+    const ExchangeOutcome {
+        server as finalServer
+        accepted as invalidAccepted
+        status as invalidStatus
+        contentType as invalidContentType
+        requestIDHeader as invalidHeader
+        contentLength as invalidLength
+        connectionHeader as invalidConnection
+        separator as invalidSeparator
+        body as regeneratedID
+    } = invalidOutcome
+    discard finalServer
+    if !validExchange(
+        invalidAccepted,
+        invalidStatus,
+        invalidContentType,
+        invalidHeader,
+        invalidLength,
+        invalidConnection,
+        invalidSeparator,
+        regeneratedID
+    ) || regeneratedID == "invalid" {
         return 5
     }
-    if connectionHeader != "Connection: close" || separator != "" {
-        return 6
-    }
-    if body != "hello from Foundation" {
-        return 7
-    }
+
     print("web ok")
     0
 }

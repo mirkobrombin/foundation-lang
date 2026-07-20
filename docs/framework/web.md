@@ -41,6 +41,28 @@ read exactly and capped at 1 MiB. Duplicate or malformed lengths, oversized bodi
 encoding are rejected before dispatch. Closing the stream before the declared body length produces
 `BodyTruncated` instead of reaching a handler with partial input.
 
+Every transport request has a typed `Request.RequestID UUID`. A canonical non-nil
+`X-Request-ID` supplied by the client is preserved. A missing, nil, or malformed value is replaced
+with a UUIDv7. The final HTTP response receives the same canonical value through
+`X-Request-ID`, including router 404/405 responses and application errors mapped by
+`Application.ErrorResponse`. This replaces optional string-valued middleware with a default
+typed transport invariant. `Response.Header` and `Response.SetHeader` provide case-insensitive
+lookup and replacement without exposing list surgery to response middleware. `Response.AddHeader`
+preserves repeated fields when the protocol requires them, while `web.Empty` constructs a response
+without a body.
+
+`Server.ConfigureCORS` installs an HTTP transport policy instead of route middleware. An exact
+origin allowlist emits the matching origin plus `Vary: Origin`; `"*"` or an empty typed slice allows
+every origin. `OPTIONS` preflight requests terminate with 204 before route lookup. Allowed methods
+and request headers are emitted consistently, while rejected origins receive no
+`Access-Control-Allow-Origin`. Because the policy runs at the transport boundary, it also covers
+router 404/405 responses and application errors converted by `Application.ErrorResponse`.
+
+```foundation
+var server = createServer()
+server.ConfigureCORS(["https://app.example"])
+```
+
 `Request.Param`, `Request.Query`, `Request.Header`, and `Request.Form` return copied values without
 exposing owned request storage. Query and form lookup use the first matching key, decode `+` and
 percent-encoded UTF-8, and ignore malformed unrelated keys. Header lookup is ASCII

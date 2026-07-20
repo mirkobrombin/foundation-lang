@@ -3232,6 +3232,23 @@ void manualWebMiddlewareExposesEditorDetails() {
         "    next($request)\n"
         "}\n"
         "\n"
+        "fn inspect(\n"
+        "    &request web.Request,\n"
+        "    &response web.Response\n"
+        ") UUID {\n"
+        "    response.SetHeader(\"X-Test\", \"ok\")\n"
+        "    const value = response.Header(\"X-Test\")\n"
+        "    discard value\n"
+        "    request.RequestID\n"
+        "}\n"
+        "\n"
+        "fn configure(\n"
+        "    &server web.Server<AppError>,\n"
+        "    origins [String]\n"
+        ") void {\n"
+        "    server.ConfigureCORS(origins)\n"
+        "}\n"
+        "\n"
         "fn main() i32 {\n"
         "    var router = web.NewRouter<AppError>()\n"
         "    const registered = router.Use(10, $pass)\n"
@@ -3274,8 +3291,12 @@ void manualWebMiddlewareExposesEditorDetails() {
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
     std::istringstream input(
-        frame(initialize) + frame(open) + frame(request(223, "hover", 19, 31)) +
-        frame(request(224, "signatureHelp", 19, 39)) + frame(change) +
+        frame(initialize) + frame(open) + frame(request(223, "hover", 36, 31)) +
+        frame(request(224, "signatureHelp", 36, 39)) +
+        frame(request(226, "hover", 24, 16)) + frame(request(227, "hover", 21, 17)) +
+        frame(request(228, "signatureHelp", 21, 33)) +
+        frame(request(229, "hover", 31, 17)) +
+        frame(request(230, "signatureHelp", 31, 32)) + frame(change) +
         frame(request(225, "completion", 5, 11)) + frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
@@ -3284,6 +3305,11 @@ void manualWebMiddlewareExposesEditorDetails() {
     const auto hover = responseFor(transcript, 223);
     const auto signature = responseFor(transcript, 224);
     const auto completion = responseFor(transcript, 225);
+    const auto requestIDHover = responseFor(transcript, 226);
+    const auto responseHeaderHover = responseFor(transcript, 227);
+    const auto responseHeaderSignature = responseFor(transcript, 228);
+    const auto corsHover = responseFor(transcript, 229);
+    const auto corsSignature = responseFor(transcript, 230);
 
     expect(status == 0, "manual middleware language server transcript exits cleanly");
     expect(errors.str().empty(), "manual middleware requests write no server errors");
@@ -3293,6 +3319,21 @@ void manualWebMiddlewareExposesEditorDetails() {
     expect(signature.find("fn Use") != std::string::npos &&
                signature.find("MiddlewareRegistrationError") != std::string::npos,
            "manual middleware exposes compiler-backed signature help");
+    expect(requestIDHover.find("RequestID UUID") != std::string::npos &&
+               requestIDHover.find("validated client UUID") != std::string::npos,
+           "typed request ID field exposes compiler-backed hover");
+    expect(responseHeaderHover.find("fn SetHeader") != std::string::npos &&
+               responseHeaderHover.find("canonical value") != std::string::npos,
+           "response header replacement exposes compiler-backed hover");
+    expect(responseHeaderSignature.find("fn SetHeader") != std::string::npos &&
+               responseHeaderSignature.find("value String") != std::string::npos,
+           "response header replacement exposes compiler-backed signature help");
+    expect(corsHover.find("fn ConfigureCORS") != std::string::npos &&
+               corsHover.find("transport-level CORS") != std::string::npos,
+           "CORS policy exposes compiler-backed hover");
+    expect(corsSignature.find("fn ConfigureCORS") != std::string::npos &&
+               corsSignature.find("allowOrigins [String]") != std::string::npos,
+           "CORS policy exposes compiler-backed signature help");
     expect(completion.find("\"label\":\"Map\"") != std::string::npos &&
                completion.find("\"label\":\"Use\"") != std::string::npos &&
                completion.find("\"label\":\"UseGroup\"") != std::string::npos &&

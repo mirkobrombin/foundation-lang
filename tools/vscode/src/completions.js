@@ -529,6 +529,12 @@ const staticCompletions = [
         insertText: "web.NewRouteTable()"
     },
     {
+        label: "web.Empty",
+        kind: "Function",
+        detail: "fn Empty(status i32) web.Response",
+        insertText: "web.Empty(${1:204})"
+    },
+    {
         label: "web.Text",
         kind: "Function",
         detail: "fn Text(status i32, body String) web.Response",
@@ -607,10 +613,34 @@ const staticCompletions = [
         insertText: "IsJSON()"
     },
     {
+        label: "web.Response.Header",
+        kind: "Method",
+        detail: "fn Header(&self, name String) Option<String>",
+        insertText: "Header(${1:name})"
+    },
+    {
+        label: "web.Response.SetHeader",
+        kind: "Method",
+        detail: "fn SetHeader(&self, name String, value String) void",
+        insertText: "SetHeader(${1:name}, ${2:value})"
+    },
+    {
+        label: "web.Response.AddHeader",
+        kind: "Method",
+        detail: "fn AddHeader(&self, name String, value String) void",
+        insertText: "AddHeader(${1:name}, ${2:value})"
+    },
+    {
         label: "web.Application.ErrorResponse",
         kind: "Method",
         detail: "fn ErrorResponse(self, $error E) Result<web.Response, E>",
         insertText: "ErrorResponse(\$${1:error})"
+    },
+    {
+        label: "web.Server.ConfigureCORS",
+        kind: "Method",
+        detail: "fn ConfigureCORS(&self, allowOrigins [String]) void",
+        insertText: "ConfigureCORS(${1:allowOrigins})"
     },
     {
         label: "web.Server.ServeOne",
