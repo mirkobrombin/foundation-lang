@@ -149,6 +149,9 @@ void remapExpression(Expression &expression, std::size_t expressionOffset,
             if (arm.pattern.has_value()) {
                 *arm.pattern += expressionOffset;
             }
+            if (arm.guard.has_value()) {
+                *arm.guard += expressionOffset;
+            }
             arm.expression += expressionOffset;
         }
     } else if (auto *conditional =
@@ -475,6 +478,10 @@ void linkExpression(Program &program, AstExpressionId id, const std::string &cur
         for (auto &arm : match->arms) {
             if (arm.pattern.has_value()) {
                 linkExpression(program, *arm.pattern, currentPackage, imports, symbols,
+                               typeParameters, diagnostics);
+            }
+            if (arm.guard.has_value()) {
+                linkExpression(program, *arm.guard, currentPackage, imports, symbols,
                                typeParameters, diagnostics);
             }
             linkExpression(program, arm.expression, currentPackage, imports, symbols,

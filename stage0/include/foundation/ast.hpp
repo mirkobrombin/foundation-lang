@@ -186,9 +186,11 @@ struct SpawnExpression {
 };
 
 struct MatchArm {
+    bool wildcard{};
     std::string variant;
     std::optional<std::string> binding;
     std::optional<AstExpressionId> pattern;
+    std::optional<AstExpressionId> guard;
     AstExpressionId expression{};
     SourceSpan span;
 };

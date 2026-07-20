@@ -2149,6 +2149,63 @@ void selectExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void matchGuardsExposeEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "enum Reading {\n"
+        "    Value(value i32)\n"
+        "}\n"
+        "fn read($reading Reading) i32 {\n"
+        "    match reading {\n"
+        "        Value(number) if number > 0: number\n"
+        "        _: 0\n"
+        "    }\n"
+        "}\n"
+        "fn main() i32 { read(Reading.Value(value = 1)) - 1 }\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":6,\"character\":" +
+               std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(frame(initialize) + frame(open) +
+                             frame(request(221, "hover", 27)) +
+                             frame(request(222, "definition", 27)) + frame(shutdown) +
+                             frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+
+    expect(status == 0, "match guard language server transcript exits cleanly");
+    expect(errors.str().empty(), "match guard requests write no server errors");
+    expect(responseFor(transcript, 221).find("number i32") != std::string::npos,
+           "match guard binding receives compiler-backed hover");
+    const auto definition = responseFor(transcript, 222);
+    expect(definition.find(sourceUri) != std::string::npos &&
+               definition.find("\"line\":6") != std::string::npos &&
+               definition.find("\"character\":14") != std::string::npos,
+           "match guard binding opens its pattern declaration");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void forLoopsExposeEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fdn";
@@ -3569,6 +3626,7 @@ int main() {
     distributedMethodsExposeDocumentationAndParameters();
     channelOperationsExposeEditorDetails();
     selectExposesEditorDetails();
+    matchGuardsExposeEditorDetails();
     forLoopsExposeEditorDetails();
     compilerBuiltinsExposeEditorDetails();
     parseBoolExposesEditorDetails();

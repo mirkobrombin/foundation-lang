@@ -439,6 +439,45 @@ fn main() i32 {
            "match expression emits tagged C branches");
 }
 
+void guardedMatchesLowerToDeterministicC() {
+    constexpr std::string_view source = R"(
+enum Value {
+    Empty
+    Number(i32)
+}
+
+fn read($value Value) i32 {
+    match value {
+        Number(number) if number > 0: number
+        Empty if false: 1
+        _: 0
+    }
+}
+
+fn main() i32 {
+    read(Value.Number(3)) - 3
+}
+)";
+    auto first = check(source);
+    auto second = check(source);
+
+    expect(!first.diagnostics.hasErrors(), "guarded match has no diagnostics");
+    expect(first.fir.has_value(), "guarded match lowers to FIR");
+    expect(second.fir.has_value(), "repeated guarded match lowers to FIR");
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        return;
+    }
+
+    const auto firstC = foundation::emitC(*first.fir);
+    const auto secondC = foundation::emitC(*second.fir);
+    expect(firstC == secondC, "guarded match C emission is deterministic");
+    expect(firstC.find("bool fdn_tmp_") != std::string::npos &&
+               firstC.find("if (!fdn_tmp_") != std::string::npos,
+           "guarded match preserves source-order fallthrough");
+    expect(firstC.find("if (false)") != std::string::npos,
+           "unit variants retain their guards");
+}
+
 void genericValuesMonomorphizeDeterministically() {
     constexpr std::string_view source = R"(
 struct Box<T> { value T }
@@ -2077,6 +2116,7 @@ int main() {
     structValuesLowerToDeterministicC();
     deepStructGraphsStayIterative();
     enumMatchesLowerToDeterministicC();
+    guardedMatchesLowerToDeterministicC();
     genericValuesMonomorphizeDeterministically();
     genericLookaheadStaysTypeAware();
     ownershipLowersToDeterministicC();

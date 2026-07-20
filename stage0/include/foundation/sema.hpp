@@ -176,6 +176,7 @@ struct MatchTarget {
     Type type{invalidType};
     std::vector<FirVariantId> variants;
     std::vector<std::optional<FirLocalId>> bindings;
+    std::vector<std::optional<FirLocalId>> guardBindings;
     std::vector<std::vector<FirLocalId>> drops;
 };
 

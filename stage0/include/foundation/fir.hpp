@@ -310,9 +310,12 @@ struct FirEnumExpression {
 };
 
 struct FirMatchArm {
+    bool wildcard{};
     FirVariantId variant{};
     std::optional<FirLocalId> binding;
+    std::optional<FirLocalId> guardBinding;
     std::optional<FirExpressionId> pattern;
+    std::optional<FirExpressionId> guard;
     FirExpressionId expression{};
     std::vector<FirLocalId> drops;
 };

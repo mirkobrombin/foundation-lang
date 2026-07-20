@@ -1,0 +1,49 @@
+import std.format as format
+
+enum Reading {
+    Missing
+    Value(value i32)
+    Label(value String)
+}
+
+struct Box {
+    value i32
+}
+
+enum Boxed {
+    Empty
+    Item(value own Box)
+}
+
+fn score($reading Reading) i32 {
+    match reading {
+        Missing if false: 99
+        Missing: 0
+        Value(value) if value < 0: -1
+        Value(value) if value == 0: 0
+        Value(value): value
+        Label(value) if value == "foundation": 42
+        _: 7
+    }
+}
+
+fn ownedScore($boxed Boxed) i32 {
+    match boxed {
+        Item(box) if box.value > 0: box.value
+        _: 0
+    }
+}
+
+fn main() i32 {
+    const missing = Reading.Missing
+    const total = score($missing) +
+        score(Reading.Value(value = -3)) +
+        score(Reading.Value(value = 0)) +
+        score(Reading.Value(value = 5)) +
+        score(Reading.Label(value = "foundation")) +
+        score(Reading.Label(value = "other")) +
+        ownedScore(Boxed.Item(value = own Box { value = 9 })) +
+        ownedScore(Boxed.Item(value = own Box { value = -1 }))
+    print(format.I32(total))
+    0
+}

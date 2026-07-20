@@ -1,0 +1,26 @@
+import std.collections
+
+fn value($item Option<i32>) i32 {
+    match item {
+        None: -1
+        Some(found): found
+    }
+}
+
+fn main() i32 {
+    var queue = collections.NewQueue<i32>()
+    queue.Enqueue(1)
+    queue.Enqueue(2)
+    queue.Enqueue(3)
+
+    if queue.Len() != 3 return 1
+    if value(queue.Dequeue()) != 1 return 2
+    queue.Enqueue(4)
+    if value(queue.Dequeue()) != 2 return 3
+    if value(queue.Dequeue()) != 3 return 4
+    if value(queue.Dequeue()) != 4 return 5
+    if value(queue.Dequeue()) != -1 return 6
+    if !queue.IsEmpty() return 7
+    print("queue ok")
+    0
+}

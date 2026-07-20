@@ -829,6 +829,25 @@
         "matchPatterns": {
             "patterns": [
                 {
+                    "match": "^\\s*(_)\\s*(:)",
+                    "captures": {
+                        "1": { "name": "variable.language.wildcard.foundation" },
+                        "2": { "name": "punctuation.separator.foundation" }
+                    }
+                },
+                {
+                    "match": "^\\s*([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(\\()\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(\\)))?\\s+(if)\\s+([^:\\n]+?)\\s*(:)",
+                    "captures": {
+                        "1": { "name": "variable.other.enummember.foundation" },
+                        "2": { "name": "punctuation.section.parens.begin.foundation" },
+                        "3": { "name": "variable.parameter.foundation" },
+                        "4": { "name": "punctuation.section.parens.end.foundation" },
+                        "5": { "name": "keyword.control.foundation" },
+                        "6": { "name": "variable.other.match.guard.foundation" },
+                        "7": { "name": "punctuation.separator.foundation" }
+                    }
+                },
+                {
                     "match": "^\\s*([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(\\()\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(\\)))?\\s*(:)",
                     "captures": {
                         "1": { "name": "variable.other.enummember.foundation" },

@@ -1,0 +1,8 @@
+import std.collections
+
+fn main() i32 {
+    var queue = collections.NewQueue<own collections.List<i32>>()
+    var value = collections.NewList<i32>()
+    queue.Enqueue($value)
+    value.IsEmpty()
+}

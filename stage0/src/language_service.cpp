@@ -592,6 +592,9 @@ class IndexBuilder {
                 if (arm.pattern.has_value()) {
                     visitExpression(*arm.pattern, function);
                 }
+                if (arm.guard.has_value()) {
+                    visitExpression(*arm.guard, function);
+                }
                 visitExpression(arm.expression, function);
             }
         } else if (const auto *conditional =
@@ -1064,6 +1067,14 @@ class IndexBuilder {
                 declareLocal(function, *target.bindings[arm], LanguageSymbolKind::Local,
                              identifierSpan(analysis_, match->arms[arm].span,
                                             *match->arms[arm].binding, start));
+                if (arm < target.guardBindings.size() &&
+                    target.guardBindings[arm].has_value() &&
+                    function < localSymbols_.size() &&
+                    *target.bindings[arm] < localSymbols_[function].size() &&
+                    *target.guardBindings[arm] < localSymbols_[function].size()) {
+                    localSymbols_[function][*target.guardBindings[arm]] =
+                        localSymbols_[function][*target.bindings[arm]];
+                }
             }
         }
     }
@@ -1510,6 +1521,9 @@ class IndexBuilder {
                     const auto &target = *semantic_->matchTargets[id];
                     for (std::size_t arm = 0;
                          arm < match->arms.size() && arm < target.variants.size(); ++arm) {
+                        if (match->arms[arm].wildcard) {
+                            continue;
+                        }
                         addNamedOccurrence({LanguageSymbolKind::EnumVariant,
                                             target.type.declaration, target.variants[arm]},
                                            match->arms[arm].span);

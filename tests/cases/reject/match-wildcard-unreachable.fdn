@@ -1,0 +1,16 @@
+enum Choice {
+    None
+    Some(value i32)
+}
+
+fn score($choice Choice) i32 {
+    match choice {
+        _: 0
+        None: 1
+        Some(value): value
+    }
+}
+
+fn main() i32 {
+    0
+}

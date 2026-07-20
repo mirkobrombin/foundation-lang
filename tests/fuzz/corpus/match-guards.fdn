@@ -1,0 +1,16 @@
+enum Value {
+    Empty
+    Number(value i32)
+}
+
+fn read($value Value) i32 {
+    match value {
+        Number(number) if number > 0: number
+        Empty if false: 1
+        _: 0
+    }
+}
+
+fn main() i32 {
+    read(Value.Number(value = 1)) - 1
+}

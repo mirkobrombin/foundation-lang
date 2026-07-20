@@ -1673,6 +1673,12 @@ std::size_t completionExpressionEnd(
             } else if constexpr (std::is_same_v<Value, MatchExpression>) {
                 include(value.value);
                 for (const auto &arm : value.arms) {
+                    if (arm.pattern.has_value()) {
+                        include(*arm.pattern);
+                    }
+                    if (arm.guard.has_value()) {
+                        include(*arm.guard);
+                    }
                     include(arm.expression);
                 }
             } else if constexpr (std::is_same_v<Value, ConditionalExpression>) {

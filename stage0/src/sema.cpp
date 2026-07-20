@@ -5763,6 +5763,9 @@ class Analyzer {
         if (value.kind != TypeKind::Enum || value.declaration >= program_.enums.size()) {
             for (const auto &arm : match.arms) {
                 scopes_.emplace_back();
+                if (arm.guard.has_value()) {
+                    static_cast<void>(analyzeExpression(*arm.guard));
+                }
                 static_cast<void>(analyzeExpression(arm.expression));
                 scopes_.pop_back();
             }
@@ -5780,20 +5783,30 @@ class Analyzer {
             declaration.variants.size());
         std::vector<FirVariantId> variants;
         std::vector<std::optional<FirLocalId>> bindings;
+        std::vector<std::optional<FirLocalId>> guardBindings;
         std::vector<std::vector<FirLocalId>> drops;
         std::vector<std::vector<bool>> armStates;
         std::vector<std::vector<MoveState>> armMoveStates;
         std::vector<std::vector<LoanState>> armLoanStates;
         auto borrowedClosure = false;
+        auto wildcardCovered = false;
         auto result = invalidType;
         for (const auto &arm : match.arms) {
             restoreOutstanding(beforeArms);
             restoreMoves(movesBeforeArms);
             restoreLoans(loansBeforeArms);
-            auto variant = findVariant(enumType, arm.variant);
-            if (!variant.has_value()) {
+            if (wildcardCovered) {
+                diagnostics_.error("FDN2039", "match arm is unreachable after wildcard",
+                                   arm.span);
+            }
+
+            std::optional<FirVariantId> variant;
+            if (!arm.wildcard) {
+                variant = findVariant(enumType, arm.variant);
+            }
+            if (!arm.wildcard && !variant.has_value()) {
                 diagnostics_.error("FDN2035", "unknown variant " + arm.variant, arm.span);
-            } else {
+            } else if (variant.has_value()) {
                 if (declaration.packageName != currentPackage() &&
                     !declaration.variants[*variant].exported) {
                     diagnostics_.error("FDN3008", "variant " + arm.variant + " is not exported",
@@ -5803,7 +5816,61 @@ class Analyzer {
 
             scopes_.emplace_back();
             std::optional<FirLocalId> binding;
-            if (variant.has_value()) {
+            std::optional<FirLocalId> guardBinding;
+            const auto unconditional = !arm.guard.has_value();
+            const auto analyzeGuard = [&](std::optional<Type> payload) {
+                if (!arm.guard.has_value()) {
+                    return;
+                }
+                if (arm.binding.has_value() && payload.has_value()) {
+                    scopes_.emplace_back();
+                    auto guardType = *payload;
+                    auto readBinding = false;
+                    if (!isCopyParameterType(guardType)) {
+                        guardType = guardType.kind == TypeKind::Own &&
+                                            guardType.arguments.size() == 1
+                                        ? Type{TypeKind::View, 0,
+                                               {guardType.arguments.front()}}
+                                        : Type{TypeKind::View, 0, {guardType}};
+                        readBinding = true;
+                    }
+                    guardBinding = addLocal(*arm.binding, guardType, false, arm.span);
+                    model_.functions[currentFunction_].locals[*guardBinding].readBinding =
+                        readBinding;
+                }
+                const auto movesBeforeGuard = movePrefix(movesBeforeArms.size());
+                requireSame(boolType,
+                            analyzeExpression(*arm.guard, boolType,
+                                              ExpressionUse::Inspect),
+                            program_.expressions[*arm.guard].span, "match guard");
+                const auto movesAfterGuard = movePrefix(movesBeforeArms.size());
+                for (std::size_t local = 0; local < movesBeforeGuard.size(); ++local) {
+                    if (movesBeforeGuard[local] != movesAfterGuard[local]) {
+                        diagnostics_.error(
+                            "FDN2228", "match guard cannot move binding " +
+                                           model_.functions[currentFunction_].locals[local].name,
+                            program_.expressions[*arm.guard].span);
+                    }
+                }
+                restoreMoves(movesBeforeGuard);
+                restoreLoans(loansBeforeArms);
+                if (guardBinding.has_value()) {
+                    reportScope(scopes_.back());
+                    scopes_.pop_back();
+                }
+            };
+
+            if (arm.wildcard) {
+                if (arm.binding.has_value() || arm.pattern.has_value()) {
+                    diagnostics_.error("FDN2041", "wildcard does not accept a payload",
+                                       arm.span);
+                }
+                analyzeGuard(std::nullopt);
+                if (unconditional) {
+                    wildcardCovered = true;
+                    std::fill(covered.begin(), covered.end(), true);
+                }
+            } else if (variant.has_value()) {
                 auto payload = model_.enums[enumType].payloadTypes[*variant];
                 if (payload.has_value()) {
                     payload = substitute(*payload, value.arguments);
@@ -5821,13 +5888,19 @@ class Analyzer {
                         diagnostics_.error("FDN2039", "duplicate match pattern " + arm.variant,
                                            arm.span);
                     }
-                    covered[*variant] = true;
+                    analyzeGuard(std::nullopt);
+                    if (unconditional) {
+                        covered[*variant] = true;
+                    }
                 } else if (arm.binding.has_value()) {
                     if (covered[*variant]) {
                         diagnostics_.error("FDN2039", "duplicate match pattern " + arm.variant,
                                            arm.span);
                     }
-                    covered[*variant] = true;
+                    analyzeGuard(payload);
+                    if (unconditional) {
+                        covered[*variant] = true;
+                    }
                     binding = addLocal(*arm.binding, *payload, false, arm.span);
                 } else if (arm.pattern.has_value()) {
                     const auto &patternExpression = program_.expressions[*arm.pattern];
@@ -5852,11 +5925,13 @@ class Analyzer {
                     requireSame(*payload, patternType, patternExpression.span,
                                 "match payload pattern");
                     if (covered[*variant] ||
-                        (key.has_value() && !literalPatterns[*variant].insert(*key).second)) {
+                        (unconditional && key.has_value() &&
+                         !literalPatterns[*variant].insert(*key).second)) {
                         diagnostics_.error("FDN2039", "duplicate match pattern " + arm.variant,
                                            arm.span);
                     }
-                    if (*payload == boolType &&
+                    analyzeGuard(std::nullopt);
+                    if (unconditional && *payload == boolType &&
                         literalPatterns[*variant].contains("bool:true") &&
                         literalPatterns[*variant].contains("bool:false")) {
                         covered[*variant] = true;
@@ -5865,7 +5940,10 @@ class Analyzer {
                     diagnostics_.error("FDN2041", "payload pattern requires a binding or literal",
                                        arm.span);
                     covered[*variant] = true;
+                    analyzeGuard(std::nullopt);
                 }
+            } else {
+                analyzeGuard(std::nullopt);
             }
             const auto armExpected = expected.has_value()
                                          ? expected
@@ -5888,6 +5966,7 @@ class Analyzer {
             }
             variants.push_back(variant.value_or(0));
             bindings.push_back(binding);
+            guardBindings.push_back(guardBinding);
         }
         if (!armStates.empty()) {
             std::vector<bool> merged(beforeArms.size());
@@ -5933,8 +6012,9 @@ class Analyzer {
                                    span);
             }
         }
-        model_.matchTargets[id] = MatchTarget{value, std::move(variants), std::move(bindings),
-                                              std::move(drops)};
+        model_.matchTargets[id] =
+            MatchTarget{value, std::move(variants), std::move(bindings),
+                        std::move(guardBindings), std::move(drops)};
         model_.expressionBorrowedClosures[id] = borrowedClosure;
         return result;
     }

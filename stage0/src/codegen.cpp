@@ -2357,13 +2357,19 @@ class FunctionEmitter {
                                    : std::nullopt);
         }
 
+        const auto matched = nextTemporary();
+        out_ << indentation(depth) << "bool " << matched << " = false;\n";
         for (std::size_t index = 0; index < match.arms.size(); ++index) {
             const auto &arm = match.arms[index];
-            const auto payload = value.value + ".fdn_data." + payloadName(arm.variant);
-            out_ << indentation(depth) << (index == 0 ? "if (" : "else if (")
-                 << value.value << ".fdn_tag == "
-                 << enumTag(match.type.declaration, arm.variant);
-            if (patterns[index].has_value()) {
+            const auto payload = arm.wildcard
+                                     ? std::string{}
+                                     : value.value + ".fdn_data." + payloadName(arm.variant);
+            out_ << indentation(depth) << "if (!" << matched;
+            if (!arm.wildcard) {
+                out_ << " && " << value.value << ".fdn_tag == "
+                     << enumTag(match.type.declaration, arm.variant);
+            }
+            if (!arm.wildcard && patterns[index].has_value()) {
                 const auto patternType = function_.expressions[*arm.pattern].type;
                 out_ << " && ";
                 if (patternType == stringType) {
@@ -2374,40 +2380,76 @@ class FunctionEmitter {
                 }
             }
             out_ << ") {\n";
+
+            auto armDepth = depth + 1;
+            if (arm.guardBinding.has_value()) {
+                const auto local = *arm.guardBinding;
+                const auto &localType = function_.locals[local].type;
+                const auto &payloadType = function_.locals[*arm.binding].type;
+                out_ << indentation(armDepth);
+                if (!taskPoll_) {
+                    out_ << cType(localType) << ' ';
+                }
+                out_ << localValue(local) << " = ";
+                if (localType.kind != TypeKind::View || payloadType.kind == TypeKind::Own ||
+                    payloadType.kind == TypeKind::View || payloadType.kind == TypeKind::Edit ||
+                    (localType.arguments.size() == 1 &&
+                     (localType.arguments.front().kind == TypeKind::Slice ||
+                      localType.arguments.front().kind == TypeKind::Contract))) {
+                    out_ << payload;
+                } else {
+                    out_ << "&(" << payload << ')';
+                }
+                out_ << ";\n";
+            }
+
+            std::optional<EmittedExpression> guard;
+            if (arm.guard.has_value()) {
+                guard = emitExpression(*arm.guard, armDepth);
+                out_ << indentation(armDepth) << "if (" << guard->value << ") {\n";
+                ++armDepth;
+            }
+
+            out_ << indentation(armDepth) << matched << " = true;\n";
             if (arm.binding.has_value()) {
                 const auto local = *arm.binding;
                 if (typeRequiresDrop(program_, function_.locals[local].type)) {
                     const auto moved = emitMoveValue(function_.locals[local].type, payload,
-                                                     depth + 1);
-                    out_ << indentation(depth + 1);
+                                                     armDepth);
+                    out_ << indentation(armDepth);
                     if (!taskPoll_) {
                         out_ << cType(function_.locals[local].type) << ' ';
                     }
                     out_ << localValue(local) << " = " << moved.value << ";\n";
                 } else {
-                    out_ << indentation(depth + 1);
+                    out_ << indentation(armDepth);
                     if (!taskPoll_) {
                         out_ << cType(function_.locals[local].type) << ' ';
                     }
                     out_ << localValue(local) << " = " << payload << ";\n";
                 }
-                activateLocal(local, depth + 1);
-                out_ << indentation(depth + 1) << "(void)" << localValue(local)
+                activateLocal(local, armDepth);
+                out_ << indentation(armDepth) << "(void)" << localValue(local)
                      << ";\n";
             }
-            const auto armValue = emitExpression(arm.expression, depth + 1);
+            const auto armValue = emitExpression(arm.expression, armDepth);
             if (!armValue.diverges) {
                 if (type != voidType) {
-                    out_ << indentation(depth + 1) << temporary << " = " << armValue.value
+                    out_ << indentation(armDepth) << temporary << " = " << armValue.value
                          << ";\n";
                 }
-                emitDrops(arm.drops, depth + 1);
+                emitDrops(arm.drops, armDepth);
                 emitDropValue(out_, program_, function_.expressions[match.value].type, value.value,
-                              depth + 1);
+                              armDepth);
+            }
+            if (guard.has_value()) {
+                --armDepth;
+                out_ << indentation(armDepth) << "}\n";
+                emitCleanups(*guard, armDepth);
             }
             out_ << indentation(depth) << "}\n";
         }
-        out_ << indentation(depth) << "else {\n";
+        out_ << indentation(depth) << "if (!" << matched << ") {\n";
         emitLocation(span, depth + 1);
         out_ << indentation(depth + 1) << "fdn_invalid_enum_tag();\n";
         out_ << indentation(depth) << "}\n";

@@ -1,0 +1,23 @@
+struct Token {
+    value i32
+}
+
+enum Choice {
+    First
+    Second
+}
+
+fn consume($token own Token) bool {
+    token.value > 0
+}
+
+fn score($choice Choice, $token own Token) i32 {
+    match choice {
+        First if consume($token): 1
+        _: 0
+    }
+}
+
+fn main() i32 {
+    0
+}

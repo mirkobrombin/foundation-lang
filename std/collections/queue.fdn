@@ -1,0 +1,46 @@
+package std.collections
+
+struct Queue<T> {
+    front own List<T>
+    back own List<T>
+
+    fn Len(self) i32 {
+        self.front.Len() + self.back.Len()
+    }
+
+    fn IsEmpty(self) bool {
+        self.Len() == 0
+    }
+
+    fn Enqueue(&self, $value T) void {
+        self.back.PushFront($value)
+    }
+
+    fn Dequeue(&self) Option<T> {
+        if self.front.IsEmpty() {
+            self.rotate()
+        }
+        self.front.PopFront()
+    }
+
+    fn Clear(&self) void {
+        self.front.Clear()
+        self.back.Clear()
+    }
+
+    fn rotate(&self) void {
+        var pending = replace self.back with NewList<T>()
+        while !pending.IsEmpty() {
+            self.front.PushFront(optionValue(pending.PopFront()))
+        }
+        discard pending
+    }
+
+    fn drop(&self) void {
+        self.Clear()
+    }
+}
+
+fn NewQueue<T>() own Queue<T> {
+    own Queue<T> { front = NewList<T>() back = NewList<T>() }
+}

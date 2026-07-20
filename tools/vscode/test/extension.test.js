@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.107.0");
+    assert.equal(manifest.version, "0.108.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1803,6 +1803,34 @@ test("collects contracts, implementations, and receiver methods", () => {
     assert.ok(grammar.repository.blocks.patterns[0].patterns.some(
         (pattern) => pattern.include === "$self"
     ));
+});
+
+test("highlights guarded match patterns and wildcard fallbacks", () => {
+    const grammar = readJson("syntaxes/foundation.tmLanguage.json");
+    const [wildcard, guarded, variant] = grammar.repository.matchPatterns.patterns;
+
+    assert.equal(wildcard.captures[1].name, "variable.language.wildcard.foundation");
+    assert.equal(wildcard.captures[2].name, "punctuation.separator.foundation");
+    assert.deepEqual(new RegExp(wildcard.match).exec("    _:")?.slice(1), ["_", ":"]);
+    assert.equal(guarded.captures[1].name, "variable.other.enummember.foundation");
+    assert.equal(guarded.captures[5].name, "keyword.control.foundation");
+    assert.equal(guarded.captures[6].name, "variable.other.match.guard.foundation");
+    assert.deepEqual(
+        new RegExp(guarded.match).exec("    Some(value) if predicate: result")?.slice(1),
+        ["Some", "(", "value", ")", "if", "predicate", ":"]
+    );
+    assert.deepEqual(new RegExp(variant.match).exec("    Some(value): result")?.slice(1),
+        ["Some", "(", "value", ")", ":"]);
+    assert.equal(new RegExp(guarded.match).test("    .Some(value) if predicate: result"), false);
+
+    const snippets = readJson("snippets/foundation.json");
+    assert.equal(snippets["Match guard"].prefix, "matchguard");
+    assert.deepEqual(snippets["Match guard"].body, [
+        "match ${1:value} {",
+        "    ${2:Some}(${3:item}) if ${4:predicate}: ${5:result}",
+        "    _: ${6:fallback}",
+        "}"
+    ]);
 });
 
 test("collects contract inheritance, defaults, and delegation", () => {

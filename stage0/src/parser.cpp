@@ -2355,6 +2355,7 @@ AstExpressionId Parser::matchExpression(const Token &start) {
     std::vector<MatchArm> arms;
     while (!check(TokenKind::RightBrace) && !atEnd()) {
         const auto variant = expect(TokenKind::Identifier, "FDN1056", "expected pattern variant");
+        const auto wildcard = variant.text == "_";
         std::optional<std::string> binding;
         std::optional<AstExpressionId> pattern;
         if (match(TokenKind::LeftParen)) {
@@ -2365,9 +2366,13 @@ AstExpressionId Parser::matchExpression(const Token &start) {
             }
             expect(TokenKind::RightParen, "FDN1058", "expected ) after payload pattern");
         }
+        std::optional<AstExpressionId> guard;
+        if (match(TokenKind::If)) {
+            guard = expression();
+        }
         expect(TokenKind::Colon, "FDN1059", "expected : after match pattern");
-        arms.push_back(
-            {variant.text, std::move(binding), pattern, expression(), variant.span});
+        arms.push_back({wildcard, variant.text, std::move(binding), pattern, guard, expression(),
+                        variant.span});
     }
     expect(TokenKind::RightBrace, "FDN1060", "expected } after match expression");
     return addExpression(MatchExpression{value, std::move(arms)}, start.span);

@@ -798,10 +798,15 @@ class Lowerer {
             std::vector<FirMatchArm> arms;
             arms.reserve(match.arms.size());
             for (std::size_t arm = 0; arm < match.arms.size(); ++arm) {
-                arms.push_back({target.variants[arm], target.bindings[arm],
+                arms.push_back({match.arms[arm].wildcard, target.variants[arm],
+                                target.bindings[arm], target.guardBindings[arm],
                                 match.arms[arm].pattern.has_value()
                                     ? std::optional<FirExpressionId>{
                                           lowerExpression(*match.arms[arm].pattern)}
+                                    : std::nullopt,
+                                match.arms[arm].guard.has_value()
+                                    ? std::optional<FirExpressionId>{
+                                          lowerExpression(*match.arms[arm].guard)}
                                     : std::nullopt,
                                 lowerExpression(match.arms[arm].expression), target.drops[arm]});
             }

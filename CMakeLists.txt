@@ -225,6 +225,11 @@ if(FOUNDATION_BUILD_FUZZERS)
         "${FOUNDATION_FUZZ_CORPUS_DIR}/application-plan.fdn"
         COPYONLY
     )
+    configure_file(
+        tests/fuzz/corpus/match-guards.fdn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/match-guards.fdn"
+        COPYONLY
+    )
 endif()
 
 include(CTest)
@@ -2767,6 +2772,45 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
     add_test(
+        NAME stage0.run.match-guards
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-guards.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-guards.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.match-guards-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-guards.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/match-guards.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/match-guards
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-guards.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    foreach(match_guard_reject IN ITEMS
+            "match-guard-type;FDN2011"
+            "match-guard-nonexhaustive;FDN2040"
+            "match-guard-move;FDN2228"
+            "match-wildcard-unreachable;FDN2039"
+            "match-wildcard-payload;FDN2041")
+        list(GET match_guard_reject 0 match_guard_name)
+        list(GET match_guard_reject 1 match_guard_code)
+        add_test(
+            NAME stage0.check.${match_guard_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${match_guard_name}.fdn
+                -DCODE=${match_guard_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
+    add_test(
         NAME stage0.check.named-enum-payload-unknown
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -3139,6 +3183,36 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/collections
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/collections/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.queue-values
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/queue-values.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/queue-values.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.queue-values-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/queue-values.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/queue-values.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/queue-values
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/queue-values.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.queue-transfer
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/queue-transfer.fdn
+            -DCODE=FDN2065
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(
         NAME stage0.run.events

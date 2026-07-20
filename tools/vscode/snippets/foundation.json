@@ -312,6 +312,16 @@
         ],
         "description": "Match an enum value"
     },
+    "Match guard": {
+        "prefix": "matchguard",
+        "body": [
+            "match ${1:value} {",
+            "    ${2:Some}(${3:item}) if ${4:predicate}: ${5:result}",
+            "    _: ${6:fallback}",
+            "}"
+        ],
+        "description": "Match a guarded enum payload with a wildcard fallback"
+    },
     "Struct": {
         "prefix": "struct",
         "body": [
