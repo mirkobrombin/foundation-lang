@@ -9,6 +9,10 @@ enum ActivationError {
     Rejected
 }
 
+enum AsyncError {
+    Failed
+}
+
 @di.Scope(.Scoped)
 service RequestState {
     @di.Inject()
@@ -46,6 +50,21 @@ service RejectedService {
     }
 }
 
+@di.Scope(.Transient)
+service AsyncValue {
+    text String
+
+    @di.Inject()
+    fn New() AsyncValue {
+        print("async")
+        AsyncValue { text = "async ok" }
+    }
+
+    fn Message(self) String {
+        text.Copy(self.text)
+    }
+}
+
 @web.Route(.GET, "/ok")
 fn Get(
     @web.Inject() firstState RequestState,
@@ -62,6 +81,32 @@ fn Get(
 fn Fail(@web.Inject() rejected RejectedService) web.Response {
     discard rejected
     web.Text(200, "unexpected")
+}
+
+task completeAsync($value AsyncValue) web.Response {
+    web.Text(200, value.Message())
+}
+
+@web.Route(.GET, "/async/{message:alpha}")
+task Async(
+    @web.Inject() $value AsyncValue,
+    @web.Path("message") $message String
+) Result<web.Response, AsyncError> {
+    discard message
+    const completing = spawn completeAsync($value)
+    const response = $completing.wait()
+    .Ok(response)
+}
+
+struct AsyncDispatchOutcome {
+    Application own FoundationApplication
+    Value Result<web.Response, web.DispatchError<FoundationWebError>>
+}
+
+task dispatchAsync($application own FoundationApplication) own AsyncDispatchOutcome {
+    var active = application
+    const value = active.Dispatch(request("/async/value"))
+    own AsyncDispatchOutcome { Application = active Value = value }
 }
 
 fn request($path String) web.Request {
@@ -109,11 +154,17 @@ fn dispatchActivationRejected(
 fn webActivationRejected($error FoundationWebError) bool {
     match error {
         Binding(error): unexpectedBindingError(error)
+        AsyncFailed(error): unexpectedAsyncError(error)
         FailActivationFailed(error): rejectedError(error)
     }
 }
 
 fn unexpectedBindingError(error FoundationWebBindingError) bool {
+    discard error
+    false
+}
+
+fn unexpectedAsyncError(error AsyncError) bool {
     discard error
     false
 }
@@ -137,6 +188,15 @@ fn main() i32 {
     }
     if responseBody($second) != "ok" return 4
     if !activationRejected($application.Dispatch(request("/fail"))) return 5
+
+    const dispatching = spawn dispatchAsync($application)
+    const AsyncDispatchOutcome { Application Value } = $dispatching.wait()
+    application = Application
+    const asyncResponse = Value else error {
+        discard error
+        return 6
+    }
+    if responseBody($asyncResponse) != "async ok" return 7
 
     discard application
     print("web activation")

@@ -62,7 +62,7 @@ fn Index(@web.Inject() info AppInfo) web.Response {
 }
 
 @web.Route(.GET, "/health")
-fn Health() web.Response {
+task Health() web.Response {
     web.Json(200, "{\"status\":\"healthy\"}")
 }
 

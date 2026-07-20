@@ -1,0 +1,28 @@
+package test.web.reject
+
+import foundation.di
+import foundation.web
+
+@di.Scope(.Scoped)
+service RequestState {
+    value String
+
+    @di.Inject()
+    fn New() RequestState {
+        RequestState { value = "request" }
+    }
+}
+
+@web.Route(.GET, "/items")
+task GetItems(
+    @web.Inject() $first RequestState,
+    @web.Inject() $second RequestState
+) web.Response {
+    discard first
+    discard second
+    web.Text(200, "items")
+}
+
+fn main() i32 {
+    0
+}

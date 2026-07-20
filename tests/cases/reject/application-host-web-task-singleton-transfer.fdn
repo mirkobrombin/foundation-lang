@@ -1,0 +1,24 @@
+package test.web.reject
+
+import foundation.di
+import foundation.web
+
+@di.Scope(.Singleton)
+service SharedState {
+    value String
+
+    @di.Inject()
+    fn New() SharedState {
+        SharedState { value = "shared" }
+    }
+}
+
+@web.Route(.GET, "/items")
+task GetItems(@web.Inject() $state SharedState) web.Response {
+    discard state
+    web.Text(200, "items")
+}
+
+fn main() i32 {
+    0
+}

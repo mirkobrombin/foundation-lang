@@ -50,9 +50,10 @@ body. `Request.IsJSON` parses the media type instead of matching a prefix. It ac
 malformed parameter list is not a JSON content type.
 
 `@Route`, `@Path`, `@Query`, `@Header`, `@Form`, `@Body`, and `@Inject` are typed package
-attributes consumed by the compiler host derivation pass. A route is a free, non-generic
-synchronous function that returns `web.Response` or `Result<web.Response, E>`. Each parameter has
-exactly one binding attribute.
+attributes consumed by the compiler host derivation pass. A route is a free, non-generic function
+or task that returns `web.Response` or `Result<web.Response, E>`. Each parameter has exactly one
+binding attribute. A task route is started and joined by its generated adapter before the request
+scope closes. It is structured request work, not a detached task.
 
 ```foundation
 @web.Route(.POST, "/users/{id:alpha}")
@@ -74,7 +75,12 @@ machine type. Required sources produce a generated `FoundationWebBindingError` w
 `Invalid` binding error with the source and binding name. `@web.Inject()` resolves one statically
 selected provider. Singletons remain shared by the application, scoped providers are constructed
 once per dispatch and reused within that request, and transient providers are constructed for each
-injection. Non-singleton web activation cannot use `@di.Input()` because the request adapter has no
+injection. A task may read a copyable injected value or take ownership of one scoped or transient
+value with `$`. Singleton services cannot be transferred, and the same request-local provider
+cannot be transferred through multiple parameters. Owned request values and services remain alive
+in the task frame until the generated adapter joins it. Cancellation already requested by the
+enclosing server task is forwarded to the handler task. Non-singleton web activation cannot use
+`@di.Input()` because the request adapter has no
 implicit application values. Fallible constructors in one route graph share one error type and
 produce an activation-specific `FoundationWebError` variant. Every request-local value is dropped
 when the adapter returns. `@web.Body()` accepts either raw `String` or a local concrete struct
@@ -131,11 +137,12 @@ without affecting normal compilation. Negative fixtures pin the web declaration 
 initialization failures except the internal missing-runtime invariant.
 
 The `application-host-web-activation` fixture proves one scoped construction per request, fresh
-transient construction per injection, typed constructor failures, and zero live allocations. The
+transient construction per injection, joined task-route execution with an owned transient, typed
+constructor failures, and zero live allocations. The runtime task fixture proves cancellation
+forwarding across the adapter's nested synchronous wait. The
 lower-level `web-server.fdn` and `web-routing.fdn` fixtures cover manual handlers, precedence,
 method backtracking, integer, alpha, and portable regex constraints, catch-all capture, 404/405
 selection, and registration failures.
 
-This is not the completed `app/web` compatibility boundary. Asynchronous route functions,
-middleware, continuous serving, graceful shutdown, TLS, OpenAPI, and the health adapter remain
-pending.
+This is not the completed `app/web` compatibility boundary. Middleware, continuous serving,
+graceful shutdown, TLS, OpenAPI, and the health adapter remain pending.

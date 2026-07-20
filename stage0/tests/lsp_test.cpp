@@ -3132,7 +3132,7 @@ void webActivationExposesEditorDetails() {
         "}\n"
         "\n"
         "@web.Route(.GET, \"/fail\")\n"
-        "fn Fail(@web.Inject() rejected RejectedService) web.Response {\n"
+        "task Fail(@web.Inject() rejected RejectedService) web.Response {\n"
         "    discard rejected\n"
         "    web.Text(200, \"unexpected\")\n"
         "}\n"

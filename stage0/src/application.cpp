@@ -108,6 +108,7 @@ struct WebRoutePlan {
     std::string method;
     std::string path;
     std::vector<WebParameterPlan> parameters;
+    bool task{};
     std::optional<Type> executionError;
     std::optional<Type> activationError;
 };
@@ -2831,7 +2832,10 @@ std::string emitApplicationHostSource(const FirProgram &program,
                 const auto local = "foundationWebParameter" +
                                    std::to_string(parameterIndex);
                 if (parameter.source == WebBindingSource::Inject) {
-                    arguments.push_back(emitWebActivation(*parameter.provider));
+                    arguments.push_back(
+                        std::string(parameterMarker(
+                            parameterMode(function, parameter.index))) +
+                        emitWebActivation(*parameter.provider));
                     continue;
                 }
                 const auto parameterLocal = function.parameters[parameter.index];
@@ -2926,14 +2930,19 @@ std::string emitApplicationHostSource(const FirProgram &program,
                 << webActivation.body.str();
             const auto invocation = functionName(function, rootPackage, aliases) + '(' +
                                     join(arguments) + ')';
+            auto completed = invocation;
+            if (route.task) {
+                out << "        const foundationWebHandler = spawn " << invocation << "\n";
+                completed = "$foundationWebHandler.wait()";
+            }
             if (route.executionError.has_value()) {
-                out << "        match " << invocation << " {\n"
+                out << "        match " << completed << " {\n"
                     << "            Ok(response): .Ok(response)\n"
                     << "            Err(error): .Err(.Handler(error = ." << method
                     << "Failed(error = error)))\n"
                     << "        }\n";
             } else {
-                out << "        .Ok(" << invocation << ")\n";
+                out << "        .Ok(" << completed << ")\n";
             }
             out << "    }\n\n";
         }
@@ -3668,16 +3677,13 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
         route.function = index;
         route.method = enumCase(program, routeUse, 0);
         route.path = stringArgument(routeUse, 1).value_or("");
+        route.task = function.task;
         if (function.method) {
             diagnostics.error("FDN2350", "@web.Route requires a free function",
                               function.sourceSpan);
         }
         if (function.generic) {
             diagnostics.error("FDN2351", "@web.Route function cannot be generic",
-                              function.sourceSpan);
-        }
-        if (function.task) {
-            diagnostics.error("FDN2352", "task web routes are not supported yet",
                               function.sourceSpan);
         }
         if (route.method.empty() || route.path.empty()) {
@@ -3741,9 +3747,15 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
             binding.index = parameter;
             binding.source = bindings.front().first;
             if (binding.source == WebBindingSource::Inject) {
-                if (parameterMode(function, parameter) != ParameterMode::Read) {
-                    diagnostics.error("FDN2356", "injected web services require read access",
-                                      function.sourceSpan);
+                const auto mode = parameterMode(function, parameter);
+                if (mode == ParameterMode::Edit ||
+                    (!function.task && mode != ParameterMode::Read)) {
+                    diagnostics.error(
+                        "FDN2356",
+                        function.task
+                            ? "task web injection requires read or transfer access"
+                            : "injected web services require read access",
+                        function.sourceSpan);
                 }
                 const auto candidates = providerCandidates(program, value.type, std::nullopt);
                 if (candidates.empty()) {
@@ -3809,6 +3821,34 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
             diagnostics.error("FDN2366",
                               "web route cannot combine repeated body binding with form binding",
                               function.sourceSpan);
+        }
+        std::map<FirStructId, std::size_t> injectedProviders;
+        for (const auto &parameter : route.parameters) {
+            if (parameter.source == WebBindingSource::Inject &&
+                parameter.provider.has_value()) {
+                ++injectedProviders[*parameter.provider];
+            }
+        }
+        for (const auto &parameter : route.parameters) {
+            if (parameter.source != WebBindingSource::Inject ||
+                !parameter.provider.has_value() ||
+                parameterMode(function, parameter.index) != ParameterMode::Transfer) {
+                continue;
+            }
+            const auto provider = *parameter.provider;
+            if (serviceLifetime(program, program.structs[provider]) == Lifetime::Singleton) {
+                diagnostics.error(
+                    "FDN2395",
+                    "task web route cannot take ownership of singleton service " +
+                        program.structs[provider].name,
+                    function.sourceSpan);
+            } else if (injectedProviders[provider] != 1) {
+                diagnostics.error(
+                    "FDN2396",
+                    "owned task web service must be injected exactly once: " +
+                        program.structs[provider].name,
+                    function.sourceSpan);
+            }
         }
         webRoutes.push_back(std::move(route));
     }

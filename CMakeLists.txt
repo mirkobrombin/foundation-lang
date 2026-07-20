@@ -1573,7 +1573,6 @@ if(BUILD_TESTING)
             "application-host-duplicate-policy;FDN2344"
             "application-host-web-method-route;FDN2350"
             "application-host-web-generic-route;FDN2351"
-            "application-host-web-task-route;FDN2352"
             "application-host-web-empty-path;FDN2353"
             "application-host-web-duplicate-route;FDN2354"
             "application-host-web-multiple-binding;FDN2355"
@@ -1613,6 +1612,8 @@ if(BUILD_TESTING)
             "application-host-validation-pattern;FDN2391"
             "application-host-web-activation-input;FDN2393"
             "application-host-web-activation-errors;FDN2394"
+            "application-host-web-task-singleton-transfer;FDN2395"
+            "application-host-web-task-owned-duplicate;FDN2396"
             "application-host-transfer;FDN2333")
         list(GET application_host_case 0 application_host_name)
         list(GET application_host_case 1 application_host_code)

@@ -492,6 +492,9 @@ void fdn_task_wait(fdn_task **task, void *result) {
     if (owned->waiter != NULL) {
         fdn_panic_cstr("task already has a waiter");
     }
+    if (fdn_task_current != NULL && fdn_task_current->cancellation_requested) {
+        fdn_task_request_cancellation(owned);
+    }
     fdn_task_run_until(owned);
     fdn_task_release(owned, result, true);
 }
