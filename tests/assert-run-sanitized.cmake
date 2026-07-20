@@ -36,6 +36,9 @@ endif()
 if(DEFINED RUNTIME_REACTOR_SOURCE)
     list(APPEND runtime_sources "${RUNTIME_REACTOR_SOURCE}")
 endif()
+if(DEFINED RUNTIME_RESILIENCY_SOURCE)
+    list(APPEND runtime_sources "${RUNTIME_RESILIENCY_SOURCE}")
+endif()
 if(DEFINED RUNTIME_NET_SOURCE)
     list(APPEND runtime_sources "${RUNTIME_NET_SOURCE}")
 endif()
@@ -45,6 +48,7 @@ endif()
 
 set(thread_arguments)
 if(DEFINED RUNTIME_BLOCKING_SOURCE OR DEFINED RUNTIME_REACTOR_SOURCE OR
+   DEFINED RUNTIME_RESILIENCY_SOURCE OR
    DEFINED RUNTIME_NET_SOURCE)
     list(APPEND thread_arguments -pthread)
 endif()

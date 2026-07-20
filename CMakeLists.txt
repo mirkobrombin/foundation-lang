@@ -24,6 +24,7 @@ add_library(foundation_runtime STATIC
     runtime/src/blocking.c
     runtime/src/pool.c
     runtime/src/reactor.c
+    runtime/src/resiliency.c
     runtime/src/net.c
     runtime/src/plugin.c
     runtime/src/plugin_sandbox.c
@@ -82,6 +83,7 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_RUNTIME_BLOCKING_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c"
     FOUNDATION_RUNTIME_POOL_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c"
     FOUNDATION_RUNTIME_REACTOR_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c"
+    FOUNDATION_RUNTIME_RESILIENCY_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/resiliency.c"
     FOUNDATION_RUNTIME_NET_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c"
     FOUNDATION_RUNTIME_PLUGIN_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/plugin.c"
     FOUNDATION_RUNTIME_PLUGIN_SANDBOX_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/plugin_sandbox.c"
@@ -235,6 +237,11 @@ if(FOUNDATION_BUILD_FUZZERS)
         "${FOUNDATION_FUZZ_CORPUS_DIR}/match-guards.fdn"
         COPYONLY
     )
+    configure_file(
+        tests/fuzz/corpus/select-timeout.fdn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/select-timeout.fdn"
+        COPYONLY
+    )
 endif()
 
 include(CTest)
@@ -281,6 +288,8 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_pool_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_reactor_test runtime/tests/reactor_test.c)
     target_link_libraries(foundation_runtime_reactor_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_resiliency_test runtime/tests/resiliency_test.c)
+    target_link_libraries(foundation_runtime_resiliency_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_net_test runtime/tests/net_test.c)
     target_link_libraries(foundation_runtime_net_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_plugin_test runtime/tests/plugin_test.c)
@@ -451,6 +460,7 @@ if(BUILD_TESTING)
                 foundation_runtime_blocking_test
                 foundation_runtime_pool_test
                 foundation_runtime_reactor_test
+                foundation_runtime_resiliency_test
                 foundation_runtime_net_test)
             target_compile_options(${runtime_test} PRIVATE -fsanitize=address,undefined)
             target_link_options(${runtime_test} PRIVATE -fsanitize=address,undefined)
@@ -473,6 +483,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_blocking_test PRIVATE /W4)
         target_compile_options(foundation_runtime_pool_test PRIVATE /W4)
         target_compile_options(foundation_runtime_reactor_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_resiliency_test PRIVATE /W4)
         target_compile_options(foundation_runtime_net_test PRIVATE /W4)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE /WX)
@@ -491,6 +502,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_blocking_test PRIVATE /WX)
             target_compile_options(foundation_runtime_pool_test PRIVATE /WX)
             target_compile_options(foundation_runtime_reactor_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_resiliency_test PRIVATE /WX)
             target_compile_options(foundation_runtime_net_test PRIVATE /WX)
         endif()
     else()
@@ -512,6 +524,8 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_blocking_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_pool_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_reactor_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_resiliency_test PRIVATE
+                               -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_net_test PRIVATE -Wall -Wextra -Wpedantic)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_runtime_panic_test PRIVATE -Werror)
@@ -530,6 +544,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_blocking_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_pool_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_reactor_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_resiliency_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_net_test PRIVATE -Werror)
         endif()
     endif()
@@ -675,6 +690,7 @@ if(BUILD_TESTING)
     add_test(NAME runtime.blocking COMMAND foundation_runtime_blocking_test)
     add_test(NAME runtime.pool COMMAND foundation_runtime_pool_test)
     add_test(NAME runtime.reactor COMMAND foundation_runtime_reactor_test)
+    add_test(NAME runtime.resiliency COMMAND foundation_runtime_resiliency_test)
     add_test(NAME runtime.net COMMAND foundation_runtime_net_test)
     add_test(
         NAME runtime.plugin
@@ -1324,6 +1340,15 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
     )
     add_test(
+        NAME stage0.run.resiliency-policies
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.fdn
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/resiliency_native.c
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
+    )
+    add_test(
         NAME stage0.run.raw-pointers
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -1404,6 +1429,24 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/resiliency-web
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/resiliency-web/expected.out
+            -DASSERT_ALLOCATIONS=1
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+
+    add_test(
+        NAME stage0.run.resiliency-policies-example
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/resiliency-policies
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/resiliency-policies/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.resiliency-policies-example-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/resiliency-policies
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/resiliency-policies/expected.out
             -DASSERT_ALLOCATIONS=1
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1852,6 +1895,27 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
     add_test(
+        NAME stage0.run.resiliency-policies-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/resiliency-policies.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/resiliency-policies
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.out
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/resiliency_native.c
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+            -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+            -DRUNTIME_RESILIENCY_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/resiliency.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
         NAME stage0.run.callback-native
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -1927,6 +1991,7 @@ if(BUILD_TESTING)
             select-outside-task
             select-missing-error
             select-receive-unbound
+            select-timeout-type
             select-invalid-operation)
         if(select_reject STREQUAL "select-outside-task")
             set(select_code FDN2174)
@@ -1934,6 +1999,8 @@ if(BUILD_TESTING)
             set(select_code FDN1156)
         elseif(select_reject STREQUAL "select-receive-unbound")
             set(select_code FDN2177)
+        elseif(select_reject STREQUAL "select-timeout-type")
+            set(select_code FDN2011)
         else()
             set(select_code FDN2175)
         endif()
@@ -4089,6 +4156,26 @@ if(BUILD_TESTING)
                 -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
                 -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
                 -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.resiliency-policies-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/resiliency-policies-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/resiliency-policies-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.out
+                -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/resiliency_native.c
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                -DRUNTIME_RESILIENCY_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/resiliency.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )

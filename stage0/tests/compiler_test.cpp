@@ -345,6 +345,70 @@ fn main() i32 {
            "task poll resumes from an explicit state");
 }
 
+void dynamicSelectTimeoutsLowerToStoredDeadlines() {
+    constexpr std::string_view source = R"(
+task waitFor(delay u64, $receiver Receiver<void>) bool {
+    select {
+        receiver.receive(): return true
+        timeout timeoutValue(delay): return false
+        else error: return false
+    }
+}
+
+fn timeoutValue(value u64) u64 { value }
+
+fn main() i32 {
+    const Channel { sender receiver } = channel<void>(0)
+    const pending = spawn waitFor(1, $receiver)
+    discard sender
+    discard $pending.wait()
+    0
+}
+)";
+    const auto first = check(source);
+    const auto second = check(source);
+    expect(!first.diagnostics.hasErrors(), "dynamic select timeout is accepted");
+    expect(first.fir.has_value() && second.fir.has_value(),
+           "dynamic select timeout lowers to FIR");
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        return;
+    }
+    const auto firstC = foundation::emitC(*first.fir, "dynamic-timeout.fdn");
+    const auto secondC = foundation::emitC(*second.fir, "dynamic-timeout.fdn");
+    expect(firstC == secondC, "dynamic timeout C emission is deterministic");
+    expect(firstC.find("UINT64_MAX -") != std::string::npos,
+           "dynamic timeout addition saturates before suspension");
+
+    constexpr std::string_view invalid = R"(
+task waitFor(delay i32, $receiver Receiver<void>) bool {
+    select {
+        receiver.receive(): return true
+        timeout delay: return false
+        else error: return false
+    }
+}
+
+fn main() i32 { 0 }
+)";
+    const auto rejected = check(invalid);
+    expect(hasCode(rejected.diagnostics, "FDN2011"),
+           "dynamic select timeout requires u64 nanoseconds");
+
+    constexpr std::string_view unknownUnit = R"(
+task waitFor($receiver Receiver<void>) bool {
+    select {
+        receiver.receive(): return true
+        timeout 1.fortnight: return false
+        else error: return false
+    }
+}
+
+fn main() i32 { 0 }
+)";
+    expect(hasCode(check(unknownUnit).diagnostics, "FDN1144"),
+           "literal select timeout rejects unknown units");
+}
+
 void structValuesLowerToDeterministicC() {
     constexpr std::string_view source = R"(
 struct Point {
@@ -2240,6 +2304,7 @@ int main() {
     immutableBindingsAndCommentsLexDeterministically();
     tasksLowerToOwnedRuntimeHandles();
     taskWaitsLowerToStacklessStates();
+    dynamicSelectTimeoutsLowerToStoredDeadlines();
     structValuesLowerToDeterministicC();
     deepStructGraphsStayIterative();
     enumMatchesLowerToDeterministicC();

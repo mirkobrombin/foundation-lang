@@ -448,7 +448,12 @@ class Lowerer {
             }
             std::optional<FirSelectTimeoutArm> timeout;
             if (selection->timeout.has_value()) {
+                std::optional<FirExpressionId> duration;
+                if (selection->timeout->duration.has_value()) {
+                    duration = lowerExpression(*selection->timeout->duration);
+                }
                 timeout = FirSelectTimeoutArm{selection->timeout->nanoseconds,
+                                              duration,
                                               lowerBlock(selection->timeout->body)};
             }
             value = FirSelectStatement{std::move(operations), std::move(timeout),

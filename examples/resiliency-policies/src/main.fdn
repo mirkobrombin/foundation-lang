@@ -1,0 +1,98 @@
+package example.resiliency.policies
+
+import foundation.resiliency
+import std.time
+
+// Reports a typed service operation failure.
+enum ServiceError {
+    // The service was unavailable.
+    Unavailable
+}
+
+fn loadStatus() Result<String, ServiceError> {
+    .Ok("ready")
+}
+
+fn retryValue(
+    $value Result<String, resiliency.RetryError<ServiceError>>
+) String {
+    match value {
+        Ok(status): status
+        Err(error): retryFailed(error)
+    }
+}
+
+fn retryFailed(error resiliency.RetryError<ServiceError>) never {
+    discard error
+    panic("retry failed")
+}
+
+fn main() i32 {
+    const createdLimiter = resiliency.NewRateLimiter(1000, 1) else error {
+        discard error
+        return 1
+    }
+    var limiter = createdLimiter
+    if !limiter.Allow() return 2
+    const waiting = spawn resiliency.Wait($limiter)
+    const resiliency.RateLimitWait { Limiter Value } = $waiting.wait()
+    limiter = Limiter
+    Value else error {
+        discard error
+        discard limiter
+        return 3
+    }
+    print("rate limiter admitted")
+    discard limiter
+
+    const options = resiliency.RetryOptions<ServiceError> {
+        Attempts = 3
+        InitialDelay = time.Milliseconds(10)
+        MaxDelay = time.Milliseconds(100)
+        Factor = 2.0
+        Jitter = 0.0
+        RetryIf = .None
+    }
+    const retrying = spawn resiliency.Retry<String, ServiceError>(
+        $loadStatus,
+        $options
+    )
+    print("retry returned " + retryValue($retrying.wait()))
+
+    const createdCircuit = resiliency.NewCircuitBreaker<ServiceError>(
+        3,
+        time.Seconds(30)
+    ) else error {
+        discard error
+        return 4
+    }
+    var circuit = createdCircuit
+    circuit.Execute(loadStatusVoid) else error {
+        discard error
+        return 5
+    }
+    print("circuit closed")
+    discard circuit
+
+    const createdGate = resiliency.NewBulkhead(2, 4) else error {
+        discard error
+        return 6
+    }
+    var gate = createdGate
+    const admission = gate.Acquire()
+    const acquired = $admission.wait() else error {
+        discard error
+        discard gate
+        return 7
+    }
+    var permit = acquired
+    print("bulkhead admitted")
+    permit.Release()
+    discard permit
+    discard gate
+    0
+}
+
+fn loadStatusVoid() Result<void, ServiceError> {
+    .Ok
+}

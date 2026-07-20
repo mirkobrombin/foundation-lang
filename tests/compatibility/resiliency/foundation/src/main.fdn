@@ -5,14 +5,25 @@ import foundation.resiliency.web as rateWeb
 import foundation.web
 import std.collections
 import std.format
+import std.time
 
 @blocking
 extern c fn nativeSleepDouble(
     value i32,
     delay u64
 ) i32 as foundation_native_sleep_double
+extern c fn resetRetryNative() void as foundation_native_retry_reset
+extern c fn retryNextNative() i32 as foundation_native_retry_next
+extern c fn retryCallsNative() i32 as foundation_native_retry_calls
+extern c fn stateChangeNative() void as foundation_native_state_change
+extern c fn resetStateNative() void as foundation_native_state_reset
+extern c fn stateChangesNative() i32 as foundation_native_state_changes
 
 enum AppError {
+    Failed
+}
+
+enum OperationError {
     Failed
 }
 
@@ -114,6 +125,167 @@ fn middlewareAccepted(
     }
 }
 
+fn retryOperation() Result<i32, OperationError> {
+    const call = retryNextNative()
+    if call < 3 return .Err(.Failed)
+    .Ok(call)
+}
+
+fn neverRetry(error OperationError) bool {
+    discard error
+    false
+}
+
+fn failOperation() Result<void, OperationError> {
+    .Err(.Failed)
+}
+
+fn passOperation() Result<void, OperationError> {
+    .Ok
+}
+
+fn recordState(previous resiliency.CircuitState, state resiliency.CircuitState) void {
+    discard previous
+    discard state
+    stateChangeNative()
+}
+
+fn breaker(
+    $value Result<resiliency.CircuitBreaker<OperationError>, resiliency.ConfigurationError>
+) resiliency.CircuitBreaker<OperationError> {
+    match value {
+        Ok(created): created
+        Err(error): invalidConfiguration(error)
+    }
+}
+
+fn bulkhead(
+    $value Result<own resiliency.Bulkhead, resiliency.ConfigurationError>
+) own resiliency.Bulkhead {
+    match value {
+        Ok(created): created
+        Err(error): invalidConfiguration(error)
+    }
+}
+
+fn waited(
+    $value Result<void, resiliency.WaitError>,
+    $limiter resiliency.RateLimiter
+) resiliency.RateLimiter {
+    match value {
+        Ok: limiter
+        Err(error): waitFailure($limiter, error)
+    }
+}
+
+fn waitFailure($limiter resiliency.RateLimiter, error resiliency.WaitError) never {
+    discard limiter
+    discard error
+    panic("resiliency compatibility wait failed")
+}
+
+fn retryValue(
+    $value Result<i32, resiliency.RetryError<OperationError>>
+) i32 {
+    match value {
+        Ok(result): result
+        Err(error): retryFailure(error)
+    }
+}
+
+fn retryFailure(error resiliency.RetryError<OperationError>) never {
+    discard error
+    panic("resiliency compatibility retry failed")
+}
+
+fn retryRejected(
+    $value Result<i32, resiliency.RetryError<OperationError>>
+) bool {
+    match value {
+        Ok(result): unexpectedRetry(result)
+        Err(error): retryOperationRejected(error)
+    }
+}
+
+fn unexpectedRetry(result i32) bool {
+    discard result
+    false
+}
+
+fn retryOperationRejected(error resiliency.RetryError<OperationError>) bool {
+    match error {
+        Operation(failure): operationRejected(failure)
+        InvalidConfiguration(configuration): invalidRetry(configuration)
+        Cancelled: false
+    }
+}
+
+fn operationRejected(error OperationError) bool {
+    discard error
+    true
+}
+
+fn invalidRetry(error resiliency.ConfigurationError) bool {
+    discard error
+    false
+}
+
+fn circuitCode(
+    $value Result<void, resiliency.CircuitError<OperationError>>
+) i32 {
+    match value {
+        Ok: 0
+        Err(error): match error {
+            Open: 1
+            Operation(failure): failedCircuit(failure)
+        }
+    }
+}
+
+fn failedCircuit(error OperationError) i32 {
+    discard error
+    2
+}
+
+fn circuitStateCode(state resiliency.CircuitState) i32 {
+    match state {
+        Closed: 0
+        Open: 1
+        HalfOpen: 2
+    }
+}
+
+fn permit(
+    $value Result<own resiliency.Permit, resiliency.BulkheadError>
+) own resiliency.Permit {
+    match value {
+        Ok(acquired): acquired
+        Err(error): bulkheadFailure(error)
+    }
+}
+
+fn bulkheadFailure(error resiliency.BulkheadError) never {
+    discard error
+    panic("resiliency compatibility bulkhead failed")
+}
+
+fn bulkheadFull(
+    $value Result<own resiliency.Permit, resiliency.BulkheadError>
+) bool {
+    match value {
+        Ok(acquired): unexpectedPermit($acquired)
+        Err(error): match error {
+            QueueFull: true
+            Cancelled: false
+        }
+    }
+}
+
+fn unexpectedPermit($permit own resiliency.Permit) bool {
+    discard permit
+    false
+}
+
 fn rejectedMiddleware(error web.MiddlewareRegistrationError) bool {
     discard error
     false
@@ -142,5 +314,73 @@ fn main() i32 {
     print(format.I32(status($router.Dispatch(request("192.0.2.1")))))
     print(format.I32(status($router.Dispatch(request("192.0.2.2")))))
     print("resiliency rate limit ok")
+
+    var waiter = limiter(resiliency.NewRateLimiter(1000, 1))
+    if !waiter.Allow() return 8
+    const waitTask = spawn resiliency.Wait($waiter)
+    const resiliency.RateLimitWait { Limiter Value } = $waitTask.wait()
+    waiter = waited($Value, $Limiter)
+    discard waiter
+    print("wait ok")
+
+    resetRetryNative()
+    const retryOptions = resiliency.RetryOptions<OperationError> {
+        Attempts = 3
+        InitialDelay = time.Milliseconds(1)
+        MaxDelay = time.Milliseconds(2)
+        Factor = 2.0
+        Jitter = 0.0
+        RetryIf = .None
+    }
+    const retried = spawn resiliency.Retry<i32, OperationError>($retryOperation, $retryOptions)
+    const calls = retryValue($retried.wait())
+    print("retry " + format.I32(calls))
+
+    resetRetryNative()
+    const filteredOptions = resiliency.RetryOptions<OperationError> {
+        Attempts = 3
+        InitialDelay = time.Zero()
+        MaxDelay = time.Zero()
+        Factor = 1.0
+        Jitter = 0.0
+        RetryIf = .Some(neverRetry)
+    }
+    const filtered = spawn resiliency.Retry<i32, OperationError>(
+        $retryOperation,
+        $filteredOptions
+    )
+    if !retryRejected($filtered.wait()) return 9
+    print("retry filtered " + format.I32(retryCallsNative()))
+
+    resetStateNative()
+    var circuit = breaker(resiliency.NewCircuitBreaker<OperationError>(2, time.Milliseconds(1)))
+    circuit.OnStateChange($recordState)
+    const firstCircuit = circuitCode($circuit.Execute(failOperation))
+    const secondCircuit = circuitCode($circuit.Execute(failOperation))
+    const openCircuit = circuitCode($circuit.Execute(passOperation))
+    const circuitWait = spawn sleep(3)
+    $circuitWait.wait()
+    const recoveredCircuit = circuitCode($circuit.Execute(passOperation))
+    print(
+        "circuit " + format.Bool(firstCircuit == 2) + " " +
+        format.Bool(secondCircuit == 2) + " " + format.Bool(openCircuit == 1) + " " +
+        format.Bool(recoveredCircuit == 0) + " " + format.I32(circuitStateCode(circuit.State())) +
+        " " + format.I32(stateChangesNative())
+    )
+    discard circuit
+
+    var gate = bulkhead(resiliency.NewBulkhead(1, 1))
+    const firstPending = gate.Acquire()
+    var firstPermit = permit($firstPending.wait())
+    const queued = gate.Acquire()
+    const rejected = gate.Acquire()
+    const full = bulkheadFull($rejected.wait())
+    firstPermit.Release()
+    discard firstPermit
+    var secondPermit = permit($queued.wait())
+    secondPermit.Release()
+    discard secondPermit
+    discard gate
+    print("bulkhead " + format.Bool(full) + " 2")
     0
 }

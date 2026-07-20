@@ -2089,10 +2089,10 @@ void selectExposesEditorDetails() {
     const auto source = root / "main.fdn";
     const std::string contents =
         "package sample\n"
-        "task work($receiver Receiver<String>) Result<void, ChannelError> {\n"
+        "task work($receiver Receiver<String>, delay u64) Result<void, ChannelError> {\n"
         "    select {\n"
         "        const message = receiver.receive(): print(message)\n"
-        "        timeout 5.seconds: return .Err(.Timeout)\n"
+        "        timeout delay: return .Err(.Timeout)\n"
         "        else error: return .Err(error)\n"
         "    }\n"
         "    .Ok\n"
@@ -2137,8 +2137,9 @@ void selectExposesEditorDetails() {
                selectHover.find("else error") != std::string::npos,
            "select hover explains deterministic readiness and typed errors");
     expect(timeoutHover.find("monotonic duration") != std::string::npos &&
-               timeoutHover.find("milliseconds") != std::string::npos,
-           "timeout hover explains its clock and supported units");
+               timeoutHover.find("dynamic `u64` nanosecond expression") != std::string::npos &&
+               timeoutHover.find("saturates") != std::string::npos,
+           "timeout hover explains dynamic monotonic deadlines");
     expect(bindingHover.find("message String") != std::string::npos,
            "select payload binding receives compiler-backed hover");
     expect(definition.find(sourceUri) != std::string::npos &&

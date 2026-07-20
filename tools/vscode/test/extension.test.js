@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.112.0");
+    assert.equal(manifest.version, "0.113.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1342,7 +1342,11 @@ test("grammar and completions track compiler keywords", () => {
         "foundation.resiliency", "foundation.resiliency.web",
         "resiliency.RateLimiter", "resiliency.ConfigurationError",
         "resiliency.NewRateLimiter", "resiliency.RateLimiter.Allow",
-        "resiliency.RateLimiter.AllowAt", "rateWeb.RateLimit",
+        "resiliency.RateLimiter.AllowAt", "resiliency.Wait",
+        "resiliency.CircuitBreaker", "resiliency.NewCircuitBreaker",
+        "resiliency.RetryOptions", "resiliency.Retry",
+        "resiliency.Bulkhead", "resiliency.NewBulkhead",
+        "rateWeb.RateLimit",
         "rateWeb.RateLimitWithPolicy",
         "foundation.worker", "worker.Supervisor", "worker.NewSupervisor",
         "worker.Supervisor.Start", "worker.Supervisor.Shutdown", "worker.Supervisor.Cancel",

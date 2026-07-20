@@ -1838,39 +1838,47 @@ AstStatementId Parser::selectStatement(const Token &start) {
     while (!check(TokenKind::RightBrace) && !atEnd()) {
         if (match(TokenKind::Timeout)) {
             const auto timeoutToken = previous();
-            const auto amount = expect(TokenKind::Integer, "FDN1141",
-                                       "expected timeout duration");
-            expect(TokenKind::Dot, "FDN1142", "expected timeout duration unit");
-            const auto unit = expect(TokenKind::Identifier, "FDN1143",
-                                     "expected timeout duration unit");
-            std::uint64_t magnitude{};
-            const auto conversion = std::from_chars(
-                amount.text.data(), amount.text.data() + amount.text.size(), magnitude);
-            if (conversion.ec != std::errc{} ||
-                conversion.ptr != amount.text.data() + amount.text.size()) {
-                diagnostics_.error("FDN1016", "integer is outside the supported range",
-                                   amount.span);
-            }
-            std::uint64_t multiplier{};
-            if (unit.text == "seconds") {
-                multiplier = UINT64_C(1000000000);
-            } else if (unit.text == "milliseconds") {
-                multiplier = UINT64_C(1000000);
-            } else if (unit.text == "microseconds") {
-                multiplier = UINT64_C(1000);
-            } else if (unit.text == "nanoseconds") {
-                multiplier = 1;
-            } else {
-                diagnostics_.error("FDN1144", "unknown timeout duration unit " + unit.text,
-                                   unit.span);
-            }
             std::uint64_t nanoseconds{};
-            if (multiplier != 0 && magnitude > UINT64_MAX / multiplier) {
-                diagnostics_.error("FDN1145", "timeout duration is outside the supported range",
-                                   amount.span);
-                nanoseconds = UINT64_MAX;
+            std::optional<AstExpressionId> duration;
+            const auto literal = check(TokenKind::Integer) &&
+                                 peek(1).kind == TokenKind::Dot &&
+                                 peek(2).kind == TokenKind::Identifier;
+            if (literal) {
+                const auto amount = advance();
+                advance();
+                const auto unit = advance();
+                std::uint64_t magnitude{};
+                const auto conversion = std::from_chars(
+                    amount.text.data(), amount.text.data() + amount.text.size(), magnitude);
+                if (conversion.ec != std::errc{} ||
+                    conversion.ptr != amount.text.data() + amount.text.size()) {
+                    diagnostics_.error("FDN1016", "integer is outside the supported range",
+                                       amount.span);
+                }
+                std::uint64_t multiplier{};
+                if (unit.text == "seconds") {
+                    multiplier = UINT64_C(1000000000);
+                } else if (unit.text == "milliseconds") {
+                    multiplier = UINT64_C(1000000);
+                } else if (unit.text == "microseconds") {
+                    multiplier = UINT64_C(1000);
+                } else if (unit.text == "nanoseconds") {
+                    multiplier = 1;
+                } else {
+                    diagnostics_.error("FDN1144",
+                                       "unknown timeout duration unit " + unit.text,
+                                       unit.span);
+                }
+                if (multiplier != 0 && magnitude > UINT64_MAX / multiplier) {
+                    diagnostics_.error("FDN1145",
+                                       "timeout duration is outside the supported range",
+                                       amount.span);
+                    nanoseconds = UINT64_MAX;
+                } else {
+                    nanoseconds = magnitude * multiplier;
+                }
             } else {
-                nanoseconds = magnitude * multiplier;
+                duration = expression();
             }
             expect(TokenKind::Colon, "FDN1146", "expected : after timeout duration");
             const auto body = selectArmBlock();
@@ -1878,7 +1886,7 @@ AstStatementId Parser::selectStatement(const Token &start) {
                 diagnostics_.error("FDN1147", "select accepts one timeout branch",
                                    timeoutToken.span);
             } else {
-                timeout = SelectTimeoutArm{nanoseconds, body, timeoutToken.span};
+                timeout = SelectTimeoutArm{nanoseconds, duration, body, timeoutToken.span};
             }
             continue;
         }

@@ -307,6 +307,7 @@ struct SelectOperationArm {
 
 struct SelectTimeoutArm {
     std::uint64_t nanoseconds{};
+    std::optional<AstExpressionId> duration;
     AstBlockId body{};
     SourceSpan span;
 };

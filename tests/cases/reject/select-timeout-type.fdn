@@ -1,0 +1,11 @@
+task waitFor(delay i32, $receiver Receiver<void>) bool {
+    select {
+        receiver.receive(): return true
+        timeout delay: return false
+        else error: return false
+    }
+}
+
+fn main() i32 {
+    0
+}

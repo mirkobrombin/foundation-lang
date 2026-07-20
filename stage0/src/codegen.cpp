@@ -520,15 +520,6 @@ std::string typeKey(const Type &type) {
     return result;
 }
 
-std::string functionKey(FirFunctionId function, const std::vector<Type> &arguments) {
-    std::string result = std::to_string(function) + '<';
-    for (const auto &argument : arguments) {
-        result += typeKey(argument) + ';';
-    }
-    result += '>';
-    return result;
-}
-
 bool isCopyParameterType(const FirProgram &program, const Type &type) {
     if (isMachineScalar(type) && type != voidType && type != neverType) {
         return true;
@@ -574,6 +565,45 @@ class Monomorphizer {
     }
 
   private:
+    std::string sourceTypeKey(const Type &type) const {
+        if (type.kind == TypeKind::View && type.declaration == 1 &&
+            type.arguments.size() == 1 &&
+            isCopyParameterType(source_, type.arguments.front())) {
+            return sourceTypeKey(type.arguments.front());
+        }
+        std::string result;
+        if (type.kind == TypeKind::Struct && type.declaration < source_.structs.size()) {
+            result = "struct:" + source_.structs[type.declaration].name;
+        } else if (type.kind == TypeKind::Enum &&
+                   type.declaration < source_.enums.size()) {
+            result = "enum:" + source_.enums[type.declaration].name;
+        } else if (type.kind == TypeKind::Contract &&
+                   type.declaration < source_.contracts.size()) {
+            result = "contract:" + source_.contracts[type.declaration].name;
+        } else {
+            result = std::to_string(static_cast<unsigned int>(type.kind)) + ':' +
+                     std::to_string(type.declaration);
+        }
+        if (!type.arguments.empty()) {
+            result += '<';
+            for (const auto &argument : type.arguments) {
+                result += sourceTypeKey(argument) + ';';
+            }
+            result += '>';
+        }
+        return result;
+    }
+
+    std::string sourceFunctionKey(FirFunctionId function,
+                                  const std::vector<Type> &arguments) const {
+        std::string result = std::to_string(function) + '<';
+        for (const auto &argument : arguments) {
+            result += sourceTypeKey(argument) + ';';
+        }
+        result += '>';
+        return result;
+    }
+
     Type instantiateType(const Type &source) {
         if (source.kind == TypeKind::Parameter || source.kind == TypeKind::Invalid) {
             internalError("unresolved type reached monomorphization");
@@ -600,7 +630,7 @@ class Monomorphizer {
             return Type{source.kind, source.declaration, {std::move(target)}};
         }
         if (source.kind == TypeKind::Contract) {
-            const auto key = typeKey(source);
+            const auto key = sourceTypeKey(source);
             if (const auto found = contracts_.find(key); found != contracts_.end()) {
                 return Type{TypeKind::Contract, found->second, {}};
             }
@@ -639,7 +669,7 @@ class Monomorphizer {
             return source;
         }
 
-        const auto key = typeKey(source);
+        const auto key = sourceTypeKey(source);
         if (source.kind == TypeKind::Struct) {
             if (const auto found = structs_.find(key); found != structs_.end()) {
                 return Type{TypeKind::Struct, found->second, {}};
@@ -693,7 +723,7 @@ class Monomorphizer {
 
     FirFunctionId instantiateFunction(FirFunctionId sourceId,
                                       const std::vector<Type> &arguments) {
-        const auto key = functionKey(sourceId, arguments);
+        const auto key = sourceFunctionKey(sourceId, arguments);
         if (const auto found = functions_.find(key); found != functions_.end()) {
             return found->second;
         }
@@ -2822,12 +2852,22 @@ class FunctionEmitter {
             }
         }
 
+        std::optional<EmittedExpression> timeoutDuration;
+        if (selection.timeout.has_value() &&
+            selection.timeout->duration.has_value()) {
+            timeoutDuration = emitExpression(*selection.timeout->duration, depth);
+        }
+
         const auto now = nextTemporary();
         if (selection.timeout.has_value()) {
             out_ << indentation(depth) << "uint64_t " << now
                  << " = fdn_monotonic_nanoseconds();\n";
             out_ << indentation(depth) << localValue(selection.deadlineStorage) << " = ";
-            if (selection.timeout->nanoseconds == UINT64_MAX) {
+            if (timeoutDuration.has_value()) {
+                out_ << timeoutDuration->value << " > UINT64_MAX - " << now
+                     << " ? UINT64_MAX : " << now << " + "
+                     << timeoutDuration->value << ";\n";
+            } else if (selection.timeout->nanoseconds == UINT64_MAX) {
                 out_ << "UINT64_MAX;\n";
             } else {
                 out_ << "UINT64_C(" << selection.timeout->nanoseconds << ") > UINT64_MAX - "

@@ -237,6 +237,20 @@ uint64_t foundation_runtime_time_unix_seconds(void);
 uint64_t foundation_runtime_time_monotonic_nanoseconds(void);
 int32_t foundation_runtime_time_format_utc(uint64_t unix_seconds, fdn_string *result);
 int32_t foundation_runtime_time_parse_duration(const fdn_string *value, int64_t *result);
+bool foundation_runtime_resiliency_finite(double value);
+int32_t foundation_runtime_resiliency_retry_delay(
+    int64_t initial_nanoseconds, int64_t max_nanoseconds, double factor,
+    double jitter, uint64_t attempt, int64_t *result);
+uint64_t foundation_runtime_bulkhead_open(uint64_t max_concurrent,
+                                          uint64_t max_queue);
+void foundation_runtime_bulkhead_retain(uint64_t handle);
+void foundation_runtime_bulkhead_release(uint64_t handle);
+void foundation_runtime_bulkhead_acquire(uint64_t handle,
+                                         fdn_reactor_operation *operation);
+void foundation_runtime_bulkhead_cancel(fdn_reactor_operation *operation);
+void foundation_runtime_bulkhead_permit_release(uint64_t handle);
+uint64_t foundation_runtime_bulkhead_live_handles(void);
+uint64_t foundation_runtime_bulkhead_live_waiters(void);
 void foundation_runtime_uuid_v4(uint64_t *high, uint64_t *low);
 void foundation_runtime_uuid_v7(uint64_t *high, uint64_t *low);
 uint64_t foundation_runtime_cancellation_open(void);

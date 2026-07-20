@@ -85,6 +85,14 @@ fn configurationErrorCode(
             InvalidBurst: 2
             InvalidMaxClients: 3
             InvalidClientTTL: 4
+            InvalidThreshold: 5
+            InvalidTimeout: 5
+            InvalidAttempts: 5
+            InvalidMaxConcurrent: 5
+            InvalidInitialDelay: 5
+            InvalidMaxDelay: 5
+            InvalidFactor: 5
+            InvalidJitter: 5
         }
     }
 }

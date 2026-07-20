@@ -208,6 +208,9 @@ void remapStatement(Statement &statement, std::size_t expressionOffset,
             operation.body += blockOffset;
         }
         if (selection->timeout.has_value()) {
+            if (selection->timeout->duration.has_value()) {
+                *selection->timeout->duration += expressionOffset;
+            }
             selection->timeout->body += blockOffset;
         }
         selection->errorBlock += blockOffset;
@@ -656,6 +659,10 @@ void linkBlock(Program &program, AstBlockId id, const std::string &currentPackag
                           typeParameters, diagnostics);
             }
             if (selection->timeout.has_value()) {
+                if (selection->timeout->duration.has_value()) {
+                    linkExpression(program, *selection->timeout->duration, currentPackage,
+                                   imports, symbols, typeParameters, diagnostics);
+                }
                 linkBlock(program, selection->timeout->body, currentPackage, imports, symbols,
                           typeParameters, diagnostics);
             }

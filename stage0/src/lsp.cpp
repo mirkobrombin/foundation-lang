@@ -2481,10 +2481,10 @@ class LanguageServer {
                         "deadline.";
                 } else if (keyword == "timeout") {
                     documentation =
-                        "```foundation\ntimeout 5.seconds: action\n```\n\nRuns only when no "
-                        "channel operation completes before the monotonic duration. Supported "
-                        "units are `seconds`, `milliseconds`, `microseconds`, and "
-                        "`nanoseconds`.";
+                        "```foundation\ntimeout delay: action\n```\n\nRuns only when no "
+                        "channel operation completes before the monotonic duration. The duration "
+                        "may be a unit literal or a dynamic `u64` nanosecond expression. Deadline "
+                        "addition saturates instead of wrapping.";
                 } else if (keyword == "blocking" && found->offset != 0 &&
                            source.contents[found->offset - 1] == '@') {
                     documentation =

@@ -2,7 +2,34 @@ package foundation.resiliency
 
 import std.time
 
-// Reports an invalid token bucket configuration.
+extern c fn finiteNative(value f64) bool as foundation_runtime_resiliency_finite
+extern c fn retryDelayNative(
+    initialNanoseconds i64,
+    maxNanoseconds i64,
+    factor f64,
+    jitter f64,
+    attempt u64,
+    &delayNanoseconds i64
+) i32 as foundation_runtime_resiliency_retry_delay
+extern c fn openBulkheadNative(
+    maxConcurrent u64,
+    maxQueue u64
+) u64 as foundation_runtime_bulkhead_open
+extern c fn retainBulkheadNative(
+    handle u64
+) void as foundation_runtime_bulkhead_retain
+extern c fn releaseBulkheadNative(
+    handle u64
+) void as foundation_runtime_bulkhead_release
+@callback(cancel = foundation_runtime_bulkhead_cancel)
+extern c fn acquireBulkheadNative(
+    handle u64
+) i32 as foundation_runtime_bulkhead_acquire
+extern c fn releasePermitNative(
+    handle u64
+) void as foundation_runtime_bulkhead_permit_release
+
+// Reports an invalid resiliency policy configuration.
 enum ConfigurationError {
     // The refill rate must be greater than zero.
     InvalidRate
@@ -12,6 +39,145 @@ enum ConfigurationError {
     InvalidMaxClients
     // A client expiration duration must be greater than zero.
     InvalidClientTTL
+    // A circuit breaker failure threshold must be greater than zero.
+    InvalidThreshold
+    // A circuit breaker timeout must be greater than zero.
+    InvalidTimeout
+    // A retry policy must attempt an operation at least once.
+    InvalidAttempts
+    // A bulkhead must admit at least one concurrent operation.
+    InvalidMaxConcurrent
+    // A retry delay cannot be negative.
+    InvalidInitialDelay
+    // A retry maximum delay cannot be less than its initial delay.
+    InvalidMaxDelay
+    // A retry factor must be finite and at least one.
+    InvalidFactor
+    // Retry jitter must be finite and between zero and one.
+    InvalidJitter
+}
+
+// Reports cancellation while a rate limiter waits for its next token.
+enum WaitError {
+    // The waiting task was cancelled before a token became available.
+    Cancelled
+}
+
+// Returns a rate limiter together with one blocking-free wait result.
+struct RateLimitWait {
+    // Preserves the updated token bucket after the wait.
+    Limiter RateLimiter
+    // Reports token admission or cancellation.
+    Value Result<void, WaitError>
+}
+
+// Describes the observable circuit breaker state.
+enum CircuitState {
+    // Operations are admitted and failures are counted.
+    Closed
+    // Operations are rejected until the configured timeout elapses.
+    Open
+    // One recovery probe is admitted.
+    HalfOpen
+}
+
+// Preserves either an open circuit or the typed operation failure.
+enum CircuitError<E> {
+    // The circuit rejected the operation.
+    Open
+    // The admitted operation returned its typed failure.
+    Operation(error E)
+}
+
+// Configures one retry operation.
+struct RetryOptions<E> {
+    // Sets the complete number of calls, including the initial call.
+    Attempts i32 = 3
+    // Sets the delay before the first retry.
+    InitialDelay time.Duration = time.Milliseconds(100)
+    // Caps exponential retry delay.
+    MaxDelay time.Duration = time.Seconds(2)
+    // Multiplies delay after each failed attempt.
+    Factor f64 = 2.0
+    // Adds a random fraction between zero and this inclusive upper bound.
+    Jitter f64 = 0.0
+    // Selects which typed operation failures may be retried.
+    RetryIf Option<fn(E) bool> = .None
+}
+
+// Preserves operation, configuration, and structured cancellation failures.
+enum RetryError<E> {
+    // The final admitted operation returned its typed failure.
+    Operation(error E)
+    // The retry options failed validation before execution.
+    InvalidConfiguration(error ConfigurationError)
+    // The retry task was cancelled during a cooperative delay.
+    Cancelled
+}
+
+// Reports bounded bulkhead admission and cancellation failures.
+enum BulkheadError {
+    // The complete waiting queue is already occupied.
+    QueueFull
+    // The waiting task was cancelled before admission.
+    Cancelled
+}
+
+struct retryDecision<E> {
+    condition Option<fn(E) bool>
+    allowed bool
+}
+
+// Owns one bounded concurrency policy shared by cloned handles.
+struct Bulkhead {
+    handle u64
+
+    // Creates another owner of the same concurrency policy.
+    fn Clone(self) own Bulkhead {
+        retainBulkheadNative(self.handle)
+        own Bulkhead { handle = self.handle }
+    }
+
+    // Starts one FIFO admission without blocking an executor thread.
+    fn Acquire(self) Task<Result<own Permit, BulkheadError>> {
+        const cloned = self.Clone()
+        spawn acquireBulkhead($cloned)
+    }
+
+    fn takeHandle(&self) u64 {
+        replace self.handle with 0
+    }
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        releaseBulkheadNative(handle)
+    }
+}
+
+// Releases one bulkhead slot deterministically when dropped.
+struct Permit {
+    handle u64
+
+    // Releases the slot before lexical scope exit.
+    fn Release(&self) void {
+        const handle = self.takeHandle()
+        if handle != 0 {
+            releasePermitNative(handle)
+            releaseBulkheadNative(handle)
+        }
+    }
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            releasePermitNative(handle)
+            releaseBulkheadNative(handle)
+        }
+    }
+
+    fn takeHandle(&self) u64 {
+        replace self.handle with 0
+    }
 }
 
 // Limits nonblocking operations with a monotonic token bucket.
@@ -20,19 +186,23 @@ struct RateLimiter {
     rate f64
     burst f64
     last time.MonotonicInstant
+    waitNanoseconds u64
 
     // Reports whether one operation may proceed now.
     fn Allow(&self) bool {
         self.AllowAt(time.MonotonicNow())
     }
 
-    // Reports whether one operation may proceed at an explicit monotonic instant.
+    // Reports admission at an explicit monotonic instant.
     fn AllowAt(&self, now time.MonotonicInstant) bool {
         const elapsed = now.Since(self.last) else error {
             discard error
             return false
         }
-        const refill = refillSeconds(elapsed, self.burst / self.rate) * self.rate
+        const refill = refillSeconds(
+            elapsed,
+            self.burst / self.rate
+        ) * self.rate
         self.tokens = self.tokens + refill
         if self.tokens > self.burst {
             self.tokens = self.burst
@@ -41,6 +211,49 @@ struct RateLimiter {
         if self.tokens < 1.0 return false
         self.tokens = self.tokens - 1.0
         true
+    }
+}
+
+// Executes fallible operations until one succeeds or the circuit rejects them.
+struct CircuitBreaker<E> {
+    state CircuitState
+    failures i32
+    threshold i32
+    openDuration time.Duration
+    lastFailure time.MonotonicInstant
+    probing bool
+    onStateChange Option<fn(CircuitState, CircuitState) void>
+
+    // Returns the current circuit state.
+    fn State(self) CircuitState {
+        self.state
+    }
+
+    // Replaces the callback invoked after each state transition.
+    fn OnStateChange(
+        &self,
+        $callback fn(CircuitState, CircuitState) void
+    ) void {
+        self.onStateChange = .Some(callback)
+    }
+
+    // Removes the current state transition callback.
+    fn ClearStateChange(&self) void {
+        self.onStateChange = .None
+    }
+
+    // Executes one synchronous typed operation when the circuit permits it.
+    fn Execute(
+        &self,
+        operation fn() Result<void, E>
+    ) Result<void, CircuitError<E>> {
+        if !circuitAllows(&self) return .Err(.Open)
+        operation() else error {
+            circuitFailed(&self)
+            return .Err(.Operation(error = error))
+        }
+        circuitSucceeded(&self)
+        .Ok
     }
 }
 
@@ -56,7 +269,160 @@ fn NewRateLimiter(
         rate = f64.From(rate)
         burst = f64.From(burst)
         last = time.MonotonicNow()
+        waitNanoseconds = waitNanoseconds(rate)
     })
+}
+
+// Waits cooperatively until one token is available and returns the limiter.
+task Wait($limiter RateLimiter) RateLimitWait {
+    var active = limiter
+    while !active.Allow() {
+        const Channel { sender receiver } = channel<void>(0)
+        var endpoint = receiver
+        select {
+            endpoint.receive(): {
+                discard sender
+                discard endpoint
+            }
+            timeout active.waitNanoseconds: {
+                discard sender
+                discard endpoint
+            }
+            else error: {
+                discard error
+                discard sender
+                discard endpoint
+                return RateLimitWait {
+                    Limiter = active
+                    Value = .Err(.Cancelled)
+                }
+            }
+        }
+    }
+    RateLimitWait { Limiter = active Value = .Ok }
+}
+
+// Creates a closed circuit breaker with a monotonic open timeout.
+fn NewCircuitBreaker<E>(
+    threshold i32,
+    openDuration time.Duration
+) Result<CircuitBreaker<E>, ConfigurationError> {
+    if threshold <= 0 return .Err(.InvalidThreshold)
+    if openDuration.Nanoseconds() <= 0 return .Err(.InvalidTimeout)
+    .Ok(CircuitBreaker<E> {
+        state = .Closed
+        failures = 0
+        threshold = threshold
+        openDuration = openDuration
+        lastFailure = time.MonotonicNow()
+        probing = false
+        onStateChange = .None
+    })
+}
+
+// Creates a FIFO bulkhead with bounded active and waiting operations.
+fn NewBulkhead(
+    maxConcurrent u64,
+    maxQueue u64
+) Result<own Bulkhead, ConfigurationError> {
+    if maxConcurrent == 0 return .Err(.InvalidMaxConcurrent)
+    const handle = openBulkheadNative(maxConcurrent, maxQueue)
+    if handle == 0 return .Err(.InvalidMaxConcurrent)
+    .Ok(own Bulkhead { handle = handle })
+}
+
+// Retries one synchronous typed operation without blocking the executor.
+task Retry<T, E>(
+    $operation fn() Result<T, E>,
+    $options RetryOptions<E>
+) Result<T, RetryError<E>> {
+    validateRetryOptions(options) else error {
+        return .Err(.InvalidConfiguration(error = error))
+    }
+
+    const active = spawn retry<T, E>($operation, $options, 0)
+    const result = $active.wait()
+    result
+}
+
+task retry<T, E>(
+    $operation fn() Result<T, E>,
+    $options RetryOptions<E>,
+    attempt i32
+) Result<T, RetryError<E>> {
+    var activeOptions = options
+    var nextAttempt = attempt
+    while nextAttempt < activeOptions.Attempts {
+        const value = operation() else error {
+            nextAttempt = nextAttempt + 1
+            const candidate = replace activeOptions.RetryIf with .None
+            const retryDecision { condition allowed } = retryAllowed<E>(
+                $candidate,
+                error
+            )
+            activeOptions.RetryIf = condition
+            if nextAttempt >= activeOptions.Attempts || !allowed {
+                return .Err(.Operation(error = error))
+            }
+
+            var delayNanoseconds i64 = 0
+            const delayStatus = retryDelayNative(
+                activeOptions.InitialDelay.Nanoseconds(),
+                activeOptions.MaxDelay.Nanoseconds(),
+                activeOptions.Factor,
+                activeOptions.Jitter,
+                retryAttempt(nextAttempt),
+                &delayNanoseconds
+            )
+            if delayStatus != 0 {
+                discard error
+                return .Err(.InvalidConfiguration(error = .InvalidFactor))
+            }
+            const delay = u64.From(delayNanoseconds) else conversionError {
+                discard conversionError
+                discard error
+                return .Err(.InvalidConfiguration(error = .InvalidInitialDelay))
+            }
+            discard error
+
+            const Channel { sender receiver } = channel<void>(0)
+            var endpoint = receiver
+            select {
+                endpoint.receive(): {
+                    discard sender
+                    discard endpoint
+                }
+                timeout delay: {
+                    discard sender
+                    discard endpoint
+                }
+                else channelError: {
+                    discard channelError
+                    discard sender
+                    discard endpoint
+                    return .Err(.Cancelled)
+                }
+            }
+            continue
+        }
+        return .Ok(value)
+    }
+    panic("retry attempt invariant failed")
+}
+
+task acquireBulkhead(
+    $bulkhead own Bulkhead
+) Result<own Permit, BulkheadError> {
+    var active = bulkhead
+    const status = acquireBulkheadNative(active.handle)
+    if status == 0 {
+        const handle = active.takeHandle()
+        discard active
+        return .Ok(own Permit { handle = handle })
+    }
+    discard active
+    if status == 1 return .Err(.QueueFull)
+    .Err(.Cancelled)
 }
 
 fn refillSeconds(duration time.Duration, fallback f64) f64 {
@@ -65,4 +431,142 @@ fn refillSeconds(duration time.Duration, fallback f64) f64 {
         return fallback
     }
     nanoseconds / 1000000000.0
+}
+
+fn waitNanoseconds(rate i32) u64 {
+    const positive = u64.From(rate) else error {
+        discard error
+        panic("rate limiter wait invariant failed")
+    }
+    (1000000000 + positive - 1) / positive
+}
+
+fn circuitAllows<E>(&breaker CircuitBreaker<E>) bool {
+    match breaker.state {
+        Closed: true
+        Open: allowOpenCircuit(&breaker)
+        HalfOpen: allowHalfOpenCircuit(&breaker)
+    }
+}
+
+fn allowOpenCircuit<E>(&breaker CircuitBreaker<E>) bool {
+    const elapsed = time.MonotonicNow().Since(breaker.lastFailure) else error {
+        discard error
+        return false
+    }
+    if elapsed.Nanoseconds() <= breaker.openDuration.Nanoseconds() return false
+    breaker.probing = false
+    changeCircuitState(&breaker, .HalfOpen)
+    allowHalfOpenCircuit(&breaker)
+}
+
+fn allowHalfOpenCircuit<E>(&breaker CircuitBreaker<E>) bool {
+    if breaker.probing return false
+    breaker.probing = true
+    true
+}
+
+fn circuitSucceeded<E>(&breaker CircuitBreaker<E>) void {
+    breaker.failures = 0
+    if circuitStateCode(breaker.state) == 2 {
+        breaker.probing = false
+        changeCircuitState(&breaker, .Closed)
+    }
+}
+
+fn circuitFailed<E>(&breaker CircuitBreaker<E>) void {
+    breaker.lastFailure = time.MonotonicNow()
+    if circuitStateCode(breaker.state) == 2 {
+        breaker.probing = false
+        breaker.failures = 0
+        changeCircuitState(&breaker, .Open)
+        return
+    }
+    breaker.failures = breaker.failures + 1
+    if circuitStateCode(breaker.state) == 0 &&
+        breaker.failures >= breaker.threshold {
+        changeCircuitState(&breaker, .Open)
+    }
+}
+
+fn changeCircuitState<E>(
+    &breaker CircuitBreaker<E>,
+    state CircuitState
+) void {
+    const previous = breaker.state
+    if circuitStateCode(previous) == circuitStateCode(state) return
+    breaker.state = state
+    const optional = replace breaker.onStateChange with .None
+    match optional {
+        None: stateChangedWithoutCallback()
+        Some(callback): restoreStateChange(&breaker, previous, state, $callback)
+    }
+}
+
+fn stateChangedWithoutCallback() void {
+}
+
+fn circuitStateCode(state CircuitState) i32 {
+    match state {
+        Closed: 0
+        Open: 1
+        HalfOpen: 2
+    }
+}
+
+fn restoreStateChange<E>(
+    &breaker CircuitBreaker<E>,
+    previous CircuitState,
+    state CircuitState,
+    $callback fn(CircuitState, CircuitState) void
+) void {
+    callback(previous, state)
+    breaker.onStateChange = .Some(callback)
+}
+
+fn validateRetryOptions<E>(
+    options RetryOptions<E>
+) Result<void, ConfigurationError> {
+    if options.Attempts < 1 return .Err(.InvalidAttempts)
+    if options.InitialDelay.Nanoseconds() < 0 return .Err(.InvalidInitialDelay)
+    if options.MaxDelay.Nanoseconds() < options.InitialDelay.Nanoseconds() {
+        return .Err(.InvalidMaxDelay)
+    }
+    if !finiteNative(options.Factor) || options.Factor < 1.0 {
+        return .Err(.InvalidFactor)
+    }
+    if !finiteNative(options.Jitter) ||
+        options.Jitter < 0.0 ||
+        options.Jitter > 1.0 {
+        return .Err(.InvalidJitter)
+    }
+    .Ok
+}
+
+fn retryAllowed<E>($condition Option<fn(E) bool>, error E) retryDecision<E> {
+    match condition {
+        None: retryWithoutPredicate<E>()
+        Some(predicate): retryWithPredicate<E>($predicate, error)
+    }
+}
+
+fn retryWithoutPredicate<E>() retryDecision<E> {
+    retryDecision<E> { condition = .None allowed = true }
+}
+
+fn retryWithPredicate<E>(
+    $predicate fn(E) bool,
+    error E
+) retryDecision<E> {
+    const allowed = predicate(error)
+    retryDecision<E> { condition = .Some(predicate) allowed = allowed }
+}
+
+fn retryAttempt(attempt i32) u64 {
+    const previous = attempt - 1
+    const converted = u64.From(previous) else error {
+        discard error
+        panic("retry attempt invariant failed")
+    }
+    converted
 }

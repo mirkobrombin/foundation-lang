@@ -451,6 +451,7 @@ struct FirSelectOperationArm {
 
 struct FirSelectTimeoutArm {
     std::uint64_t nanoseconds{};
+    std::optional<FirExpressionId> duration;
     FirBlockId body{};
 };
 

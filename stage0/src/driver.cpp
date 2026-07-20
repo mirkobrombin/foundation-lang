@@ -459,6 +459,8 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
         sdkAsset("runtime/src/blocking.c", std::filesystem::path{FOUNDATION_RUNTIME_BLOCKING_SOURCE}),
         sdkAsset("runtime/src/pool.c", std::filesystem::path{FOUNDATION_RUNTIME_POOL_SOURCE}),
         sdkAsset("runtime/src/reactor.c", std::filesystem::path{FOUNDATION_RUNTIME_REACTOR_SOURCE}),
+        sdkAsset("runtime/src/resiliency.c",
+                 std::filesystem::path{FOUNDATION_RUNTIME_RESILIENCY_SOURCE}),
         sdkAsset("runtime/src/net.c", std::filesystem::path{FOUNDATION_RUNTIME_NET_SOURCE}),
         sdkAsset("runtime/src/plugin.c", std::filesystem::path{FOUNDATION_RUNTIME_PLUGIN_SOURCE}),
         sdkAsset("runtime/src/plugin_sandbox.c",

@@ -2814,6 +2814,14 @@ class Analyzer {
                                    statement.span);
             }
 
+            if (selection->timeout.has_value() &&
+                selection->timeout->duration.has_value()) {
+                requireSame(u64Type,
+                            analyzeExpression(*selection->timeout->duration),
+                            selection->timeout->span,
+                            "dynamic select timeout");
+            }
+
             std::vector<Type> payloads;
             std::vector<std::optional<FirLocalId>> bindings(selection->operations.size());
             payloads.reserve(selection->operations.size());

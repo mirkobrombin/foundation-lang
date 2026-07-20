@@ -542,6 +542,9 @@ class IndexBuilder {
                 visitBlock(operation.body, function);
             }
             if (selection->timeout.has_value()) {
+                if (selection->timeout->duration.has_value()) {
+                    visitExpression(*selection->timeout->duration, function);
+                }
                 visitBlock(selection->timeout->body, function);
             }
             visitBlock(selection->errorBlock, function);
