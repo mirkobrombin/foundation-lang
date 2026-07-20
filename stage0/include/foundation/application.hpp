@@ -11,6 +11,8 @@ namespace foundation {
 
 [[nodiscard]] std::string emitApplicationPlan(const FirProgram &program,
                                               Diagnostics &diagnostics);
+[[nodiscard]] std::string emitOpenAPI(const FirProgram &program, Diagnostics &diagnostics,
+                                      std::string_view title, std::string_view version);
 [[nodiscard]] std::string emitPackageSource(const FirProgram &program,
                                             Diagnostics &diagnostics,
                                             std::string_view rootPackage,

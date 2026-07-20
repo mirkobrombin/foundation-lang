@@ -2011,6 +2011,39 @@ void applicationPlanValidatesStaticDependencyGraph() {
            "application plan keeps typed action dispatch metadata");
 }
 
+void openAPIGenerationUsesValidatedRouteGraph() {
+    const auto source = std::filesystem::path(FOUNDATION_TEST_SOURCE_DIR) /
+                        "tests/projects/openapi-document";
+    auto analysis = foundation::analyzeProject(source);
+    expect(!analysis.diagnostics.hasErrors(), "OpenAPI fixture has no diagnostics");
+    expect(analysis.semantic.has_value(), "OpenAPI fixture has a semantic model");
+    if (!analysis.semantic.has_value()) {
+        return;
+    }
+    const auto fir = foundation::lower(analysis.program, *analysis.semantic);
+    foundation::Diagnostics firstDiagnostics;
+    foundation::Diagnostics secondDiagnostics;
+    const auto first =
+        foundation::emitOpenAPI(fir, firstDiagnostics, "Test API", "1.2.3");
+    const auto second =
+        foundation::emitOpenAPI(fir, secondDiagnostics, "Test API", "1.2.3");
+    expect(!firstDiagnostics.hasErrors() && !secondDiagnostics.hasErrors(),
+           "OpenAPI generation reuses the validated application graph");
+    expect(first == second, "OpenAPI emission is deterministic");
+    expect(first.find("\"openapi\": \"3.0.3\"") != std::string::npos &&
+               first.find("\"title\": \"Test API\"") != std::string::npos,
+           "OpenAPI emission keeps document identity");
+    expect(first.find("\"/users/{id}\"") != std::string::npos &&
+               first.find("\"minimum\": 18") != std::string::npos &&
+               first.find("\"enum\": [\"admin\", \"member\"]") !=
+                   std::string::npos,
+           "OpenAPI emission normalizes paths and carries typed parameter metadata");
+    expect(first.find("\"404\": {") != std::string::npos &&
+               first.find("\"description\": \"User not found\"") !=
+                   std::string::npos,
+           "OpenAPI emission carries explicit responses");
+}
+
 void applicationHostEmitsTypedFoundationSource() {
     const auto source = std::filesystem::path(FOUNDATION_TEST_SOURCE_DIR) /
                         "examples/services";
@@ -2236,6 +2269,7 @@ int main() {
     closuresLowerToDeterministicFunctionValues();
     servicesAndActionsLowerToStaticApplicationMetadata();
     applicationPlanValidatesStaticDependencyGraph();
+    openAPIGenerationUsesValidatedRouteGraph();
     applicationHostEmitsTypedFoundationSource();
     projectDiagnosticsRetainTheirSource();
     standardLibrarySourceIsLoadedOnce();

@@ -234,5 +234,6 @@ lower-level `web-server.fdn` and `web-routing.fdn` fixtures cover manual handler
 method backtracking, integer, alpha, and portable regex constraints, catch-all capture, 404/405
 selection, and registration failures.
 
-This is not the completed `app/web` compatibility boundary. Continuous serving, graceful
-shutdown, TLS, OpenAPI, and the health adapter remain pending.
+`foundationc emit-openapi` now consumes this same validated route graph; see
+`docs/framework/openapi.md`. This is not the completed `app/web` compatibility boundary.
+Continuous serving, graceful shutdown, TLS, and the health adapter remain pending.

@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.109.0");
+    assert.equal(manifest.version, "0.110.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1451,6 +1451,8 @@ test("grammar and completions track compiler keywords", () => {
     assert.equal(snippets["Validated model"].prefix, "validmodel");
     assert.match(snippets["Validated model"].body.join("\n"),
         /@validation\.Validatable\(\)/);
+    assert.match(snippets["Documented OpenAPI route"].body.join("\n"),
+        /@openapi\.Response/);
     assert.match(snippets["Target declaration"].body.join("\n"), /@target/);
     assert.match(snippets["Blocking C ABI import"].body.join("\n"), /@blocking/);
     assert.match(snippets["Callback C ABI import"].body.join("\n"), /@callback/);

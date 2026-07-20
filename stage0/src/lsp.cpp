@@ -4146,8 +4146,9 @@ class LanguageServer {
         const auto position = requestPosition(params);
         const auto requested = position.has_value() ? offsetAt(source.contents, *position)
                                                      : std::nullopt;
+        const auto completionOffset = requested.value_or(0);
         if (requested.has_value()) {
-            auto previous = *requested;
+            auto previous = completionOffset;
             while (previous != 0 &&
                    (source.contents[previous - 1] == ' ' ||
                     source.contents[previous - 1] == '\t')) {
@@ -4159,7 +4160,7 @@ class LanguageServer {
         std::map<std::string, Json> items;
         const auto &index = languageIndex(*analysis);
         if (requested.has_value()) {
-            if (const auto access = completionAccess(source.contents, *requested);
+            if (const auto access = completionAccess(source.contents, completionOffset);
                 access.has_value()) {
                 const auto receiver = identifierBefore(source.contents, access->receiverEnd);
                 if (receiver.has_value()) {
@@ -4439,10 +4440,8 @@ class LanguageServer {
                                                     : symbol->documentation);
                 }
             }
-            if (requested.has_value()) {
-                addVisibleLocalCompletions(items, *analysis, *sourceId, *requested,
-                                           source.contents);
-            }
+            addVisibleLocalCompletions(items, *analysis, *sourceId, completionOffset,
+                                       source.contents);
         }
         return completionResult(std::move(items));
     }

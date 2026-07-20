@@ -1,0 +1,74 @@
+package foundation.openapi
+
+import std.collections
+
+// Adds a short explanation to one generated API operation.
+attribute Summary(value String) targets(fn)
+
+// Adds detailed text to an operation or one of its exposed parameters.
+attribute Description(value String) targets(fn, parameter)
+
+// Declares one documented HTTP response for an operation.
+attribute Response(status u16, description String) targets(fn) repeatable
+
+// Declares the inclusive lower bound of a numeric exposed parameter.
+attribute Minimum(value f64) targets(parameter)
+
+// Adds one allowed value to a String exposed parameter.
+attribute EnumValue(value String) targets(parameter) repeatable
+
+enum ParameterLocation {
+    Path
+    Query
+    Header
+}
+
+enum SchemaType {
+    String
+    Integer
+    Number
+    Boolean
+}
+
+struct Schema {
+    Type SchemaType
+    Minimum Option<f64>
+    Enum own collections.List<String>
+}
+
+struct Parameter {
+    Name String
+    In ParameterLocation
+    Required bool
+    Description String
+    Schema own Schema
+}
+
+struct ResponseDescription {
+    Status u16
+    Description String
+}
+
+struct Operation {
+    Method String
+    Summary String
+    Description String
+    Parameters own collections.List<Parameter>
+    Responses own collections.List<ResponseDescription>
+}
+
+struct PathItem {
+    Path String
+    Operations own collections.List<Operation>
+}
+
+struct Info {
+    Title String
+    Version String
+}
+
+struct Document {
+    OpenAPI String
+    Info own Info
+    Paths own collections.List<PathItem>
+}

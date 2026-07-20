@@ -3198,6 +3198,72 @@ void derivedValidationExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void openAPIAttributesExposeEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "\n"
+        "import foundation.openapi\n"
+        "import foundation.web\n"
+        "\n"
+        "@openapi.Summary(\"Find a user\")\n"
+        "@openapi.Response(200, \"User found\")\n"
+        "@web.Route(.GET, \"/users\")\n"
+        "fn GetUser(@web.Query(\"limit\") @openapi.Minimum(1) limit i32) web.Response {\n"
+        "    discard limit\n"
+        "    web.Empty(204)\n"
+        "}\n"
+        "\n"
+        "fn main() i32 { 0 }\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(216, "hover", 5, 12)) +
+        frame(request(217, "signatureHelp", 5, 28)) +
+        frame(request(218, "hover", 8, 43)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto summaryHover = responseFor(transcript, 216);
+    const auto summarySignature = responseFor(transcript, 217);
+    const auto minimumHover = responseFor(transcript, 218);
+
+    expect(status == 0, "OpenAPI language server transcript exits cleanly");
+    expect(errors.str().empty(), "OpenAPI requests write no server errors");
+    expect(summaryHover.find("attribute Summary(value String)") != std::string::npos &&
+               summaryHover.find("short explanation") != std::string::npos,
+           "OpenAPI summary hover exposes its signature and documentation");
+    expect(summarySignature.find("attribute Summary(value String)") !=
+               std::string::npos,
+           "OpenAPI summary arguments receive signature help");
+    expect(minimumHover.find("attribute Minimum(value f64)") != std::string::npos &&
+               minimumHover.find("lower bound") != std::string::npos,
+           "OpenAPI parameter metadata exposes compiler-backed hover");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void webActivationExposesEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fdn";
@@ -3691,6 +3757,7 @@ int main() {
     rawPointersExposeEditorDetails();
     servicesAndActionsExposeEditorDetails();
     derivedValidationExposesEditorDetails();
+    openAPIAttributesExposeEditorDetails();
     webActivationExposesEditorDetails();
     manualWebMiddlewareExposesEditorDetails();
     stateMachinesExposeEditorDetails();

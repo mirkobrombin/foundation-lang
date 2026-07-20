@@ -1,11 +1,10 @@
 # Foundation web application
 
-This example is an executable Foundation web application with compiler-generated routing and
-dependency injection. It covers singleton, request-scoped, and transient services, typed path and
-query values, an optional query, headers, request bodies, forms, typed handler failures, JSON and
-text responses, global response middleware, group API-key middleware, and the HTTP/1.1 server.
+This example is a complete Foundation web application whose routes and service graph come directly
+from typed declarations. Its handlers cover the common request inputs and response forms, while
+the application combines global response middleware with an API-key-protected route group.
 
-Run its deterministic in-process smoke test:
+Run the in-process smoke test first. It exercises the same route table without opening a socket:
 
 ```sh
 foundationc run examples/web-app
@@ -17,7 +16,8 @@ Start the server on `127.0.0.1:8080`:
 foundationc run examples/web-app -- --serve
 ```
 
-The server handles one connection at a time through structured tasks. Try these requests:
+The server handles one connection at a time through structured tasks. These requests cover the
+public health route, the protected query route, a body-bound update, and form binding:
 
 ```sh
 curl http://127.0.0.1:8080/health
@@ -26,6 +26,12 @@ curl -X POST -H 'X-Api-Key: foundation-demo' -H 'X-Enabled: true' --data 'profil
 curl -X POST --data 'username=Ada+Lovelace' http://127.0.0.1:8080/login
 ```
 
-Routes, binding adapters, validation, and the application host are derived by the compiler. No
-derived Foundation source is stored in the example; the language server and C11 backend consume
-the same semantic graph.
+Routes, binding adapters, validation, and the application host are derived in memory. No generated
+Foundation source is stored with the example, so editor navigation leads back to the declarations
+you wrote.
+
+Generate the matching OpenAPI 3.0.3 document with:
+
+```sh
+foundationc emit-openapi examples/web-app -o web.openapi.json
+```

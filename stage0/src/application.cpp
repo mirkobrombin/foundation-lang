@@ -42,6 +42,12 @@ constexpr std::string_view webGroupMiddlewareAttribute =
     "foundation.web.GroupMiddleware";
 constexpr std::string_view webRouteMiddlewareAttribute =
     "foundation.web.RouteMiddleware";
+constexpr std::string_view openAPISummaryAttribute = "foundation.openapi.Summary";
+constexpr std::string_view openAPIDescriptionAttribute =
+    "foundation.openapi.Description";
+constexpr std::string_view openAPIResponseAttribute = "foundation.openapi.Response";
+constexpr std::string_view openAPIMinimumAttribute = "foundation.openapi.Minimum";
+constexpr std::string_view openAPIEnumValueAttribute = "foundation.openapi.EnumValue";
 constexpr std::string_view bindableAttribute = "foundation.bind.Bindable";
 constexpr std::string_view bindNameAttribute = "foundation.bind.Name";
 constexpr std::string_view bindIgnoreAttribute = "foundation.bind.Ignore";
@@ -108,6 +114,9 @@ struct WebParameterPlan {
     WebBindingSource source{WebBindingSource::Path};
     std::string name;
     std::optional<FirStructId> provider;
+    std::string description;
+    std::optional<std::string> minimum;
+    std::vector<std::string> enumValues;
 };
 
 struct WebRoutePlan {
@@ -118,6 +127,9 @@ struct WebRoutePlan {
     bool task{};
     std::optional<Type> executionError;
     std::optional<Type> activationError;
+    std::string summary;
+    std::string description;
+    std::map<std::uint16_t, std::string> responses;
 };
 
 enum class WebMiddlewareScope {
@@ -799,6 +811,33 @@ Type baseType(Type type) {
         type = type.arguments.front();
     }
     return type;
+}
+
+Type openAPIParameterType(const FirProgram &program, Type type, bool &optional) {
+    type = baseType(std::move(type));
+    optional = isBuiltinOption(program, type);
+    if (optional) {
+        return baseType(type.arguments.front());
+    }
+    return type;
+}
+
+std::string_view openAPISchemaType(const FirProgram &program, const Type &type) {
+    bool optional{};
+    const auto value = openAPIParameterType(program, type, optional);
+    if (value == stringType) {
+        return "string";
+    }
+    if (value == boolType) {
+        return "boolean";
+    }
+    if (isInteger(value)) {
+        return "integer";
+    }
+    if (isFloating(value)) {
+        return "number";
+    }
+    return {};
 }
 
 ParameterMode parameterMode(const FirFunction &function, std::size_t index) {
@@ -3828,10 +3867,192 @@ std::string emitApplicationHostSource(const FirProgram &program,
     return out.str();
 }
 
+std::string normalizedOpenAPIPath(std::string_view path) {
+    std::string result = "/";
+    const auto segments = webRouteSegments(path);
+    for (std::size_t index = 0; index < segments.size(); ++index) {
+        if (index != 0) {
+            result += '/';
+        }
+        const auto segment = segments[index];
+        if (!webParameterSegment(segment)) {
+            result += segment;
+            continue;
+        }
+        auto [name, constraints] = webParameterParts(segment);
+        static_cast<void>(constraints);
+        result += '{';
+        result += name;
+        result += '}';
+    }
+    return result;
+}
+
+const char *openAPIParameterLocation(WebBindingSource source) {
+    switch (source) {
+    case WebBindingSource::Path:
+        return "path";
+    case WebBindingSource::Query:
+        return "query";
+    case WebBindingSource::Header:
+        return "header";
+    case WebBindingSource::Form:
+    case WebBindingSource::Body:
+    case WebBindingSource::Inject:
+        return "";
+    }
+    return "";
+}
+
+std::string lowerASCII(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](const auto character) {
+        return static_cast<char>(
+            std::tolower(static_cast<unsigned char>(character)));
+    });
+    return value;
+}
+
+void emitOpenAPIParameter(std::ostringstream &out, const FirProgram &program,
+                          const FirFunction &function,
+                          const WebParameterPlan &parameter) {
+    const auto local = function.parameters[parameter.index];
+    const auto &type = function.locals[local].type;
+    bool optional{};
+    static_cast<void>(openAPIParameterType(program, type, optional));
+    out << "          {\n"
+        << "            \"name\": ";
+    emitString(out, parameter.name);
+    out << ",\n            \"in\": ";
+    emitString(out, openAPIParameterLocation(parameter.source));
+    if (!parameter.description.empty()) {
+        out << ",\n            \"description\": ";
+        emitString(out, parameter.description);
+    }
+    out << ",\n            \"required\": "
+        << (parameter.source == WebBindingSource::Path || !optional ? "true" : "false")
+        << ",\n            \"schema\": {\n"
+        << "              \"type\": ";
+    emitString(out, openAPISchemaType(program, type));
+    if (parameter.minimum.has_value()) {
+        out << ",\n              \"minimum\": " << *parameter.minimum;
+    }
+    if (!parameter.enumValues.empty()) {
+        out << ",\n              \"enum\": [";
+        for (std::size_t index = 0; index < parameter.enumValues.size(); ++index) {
+            if (index != 0) {
+                out << ", ";
+            }
+            emitString(out, parameter.enumValues[index]);
+        }
+        out << ']';
+    }
+    out << "\n            }\n          }";
+}
+
+std::string emitOpenAPIDocument(const FirProgram &program,
+                                const std::vector<WebRoutePlan> &routes,
+                                std::string_view title, std::string_view version) {
+    std::map<std::string, std::vector<const WebRoutePlan *>> paths;
+    for (const auto &route : routes) {
+        paths[normalizedOpenAPIPath(route.path)].push_back(&route);
+    }
+
+    std::ostringstream out;
+    out << "{\n  \"openapi\": \"3.0.3\",\n  \"info\": {\n    \"title\": ";
+    emitString(out, title);
+    out << ",\n    \"version\": ";
+    emitString(out, version);
+    out << "\n  },\n  \"paths\": {";
+    auto firstPath = true;
+    for (const auto &[path, operations] : paths) {
+        out << (firstPath ? "\n" : ",\n") << "    ";
+        firstPath = false;
+        emitString(out, path);
+        out << ": {";
+        for (std::size_t operationIndex = 0; operationIndex < operations.size();
+             ++operationIndex) {
+            const auto &route = *operations[operationIndex];
+            const auto &function = program.functions[route.function];
+            out << (operationIndex == 0 ? "\n" : ",\n") << "      ";
+            emitString(out, lowerASCII(route.method));
+            out << ": {";
+            auto firstField = true;
+            const auto emitTextField = [&](std::string_view name,
+                                           std::string_view value) {
+                if (value.empty()) {
+                    return;
+                }
+                out << (firstField ? "\n" : ",\n") << "        ";
+                firstField = false;
+                emitString(out, name);
+                out << ": ";
+                emitString(out, value);
+            };
+            emitTextField("summary", route.summary);
+            emitTextField("description", route.description);
+
+            std::vector<const WebParameterPlan *> parameters;
+            for (const auto &parameter : route.parameters) {
+                if (*openAPIParameterLocation(parameter.source) != '\0') {
+                    parameters.push_back(&parameter);
+                }
+            }
+            if (!parameters.empty()) {
+                out << (firstField ? "\n" : ",\n") << "        \"parameters\": [\n";
+                firstField = false;
+                for (std::size_t index = 0; index < parameters.size(); ++index) {
+                    if (index != 0) {
+                        out << ",\n";
+                    }
+                    emitOpenAPIParameter(out, program, function, *parameters[index]);
+                }
+                out << "\n        ]";
+            }
+
+            out << (firstField ? "\n" : ",\n") << "        \"responses\": {\n";
+            if (route.responses.empty()) {
+                out << "          \"200\": {\n"
+                    << "            \"description\": \"OK\"\n"
+                    << "          }\n";
+            } else {
+                auto firstResponse = true;
+                for (const auto &[status, description] : route.responses) {
+                    if (!firstResponse) {
+                        out << ",\n";
+                    }
+                    firstResponse = false;
+                    out << "          ";
+                    emitString(out, std::to_string(status));
+                    out << ": {\n            \"description\": ";
+                    emitString(out, description);
+                    out << "\n          }";
+                }
+                out << '\n';
+            }
+            out << "        }\n      }";
+        }
+        out << "\n    }";
+    }
+    if (!firstPath) {
+        out << '\n';
+    }
+    out << "  }\n}\n";
+    return out.str();
+}
+
+enum class ApplicationArtifact {
+    Plan,
+    Host,
+    OpenAPI,
+};
+
 } // namespace
 
 std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diagnostics,
-                                    bool host, std::string_view generatedSourcePath) {
+                                    ApplicationArtifact artifact,
+                                    std::string_view generatedSourcePath,
+                                    std::string_view title = {},
+                                    std::string_view version = {}) {
     std::map<std::string, FirStructId> servicesByName;
     for (FirStructId index = 0; index < program.structs.size(); ++index) {
         if (program.structs[index].service) {
@@ -3934,6 +4155,13 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
 
         const auto routeUse = findAttribute(program, function.attributes, webRouteAttribute);
         if (routeUse == nullptr) {
+            if (hasAttribute(program, function.attributes, openAPISummaryAttribute) ||
+                hasAttribute(program, function.attributes, openAPIDescriptionAttribute) ||
+                hasAttribute(program, function.attributes, openAPIResponseAttribute)) {
+                diagnostics.error("FDN2401",
+                                  "OpenAPI operation metadata requires an @web.Route function",
+                                  function.sourceSpan);
+            }
             continue;
         }
         WebRoutePlan route;
@@ -3941,6 +4169,37 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
         route.method = enumCase(program, routeUse, 0);
         route.path = stringArgument(routeUse, 1).value_or("");
         route.task = function.task;
+        route.summary =
+            stringArgument(findAttribute(program, function.attributes,
+                                         openAPISummaryAttribute))
+                .value_or("");
+        route.description =
+            stringArgument(findAttribute(program, function.attributes,
+                                         openAPIDescriptionAttribute))
+                .value_or("");
+        for (const auto &attribute : function.attributes) {
+            const auto declaration = attributeDeclaration(program, attribute);
+            if (declaration == nullptr || declaration->name != openAPIResponseAttribute) {
+                continue;
+            }
+            const auto status = signedIntegerArgument(&attribute, 0);
+            const auto description = stringArgument(&attribute, 1);
+            if (!status.has_value() || *status < 100 || *status > 599 ||
+                !description.has_value() || description->empty()) {
+                diagnostics.error("FDN2402",
+                                  "@openapi.Response requires status 100 through 599 and a "
+                                  "non-empty description",
+                                  function.sourceSpan);
+                continue;
+            }
+            if (!route.responses
+                     .emplace(static_cast<std::uint16_t>(*status), *description)
+                     .second) {
+                diagnostics.error("FDN2402", "duplicate OpenAPI response status " +
+                                                   std::to_string(*status),
+                                  function.sourceSpan);
+            }
+        }
         if (function.method) {
             diagnostics.error("FDN2350", "@web.Route requires a free function",
                               function.sourceSpan);
@@ -4076,6 +4335,65 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
                 }
                 if (binding.source == WebBindingSource::Form) {
                     ++formBindings;
+                }
+            }
+            const auto description =
+                findAttribute(program, attributes, openAPIDescriptionAttribute);
+            const auto minimum = findAttribute(program, attributes, openAPIMinimumAttribute);
+            const auto hasEnumValues =
+                hasAttribute(program, attributes, openAPIEnumValueAttribute);
+            const auto exposedParameter = binding.source == WebBindingSource::Path ||
+                                          binding.source == WebBindingSource::Query ||
+                                          binding.source == WebBindingSource::Header;
+            if (!exposedParameter &&
+                (description != nullptr || minimum != nullptr || hasEnumValues)) {
+                diagnostics.error(
+                    "FDN2403",
+                    "OpenAPI parameter metadata requires a path, query, or header binding",
+                    function.sourceSpan);
+            } else if (exposedParameter) {
+                binding.description = stringArgument(description).value_or("");
+                if (description != nullptr && binding.description.empty()) {
+                    diagnostics.error("FDN2403",
+                                      "@openapi.Description requires non-empty text",
+                                      function.sourceSpan);
+                }
+                if (minimum != nullptr) {
+                    const auto schema = openAPISchemaType(program, value.type);
+                    const auto argument = numericArgument(minimum);
+                    if ((schema != "integer" && schema != "number") ||
+                        !argument.has_value()) {
+                        diagnostics.error(
+                            "FDN2403",
+                            "@openapi.Minimum requires a numeric web parameter",
+                            function.sourceSpan);
+                    } else {
+                        binding.minimum = argument->literal;
+                    }
+                }
+                std::set<std::string> values;
+                for (const auto &attribute : attributes) {
+                    const auto declaration = attributeDeclaration(program, attribute);
+                    if (declaration == nullptr ||
+                        declaration->name != openAPIEnumValueAttribute) {
+                        continue;
+                    }
+                    const auto enumValue = stringArgument(&attribute);
+                    if (openAPISchemaType(program, value.type) != "string" ||
+                        !enumValue.has_value() || enumValue->empty()) {
+                        diagnostics.error(
+                            "FDN2403",
+                            "@openapi.EnumValue requires a non-empty String web parameter value",
+                            function.sourceSpan);
+                        continue;
+                    }
+                    if (!values.insert(*enumValue).second) {
+                        diagnostics.error("FDN2403", "duplicate OpenAPI enum value " +
+                                                           *enumValue,
+                                          function.sourceSpan);
+                        continue;
+                    }
+                    binding.enumValues.push_back(*enumValue);
                 }
             }
             route.parameters.push_back(std::move(binding));
@@ -4494,7 +4812,10 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
     if (diagnostics.hasErrors()) {
         return {};
     }
-    if (host) {
+    if (artifact == ApplicationArtifact::OpenAPI) {
+        return emitOpenAPIDocument(program, webRoutes, title, version);
+    }
+    if (artifact == ApplicationArtifact::Host) {
         if (program.main >= program.functions.size() ||
             program.functions[program.main].packageName.empty()) {
             diagnostics.error("FDN2330", "application host requires a project package",
@@ -4638,7 +4959,13 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
 }
 
 std::string emitApplicationPlan(const FirProgram &program, Diagnostics &diagnostics) {
-    return emitApplicationArtifact(program, diagnostics, false, {});
+    return emitApplicationArtifact(program, diagnostics, ApplicationArtifact::Plan, {});
+}
+
+std::string emitOpenAPI(const FirProgram &program, Diagnostics &diagnostics,
+                        std::string_view title, std::string_view version) {
+    return emitApplicationArtifact(program, diagnostics, ApplicationArtifact::OpenAPI, {},
+                                   title, version);
 }
 
 std::string emitPackageSource(const FirProgram &program, Diagnostics &diagnostics,
@@ -4655,7 +4982,8 @@ std::string emitPackageSource(const FirProgram &program, Diagnostics &diagnostic
 
 std::string emitApplicationHost(const FirProgram &program, Diagnostics &diagnostics,
                                 std::string_view generatedSourcePath) {
-    return emitApplicationArtifact(program, diagnostics, true, generatedSourcePath);
+    return emitApplicationArtifact(program, diagnostics, ApplicationArtifact::Host,
+                                   generatedSourcePath);
 }
 
 } // namespace foundation

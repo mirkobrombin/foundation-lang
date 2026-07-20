@@ -1,0 +1,14 @@
+package test.openapi.reject
+
+import foundation.openapi
+import foundation.web
+
+@openapi.Response(99, "Invalid status")
+@web.Route(.GET, "/items")
+fn Items() web.Response {
+    web.Empty(204)
+}
+
+fn main() i32 {
+    0
+}

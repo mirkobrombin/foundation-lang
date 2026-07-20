@@ -57,6 +57,10 @@ enum class FormatMode {
                                         const std::filesystem::path &output);
 [[nodiscard]] int emitApplicationPlanFile(const std::filesystem::path &source,
                                           const std::filesystem::path &output);
+[[nodiscard]] int emitOpenAPIFile(
+    const std::filesystem::path &source, const std::filesystem::path &output,
+    const std::optional<std::string> &title = std::nullopt,
+    const std::optional<std::string> &version = std::nullopt);
 [[nodiscard]] int emitApplicationHostFile(const std::filesystem::path &source,
                                           const std::filesystem::path &output);
 [[nodiscard]] int buildFile(const std::filesystem::path &source,

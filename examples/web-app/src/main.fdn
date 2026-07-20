@@ -1,6 +1,7 @@
 package example.web
 
 import foundation.di
+import foundation.openapi
 import foundation.web
 import std.collections
 import std.format
@@ -101,20 +102,27 @@ fn withServerHeader($response web.Response) web.Response {
     web.Response { Status = Status Headers = activeHeaders Body = Body }
 }
 
+@openapi.Summary("Show application information")
+@openapi.Response(200, "Application information")
 @web.Route(.GET, "/")
 fn Index(@web.Inject() info AppInfo) web.Response {
     web.Text(200, info.Label())
 }
 
+@openapi.Summary("Check service health")
+@openapi.Response(200, "Service is healthy")
 @web.Route(.GET, "/health")
 task Health() web.Response {
     web.Json(200, "{\"status\":\"healthy\"}")
 }
 
+@openapi.Summary("Find a user")
+@openapi.Response(200, "User found")
+@openapi.Response(401, "API key missing")
 @web.Route(.GET, "/users/{id:alpha}")
 fn GetUser(
     @web.Path("id") id String,
-    @web.Query("limit") limit i32,
+    @web.Query("limit") @openapi.Minimum(1) limit i32,
     @web.Query("note") $note Option<String>,
     @web.Header("X-Trace") trace String,
     @web.Inject() requestInfo RequestInfo,
@@ -134,6 +142,9 @@ fn GetUser(
     web.Text(200, $body)
 }
 
+@openapi.Summary("Create a user")
+@openapi.Response(201, "User created")
+@openapi.Response(401, "API key missing")
 @web.Route(.POST, "/users/{id:alpha}")
 fn CreateUser(
     @web.Path("id") id String,
@@ -144,6 +155,8 @@ fn CreateUser(
     .Ok(web.Text(201, "created " + text.Copy(id) + ": " + text.Copy(body)))
 }
 
+@openapi.Summary("Log in")
+@openapi.Response(200, "Login accepted")
 @web.Route(.POST, "/login")
 fn Login(@web.Form("username") username String) web.Response {
     web.Text(200, "welcome " + text.Copy(username))

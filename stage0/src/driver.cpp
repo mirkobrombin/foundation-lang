@@ -805,6 +805,53 @@ int emitApplicationPlanFile(const std::filesystem::path &source,
     return report(source, result);
 }
 
+int emitOpenAPIFile(const std::filesystem::path &source,
+                    const std::filesystem::path &output,
+                    const std::optional<std::string> &title,
+                    const std::optional<std::string> &version) {
+    if (output.extension() != ".json") {
+        std::cerr << "foundationc: OpenAPI output must use the .json extension\n";
+        return 2;
+    }
+    auto analysis = analyzeProject(source);
+    if (analysis.semantic.has_value()) {
+        auto documentTitle = title.value_or("");
+        auto documentVersion = version.value_or("");
+        if (const auto manifestPath = discoverPackageManifest(source);
+            manifestPath.has_value()) {
+            const auto manifest = readPackageManifest(*manifestPath);
+            if (manifest.value.has_value()) {
+                if (documentTitle.empty()) {
+                    documentTitle = manifest.value->name;
+                }
+                if (documentVersion.empty()) {
+                    documentVersion = manifest.value->version.string();
+                }
+            }
+        }
+        if (documentTitle.empty()) {
+            documentTitle = "Foundation API";
+        }
+        if (documentVersion.empty()) {
+            documentVersion = "0.0.0";
+        }
+        const auto fir = lower(analysis.program, *analysis.semantic);
+        const auto generated = emitOpenAPI(fir, analysis.diagnostics, documentTitle,
+                                           documentVersion);
+        Compilation result;
+        result.sources = std::move(analysis.sources);
+        result.diagnostics = std::move(analysis.diagnostics);
+        if (const auto status = report(source, result); status != 0) {
+            return status;
+        }
+        return writeFile(output, generated) ? 0 : 1;
+    }
+    Compilation result;
+    result.sources = std::move(analysis.sources);
+    result.diagnostics = std::move(analysis.diagnostics);
+    return report(source, result);
+}
+
 namespace {
 
 int emitApplicationHostSourceFile(const std::filesystem::path &source,

@@ -3,6 +3,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -21,6 +22,8 @@ void printUsage(std::ostream &output) {
            << "  foundationc emit-metadata <source-or-project> -o <output.json>\n"
            << "  foundationc documentation <source-or-project> -o <output.md>\n"
            << "  foundationc emit-app-plan <source-or-project> -o <output.json>\n"
+           << "  foundationc emit-openapi <source-or-project> -o <output.json>"
+              " [--title <title>] [--version <version>]\n"
            << "  foundationc emit-app-host <source-or-project> -o <output.fdn>\n"
            << "  foundationc build <source-or-project> -o <executable> [--native <input>]...\n"
            << "  foundationc run <source-or-project> [--native <input>]... [-- <argument>...]\n"
@@ -31,6 +34,27 @@ void printUsage(std::ostream &output) {
 
 bool outputArgumentsAreValid(int argc, char **argv) {
     return argc == 5 && std::string_view(argv[3]) == "-o";
+}
+
+bool parseOpenAPIArguments(int argc, char **argv, std::optional<std::string> &title,
+                           std::optional<std::string> &version) {
+    if (argc < 5 || std::string_view(argv[3]) != "-o") {
+        return false;
+    }
+    for (auto index = 5; index < argc; index += 2) {
+        if (index + 1 >= argc) {
+            return false;
+        }
+        const std::string_view option = argv[index];
+        if (option == "--title" && !title.has_value()) {
+            title = argv[index + 1];
+        } else if (option == "--version" && !version.has_value()) {
+            version = argv[index + 1];
+        } else {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool parseNativeArguments(int argc, char **argv, int start,
@@ -135,6 +159,17 @@ int main(int argc, char **argv) {
         if (command == "emit-app-plan" && outputArgumentsAreValid(argc, argv)) {
             return foundation::emitApplicationPlanFile(std::filesystem::path(argv[2]),
                                                        std::filesystem::path(argv[4]));
+        }
+        if (command == "emit-openapi") {
+            std::optional<std::string> title;
+            std::optional<std::string> version;
+            if (!parseOpenAPIArguments(argc, argv, title, version)) {
+                printUsage(std::cerr);
+                return 2;
+            }
+            return foundation::emitOpenAPIFile(std::filesystem::path(argv[2]),
+                                               std::filesystem::path(argv[4]), title,
+                                               version);
         }
         if (command == "emit-app-host" && outputArgumentsAreValid(argc, argv)) {
             return foundation::emitApplicationHostFile(std::filesystem::path(argv[2]),

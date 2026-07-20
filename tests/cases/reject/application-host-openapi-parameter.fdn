@@ -1,0 +1,14 @@
+package test.openapi.reject
+
+import foundation.openapi
+import foundation.web
+
+@web.Route(.GET, "/items")
+fn Items(@web.Query("active") @openapi.Minimum(1) active bool) web.Response {
+    discard active
+    web.Empty(204)
+}
+
+fn main() i32 {
+    0
+}

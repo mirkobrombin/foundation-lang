@@ -1,0 +1,3 @@
+format foundation.lock/v1
+root test.openapi 1.2.3
+target linux

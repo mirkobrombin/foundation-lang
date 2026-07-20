@@ -1,0 +1,24 @@
+package test.compatibility.openapi
+
+import foundation.openapi
+import foundation.web
+
+@openapi.Summary("Find a user")
+@openapi.Description("Finds one user by the public identifier.")
+@openapi.Response(200, "User found")
+@openapi.Response(404, "User not found")
+@web.Route(.GET, "/users/{id:int}")
+fn GetUser(
+    @web.Path("id") id i64,
+    @web.Query("role") role String,
+    @web.Header("X-Trace") trace String
+) web.Response {
+    discard id
+    discard role
+    discard trace
+    web.Empty(204)
+}
+
+fn main() i32 {
+    0
+}

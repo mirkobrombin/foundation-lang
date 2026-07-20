@@ -1413,6 +1413,17 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-plan.cmake
     )
     add_test(
+        NAME stage0.emit.openapi
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/openapi-document
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/openapi-document/expected.openapi.json
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/openapi-first.json
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/openapi-second.json
+            -DOVERRIDE=${CMAKE_CURRENT_BINARY_DIR}/openapi-override.json
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-openapi.cmake
+    )
+    add_test(
         NAME stage0.emit.application-host
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -1700,6 +1711,9 @@ if(BUILD_TESTING)
             "application-host-web-middleware-order;FDN2399"
             "application-host-web-middleware-route;FDN2400"
             "application-host-web-middleware-group;FDN2400"
+            "application-host-openapi-non-route;FDN2401"
+            "application-host-openapi-response;FDN2402"
+            "application-host-openapi-parameter;FDN2403"
             "application-host-transfer;FDN2333")
         list(GET application_host_case 0 application_host_name)
         list(GET application_host_case 1 application_host_code)

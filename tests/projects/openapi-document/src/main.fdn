@@ -1,0 +1,33 @@
+package test.openapi
+
+import foundation.openapi
+import foundation.web
+import std.text
+
+@openapi.Summary("Find a user")
+@openapi.Description("Finds one user by the public identifier.")
+@openapi.Response(200, "User found")
+@openapi.Response(404, "User not found")
+@web.Route(.GET, "/users/{id:int}")
+fn GetUser(
+    @web.Path("id") id i64,
+    @web.Query("minimum_age") @openapi.Minimum(18) minimumAge i32,
+    @web.Query("role") @openapi.Description("Optional role filter.")
+    @openapi.EnumValue("admin") @openapi.EnumValue("member") role Option<String>,
+    @web.Header("X-Trace") trace String
+) web.Response {
+    discard id
+    discard minimumAge
+    discard role
+    discard trace
+    web.Text(200, "user")
+}
+
+@web.Route(.GET, "/assets/{*path}")
+fn Asset(@web.Path("path") path String) web.Response {
+    web.Text(200, text.Copy(path))
+}
+
+fn main() i32 {
+    0
+}

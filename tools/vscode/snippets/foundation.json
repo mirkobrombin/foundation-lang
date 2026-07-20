@@ -93,6 +93,19 @@
         ],
         "description": "Declare a compiler-generated typed HTTP route"
     },
+    "Documented OpenAPI route": {
+        "prefix": "openapiroute",
+        "body": [
+            "@openapi.Summary(\"${1:Find an item}\")",
+            "@openapi.Description(\"${2:Finds one item by identifier.}\")",
+            "@openapi.Response(${3:200}, \"${4:Item found}\")",
+            "@web.Route(${5:.GET}, \"${6:/items/{id}}\")",
+            "fn ${7:GetItem}(@web.Path(\"${8:id}\") ${8:id} String) web.Response {",
+            "    ${9:web.Text(200, \"ok\")}",
+            "}"
+        ],
+        "description": "Declare a typed route with compiler-generated OpenAPI metadata"
+    },
     "Global HTTP middleware": {
         "prefix": "webmiddlewareglobal",
         "body": [
