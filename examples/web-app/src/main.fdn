@@ -26,6 +26,36 @@ service AppInfo {
     }
 }
 
+@di.Scope(.Scoped)
+service RequestInfo {
+    marker String
+
+    @di.Inject()
+    fn New() RequestInfo {
+        RequestInfo { marker = "request" }
+    }
+
+    fn Ready(self) bool {
+        self.marker == "request"
+    }
+}
+
+@di.Scope(.Transient)
+service UserPresenter {
+    ready bool
+
+    @di.Inject()
+    fn New(requestInfo RequestInfo, info AppInfo) UserPresenter {
+        UserPresenter {
+            ready = requestInfo.Ready() && info.Label() == "Foundation Web 0.1.0"
+        }
+    }
+
+    fn Ready(self) bool {
+        self.ready
+    }
+}
+
 @web.Route(.GET, "/")
 fn Index(@web.Inject() info AppInfo) web.Response {
     web.Text(200, info.Label())
@@ -42,8 +72,13 @@ fn GetUser(
     @web.Query("limit") limit i32,
     @web.Query("note") $note Option<String>,
     @web.Header("X-Trace") trace String,
+    @web.Inject() requestInfo RequestInfo,
+    @web.Inject() presenter UserPresenter,
     @web.Inject() info AppInfo
 ) web.Response {
+    if !requestInfo.Ready() || !presenter.Ready() {
+        return web.Text(500, "request activation failed")
+    }
     const noteValue = match note {
         None: "none"
         Some(value): value

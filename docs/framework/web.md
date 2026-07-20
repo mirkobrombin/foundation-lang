@@ -71,9 +71,15 @@ fn CreateUser(
 Path, query, header, and form sources accept `String`, `Option<String>`, `bool`, and every integer
 machine type. Required sources produce a generated `FoundationWebBindingError` when absent.
 `Option<String>` receives `.None` instead. Invalid boolean and integer text produces an explicit
-`Invalid` binding error with the source and binding name. `@web.Body()` accepts either raw `String`
-or a local concrete struct marked `@bind.Bindable()`. Typed bodies require a valid JSON content
-type and use the same generated `BindJSON` method as configuration binding. JSON syntax errors
+`Invalid` binding error with the source and binding name. `@web.Inject()` resolves one statically
+selected provider. Singletons remain shared by the application, scoped providers are constructed
+once per dispatch and reused within that request, and transient providers are constructed for each
+injection. Non-singleton web activation cannot use `@di.Input()` because the request adapter has no
+implicit application values. Fallible constructors in one route graph share one error type and
+produce an activation-specific `FoundationWebError` variant. Every request-local value is dropped
+when the adapter returns. `@web.Body()` accepts either raw `String` or a local concrete struct
+marked `@bind.Bindable()`. Typed bodies require a valid JSON content type and use the same generated
+`BindJSON` method as configuration binding. JSON syntax errors
 retain their parser kind and offset. Duplicate keys, trailing values, wrong JSON shapes, wrong
 field types, and unknown fields are rejected. The host initializes generated binding fields with
 their typed zero value and preserves declared field defaults. An ignored or private field without
@@ -110,7 +116,8 @@ rule set and its remaining compatibility gaps.
 
 The compiler rejects invalid paths, exact duplicate routes, ambiguous parameter branches,
 unmatched path parameters, repeated sources, unsupported binding types, missing or ambiguous DI
-providers, non-singleton route injection, and unsupported return types before deriving the host.
+providers, unavailable activation inputs, mixed activation error types, and unsupported return
+types before deriving the host.
 The derived host contains deterministic route IDs, one signature-specific adapter per route,
 closed binding and handler error variants, and a `Dispatch` implementation. No host file is written
 by normal `check`, `build`, `run`, or language-server operation.
@@ -123,10 +130,12 @@ missing and invalid binding errors, and a real HTTP 415 response. A separate reg
 without affecting normal compilation. Negative fixtures pin the web declaration and typed-body
 initialization failures except the internal missing-runtime invariant.
 
-The lower-level `web-server.fdn` and `web-routing.fdn` fixtures cover manual handlers, precedence,
+The `application-host-web-activation` fixture proves one scoped construction per request, fresh
+transient construction per injection, typed constructor failures, and zero live allocations. The
+lower-level `web-server.fdn` and `web-routing.fdn` fixtures cover manual handlers, precedence,
 method backtracking, integer, alpha, and portable regex constraints, catch-all capture, 404/405
 selection, and registration failures.
 
-This is not the completed `app/web` compatibility boundary. Scoped route activation, asynchronous
-route functions, middleware, continuous serving, graceful shutdown, TLS, OpenAPI, and the health
-adapter remain pending.
+This is not the completed `app/web` compatibility boundary. Asynchronous route functions,
+middleware, continuous serving, graceful shutdown, TLS, OpenAPI, and the health adapter remain
+pending.

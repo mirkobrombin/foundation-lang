@@ -109,6 +109,7 @@ struct WebRoutePlan {
     std::string path;
     std::vector<WebParameterPlan> parameters;
     std::optional<Type> executionError;
+    std::optional<Type> activationError;
 };
 
 enum class StructBindingFieldKind {
@@ -2564,6 +2565,11 @@ std::string emitApplicationHostSource(const FirProgram &program,
             out << "    Validation(errors own " << validationErrorsType << ")\n";
         }
         for (const auto &route : webRoutes) {
+            if (route.activationError.has_value()) {
+                out << "    " << webMethods.at(route.function) << "ActivationFailed(error "
+                    << sourceTypeName(program, *route.activationError, rootPackage, aliases)
+                    << ")\n";
+            }
             if (!route.executionError.has_value()) {
                 continue;
             }
@@ -2763,6 +2769,60 @@ std::string emitApplicationHostSource(const FirProgram &program,
                 << "    ) Result<" << webResponseType << ", " << webDispatchErrorType
                 << "<FoundationWebError>> {\n"
                 << "        var foundationActiveRequest = foundationRequest\n";
+            ConstructionContext webActivation;
+            webActivation.applicationReceiver = true;
+            webActivation.indent = "        ";
+            webActivation.identifiers.insert("foundationActiveRequest");
+            for (std::size_t parameterIndex = 0;
+                 parameterIndex < route.parameters.size(); ++parameterIndex) {
+                webActivation.identifiers.insert(
+                    "foundationWebParameter" + std::to_string(parameterIndex));
+            }
+            std::map<FirStructId, std::string> scopedWebServices;
+            std::function<std::string(FirStructId)> emitWebActivation;
+            emitWebActivation = [&](const auto service) {
+                const auto &plan = plans.at(service);
+                if (plan.lifetime == Lifetime::Singleton) {
+                    return "self." + fields.at(service);
+                }
+                if (plan.lifetime == Lifetime::Scoped) {
+                    if (const auto found = scopedWebServices.find(service);
+                        found != scopedWebServices.end()) {
+                        return found->second;
+                    }
+                }
+
+                const auto &constructor = program.functions[plan.constructor];
+                std::vector<std::string> constructorArguments;
+                constructorArguments.reserve(plan.dependencies.size());
+                for (const auto &dependency : plan.dependencies) {
+                    if (dependency.input || !dependency.provider.has_value()) {
+                        continue;
+                    }
+                    const auto value = emitWebActivation(*dependency.provider);
+                    constructorArguments.push_back(
+                        std::string(parameterMarker(dependency.mode)) + value);
+                }
+
+                const auto local = uniqueIdentifier(
+                    webActivation, serviceFieldName(program, service));
+                webActivation.body << webActivation.indent << "const " << local << " = "
+                                   << functionName(constructor, rootPackage, aliases) << '('
+                                   << join(constructorArguments) << ')';
+                if (plan.fallible) {
+                    webActivation.body
+                        << " else error {\n"
+                        << webActivation.indent
+                        << "    return .Err(.Handler(error = ." << method
+                        << "ActivationFailed(error = error)))\n"
+                        << webActivation.indent << '}';
+                }
+                webActivation.body << '\n';
+                if (plan.lifetime == Lifetime::Scoped) {
+                    scopedWebServices.emplace(service, local);
+                }
+                return local;
+            };
             std::vector<std::string> arguments;
             arguments.reserve(route.parameters.size());
             for (std::size_t parameterIndex = 0;
@@ -2771,7 +2831,7 @@ std::string emitApplicationHostSource(const FirProgram &program,
                 const auto local = "foundationWebParameter" +
                                    std::to_string(parameterIndex);
                 if (parameter.source == WebBindingSource::Inject) {
-                    arguments.push_back("self." + fields.at(*parameter.provider));
+                    arguments.push_back(emitWebActivation(*parameter.provider));
                     continue;
                 }
                 const auto parameterLocal = function.parameters[parameter.index];
@@ -2862,7 +2922,8 @@ std::string emitApplicationHostSource(const FirProgram &program,
                     << "        }\n"
                     << "        discard " << textLocal << "\n";
             }
-            out << "        discard foundationActiveRequest\n";
+            out << "        discard foundationActiveRequest\n"
+                << webActivation.body.str();
             const auto invocation = functionName(function, rootPackage, aliases) + '(' +
                                     join(arguments) + ')';
             if (route.executionError.has_value()) {
@@ -2927,6 +2988,11 @@ std::string emitApplicationHostSource(const FirProgram &program,
                 << "foundationWebValidationErrorResponse($errors)\n";
         }
         for (const auto &route : webRoutes) {
+            if (route.activationError.has_value()) {
+                const auto method = webMethods.at(route.function);
+                out << "            " << method << "ActivationFailed(error): .Err(."
+                    << method << "ActivationFailed(error = error))\n";
+            }
             if (!route.executionError.has_value()) {
                 continue;
             }
@@ -3892,17 +3958,45 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
                                   function.sourceSpan);
             }
         }
-        for (const auto &parameter : route.parameters) {
-            if (!parameter.provider.has_value() || !plans.contains(*parameter.provider)) {
-                continue;
+        std::set<FirStructId> visited;
+        std::optional<Type> activationError;
+        std::function<void(FirStructId)> inspectWebActivation = [&](const auto service) {
+            const auto &plan = plans.at(service);
+            if (plan.lifetime == Lifetime::Singleton || !visited.insert(service).second) {
+                return;
             }
-            if (plans.at(*parameter.provider).lifetime != Lifetime::Singleton) {
-                diagnostics.error(
-                    "FDN2363",
-                    "generated web injection currently requires a singleton service",
-                    function.sourceSpan);
+            const auto &constructor = program.functions[plan.constructor];
+            if (plan.fallible) {
+                const auto &candidate = constructor.returnType.arguments[1];
+                if (activationError.has_value() && *activationError != candidate) {
+                    diagnostics.error(
+                        "FDN2394",
+                        "fallible constructors in one web activation must use the same error type",
+                        constructor.sourceSpan);
+                } else {
+                    activationError = candidate;
+                }
+            }
+            for (const auto &dependency : plan.dependencies) {
+                if (dependency.input) {
+                    diagnostics.error(
+                        "FDN2393",
+                        "web activation cannot supply DI input " + dependency.parameter +
+                            " for " + program.structs[service].name,
+                        constructor.sourceSpan);
+                    continue;
+                }
+                if (dependency.provider.has_value() && plans.contains(*dependency.provider)) {
+                    inspectWebActivation(*dependency.provider);
+                }
+            }
+        };
+        for (const auto &parameter : route.parameters) {
+            if (parameter.provider.has_value() && plans.contains(*parameter.provider)) {
+                inspectWebActivation(*parameter.provider);
             }
         }
+        route.activationError = std::move(activationError);
     }
     std::sort(webRoutes.begin(), webRoutes.end(), [](const auto &left, const auto &right) {
         if (left.path != right.path) {

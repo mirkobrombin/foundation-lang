@@ -3110,6 +3110,89 @@ void derivedValidationExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void webActivationExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "\n"
+        "import foundation.di\n"
+        "import foundation.web\n"
+        "\n"
+        "enum ActivationError {\n"
+        "    Rejected\n"
+        "}\n"
+        "\n"
+        "@di.Scope(.Transient)\n"
+        "service RejectedService {\n"
+        "    @di.Inject()\n"
+        "    fn New() Result<RejectedService, ActivationError> {\n"
+        "        .Err(.Rejected)\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "@web.Route(.GET, \"/fail\")\n"
+        "fn Fail(@web.Inject() rejected RejectedService) web.Response {\n"
+        "    discard rejected\n"
+        "    web.Text(200, \"unexpected\")\n"
+        "}\n"
+        "\n"
+        "fn inspect($value FoundationWebError) bool {\n"
+        "    match value {\n"
+        "        Binding(error): ignoredBinding(error)\n"
+        "        FailActivationFailed(error): rejected(error)\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "fn ignoredBinding(error FoundationWebBindingError) bool {\n"
+        "    discard error\n"
+        "    false\n"
+        "}\n"
+        "\n"
+        "fn rejected(error ActivationError) bool {\n"
+        "    match error {\n"
+        "        Rejected: true\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    const application = BuildFoundationApplication()\n"
+        "    discard application\n"
+        "    0\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{"
+        "\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto hover =
+        "{\"jsonrpc\":\"2.0\",\"id\":221,\"method\":\"textDocument/hover\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\"},\"position\":{\"line\":26,\"character\":12}}}";
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(hover) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto response = responseFor(output.str(), 221);
+
+    expect(status == 0, "web activation language server transcript exits cleanly");
+    expect(errors.str().empty(), "web activation requests write no server errors");
+    expect(response.find("FailActivationFailed(error ActivationError)") != std::string::npos,
+           "web activation exposes the typed derived error variant");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void stateMachinesExposeEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fdn";
@@ -3317,6 +3400,7 @@ int main() {
     rawPointersExposeEditorDetails();
     servicesAndActionsExposeEditorDetails();
     derivedValidationExposesEditorDetails();
+    webActivationExposesEditorDetails();
     stateMachinesExposeEditorDetails();
     workflowsExposeEditorDetails();
 

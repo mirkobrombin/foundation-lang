@@ -1,9 +1,9 @@
-# Generated web application
+# Foundation web application
 
 This example is an executable Foundation web application with compiler-generated routing and
-dependency injection. It covers a singleton service, typed path and query values, an optional
-query, headers, request bodies, forms, typed handler failures, JSON and text responses, and the
-HTTP/1.1 server.
+dependency injection. It covers singleton, request-scoped, and transient services, typed path and
+query values, an optional query, headers, request bodies, forms, typed handler failures, JSON and
+text responses, and the HTTP/1.1 server.
 
 Run its deterministic in-process smoke test:
 
@@ -27,5 +27,5 @@ curl -X POST --data 'username=Ada+Lovelace' http://127.0.0.1:8080/login
 ```
 
 Routes, binding adapters, validation, and the application host are derived by the compiler. No
-generated Foundation source is stored in the example; the language server and C11 backend consume
+derived Foundation source is stored in the example; the language server and C11 backend consume
 the same semantic graph.

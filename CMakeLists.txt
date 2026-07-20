@@ -1473,6 +1473,16 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
     add_test(
+        NAME stage0.emit.application-host-web-activation
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-activation
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-activation
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-activation-inspection.fdn
+            -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-activation/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
+    )
+    add_test(
         NAME stage0.emit.application-host-bind
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -1573,7 +1583,6 @@ if(BUILD_TESTING)
             "application-host-web-unsupported-binding;FDN2359"
             "application-host-web-empty-binding;FDN2360"
             "application-host-web-return;FDN2362"
-            "application-host-web-transient-inject;FDN2363"
             "application-host-web-invalid-path;FDN2364"
             "application-host-web-invalid-regex;FDN2364"
             "application-host-web-duplicate-binding;FDN2365"
@@ -1602,6 +1611,8 @@ if(BUILD_TESTING)
             "application-host-validation-rule-signature;FDN2392"
             "application-host-validation-nested-cycle;FDN2390"
             "application-host-validation-pattern;FDN2391"
+            "application-host-web-activation-input;FDN2393"
+            "application-host-web-activation-errors;FDN2394"
             "application-host-transfer;FDN2333")
         list(GET application_host_case 0 application_host_name)
         list(GET application_host_case 1 application_host_code)
@@ -2303,6 +2314,25 @@ if(BUILD_TESTING)
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-routing.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-routing
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+            -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+            -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.application-host-web-activation-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-activation
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-activation.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-activation-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-activation/expected.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
             -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
@@ -3636,6 +3666,24 @@ if(BUILD_TESTING)
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-routing-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-routing-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.application-host-web-activation-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-activation
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-activation-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-activation-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-activation/expected.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                 -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c

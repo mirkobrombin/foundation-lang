@@ -1,0 +1,42 @@
+package test.web.reject
+
+import foundation.di
+import foundation.web
+
+enum FirstError {
+    Failed
+}
+
+enum SecondError {
+    Failed
+}
+
+@di.Scope(.Transient)
+service FirstService {
+    @di.Inject()
+    fn New() Result<FirstService, FirstError> {
+        .Err(.Failed)
+    }
+}
+
+@di.Scope(.Transient)
+service SecondService {
+    @di.Inject()
+    fn New() Result<SecondService, SecondError> {
+        .Err(.Failed)
+    }
+}
+
+@web.Route(.GET, "/items")
+fn GetItems(
+    @web.Inject() first FirstService,
+    @web.Inject() second SecondService
+) web.Response {
+    discard first
+    discard second
+    web.Text(200, "items")
+}
+
+fn main() i32 {
+    0
+}

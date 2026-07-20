@@ -1,0 +1,144 @@
+package test.host.web.activation
+
+import foundation.di
+import foundation.web
+import std.collections
+import std.text
+
+enum ActivationError {
+    Rejected
+}
+
+@di.Scope(.Scoped)
+service RequestState {
+    @di.Inject()
+    fn New() RequestState {
+        print("scoped")
+        RequestState {}
+    }
+
+    fn Value(self) i32 {
+        1
+    }
+}
+
+@di.Scope(.Transient)
+service RequestStep {
+    @di.Inject()
+    fn New(state RequestState) RequestStep {
+        if state.Value() != 1 {
+            panic("invalid scoped dependency")
+        }
+        print("transient")
+        RequestStep {}
+    }
+
+    fn Value(self) i32 {
+        1
+    }
+}
+
+@di.Scope(.Transient)
+service RejectedService {
+    @di.Inject()
+    fn New() Result<RejectedService, ActivationError> {
+        .Err(.Rejected)
+    }
+}
+
+@web.Route(.GET, "/ok")
+fn Get(
+    @web.Inject() firstState RequestState,
+    @web.Inject() secondState RequestState,
+    @web.Inject() firstStep RequestStep,
+    @web.Inject() secondStep RequestStep
+) web.Response {
+    const count = firstState.Value() + secondState.Value() +
+        firstStep.Value() + secondStep.Value()
+    web.Text(200, "ok" if count == 4 else "invalid")
+}
+
+@web.Route(.GET, "/fail")
+fn Fail(@web.Inject() rejected RejectedService) web.Response {
+    discard rejected
+    web.Text(200, "unexpected")
+}
+
+fn request($path String) web.Request {
+    web.Request {
+        Method = .GET
+        Target = text.Copy(path)
+        Path = path
+        Version = "HTTP/1.1"
+        Headers = collections.NewList<web.HeaderValue>()
+        Params = collections.NewList<web.Parameter>()
+    }
+}
+
+fn responseBody($response web.Response) String {
+    const web.Response { Status Headers Body } = response
+    discard Status
+    discard Headers
+    Body
+}
+
+fn activationRejected(
+    $value Result<web.Response, web.DispatchError<FoundationWebError>>
+) bool {
+    match value {
+        Ok(response): unexpectedResponse($response)
+        Err(error): dispatchActivationRejected($error)
+    }
+}
+
+fn unexpectedResponse($response web.Response) bool {
+    discard response
+    false
+}
+
+fn dispatchActivationRejected(
+    $error web.DispatchError<FoundationWebError>
+) bool {
+    match error {
+        NotFound: false
+        MethodNotAllowed: false
+        Handler(error): webActivationRejected($error)
+    }
+}
+
+fn webActivationRejected($error FoundationWebError) bool {
+    match error {
+        Binding(error): unexpectedBindingError(error)
+        FailActivationFailed(error): rejectedError(error)
+    }
+}
+
+fn unexpectedBindingError(error FoundationWebBindingError) bool {
+    discard error
+    false
+}
+
+fn rejectedError(error ActivationError) bool {
+    match error {
+        Rejected: true
+    }
+}
+
+fn main() i32 {
+    var application = BuildFoundationApplication()
+    const first = application.Dispatch(request("/ok")) else error {
+        discard error
+        return 1
+    }
+    if responseBody($first) != "ok" return 2
+    const second = application.Dispatch(request("/ok")) else error {
+        discard error
+        return 3
+    }
+    if responseBody($second) != "ok" return 4
+    if !activationRejected($application.Dispatch(request("/fail"))) return 5
+
+    discard application
+    print("web activation")
+    0
+}
