@@ -1,6 +1,6 @@
 fn main() i32 {
     const value = "owned"
-    const read = fn() void capture value {
+    const read = fn() void capture(value) {
         print(value)
     }
     discard value

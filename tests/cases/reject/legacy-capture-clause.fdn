@@ -1,6 +1,6 @@
 fn main() i32 {
     const value = 1
-    const read = fn() i32 capture(view value) {
+    const read = fn() i32 capture value {
         value
     }
     read() - 1

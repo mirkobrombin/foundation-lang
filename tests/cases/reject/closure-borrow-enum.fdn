@@ -5,7 +5,7 @@ enum Holder {
 
 fn main() i32 {
     const value = "borrowed"
-    const holder = Holder.Callback(fn() String capture value {
+    const holder = Holder.Callback(fn() String capture(value) {
         value
     })
     discard holder

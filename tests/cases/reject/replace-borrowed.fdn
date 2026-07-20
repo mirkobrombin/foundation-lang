@@ -4,7 +4,7 @@ struct Item {
 
 fn main() i32 {
     var current = own Item { value = 1 }
-    const read = fn() i32 capture current {
+    const read = fn() i32 capture(current) {
         current.value
     }
     const previous = replace current with own Item { value = 2 }

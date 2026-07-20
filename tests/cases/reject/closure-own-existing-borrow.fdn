@@ -3,7 +3,7 @@ fn invoke(callback fn() i32) i32 {
 }
 
 fn invalid(&value i32) i32 {
-    invoke(fn() i32 capture $value {
+    invoke(fn() i32 capture($value) {
         value
     })
 }

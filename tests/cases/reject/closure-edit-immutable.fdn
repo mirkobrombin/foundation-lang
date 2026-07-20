@@ -1,6 +1,6 @@
 fn main() i32 {
     const value = 1
-    const update = fn() void capture &value {
+    const update = fn() void capture(&value) {
         value = 2
     }
     update()

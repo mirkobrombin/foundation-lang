@@ -5,7 +5,7 @@ struct Holder {
 fn main() i32 {
     const value = "borrowed"
     const holder = Holder {
-        callback = fn() String capture value {
+        callback = fn() String capture(value) {
             value
         }
     }

@@ -551,7 +551,7 @@ fn dispatchGlobalMiddleware<E>(
         $request,
         fn(
             $nextRequest Request
-        ) Result<Response, DispatchError<E>> capture &router {
+        ) Result<Response, DispatchError<E>> capture(&router) {
             dispatchGlobalMiddleware(&router, $nextRequest)
         }
     )
@@ -608,7 +608,7 @@ fn dispatchScopedMiddleware<E>(
             $request,
             fn(
                 $nextRequest Request
-            ) Result<Response, DispatchError<E>> capture &router, expectedMethod, $nextPattern {
+            ) Result<Response, DispatchError<E>> capture(&router, expectedMethod, $nextPattern) {
                 dispatchScopedMiddleware(
                     &router,
                     expectedMethod,

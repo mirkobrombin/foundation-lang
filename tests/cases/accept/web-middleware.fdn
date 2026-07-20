@@ -192,7 +192,7 @@ fn main() i32 {
     const captured = fn(
         $request web.Request,
         next fn($web.Request) Result<web.Response, web.DispatchError<AppError>>
-    ) Result<web.Response, web.DispatchError<AppError>> capture $capturedPrefix {
+    ) Result<web.Response, web.DispatchError<AppError>> capture($capturedPrefix) {
         surround($request, next, capturedPrefix, "<captured")
     }
     if middlewareErrorCode($router.Use(15, $captured)) != 0 return 6

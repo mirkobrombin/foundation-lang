@@ -2429,7 +2429,7 @@ AstExpressionId Parser::functionExpression(const Token &start) {
 
     std::vector<Capture> captures;
     if (match(TokenKind::Capture)) {
-        const auto parenthesized = match(TokenKind::LeftParen);
+        expect(TokenKind::LeftParen, "FDN1189", "expected ( after capture");
         do {
             auto mode = CaptureMode::Copy;
             SourceSpan span = current().span;
@@ -2459,9 +2459,7 @@ AstExpressionId Parser::functionExpression(const Token &start) {
                                      "expected captured binding");
             captures.push_back({mode, name.text, span});
         } while (match(TokenKind::Comma));
-        if (parenthesized) {
-            expect(TokenKind::RightParen, "FDN1129", "expected ) after capture list");
-        }
+        expect(TokenKind::RightParen, "FDN1129", "expected ) after capture list");
     }
 
     const auto tailResult = returnType.name != "void" || !returnType.arguments.empty();

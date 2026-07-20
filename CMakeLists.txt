@@ -191,6 +191,11 @@ if(FOUNDATION_BUILD_FUZZERS)
         COPYONLY
     )
     configure_file(
+        tests/fuzz/corpus/closures.fdn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/closures.fdn"
+        COPYONLY
+    )
+    configure_file(
         tests/fuzz/corpus/network.fdn
         "${FOUNDATION_FUZZ_CORPUS_DIR}/network.fdn"
         COPYONLY
@@ -1872,7 +1877,8 @@ if(BUILD_TESTING)
             "legacy-receiver-mode;FDN1185"
             "legacy-parameter-mode;FDN1186"
             "legacy-edit-expression;FDN1187"
-            "legacy-capture-mode;FDN1188")
+            "legacy-capture-mode;FDN1188"
+            "legacy-capture-clause;FDN1189")
         list(GET legacy_mode_case 0 legacy_mode_name)
         list(GET legacy_mode_case 1 legacy_mode_code)
         add_test(

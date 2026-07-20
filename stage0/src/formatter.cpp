@@ -188,6 +188,7 @@ bool spaceBetween(const std::vector<Token> &tokens, std::size_t index,
             return !genericDelimiters[index - 1];
         }
         return previous != TokenKind::Identifier && previous != TokenKind::Fn &&
+               previous != TokenKind::Capture &&
                previous != TokenKind::RightParen && previous != TokenKind::RightBracket;
     }
     if (current == TokenKind::LeftBracket) {
@@ -301,7 +302,7 @@ class Writer {
             output_.append(raw);
             lineStart_ = !raw.empty() && (raw.back() == '\n' || raw.back() == '\r');
             updateDepth(token.kind, angleDelimiters[index],
-                        closureBlocks.contains(token.span.offset));
+                        closureBlocks.contains(token.span.offset), token.span.line);
             previousEnd = token.span.offset + token.span.length;
         }
         return output_;
@@ -438,19 +439,25 @@ class Writer {
         continuation_ = false;
     }
 
-    void updateDepth(TokenKind kind, bool genericDelimiter, bool closureBlock) {
+    void updateDepth(TokenKind kind, bool genericDelimiter, bool closureBlock,
+                     std::size_t line) {
         if (kind == TokenKind::LeftBrace) {
             ++braceDepth_;
-            braceClosureExtras_.push_back(closureBlock && !parenBraceDepths_.empty());
+            const auto multilineParent = std::any_of(
+                parenOpeningLines_.begin(), parenOpeningLines_.end(),
+                [line](std::size_t openingLine) { return openingLine != line; });
+            braceClosureExtras_.push_back(closureBlock && multilineParent);
         } else if (kind == TokenKind::RightBrace && braceDepth_ != 0) {
             --braceDepth_;
             braceClosureExtras_.pop_back();
         } else if (kind == TokenKind::LeftParen) {
             parenBraceDepths_.push_back(braceDepth_);
             parenFunctions_.push_back(lastToken_ == TokenKind::Fn);
+            parenOpeningLines_.push_back(line);
         } else if (kind == TokenKind::RightParen && !parenBraceDepths_.empty()) {
             parenBraceDepths_.pop_back();
             parenFunctions_.pop_back();
+            parenOpeningLines_.pop_back();
         } else if (kind == TokenKind::LeftBracket) {
             bracketBraceDepths_.push_back(braceDepth_);
         } else if (kind == TokenKind::RightBracket && !bracketBraceDepths_.empty()) {
@@ -466,6 +473,7 @@ class Writer {
     std::vector<bool> braceClosureExtras_;
     std::vector<std::size_t> parenBraceDepths_;
     std::vector<bool> parenFunctions_;
+    std::vector<std::size_t> parenOpeningLines_;
     std::vector<std::size_t> bracketBraceDepths_;
     std::unordered_set<std::size_t> compensationLines_;
     TokenKind lastToken_{TokenKind::Eof};

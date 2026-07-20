@@ -227,10 +227,10 @@ fn main() i32 {
     var successful = hosting.NewHost<Failure>()
     const startLabel = "on start"
     const stopLabel = "on stop"
-    const startHook = fn() void capture $startLabel {
+    const startHook = fn() void capture($startLabel) {
         print(startLabel)
     }
-    const stopHook = fn() void capture $stopLabel {
+    const stopHook = fn() void capture($stopLabel) {
         print(stopLabel)
     }
     if !added(successful.OnStart($startHook)) return 1

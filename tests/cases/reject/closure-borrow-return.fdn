@@ -1,6 +1,6 @@
 fn make() fn() String {
     const value = "borrowed"
-    fn() String capture value {
+    fn() String capture(value) {
         value
     }
 }

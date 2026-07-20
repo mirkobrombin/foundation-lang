@@ -304,22 +304,22 @@ fn main(args [String]) i32 {
     var current = first
     const typedIdentity fn(i32) i32 = identity<i32>
     const copied = 2
-    const copyCallback = fn(value i32) i32 capture copied {
+    const copyCallback = fn(value i32) i32 capture(copied) {
         value + copied
     }
     const base = 3
-    const viewCallback = fn(value i32) i32 capture base {
+    const viewCallback = fn(value i32) i32 capture(base) {
         value + base
     }
     var total = 4
-    const editCallback = fn(value i32) i32 capture &total {
+    const editCallback = fn(value i32) i32 capture(&total) {
         total = total + value
         total
     }
     const label = "owned"
     const emptyLabel = ""
     const emptyStringMatches = !emptyLabel
-    const ownCallback = fn() i32 capture $label {
+    const ownCallback = fn() i32 capture($label) {
         if label == "owned" {
             return 1
         }

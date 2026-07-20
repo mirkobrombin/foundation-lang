@@ -188,7 +188,7 @@ void formatsNestedCallableSignatures() {
         "const seed=1\n"
         "callback(\n"
         "1,\n"
-        "fn(value i32)Result<i32,E>capture seed{\n"
+        "fn(value i32)Result<i32,E>capture(seed) {\n"
         ".Ok(value+seed)\n"
         "}\n"
         ")\n"
@@ -203,7 +203,7 @@ void formatsNestedCallableSignatures() {
         "    const seed = 1\n"
         "    callback(\n"
         "        1,\n"
-        "        fn(value i32) Result<i32, E> capture seed {\n"
+        "        fn(value i32) Result<i32, E> capture(seed) {\n"
         "            .Ok(value + seed)\n"
         "        }\n"
         "    )\n"
@@ -265,6 +265,7 @@ void preservesEstablishedFoundationStyle() {
         root / "tests/cases/accept/sequences.fdn",
         root / "tests/cases/accept/typed-attributes.fdn",
         root / "tests/cases/accept/raw-pointers.fdn",
+        root / "tests/cases/accept/closures.fdn",
         root / "tests/cases/accept/service-actions.fdn",
         root / "tests/cases/accept/text-path.fdn",
     };

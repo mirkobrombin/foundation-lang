@@ -117,7 +117,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.103.0");
+    assert.equal(manifest.version, "0.104.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1527,7 +1527,7 @@ test("tracks function values and explicit closure captures", () => {
         }
         fn main() i32 {
             const factor = 2
-            const scale fn(i32) i32 = fn(value i32) i32 capture factor {
+            const scale fn(i32) i32 = fn(value i32) i32 capture(factor) {
                 value * factor
             }
             scale(21) - 42
@@ -1539,6 +1539,8 @@ test("tracks function values and explicit closure captures", () => {
     assert.equal(byLabel.get("Callback").insertText, "Callback { call = ${1:call} }");
     assert.match(grammar.repository.functionTypes.patterns[0].begin, /fn/);
     assert.match(grammar.repository.captureClauses.patterns[0].begin, /capture/);
+    assert.ok(grammar.repository.captureClauses.patterns[0].begin.includes("\\("));
+    assert.equal(grammar.repository.captureClauses.patterns[0].end, "\\)");
     assert.match(grammar.repository.captureClauses.patterns[0].beginCaptures[1].name, /keyword/);
     assert.match(grammar.repository.captureClauses.patterns[0].patterns.find((pattern) =>
         pattern.name === "variable.other.capture.foundation"

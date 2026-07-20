@@ -3073,7 +3073,7 @@ std::string emitApplicationHostSource(const FirProgram &program,
                 << "            fn(\n"
                 << "                $foundationNextRequest " << webRequestType << "\n"
                 << "            ) Result<" << webResponseType << ", "
-                << webDispatchErrorType << "<FoundationWebError>> capture &self {\n"
+                << webDispatchErrorType << "<FoundationWebError>> capture(&self) {\n"
                 << "                self." << nextMethod
                 << "($foundationNextRequest)\n"
                 << "            }\n"

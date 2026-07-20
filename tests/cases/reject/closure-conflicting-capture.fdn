@@ -1,9 +1,9 @@
 fn main() i32 {
     var value = 1
-    const first = fn() i32 capture &value {
+    const first = fn() i32 capture(&value) {
         value
     }
-    const second = fn() i32 capture &value {
+    const second = fn() i32 capture(&value) {
         value
     }
     first() + second()

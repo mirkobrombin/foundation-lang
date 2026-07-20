@@ -1828,7 +1828,7 @@ fn apply<T>($value T, operation fn(T) T) T {
 fn main() i32 {
     const direct fn(i32) i32 = double
     const factor = 2
-    const closure = fn(value i32) i32 capture factor {
+    const closure = fn(value i32) i32 capture(factor) {
         value * factor
     }
     apply(21, direct) + apply(21, closure) - 84

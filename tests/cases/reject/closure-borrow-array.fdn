@@ -1,6 +1,6 @@
 fn main() i32 {
     const value = "borrowed"
-    const callbacks = [fn() String capture value {
+    const callbacks = [fn() String capture(value) {
         value
     }]
     discard callbacks
