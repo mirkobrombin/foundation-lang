@@ -1,0 +1,20 @@
+struct ServerConfig {
+    Host String = "localhost"
+    Port i32 = 8080
+    Timeout i32 = 30
+}
+
+fn main() i32 {
+    const configured = ServerConfig {
+        Host = "127.0.0.1"
+        Timeout = 60
+    }
+    const disabled = ServerConfig { Port = 0 }
+
+    if configured.Host != "127.0.0.1" return 1
+    if configured.Port != 8080 return 1
+    if configured.Timeout != 60 return 1
+    if disabled.Port != 0 return 1
+    print("options migration")
+    0
+}
