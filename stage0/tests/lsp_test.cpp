@@ -3347,6 +3347,111 @@ void authenticationPackagesExposeEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void resiliencyPackagesExposeEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "\n"
+        "import foundation.resiliency\n"
+        "import foundation.resiliency.web as rateWeb\n"
+        "import foundation.web\n"
+        "import std.time\n"
+        "\n"
+        "enum AppError {\n"
+        "    Busy\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    var router = web.NewRouter<AppError>()\n"
+        "    const created = resiliency.NewRateLimiter(5, 10) else error {\n"
+        "        discard error\n"
+        "        return 1\n"
+        "    }\n"
+        "    var limiter = created\n"
+        "    const allowed = limiter.Allow()\n"
+        "    discard allowed\n"
+        "    const middleware = rateWeb.RateLimitWithPolicy<AppError>(\n"
+        "        5,\n"
+        "        10,\n"
+        "        time.Seconds(60),\n"
+        "        100\n"
+        "    ) else error {\n"
+        "        discard error\n"
+        "        return 2\n"
+        "    }\n"
+        "    const registered = router.UseStateful(10, $middleware)\n"
+        "    discard registered\n"
+        "    0\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(231, "hover", 13, 38)) +
+        frame(request(232, "signatureHelp", 13, 48)) +
+        frame(request(233, "definition", 13, 38)) +
+        frame(request(234, "hover", 18, 30)) +
+        frame(request(235, "hover", 20, 43)) +
+        frame(request(236, "signatureHelp", 23, 24)) +
+        frame(request(237, "hover", 29, 35)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto limiterHover = responseFor(transcript, 231);
+    const auto limiterSignature = responseFor(transcript, 232);
+    const auto limiterDefinition = responseFor(transcript, 233);
+    const auto allowHover = responseFor(transcript, 234);
+    const auto policyHover = responseFor(transcript, 235);
+    const auto policySignature = responseFor(transcript, 236);
+    const auto statefulHover = responseFor(transcript, 237);
+
+    expect(status == 0, "resiliency language server transcript exits cleanly");
+    expect(errors.str().empty(), "resiliency requests write no server errors");
+    expect(limiterHover.find("fn NewRateLimiter") != std::string::npos &&
+               limiterHover.find("complete burst capacity") != std::string::npos,
+           "rate limiter hover exposes its signature and documentation");
+    expect(limiterSignature.find("fn NewRateLimiter") != std::string::npos &&
+               limiterSignature.find("burst i32") != std::string::npos,
+           "rate limiter calls receive compiler-backed signature help");
+    expect(limiterDefinition.find("resiliency.fdn") != std::string::npos,
+           "rate limiter functions navigate to their SDK declaration");
+    expect(allowHover.find("fn Allow") != std::string::npos &&
+               allowHover.find("operation may proceed") != std::string::npos,
+           "rate limiter methods expose compiler-backed hover");
+    expect(policyHover.find("fn RateLimitWithPolicy") != std::string::npos &&
+               policyHover.find("client retention policy") != std::string::npos,
+           "web rate-limit policy exposes compiler-backed hover");
+    expect(policySignature.find("fn RateLimitWithPolicy") != std::string::npos &&
+               policySignature.find("maxClients i32") != std::string::npos,
+           "web rate-limit policy receives signature help across lines");
+    expect(statefulHover.find("fn UseStateful") != std::string::npos &&
+               statefulHover.find("stateful middleware owned by the router") !=
+                   std::string::npos,
+           "stateful router registration exposes signature and documentation");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void webActivationExposesEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fdn";
@@ -3842,6 +3947,7 @@ int main() {
     derivedValidationExposesEditorDetails();
     openAPIAttributesExposeEditorDetails();
     authenticationPackagesExposeEditorDetails();
+    resiliencyPackagesExposeEditorDetails();
     webActivationExposesEditorDetails();
     manualWebMiddlewareExposesEditorDetails();
     stateMachinesExposeEditorDetails();

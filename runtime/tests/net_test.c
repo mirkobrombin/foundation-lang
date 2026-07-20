@@ -20,6 +20,10 @@ int main(void) {
     uint64_t second_listener = 0;
     uint64_t bound_port = 0;
     uint64_t second_port = 0;
+    fdn_string peer = fdn_string_static("unmodified", 10);
+
+    require(foundation_runtime_net_peer_address(0, &peer) == 4);
+    require(peer.length == 0);
 
     require(foundation_runtime_net_resolve(&invalid, UINT64_C(80), &addresses) == 1);
     require(addresses == 0);

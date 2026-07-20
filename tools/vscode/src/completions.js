@@ -168,6 +168,8 @@ const staticCompletions = [
     { label: "foundation.web", kind: "Module", detail: "Typed HTTP routing and serving" },
     { label: "foundation.auth", kind: "Module", detail: "Typed token signing and key rotation" },
     { label: "foundation.auth.web", kind: "Module", detail: "Typed Bearer handler boundary" },
+    { label: "foundation.resiliency", kind: "Module", detail: "Typed nonblocking resilience policies" },
+    { label: "foundation.resiliency.web", kind: "Module", detail: "Owned stateful web resilience middleware" },
     { label: "foundation.di", kind: "Module", detail: "Static dependency graph metadata" },
     { label: "foundation.actions", kind: "Module", detail: "Typed action dispatch metadata" },
     { label: "@di.Inject()", kind: "Keyword", detail: "Select a service constructor", insertText: "@di.Inject()" },
@@ -251,6 +253,7 @@ const staticCompletions = [
     { label: "web.RouteTable", kind: "Struct", detail: "validated handler-free route metadata" },
     { label: "web.RouteMatch", kind: "Struct", detail: "matched route ID and owned path parameters" },
     { label: "web.Handler", kind: "Interface", detail: "typed HTTP handler contract" },
+    { label: "web.Middleware", kind: "Interface", detail: "owned reusable stateful middleware contract" },
     { label: "web.Application", kind: "Interface", detail: "shared typed request dispatch graph" },
     { label: "web.Request", kind: "Struct", detail: "owned parsed HTTP request" },
     { label: "web.Response", kind: "Struct", detail: "owned HTTP response" },
@@ -290,6 +293,13 @@ const staticCompletions = [
     { label: "authWeb.Bearer", kind: "Struct", detail: "typed Bearer-protected web handler" },
     { label: "authWeb.BearerError", kind: "Enum", detail: "authorization, token, or handler failure" },
     { label: "authWeb.Protect", kind: "Function", detail: "fn Protect<E>($secret own bytes.Bytes, $handler own AuthenticatedHandler<E>) Result<own Bearer<E>, auth.Error>", insertText: "authWeb.Protect<${1:Error}>(\\$${2:secret}, \\$${3:handler})" },
+    { label: "resiliency.RateLimiter", kind: "Struct", detail: "monotonic nonblocking token bucket" },
+    { label: "resiliency.ConfigurationError", kind: "Enum", detail: "invalid limiter or client retention policy" },
+    { label: "resiliency.NewRateLimiter", kind: "Function", detail: "fn NewRateLimiter(rate i32, burst i32) Result<RateLimiter, ConfigurationError>", insertText: "resiliency.NewRateLimiter(${1:rate}, ${2:burst})" },
+    { label: "resiliency.RateLimiter.Allow", kind: "Method", detail: "fn Allow(&self) bool", insertText: "Allow()" },
+    { label: "resiliency.RateLimiter.AllowAt", kind: "Method", detail: "fn AllowAt(&self, now time.MonotonicInstant) bool", insertText: "AllowAt(${1:now})" },
+    { label: "rateWeb.RateLimit", kind: "Function", detail: "fn RateLimit<E>(rate i32, burst i32) Result<own web.Middleware<E>, resiliency.ConfigurationError>", insertText: "rateWeb.RateLimit<${1:Error}>(${2:rate}, ${3:burst})" },
+    { label: "rateWeb.RateLimitWithPolicy", kind: "Function", detail: "fn RateLimitWithPolicy<E>(rate i32, burst i32, clientTTL time.Duration, maxClients i32) Result<own web.Middleware<E>, resiliency.ConfigurationError>", insertText: "rateWeb.RateLimitWithPolicy<${1:Error}>(${2:rate}, ${3:burst}, ${4:clientTTL}, ${5:maxClients})" },
     {
         label: "platform.Current",
         kind: "Function",
@@ -545,6 +555,12 @@ const staticCompletions = [
         insertText: "CopyInto(&${1:target}, ${2:source}, ${3:key}, ${4:targetKey})"
     },
     {
+        label: "net.TcpConnection.PeerAddress",
+        kind: "Method",
+        detail: "fn PeerAddress(self) Result<String, net.Error>",
+        insertText: "PeerAddress()"
+    },
+    {
         label: "web.NewServer",
         kind: "Function",
         detail: "fn NewServer<E>($address String, port u64, $application own web.Application<E>) Result<own web.Server<E>, net.Error>",
@@ -593,16 +609,34 @@ const staticCompletions = [
         insertText: "Use(${1:10}, \\$${2:middleware})"
     },
     {
+        label: "web.Router.UseStateful",
+        kind: "Method",
+        detail: "fn UseStateful(&self, order i32, $middleware own web.Middleware<E>) Result<void, web.MiddlewareRegistrationError>",
+        insertText: "UseStateful(${1:10}, \\$${2:middleware})"
+    },
+    {
         label: "web.Router.UseGroup",
         kind: "Method",
         detail: "fn UseGroup(&self, $prefix String, order i32, $middleware fn($web.Request, fn($web.Request) Result<web.Response, web.DispatchError<E>>) Result<web.Response, web.DispatchError<E>>) Result<void, web.MiddlewareRegistrationError>",
         insertText: "UseGroup(\"${1:/api}\", ${2:10}, \\$${3:middleware})"
     },
     {
+        label: "web.Router.UseGroupStateful",
+        kind: "Method",
+        detail: "fn UseGroupStateful(&self, $prefix String, order i32, $middleware own web.Middleware<E>) Result<void, web.MiddlewareRegistrationError>",
+        insertText: "UseGroupStateful(\"${1:/api}\", ${2:10}, \\$${3:middleware})"
+    },
+    {
         label: "web.Router.UseRoute",
         kind: "Method",
         detail: "fn UseRoute(&self, method web.Method, $path String, order i32, $middleware fn($web.Request, fn($web.Request) Result<web.Response, web.DispatchError<E>>) Result<web.Response, web.DispatchError<E>>) Result<void, web.MiddlewareRegistrationError>",
         insertText: "UseRoute(${1:.GET}, \"${2:/path}\", ${3:10}, \\$${4:middleware})"
+    },
+    {
+        label: "web.Router.UseRouteStateful",
+        kind: "Method",
+        detail: "fn UseRouteStateful(&self, method web.Method, $path String, order i32, $middleware own web.Middleware<E>) Result<void, web.MiddlewareRegistrationError>",
+        insertText: "UseRouteStateful(${1:.GET}, \"${2:/path}\", ${3:10}, \\$${4:middleware})"
     },
     {
         label: "web.RouteTable.Add",

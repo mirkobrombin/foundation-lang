@@ -1315,6 +1315,15 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
     )
     add_test(
+        NAME stage0.run.resiliency-rate-limit
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.fdn
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/blocking_native.c
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
+    )
+    add_test(
         NAME stage0.run.raw-pointers
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -1378,6 +1387,23 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/auth-web
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/auth-web/expected.out
+            -DASSERT_ALLOCATIONS=1
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.resiliency-web-example
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/resiliency-web
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/resiliency-web/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.resiliency-web-example-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/resiliency-web
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/resiliency-web/expected.out
             -DASSERT_ALLOCATIONS=1
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1801,6 +1827,27 @@ if(BUILD_TESTING)
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
             -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
             -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.resiliency-rate-limit-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/resiliency-rate-limit.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/resiliency-rate-limit
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.out
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/blocking_native.c
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+            -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+            -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
@@ -4022,6 +4069,26 @@ if(BUILD_TESTING)
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
                 -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
                 -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.resiliency-rate-limit-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/resiliency-rate-limit-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/resiliency-rate-limit-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.out
+                -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/blocking_native.c
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )

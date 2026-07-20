@@ -1,0 +1,169 @@
+package foundation.resiliency.web
+
+import foundation.resiliency
+import foundation.web
+import std.collections
+import std.text
+import std.time
+
+struct clientLimiter {
+    key String
+    limiter resiliency.RateLimiter
+    lastSeen time.MonotonicInstant
+}
+
+struct rateLimitStore {
+    clients own collections.List<clientLimiter>
+    rate i32
+    burst i32
+    clientTTL time.Duration
+    maxClients i32
+
+    fn Allow(&self, key String) bool {
+        const now = time.MonotonicNow()
+        var active = replace self.clients with collections.NewList<clientLimiter>()
+        var reversed = collections.NewList<clientLimiter>()
+        var selected Option<clientLimiter> = .None
+        var found = false
+
+        while !active.IsEmpty() {
+            const current = clientValue(active.PopFront())
+            const expired = clientExpired(current, now, self.clientTTL)
+            if !found && current.key == key && !expired {
+                selected = .Some(current)
+                found = true
+            } else {
+                if !expired {
+                    reversed.PushFront($current)
+                } else {
+                    discard current
+                }
+            }
+        }
+
+        var chosen = match selected {
+            None: clientLimiter {
+                key = text.Copy(key)
+                limiter = limiterOrPanic(resiliency.NewRateLimiter(self.rate, self.burst))
+                lastSeen = now
+            }
+            Some(current): current
+        }
+        if !found {
+            if reversed.Len() >= self.maxClients {
+                discard reversed.PopFront()
+            }
+        } else {
+            chosen.lastSeen = now
+        }
+
+        const allowed = if found {
+            chosen.limiter.AllowAt(now)
+        } else {
+            chosen.limiter.Allow()
+        }
+        var restored = reverseClients($reversed)
+        restored.PushFront($chosen)
+        self.clients = restored
+        allowed
+    }
+}
+
+struct rateLimitMiddleware<E> implements web.Middleware<E> {
+    store own rateLimitStore
+
+    fn Handle(
+        &self,
+        $request web.Request,
+        next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+    ) Result<web.Response, web.DispatchError<E>> {
+        const key = if request.RemoteAddress == "" {
+            "unknown"
+        } else {
+            text.Copy(request.RemoteAddress)
+        }
+        if !self.store.Allow(key) {
+            discard request
+            return .Ok(web.Text(429, "rate limit exceeded"))
+        }
+        next($request)
+    }
+}
+
+// Creates nonblocking per-client rate-limit middleware.
+fn RateLimit<E>(
+    rate i32,
+    burst i32
+) Result<own web.Middleware<E>, resiliency.ConfigurationError> {
+    RateLimitWithPolicy<E>(rate, burst, time.Seconds(600), 10000)
+}
+
+// Creates rate-limit middleware with explicit client retention policy.
+fn RateLimitWithPolicy<E>(
+    rate i32,
+    burst i32,
+    clientTTL time.Duration,
+    maxClients i32
+) Result<own web.Middleware<E>, resiliency.ConfigurationError> {
+    if rate <= 0 return .Err(.InvalidRate)
+    if burst <= 0 return .Err(.InvalidBurst)
+    if maxClients <= 0 return .Err(.InvalidMaxClients)
+    if clientTTL.Nanoseconds() <= 0 return .Err(.InvalidClientTTL)
+    .Ok(own rateLimitMiddleware<E> {
+        store = own rateLimitStore {
+            clients = collections.NewList<clientLimiter>()
+            rate = rate
+            burst = burst
+            clientTTL = clientTTL
+            maxClients = maxClients
+        }
+    })
+}
+
+fn clientExpired(
+    value clientLimiter,
+    now time.MonotonicInstant,
+    clientTTL time.Duration
+) bool {
+    const elapsed = now.Since(value.lastSeen) else error {
+        discard error
+        return false
+    }
+    elapsed.Nanoseconds() > clientTTL.Nanoseconds()
+}
+
+fn reverseClients(
+    $values own collections.List<clientLimiter>
+) own collections.List<clientLimiter> {
+    var source = values
+    var result = collections.NewList<clientLimiter>()
+    while !source.IsEmpty() {
+        result.PushFront(clientValue(source.PopFront()))
+    }
+    result
+}
+
+fn limiterOrPanic(
+    $value Result<resiliency.RateLimiter, resiliency.ConfigurationError>
+) resiliency.RateLimiter {
+    match value {
+        Ok(limiter): limiter
+        Err(error): invalidLimiter(error)
+    }
+}
+
+fn invalidLimiter(error resiliency.ConfigurationError) never {
+    discard error
+    panic("rate limiter configuration invariant failed")
+}
+
+fn clientValue($value Option<clientLimiter>) clientLimiter {
+    match value {
+        None: missingClient()
+        Some(client): client
+    }
+}
+
+fn missingClient() clientLimiter {
+    panic("rate limit client invariant failed")
+}

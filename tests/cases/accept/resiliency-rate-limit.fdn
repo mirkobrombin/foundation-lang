@@ -1,0 +1,233 @@
+package test.resiliency_rate_limit
+
+import foundation.resiliency
+import foundation.resiliency.web as rateWeb
+import foundation.web
+import std.collections
+import std.format
+import std.time
+
+@blocking
+extern c fn nativeSleepDouble(
+    value i32,
+    delay u64
+) i32 as foundation_native_sleep_double
+
+enum AppError {
+    Failed
+}
+
+struct Accepted implements web.Handler<AppError> {
+    fn Handle(self, $request web.Request) Result<web.Response, AppError> {
+        discard request
+        .Ok(web.Text(200, "accepted"))
+    }
+}
+
+task sleep(delay u64) void {
+    discard nativeSleepDouble(0, delay)
+}
+
+fn limiter(
+    $value Result<resiliency.RateLimiter, resiliency.ConfigurationError>
+) resiliency.RateLimiter {
+    match value {
+        Ok(created): created
+        Err(error): invalidConfiguration(error)
+    }
+}
+
+fn invalidConfiguration(error resiliency.ConfigurationError) never {
+    discard error
+    panic("rate limiter test configuration failed")
+}
+
+fn request($client String) web.Request {
+    web.Request {
+        Method = .GET
+        Target = "/"
+        Path = "/"
+        Version = "HTTP/1.1"
+        RemoteAddress = client
+        Headers = collections.NewList<web.HeaderValue>()
+        Params = collections.NewList<web.Parameter>()
+    }
+}
+
+fn status(
+    $value Result<web.Response, web.DispatchError<AppError>>
+) i32 {
+    match value {
+        Ok(response): responseStatus($response)
+        Err(error): dispatchFailure(error)
+    }
+}
+
+fn responseStatus($response web.Response) i32 {
+    const web.Response { Status Headers Body } = response
+    discard Headers
+    discard Body
+    Status
+}
+
+fn dispatchFailure(error web.DispatchError<AppError>) never {
+    discard error
+    panic("rate limit dispatch failed")
+}
+
+fn configurationErrorCode(
+    $value Result<resiliency.RateLimiter, resiliency.ConfigurationError>
+) i32 {
+    match value {
+        Ok(created): acceptedConfiguration(created)
+        Err(error): match error {
+            InvalidRate: 1
+            InvalidBurst: 2
+            InvalidMaxClients: 3
+            InvalidClientTTL: 4
+        }
+    }
+}
+
+fn acceptedConfiguration(value resiliency.RateLimiter) i32 {
+    discard value
+    0
+}
+
+fn middlewareErrorCode(
+    $value Result<void, web.MiddlewareRegistrationError>
+) i32 {
+    match value {
+        Ok: 0
+        Err(error): match error {
+            InvalidGroup: 1
+            UnknownGroup: 2
+            UnknownRoute: 3
+            DuplicateOrder: 4
+        }
+    }
+}
+
+fn routeAccepted($value Result<void, web.RegistrationError>) bool {
+    match value {
+        Ok: true
+        Err(error): rejectedRoute(error)
+    }
+}
+
+fn rejectedRoute(error web.RegistrationError) bool {
+    discard error
+    false
+}
+
+fn policyRejected(
+    $value Result<own web.Middleware<AppError>, resiliency.ConfigurationError>
+) bool {
+    match value {
+        Ok(middleware): acceptedPolicy($middleware)
+        Err(error): rejectedPolicy(error)
+    }
+}
+
+fn acceptedPolicy($middleware own web.Middleware<AppError>) bool {
+    discard middleware
+    false
+}
+
+fn rejectedPolicy(error resiliency.ConfigurationError) bool {
+    discard error
+    true
+}
+
+fn main() i32 {
+    var bucket = limiter(resiliency.NewRateLimiter(1, 2))
+    if !bucket.Allow() return 1
+    if !bucket.Allow() return 2
+    if bucket.Allow() return 3
+
+    const waiting = spawn sleep(1100)
+    $waiting.wait()
+    if !bucket.Allow() return 4
+    if bucket.Allow() return 5
+
+    if configurationErrorCode(resiliency.NewRateLimiter(0, 1)) != 1 return 6
+    if configurationErrorCode(resiliency.NewRateLimiter(1, 0)) != 2 return 7
+
+    var router = web.NewRouter<AppError>()
+    const mapped = router.Map(.GET, "/", own Accepted {})
+    if !routeAccepted($mapped) return 8
+    const middleware = rateWeb.RateLimit<AppError>(1, 2) else error {
+        discard error
+        return 9
+    }
+    if middlewareErrorCode($router.UseStateful(10, $middleware)) != 0 return 10
+
+    const firstStatus = status($router.Dispatch(request("first")))
+    print(format.I32(firstStatus))
+    if firstStatus != 200 return 11
+    const secondStatus = status($router.Dispatch(request("first")))
+    print(format.I32(secondStatus))
+    if secondStatus != 200 return 12
+    const limitedStatus = status($router.Dispatch(request("first")))
+    print(format.I32(limitedStatus))
+    if limitedStatus != 429 return 13
+    const otherStatus = status($router.Dispatch(request("second")))
+    print(format.I32(otherStatus))
+    if otherStatus != 200 return 14
+
+    var bounded = web.NewRouter<AppError>()
+    const boundedMap = bounded.Map(.GET, "/", own Accepted {})
+    if !routeAccepted($boundedMap) return 15
+    const boundedMiddleware = rateWeb.RateLimitWithPolicy<AppError>(
+        1,
+        1,
+        time.Seconds(60),
+        2
+    ) else error {
+        discard error
+        return 16
+    }
+    if middlewareErrorCode($bounded.UseStateful(10, $boundedMiddleware)) != 0 return 17
+    if status($bounded.Dispatch(request("a"))) != 200 return 18
+    if status($bounded.Dispatch(request("b"))) != 200 return 19
+    if status($bounded.Dispatch(request("a"))) != 429 return 20
+    if status($bounded.Dispatch(request("c"))) != 200 return 21
+    if status($bounded.Dispatch(request("a"))) != 429 return 22
+    if status($bounded.Dispatch(request("b"))) != 200 return 23
+
+    var expiring = web.NewRouter<AppError>()
+    const expiringMap = expiring.Map(.GET, "/", own Accepted {})
+    if !routeAccepted($expiringMap) return 24
+    const expiringMiddleware = rateWeb.RateLimitWithPolicy<AppError>(
+        1,
+        1,
+        time.Milliseconds(1),
+        2
+    ) else error {
+        discard error
+        return 25
+    }
+    if middlewareErrorCode($expiring.UseStateful(10, $expiringMiddleware)) != 0 return 26
+    if status($expiring.Dispatch(request("expiring"))) != 200 return 27
+    const expiryWait = spawn sleep(5)
+    $expiryWait.wait()
+    if status($expiring.Dispatch(request("expiring"))) != 200 return 28
+
+    const invalidCapacity = policyRejected($rateWeb.RateLimitWithPolicy<AppError>(
+        1,
+        1,
+        time.Milliseconds(1),
+        0
+        ))
+    if !invalidCapacity return 29
+    const invalidTTL = policyRejected($rateWeb.RateLimitWithPolicy<AppError>(
+        1,
+        1,
+        time.Zero(),
+        1
+        ))
+    if !invalidTTL return 30
+
+    print("resiliency rate limit ok")
+    0
+}

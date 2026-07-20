@@ -156,6 +156,8 @@ fn listenerRoundTrip() bool {
     const client = connectionOr($connecting.wait())
     const net.AcceptOutcome { Listener as listenerAfter Value as accepted } = $accepting.wait()
     const server = connectionOr($accepted)
+    const clientPeer = textOr(client.PeerAddress())
+    const serverPeer = textOr(server.PeerAddress())
     const clientPair = pairOr(client.Split())
     const serverPair = pairOr(server.Split())
     const net.StreamPair { Reader as clientReader Writer as clientWriter } = clientPair
@@ -174,6 +176,7 @@ fn listenerRoundTrip() bool {
 
     const success = lineOr($request) == "hello" && textOr($bodyResult) == "body" &&
         lineOr($response) == "world" &&
+        clientPeer == "127.0.0.1" && serverPeer == "127.0.0.1" &&
         writeSucceeded($clientWrite) && writeSucceeded($serverWrite)
     discard listenerAfter
     discard clientWriterAfter

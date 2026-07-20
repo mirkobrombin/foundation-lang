@@ -26,9 +26,11 @@ methods HelloHandler {
         }
         const requestIDMatched = !active.RequestID.IsNil()
         const requestID = active.RequestID.String()
+        const remoteMatched = active.RemoteAddress == "127.0.0.1"
         const bodyMatched = active.Body == "ping" && active.ContentLength == 4
         discard active
-        if !nameMatched || !sourceMatched || !traceMatched || !requestIDMatched || !bodyMatched {
+        if !nameMatched || !sourceMatched || !traceMatched || !requestIDMatched ||
+            !remoteMatched || !bodyMatched {
             return .Err(.Failed)
         }
         .Ok(web.Text(200, $requestID))

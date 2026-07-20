@@ -1,0 +1,76 @@
+package example.resiliency.web
+
+import foundation.resiliency
+import foundation.resiliency.web as rateWeb
+import foundation.web
+import std.collections
+import std.format
+
+// Reports an application handler failure.
+enum AppError {
+    // The health handler failed.
+    Failed
+}
+
+// Returns a healthy response for accepted requests.
+struct Healthy implements web.Handler<AppError> {
+    // Handles one accepted health request.
+    fn Handle(self, $request web.Request) Result<web.Response, AppError> {
+        discard request
+        .Ok(web.Text(200, "healthy"))
+    }
+}
+
+fn request($remoteAddress String) web.Request {
+    web.Request {
+        Method = .GET
+        Target = "/health"
+        Path = "/health"
+        Version = "HTTP/1.1"
+        RemoteAddress = remoteAddress
+        Headers = collections.NewList<web.HeaderValue>()
+        Params = collections.NewList<web.Parameter>()
+    }
+}
+
+fn status($value Result<web.Response, web.DispatchError<AppError>>) i32 {
+    match value {
+        Ok(response): responseStatus($response)
+        Err(error): dispatchFailed(error)
+    }
+}
+
+fn responseStatus($response web.Response) i32 {
+    const web.Response { Status Headers Body } = response
+    discard Headers
+    discard Body
+    Status
+}
+
+fn dispatchFailed(error web.DispatchError<AppError>) never {
+    discard error
+    panic("rate-limit example dispatch failed")
+}
+
+fn main() i32 {
+    var router = web.NewRouter<AppError>()
+    router.Map(.GET, "/health", own Healthy {}) else error {
+        discard error
+        return 1
+    }
+
+    const middleware = rateWeb.RateLimit<AppError>(2, 2) else error {
+        discard error
+        return 2
+    }
+    router.UseStateful(10, $middleware) else error {
+        discard error
+        return 3
+    }
+
+    print(format.I32(status($router.Dispatch(request("192.0.2.10")))))
+    print(format.I32(status($router.Dispatch(request("192.0.2.10")))))
+    print(format.I32(status($router.Dispatch(request("192.0.2.10")))))
+    print(format.I32(status($router.Dispatch(request("192.0.2.11")))))
+    0
+}

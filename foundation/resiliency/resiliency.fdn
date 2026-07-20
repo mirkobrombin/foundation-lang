@@ -1,0 +1,68 @@
+package foundation.resiliency
+
+import std.time
+
+// Reports an invalid token bucket configuration.
+enum ConfigurationError {
+    // The refill rate must be greater than zero.
+    InvalidRate
+    // The burst capacity must be greater than zero.
+    InvalidBurst
+    // A bounded client store must retain at least one client.
+    InvalidMaxClients
+    // A client expiration duration must be greater than zero.
+    InvalidClientTTL
+}
+
+// Limits nonblocking operations with a monotonic token bucket.
+struct RateLimiter {
+    tokens f64
+    rate f64
+    burst f64
+    last time.MonotonicInstant
+
+    // Reports whether one operation may proceed now.
+    fn Allow(&self) bool {
+        self.AllowAt(time.MonotonicNow())
+    }
+
+    // Reports whether one operation may proceed at an explicit monotonic instant.
+    fn AllowAt(&self, now time.MonotonicInstant) bool {
+        const elapsed = now.Since(self.last) else error {
+            discard error
+            return false
+        }
+        const refill = refillSeconds(elapsed, self.burst / self.rate) * self.rate
+        self.tokens = self.tokens + refill
+        if self.tokens > self.burst {
+            self.tokens = self.burst
+        }
+        self.last = now
+        if self.tokens < 1.0 return false
+        self.tokens = self.tokens - 1.0
+        true
+    }
+}
+
+// Creates a token bucket initialized with its complete burst capacity.
+fn NewRateLimiter(
+    rate i32,
+    burst i32
+) Result<RateLimiter, ConfigurationError> {
+    if rate <= 0 return .Err(.InvalidRate)
+    if burst <= 0 return .Err(.InvalidBurst)
+    .Ok(RateLimiter {
+        tokens = f64.From(burst)
+        rate = f64.From(rate)
+        burst = f64.From(burst)
+        last = time.MonotonicNow()
+    })
+}
+
+fn refillSeconds(duration time.Duration, fallback f64) f64 {
+    const nanoseconds = f64.From(duration.Nanoseconds()) else error {
+        discard error
+        return fallback
+    }
+    nanoseconds / 1000000000.0
+}

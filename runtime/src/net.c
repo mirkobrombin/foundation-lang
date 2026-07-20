@@ -871,6 +871,66 @@ int32_t foundation_runtime_net_split(uint64_t handle, uint64_t *reader,
     return FDN_NET_OK;
 }
 
+int32_t foundation_runtime_net_peer_address(uint64_t handle,
+                                            fdn_string *address) {
+    fdn_net_connection *connection = (fdn_net_connection *)(uintptr_t)handle;
+    struct sockaddr_storage peer;
+#if defined(_WIN32)
+    int peer_length = (int)sizeof(peer);
+#else
+    socklen_t peer_length = (socklen_t)sizeof(peer);
+#endif
+    fdn_net_socket socket;
+    const void *native_address;
+    char text[INET6_ADDRSTRLEN];
+    size_t length;
+    char *copy;
+
+    if (address == NULL) {
+        fdn_panic_cstr("network peer address output is null");
+    }
+    fdn_string_drop(address);
+    *address = fdn_string_static("", 0);
+    if (connection == NULL) {
+        return FDN_NET_CLOSED;
+    }
+
+    fdn_net_connection_enter(connection);
+    socket = connection->socket;
+    fdn_net_connection_leave(connection);
+    if (socket == FDN_NET_INVALID_SOCKET) {
+        return FDN_NET_CLOSED;
+    }
+
+    (void)memset(&peer, 0, sizeof(peer));
+    if (getpeername(socket, (struct sockaddr *)&peer, &peer_length) != 0) {
+        return FDN_NET_IO;
+    }
+    if (peer.ss_family == AF_INET) {
+        const struct sockaddr_in *ipv4 = (const struct sockaddr_in *)&peer;
+        native_address = &ipv4->sin_addr;
+    } else if (peer.ss_family == AF_INET6) {
+        const struct sockaddr_in6 *ipv6 = (const struct sockaddr_in6 *)&peer;
+        native_address = &ipv6->sin6_addr;
+    } else {
+        return FDN_NET_IO;
+    }
+    if (inet_ntop(peer.ss_family, native_address, text, sizeof(text)) == NULL) {
+        return FDN_NET_IO;
+    }
+
+    length = strlen(text);
+    if (length == 0) {
+        return FDN_NET_IO;
+    }
+    copy = fdn_alloc(length);
+    (void)memcpy(copy, text, length);
+    address->data = copy;
+    address->length = length;
+    address->owned = 1;
+    return FDN_NET_OK;
+}
+
 void foundation_runtime_net_connection_close(uint64_t handle) {
     fdn_net_connection *connection = (fdn_net_connection *)(uintptr_t)handle;
     fdn_net_socket socket = FDN_NET_INVALID_SOCKET;

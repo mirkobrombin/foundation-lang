@@ -157,6 +157,13 @@ The manual chain is reusable across dispatches and owns captured middleware clos
 middleware may replace the request before lookup or map `NotFound` and `MethodNotAllowed` into a
 response. Group and route selection is fixed after lookup, matching generated applications.
 
+Mutable policy implements `web.Middleware<E>` and transfers into `Router.UseStateful`,
+`Router.UseGroupStateful`, or `Router.UseRouteStateful`. The router
+owns that instance across dispatches and calls it with an editable receiver. Stateless functions
+continue to use `Use`, which adapts them to the same internal contract. Accepted TCP requests also
+carry the numeric socket peer in `Request.RemoteAddress`; direct dispatch may set that field
+explicitly.
+
 Path, query, header, and form sources accept `String`, `Option<String>`, `bool`, and every integer
 machine type. Required sources produce a generated `FoundationWebBindingError` when absent.
 `Option<String>` receives `.None` instead. Invalid boolean and integer text produces an explicit
@@ -236,4 +243,4 @@ selection, and registration failures.
 
 `foundationc emit-openapi` now consumes this same validated route graph; see
 `docs/framework/openapi.md`. This is not the completed `app/web` compatibility boundary.
-Continuous serving, graceful shutdown, TLS, and the health adapter remain pending.
+Compression, continuous serving, graceful shutdown, TLS, and the health adapter remain pending.

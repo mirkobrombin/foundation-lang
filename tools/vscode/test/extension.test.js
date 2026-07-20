@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.111.0");
+    assert.equal(manifest.version, "0.112.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1270,7 +1270,8 @@ test("grammar and completions track compiler keywords", () => {
         "parse.Usize",
         "std.fs", "fs.OpenLines", "fs.ReadText", "fs.ReadTextLimited", "fs.OpenDir", "fs.Size", "fs.Modified",
         "fs.LineReader.Next", "fs.LineReader.NextLimited",
-        "std.net", "net.Listen", "net.Accept", "net.Connect", "net.TcpConnection.Split", "net.ReadLine",
+        "std.net", "net.Listen", "net.Accept", "net.Connect", "net.TcpConnection.Split",
+        "net.TcpConnection.PeerAddress", "net.ReadLine",
         "net.ReadLineLimited", "net.ReadExact", "net.WriteAll",
         "std.format", "format.Bool", "format.I8", "format.I16", "format.I32",
         "format.I64", "format.Isize", "format.U8", "format.U16", "format.U32",
@@ -1322,11 +1323,12 @@ test("grammar and completions track compiler keywords", () => {
         "validation.Errors", "validation.NewErrors", "validation.IsEmail",
         "validation.Errors.IsEmpty", "validation.Errors.Len", "validation.Errors.TakeFirst",
         "foundation.web", "web.Server", "web.Router", "web.RouteTable", "web.RouteMatch",
-        "web.Handler", "web.Application", "web.Request", "web.Response", "web.Method",
+        "web.Handler", "web.Middleware", "web.Application", "web.Request", "web.Response", "web.Method",
         "web.MatchError", "web.DispatchError", "web.MiddlewareRegistrationError",
         "web.ServeOutcome", "web.NewServer",
         "web.NewRouter", "web.NewRouteTable", "web.Empty", "web.Text", "web.Json", "web.Router.Map",
-        "web.Router.Use", "web.Router.UseGroup", "web.Router.UseRoute",
+        "web.Router.Use", "web.Router.UseStateful", "web.Router.UseGroup",
+        "web.Router.UseGroupStateful", "web.Router.UseRoute", "web.Router.UseRouteStateful",
         "web.RouteTable.Add", "web.RouteTable.Match", "web.Request.Param", "web.Request.Query",
         "web.Request.Header", "web.Request.Form", "web.Request.IsJSON",
         "web.Response.Header", "web.Response.SetHeader", "web.Response.AddHeader",
@@ -1337,6 +1339,11 @@ test("grammar and completions track compiler keywords", () => {
         "auth.Service.AddKey", "auth.Service.Sign", "auth.Service.Verify",
         "foundation.auth.web", "authWeb.AuthenticatedHandler", "authWeb.Bearer",
         "authWeb.BearerError", "authWeb.Protect",
+        "foundation.resiliency", "foundation.resiliency.web",
+        "resiliency.RateLimiter", "resiliency.ConfigurationError",
+        "resiliency.NewRateLimiter", "resiliency.RateLimiter.Allow",
+        "resiliency.RateLimiter.AllowAt", "rateWeb.RateLimit",
+        "rateWeb.RateLimitWithPolicy",
         "foundation.worker", "worker.Supervisor", "worker.NewSupervisor",
         "worker.Supervisor.Start", "worker.Supervisor.Shutdown", "worker.Supervisor.Cancel",
         "worker.Group", "worker.GroupNext", "worker.GroupWait", "worker.GroupWake",

@@ -1,0 +1,146 @@
+package test.compatibility.resiliency
+
+import foundation.resiliency
+import foundation.resiliency.web as rateWeb
+import foundation.web
+import std.collections
+import std.format
+
+@blocking
+extern c fn nativeSleepDouble(
+    value i32,
+    delay u64
+) i32 as foundation_native_sleep_double
+
+enum AppError {
+    Failed
+}
+
+struct Accepted implements web.Handler<AppError> {
+    fn Handle(self, $request web.Request) Result<web.Response, AppError> {
+        discard request
+        .Ok(web.Text(200, "accepted"))
+    }
+}
+
+task sleep(delay u64) void {
+    discard nativeSleepDouble(0, delay)
+}
+
+fn limiter(
+    $value Result<resiliency.RateLimiter, resiliency.ConfigurationError>
+) resiliency.RateLimiter {
+    match value {
+        Ok(created): created
+        Err(error): invalidConfiguration(error)
+    }
+}
+
+fn invalidConfiguration(error resiliency.ConfigurationError) never {
+    discard error
+    panic("resiliency compatibility configuration failed")
+}
+
+fn rejectedConfiguration(
+    $value Result<resiliency.RateLimiter, resiliency.ConfigurationError>
+) bool {
+    match value {
+        Ok(created): acceptedConfiguration(created)
+        Err(error): rejectedError(error)
+    }
+}
+
+fn acceptedConfiguration(value resiliency.RateLimiter) bool {
+    discard value
+    false
+}
+
+fn rejectedError(error resiliency.ConfigurationError) bool {
+    discard error
+    true
+}
+
+fn request($client String) web.Request {
+    web.Request {
+        Method = .GET
+        Target = "/"
+        Path = "/"
+        Version = "HTTP/1.1"
+        RemoteAddress = client
+        Headers = collections.NewList<web.HeaderValue>()
+        Params = collections.NewList<web.Parameter>()
+    }
+}
+
+fn status(
+    $value Result<web.Response, web.DispatchError<AppError>>
+) i32 {
+    match value {
+        Ok(response): responseStatus($response)
+        Err(error): dispatchFailure(error)
+    }
+}
+
+fn responseStatus($response web.Response) i32 {
+    const web.Response { Status Headers Body } = response
+    discard Headers
+    discard Body
+    Status
+}
+
+fn dispatchFailure(error web.DispatchError<AppError>) never {
+    discard error
+    panic("resiliency compatibility dispatch failed")
+}
+
+fn routeAccepted($value Result<void, web.RegistrationError>) bool {
+    match value {
+        Ok: true
+        Err(error): rejectedRoute(error)
+    }
+}
+
+fn rejectedRoute(error web.RegistrationError) bool {
+    discard error
+    false
+}
+
+fn middlewareAccepted(
+    $value Result<void, web.MiddlewareRegistrationError>
+) bool {
+    match value {
+        Ok: true
+        Err(error): rejectedMiddleware(error)
+    }
+}
+
+fn rejectedMiddleware(error web.MiddlewareRegistrationError) bool {
+    discard error
+    false
+}
+
+fn main() i32 {
+    var bucket = limiter(resiliency.NewRateLimiter(1, 2))
+    if !bucket.Allow() || !bucket.Allow() || bucket.Allow() return 1
+    const waiting = spawn sleep(1100)
+    $waiting.wait()
+    if !bucket.Allow() || bucket.Allow() return 2
+    if !rejectedConfiguration(resiliency.NewRateLimiter(0, 1)) return 3
+    if !rejectedConfiguration(resiliency.NewRateLimiter(1, 0)) return 4
+
+    var router = web.NewRouter<AppError>()
+    const mapped = router.Map(.GET, "/", own Accepted {})
+    if !routeAccepted($mapped) return 5
+    const middleware = rateWeb.RateLimit<AppError>(1, 2) else error {
+        discard error
+        return 6
+    }
+    if !middlewareAccepted($router.UseStateful(10, $middleware)) return 7
+
+    print(format.I32(status($router.Dispatch(request("192.0.2.1")))))
+    print(format.I32(status($router.Dispatch(request("192.0.2.1")))))
+    print(format.I32(status($router.Dispatch(request("192.0.2.1")))))
+    print(format.I32(status($router.Dispatch(request("192.0.2.2")))))
+    print("resiliency rate limit ok")
+    0
+}

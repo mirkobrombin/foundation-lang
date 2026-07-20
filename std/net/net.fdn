@@ -34,6 +34,10 @@ extern c fn acceptNative(listener u64, &connection u64) i32 as foundation_runtim
 extern c fn connectNative(addresses u64, &connection u64) i32 as foundation_runtime_net_connect_start
 
 extern c fn splitNative(connection u64, &reader u64, &writer u64) i32 as foundation_runtime_net_split
+extern c fn peerAddressNative(
+    connection u64,
+    &address String
+) i32 as foundation_runtime_net_peer_address
 extern c fn closeConnectionNative(connection u64) void as foundation_runtime_net_connection_close
 extern c fn closeReaderNative(reader u64) void as foundation_runtime_net_reader_close
 extern c fn closeWriterNative(writer u64) void as foundation_runtime_net_writer_close
@@ -92,6 +96,14 @@ struct TcpListener {
 
 struct TcpConnection {
     handle u64
+
+    // Returns the numeric peer IP address without its transport port.
+    fn PeerAddress(self) Result<String, Error> {
+        var address = ""
+        const status = peerAddressNative(self.handle, &address)
+        if status == 0 return .Ok(address)
+        .Err(errorFor(status))
+    }
 
     // Consumes the connection and produces independently owned read and write halves.
     fn Split($self) Result<StreamPair, Error> {

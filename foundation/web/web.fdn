@@ -62,6 +62,8 @@ struct Request {
     Target String
     Path String
     Version String
+    // Carries the numeric transport peer address when a server accepted the request.
+    RemoteAddress String = ""
     // Carries a validated client UUID or a generated UUIDv7.
     RequestID UUID = UUID.Nil()
     Body String = ""
@@ -249,6 +251,15 @@ contract Handler<E> {
     fn Handle(self, $request Request) Result<Response, E>
 }
 
+// Wraps one request with reusable mutable state owned by the router.
+contract Middleware<E> {
+    fn Handle(
+        &self,
+        $request Request,
+        next fn($Request) Result<Response, DispatchError<E>>
+    ) Result<Response, DispatchError<E>>
+}
+
 // Dispatches one request through a reusable application graph.
 contract Application<E> {
     fn Dispatch(&self, $request Request) Result<Response, DispatchError<E>>
@@ -325,6 +336,32 @@ struct route<E> {
     handler own Handler<E>
 }
 
+struct functionMiddleware<E> implements Middleware<E> {
+    handler fn(
+        $Request,
+        fn($Request) Result<Response, DispatchError<E>>
+    ) Result<Response, DispatchError<E>>
+
+    fn Handle(
+        &self,
+        $request Request,
+        next fn($Request) Result<Response, DispatchError<E>>
+    ) Result<Response, DispatchError<E>> {
+        invokeFunctionMiddleware(self.handler, $request, next)
+    }
+}
+
+fn invokeFunctionMiddleware<E>(
+    handler fn(
+        $Request,
+        fn($Request) Result<Response, DispatchError<E>>
+    ) Result<Response, DispatchError<E>>,
+    $request Request,
+    next fn($Request) Result<Response, DispatchError<E>>
+) Result<Response, DispatchError<E>> {
+    handler($request, next)
+}
+
 enum middlewareScope {
     Global
     Group
@@ -337,10 +374,7 @@ struct routerMiddleware<E> {
     path String
     order i32
     sequence u64
-    handler fn(
-        $Request,
-        fn($Request) Result<Response, DispatchError<E>>
-    ) Result<Response, DispatchError<E>>
+    handler own Middleware<E>
 }
 
 struct pathCursor {
@@ -427,7 +461,7 @@ struct routeSearch {
 
 struct Router<E> implements Application<E> {
     routes own collections.List<own route<E>>
-    middleware own collections.List<routerMiddleware<E>>
+    middleware own collections.List<own routerMiddleware<E>>
     nextMiddlewareSequence u64
 
     // Registers a unique method and path pair.
@@ -470,6 +504,22 @@ struct Router<E> implements Application<E> {
             .GET,
             "",
             order,
+            own functionMiddleware<E> { handler = middleware }
+        )
+    }
+
+    // Wraps route lookup with one stateful middleware owned by the router.
+    fn UseStateful(
+        &self,
+        order i32,
+        $middleware own Middleware<E>
+    ) Result<void, MiddlewareRegistrationError> {
+        registerRouterMiddleware(
+            &self,
+            .Global,
+            .GET,
+            "",
+            order,
             $middleware
         )
     }
@@ -483,6 +533,25 @@ struct Router<E> implements Application<E> {
             $Request,
             fn($Request) Result<Response, DispatchError<E>>
         ) Result<Response, DispatchError<E>>
+    ) Result<void, MiddlewareRegistrationError> {
+        if !validMiddlewareGroup(prefix) return .Err(.InvalidGroup)
+        if !routerScopeExists(&self, .Group, .GET, prefix) return .Err(.UnknownGroup)
+        registerRouterMiddleware(
+            &self,
+            .Group,
+            .GET,
+            $prefix,
+            order,
+            own functionMiddleware<E> { handler = middleware }
+        )
+    }
+
+    // Wraps every mapped route below one static path prefix with owned state.
+    fn UseGroupStateful(
+        &self,
+        $prefix String,
+        order i32,
+        $middleware own Middleware<E>
     ) Result<void, MiddlewareRegistrationError> {
         if !validMiddlewareGroup(prefix) return .Err(.InvalidGroup)
         if !routerScopeExists(&self, .Group, .GET, prefix) return .Err(.UnknownGroup)
@@ -514,6 +583,25 @@ struct Router<E> implements Application<E> {
             method,
             $path,
             order,
+            own functionMiddleware<E> { handler = middleware }
+        )
+    }
+
+    // Wraps one exact mapped method and route pattern with owned state.
+    fn UseRouteStateful(
+        &self,
+        method Method,
+        $path String,
+        order i32,
+        $middleware own Middleware<E>
+    ) Result<void, MiddlewareRegistrationError> {
+        if !routerScopeExists(&self, .Route, method, path) return .Err(.UnknownRoute)
+        registerRouterMiddleware(
+            &self,
+            .Route,
+            method,
+            $path,
+            order,
             $middleware
         )
     }
@@ -536,7 +624,7 @@ fn dispatchGlobalMiddleware<E>(
     const current = middlewareValue(router.middleware.PopFront())
     const routerMiddleware { scope method path order sequence handler } = current
     if middlewareScopeScore(scope) != 0 {
-        router.middleware.PushFront(routerMiddleware<E> {
+        router.middleware.PushFront(own routerMiddleware<E> {
             scope = scope
             method = method
             path = path
@@ -547,7 +635,8 @@ fn dispatchGlobalMiddleware<E>(
         return dispatchMatchedRoute(&router, $request)
     }
 
-    const handled = handler(
+    var activeHandler = handler
+    const handled = activeHandler.Handle(
         $request,
         fn(
             $nextRequest Request
@@ -555,13 +644,13 @@ fn dispatchGlobalMiddleware<E>(
             dispatchGlobalMiddleware(&router, $nextRequest)
         }
     )
-    router.middleware.PushFront(routerMiddleware<E> {
+    router.middleware.PushFront(own routerMiddleware<E> {
         scope = scope
         method = method
         path = path
         order = order
         sequence = sequence
-        handler = handler
+        handler = activeHandler
     })
     handled
 }
@@ -603,8 +692,9 @@ fn dispatchScopedMiddleware<E>(
     const routerMiddleware { scope method path order sequence handler } = current
     const applies = middlewareApplies(scope, method, path, expectedMethod, pattern)
     const nextPattern = text.Copy(pattern)
+    var activeHandler = handler
     const handled = if applies {
-        handler(
+        activeHandler.Handle(
             $request,
             fn(
                 $nextRequest Request
@@ -621,13 +711,13 @@ fn dispatchScopedMiddleware<E>(
         discard nextPattern
         dispatchScopedMiddleware(&router, expectedMethod, pattern, $request)
     }
-    router.middleware.PushFront(routerMiddleware<E> {
+    router.middleware.PushFront(own routerMiddleware<E> {
         scope = scope
         method = method
         path = path
         order = order
         sequence = sequence
-        handler = handler
+        handler = activeHandler
     })
     handled
 }
@@ -811,6 +901,13 @@ task handleConnection<E>(
     $cors corsPolicy,
     $connection own net.TcpConnection
 ) own ConnectionOutcome<E> {
+    const remoteAddress = connection.PeerAddress() else error {
+        return own ConnectionOutcome<E> {
+            Router = router
+            cors = cors
+            Value = .Err(.Network(error = error))
+        }
+    }
     const pair = connection.Split() else error {
         return own ConnectionOutcome<E> {
             Router = router
@@ -826,7 +923,14 @@ task handleConnection<E>(
     const request = read else error {
         return finishReadError<E>($router, $cors, $Writer, $error)
     }
-    const dispatching = spawn dispatchRequest<E>($router, $cors, $Writer, $request)
+    var preparedRequest = request
+    preparedRequest.RemoteAddress = remoteAddress
+    const dispatching = spawn dispatchRequest<E>(
+        $router,
+        $cors,
+        $Writer,
+        $preparedRequest
+    )
     const result = $dispatching.wait()
     result
 }
@@ -1783,27 +1887,51 @@ fn registerRouterMiddleware<E>(
     method Method,
     $path String,
     order i32,
-    $handler fn(
-        $Request,
-        fn($Request) Result<Response, DispatchError<E>>
-    ) Result<Response, DispatchError<E>>
+    $handler own Middleware<E>
 ) Result<void, MiddlewareRegistrationError> {
     if middlewareOrderExists(&router, scope, method, path, order) {
         return .Err(.DuplicateOrder)
     }
-    var values = replace router.middleware with newMiddlewareList<E>()
-    values.PushFront(routerMiddleware<E> {
+    const middleware = own routerMiddleware<E> {
         scope = scope
         method = method
         path = path
         order = order
         sequence = router.nextMiddlewareSequence
         handler = handler
-    })
+    }
     router.nextMiddlewareSequence = router.nextMiddlewareSequence + 1
-    const compare fn(routerMiddleware<E>, routerMiddleware<E>) i32 = compareRouterMiddleware
-    router.middleware = collections.Sort($values, compare)
+    insertRouterMiddleware(&router, $middleware)
     .Ok
+}
+
+fn insertRouterMiddleware<E>(
+    &router Router<E>,
+    $middleware own routerMiddleware<E>
+) void {
+    const active = replace router.middleware with newMiddlewareList<E>()
+    router.middleware = insertSortedMiddleware($active, $middleware)
+}
+
+fn insertSortedMiddleware<E>(
+    $values own collections.List<own routerMiddleware<E>>,
+    $middleware own routerMiddleware<E>
+) own collections.List<own routerMiddleware<E>> {
+    var active = values
+    if active.IsEmpty() {
+        active.PushFront($middleware)
+        return active
+    }
+    const current = middlewareValue(active.PopFront())
+    if compareRouterMiddleware(middleware, current) < 0 {
+        active.PushFront($current)
+        active.PushFront($middleware)
+        return active
+    }
+    const inserted = insertSortedMiddleware($active, $middleware)
+    var result = inserted
+    result.PushFront($current)
+    result
 }
 
 fn middlewareOrderExists<E>(
@@ -1830,7 +1958,7 @@ fn middlewareOrderExists<E>(
             currentPath == path && methodEqual(currentMethod, method) && currentOrder == order {
             found = true
         }
-        reversed.PushFront(routerMiddleware<E> {
+        reversed.PushFront(own routerMiddleware<E> {
             scope = currentScope
             method = currentMethod
             path = currentPath
@@ -2280,8 +2408,8 @@ fn reverseRoutes<E>(
 }
 
 fn reverseMiddlewares<E>(
-    $values own collections.List<routerMiddleware<E>>
-) own collections.List<routerMiddleware<E>> {
+    $values own collections.List<own routerMiddleware<E>>
+) own collections.List<own routerMiddleware<E>> {
     var source = values
     var result = newMiddlewareList<E>()
     while !source.IsEmpty() {
@@ -2327,8 +2455,8 @@ fn newRouteList<E>() own collections.List<own route<E>> {
     collections.NewList<own route<E>>()
 }
 
-fn newMiddlewareList<E>() own collections.List<routerMiddleware<E>> {
-    collections.NewList<routerMiddleware<E>>()
+fn newMiddlewareList<E>() own collections.List<own routerMiddleware<E>> {
+    collections.NewList<own routerMiddleware<E>>()
 }
 
 fn newRoutePatternList() own collections.List<routePattern> {
@@ -2343,8 +2471,8 @@ fn routeValue<E>($value Option<own route<E>>) own route<E> {
 }
 
 fn middlewareValue<E>(
-    $value Option<routerMiddleware<E>>
-) routerMiddleware<E> {
+    $value Option<own routerMiddleware<E>>
+) own routerMiddleware<E> {
     match value {
         None: missingMiddleware<E>()
         Some(current): current
@@ -2362,7 +2490,7 @@ fn missingRoute<E>() own route<E> {
     panic("HTTP router entry invariant failed")
 }
 
-fn missingMiddleware<E>() routerMiddleware<E> {
+fn missingMiddleware<E>() own routerMiddleware<E> {
     panic("HTTP middleware entry invariant failed")
 }
 

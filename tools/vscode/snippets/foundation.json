@@ -863,6 +863,18 @@
         ],
         "description": "Create a typed Bearer boundary with verified payload claims"
     },
+    "Stateful web rate limit": {
+        "prefix": "ratelimit",
+        "body": [
+            "const ${1:middleware} = rateWeb.RateLimit<${2:AppError}>(${3:100}, ${4:20}) else ${5:error} {",
+            "    ${6:return .Err(error)}",
+            "}",
+            "${7:router}.UseStateful(${8:10}, \\$${1:middleware}) else ${9:error} {",
+            "    ${10:return .Err(error)}",
+            "}"
+        ],
+        "description": "Register an owned per-client rate limiter"
+    },
     "Print": {
         "prefix": "print",
         "body": "print(${1:\"message\"})",

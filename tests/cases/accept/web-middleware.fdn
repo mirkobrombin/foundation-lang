@@ -12,6 +12,21 @@ struct TextHandler implements web.Handler<AppError> {
     value String
 }
 
+struct StatefulMarker implements web.Middleware<AppError> {
+    label String
+    calls i32
+
+    fn Handle(
+        &self,
+        $request web.Request,
+        next fn($web.Request) Result<web.Response, web.DispatchError<AppError>>
+    ) Result<web.Response, web.DispatchError<AppError>> {
+        self.calls = self.calls + 1
+        const position = if self.calls == 1 { "first" } else { "later" }
+        surround($request, next, self.label + "-" + position + ">", "<" + self.label)
+    }
+}
+
 methods TextHandler {
     fn Handle(self, $request web.Request) Result<web.Response, AppError> {
         discard request
@@ -173,6 +188,10 @@ fn textHandler($value String) own web.Handler<AppError> {
     own TextHandler { value = value }
 }
 
+fn statefulMarker($label String) own web.Middleware<AppError> {
+    own StatefulMarker { label = label calls = 0 }
+}
+
 fn main() i32 {
     var router = web.NewRouter<AppError>()
     const mappedValue = router.Map(
@@ -225,5 +244,27 @@ fn main() i32 {
     var stopped = request("/api/v1/value")
     stopped.Headers.PushFront(web.HeaderValue { Name = "X-Stop" Value = "true" })
     print(body($router.Dispatch($stopped)))
+
+    var scoped = web.NewRouter<AppError>()
+    if !routeAccepted($scoped.Map(.GET, "/api/state", textHandler("state"))) return 16
+    if !routeAccepted($scoped.Map(.GET, "/outside", textHandler("outside"))) return 17
+    const groupState = scoped.UseGroupStateful(
+        "/api",
+        10,
+        statefulMarker("group")
+    )
+    if middlewareErrorCode($groupState) != 0 return 18
+    const routeState = scoped.UseRouteStateful(
+        .GET,
+        "/api/state",
+        20,
+        statefulMarker("route")
+    )
+    if middlewareErrorCode($routeState) != 0 return 19
+    const firstState = body($scoped.Dispatch(request("/api/state")))
+    if firstState != "group-first>route-first>state<route<group" return 20
+    const laterState = body($scoped.Dispatch(request("/api/state")))
+    if laterState != "group-later>route-later>state<route<group" return 21
+    if body($scoped.Dispatch(request("/outside"))) != "outside" return 22
     0
 }
