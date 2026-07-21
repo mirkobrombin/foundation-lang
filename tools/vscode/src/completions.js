@@ -156,7 +156,8 @@ const staticCompletions = [
     { label: "std.format", kind: "Module", detail: "Primitive value formatting" },
     { label: "std.json", kind: "Module", detail: "Owned JSON values and parsing" },
     { label: "std.time", kind: "Module", detail: "Unix time values" },
-    { label: "std.concurrent", kind: "Module", detail: "Structured cancellation values" },
+    { label: "std.concurrent", kind: "Module", detail: "Cancellation and executor transfer" },
+    { label: "@concurrent.Transferable()", kind: "Keyword", detail: "Opt a custom-drop owner into structural executor transfer", insertText: "@concurrent.Transferable()" },
     { label: "std.bytes", kind: "Module", detail: "Owned binary data and cryptographic encoding" },
     { label: "std.pattern", kind: "Module", detail: "Portable bounded pattern matching" },
     { label: "std.ring", kind: "Module", detail: "Preallocated bounded FIFO buffers" },
@@ -895,6 +896,12 @@ const staticCompletions = [
         kind: "Method",
         detail: "fn FormatUtc(self) Result<String, time.Error>",
         insertText: "FormatUtc()"
+    },
+    {
+        label: "concurrent.Transferable",
+        kind: "Property",
+        detail: "attribute Transferable() targets(struct)",
+        insertText: "concurrent.Transferable()"
     },
     {
         label: "concurrent.NewCancellationSource",

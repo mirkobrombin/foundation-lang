@@ -1,11 +1,15 @@
 package std.concurrent
 
+// Opts an owned custom-drop value into structural transfer between executors.
+attribute Transferable() targets(struct)
+
 extern c fn openNative() u64 as foundation_runtime_cancellation_open
 extern c fn retainNative(handle u64) u64 as foundation_runtime_cancellation_retain
 extern c fn requestNative(handle u64) void as foundation_runtime_cancellation_request
 extern c fn requestedNative(handle u64) bool as foundation_runtime_cancellation_requested
 extern c fn releaseNative(handle u64) void as foundation_runtime_cancellation_release
 
+@Transferable()
 struct Cancellation {
     handle u64
 
@@ -19,6 +23,7 @@ struct Cancellation {
     }
 }
 
+@Transferable()
 struct CancellationSource {
     handle u64
 

@@ -1,0 +1,55 @@
+import foundation.worker
+import std.format as format
+
+task publish($sender Sender<i32>, value i32) void {
+    const delivered = sender.send(value)
+    match delivered {
+        Ok: deliveredSuccessfully()
+        Err(error): deliveryFailed(error)
+    }
+}
+
+fn deliveredSuccessfully() void {}
+
+fn deliveryFailed(error ChannelError) never {
+    discard error
+    panic("parallel channel send failed")
+}
+
+task collect($receiver Receiver<i32>, count i32) i32 {
+    var inbox = receiver
+    var received = 0
+    var total = 0
+    while received < count {
+        select {
+            const value = inbox.receive(): {
+                total = total + value
+                received = received + 1
+            }
+            else error: {
+                discard error
+                panic("parallel channel receive failed")
+            }
+        }
+    }
+    total
+}
+
+fn main() i32 {
+    const Channel { sender receiver } = channel<i32>(2)
+    const pending = spawn collect($receiver, 8)
+    const pool = worker.NewPool(4)
+    pool.Start(spawn publish(sender.clone(), 1))
+    pool.Start(spawn publish(sender.clone(), 2))
+    pool.Start(spawn publish(sender.clone(), 3))
+    pool.Start(spawn publish(sender.clone(), 4))
+    pool.Start(spawn publish(sender.clone(), 5))
+    pool.Start(spawn publish(sender.clone(), 6))
+    pool.Start(spawn publish(sender.clone(), 7))
+    pool.Start(spawn publish(sender.clone(), 8))
+    discard sender
+    const total = $pending.wait()
+    pool.Shutdown()
+    print(format.I32(total))
+    0
+}

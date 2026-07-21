@@ -75,7 +75,8 @@ does not define an implicit zero for arbitrary generic types.
 Expired entries are removed before each operation, and snapshots never include them. Shard counts
 are rounded up to a power of two. `StringHasher` provides deterministic FNV-1a over UTF-8 bytes.
 
-Handles are safe between cooperative tasks on one executor. They are not currently accepted by
-`foundation.worker.Pool`, because channel endpoints are not yet transferable across OS-thread
-executors. That boundary remains explicit rather than claiming thread safety that the runtime has
-not proven.
+Handles are safe across cooperative tasks and native worker executors. Their request and reply
+channels use the executor mailbox transport, so the actor remains the sole storage owner while
+callers run concurrently on `foundation.worker.Pool`. The executable fixture covers concurrent
+writers, reply channels, remote `select` wakeups, cleanup, and the function-valued `Compute`
+operation.

@@ -1,5 +1,6 @@
 package example.safemap
 
+import foundation.worker
 import std.format
 import std.safemap
 
@@ -40,6 +41,16 @@ task seed($handle safemap.Handle<String, i32>, $name String, value i32) void {
     requireVoid($stored)
 }
 
+task waitUntilCount($handle safemap.Handle<String, i32>, expected i32) i32 {
+    while true {
+        const pending = handle.Len()
+        const result = $pending.wait()
+        const count = requireI32($result)
+        if count >= expected return count
+    }
+    0
+}
+
 fn main() i32 {
     const counters = safemap.NewSharded<String, i32>(
         $safemap.StringEqual,
@@ -55,6 +66,15 @@ fn main() i32 {
     const second = spawn seed($secondHandle, "tests", 12)
     $first.wait()
     $second.wait()
+
+    const workers = worker.NewPool(4)
+    workers.Start(spawn seed(counters.Handle(), "linux", 1))
+    workers.Start(spawn seed(counters.Handle(), "macos", 1))
+    workers.Start(spawn seed(counters.Handle(), "windows", 1))
+    workers.Start(spawn seed(counters.Handle(), "bsd", 1))
+    const waiting = spawn waitUntilCount(counters.Handle(), 6)
+    if $waiting.wait() != 6 return 1
+    workers.Shutdown()
 
     const incremented = counters.Compute("builds", 0, $increment)
     print("builds: " + format.I32(requireI32($incremented.wait())))

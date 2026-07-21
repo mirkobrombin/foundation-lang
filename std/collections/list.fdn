@@ -1,10 +1,13 @@
 package std.collections
 
+import std.concurrent
+
 struct listNode<T> {
     value T
     next Option<own listNode<T>>
 }
 
+@concurrent.Transferable()
 struct List<T> {
     head Option<own listNode<T>>
     length i32

@@ -36,6 +36,7 @@ static FDN_THREAD_LOCAL fdn_task_cancel_check_fn fdn_task_transfer_cancel;
 static FDN_THREAD_LOCAL void *fdn_task_transfer_context;
 
 typedef struct fdn_task_external_hub fdn_task_external_hub;
+typedef struct fdn_task_remote_wake fdn_task_remote_wake;
 
 struct fdn_task_external_source {
     struct fdn_task_external_source *next;
@@ -56,8 +57,119 @@ struct fdn_task_external_hub {
 #endif
 };
 
+struct fdn_task_remote_wake {
+    fdn_task_remote_wake *next;
+    fdn_task *task;
+    unsigned int status;
+};
+
+struct fdn_task_executor_mailbox {
+    fdn_task_remote_wake *head;
+    fdn_task_remote_wake *tail;
+    fdn_task_external_source *source;
+#if defined(_WIN32)
+    CRITICAL_SECTION lock;
+#else
+    pthread_mutex_t lock;
+#endif
+};
+
 static FDN_THREAD_LOCAL fdn_task_external_hub *fdn_task_external_current;
+static FDN_THREAD_LOCAL fdn_task_executor_mailbox *fdn_task_executor_current;
 static FDN_THREAD_LOCAL size_t fdn_supervisor_count;
+
+static void fdn_task_wake_local(fdn_task *task, unsigned int status);
+
+static void fdn_task_executor_lock(fdn_task_executor_mailbox *executor) {
+#if defined(_WIN32)
+    EnterCriticalSection(&executor->lock);
+#else
+    if (pthread_mutex_lock(&executor->lock) != 0) {
+        fdn_panic_cstr("task executor mailbox lock failed");
+    }
+#endif
+}
+
+static void fdn_task_executor_unlock(fdn_task_executor_mailbox *executor) {
+#if defined(_WIN32)
+    LeaveCriticalSection(&executor->lock);
+#else
+    if (pthread_mutex_unlock(&executor->lock) != 0) {
+        fdn_panic_cstr("task executor mailbox unlock failed");
+    }
+#endif
+}
+
+static bool fdn_task_executor_drain(void *context) {
+    fdn_task_executor_mailbox *executor = context;
+    fdn_task_remote_wake *head;
+    bool woke = false;
+    if (executor == NULL || executor != fdn_task_executor_current) {
+        fdn_panic_cstr("task executor mailbox belongs to a different executor");
+    }
+    fdn_task_executor_lock(executor);
+    head = executor->head;
+    executor->head = NULL;
+    executor->tail = NULL;
+    fdn_task_executor_unlock(executor);
+    while (head != NULL) {
+        fdn_task_remote_wake *next = head->next;
+        if (head->task == NULL || head->task->executor != executor) {
+            fdn_panic_cstr("task executor mailbox contains an invalid wake");
+        }
+        fdn_task_wake_local(head->task, head->status);
+        fdn_dealloc(head);
+        head = next;
+        woke = true;
+    }
+    return woke;
+}
+
+static fdn_task_executor_mailbox *fdn_task_executor_open(void) {
+    fdn_task_executor_mailbox *executor;
+    if (fdn_task_executor_current != NULL) {
+        return fdn_task_executor_current;
+    }
+    executor = fdn_alloc(sizeof(*executor));
+    executor->head = NULL;
+    executor->tail = NULL;
+    executor->source = NULL;
+#if defined(_WIN32)
+    InitializeCriticalSection(&executor->lock);
+#else
+    if (pthread_mutex_init(&executor->lock, NULL) != 0) {
+        fdn_panic_cstr("task executor mailbox initialization failed");
+    }
+#endif
+    fdn_task_executor_current = executor;
+    executor->source = fdn_task_external_source_open(fdn_task_executor_drain, executor);
+    return executor;
+}
+
+static void fdn_task_executor_close_if_idle(void) {
+    fdn_task_executor_mailbox *executor;
+    if (fdn_task_count != 0 || fdn_task_executor_current == NULL) {
+        return;
+    }
+    executor = fdn_task_executor_current;
+    fdn_task_executor_lock(executor);
+    if (executor->head != NULL || executor->tail != NULL) {
+        fdn_task_executor_unlock(executor);
+        fdn_panic_cstr("task executor mailbox closed with pending wakes");
+    }
+    fdn_task_executor_unlock(executor);
+    fdn_task_external_source_close(executor->source);
+    executor->source = NULL;
+    fdn_task_executor_current = NULL;
+#if defined(_WIN32)
+    DeleteCriticalSection(&executor->lock);
+#else
+    if (pthread_mutex_destroy(&executor->lock) != 0) {
+        fdn_panic_cstr("task executor mailbox destroy failed");
+    }
+#endif
+    fdn_dealloc(executor);
+}
 
 typedef struct fdn_supervisor {
     fdn_task *head;
@@ -370,17 +482,21 @@ static void fdn_task_release(fdn_task *task, void *result, bool move_result) {
     }
     task->drop_frame(task->frame);
     task->frame = NULL;
+    task->executor = NULL;
     --fdn_task_count;
     fdn_dealloc(task);
+    fdn_task_executor_close_if_idle();
 }
 
 fdn_task *fdn_task_spawn(void *frame, fdn_task_poll_fn poll,
                          fdn_task_move_result_fn move_result,
                          fdn_task_drop_frame_fn drop_frame) {
     fdn_task *task;
+    fdn_task_executor_mailbox *executor;
     if (frame == NULL || poll == NULL || move_result == NULL || drop_frame == NULL) {
         fdn_panic_cstr("invalid task callbacks");
     }
+    executor = fdn_task_executor_open();
     task = fdn_alloc(sizeof(*task));
     task->next = NULL;
     task->supervisor_next = NULL;
@@ -396,6 +512,7 @@ fdn_task *fdn_task_spawn(void *frame, fdn_task_poll_fn poll,
     task->wake_kind = 0;
     task->wake_status = 0;
     task->frame = frame;
+    task->executor = executor;
     task->poll = poll;
     task->move_result = move_result;
     task->drop_frame = drop_frame;
@@ -420,7 +537,9 @@ void fdn_task_transfer_out(fdn_task *task) {
     }
     fdn_task_remove_queued(task);
     --fdn_task_count;
+    task->executor = NULL;
     task->transferred = true;
+    fdn_task_executor_close_if_idle();
 }
 
 void fdn_task_run_transferred(fdn_task *task, fdn_task_cancel_check_fn cancel,
@@ -433,6 +552,7 @@ void fdn_task_run_transferred(fdn_task *task, fdn_task_cancel_check_fn cancel,
         fdn_panic_cstr("invalid transferred task executor");
     }
     task->transferred = false;
+    task->executor = fdn_task_executor_open();
     ++fdn_task_count;
     fdn_task_enqueue(task);
     fdn_task_transfer_target = task;
@@ -567,9 +687,10 @@ bool fdn_task_take_wake(void *context, unsigned int kind, unsigned int *status) 
     return true;
 }
 
-void fdn_task_wake(fdn_task *task, unsigned int status) {
+static void fdn_task_wake_local(fdn_task *task, unsigned int status) {
     if (task == NULL || task->cancel_wait == NULL || task->wait_context == NULL ||
-        task->wake_ready || task->queued || task->ready) {
+        task->executor != fdn_task_executor_current || task->wake_ready ||
+        task->queued || task->ready) {
         fdn_panic_cstr("invalid task wake");
     }
     task->wake_context = task->wait_context;
@@ -582,6 +703,32 @@ void fdn_task_wake(fdn_task *task, unsigned int status) {
     task->cancel_wait = NULL;
     task->wait_next = NULL;
     fdn_task_enqueue(task);
+}
+
+void fdn_task_wake(fdn_task *task, unsigned int status) {
+    fdn_task_executor_mailbox *executor;
+    fdn_task_remote_wake *wake;
+    if (task == NULL || task->executor == NULL) {
+        fdn_panic_cstr("invalid task wake target");
+    }
+    executor = task->executor;
+    if (executor == fdn_task_executor_current) {
+        fdn_task_wake_local(task, status);
+        return;
+    }
+    wake = fdn_alloc(sizeof(*wake));
+    wake->next = NULL;
+    wake->task = task;
+    wake->status = status;
+    fdn_task_executor_lock(executor);
+    if (executor->tail == NULL) {
+        executor->head = wake;
+    } else {
+        executor->tail->next = wake;
+    }
+    executor->tail = wake;
+    fdn_task_executor_unlock(executor);
+    fdn_task_external_source_notify(executor->source);
 }
 
 void fdn_task_set_timer_source(fdn_task_idle_wake_fn wake,
@@ -599,7 +746,7 @@ fdn_task_external_source *fdn_task_external_source_open(
     fdn_task_external_wake_fn wake, void *context) {
     fdn_task_external_source *source;
     fdn_task_external_hub *hub;
-    if (wake == NULL || context == NULL || fdn_task_current == NULL) {
+    if (wake == NULL || context == NULL) {
         fdn_panic_cstr("invalid task external source");
     }
     hub = fdn_task_external_current;
@@ -636,7 +783,7 @@ void fdn_task_external_source_notify(fdn_task_external_source *source) {
 void fdn_task_external_source_close(fdn_task_external_source *source) {
     fdn_task_external_hub *hub;
     fdn_task_external_source **cursor;
-    if (source == NULL || source->hub == NULL || fdn_task_current == NULL) {
+    if (source == NULL || source->hub == NULL) {
         fdn_panic_cstr("invalid task external source removal");
     }
     hub = source->hub;

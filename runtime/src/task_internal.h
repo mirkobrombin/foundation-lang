@@ -10,6 +10,7 @@ typedef void (*fdn_task_idle_sleep_fn)(uint64_t deadline_nanoseconds);
 typedef bool (*fdn_task_external_wake_fn)(void *context);
 typedef bool (*fdn_task_cancel_check_fn)(void *context);
 typedef struct fdn_task_external_source fdn_task_external_source;
+typedef struct fdn_task_executor_mailbox fdn_task_executor_mailbox;
 
 struct fdn_task {
     struct fdn_task *next;
@@ -26,6 +27,7 @@ struct fdn_task {
     unsigned int wake_kind;
     unsigned int wake_status;
     void *frame;
+    fdn_task_executor_mailbox *executor;
     fdn_task_poll_fn poll;
     fdn_task_move_result_fn move_result;
     fdn_task_drop_frame_fn drop_frame;

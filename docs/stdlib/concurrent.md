@@ -37,6 +37,17 @@ token; APIs do not need a second cancellation mechanism for structured shutdown.
 The shared request flag uses release/acquire synchronization. Its native representation is an
 opaque `u64` handle private to the standard library and is not a public package ABI.
 
+## Executor transfer
+
+`@concurrent.Transferable()` opts an owned custom-drop struct into the compiler's structural
+executor-transfer check. Every field must still be transferable. The attribute does not create a
+shared alias, add locking, or permit borrows to cross threads. It states that moving the sole owner
+and eventually running its cleanup on another Foundation executor is valid.
+
+Plain structs without custom cleanup are checked structurally without an attribute. Function
+values are transferable only as owned values; the language already prevents an escaping closure
+from retaining view or edit captures. Task handles remain bound to their executor.
+
 ## Channels
 
 `channel<T>(capacity)` returns a move-only `Channel<T>` pair. A complete
@@ -59,6 +70,12 @@ and uses an explicit error branch plus a monotonic timeout branch.
 count and cleanup releases exactly one contribution. Receiver cloning is intentionally absent:
 one channel has one explicit consumer owner, while packages can distribute as many producers as
 their protocol requires.
+
+Channels are synchronized across native pool workers. The channel lock protects endpoint counts,
+buffers, wait queues, and select subscriptions. A remote completion enters the owning executor
+through its mailbox before the parked task reaches the ready queue. `Sender<T>`, `Receiver<T>`, and
+the complete `Channel<T>` pair pass the pool boundary only when `T` passes the same structural
+transfer check.
 
 ## Blocking native work
 

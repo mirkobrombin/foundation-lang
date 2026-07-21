@@ -706,10 +706,32 @@ class Analyzer {
         return parallelTransferSafe(type, active);
     }
 
+    bool parallelTransferOptIn(std::size_t declaration) const {
+        if (declaration >= model_.structs.size()) {
+            return false;
+        }
+        for (const auto &use : model_.structs[declaration].attributes) {
+            if (use.declaration < model_.attributeDeclarations.size() &&
+                model_.attributeDeclarations[use.declaration].name ==
+                    "std.concurrent.Transferable") {
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool parallelTransferSafe(const Type &type,
                               std::unordered_set<std::string> &active) const {
         if (isMachineScalar(type) || type == stringType) {
             return true;
+        }
+        if (type.kind == TypeKind::Function) {
+            return true;
+        }
+        if ((type.kind == TypeKind::Channel || type.kind == TypeKind::Sender ||
+             type.kind == TypeKind::Receiver) &&
+            type.arguments.size() == 1) {
+            return parallelTransferSafe(type.arguments.front(), active);
         }
         if (type.kind == TypeKind::Own && type.arguments.size() == 1) {
             return parallelTransferSafe(type.arguments.front(), active);
@@ -729,7 +751,8 @@ class Analyzer {
         if (type.kind == TypeKind::Struct) {
             if (type.declaration >= model_.structs.size() ||
                 (type.declaration < methods_.size() &&
-                 methods_[type.declaration].contains("drop"))) {
+                 methods_[type.declaration].contains("drop") &&
+                 !parallelTransferOptIn(type.declaration))) {
                 safe = false;
             } else {
                 for (const auto &field : model_.structs[type.declaration].fieldTypes) {

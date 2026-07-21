@@ -64,14 +64,17 @@ fn main() i32 {
 }
 ```
 
-`Pool.Start` requires a direct `spawn` expression. Primitive values, `String`, arrays, and
-aggregate values composed only from those types can transfer. Borrows, slices, function values,
-contracts, task or channel handles, and structs with custom `drop` cannot cross into the pool.
-This structural rule prevents a native resource handle or executor-local value from moving to a
-different thread by accident.
+`Pool.Start` requires a direct `spawn` expression. Owned primitive values, `String`, arrays,
+function values, directional channels, and aggregates composed from transferable fields can cross
+into the pool. Borrows, slices, contracts, and task handles cannot cross. A custom-drop struct must
+opt in with `@concurrent.Transferable()`, and every field must still pass the structural check.
+This prevents a native resource handle or executor-local value from moving to another thread by
+accident while preserving explicit transfer for safe containers.
 
-Each worker owns a cooperative executor for the transferred task and any child tasks or channels
-it creates. `Shutdown` drains submitted work and joins every worker. `Cancel` requests structured
-cancellation for queued and running tasks, then joins. Cancellation remains cooperative while a
-task is executing ordinary CPU instructions. A `print` call writes one complete line, while line
-ordering between parallel tasks remains unspecified.
+Each worker owns a cooperative executor for the transferred task and any child tasks it creates.
+Channels synchronize their state and route remote wakes through the destination executor mailbox,
+so send, receive, and select can coordinate between a pool worker and another executor. `Shutdown`
+drains submitted work and joins every worker. `Cancel` requests structured cancellation for queued
+and running tasks, then joins. Cancellation remains cooperative while a task is executing ordinary
+CPU instructions. A `print` call writes one complete line, while line ordering between parallel
+tasks remains unspecified.
