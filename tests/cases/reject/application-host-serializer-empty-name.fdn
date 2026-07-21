@@ -1,0 +1,13 @@
+package test.host.serializer.empty_name
+
+import foundation.serializer
+
+@serializer.Serializable()
+struct Input {
+    @serializer.Name("")
+    Value String
+}
+
+fn main() i32 {
+    0
+}

@@ -1144,6 +1144,19 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
         }
     } else {
         paths.push_back(input);
+        const auto inputIdentity = sourceIdentity(input);
+        const auto inputDirectory = inputIdentity.parent_path();
+        for (const auto &overlay : overlays) {
+            const auto identity = sourceIdentity(overlay.path);
+            if (overlay.path.extension() == ".fdn" && identity != inputIdentity &&
+                identity.parent_path() == inputDirectory) {
+                paths.push_back(overlay.path);
+            }
+        }
+        std::sort(paths.begin(), paths.end(), [](const auto &left, const auto &right) {
+            return sourceIdentity(left).generic_string() <
+                   sourceIdentity(right).generic_string();
+        });
     }
 
     std::unordered_map<std::string, std::string> libraryDisplayPaths;

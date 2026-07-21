@@ -1,0 +1,16 @@
+package test.host.serializer.method_collision
+
+import foundation.serializer
+
+@serializer.Serializable()
+struct Input {
+    Value String
+
+    fn Marshal(self) String {
+        self.Value
+    }
+}
+
+fn main() i32 {
+    0
+}

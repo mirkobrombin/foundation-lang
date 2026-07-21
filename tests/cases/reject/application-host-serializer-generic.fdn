@@ -1,0 +1,12 @@
+package test.host.serializer.generic
+
+import foundation.serializer
+
+@serializer.Serializable()
+struct Input<T> {
+    Value T
+}
+
+fn main() i32 {
+    0
+}

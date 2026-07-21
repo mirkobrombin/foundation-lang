@@ -5840,7 +5840,15 @@ class Analyzer {
     Type analyzeMatch(AstExpressionId id, const MatchExpression &match,
                       std::optional<Type> expected, SourceSpan span) {
         const auto value = analyzeExpression(match.value);
-        if (value.kind != TypeKind::Enum || value.declaration >= program_.enums.size()) {
+        auto matchedType = value;
+        const auto borrowedMatch =
+            (value.kind == TypeKind::View || value.kind == TypeKind::Edit) &&
+            value.arguments.size() == 1;
+        if (borrowedMatch) {
+            matchedType = value.arguments.front();
+        }
+        if (matchedType.kind != TypeKind::Enum ||
+            matchedType.declaration >= program_.enums.size()) {
             for (const auto &arm : match.arms) {
                 scopes_.emplace_back();
                 if (arm.guard.has_value()) {
@@ -5858,7 +5866,7 @@ class Analyzer {
             return invalidType;
         }
 
-        const auto enumType = value.declaration;
+        const auto enumType = matchedType.declaration;
         const auto &declaration = program_.enums[enumType];
         const auto beforeArms = resultOutstanding_;
         const auto movesBeforeArms = moveStates_;
@@ -5958,7 +5966,7 @@ class Analyzer {
             } else if (variant.has_value()) {
                 auto payload = model_.enums[enumType].payloadTypes[*variant];
                 if (payload.has_value()) {
-                    payload = substitute(*payload, value.arguments);
+                    payload = substitute(*payload, matchedType.arguments);
                     if (*payload == voidType &&
                         declaration.builtin == BuiltinEnumKind::Result) {
                         payload.reset();
@@ -5986,7 +5994,19 @@ class Analyzer {
                     if (unconditional) {
                         covered[*variant] = true;
                     }
-                    binding = addLocal(*arm.binding, *payload, false, arm.span);
+                    auto bindingType = *payload;
+                    auto readBinding = false;
+                    if (borrowedMatch && !isCopyParameterType(bindingType)) {
+                        bindingType = bindingType.kind == TypeKind::Own &&
+                                              bindingType.arguments.size() == 1
+                                          ? Type{TypeKind::View, 0,
+                                                 {bindingType.arguments.front()}}
+                                          : Type{TypeKind::View, 0, {bindingType}};
+                        readBinding = true;
+                    }
+                    binding = addLocal(*arm.binding, bindingType, false, arm.span);
+                    model_.functions[currentFunction_].locals[*binding].readBinding =
+                        readBinding;
                 } else if (arm.pattern.has_value()) {
                     const auto &patternExpression = program_.expressions[*arm.pattern];
                     std::optional<std::string> key;
@@ -6107,7 +6127,7 @@ class Analyzer {
             }
         }
         model_.matchTargets[id] =
-            MatchTarget{value, std::move(variants), std::move(bindings),
+            MatchTarget{matchedType, std::move(variants), std::move(bindings),
                         std::move(guardBindings), std::move(drops)};
         model_.expressionBorrowedClosures[id] = borrowedClosure;
         return result;

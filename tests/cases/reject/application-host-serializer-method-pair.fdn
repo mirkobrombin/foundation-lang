@@ -1,0 +1,20 @@
+package test.host.serializer.method_pair
+
+import foundation.serializer
+import std.json
+
+@serializer.Serializable()
+struct Input {
+    Value String
+
+    @serializer.Encode()
+    fn encode(self, policy serializer.Policy) Result<json.Value, serializer.Error> {
+        discard self
+        discard policy
+        .Ok(.Null)
+    }
+}
+
+fn main() i32 {
+    0
+}

@@ -1,0 +1,587 @@
+package foundation.serializer
+
+import std.json
+import std.format
+import std.parse
+import std.text
+
+// Requests compiler-derived JSON serialization for one concrete struct.
+attribute Serializable() targets(struct)
+
+// Overrides the JSON key of one serializable field.
+attribute Name(value String) targets(field)
+
+// Excludes one field from encoding and decoding.
+attribute Ignore() targets(field)
+
+// Marks the typed value-to-JSON method of a custom serializable type.
+attribute Encode() targets(method)
+
+// Marks the typed JSON-to-value function of a custom serializable type.
+attribute Decode() targets(method)
+
+enum NamingStrategy {
+    PascalCase
+    CamelCase
+    SnakeCase
+}
+
+enum ErrorKind {
+    Syntax
+    ExpectedObject
+    ExpectedString
+    ExpectedBoolean
+    ExpectedNumber
+    InvalidNumber
+    InvalidUUID
+    DuplicateField
+    UnknownField
+    Custom
+}
+
+struct Error {
+    Kind ErrorKind
+    Field String = ""
+    Message String = ""
+    Offset u64 = 0
+    JSONKind Option<json.ErrorKind> = .None
+}
+
+struct Policy {
+    Naming NamingStrategy = .PascalCase
+    IgnoreNone bool = false
+    IgnoreZero bool = false
+    RejectUnknown bool = false
+}
+
+fn Default() Policy {
+    Policy {}
+}
+
+fn FieldName(name String, naming NamingStrategy) String {
+    match naming {
+        PascalCase: text.Copy(name)
+        CamelCase: camelCase(name)
+        SnakeCase: snakeCase(name)
+    }
+}
+
+fn Syntax(error json.Error) Error {
+    Error {
+        Kind = .Syntax
+        Offset = error.Offset
+        JSONKind = .Some(error.Kind)
+    }
+}
+
+fn Write(error json.WriteError) Error {
+    const kind = match error.Kind {
+        InvalidNumber: "invalid JSON number"
+        DepthLimit: "JSON depth limit exceeded"
+        Builder: "JSON writer failed"
+    }
+    Error { Kind = .Custom Message = kind }
+}
+
+fn Expected(field String, kind ErrorKind) Error {
+    Error { Kind = kind Field = text.Copy(field) }
+}
+
+fn Invalid(field String, kind ErrorKind) Error {
+    Error { Kind = kind Field = text.Copy(field) }
+}
+
+fn Duplicate(field String) Error {
+    Error { Kind = .DuplicateField Field = text.Copy(field) }
+}
+
+fn Unknown(field String) Error {
+    Error { Kind = .UnknownField Field = text.Copy(field) }
+}
+
+fn Keep(
+    $value json.Value,
+    ignoreNone bool,
+    ignoreZero bool
+) Option<json.Value> {
+    match value {
+        Null: .None if ignoreNone || ignoreZero else .Some(.Null)
+        Bool(state): .None if ignoreZero && !state else .Some(.Bool(state))
+        Number(number): keepNumber($number, ignoreZero)
+        Text(textValue): keepText($textValue, ignoreZero)
+        Array(array): keepArray($array, ignoreZero)
+        Object(object): keepObject($object, ignoreZero)
+    }
+}
+
+fn NonNull($value json.Value) Option<json.Value> {
+    match value {
+        Null: .None
+        Bool(state): .Some(.Bool(state))
+        Number(number): .Some(.Number(number))
+        Text(textValue): .Some(.Text(textValue))
+        Array(array): .Some(.Array(array))
+        Object(object): .Some(.Object(object))
+    }
+}
+
+fn StringValue(value String) json.Value {
+    .Text(text.Copy(value))
+}
+
+fn BooleanValue(value bool) json.Value {
+    .Bool(value)
+}
+
+fn I8Value(value i8) json.Value {
+    .Number(format.I8(value))
+}
+
+fn I16Value(value i16) json.Value {
+    .Number(format.I16(value))
+}
+
+fn I32Value(value i32) json.Value {
+    .Number(format.I32(value))
+}
+
+fn I64Value(value i64) json.Value {
+    .Number(format.I64(value))
+}
+
+fn IsizeValue(value isize) json.Value {
+    .Number(format.Isize(value))
+}
+
+fn U8Value(value u8) json.Value {
+    .Number(format.U8(value))
+}
+
+fn U16Value(value u16) json.Value {
+    .Number(format.U16(value))
+}
+
+fn U32Value(value u32) json.Value {
+    .Number(format.U32(value))
+}
+
+fn U64Value(value u64) json.Value {
+    .Number(format.U64(value))
+}
+
+fn UsizeValue(value usize) json.Value {
+    .Number(format.Usize(value))
+}
+
+fn F32Value(value f32) json.Value {
+    .Number(format.F32(value))
+}
+
+fn F64Value(value f64) json.Value {
+    .Number(format.F64(value))
+}
+
+fn UUIDValue(value UUID) json.Value {
+    .Text(value.String())
+}
+
+fn I8($value json.Value, field String) Result<i8, Error> {
+    const number = Number($value, field) else error {
+        return .Err(error)
+    }
+    const parsed = parse.I8(number) else error {
+        discard error
+        return .Err(Invalid(field, .InvalidNumber))
+    }
+    .Ok(parsed)
+}
+
+fn I16($value json.Value, field String) Result<i16, Error> {
+    const number = Number($value, field) else error {
+        return .Err(error)
+    }
+    const parsed = parse.I16(number) else error {
+        discard error
+        return .Err(Invalid(field, .InvalidNumber))
+    }
+    .Ok(parsed)
+}
+
+fn I32($value json.Value, field String) Result<i32, Error> {
+    const number = Number($value, field) else error {
+        return .Err(error)
+    }
+    const parsed = parse.I32(number) else error {
+        discard error
+        return .Err(Invalid(field, .InvalidNumber))
+    }
+    .Ok(parsed)
+}
+
+fn I64($value json.Value, field String) Result<i64, Error> {
+    const number = Number($value, field) else error {
+        return .Err(error)
+    }
+    const parsed = parse.I64(number) else error {
+        discard error
+        return .Err(Invalid(field, .InvalidNumber))
+    }
+    .Ok(parsed)
+}
+
+fn Isize($value json.Value, field String) Result<isize, Error> {
+    const number = Number($value, field) else error {
+        return .Err(error)
+    }
+    const parsed = parse.Isize(number) else error {
+        discard error
+        return .Err(Invalid(field, .InvalidNumber))
+    }
+    .Ok(parsed)
+}
+
+fn U8($value json.Value, field String) Result<u8, Error> {
+    const number = Number($value, field) else error {
+        return .Err(error)
+    }
+    const parsed = parse.U8(number) else error {
+        discard error
+        return .Err(Invalid(field, .InvalidNumber))
+    }
+    .Ok(parsed)
+}
+
+fn U16($value json.Value, field String) Result<u16, Error> {
+    const number = Number($value, field) else error {
+        return .Err(error)
+    }
+    const parsed = parse.U16(number) else error {
+        discard error
+        return .Err(Invalid(field, .InvalidNumber))
+    }
+    .Ok(parsed)
+}
+
+fn U32($value json.Value, field String) Result<u32, Error> {
+    const number = Number($value, field) else error {
+        return .Err(error)
+    }
+    const parsed = parse.U32(number) else error {
+        discard error
+        return .Err(Invalid(field, .InvalidNumber))
+    }
+    .Ok(parsed)
+}
+
+fn U64($value json.Value, field String) Result<u64, Error> {
+    const number = Number($value, field) else error {
+        return .Err(error)
+    }
+    const parsed = parse.U64(number) else error {
+        discard error
+        return .Err(Invalid(field, .InvalidNumber))
+    }
+    .Ok(parsed)
+}
+
+fn Usize($value json.Value, field String) Result<usize, Error> {
+    const number = Number($value, field) else error {
+        return .Err(error)
+    }
+    const parsed = parse.Usize(number) else error {
+        discard error
+        return .Err(Invalid(field, .InvalidNumber))
+    }
+    .Ok(parsed)
+}
+
+fn F32($value json.Value, field String) Result<f32, Error> {
+    const number = Number($value, field) else error {
+        return .Err(error)
+    }
+    const parsed = parse.F32(number) else error {
+        discard error
+        return .Err(Invalid(field, .InvalidNumber))
+    }
+    .Ok(parsed)
+}
+
+fn F64($value json.Value, field String) Result<f64, Error> {
+    const number = Number($value, field) else error {
+        return .Err(error)
+    }
+    const parsed = parse.F64(number) else error {
+        discard error
+        return .Err(Invalid(field, .InvalidNumber))
+    }
+    .Ok(parsed)
+}
+
+fn UUIDValueFromJSON($value json.Value, field String) Result<UUID, Error> {
+    const encoded = Text($value, field) else error {
+        return .Err(error)
+    }
+    const parsed = UUID.Parse(encoded) else error {
+        discard error
+        return .Err(Invalid(field, .InvalidUUID))
+    }
+    .Ok(parsed)
+}
+
+fn At(field String, $error Error) Error {
+    const Error { Kind Field Message Offset JSONKind } = error
+    Error {
+        Kind = Kind
+        Field = fieldPath(field, Field)
+        Message = Message
+        Offset = Offset
+        JSONKind = JSONKind
+    }
+}
+
+fn Text($value json.Value, field String) Result<String, Error> {
+    match value {
+        Text(found): .Ok(found)
+        Null: .Err(Expected(field, .ExpectedString))
+        Bool(state): impossibleBool(state, field, .ExpectedString)
+        Number(number): impossibleString(number, field, .ExpectedString)
+        Array(array): impossibleArray($array, field, .ExpectedString)
+        Object(object): impossibleObject($object, field, .ExpectedString)
+    }
+}
+
+fn Boolean($value json.Value, field String) Result<bool, Error> {
+    match value {
+        Bool(found): .Ok(found)
+        Null: .Err(Expected(field, .ExpectedBoolean))
+        Text(textValue): {
+            discard textValue
+            .Err(Expected(field, .ExpectedBoolean))
+        }
+        Number(number): {
+            discard number
+            .Err(Expected(field, .ExpectedBoolean))
+        }
+        Array(array): {
+            discard array
+            .Err(Expected(field, .ExpectedBoolean))
+        }
+        Object(object): {
+            discard object
+            .Err(Expected(field, .ExpectedBoolean))
+        }
+    }
+}
+
+fn Number($value json.Value, field String) Result<String, Error> {
+    match value {
+        Number(found): .Ok(found)
+        Null: .Err(Expected(field, .ExpectedNumber))
+        Bool(state): impossibleBool(state, field, .ExpectedNumber)
+        Text(textValue): impossibleString(textValue, field, .ExpectedNumber)
+        Array(array): impossibleArray($array, field, .ExpectedNumber)
+        Object(object): impossibleObject($object, field, .ExpectedNumber)
+    }
+}
+
+fn RequireObject($value json.Value, field String) Result<own json.Object, Error> {
+    match value {
+        Object(found): .Ok(found)
+        Null: .Err(Expected(field, .ExpectedObject))
+        Bool(state): impossibleObjectBool(state, field)
+        Text(textValue): impossibleObjectString(textValue, field)
+        Number(number): impossibleObjectString(number, field)
+        Array(array): impossibleObjectArray($array, field)
+    }
+}
+
+fn Set(
+    &object json.Object,
+    $key String,
+    $value json.Value
+) Result<void, Error> {
+    const errorKey = text.Copy(key)
+    object.Set($key, $value) else error {
+        discard error
+        return .Err(Duplicate(errorKey))
+    }
+    .Ok
+}
+
+fn fieldPath(prefix String, field String) String {
+    if !field return text.Copy(prefix)
+    var builder = text.NewBuilder()
+    write(&builder, prefix)
+    write(&builder, ".")
+    write(&builder, field)
+    const result = builder.Finish() else error {
+        discard error
+        panic("serializer field path builder is closed")
+    }
+    result
+}
+
+fn keepNumber($value String, ignoreZero bool) Option<json.Value> {
+    if ignoreZero {
+        const parsed = parse.F64(value)
+        const zero = match parsed {
+            Ok(number): number == 0.0
+            Err(error): {
+                discard error
+                false
+            }
+        }
+        if zero {
+            discard value
+            return .None
+        }
+    }
+    .Some(.Number(value))
+}
+
+fn keepText($value String, ignoreZero bool) Option<json.Value> {
+    if ignoreZero && !value {
+        discard value
+        return .None
+    }
+    .Some(.Text(value))
+}
+
+fn keepArray($value own json.Array, ignoreZero bool) Option<json.Value> {
+    if ignoreZero && value.Len() == 0 {
+        discard value
+        return .None
+    }
+    .Some(.Array(value))
+}
+
+fn keepObject($value own json.Object, ignoreZero bool) Option<json.Value> {
+    if ignoreZero && value.Len() == 0 {
+        discard value
+        return .None
+    }
+    .Some(.Object(value))
+}
+
+fn camelCase(value String) String {
+    const length = text.ByteLen(value)
+    if length == 0 return ""
+    var builder = text.NewBuilder()
+    const first = byteAt(value, 0)
+    writeByte(&builder, asciiLower(first))
+    if length > 1 {
+        const suffix = text.Slice(value, 1, length) else error {
+            discard error
+            panic("serializer field name boundary failed")
+        }
+        write(&builder, suffix)
+    }
+    const result = builder.Finish() else error {
+        discard error
+        panic("serializer field name builder is closed")
+    }
+    result
+}
+
+fn snakeCase(value String) String {
+    const length = text.ByteLen(value)
+    var builder = text.NewBuilder()
+    var offset u64 = 0
+    while offset < length {
+        const byte = byteAt(value, offset)
+        if offset > 0 && byte >= 65 && byte <= 90 {
+            writeByte(&builder, 95)
+        }
+        writeByte(&builder, asciiLower(byte))
+        offset = offset + 1
+    }
+    const result = builder.Finish() else error {
+        discard error
+        panic("serializer field name builder is closed")
+    }
+    result
+}
+
+fn asciiLower(value u64) u64 {
+    value + 32 if value >= 65 && value <= 90 else value
+}
+
+fn byteAt(value String, index u64) u64 {
+    const byte = text.ByteAt(value, index) else error {
+        discard error
+        panic("serializer field name byte invariant failed")
+    }
+    byte
+}
+
+fn write(&builder text.Builder, value String) void {
+    const written = builder.Write(value) else error {
+        discard error
+        panic("serializer builder is closed")
+    }
+    discard written
+}
+
+fn writeByte(&builder text.Builder, value u64) void {
+    const written = builder.WriteCodePoint(value) else error {
+        discard error
+        panic("serializer code point invariant failed")
+    }
+    if !written {
+        panic("serializer code point write failed")
+    }
+}
+
+fn impossibleBool(
+    state bool,
+    field String,
+    kind ErrorKind
+) Result<String, Error> {
+    discard state
+    .Err(Expected(field, kind))
+}
+
+fn impossibleString(
+    value String,
+    field String,
+    kind ErrorKind
+) Result<String, Error> {
+    discard value
+    .Err(Expected(field, kind))
+}
+
+fn impossibleArray(
+    $value own json.Array,
+    field String,
+    kind ErrorKind
+) Result<String, Error> {
+    discard value
+    .Err(Expected(field, kind))
+}
+
+fn impossibleObject(
+    $value own json.Object,
+    field String,
+    kind ErrorKind
+) Result<String, Error> {
+    discard value
+    .Err(Expected(field, kind))
+}
+
+fn impossibleObjectBool(state bool, field String) Result<own json.Object, Error> {
+    discard state
+    .Err(Expected(field, .ExpectedObject))
+}
+
+fn impossibleObjectString(value String, field String) Result<own json.Object, Error> {
+    discard value
+    .Err(Expected(field, .ExpectedObject))
+}
+
+fn impossibleObjectArray(
+    $value own json.Array,
+    field String
+) Result<own json.Object, Error> {
+    discard value
+    .Err(Expected(field, .ExpectedObject))
+}

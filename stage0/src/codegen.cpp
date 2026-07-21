@@ -2395,14 +2395,19 @@ class FunctionEmitter {
 
         const auto matched = nextTemporary();
         out_ << indentation(depth) << "bool " << matched << " = false;\n";
+        const auto valueType = function_.expressions[match.value].type;
+        const auto valueAccess =
+            valueType.kind == TypeKind::View || valueType.kind == TypeKind::Edit
+                ? value.value + "->"
+                : value.value + ".";
         for (std::size_t index = 0; index < match.arms.size(); ++index) {
             const auto &arm = match.arms[index];
             const auto payload = arm.wildcard
                                      ? std::string{}
-                                     : value.value + ".fdn_data." + payloadName(arm.variant);
+                                     : valueAccess + "fdn_data." + payloadName(arm.variant);
             out_ << indentation(depth) << "if (!" << matched;
             if (!arm.wildcard) {
-                out_ << " && " << value.value << ".fdn_tag == "
+                out_ << " && " << valueAccess << "fdn_tag == "
                      << enumTag(match.type.declaration, arm.variant);
             }
             if (!arm.wildcard && patterns[index].has_value()) {
@@ -2449,20 +2454,36 @@ class FunctionEmitter {
             out_ << indentation(armDepth) << matched << " = true;\n";
             if (arm.binding.has_value()) {
                 const auto local = *arm.binding;
-                if (typeRequiresDrop(program_, function_.locals[local].type)) {
-                    const auto moved = emitMoveValue(function_.locals[local].type, payload,
+                const auto &localType = function_.locals[local].type;
+                const auto declaredPayload =
+                    program_.enums[match.type.declaration].variants[arm.variant].payload;
+                const auto payloadType =
+                    declaredPayload.has_value()
+                        ? substitute(*declaredPayload, match.type.arguments)
+                        : invalidType;
+                if (typeRequiresDrop(program_, localType)) {
+                    const auto moved = emitMoveValue(localType, payload,
                                                      armDepth);
                     out_ << indentation(armDepth);
                     if (!taskPoll_) {
-                        out_ << cType(function_.locals[local].type) << ' ';
+                        out_ << cType(localType) << ' ';
                     }
                     out_ << localValue(local) << " = " << moved.value << ";\n";
                 } else {
                     out_ << indentation(armDepth);
                     if (!taskPoll_) {
-                        out_ << cType(function_.locals[local].type) << ' ';
+                        out_ << cType(localType) << ' ';
                     }
-                    out_ << localValue(local) << " = " << payload << ";\n";
+                    out_ << localValue(local) << " = ";
+                    if (localType.kind == TypeKind::View &&
+                        payloadType.kind != TypeKind::Own &&
+                        payloadType.kind != TypeKind::View &&
+                        payloadType.kind != TypeKind::Edit) {
+                        out_ << "&(" << payload << ')';
+                    } else {
+                        out_ << payload;
+                    }
+                    out_ << ";\n";
                 }
                 activateLocal(local, armDepth);
                 out_ << indentation(armDepth) << "(void)" << localValue(local)

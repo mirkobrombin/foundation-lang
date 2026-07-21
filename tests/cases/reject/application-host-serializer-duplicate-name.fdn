@@ -1,0 +1,16 @@
+package test.host.serializer.duplicate_name
+
+import foundation.serializer
+
+@serializer.Serializable()
+struct Input {
+    @serializer.Name("value")
+    First String
+
+    @serializer.Name("value")
+    Second String
+}
+
+fn main() i32 {
+    0
+}

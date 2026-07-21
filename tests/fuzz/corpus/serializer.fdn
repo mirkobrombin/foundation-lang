@@ -1,0 +1,41 @@
+package fuzz.serializer
+
+import foundation.serializer
+import std.json
+
+@serializer.Serializable()
+struct Record {
+    @serializer.Name("record_id")
+    ID String
+    Value Option<i32>
+
+    @serializer.Ignore()
+    Secret String
+}
+
+@serializer.Serializable()
+struct Custom {
+    Value String
+
+    @serializer.Encode()
+    fn encode(self, policy serializer.Policy) Result<json.Value, serializer.Error> {
+        discard policy
+        .Ok(.Text(self.Value))
+    }
+
+    @serializer.Decode()
+    fn decode(
+        $value json.Value,
+        policy serializer.Policy
+    ) Result<Custom, serializer.Error> {
+        discard policy
+        const decoded = serializer.Text($value, "") else error {
+            return .Err(error)
+        }
+        .Ok(Custom { Value = decoded })
+    }
+}
+
+fn main() i32 {
+    0
+}

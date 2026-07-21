@@ -178,6 +178,11 @@ if(FOUNDATION_BUILD_FUZZERS)
         COPYONLY
     )
     configure_file(
+        tests/fuzz/corpus/serializer.fdn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/serializer.fdn"
+        COPYONLY
+    )
+    configure_file(
         tests/fuzz/corpus/cancellation.fdn
         "${FOUNDATION_FUZZ_CORPUS_DIR}/cancellation.fdn"
         COPYONLY
@@ -1889,6 +1894,15 @@ if(BUILD_TESTING)
             "application-host-openapi-non-route;FDN2401"
             "application-host-openapi-response;FDN2402"
             "application-host-openapi-parameter;FDN2403"
+            "application-host-serializer-orphan-field;FDN2410"
+            "application-host-serializer-generic;FDN2411"
+            "application-host-serializer-empty-name;FDN2412"
+            "application-host-serializer-duplicate-name;FDN2413"
+            "application-host-serializer-ignored-name;FDN2414"
+            "application-host-serializer-method-signature;FDN2415"
+            "application-host-serializer-method-pair;FDN2416"
+            "application-host-serializer-unsupported-field;FDN2417"
+            "application-host-serializer-method-collision;FDN2418"
             "application-host-transfer;FDN2333")
         list(GET application_host_case 0 application_host_name)
         list(GET application_host_case 1 application_host_code)
@@ -2564,6 +2578,74 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/json-values
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-values.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.json-stringify
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-stringify.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-stringify.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.json-stringify-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-stringify.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/json-stringify.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/json-stringify
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-stringify.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.serializer
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/serializer.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/serializer.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.serializer-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/serializer.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/serializer.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/serializer
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/serializer.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.example-serializer
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/serializer
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/serializer/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.example-serializer-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/serializer
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/example-serializer.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/example-serializer
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/serializer/expected.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
@@ -4292,6 +4374,47 @@ if(BUILD_TESTING)
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/parse-values-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/parse-values-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.json-stringify-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-stringify.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/json-stringify-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/json-stringify-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-stringify.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.serializer-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/serializer.fdn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/serializer-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/serializer-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/serializer.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.example-serializer-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/serializer
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/example-serializer-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/example-serializer-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/serializer/expected.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                 -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include

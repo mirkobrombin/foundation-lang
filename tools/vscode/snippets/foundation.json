@@ -201,6 +201,28 @@
         ],
         "description": "Declare a typed custom validation rule"
     },
+    "Serializable model": {
+        "prefix": "serialmodel",
+        "body": [
+            "@serializer.Serializable()",
+            "struct ${1:Model} {",
+            "    @serializer.Name(\"${2:name}\")",
+            "    ${3:Name} String",
+            "",
+            "    ${4:Count} i32",
+            "}"
+        ],
+        "description": "Declare a compiler-derived JSON model"
+    },
+    "Marshal serializable model": {
+        "prefix": "serialmarshal",
+        "body": [
+            "const ${1:encoded} = ${2:value}.Marshal() else ${3:error} {",
+            "    ${4:return .Err(${3:error})}",
+            "}"
+        ],
+        "description": "Encode a typed model with an explicit error path"
+    },
     "Bounded pattern match": {
         "prefix": "patternmatch",
         "body": "pattern.Matches(${1:value}, \"${2:^[A-Z][a-z]+$}\")",

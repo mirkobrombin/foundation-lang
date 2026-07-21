@@ -1,0 +1,119 @@
+package test.compatibility.serializer
+
+import foundation.serializer
+import std.format
+import std.json
+
+@serializer.Serializable()
+struct Person {
+    FirstName String
+    LastName String
+    Age i32
+}
+
+@serializer.Serializable()
+struct MaybeScore {
+    Name String
+    Score Option<i32>
+}
+
+@serializer.Serializable()
+struct Tagged {
+    @serializer.Name("name")
+    Name String
+
+    @serializer.Ignore()
+    Secret String = "private"
+}
+
+@serializer.Serializable()
+struct CustomID {
+    Value String
+
+    @serializer.Encode()
+    fn encode(self, policy serializer.Policy) Result<json.Value, serializer.Error> {
+        discard policy
+        .Ok(.Text("id:" + self.Value))
+    }
+
+    @serializer.Decode()
+    fn decode(
+        $value json.Value,
+        policy serializer.Policy
+    ) Result<CustomID, serializer.Error> {
+        discard policy
+        const encoded = serializer.Text($value, "") else error {
+            return .Err(error)
+        }
+        if encoded != "id:42" {
+            return .Err(serializer.Error {
+                Kind = .Custom
+                Message = "invalid custom ID"
+            })
+        }
+        .Ok(CustomID { Value = "42" })
+    }
+}
+
+@serializer.Serializable()
+struct CustomModel {
+    ID CustomID
+}
+
+fn encode($value Result<String, serializer.Error>) String {
+    match value {
+        Ok(encoded): encoded
+        Err(error): {
+            discard error
+            panic("serializer compatibility encoding failed")
+        }
+    }
+}
+
+fn main() i32 {
+    const person = Person {
+        FirstName = "Ada"
+        LastName = "Lovelace"
+        Age = 30
+    }
+    print(encode(person.Marshal()))
+
+    var snake = serializer.Default()
+    snake.Naming = .SnakeCase
+    print(encode(person.MarshalWith(snake)))
+
+    var camel = serializer.Default()
+    camel.Naming = .CamelCase
+    print(encode(person.MarshalWith(camel)))
+
+    var ignoreNone = serializer.Default()
+    ignoreNone.IgnoreNone = true
+    print(encode(MaybeScore { Name = "Ada" Score = .None }.MarshalWith(ignoreNone)))
+
+    var ignoreZero = serializer.Default()
+    ignoreZero.IgnoreZero = true
+    print(encode(Person { FirstName = "Ada" LastName = "" Age = 0 }.MarshalWith(ignoreZero)))
+
+    print(encode(Tagged { Name = "Ada" }.Marshal()))
+    print(encode(CustomModel { ID = CustomID { Value = "42" } }.Marshal()))
+
+    const unknown = Person.Unmarshal("{\"Age\":5,\"Unknown\":1}") else error {
+        discard error
+        return 1
+    }
+    print(format.I32(unknown.Age))
+
+    const invalid = Person.Unmarshal("{\"Age\":\"wrong\"}")
+    const invalidFailed = match invalid {
+        Ok(value): {
+            discard value
+            false
+        }
+        Err(error): {
+            discard error
+            true
+        }
+    }
+    print("true" if invalidFailed else "false")
+    0
+}

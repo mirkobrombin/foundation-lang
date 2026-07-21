@@ -1,0 +1,89 @@
+import std.json
+import std.text
+
+fn require($value Result<void, json.ObjectError>) bool {
+    match value {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn stringify($value json.Value) String {
+    const result = json.Stringify($value) else error {
+        discard error
+        panic("JSON stringify fixture failed")
+    }
+    result
+}
+
+fn invalidNumber() bool {
+    const result = json.Stringify(.Number("nan"))
+    match result {
+        Ok(value): {
+            discard value
+            false
+        }
+        Err(error): match error.Kind {
+            InvalidNumber: true
+            DepthLimit: false
+            Builder: false
+        }
+    }
+}
+
+fn quotedControl() String {
+    var builder = text.NewBuilder()
+    const prefix = builder.Write("\"\\") else error {
+        discard error
+        panic("JSON string fixture builder failed")
+    }
+    discard prefix
+    const control = builder.WriteCodePoint(1) else error {
+        discard error
+        panic("JSON string fixture builder failed")
+    }
+    discard control
+    const result = builder.Finish() else error {
+        discard error
+        panic("JSON string fixture builder failed")
+    }
+    result
+}
+
+fn main() i32 {
+    var nested = json.NewObject()
+    if !require(nested.Set("line", .Text("one\ntwo"))) return 1
+
+    var values = json.NewArray()
+    values.Add(.Number("2"))
+    values.Add(.Bool(false))
+    values.Add(.Null)
+
+    var root = json.NewObject()
+    if !require(root.Set("zeta", .Array(values))) return 2
+    if !require(root.Set("alpha", .Object(nested))) return 3
+    if !require(root.Set("quote", .Text(quotedControl()))) return 4
+
+    const encoded = stringify(.Object(root))
+    print(encoded)
+    const reparsed = json.Parse(encoded) else error {
+        discard error
+        return 5
+    }
+    print(stringify($reparsed))
+
+    var duplicate = json.NewObject()
+    if !require(duplicate.Set("same", .Number("1"))) return 6
+    const rejected = duplicate.Set("same", .Number("2"))
+    const duplicateRejected = match rejected {
+        Ok: false
+        Err(error): match error {
+            DuplicateKey: true
+        }
+    }
+    if !duplicateRejected || !invalidNumber() return 7
+    0
+}

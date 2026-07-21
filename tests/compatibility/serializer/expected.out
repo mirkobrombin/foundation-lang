@@ -1,0 +1,9 @@
+{"Age":30,"FirstName":"Ada","LastName":"Lovelace"}
+{"age":30,"first_name":"Ada","last_name":"Lovelace"}
+{"age":30,"firstName":"Ada","lastName":"Lovelace"}
+{"Name":"Ada"}
+{"FirstName":"Ada"}
+{"name":"Ada"}
+{"ID":"id:42"}
+5
+true

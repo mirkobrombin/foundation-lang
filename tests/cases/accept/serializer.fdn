@@ -1,0 +1,172 @@
+package test.serializer
+
+import foundation.serializer
+import std.json
+import std.text
+
+@serializer.Serializable()
+struct CustomID {
+    Value String
+}
+
+methods CustomID {
+    @serializer.Encode()
+    fn encode(self, policy serializer.Policy) Result<json.Value, serializer.Error> {
+        discard policy
+        .Ok(.Text("id:" + self.Value))
+    }
+
+    @serializer.Decode()
+    fn decode(
+        $value json.Value,
+        policy serializer.Policy
+    ) Result<CustomID, serializer.Error> {
+        discard policy
+        const encoded = serializer.Text($value, "") else error {
+            return .Err(error)
+        }
+        if !text.StartsWith(encoded, "id:") {
+            return .Err(serializer.Error {
+                Kind = .Custom
+                Message = "invalid custom ID"
+            })
+        }
+        const id = text.Slice(encoded, 3, text.ByteLen(encoded)) else error {
+            discard error
+            return .Err(serializer.Error {
+                Kind = .Custom
+                Message = "invalid custom ID"
+            })
+        }
+        .Ok(CustomID { Value = id })
+    }
+}
+
+@serializer.Serializable()
+struct Address {
+    City String
+}
+
+@serializer.Serializable()
+struct Profile {
+    @serializer.Name("first_name")
+    FirstName String
+    LastName String
+    Age i32
+    Score f64
+    Active bool
+    ID CustomID
+    Address Address
+    Nick Option<String>
+
+    @serializer.Ignore()
+    Secret String = "hidden"
+
+    Attempts i32 = 7
+}
+
+fn unwrap($value Result<String, serializer.Error>) String {
+    match value {
+        Ok(encoded): encoded
+        Err(error): {
+            discard error
+            panic("serializer fixture failed")
+        }
+    }
+}
+
+fn profile() Profile {
+    Profile {
+        FirstName = "Mirko"
+        LastName = "Brombin"
+        Age = 30
+        Score = 4.5
+        Active = true
+        ID = CustomID { Value = "42" }
+        Address = Address { City = "Rome" }
+        Nick = .Some("mb")
+    }
+}
+
+fn validRoundTrip(encoded String, policy serializer.Policy) bool {
+    const decoded = Profile.UnmarshalWith(encoded, policy) else error {
+        discard error
+        return false
+    }
+    decoded.FirstName == "Mirko" && decoded.LastName == "Brombin" &&
+        decoded.Age == 30 && decoded.Score == 4.5 && decoded.Active &&
+        decoded.ID.Value == "42" && decoded.Address.City == "Rome" &&
+        decoded.Secret == "hidden" && decoded.Attempts == 7
+}
+
+fn rejectsUnknown() bool {
+    const policy = serializer.Policy { RejectUnknown = true }
+    const decoded = Profile.UnmarshalWith("{\"extra\":1}", policy)
+    match decoded {
+        Ok(value): {
+            discard value
+            false
+        }
+        Err(error): match error.Kind {
+            UnknownField: error.Field == "extra"
+            Syntax: false
+            ExpectedObject: false
+            ExpectedString: false
+            ExpectedBoolean: false
+            ExpectedNumber: false
+            InvalidNumber: false
+            InvalidUUID: false
+            DuplicateField: false
+            Custom: false
+        }
+    }
+}
+
+fn rejectsType() bool {
+    const decoded = Profile.Unmarshal("{\"Age\":\"wrong\"}")
+    match decoded {
+        Ok(value): {
+            discard value
+            false
+        }
+        Err(error): match error.Kind {
+            ExpectedNumber: error.Field == "Age"
+            Syntax: false
+            ExpectedObject: false
+            ExpectedString: false
+            ExpectedBoolean: false
+            InvalidNumber: false
+            InvalidUUID: false
+            DuplicateField: false
+            UnknownField: false
+            Custom: false
+        }
+    }
+}
+
+fn main() i32 {
+    const source = profile()
+    const encoded = unwrap(source.Marshal())
+    print(encoded)
+    if !validRoundTrip(encoded, serializer.Default()) return 1
+
+    const compact = serializer.Policy {
+        Naming = .SnakeCase
+        IgnoreNone = true
+        IgnoreZero = true
+    }
+    const compactSource = Profile {
+        FirstName = "Mirko"
+        LastName = ""
+        Age = 0
+        Score = 0.0
+        Active = false
+        ID = CustomID { Value = "42" }
+        Address = Address { City = "" }
+        Nick = .None
+    }
+    print(unwrap(compactSource.MarshalWith(compact)))
+
+    if !rejectsUnknown() || !rejectsType() return 2
+    0
+}

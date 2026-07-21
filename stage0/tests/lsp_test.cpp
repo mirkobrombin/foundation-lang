@@ -3416,6 +3416,95 @@ void derivedValidationExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void derivedSerializerExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "\n"
+        "import foundation.serializer\n"
+        "\n"
+        "@serializer.Serializable()\n"
+        "struct Profile {\n"
+        "    @serializer.Name(\"first_name\")\n"
+        "    FirstName String\n"
+        "}\n"
+        "\n"
+        "fn inspect(profile Profile) i32 {\n"
+        "    const policy = serializer.Default()\n"
+        "    const encoded = profile.MarshalWith(policy) else error {\n"
+        "        discard error\n"
+        "        return 1\n"
+        "    }\n"
+        "    discard encoded\n"
+        "    0\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    inspect(Profile { FirstName = \"Ada\" })\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(216, "hover", 12, 33)) +
+        frame(request(217, "signatureHelp", 12, 46)) +
+        frame(request(218, "definition", 12, 33)) +
+        frame(request(219, "completion", 12, 28)) +
+        frame(request(220, "hover", 6, 18)) +
+        frame(request(221, "signatureHelp", 6, 28)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto hover = responseFor(transcript, 216);
+    const auto signature = responseFor(transcript, 217);
+    const auto definition = responseFor(transcript, 218);
+    const auto completion = responseFor(transcript, 219);
+    const auto nameHover = responseFor(transcript, 220);
+    const auto nameSignature = responseFor(transcript, 221);
+
+    expect(status == 0, "derived serializer language server transcript exits cleanly");
+    expect(errors.str().empty(), "derived serializer requests write no server errors");
+    expect(hover.find("fn MarshalWith(") != std::string::npos &&
+               hover.find("policy Policy") != std::string::npos,
+           "derived serializer exposes compiler-backed hover");
+    expect(signature.find("fn MarshalWith(") != std::string::npos &&
+               signature.find("policy Policy") != std::string::npos,
+           "derived serializer exposes compiler-backed signature help");
+    expect(definition.find(sourceUri) != std::string::npos &&
+               definition.find(".foundation.generated.fdn") == std::string::npos,
+           "derived serializer definition returns to its source struct");
+    expect(completion.find("MarshalWith") != std::string::npos &&
+               completion.find("ToJSON") != std::string::npos,
+           "derived serializer instance methods participate in completion");
+    expect(nameHover.find("attribute Name(value String)") != std::string::npos &&
+               nameHover.find("JSON key") != std::string::npos,
+           "serializer name hover exposes its signature and documentation");
+    expect(nameSignature.find("attribute Name(value String)") != std::string::npos,
+           "serializer name arguments receive signature help");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void openAPIAttributesExposeEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fdn";
@@ -4265,6 +4354,7 @@ int main() {
     rawPointersExposeEditorDetails();
     servicesAndActionsExposeEditorDetails();
     derivedValidationExposesEditorDetails();
+    derivedSerializerExposesEditorDetails();
     openAPIAttributesExposeEditorDetails();
     authenticationPackagesExposeEditorDetails();
     ringPackageExposesEditorDetails();

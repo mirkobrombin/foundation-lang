@@ -1,0 +1,12 @@
+package test.host.serializer.unsupported_field
+
+import foundation.serializer
+
+@serializer.Serializable()
+struct Input {
+    Callback fn() void
+}
+
+fn main() i32 {
+    0
+}

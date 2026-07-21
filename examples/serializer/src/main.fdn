@@ -1,0 +1,38 @@
+package example.serializer
+
+import foundation.serializer
+
+@serializer.Serializable()
+struct Profile {
+    @serializer.Name("first_name")
+    FirstName String
+    Age i32
+    Nick Option<String>
+
+    @serializer.Ignore()
+    Secret String = "hidden"
+}
+
+fn main() i32 {
+    const profile = Profile {
+        FirstName = "Ada"
+        Age = 30
+        Nick = .None
+    }
+    var policy = serializer.Default()
+    policy.Naming = .SnakeCase
+    policy.IgnoreNone = true
+
+    const encoded = profile.MarshalWith(policy) else error {
+        discard error
+        return 1
+    }
+    print(encoded)
+
+    const decoded = Profile.UnmarshalWith(encoded, policy) else error {
+        discard error
+        return 2
+    }
+    print(decoded.FirstName)
+    0
+}

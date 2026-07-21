@@ -1,0 +1,17 @@
+package test.host.serializer.method_signature
+
+import foundation.serializer
+
+@serializer.Serializable()
+struct Input {
+    Value String
+
+    @serializer.Encode()
+    fn encode(self) void {
+        return
+    }
+}
+
+fn main() i32 {
+    0
+}

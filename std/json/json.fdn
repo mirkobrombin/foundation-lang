@@ -13,6 +13,20 @@ enum ErrorKind {
     TrailingData
 }
 
+enum ObjectError {
+    DuplicateKey
+}
+
+enum WriteErrorKind {
+    InvalidNumber
+    DepthLimit
+    Builder
+}
+
+struct WriteError {
+    Kind WriteErrorKind
+}
+
 struct Error {
     Kind ErrorKind
     Offset u64
@@ -160,6 +174,12 @@ struct Array {
             Some(node): popItem(&self, $node)
         }
     }
+
+    fn Add(&self, $value Value) void {
+        self.reverse()
+        self.pushFront($value)
+        self.reverse()
+    }
 }
 
 struct Object {
@@ -236,6 +256,126 @@ struct Object {
             self.length = self.length - 1
         }
         value
+    }
+
+    fn Set(&self, $key String, $value Value) Result<void, ObjectError> {
+        if self.hasKey(key) {
+            discard key
+            discard value
+            return .Err(.DuplicateKey)
+        }
+        self.pushFront($key, $value)
+        .Ok
+    }
+
+    fn sort(&self) void {
+        var state = fieldSort {
+            pending = replace self.fields with .None
+            sorted = .None
+        }
+        while state.step() {}
+        state.reverse()
+        const fieldSort { pending sorted } = state
+        discard pending
+        self.fields = sorted
+    }
+
+    fn popFront(&self) Option<entry> {
+        const selected = replace self.fields with .None
+        match selected {
+            None: .None
+            Some(node): popField(&self, $node)
+        }
+    }
+}
+
+struct entry {
+    key String
+    value Value
+}
+
+struct fieldSort {
+    pending Option<own field>
+    sorted Option<own field>
+
+    fn step(&self) bool {
+        const selected = replace self.pending with .None
+        match selected {
+            None: false
+            Some(node): self.choose($node)
+        }
+    }
+
+    fn choose(&self, $node own field) bool {
+        const field { key value next } = node
+        var choice = fieldChoice {
+            bestKey = key
+            bestValue = value
+            candidates = next
+            remaining = .None
+        }
+        while choice.step() {}
+        const fieldChoice { bestKey bestValue candidates remaining } = choice
+        discard candidates
+        const previous = replace self.sorted with .None
+        self.sorted = .Some(own field {
+            key = bestKey
+            value = bestValue
+            next = previous
+        })
+        self.pending = remaining
+        true
+    }
+
+    fn reverse(&self) void {
+        var state = fieldReverse {
+            current = replace self.sorted with .None
+            result = .None
+        }
+        var running = true
+        while running {
+            const selected = replace state.current with .None
+            running = state.step($selected)
+        }
+        const fieldReverse { current result } = state
+        discard current
+        self.sorted = result
+    }
+}
+
+struct fieldChoice {
+    bestKey String
+    bestValue Value
+    candidates Option<own field>
+    remaining Option<own field>
+
+    fn step(&self) bool {
+        const selected = replace self.candidates with .None
+        match selected {
+            None: false
+            Some(node): self.accept($node)
+        }
+    }
+
+    fn accept(&self, $node own field) bool {
+        const field { key value next } = node
+        self.candidates = next
+        if text.Compare(key, self.bestKey) < 0 {
+            const previous = replace self.remaining with .None
+            self.remaining = .Some(own field {
+                key = replace self.bestKey with key
+                value = replace self.bestValue with value
+                next = previous
+            })
+        } else {
+            const previous = replace self.remaining with .None
+            self.remaining = .Some(own field {
+                key = key
+                value = value
+                next = previous
+            })
+        }
+        true
     }
 }
 
@@ -571,6 +711,13 @@ fn popItem(&array Array, $node own item) Option<Value> {
     .Some(value)
 }
 
+fn popField(&object Object, $node own field) Option<entry> {
+    const field { key value next } = node
+    object.fields = next
+    object.length = object.length - 1
+    .Some(entry { key = key value = value })
+}
+
 fn newArray() own Array {
     own Array { head = .None length = 0 }
 }
@@ -662,4 +809,231 @@ fn Parse(source String) Result<Value, Error> {
         return .Err(parseError(.TrailingData, state.offset))
     }
     .Ok(value)
+}
+
+fn NewArray() own Array {
+    newArray()
+}
+
+fn NewObject() own Object {
+    newObject()
+}
+
+fn Stringify($value Value) Result<String, WriteError> {
+    var builder = text.NewBuilder()
+    writeValue(&builder, $value, 0) else error {
+        discard builder.Close()
+        return .Err(error)
+    }
+    const result = builder.Finish() else error {
+        discard error
+        return .Err(WriteError { Kind = .Builder })
+    }
+    .Ok(result)
+}
+
+fn writeValue(
+    &builder text.Builder,
+    $value Value,
+    depth u64
+) Result<void, WriteError> {
+    if depth > 128 {
+        discard value
+        return .Err(WriteError { Kind = .DepthLimit })
+    }
+    match value {
+        Null: writeRaw(&builder, "null")
+        Bool(state): writeRaw(&builder, "true" if state else "false")
+        Number(number): writeNumber(&builder, number)
+        Text(value): writeString(&builder, value)
+        Array(array): writeArray(&builder, $array, depth)
+        Object(object): writeObject(&builder, $object, depth)
+    }
+}
+
+fn writeArray(
+    &builder text.Builder,
+    $array own Array,
+    depth u64
+) Result<void, WriteError> {
+    var values = array
+    writeRaw(&builder, "[") else error {
+        return .Err(error)
+    }
+    var first = true
+    while values.Len() > 0 {
+        if !first {
+            writeRaw(&builder, ",") else error {
+                return .Err(error)
+            }
+        }
+        const selected = values.PopFront()
+        const value = match selected {
+            None: missingValue()
+            Some(current): current
+        }
+        writeValue(&builder, $value, depth + 1) else error {
+            return .Err(error)
+        }
+        first = false
+    }
+    writeRaw(&builder, "]")
+}
+
+fn writeObject(
+    &builder text.Builder,
+    $object own Object,
+    depth u64
+) Result<void, WriteError> {
+    var fields = object
+    fields.sort()
+    writeRaw(&builder, "{") else error {
+        return .Err(error)
+    }
+    var first = true
+    while fields.Len() > 0 {
+        if !first {
+            writeRaw(&builder, ",") else error {
+                return .Err(error)
+            }
+        }
+        const selected = fields.popFront()
+        const current = match selected {
+            None: missingEntry()
+            Some(found): found
+        }
+        const entry { key value } = current
+        writeString(&builder, key) else error {
+            discard value
+            return .Err(error)
+        }
+        writeRaw(&builder, ":") else error {
+            discard value
+            return .Err(error)
+        }
+        writeValue(&builder, $value, depth + 1) else error {
+            return .Err(error)
+        }
+        first = false
+    }
+    writeRaw(&builder, "}")
+}
+
+fn writeNumber(
+    &builder text.Builder,
+    value String
+) Result<void, WriteError> {
+    const parsed = Parse(value) else error {
+        discard error
+        return .Err(WriteError { Kind = .InvalidNumber })
+    }
+    const valid = match parsed {
+        Number(canonical): text.Equal(canonical, value)
+        Null: false
+        Bool(state): state && false
+        Text(textValue): !textValue && false
+        Array(array): array.Len() == 0 && false
+        Object(object): object.Len() == 0 && false
+    }
+    if !valid {
+        return .Err(WriteError { Kind = .InvalidNumber })
+    }
+    writeRaw(&builder, value)
+}
+
+fn writeString(
+    &builder text.Builder,
+    value String
+) Result<void, WriteError> {
+    writeRaw(&builder, "\"") else error {
+        return .Err(error)
+    }
+    const length = text.ByteLen(value)
+    var segment u64 = 0
+    var offset u64 = 0
+    while offset < length {
+        const byte = readByte(value, offset)
+        if byte == 34 || byte == 92 || byte < 32 {
+            writeRange(&builder, value, segment, offset) else error {
+                return .Err(error)
+            }
+            writeEscapedByte(&builder, byte) else error {
+                return .Err(error)
+            }
+            segment = offset + 1
+        }
+        offset = offset + 1
+    }
+    writeRange(&builder, value, segment, length) else error {
+        return .Err(error)
+    }
+    writeRaw(&builder, "\"")
+}
+
+fn writeEscapedByte(
+    &builder text.Builder,
+    value u64
+) Result<void, WriteError> {
+    if value == 34 return writeRaw(&builder, "\\\"")
+    if value == 92 return writeRaw(&builder, "\\\\")
+    if value == 8 return writeRaw(&builder, "\\b")
+    if value == 9 return writeRaw(&builder, "\\t")
+    if value == 10 return writeRaw(&builder, "\\n")
+    if value == 12 return writeRaw(&builder, "\\f")
+    if value == 13 return writeRaw(&builder, "\\r")
+    writeRaw(&builder, "\\u00") else error {
+        return .Err(error)
+    }
+    writeHexDigit(&builder, value / 16) else error {
+        return .Err(error)
+    }
+    writeHexDigit(&builder, value % 16)
+}
+
+fn writeHexDigit(
+    &builder text.Builder,
+    value u64
+) Result<void, WriteError> {
+    const code = value + 48 if value < 10 else value + 87
+    const written = builder.WriteCodePoint(code) else error {
+        discard error
+        return .Err(WriteError { Kind = .Builder })
+    }
+    if !written {
+        return .Err(WriteError { Kind = .Builder })
+    }
+    .Ok
+}
+
+fn writeRange(
+    &builder text.Builder,
+    value String,
+    start u64,
+    end u64
+) Result<void, WriteError> {
+    if start == end return .Ok
+    const part = readSlice(value, start, end)
+    writeRaw(&builder, part)
+}
+
+fn writeRaw(
+    &builder text.Builder,
+    value String
+) Result<void, WriteError> {
+    const written = builder.Write(value) else error {
+        discard error
+        return .Err(WriteError { Kind = .Builder })
+    }
+    if !written {
+        return .Err(WriteError { Kind = .Builder })
+    }
+    .Ok
+}
+
+fn missingValue() Value {
+    panic("JSON writer value invariant failed")
+}
+
+fn missingEntry() entry {
+    panic("JSON writer object invariant failed")
 }

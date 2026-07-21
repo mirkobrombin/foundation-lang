@@ -1,0 +1,14 @@
+package test.host.serializer.ignored_name
+
+import foundation.serializer
+
+@serializer.Serializable()
+struct Input {
+    @serializer.Ignore()
+    @serializer.Name("value")
+    Value String
+}
+
+fn main() i32 {
+    0
+}

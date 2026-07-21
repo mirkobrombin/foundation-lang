@@ -63,6 +63,11 @@ constexpr std::string_view validationEmailAttribute = "foundation.validation.Ema
 constexpr std::string_view validationPatternAttribute = "foundation.validation.Pattern";
 constexpr std::string_view validationNestedAttribute = "foundation.validation.Nested";
 constexpr std::string_view validationRuleAttribute = "foundation.validation.Rule";
+constexpr std::string_view serializableAttribute = "foundation.serializer.Serializable";
+constexpr std::string_view serializerNameAttribute = "foundation.serializer.Name";
+constexpr std::string_view serializerIgnoreAttribute = "foundation.serializer.Ignore";
+constexpr std::string_view serializerEncodeAttribute = "foundation.serializer.Encode";
+constexpr std::string_view serializerDecodeAttribute = "foundation.serializer.Decode";
 
 enum class Lifetime {
     Transient,
@@ -191,6 +196,19 @@ struct StructValidationPlan {
     FirStructId type{};
     std::vector<ValidationRulePlan> rules;
     std::vector<FirFunctionId> customRules;
+};
+
+struct SerializerFieldPlan {
+    std::size_t field{};
+    std::optional<std::string> name;
+    bool ignored{};
+};
+
+struct StructSerializerPlan {
+    FirStructId type{};
+    std::vector<SerializerFieldPlan> fields;
+    std::optional<FirFunctionId> encoder;
+    std::optional<FirFunctionId> decoder;
 };
 
 const char *webBindingSourceName(WebBindingSource source) {
@@ -465,6 +483,8 @@ const char *webIntegerParser(const Type &type) {
 }
 
 Type baseType(Type type);
+bool hasAttribute(const FirProgram &program, const std::vector<FirAttributeUse> &uses,
+                  std::string_view name);
 
 bool isNamedStruct(const FirProgram &program, const Type &type, std::string_view name) {
     const auto value = baseType(type);
@@ -490,6 +510,62 @@ bool isList(const FirProgram &program, const Type &type) {
     return value.kind == TypeKind::Struct && value.declaration < program.structs.size() &&
            program.structs[value.declaration].name == "std.collections.List" &&
            value.arguments.size() == 1;
+}
+
+const char *serializerScalarName(const Type &type) {
+    switch (baseType(type).kind) {
+    case TypeKind::String:
+        return "String";
+    case TypeKind::Bool:
+        return "Boolean";
+    case TypeKind::I8:
+        return "I8";
+    case TypeKind::I16:
+        return "I16";
+    case TypeKind::I32:
+        return "I32";
+    case TypeKind::I64:
+        return "I64";
+    case TypeKind::Isize:
+        return "Isize";
+    case TypeKind::U8:
+        return "U8";
+    case TypeKind::U16:
+        return "U16";
+    case TypeKind::U32:
+        return "U32";
+    case TypeKind::U64:
+        return "U64";
+    case TypeKind::Usize:
+        return "Usize";
+    case TypeKind::F32:
+        return "F32";
+    case TypeKind::F64:
+        return "F64";
+    default:
+        return nullptr;
+    }
+}
+
+bool serializerTypeSupported(const FirProgram &program, const Type &type) {
+    const auto value = baseType(type);
+    if (serializerScalarName(value) != nullptr ||
+        isNamedStruct(program, value, "std.prelude.UUID")) {
+        return true;
+    }
+    if (isBuiltinOption(program, value)) {
+        return serializerTypeSupported(program, value.arguments.front());
+    }
+    return value.kind == TypeKind::Struct && value.declaration < program.structs.size() &&
+           hasAttribute(program, program.structs[value.declaration].attributes,
+                        serializableAttribute);
+}
+
+bool serializerResult(const FirProgram &program, const Type &type, const Type &success) {
+    const auto value = baseType(type);
+    return isNamedEnum(program, value, "Result") && value.arguments.size() == 2 &&
+           value.arguments.front() == success &&
+           isNamedStruct(program, value.arguments[1], "foundation.serializer.Error");
 }
 
 std::optional<StructBindingFieldKind> structBindingFieldKind(const FirProgram &program,
@@ -1702,6 +1778,182 @@ std::string emitApplicationHostSource(const FirProgram &program,
             visitValidation(index);
         }
     }
+    std::vector<StructSerializerPlan> structSerializers;
+    for (FirStructId index = 0; index < program.structs.size(); ++index) {
+        const auto &type = program.structs[index];
+        if (packageName(type.name) != rootPackage || type.sourcePath == generatedSourcePath) {
+            continue;
+        }
+        const auto serializable = hasAttribute(program, type.attributes, serializableAttribute);
+        const auto hasFieldMetadata = std::any_of(
+            type.fields.begin(), type.fields.end(), [&](const auto &field) {
+                return hasAttribute(program, field.attributes, serializerNameAttribute) ||
+                       hasAttribute(program, field.attributes, serializerIgnoreAttribute);
+            });
+        const auto hasMethodMetadata = std::any_of(
+            program.functions.begin(), program.functions.end(), [&](const auto &function) {
+                return function.sourcePath != generatedSourcePath &&
+                       ownerName(function) == type.name &&
+                       (hasAttribute(program, function.attributes, serializerEncodeAttribute) ||
+                        hasAttribute(program, function.attributes, serializerDecodeAttribute));
+            });
+        if (!serializable) {
+            if (hasFieldMetadata || hasMethodMetadata) {
+                diagnostics.error(
+                    "FDN2410",
+                    "serializer metadata requires @serializer.Serializable on " + type.name,
+                    type.sourceSpan);
+            }
+            continue;
+        }
+        if (type.typeParameterCount != 0) {
+            diagnostics.error("FDN2411", "generated serialization requires a concrete struct",
+                              type.sourceSpan);
+            continue;
+        }
+
+        StructSerializerPlan serializer{index, {}, std::nullopt, std::nullopt};
+        std::set<std::string> explicitNames;
+        for (std::size_t fieldIndex = 0; fieldIndex < type.fields.size(); ++fieldIndex) {
+            const auto &field = type.fields[fieldIndex];
+            const auto name = stringArgument(
+                findAttribute(program, field.attributes, serializerNameAttribute));
+            const auto ignored =
+                hasAttribute(program, field.attributes, serializerIgnoreAttribute);
+            if (name.has_value() && name->empty()) {
+                diagnostics.error("FDN2412", "serializer field name cannot be empty: " +
+                                                   type.name + "." + field.name,
+                                  type.sourceSpan);
+            }
+            if (name.has_value() && !explicitNames.insert(*name).second) {
+                diagnostics.error("FDN2413", "duplicate serializer field name " + *name,
+                                  type.sourceSpan);
+            }
+            if (ignored && name.has_value()) {
+                diagnostics.error("FDN2414", "ignored serializer field cannot declare a name: " +
+                                                   type.name + "." + field.name,
+                                  type.sourceSpan);
+            }
+            serializer.fields.push_back({fieldIndex, name, ignored});
+        }
+
+        for (FirFunctionId functionIndex = 0; functionIndex < program.functions.size();
+             ++functionIndex) {
+            const auto &function = program.functions[functionIndex];
+            if (function.sourcePath == generatedSourcePath || ownerName(function) != type.name) {
+                continue;
+            }
+            const auto encode =
+                hasAttribute(program, function.attributes, serializerEncodeAttribute);
+            const auto decode =
+                hasAttribute(program, function.attributes, serializerDecodeAttribute);
+            if (!encode && !decode) {
+                continue;
+            }
+            if (encode && decode) {
+                diagnostics.error("FDN2415", "one serializer method cannot encode and decode",
+                                  function.sourceSpan);
+                continue;
+            }
+            const auto policyParameter = [&](const std::size_t parameter) {
+                if (parameter >= function.parameters.size()) {
+                    return false;
+                }
+                const auto local = function.parameters[parameter];
+                return local < function.locals.size() &&
+                       isNamedStruct(program, function.locals[local].type,
+                                     "foundation.serializer.Policy");
+            };
+            auto valid = !function.generic && !function.task && !function.blocking &&
+                         !function.callback && !function.action;
+            if (encode) {
+                valid = valid && function.receiver == FirReceiverKind::View &&
+                        function.parameters.size() == 2 && policyParameter(1) &&
+                        isNamedEnum(program, baseType(function.returnType), "Result") &&
+                        function.returnType.arguments.size() == 2 &&
+                        isNamedEnum(program, function.returnType.arguments.front(),
+                                    "std.json.Value") &&
+                        isNamedStruct(program, function.returnType.arguments[1],
+                                      "foundation.serializer.Error");
+                if (!valid) {
+                    diagnostics.error(
+                        "FDN2415",
+                        "@serializer.Encode requires fn name(self, policy "
+                        "serializer.Policy) Result<json.Value, serializer.Error>",
+                        function.sourceSpan);
+                } else if (serializer.encoder.has_value()) {
+                    diagnostics.error("FDN2415", "serializable type has multiple encoders",
+                                      function.sourceSpan);
+                } else {
+                    serializer.encoder = functionIndex;
+                }
+            } else {
+                const Type owner{TypeKind::Struct, index};
+                valid = valid && !function.receiver.has_value() && function.method &&
+                        function.parameters.size() == 2 && policyParameter(1) &&
+                        isNamedEnum(program, function.locals[function.parameters[0]].type,
+                                    "std.json.Value") &&
+                        parameterMode(function, 0) == ParameterMode::Transfer &&
+                        serializerResult(program, function.returnType, owner);
+                if (!valid) {
+                    diagnostics.error(
+                        "FDN2415",
+                        "@serializer.Decode requires fn name($value json.Value, policy "
+                        "serializer.Policy) Result<Self, serializer.Error>",
+                        function.sourceSpan);
+                } else if (serializer.decoder.has_value()) {
+                    diagnostics.error("FDN2415", "serializable type has multiple decoders",
+                                      function.sourceSpan);
+                } else {
+                    serializer.decoder = functionIndex;
+                }
+            }
+        }
+        if (serializer.encoder.has_value() != serializer.decoder.has_value()) {
+            diagnostics.error("FDN2416", "custom serializer requires both encode and decode",
+                              type.sourceSpan);
+        }
+        if (serializer.encoder.has_value() && hasFieldMetadata) {
+            diagnostics.error("FDN2416", "custom serializer cannot declare field metadata",
+                              type.sourceSpan);
+        }
+        if (!serializer.encoder.has_value()) {
+            for (const auto &field : serializer.fields) {
+                if (!field.ignored &&
+                    !serializerTypeSupported(program, type.fields[field.field].type)) {
+                    diagnostics.error(
+                        "FDN2417",
+                        "unsupported generated serializer field type " +
+                            typeName(program, baseType(type.fields[field.field].type)) + " for " +
+                            type.name + "." + type.fields[field.field].name,
+                        type.sourceSpan);
+                }
+                const auto &declaration = type.fields[field.field];
+                if (field.ignored && !declaration.hasDefault &&
+                    !serializerTypeSupported(program, declaration.type)) {
+                    diagnostics.error(
+                        "FDN2417",
+                        "serializer cannot construct ignored field " + type.name + "." +
+                            declaration.name + " without a default",
+                        type.sourceSpan);
+                }
+            }
+        }
+        for (const auto &name : {"Marshal", "MarshalWith", "ToJSON", "Unmarshal",
+                                 "UnmarshalWith", "FromJSON"}) {
+            const auto collides = std::find_if(
+                program.functions.begin(), program.functions.end(), [&](const auto &function) {
+                    return function.sourcePath != generatedSourcePath &&
+                           ownerName(function) == type.name && shortName(function.name) == name;
+                });
+            if (collides != program.functions.end()) {
+                diagnostics.error("FDN2418", "generated serializer method already exists for " +
+                                                   type.name + "." + name,
+                                  collides->sourceSpan);
+            }
+        }
+        structSerializers.push_back(std::move(serializer));
+    }
     std::map<FirStructId, const StructBindingPlan *> structBindingsByType;
     for (const auto &binding : structBindings) {
         structBindingsByType.emplace(binding.type, &binding);
@@ -2135,6 +2387,15 @@ std::string emitApplicationHostSource(const FirProgram &program,
     if (!structValidations.empty()) {
         packages.insert("foundation.validation");
     }
+    if (!structSerializers.empty()) {
+        packages.insert("foundation.serializer");
+        packages.insert("std.json");
+        for (const auto &serializer : structSerializers) {
+            for (const auto &field : program.structs[serializer.type].fields) {
+                collectTypePackages(program, field.type, packages);
+            }
+        }
+    }
     packages.erase(rootPackage);
     packages.erase("");
 
@@ -2327,6 +2588,35 @@ std::string emitApplicationHostSource(const FirProgram &program,
         qualifiedName("foundation.validation.IsEmail", rootPackage, aliases);
     const auto validationPatternFunction =
         qualifiedName("foundation.validation.IsPattern", rootPackage, aliases);
+    const auto serializerPolicyType =
+        qualifiedName("foundation.serializer.Policy", rootPackage, aliases);
+    const auto serializerErrorType =
+        qualifiedName("foundation.serializer.Error", rootPackage, aliases);
+    const auto serializerDefaultFunction =
+        qualifiedName("foundation.serializer.Default", rootPackage, aliases);
+    const auto serializerFieldNameFunction =
+        qualifiedName("foundation.serializer.FieldName", rootPackage, aliases);
+    const auto serializerKeepFunction =
+        qualifiedName("foundation.serializer.Keep", rootPackage, aliases);
+    const auto serializerAtFunction =
+        qualifiedName("foundation.serializer.At", rootPackage, aliases);
+    const auto serializerUnknownFunction =
+        qualifiedName("foundation.serializer.Unknown", rootPackage, aliases);
+    const auto serializerSyntaxFunction =
+        qualifiedName("foundation.serializer.Syntax", rootPackage, aliases);
+    const auto serializerWriteFunction =
+        qualifiedName("foundation.serializer.Write", rootPackage, aliases);
+    const auto serializerSetFunction =
+        qualifiedName("foundation.serializer.Set", rootPackage, aliases);
+    const auto serializerObjectFunction =
+        qualifiedName("foundation.serializer.RequireObject", rootPackage, aliases);
+    const auto serializerNonNullFunction =
+        qualifiedName("foundation.serializer.NonNull", rootPackage, aliases);
+    const auto jsonValueType = qualifiedName("std.json.Value", rootPackage, aliases);
+    const auto jsonNewObjectFunction =
+        qualifiedName("std.json.NewObject", rootPackage, aliases);
+    const auto jsonStringifyFunction =
+        qualifiedName("std.json.Stringify", rootPackage, aliases);
     const auto usesTypedWebBody = std::any_of(
         webRoutes.begin(), webRoutes.end(), [&](const auto &route) {
             const auto &function = program.functions[route.function];
@@ -2409,6 +2699,298 @@ std::string emitApplicationHostSource(const FirProgram &program,
         value << " }";
         return value.str();
     };
+
+    const auto serializerHelperName = [](const FirStructId type, const std::size_t field,
+                                         std::string_view suffix, const bool decode) {
+        return "foundationSerializer" + std::string(decode ? "Decode" : "Encode") +
+               std::to_string(type) + "Field" + std::to_string(field) +
+               std::string(suffix);
+    };
+    std::function<std::string(const Type &)> serializerZeroValue = [&](const Type &fieldType) {
+        const auto value = baseType(fieldType);
+        if (value == stringType) {
+            return std::string{"\"\""};
+        }
+        if (value == boolType) {
+            return std::string{"false"};
+        }
+        if (isInteger(value)) {
+            return std::string{"0"};
+        }
+        if (value == f32Type || value == f64Type) {
+            return std::string{"0.0"};
+        }
+        if (isNamedStruct(program, value, "std.prelude.UUID")) {
+            return std::string{"UUID.Nil()"};
+        }
+        if (isBuiltinOption(program, value)) {
+            return std::string{".None"};
+        }
+        if (value.kind == TypeKind::Struct && value.declaration < program.structs.size()) {
+            return sourceTypeName(program, value, rootPackage, aliases) +
+                   ".FoundationSerializerZero()";
+        }
+        return std::string{""};
+    };
+
+    std::set<std::string> emittedSerializerHelpers;
+    std::function<void(const Type &, const std::string &, bool)> emitSerializerHelper;
+    emitSerializerHelper = [&](const Type &fieldType, const std::string &name,
+                               const bool decode) {
+        if (!emittedSerializerHelpers.insert(name).second) {
+            return;
+        }
+        const auto value = baseType(fieldType);
+        const auto sourceType = sourceTypeName(program, value, rootPackage, aliases);
+        out << "fn " << name << '(' << (decode ? "$value " + jsonValueType : "value " + sourceType)
+            << ", policy " << serializerPolicyType << ", field String) Result<"
+            << (decode ? sourceType : jsonValueType) << ", " << serializerErrorType
+            << "> {\n";
+        if (const auto scalar = serializerScalarName(value); scalar != nullptr) {
+            const auto decoder = std::string_view{scalar} == "String"
+                                     ? std::string{"Text"}
+                                     : std::string{scalar};
+            const auto function = qualifiedName(
+                std::string("foundation.serializer.") +
+                    (decode ? decoder : std::string{scalar} + "Value"),
+                rootPackage, aliases);
+            if (decode) {
+                out << "    " << function << "($value, field)\n";
+            } else {
+                out << "    .Ok(" << function << "(value))\n";
+            }
+            out << "}\n\n";
+            return;
+        }
+        if (isNamedStruct(program, value, "std.prelude.UUID")) {
+            const auto function = qualifiedName(
+                decode ? "foundation.serializer.UUIDValueFromJSON"
+                       : "foundation.serializer.UUIDValue",
+                rootPackage, aliases);
+            if (decode) {
+                out << "    " << function << "($value, field)\n";
+            } else {
+                out << "    .Ok(" << function << "(value))\n";
+            }
+            out << "}\n\n";
+            return;
+        }
+        if (isBuiltinOption(program, value)) {
+            const auto childName = name + "Value";
+            if (decode) {
+                out << "    const selected = " << serializerNonNullFunction
+                    << "($value)\n"
+                    << "    match selected {\n"
+                    << "        None: .Ok(.None)\n"
+                    << "        Some(found): {\n"
+                    << "            const decoded = " << childName
+                    << "($found, policy, field) else error {\n"
+                    << "                return .Err(error)\n"
+                    << "            }\n"
+                    << "            .Ok(.Some(decoded))\n"
+                    << "        }\n"
+                    << "    }\n";
+            } else {
+                out << "    match value {\n"
+                    << "        None: .Ok(.Null)\n"
+                    << "        Some(found): " << childName
+                    << "(found, policy, field)\n"
+                    << "    }\n";
+            }
+            out << "}\n\n";
+            emitSerializerHelper(value.arguments.front(), childName, decode);
+            return;
+        }
+        if (value.kind == TypeKind::Struct && value.declaration < program.structs.size()) {
+            const auto typeName = sourceTypeName(program, value, rootPackage, aliases);
+            if (decode) {
+                out << "    const decoded = " << typeName
+                    << ".FromJSON($value, policy) else error {\n"
+                    << "        return .Err(" << serializerAtFunction
+                    << "(field, $error))\n"
+                    << "    }\n"
+                    << "    .Ok(decoded)\n";
+            } else {
+                out << "    const encoded = value.ToJSON(policy) else error {\n"
+                    << "        return .Err(" << serializerAtFunction
+                    << "(field, $error))\n"
+                    << "    }\n"
+                    << "    .Ok(encoded)\n";
+            }
+            out << "}\n\n";
+            return;
+        }
+        out << "    panic(\"unsupported compiler serializer type\")\n"
+            << "}\n\n";
+    };
+
+    for (const auto &serializer : structSerializers) {
+        const auto &type = program.structs[serializer.type];
+        const auto typeName = qualifiedName(type.name, rootPackage, aliases);
+        out << "methods " << typeName << " {\n"
+            << "    fn Marshal(self) Result<String, " << serializerErrorType << "> {\n"
+            << "        self.MarshalWith(" << serializerDefaultFunction << "())\n"
+            << "    }\n\n"
+            << "    fn MarshalWith(\n"
+            << "        self,\n"
+            << "        policy " << serializerPolicyType << "\n"
+            << "    ) Result<String, " << serializerErrorType << "> {\n"
+            << "        const value = self.ToJSON(policy) else error {\n"
+            << "            return .Err(error)\n"
+            << "        }\n"
+            << "        const encoded = " << jsonStringifyFunction
+            << "($value) else error {\n"
+            << "            return .Err(" << serializerWriteFunction << "(error))\n"
+            << "        }\n"
+            << "        .Ok(encoded)\n"
+            << "    }\n\n"
+            << "    fn Unmarshal(source String) Result<" << typeName << ", "
+            << serializerErrorType << "> {\n"
+            << "        " << typeName << ".UnmarshalWith(source, "
+            << serializerDefaultFunction << "())\n"
+            << "    }\n\n"
+            << "    fn UnmarshalWith(\n"
+            << "        source String,\n"
+            << "        policy " << serializerPolicyType << "\n"
+            << "    ) Result<" << typeName << ", " << serializerErrorType << "> {\n"
+            << "        const value = " << jsonParseFunction << "(source) else error {\n"
+            << "            return .Err(" << serializerSyntaxFunction << "(error))\n"
+            << "        }\n"
+            << "        " << typeName << ".FromJSON($value, policy)\n"
+            << "    }\n\n"
+            << "    fn FoundationSerializerZero() " << typeName << " {\n"
+            << "        " << typeName << " {";
+        for (const auto &field : type.fields) {
+            if (field.hasDefault) {
+                continue;
+            }
+            out << ' ' << field.name << " = " << serializerZeroValue(field.type);
+        }
+        out << " }\n"
+            << "    }\n\n"
+            << "    fn ToJSON(\n"
+            << "        self,\n"
+            << "        policy " << serializerPolicyType << "\n"
+            << "    ) Result<" << jsonValueType << ", " << serializerErrorType << "> {\n";
+        if (serializer.encoder.has_value()) {
+            out << "        self." << shortName(program.functions[*serializer.encoder].name)
+                << "(policy)\n";
+        } else {
+            out << "        var object = " << jsonNewObjectFunction << "()\n";
+            for (const auto &fieldPlan : serializer.fields) {
+                if (fieldPlan.ignored) {
+                    continue;
+                }
+                const auto &field = type.fields[fieldPlan.field];
+                const auto encodeName = serializerHelperName(serializer.type, fieldPlan.field,
+                                                             "", false);
+                out << "        const encoded" << fieldPlan.field << " = " << encodeName
+                    << "(self." << field.name << ", policy, ";
+                emitString(out, field.name);
+                out << ") else error {\n"
+                    << "            return .Err(error)\n"
+                    << "        }\n"
+                    << "        const kept" << fieldPlan.field << " = "
+                    << serializerKeepFunction << "($encoded" << fieldPlan.field
+                    << ", policy.IgnoreNone, policy.IgnoreZero)\n"
+                    << "        match kept" << fieldPlan.field << " {\n"
+                    << "            None: {}\n"
+                    << "            Some(value): {\n"
+                    << "                const fieldKey = ";
+                if (fieldPlan.name.has_value()) {
+                    emitString(out, *fieldPlan.name);
+                } else {
+                    out << serializerFieldNameFunction << '(';
+                    emitString(out, field.name);
+                    out << ", policy.Naming)";
+                }
+                out << "\n"
+                    << "                " << serializerSetFunction
+                    << "(&object, $fieldKey, $value) else error {\n"
+                    << "                    return .Err(error)\n"
+                    << "                }\n"
+                    << "            }\n"
+                    << "        }\n";
+            }
+            out << "        .Ok(.Object(object))\n";
+        }
+        out << "    }\n\n"
+            << "    fn FromJSON(\n"
+            << "        $value " << jsonValueType << ",\n"
+            << "        policy " << serializerPolicyType << "\n"
+            << "    ) Result<" << typeName << ", " << serializerErrorType << "> {\n";
+        if (serializer.decoder.has_value()) {
+            out << "        " << typeName << '.'
+                << shortName(program.functions[*serializer.decoder].name)
+                << "($value, policy)\n";
+        } else {
+            out << "        const selected = " << serializerObjectFunction
+                << "($value, \"\") else error {\n"
+                << "            return .Err(error)\n"
+                << "        }\n"
+                << "        var object = selected\n"
+                << "        var result = " << typeName << ".FoundationSerializerZero()\n";
+            for (const auto &fieldPlan : serializer.fields) {
+                if (fieldPlan.ignored) {
+                    continue;
+                }
+                const auto &field = type.fields[fieldPlan.field];
+                const auto decodeName = serializerHelperName(serializer.type, fieldPlan.field,
+                                                             "", true);
+                out << "        const fieldKey" << fieldPlan.field << " = ";
+                if (fieldPlan.name.has_value()) {
+                    emitString(out, *fieldPlan.name);
+                } else {
+                    out << serializerFieldNameFunction << '(';
+                    emitString(out, field.name);
+                    out << ", policy.Naming)";
+                }
+                out << "\n"
+                    << "        const fieldValue" << fieldPlan.field << " = object.Take(fieldKey"
+                    << fieldPlan.field << ")\n"
+                    << "        match fieldValue" << fieldPlan.field << " {\n"
+                    << "            None: {}\n"
+                    << "            Some(found): {\n"
+                    << "                const decoded = " << decodeName
+                    << "($found, policy, fieldKey" << fieldPlan.field << ") else error {\n"
+                    << "                    return .Err(error)\n"
+                    << "                }\n"
+                    << "                result." << field.name << " = decoded\n"
+                    << "            }\n"
+                    << "        }\n";
+            }
+            out << "        if policy.RejectUnknown && object.Len() > 0 {\n"
+                << "            const selectedKey = object.FirstKey()\n"
+                << "            const unknownKey = match selectedKey {\n"
+                << "                None: \"\"\n"
+                << "                Some(found): found\n"
+                << "            }\n"
+                << "            return .Err(" << serializerUnknownFunction
+                << "(unknownKey))\n"
+                << "        }\n"
+                << "        .Ok(result)\n";
+        }
+        out << "    }\n"
+            << "}\n\n";
+    }
+
+    for (const auto &serializer : structSerializers) {
+        if (serializer.encoder.has_value()) {
+            continue;
+        }
+        const auto &type = program.structs[serializer.type];
+        for (const auto &field : serializer.fields) {
+            if (field.ignored) {
+                continue;
+            }
+            emitSerializerHelper(type.fields[field.field].type,
+                                 serializerHelperName(serializer.type, field.field, "", false),
+                                 false);
+            emitSerializerHelper(type.fields[field.field].type,
+                                 serializerHelperName(serializer.type, field.field, "", true),
+                                 true);
+        }
+    }
 
     for (const auto &validation : structValidations) {
         const auto &type = program.structs[validation.type];

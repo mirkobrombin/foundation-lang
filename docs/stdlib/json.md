@@ -4,6 +4,7 @@
 
 ```foundation
 fn Parse(source String) Result<Value, Error>
+fn Stringify($value Value) Result<String, WriteError>
 ```
 
 `Value` has `Null`, `Bool`, `Number`, `Text`, `Array`, and `Object` variants. Numbers retain their
@@ -13,3 +14,8 @@ transfer owned values without copying the remaining tree.
 The parser validates escapes, UTF-16 surrogate pairs, number grammar, trailing input, duplicate
 object keys, and a nesting limit of 128 containers. `Error` reports an `ErrorKind` and byte offset.
 Input is borrowed for the parse; every String stored in the result is an owned copy.
+
+`Stringify` consumes its tree, validates retained number spellings, escapes control bytes and JSON
+syntax characters, sorts object keys lexically, and enforces the same 128-container nesting limit.
+`Array.Add`, `Object.Set`, `NewArray`, and `NewObject` build owned trees without a host JSON library.
+`Object.Set` rejects duplicate keys.
