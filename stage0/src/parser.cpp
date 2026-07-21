@@ -168,8 +168,8 @@ Program Parser::parse() {
         installBuiltins();
     }
     if (match(TokenKind::Package)) {
-        const auto [name, span] =
-            qualifiedName("FDN1090", "expected package name after package");
+        const auto [name, span] = qualifiedName(
+            "FDN1090", "expected package name after package", true);
         program_.packageName = name;
         program_.hasPackageDeclaration = true;
         if (name.empty()) {
@@ -177,11 +177,17 @@ Program Parser::parse() {
         }
     }
     while (match(TokenKind::Import)) {
-        const auto [name, span] =
-            qualifiedName("FDN1091", "expected package name after import");
+        const auto [name, span] = qualifiedName(
+            "FDN1091", "expected package name after import", true);
+        const auto finalSegmentKind = previous().kind;
         std::string alias;
         if (match(TokenKind::As)) {
             alias = expect(TokenKind::Identifier, "FDN1092", "expected import alias after as").text;
+        } else if (finalSegmentKind != TokenKind::Identifier &&
+                   finalSegmentKind != TokenKind::Test) {
+            diagnostics_.error("FDN1093",
+                               "an import ending in a keyword requires an explicit alias",
+                               previous().span);
         }
         program_.imports.push_back({name, std::move(alias), span});
     }
@@ -459,9 +465,24 @@ void Parser::restoreProgram(std::size_t expressions, std::size_t statements,
 }
 
 std::pair<std::string, SourceSpan> Parser::qualifiedName(const char *code,
-                                                        const char *message) {
+                                                        const char *message,
+                                                        bool allowKeywordSegments) {
     const auto takeSegment = [&]() -> const Token & {
-        if (check(TokenKind::Identifier) || check(TokenKind::Test)) {
+        const auto identifierShaped = [](const Token &token) {
+            if (token.text.empty() ||
+                !((token.text.front() >= 'a' && token.text.front() <= 'z') ||
+                  (token.text.front() >= 'A' && token.text.front() <= 'Z') ||
+                  token.text.front() == '_')) {
+                return false;
+            }
+            return std::all_of(token.text.begin() + 1, token.text.end(), [](char value) {
+                return (value >= 'a' && value <= 'z') ||
+                       (value >= 'A' && value <= 'Z') ||
+                       (value >= '0' && value <= '9') || value == '_';
+            });
+        };
+        if (check(TokenKind::Identifier) || check(TokenKind::Test) ||
+            (allowKeywordSegments && identifierShaped(current()))) {
             return advance();
         }
         return expect(TokenKind::Identifier, code, message);
@@ -469,6 +490,10 @@ std::pair<std::string, SourceSpan> Parser::qualifiedName(const char *code,
     const auto first = takeSegment();
     std::string name = first.text;
     while (match(TokenKind::Dot)) {
+        if (current().span.line != previous().span.line) {
+            diagnostics_.error(code, message, current().span);
+            break;
+        }
         const auto segment = takeSegment();
         name += '.';
         name += segment.text;

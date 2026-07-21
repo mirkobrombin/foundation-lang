@@ -1,0 +1,26 @@
+package test.pipeline_builder_use_after_then
+
+import foundation.pipeline as pipes
+
+enum Error {
+    Failed
+}
+
+fn terminal($input String) Result<String, Error> {
+    .Ok(input)
+}
+
+fn wrapper(
+    $input String,
+    next fn($String) Result<String, Error>
+) Result<String, Error> {
+    next($input)
+}
+
+fn main() i32 {
+    var builder = pipes.New<String, String, Error>()
+    const chain = builder.Then($terminal)
+    builder.Use($wrapper)
+    discard chain
+    0
+}

@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.121.0");
+    assert.equal(manifest.version, "0.122.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1312,6 +1312,9 @@ test("grammar and completions track compiler keywords", () => {
         "plugin.StopSandbox", "plugin.FactoryRegistry.Register",
         "plugin.FactoryRegistry.Create", "plugin.ExecSandbox.Argument",
         "plugin.ExecSandbox.IsRunning", "plugin.ExecSandbox.Close",
+        "foundation.pipeline", "pipes.Builder", "pipes.Pipeline", "pipes.Middleware",
+        "pipes.New", "pipes.Builder.Use", "pipes.Builder.UseStateful",
+        "pipes.Builder.Then", "pipes.Pipeline.Process",
         "foundation.bind", "bind.Values", "bind.Entry", "bind.SourceEntry", "bind.Sources",
         "bind.Error", "bind.ErrorKind", "bind.NewValues", "bind.NewSources", "bind.Append",
         "bind.JsonObject", "bind.JsonSyntaxError", "bind.JsonUnknownField",

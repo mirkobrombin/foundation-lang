@@ -1,0 +1,60 @@
+package example.runtime_pipeline
+
+import foundation.pipeline as pipes
+
+enum MessageError {
+    Rejected
+}
+
+struct Counter implements pipes.Middleware<String, String, MessageError> {
+    calls i32
+
+    fn Handle(
+        &self,
+        $message String,
+        next fn($String) Result<String, MessageError>
+    ) Result<String, MessageError> {
+        self.calls = self.calls + 1
+        const response = next("trace>" + message) else error {
+            return .Err(error)
+        }
+        .Ok(response + "<trace-" + renderCount(self.calls))
+    }
+}
+
+fn surround(
+    $message String,
+    next fn($String) Result<String, MessageError>
+) Result<String, MessageError> {
+    const response = next("outer>" + message) else error {
+        return .Err(error)
+    }
+    .Ok(response + "<outer")
+}
+
+fn handle($message String) Result<String, MessageError> {
+    .Ok(message + "<handled")
+}
+
+fn renderCount(value i32) String {
+    if value == 1 { "1" } else { "many" }
+}
+
+fn main() i32 {
+    var builder = pipes.New<String, String, MessageError>()
+    builder.Use($surround)
+    builder.UseStateful(own Counter { calls = 0 })
+    var messages = builder.Then($handle)
+
+    const first = messages.Process("hello") else error {
+        discard error
+        return 1
+    }
+    const second = messages.Process("again") else error {
+        discard error
+        return 2
+    }
+    print(first)
+    print(second)
+    0
+}

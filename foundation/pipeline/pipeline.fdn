@@ -1,0 +1,150 @@
+package foundation.pipeline
+
+import std.collections
+
+// Wraps one typed terminal handler with reusable before and after behavior.
+contract Middleware<T, U, E> {
+    fn Handle(
+        &self,
+        $input T,
+        next fn($T) Result<U, E>
+    ) Result<U, E>
+}
+
+struct functionMiddleware<T, U, E> implements Middleware<T, U, E> {
+    handler fn(
+        $T,
+        fn($T) Result<U, E>
+    ) Result<U, E>
+
+    fn Handle(
+        &self,
+        $input T,
+        next fn($T) Result<U, E>
+    ) Result<U, E> {
+        invokeFunctionMiddleware<T, U, E>(self.handler, $input, next)
+    }
+}
+
+// Collects middleware until a terminal handler makes the chain executable.
+struct Builder<T, U, E> {
+    middleware own collections.List<own Middleware<T, U, E>>
+
+    // Appends one reusable typed middleware function in registration order.
+    fn Use(
+        &self,
+        $middleware fn(
+            $T,
+            fn($T) Result<U, E>
+        ) Result<U, E>
+    ) void {
+        self.UseStateful(own functionMiddleware<T, U, E> { handler = middleware })
+    }
+
+    // Appends one stateful middleware owned by the resulting pipeline.
+    fn UseStateful(
+        &self,
+        $middleware own Middleware<T, U, E>
+    ) void {
+        self.middleware.PushFront($middleware)
+    }
+
+    // Consumes the builder and produces a pipeline that always has a terminal handler.
+    fn Then(
+        $self,
+        $handler fn($T) Result<U, E>
+    ) own Pipeline<T, U, E> {
+        const Builder { middleware } = self
+        own Pipeline<T, U, E> {
+            middleware = reverseMiddleware<T, U, E>($middleware)
+            handler = handler
+        }
+    }
+}
+
+// Owns a complete typed middleware chain and its terminal handler.
+struct Pipeline<T, U, E> {
+    middleware own collections.List<own Middleware<T, U, E>>
+    handler fn($T) Result<U, E>
+
+    // Executes middleware as an onion around the terminal handler.
+    fn Process(
+        &self,
+        $input T
+    ) Result<U, E> {
+        processNext<T, U, E>(&self, $input)
+    }
+}
+
+// Creates an empty builder whose type fixes input, output, and recoverable failure.
+fn New<T, U, E>() own Builder<T, U, E> {
+    own Builder<T, U, E> {
+        middleware = newMiddlewareList<T, U, E>()
+    }
+}
+
+fn processNext<T, U, E>(
+    &chain Pipeline<T, U, E>,
+    $input T
+) Result<U, E> {
+    if chain.middleware.IsEmpty() {
+        return invokeTerminal<T, U, E>(chain.handler, $input)
+    }
+
+    const current = middlewareValue<T, U, E>(chain.middleware.PopFront())
+    var active = current
+    const result = active.Handle(
+        $input,
+        fn($nextInput T) Result<U, E> capture(&chain) {
+            processNext<T, U, E>(&chain, $nextInput)
+        }
+    )
+    chain.middleware.PushFront($active)
+    result
+}
+
+fn invokeFunctionMiddleware<T, U, E>(
+    handler fn(
+        $T,
+        fn($T) Result<U, E>
+    ) Result<U, E>,
+    $input T,
+    next fn($T) Result<U, E>
+) Result<U, E> {
+    handler($input, next)
+}
+
+fn invokeTerminal<T, U, E>(
+    handler fn($T) Result<U, E>,
+    $input T
+) Result<U, E> {
+    handler($input)
+}
+
+fn reverseMiddleware<T, U, E>(
+    $values own collections.List<own Middleware<T, U, E>>
+) own collections.List<own Middleware<T, U, E>> {
+    var source = values
+    var result = newMiddlewareList<T, U, E>()
+    while !source.IsEmpty() {
+        result.PushFront(middlewareValue<T, U, E>(source.PopFront()))
+    }
+    result
+}
+
+fn newMiddlewareList<T, U, E>() own collections.List<own Middleware<T, U, E>> {
+    collections.NewList<own Middleware<T, U, E>>()
+}
+
+fn middlewareValue<T, U, E>(
+    $value Option<own Middleware<T, U, E>>
+) own Middleware<T, U, E> {
+    match value {
+        None: missingMiddleware<T, U, E>()
+        Some(middleware): middleware
+    }
+}
+
+fn missingMiddleware<T, U, E>() own Middleware<T, U, E> {
+    panic("pipeline middleware invariant failed")
+}

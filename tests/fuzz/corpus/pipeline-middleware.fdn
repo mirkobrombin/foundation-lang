@@ -1,0 +1,18 @@
+package fuzz.pipeline
+
+import foundation.pipeline as pipes
+
+enum Error {
+    Failed
+}
+
+fn terminal($value String) Result<String, Error> {
+    .Ok(value)
+}
+
+fn main() i32 {
+    var builder = pipes.New<String, String, Error>()
+    const chain = builder.Then($terminal)
+    discard chain
+    0
+}

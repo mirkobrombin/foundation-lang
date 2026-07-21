@@ -168,6 +168,7 @@ const staticCompletions = [
     { label: "foundation.hosting", kind: "Module", detail: "Owned application lifecycle" },
     { label: "foundation.health", kind: "Module", detail: "Typed deterministic health checks" },
     { label: "foundation.plugin", kind: "Module", detail: "Validated native plugin lifecycle" },
+    { label: "foundation.pipeline", kind: "Module", detail: "Typed runtime onion middleware", insertText: "foundation.pipeline as pipes" },
     { label: "foundation.bind", kind: "Module", detail: "Compiler-generated typed struct binding" },
     { label: "foundation.serializer", kind: "Module", detail: "Compiler-generated typed JSON codecs" },
     { label: "foundation.validation", kind: "Module", detail: "Compiler-generated typed validation" },
@@ -250,6 +251,9 @@ const staticCompletions = [
     { label: "plugin.SandboxError", kind: "Struct", detail: "external plugin process failure" },
     { label: "plugin.SandboxStartOutcome", kind: "Struct", detail: "started process and still-owned sandbox" },
     { label: "plugin.SandboxStopOutcome", kind: "Struct", detail: "process exit and still-owned sandbox" },
+    { label: "pipes.Builder", kind: "Struct", detail: "owned incomplete middleware builder" },
+    { label: "pipes.Pipeline", kind: "Struct", detail: "owned complete middleware chain" },
+    { label: "pipes.Middleware", kind: "Interface", detail: "reusable typed stateful middleware contract" },
     { label: "bind.Values", kind: "Struct", detail: "owned reusable string binding source" },
     { label: "bind.Entry", kind: "Struct", detail: "binding source key and value" },
     { label: "validation.ErrorKind", kind: "Enum", detail: "typed validation failure kind" },
@@ -1048,6 +1052,36 @@ const staticCompletions = [
         kind: "Function",
         detail: "fn LoadNative(path String) Result<own plugin.NativePlugin, plugin.Error>",
         insertText: "plugin.LoadNative(${1:path})"
+    },
+    {
+        label: "pipes.New",
+        kind: "Function",
+        detail: "fn New<T, U, E>() own pipes.Builder<T, U, E>",
+        insertText: "pipes.New<${1:T}, ${2:U}, ${3:E}>()"
+    },
+    {
+        label: "pipes.Builder.Use",
+        kind: "Method",
+        detail: "fn Use(&self, $middleware fn($T, fn($T) Result<U, E>) Result<U, E>) void",
+        insertText: "Use(\$${1:middleware})"
+    },
+    {
+        label: "pipes.Builder.UseStateful",
+        kind: "Method",
+        detail: "fn UseStateful(&self, $middleware own pipes.Middleware<T, U, E>) void",
+        insertText: "UseStateful(\$${1:middleware})"
+    },
+    {
+        label: "pipes.Builder.Then",
+        kind: "Method",
+        detail: "fn Then($self, $handler fn($T) Result<U, E>) own pipes.Pipeline<T, U, E>",
+        insertText: "Then(\$${1:handler})"
+    },
+    {
+        label: "pipes.Pipeline.Process",
+        kind: "Method",
+        detail: "fn Process(&self, $input T) Result<U, E>",
+        insertText: "Process(\$${1:input})"
     },
     {
         label: "plugin.NewRegistry",

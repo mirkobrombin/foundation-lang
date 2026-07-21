@@ -1,0 +1,110 @@
+package test.pipeline_middleware
+
+import foundation.pipeline as pipes
+
+enum PipelineError {
+    Stopped
+}
+
+struct StatefulSuffix implements pipes.Middleware<String, String, PipelineError> {
+    calls i32
+
+    fn Handle(
+        &self,
+        $input String,
+        next fn($String) Result<String, PipelineError>
+    ) Result<String, PipelineError> {
+        self.calls = self.calls + 1
+        const suffix = if self.calls == 1 { "1" } else { "2" }
+        const output = next(input + "s") else error {
+            return .Err(error)
+        }
+        .Ok(output + suffix)
+    }
+}
+
+fn outer(
+    $input String,
+    next fn($String) Result<String, PipelineError>
+) Result<String, PipelineError> {
+    const output = next(input + "a") else error {
+        return .Err(error)
+    }
+    .Ok(output + "A")
+}
+
+fn inner(
+    $input String,
+    next fn($String) Result<String, PipelineError>
+) Result<String, PipelineError> {
+    const output = next(input + "b") else error {
+        return .Err(error)
+    }
+    .Ok(output + "B")
+}
+
+fn terminal($input String) Result<String, PipelineError> {
+    .Ok(input + "h")
+}
+
+fn stop(
+    $input String,
+    next fn($String) Result<String, PipelineError>
+) Result<String, PipelineError> {
+    discard input
+    discard next
+    .Err(.Stopped)
+}
+
+fn unreachable($input String) Result<String, PipelineError> {
+    panic(input)
+}
+
+fn expectStopped($result Result<String, PipelineError>) bool {
+    match result {
+        Ok(value): rejectText($value)
+        Err(error): match error {
+            Stopped: true
+        }
+    }
+}
+
+fn rejectText($value String) bool {
+    discard value
+    false
+}
+
+fn main() i32 {
+    var builder = pipes.New<String, String, PipelineError>()
+    builder.Use($outer)
+    builder.Use($inner)
+    var chain = builder.Then($terminal)
+    const output = chain.Process("") else error {
+        discard error
+        return 1
+    }
+    if output != "abhBA" return 2
+    print(output)
+
+    var statefulBuilder = pipes.New<String, String, PipelineError>()
+    statefulBuilder.UseStateful(own StatefulSuffix { calls = 0 })
+    var stateful = statefulBuilder.Then($terminal)
+    const first = stateful.Process("x") else error {
+        discard error
+        return 3
+    }
+    const second = stateful.Process("x") else error {
+        discard error
+        return 4
+    }
+    if first != "xsh1" || second != "xsh2" return 5
+    print(first)
+    print(second)
+
+    var stoppedBuilder = pipes.New<String, String, PipelineError>()
+    stoppedBuilder.Use($stop)
+    var stopped = stoppedBuilder.Then($unreachable)
+    if !expectStopped($stopped.Process("ignored")) return 6
+    print("stopped")
+    0
+}

@@ -3759,6 +3759,119 @@ void resiliencyPackagesExposeEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void runtimePipelinePackageExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string completeContents =
+        "package sample\n"
+        "\n"
+        "import foundation.pipeline as pipes\n"
+        "\n"
+        "enum Error { Failed }\n"
+        "\n"
+        "fn terminal($value String) Result<String, Error> {\n"
+        "    .Ok(value)\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    var builder = pipes.New<String, String, Error>()\n"
+        "    var chain = builder.Then($terminal)\n"
+        "    const output = chain.Process(\"ok\") else error {\n"
+        "        discard error\n"
+        "        return 1\n"
+        "    }\n"
+        "    discard output\n"
+        "    discard chain.Process(\"again\")\n"
+        "    0\n"
+        "}\n";
+    const std::string completionContents =
+        "package sample\n"
+        "\n"
+        "import foundation.pipeline as pipes\n"
+        "\n"
+        "enum Error { Failed }\n"
+        "\n"
+        "fn terminal($value String) Result<String, Error> {\n"
+        "    .Ok(value)\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    var builder = pipes.New<String, String, Error>()\n"
+        "    var chain = builder.Then($terminal)\n"
+        "    const output = chain.Process(\"ok\") else error {\n"
+        "        discard error\n"
+        "        return 1\n"
+        "    }\n"
+        "    discard output\n"
+        "    chain.\n"
+        "    0\n"
+        "}\n";
+    writeFile(source, completeContents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(completeContents) +
+        "\"}}}";
+    const auto change =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":2},\"contentChanges\":[{\"text\":\"" +
+        jsonEscape(completionContents) + "\"}]}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(266, "hover", 2, 21)) +
+        frame(request(267, "hover", 11, 26)) +
+        frame(request(268, "signatureHelp", 12, 38)) +
+        frame(request(269, "definition", 11, 26)) +
+        frame(request(270, "hover", 13, 27)) + frame(change) +
+        frame(request(271, "completion", 18, 10)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto packageHover = responseFor(transcript, 266);
+    const auto newHover = responseFor(transcript, 267);
+    const auto thenSignature = responseFor(transcript, 268);
+    const auto newDefinition = responseFor(transcript, 269);
+    const auto processHover = responseFor(transcript, 270);
+    const auto members = responseFor(transcript, 271);
+
+    expect(status == 0, "runtime pipeline language server transcript exits cleanly");
+    expect(errors.str().empty(), "runtime pipeline requests write no server errors");
+    expect(packageHover.find("foundation.pipeline") != std::string::npos,
+           "keyword package import receives hover through its explicit alias");
+    expect(newHover.find("fn New&lt;T, U, E&gt;()") != std::string::npos ||
+               newHover.find("fn New<T, U, E>()") != std::string::npos,
+           "runtime pipeline builder receives compiler-backed hover");
+    expect(thenSignature.find("fn Then") != std::string::npos &&
+               thenSignature.find("handler") != std::string::npos,
+           "runtime pipeline terminal receives ownership-aware signature help");
+    expect(newDefinition.find("foundation/pipeline/pipeline.fdn") != std::string::npos,
+           "runtime pipeline construction navigates to framework source");
+    expect(processHover.find("fn Process") != std::string::npos &&
+               processHover.find("Result") != std::string::npos,
+           "runtime pipeline processing exposes its typed result");
+    expect(members.find("\"label\":\"Process\"") != std::string::npos,
+           "runtime pipeline values complete their executable surface");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void ringPackageExposesEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fdn";
@@ -4357,6 +4470,7 @@ int main() {
     derivedSerializerExposesEditorDetails();
     openAPIAttributesExposeEditorDetails();
     authenticationPackagesExposeEditorDetails();
+    runtimePipelinePackageExposesEditorDetails();
     ringPackageExposesEditorDetails();
     resiliencyPackagesExposeEditorDetails();
     webActivationExposesEditorDetails();

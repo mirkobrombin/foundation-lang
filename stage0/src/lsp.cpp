@@ -2305,7 +2305,7 @@ class LanguageServer {
                                              std::size_t offset) {
         for (const auto &imported : analysis.program.imports) {
             if (imported.span.source == sourceId && imported.span.offset <= offset &&
-                offset <= imported.span.offset + imported.span.length) {
+                offset <= imported.span.offset + imported.packageName.size()) {
                 return &imported;
             }
         }

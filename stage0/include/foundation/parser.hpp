@@ -45,7 +45,8 @@ class Parser {
                         std::size_t blocks, std::size_t functions);
     bool match(TokenKind kind);
     const Token &expect(TokenKind kind, const char *code, const char *message);
-    std::pair<std::string, SourceSpan> qualifiedName(const char *code, const char *message);
+    std::pair<std::string, SourceSpan> qualifiedName(const char *code, const char *message,
+                                                     bool allowKeywordSegments = false);
     std::vector<std::string> typeParameters(std::vector<bool> *transferable = nullptr);
     TypeSyntax typeSyntax(const char *code, const char *message);
     StructDeclaration structDeclaration(bool service = false);

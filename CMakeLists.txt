@@ -183,6 +183,11 @@ if(FOUNDATION_BUILD_FUZZERS)
         COPYONLY
     )
     configure_file(
+        tests/fuzz/corpus/pipeline-middleware.fdn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/pipeline-middleware.fdn"
+        COPYONLY
+    )
+    configure_file(
         tests/fuzz/corpus/cancellation.fdn
         "${FOUNDATION_FUZZ_CORPUS_DIR}/cancellation.fdn"
         COPYONLY
@@ -1089,6 +1094,71 @@ if(BUILD_TESTING)
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/workflows.metadata.second.json
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.metadata.json
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-metadata.cmake
+    )
+    add_test(
+        NAME stage0.check.pipeline-middleware
+        COMMAND foundationc check
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pipeline-middleware.fdn
+    )
+    add_test(
+        NAME stage0.run.pipeline-middleware
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pipeline-middleware.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pipeline-middleware.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.pipeline-middleware-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pipeline-middleware.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/pipeline-middleware.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/pipeline-middleware-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pipeline-middleware.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.example-runtime-pipeline
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/runtime-pipeline
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/runtime-pipeline/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.example-runtime-pipeline-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/runtime-pipeline
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/example-runtime-pipeline.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/example-runtime-pipeline
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/runtime-pipeline/expected.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.package-keyword-import-alias
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/package-keyword-import-alias.fdn
+            -DCODE=FDN1093
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.pipeline-builder-use-after-then
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/pipeline-builder-use-after-then.fdn
+            -DCODE=FDN2065
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     foreach(workflow_reject IN ITEMS
             workflow-unknown-step:FDN3009
