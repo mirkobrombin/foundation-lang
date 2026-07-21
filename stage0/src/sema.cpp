@@ -5797,7 +5797,12 @@ class Analyzer {
                 if (arm.guard.has_value()) {
                     static_cast<void>(analyzeExpression(*arm.guard));
                 }
-                static_cast<void>(analyzeExpression(arm.expression));
+                for (const auto statement : program_.blocks[arm.block].statements) {
+                    static_cast<void>(analyzeStatement(statement));
+                }
+                if (arm.expression.has_value()) {
+                    static_cast<void>(analyzeExpression(*arm.expression));
+                }
                 scopes_.pop_back();
             }
             diagnostics_.error("FDN2037", "match requires an enum value", span);
@@ -5981,9 +5986,18 @@ class Analyzer {
                                          : (result.kind == TypeKind::Invalid
                                                 ? std::nullopt
                                                 : std::optional<Type>{result});
-            const auto armType = analyzeExpression(arm.expression, armExpected);
-            borrowedClosure =
-                borrowedClosure || model_.expressionBorrowedClosures[arm.expression];
+            auto armExits = false;
+            for (const auto statement : program_.blocks[arm.block].statements) {
+                armExits = analyzeStatement(statement) || armExits;
+            }
+            const auto tailType = arm.expression.has_value()
+                                      ? analyzeExpression(*arm.expression, armExpected)
+                                      : voidType;
+            const auto armType = armExits ? neverType : tailType;
+            if (arm.expression.has_value()) {
+                borrowedClosure = borrowedClosure ||
+                                  model_.expressionBorrowedClosures[*arm.expression];
+            }
             drops.push_back(scopeDrops(scopes_.back()));
             reportScope(scopes_.back());
             scopes_.pop_back();

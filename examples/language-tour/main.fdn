@@ -218,7 +218,10 @@ fn maybeOr(value Option<i32>, fallback i32) i32 {
 
 fn resultOr(value Result<i32, bool>, fallback i32) i32 {
     match value {
-        Ok(number): number
+        Ok(number): {
+            const delivered = number
+            delivered
+        }
         Err(failed): fallback
     }
 }

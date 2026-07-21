@@ -152,7 +152,10 @@ void remapExpression(Expression &expression, std::size_t expressionOffset,
             if (arm.guard.has_value()) {
                 *arm.guard += expressionOffset;
             }
-            arm.expression += expressionOffset;
+            arm.block += blockOffset;
+            if (arm.expression.has_value()) {
+                *arm.expression += expressionOffset;
+            }
         }
     } else if (auto *conditional =
                    std::get_if<ConditionalExpression>(&expression.value)) {
@@ -487,8 +490,12 @@ void linkExpression(Program &program, AstExpressionId id, const std::string &cur
                 linkExpression(program, *arm.guard, currentPackage, imports, symbols,
                                typeParameters, diagnostics);
             }
-            linkExpression(program, arm.expression, currentPackage, imports, symbols,
-                           typeParameters, diagnostics);
+            linkBlock(program, arm.block, currentPackage, imports, symbols, typeParameters,
+                      diagnostics);
+            if (arm.expression.has_value()) {
+                linkExpression(program, *arm.expression, currentPackage, imports, symbols,
+                               typeParameters, diagnostics);
+            }
         }
     } else if (auto *conditional =
                    std::get_if<ConditionalExpression>(&expression.value)) {

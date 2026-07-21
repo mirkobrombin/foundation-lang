@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <utility>
 
 namespace foundation {
@@ -2379,11 +2380,55 @@ AstExpressionId Parser::matchExpression(const Token &start) {
             guard = expression();
         }
         expect(TokenKind::Colon, "FDN1059", "expected : after match pattern");
-        arms.push_back({wildcard, variant.text, std::move(binding), pattern, guard, expression(),
-                        variant.span});
+        AstBlockId armBlock{};
+        std::optional<AstExpressionId> armValue;
+        if (check(TokenKind::LeftBrace)) {
+            std::tie(armBlock, armValue) = matchArmBlock();
+        } else {
+            program_.blocks.push_back({{}, variant.span});
+            armBlock = program_.blocks.size() - 1;
+            armValue = expression();
+        }
+        arms.push_back({wildcard, variant.text, std::move(binding), pattern, guard, armBlock,
+                        armValue, variant.span});
     }
     expect(TokenKind::RightBrace, "FDN1060", "expected } after match expression");
     return addExpression(MatchExpression{value, std::move(arms)}, start.span);
+}
+
+std::pair<AstBlockId, std::optional<AstExpressionId>> Parser::matchArmBlock() {
+    const auto start = expect(TokenKind::LeftBrace, "FDN1008", "expected { before block");
+    if (blockDepth_ >= maxBlockDepth) {
+        return {skipNestedBlock(start.span), std::nullopt};
+    }
+
+    ++blockDepth_;
+    Block result{{}, start.span};
+    while (!check(TokenKind::RightBrace) && !atEnd()) {
+        if (startsTailIfExpression()) {
+            const auto conditionalStart = advance();
+            const auto value = ifExpression(conditionalStart);
+            result.statements.push_back(
+                addStatement(ExpressionStatement{value}, conditionalStart.span));
+        } else {
+            result.statements.push_back(statement());
+        }
+    }
+    expect(TokenKind::RightBrace, "FDN1009", "expected } after block");
+
+    std::optional<AstExpressionId> value;
+    if (!result.statements.empty()) {
+        const auto statement = result.statements.back();
+        if (const auto *expression =
+                std::get_if<ExpressionStatement>(&program_.statements[statement].value)) {
+            value = expression->expression;
+            result.statements.pop_back();
+        }
+    }
+
+    --blockDepth_;
+    program_.blocks.push_back(std::move(result));
+    return {program_.blocks.size() - 1, value};
 }
 
 AstExpressionId Parser::ifExpression(const Token &start) {
@@ -2432,7 +2477,7 @@ std::pair<AstBlockId, AstExpressionId> Parser::expressionBlock() {
         }
     }
     if (!value.has_value()) {
-        diagnostics_.error("FDN1178", "conditional expression branch requires a final value",
+        diagnostics_.error("FDN1178", "value block requires a final expression",
                            start.span);
         value = addExpression(IntegerExpression{0, false}, start.span);
     }

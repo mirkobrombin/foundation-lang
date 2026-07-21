@@ -1,0 +1,43 @@
+package example.keyedLock
+
+import foundation.lock
+import std.time
+
+fn failed(error lock.Error) never {
+    discard error
+    panic("keyed lock operation failed")
+}
+
+fn requiredLease(
+    $value Result<own lock.Lease, lock.Error>
+) own lock.Lease {
+    match value {
+        Ok(lease): lease
+        Err(error): failed(error)
+    }
+}
+
+fn requiredVoid($value Result<void, lock.Error>) void {
+    match value {
+        Ok: {}
+        Err(error): failed(error)
+    }
+}
+
+task update($handle lock.Handle) String {
+    const pending = handle.Acquire("profile:42", time.Seconds(5))
+    const result = $pending.wait()
+    const lease = requiredLease($result)
+    const key = lease.Key()
+    const releasing = lease.Release()
+    const released = $releasing.wait()
+    requiredVoid($released)
+    key
+}
+
+fn main() i32 {
+    const locker = lock.New()
+    const updating = spawn update(locker.Handle())
+    print($updating.wait())
+    0
+}

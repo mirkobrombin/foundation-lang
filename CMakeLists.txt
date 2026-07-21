@@ -3017,6 +3017,36 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.match-blocks
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-blocks.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-blocks.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.match-blocks-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-blocks.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/match-blocks.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/match-blocks
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-blocks.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.match-block-tail
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-block-tail.fdn
+            -DCODE=FDN2011
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
         NAME stage0.run.named-enum-payloads
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -3578,6 +3608,64 @@ if(BUILD_TESTING)
             -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
             -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.lock
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/lock.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/lock.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.lock-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/lock.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/lock.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/lock
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/lock.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.lock-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/lock.fdn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/lock-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/lock-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.run.keyed-lock-example
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/keyed-lock
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/keyed-lock/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.keyed-lock-example-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/keyed-lock
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/keyed-lock-example.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/keyed-lock-example
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/keyed-lock/expected.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
@@ -4194,7 +4282,7 @@ if(BUILD_TESTING)
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )
-        foreach(cross_executor_case IN ITEMS worker-pool-channel safemap)
+        foreach(cross_executor_case IN ITEMS worker-pool-channel safemap lock)
             add_test(
                 NAME stage0.run.${cross_executor_case}-sanitized
                 COMMAND ${CMAKE_COMMAND}

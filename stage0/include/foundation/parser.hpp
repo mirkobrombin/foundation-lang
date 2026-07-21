@@ -93,6 +93,7 @@ class Parser {
     AstExpressionId finishMember(std::optional<AstExpressionId> base);
     AstExpressionId finishArray(const Token &start);
     AstExpressionId matchExpression(const Token &start);
+    std::pair<AstBlockId, std::optional<AstExpressionId>> matchArmBlock();
     AstExpressionId ifExpression(const Token &start);
     std::pair<AstBlockId, AstExpressionId> expressionBlock();
     AstExpressionId functionExpression(const Token &start);

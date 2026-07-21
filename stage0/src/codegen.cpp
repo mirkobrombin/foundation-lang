@@ -1043,7 +1043,11 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
         return !match->arms.empty() &&
                std::all_of(match->arms.begin(), match->arms.end(),
                            [&](const FirMatchArm &arm) {
-                               return expressionDiverges(program, function, arm.expression);
+                               return blockFlow(program, function, arm.block) !=
+                                          ControlFlow::Continues ||
+                                      (arm.expression.has_value() &&
+                                       expressionDiverges(program, function,
+                                                          *arm.expression));
                            });
     }
     if (const auto *conditional =
@@ -2370,7 +2374,9 @@ class FunctionEmitter {
         const auto allDiverge =
             !match.arms.empty() &&
             std::all_of(match.arms.begin(), match.arms.end(), [&](const FirMatchArm &arm) {
-                return expressionDiverges(program_, function_, arm.expression);
+                return blockFlow(program_, function_, arm.block) != ControlFlow::Continues ||
+                       (arm.expression.has_value() &&
+                        expressionDiverges(program_, function_, *arm.expression));
             });
         std::string temporary;
         if (type != voidType && !allDiverge) {
@@ -2462,8 +2468,24 @@ class FunctionEmitter {
                 out_ << indentation(armDepth) << "(void)" << localValue(local)
                      << ";\n";
             }
-            const auto armValue = emitExpression(arm.expression, armDepth);
-            if (!armValue.diverges) {
+            auto armExits = false;
+            for (const auto statement : function_.blocks[arm.block].statements) {
+                if (taskPoll_ && emitSuspendingStatement(function_.statements[statement],
+                                                         armDepth)) {
+                    continue;
+                }
+                if (emitStatement(function_.statements[statement], armDepth)) {
+                    armExits = true;
+                    break;
+                }
+            }
+            const auto armValue =
+                armExits
+                    ? EmittedExpression{"", true}
+                    : (arm.expression.has_value()
+                           ? emitExpression(*arm.expression, armDepth)
+                           : EmittedExpression{"", false});
+            if (!armExits && !armValue.diverges) {
                 if (type != voidType) {
                     out_ << indentation(armDepth) << temporary << " = " << armValue.value
                          << ";\n";

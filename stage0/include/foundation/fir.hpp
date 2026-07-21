@@ -316,7 +316,8 @@ struct FirMatchArm {
     std::optional<FirLocalId> guardBinding;
     std::optional<FirExpressionId> pattern;
     std::optional<FirExpressionId> guard;
-    FirExpressionId expression{};
+    FirBlockId block{};
+    std::optional<FirExpressionId> expression;
     std::vector<FirLocalId> drops;
 };
 

@@ -1,0 +1,128 @@
+package test.compatibility.lock
+
+import foundation.lock
+import std.time
+
+fn fail(error lock.Error) never {
+    discard error
+    panic("lock compatibility operation failed")
+}
+
+fn requiredLease(
+    $value Result<own lock.Lease, lock.Error>
+) own lock.Lease {
+    match value {
+        Ok(lease): lease
+        Err(error): fail(error)
+    }
+}
+
+fn optionalLease(
+    $value Result<Option<own lock.Lease>, lock.Error>
+) Option<own lock.Lease> {
+    match value {
+        Ok(lease): lease
+        Err(error): fail(error)
+    }
+}
+
+fn present($value Option<own lock.Lease>) own lock.Lease {
+    match value {
+        Some(lease): lease
+        None: panic("expected lock lease")
+    }
+}
+
+fn unavailable($value Option<own lock.Lease>) bool {
+    match value {
+        None: true
+        Some(lease): consumeUnexpected($lease)
+    }
+}
+
+fn consumeUnexpected($lease own lock.Lease) bool {
+    discard lease
+    false
+}
+
+fn requiredVoid($value Result<void, lock.Error>) void {
+    match value {
+        Ok: {}
+        Err(error): fail(error)
+    }
+}
+
+task delay(nanoseconds u64) void {
+    const Channel { sender receiver } = channel<void>(0)
+    var endpoint = receiver
+    select {
+        endpoint.receive(): {
+            discard sender
+            discard endpoint
+        }
+        timeout nanoseconds: {
+            discard sender
+            discard endpoint
+        }
+        else error: {
+            discard error
+            discard sender
+            discard endpoint
+        }
+    }
+}
+
+fn main() i32 {
+    const locker = lock.New()
+    const firstPending = locker.TryLock("shared", time.Zero())
+    const first = present(optionalLease($firstPending.wait()))
+    print("first acquired")
+    print(first.Key())
+
+    const blockedPending = locker.TryLock("shared", time.Zero())
+    if unavailable(optionalLease($blockedPending.wait())) {
+        print("second unavailable")
+    } else {
+        return 1
+    }
+
+    const firstRelease = first.Release()
+    requiredVoid($firstRelease.wait())
+    const afterReleasePending = locker.TryLock("shared", time.Zero())
+    const afterRelease = present(optionalLease($afterReleasePending.wait()))
+    print("after release acquired")
+    const afterReleaseDone = afterRelease.Release()
+    requiredVoid($afterReleaseDone.wait())
+
+    const expiringPending = locker.TryLock("expiring", time.Milliseconds(2))
+    const expiring = present(optionalLease($expiringPending.wait()))
+    const afterExpiryPending = locker.Acquire("expiring", time.Zero())
+    const afterExpiry = requiredLease($afterExpiryPending.wait())
+    print("after ttl acquired")
+    const staleExpiryRelease = expiring.Release()
+    requiredVoid($staleExpiryRelease.wait())
+    const afterExpiryRelease = afterExpiry.Release()
+    requiredVoid($afterExpiryRelease.wait())
+
+    const oldPending = locker.TryLock("owner", time.Milliseconds(10))
+    const old = present(optionalLease($oldPending.wait()))
+    const oldRelease = old.Release()
+    requiredVoid($oldRelease.wait())
+    const currentPending = locker.TryLock("owner", time.Zero())
+    const current = present(optionalLease($currentPending.wait()))
+    const waiting = spawn delay(20000000)
+    $waiting.wait()
+    const staleRelease = old.Release()
+    requiredVoid($staleRelease.wait())
+    const protectedPending = locker.TryLock("owner", time.Zero())
+    if unavailable(optionalLease($protectedPending.wait())) {
+        print("new owner protected")
+    } else {
+        return 2
+    }
+    const currentRelease = current.Release()
+    requiredVoid($currentRelease.wait())
+
+    print("lock compatibility ok")
+    0
+}

@@ -191,7 +191,8 @@ struct MatchArm {
     std::optional<std::string> binding;
     std::optional<AstExpressionId> pattern;
     std::optional<AstExpressionId> guard;
-    AstExpressionId expression{};
+    AstBlockId block{};
+    std::optional<AstExpressionId> expression;
     SourceSpan span;
 };
 

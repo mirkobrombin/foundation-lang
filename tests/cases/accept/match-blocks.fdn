@@ -1,0 +1,52 @@
+enum Change {
+    Add(value i32)
+    Clear
+}
+
+enum TextChoice {
+    Joined
+    Empty
+}
+
+fn apply(change Change) i32 {
+    var total = 10
+    match change {
+        Add(value): {
+            total = total + value
+            total
+        }
+        Clear: {
+            total = 0
+            total
+        }
+    }
+}
+
+fn text(choice TextChoice) String {
+    match choice {
+        Joined: {
+            const value = "match " + "owner"
+            value
+        }
+        Empty: ""
+    }
+}
+
+fn early(change Change) i32 {
+    match change {
+        Add(value): value
+        Clear: {
+            return 7
+        }
+    }
+}
+
+fn main() i32 {
+    if apply(.Add(value = 32)) != 42 return 1
+    if apply(.Clear) != 0 return 2
+    if text(.Joined) != "match owner" return 3
+    if early(.Add(value = 5)) != 5 return 4
+    if early(.Clear) != 7 return 5
+    print("match blocks")
+    0
+}

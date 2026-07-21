@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.116.0");
+    assert.equal(manifest.version, "0.117.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1361,6 +1361,11 @@ test("grammar and completions track compiler keywords", () => {
         "safemap.Map.Has", "safemap.Map.Len", "safemap.Map.Keys", "safemap.Map.Values",
         "safemap.Map.Snapshot", "safemap.Map.Clear", "safemap.Map.GetOrSet",
         "safemap.Map.Compute", "safemap.ShardedMap.WithExpiry",
+        "foundation.lock", "lock.Error", "lock.Handle", "lock.Lease", "lock.Locker",
+        "lock.InMemoryLocker",
+        "lock.New", "lock.Handle.Clone", "lock.Handle.Acquire", "lock.Handle.TryLock",
+        "lock.Lease.Key", "lock.Lease.Release", "lock.InMemoryLocker.Handle",
+        "lock.Locker.Acquire", "lock.Locker.TryLock",
         "foundation.worker", "worker.Supervisor", "worker.NewSupervisor",
         "worker.Supervisor.Start", "worker.Supervisor.Shutdown", "worker.Supervisor.Cancel",
         "worker.Group", "worker.GroupNext", "worker.GroupWait", "worker.GroupWake",

@@ -598,7 +598,10 @@ class IndexBuilder {
                 if (arm.guard.has_value()) {
                     visitExpression(*arm.guard, function);
                 }
-                visitExpression(arm.expression, function);
+                visitBlock(arm.block, function);
+                if (arm.expression.has_value()) {
+                    visitExpression(*arm.expression, function);
+                }
             }
         } else if (const auto *conditional =
                        std::get_if<ConditionalExpression>(&value)) {

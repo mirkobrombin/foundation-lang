@@ -1,0 +1,644 @@
+package foundation.lock
+
+import std.collections
+import std.text
+import std.time
+
+// Reports that a lock operation could not reach its owner task.
+enum Error {
+    // The owner task or request channel is closed.
+    Closed
+
+    // The calling task was cancelled before completion.
+    Cancelled
+}
+
+// Describes one keyed owner token.
+contract Lease {
+    // Returns an owned copy of the locked key.
+    fn Key(self) String
+
+    // Releases this owner token. Repeated calls have no further effect.
+    fn Release(self) Task<Result<void, Error>>
+}
+
+// Describes a keyed lock provider.
+contract Locker {
+    // Waits until the key is acquired or the calling task is cancelled.
+    fn Acquire(
+        self,
+        $key String,
+        ttl time.Duration
+    ) Task<Result<own Lease, Error>>
+
+    // Attempts to acquire the key without waiting.
+    fn TryLock(
+        self,
+        $key String,
+        ttl time.Duration
+    ) Task<Result<Option<own Lease>, Error>>
+}
+
+struct grantRequest {
+    key String
+    ttl i64
+    sequence u64
+    reply Sender<response>
+}
+
+struct releaseRequest {
+    key String
+    owner u64
+    reply Sender<response>
+}
+
+enum operation {
+    Acquire(value grantRequest)
+    Try(value grantRequest)
+    Release(value releaseRequest)
+}
+
+enum response {
+    Granted(owner u64)
+    Unavailable
+    Released
+}
+
+struct heldLock {
+    key String
+    owner u64
+    acquired time.MonotonicInstant
+    ttl i64
+}
+
+struct state {
+    locks own collections.List<heldLock>
+    waiters own collections.List<grantRequest>
+    nextOwner u64
+    nextSequence u64
+}
+
+// Sends lock operations to one in-process owner task.
+struct Handle {
+    sender Sender<operation>
+
+    // Creates another independently owned handle to the same locker.
+    fn Clone(self) Handle {
+        Handle { sender = self.sender.clone() }
+    }
+
+    // Waits until the key is acquired or the calling task is cancelled.
+    fn Acquire(
+        self,
+        $key String,
+        ttl time.Duration
+    ) Task<Result<own Lease, Error>> {
+        spawn acquire(self.sender.clone(), $key, ttl.Nanoseconds())
+    }
+
+    // Attempts to acquire the key without waiting.
+    fn TryLock(
+        self,
+        $key String,
+        ttl time.Duration
+    ) Task<Result<Option<own Lease>, Error>> {
+        spawn tryLock(self.sender.clone(), $key, ttl.Nanoseconds())
+    }
+}
+
+// Identifies one lock owner. Release is idempotent for this owner token.
+struct memoryLease implements Lease {
+    sender Sender<operation>
+    key String
+    owner u64
+
+    // Returns an owned copy of the locked key.
+    fn Key(self) String {
+        text.Copy(self.key)
+    }
+
+    // Releases this owner token. Repeated calls have no further effect.
+    fn Release(self) Task<Result<void, Error>> {
+        spawn release(
+            self.sender.clone(),
+            text.Copy(self.key),
+            self.owner
+        )
+    }
+}
+
+// Owns an in-process keyed locker and its owner task.
+struct InMemoryLocker implements Locker {
+    actor Task<void>
+    handle Handle
+
+    // Creates another independently owned handle to this locker.
+    fn Handle(self) Handle {
+        self.handle.Clone()
+    }
+
+    // Waits until the key is acquired or the calling task is cancelled.
+    fn Acquire(
+        self,
+        $key String,
+        ttl time.Duration
+    ) Task<Result<own Lease, Error>> {
+        self.handle.Acquire($key, ttl)
+    }
+
+    // Attempts to acquire the key without waiting.
+    fn TryLock(
+        self,
+        $key String,
+        ttl time.Duration
+    ) Task<Result<Option<own Lease>, Error>> {
+        self.handle.TryLock($key, ttl)
+    }
+}
+
+// Creates an in-process keyed locker.
+fn New() own InMemoryLocker {
+    const Channel { sender receiver } = channel<operation>(64)
+    const initial = own state {
+        locks = collections.NewList<heldLock>()
+        waiters = collections.NewList<grantRequest>()
+        nextOwner = 0
+        nextSequence = 0
+    }
+    const actor = spawn serve($receiver, $initial)
+    own InMemoryLocker {
+        actor = actor
+        handle = Handle { sender = sender }
+    }
+}
+
+task acquire(
+    $requests Sender<operation>,
+    $key String,
+    ttl i64
+) Result<own Lease, Error> {
+    const leaseKey = text.Copy(key)
+    const Channel { sender receiver } = channel<response>(0)
+    select {
+        requests.send(.Acquire(value = grantRequest {
+            key = key
+            ttl = ttl
+            sequence = 0
+            reply = sender
+        })): {
+            const received = receiver.receive()
+            return match received {
+                Ok(value): requireLease($requests, $leaseKey, $value)
+                Err(error): .Err(mapChannelError(error))
+            }
+        }
+        else error: return .Err(mapChannelError(error))
+    }
+}
+
+task tryLock(
+    $requests Sender<operation>,
+    $key String,
+    ttl i64
+) Result<Option<own Lease>, Error> {
+    const leaseKey = text.Copy(key)
+    const Channel { sender receiver } = channel<response>(0)
+    select {
+        requests.send(.Try(value = grantRequest {
+            key = key
+            ttl = ttl
+            sequence = 0
+            reply = sender
+        })): {
+            const received = receiver.receive()
+            return match received {
+                Ok(value): optionalLease($requests, $leaseKey, $value)
+                Err(error): .Err(mapChannelError(error))
+            }
+        }
+        else error: return .Err(mapChannelError(error))
+    }
+}
+
+task release(
+    $requests Sender<operation>,
+    $key String,
+    owner u64
+) Result<void, Error> {
+    const Channel { sender receiver } = channel<response>(0)
+    select {
+        requests.send(.Release(value = releaseRequest {
+            key = key
+            owner = owner
+            reply = sender
+        })): {
+            const received = receiver.receive()
+            return match received {
+                Ok(value): requireReleased($value)
+                Err(error): .Err(mapChannelError(error))
+            }
+        }
+        else error: return .Err(mapChannelError(error))
+    }
+}
+
+task serve(
+    $receiver Receiver<operation>,
+    $initial own state
+) void {
+    var inbox = receiver
+    var current = initial
+    while true {
+        var promotions = collections.NewList<String>()
+        const wakeDelay = nextTimeout(&current)
+        select {
+            const incoming = inbox.receive(): {
+                match incoming {
+                    Acquire(request): {
+                        const grantRequest { key ttl sequence reply } = request
+                        discard sequence
+                        if containsKey(&current, key) {
+                            queueWaiter(&current, $key, ttl, $reply)
+                        } else {
+                            const owner = occupy(
+                                &current,
+                                text.Copy(key),
+                                ttl
+                            )
+                            const result = reply.send(.Granted(owner = owner))
+                            match result {
+                                Ok: {
+                                    discard key
+                                }
+                                Err(sendError): {
+                                    discard sendError
+                                    const released = releaseOwner(
+                                        &current,
+                                        key,
+                                        owner
+                                    )
+                                    appendPromotion(&promotions, $released)
+                                }
+                            }
+                        }
+                    }
+                    Try(request): {
+                        const grantRequest { key ttl sequence reply } = request
+                        discard sequence
+                        if containsKey(&current, key) {
+                            discard reply.send(.Unavailable)
+                            discard key
+                        } else {
+                            const owner = occupy(
+                                &current,
+                                text.Copy(key),
+                                ttl
+                            )
+                            const result = reply.send(.Granted(owner = owner))
+                            match result {
+                                Ok: {
+                                    discard key
+                                }
+                                Err(sendError): {
+                                    discard sendError
+                                    const released = releaseOwner(
+                                        &current,
+                                        key,
+                                        owner
+                                    )
+                                    appendPromotion(&promotions, $released)
+                                }
+                            }
+                        }
+                    }
+                    Release(request): {
+                        const releaseRequest { key owner reply } = request
+                        const released = releaseOwner(
+                            &current,
+                            key,
+                            owner
+                        )
+                        discard reply.send(.Released)
+                        appendPromotion(&promotions, $released)
+                    }
+                }
+            }
+            timeout wakeDelay: {
+                collectExpired(&current, &promotions)
+            }
+            else error: {
+                discard error
+                discard promotions
+                return
+            }
+        }
+        while !promotions.IsEmpty() {
+            const key = requiredString(promotions.PopFront())
+            var delivered = false
+            while !delivered {
+                const candidate = takeOldestWaiter(&current, key)
+                match candidate {
+                    None: {
+                        delivered = true
+                    }
+                    Some(waiter): {
+                        const grantRequest {
+                            key as waiterKey
+                            ttl
+                            sequence
+                            reply
+                        } = waiter
+                        discard sequence
+                        const owner = occupy(&current, text.Copy(key), ttl)
+                        const result = reply.send(.Granted(owner = owner))
+                        match result {
+                            Ok: {
+                                delivered = true
+                            }
+                            Err(sendError): {
+                                discard sendError
+                                discard releaseOwner(&current, key, owner)
+                            }
+                        }
+                        discard waiterKey
+                    }
+                }
+            }
+            discard key
+        }
+    }
+}
+
+fn queueWaiter(
+    &current state,
+    $key String,
+    ttl i64,
+    $reply Sender<response>
+) void {
+    current.nextSequence = current.nextSequence + 1
+    current.waiters.PushFront(grantRequest {
+        key = key
+        ttl = ttl
+        sequence = current.nextSequence
+        reply = reply
+    })
+}
+
+fn appendPromotion(
+    &promotions collections.List<String>,
+    $key Option<String>
+) void {
+    match key {
+        None: {}
+        Some(value): { promotions.PushFront($value) }
+    }
+}
+
+fn occupy(&current state, $key String, ttl i64) u64 {
+    current.nextOwner = current.nextOwner + 1
+    const owner = current.nextOwner
+    current.locks.PushFront(heldLock {
+        key = key
+        owner = owner
+        acquired = time.MonotonicNow()
+        ttl = normalizedTtl(ttl)
+    })
+    owner
+}
+
+fn containsKey(&current state, key String) bool {
+    var source = replace current.locks with collections.NewList<heldLock>()
+    var restored = collections.NewList<heldLock>()
+    var found = false
+    while !source.IsEmpty() {
+        const item = requiredLock(source.PopFront())
+        if item.key == key {
+            found = true
+        }
+        restored.PushFront($item)
+    }
+    current.locks = restored
+    found
+}
+
+fn releaseOwner(&current state, key String, owner u64) Option<String> {
+    var source = replace current.locks with collections.NewList<heldLock>()
+    var restored = collections.NewList<heldLock>()
+    var released Option<String> = .None
+    while !source.IsEmpty() {
+        const item = requiredLock(source.PopFront())
+        if item.key == key && item.owner == owner {
+            released = .Some(text.Copy(item.key))
+            discard item
+        } else {
+            restored.PushFront($item)
+        }
+    }
+    current.locks = restored
+    released
+}
+
+fn collectExpired(
+    &current state,
+    &promotions collections.List<String>
+) void {
+    var source = replace current.locks with collections.NewList<heldLock>()
+    var restored = collections.NewList<heldLock>()
+    const now = time.MonotonicNow()
+    while !source.IsEmpty() {
+        const item = requiredLock(source.PopFront())
+        if expired(item, now) {
+            promotions.PushFront(text.Copy(item.key))
+            discard item
+        } else {
+            restored.PushFront($item)
+        }
+    }
+    current.locks = restored
+}
+
+fn nextTimeout(&current state) u64 {
+    var source = replace current.locks with collections.NewList<heldLock>()
+    var restored = collections.NewList<heldLock>()
+    var delay u64 = 3600000000000
+    const now = time.MonotonicNow()
+    while !source.IsEmpty() {
+        const item = requiredLock(source.PopFront())
+        const remaining = remainingNanoseconds(item, now)
+        if remaining < delay {
+            delay = remaining
+        }
+        restored.PushFront($item)
+    }
+    current.locks = restored
+    delay
+}
+
+fn remainingNanoseconds(item heldLock, now time.MonotonicInstant) u64 {
+    if item.ttl <= 0 return 3600000000000
+    const elapsed = now.Since(item.acquired) else error {
+        discard error
+        return 1
+    }
+    if elapsed.Nanoseconds() >= item.ttl return 1
+    const remaining = item.ttl - elapsed.Nanoseconds()
+    const converted = u64.From(remaining) else error {
+        discard error
+        return 1
+    }
+    converted
+}
+
+fn expired(item heldLock, now time.MonotonicInstant) bool {
+    if item.ttl <= 0 return false
+    const elapsed = now.Since(item.acquired) else error {
+        discard error
+        return false
+    }
+    elapsed.Nanoseconds() >= item.ttl
+}
+
+fn takeOldestWaiter(&current state, key String) Option<grantRequest> {
+    const sequence = oldestSequence(&current, key)
+    match sequence {
+        None: .None
+        Some(value): takeWaiter(&current, value)
+    }
+}
+
+fn oldestSequence(&current state, key String) Option<u64> {
+    var source = replace current.waiters with newWaiterList()
+    var restored = collections.NewList<grantRequest>()
+    var found Option<u64> = .None
+    while !source.IsEmpty() {
+        const item = requiredRequest(source.PopFront())
+        if item.key == key {
+            found = smallerSequence(found, item.sequence)
+        }
+        restored.PushFront($item)
+    }
+    current.waiters = restored
+    found
+}
+
+fn smallerSequence(current Option<u64>, candidate u64) Option<u64> {
+    match current {
+        None: .Some(candidate)
+        Some(value): if candidate < value {
+            .Some(candidate)
+        } else {
+            .Some(value)
+        }
+    }
+}
+
+fn takeWaiter(&current state, sequence u64) Option<grantRequest> {
+    var source = replace current.waiters with newWaiterList()
+    var restored = collections.NewList<grantRequest>()
+    var result Option<grantRequest> = .None
+    while !source.IsEmpty() {
+        const item = requiredRequest(source.PopFront())
+        if item.sequence == sequence {
+            result = .Some(item)
+        } else {
+            restored.PushFront($item)
+        }
+    }
+    current.waiters = restored
+    result
+}
+
+fn requireLease(
+    $requests Sender<operation>,
+    $key String,
+    $value response
+) Result<own Lease, Error> {
+    match value {
+        Granted(owner): .Ok(own memoryLease {
+            sender = requests
+            key = key
+            owner = owner
+        })
+        Unavailable: unexpectedResponse<Result<own Lease, Error>>()
+        Released: unexpectedResponse<Result<own Lease, Error>>()
+    }
+}
+
+fn optionalLease(
+    $requests Sender<operation>,
+    $key String,
+    $value response
+) Result<Option<own Lease>, Error> {
+    match value {
+        Granted(owner): .Ok(.Some(own memoryLease {
+            sender = requests
+            key = key
+            owner = owner
+        }))
+        Unavailable: emptyLease($requests, $key)
+        Released: unexpectedResponse<Result<Option<own Lease>, Error>>()
+    }
+}
+
+fn emptyLease(
+    $requests Sender<operation>,
+    $key String
+) Result<Option<own Lease>, Error> {
+    discard requests
+    discard key
+    .Ok(.None)
+}
+
+fn requireReleased($value response) Result<void, Error> {
+    match value {
+        Released: .Ok
+        Granted(owner): unexpectedResponse<Result<void, Error>>()
+        Unavailable: unexpectedResponse<Result<void, Error>>()
+    }
+}
+
+fn mapChannelError(error ChannelError) Error {
+    match error {
+        Closed: .Closed
+        Cancelled: .Cancelled
+        Timeout: .Cancelled
+    }
+}
+
+fn normalizedTtl(ttl i64) i64 {
+    if ttl <= 0 return 0
+    ttl
+}
+
+fn requiredLock($value Option<heldLock>) heldLock {
+    match value {
+        None: missingValue<heldLock>()
+        Some(item): item
+    }
+}
+
+fn requiredRequest($value Option<grantRequest>) grantRequest {
+    match value {
+        None: missingValue<grantRequest>()
+        Some(item): item
+    }
+}
+
+fn newWaiterList() own collections.List<grantRequest> {
+    collections.NewList<grantRequest>()
+}
+
+fn requiredString($value Option<String>) String {
+    match value {
+        None: missingValue<String>()
+        Some(item): item
+    }
+}
+
+fn missingValue<T>() T {
+    panic("lock collection invariant failed")
+}
+
+fn unexpectedResponse<T>() T {
+    panic("lock response invariant failed")
+}

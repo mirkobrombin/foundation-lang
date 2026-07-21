@@ -1,0 +1,205 @@
+package test.lock
+
+import foundation.lock
+import foundation.worker
+import std.time
+
+fn fail(error lock.Error) never {
+    discard error
+    panic("lock operation failed")
+}
+
+fn requiredLease(
+    $value Result<own lock.Lease, lock.Error>
+) own lock.Lease {
+    match value {
+        Ok(lease): lease
+        Err(error): fail(error)
+    }
+}
+
+fn optionalLease(
+    $value Result<Option<own lock.Lease>, lock.Error>
+) Option<own lock.Lease> {
+    match value {
+        Ok(lease): lease
+        Err(error): fail(error)
+    }
+}
+
+fn present($value Option<own lock.Lease>) own lock.Lease {
+    match value {
+        Some(lease): lease
+        None: panic("expected lock lease")
+    }
+}
+
+fn unavailable($value Option<own lock.Lease>) bool {
+    match value {
+        None: true
+        Some(lease): consumeUnexpected($lease)
+    }
+}
+
+fn consumeUnexpected($lease own lock.Lease) bool {
+    discard lease
+    false
+}
+
+fn requiredVoid($value Result<void, lock.Error>) void {
+    match value {
+        Ok: {}
+        Err(error): fail(error)
+    }
+}
+
+task delay(nanoseconds u64) void {
+    const Channel { sender receiver } = channel<void>(0)
+    var endpoint = receiver
+    select {
+        endpoint.receive(): {
+            discard sender
+            discard endpoint
+        }
+        timeout nanoseconds: {
+            discard sender
+            discard endpoint
+        }
+        else error: {
+            discard error
+            discard sender
+            discard endpoint
+        }
+    }
+}
+
+task useLock(
+    $handle lock.Handle,
+    value i32,
+    $results Sender<i32>
+) void {
+    const acquiring = handle.Acquire("parallel", time.Zero())
+    const acquired = $acquiring.wait()
+    const lease = requiredLease($acquired)
+    const releasing = lease.Release()
+    const released = $releasing.wait()
+    requiredVoid($released)
+    discard results.send(value)
+}
+
+task collect($results Receiver<i32>, count i32) i32 {
+    var total = 0
+    var remaining = count
+    while remaining > 0 {
+        const received = results.receive()
+        match received {
+            Ok(value): {
+                total = total + value
+            }
+            Err(error): {
+                discard error
+                panic("lock result channel failed")
+            }
+        }
+        remaining = remaining - 1
+    }
+    total
+}
+
+fn main() i32 {
+    const locker = lock.New()
+
+    const firstPending = locker.TryLock("shared", time.Zero())
+    const first = present(optionalLease($firstPending.wait()))
+    if first.Key() != "shared" return 1
+
+    const blockedPending = locker.TryLock("shared", time.Zero())
+    if !unavailable(optionalLease($blockedPending.wait())) return 2
+
+    const released = first.Release()
+    requiredVoid($released.wait())
+    const releasedAgain = first.Release()
+    requiredVoid($releasedAgain.wait())
+
+    const nextPending = locker.Acquire("shared", time.Zero())
+    const next = requiredLease($nextPending.wait())
+    const nextReleased = next.Release()
+    requiredVoid($nextReleased.wait())
+
+    const aPending = locker.TryLock("a", time.Zero())
+    const bPending = locker.TryLock("b", time.Zero())
+    const a = present(optionalLease($aPending.wait()))
+    const b = present(optionalLease($bPending.wait()))
+    const releaseA = a.Release()
+    const releaseB = b.Release()
+    requiredVoid($releaseA.wait())
+    requiredVoid($releaseB.wait())
+
+    const expiringPending = locker.TryLock("expiring", time.Milliseconds(2))
+    const expiring = present(optionalLease($expiringPending.wait()))
+    const afterExpiryPending = locker.Acquire("expiring", time.Zero())
+    const afterExpiry = requiredLease($afterExpiryPending.wait())
+    const staleRelease = expiring.Release()
+    requiredVoid($staleRelease.wait())
+    const afterExpiryRelease = afterExpiry.Release()
+    requiredVoid($afterExpiryRelease.wait())
+
+    const oldPending = locker.TryLock("owner", time.Milliseconds(10))
+    const old = present(optionalLease($oldPending.wait()))
+    const oldRelease = old.Release()
+    requiredVoid($oldRelease.wait())
+    const currentPending = locker.TryLock("owner", time.Zero())
+    const current = present(optionalLease($currentPending.wait()))
+    const waiting = spawn delay(20000000)
+    $waiting.wait()
+    const staleAgain = old.Release()
+    requiredVoid($staleAgain.wait())
+    const stillHeld = locker.TryLock("owner", time.Zero())
+    if !unavailable(optionalLease($stillHeld.wait())) return 3
+    const currentRelease = current.Release()
+    requiredVoid($currentRelease.wait())
+
+    const cancellationOwnerPending = locker.TryLock("cancelled", time.Zero())
+    const cancellationOwner = present(optionalLease($cancellationOwnerPending.wait()))
+    const abandoned = locker.Acquire("cancelled", time.Zero())
+    const cancellationYield = spawn delay(1000000)
+    $cancellationYield.wait()
+    discard abandoned
+    const cancellationRelease = cancellationOwner.Release()
+    requiredVoid($cancellationRelease.wait())
+    const afterCancellationPending = locker.Acquire("cancelled", time.Zero())
+    const afterCancellation = requiredLease($afterCancellationPending.wait())
+    const afterCancellationRelease = afterCancellation.Release()
+    requiredVoid($afterCancellationRelease.wait())
+
+    const queueOwnerPending = locker.TryLock("fifo", time.Zero())
+    const queueOwner = present(optionalLease($queueOwnerPending.wait()))
+    const firstQueued = locker.Acquire("fifo", time.Zero())
+    const firstQueueYield = spawn delay(1000000)
+    $firstQueueYield.wait()
+    const secondQueued = locker.Acquire("fifo", time.Zero())
+    const secondQueueYield = spawn delay(1000000)
+    $secondQueueYield.wait()
+    const queueOwnerRelease = queueOwner.Release()
+    requiredVoid($queueOwnerRelease.wait())
+    const firstQueuedLease = requiredLease($firstQueued.wait())
+    const firstQueuedRelease = firstQueuedLease.Release()
+    requiredVoid($firstQueuedRelease.wait())
+    const secondQueuedLease = requiredLease($secondQueued.wait())
+    const secondQueuedRelease = secondQueuedLease.Release()
+    requiredVoid($secondQueuedRelease.wait())
+
+    const Channel { sender receiver } = channel<i32>(4)
+    const gathering = spawn collect($receiver, 4)
+    const pool = worker.NewPool(4)
+    pool.Start(spawn useLock(locker.Handle(), 1, sender.clone()))
+    pool.Start(spawn useLock(locker.Handle(), 2, sender.clone()))
+    pool.Start(spawn useLock(locker.Handle(), 3, sender.clone()))
+    pool.Start(spawn useLock(locker.Handle(), 4, sender.clone()))
+    if $gathering.wait() != 10 return 4
+    pool.Shutdown()
+    discard sender
+
+    print("lock ok")
+    0
+}

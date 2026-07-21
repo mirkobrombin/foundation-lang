@@ -1,0 +1,17 @@
+enum Value {
+    Number(value i32)
+    Empty
+}
+
+fn read(value Value) i32 {
+    match value {
+        Number(number): {
+            discard number
+        }
+        Empty: 0
+    }
+}
+
+fn main() i32 {
+    read(.Empty)
+}

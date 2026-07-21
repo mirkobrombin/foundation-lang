@@ -813,7 +813,12 @@ class Lowerer {
                                     ? std::optional<FirExpressionId>{
                                           lowerExpression(*match.arms[arm].guard)}
                                     : std::nullopt,
-                                lowerExpression(match.arms[arm].expression), target.drops[arm]});
+                                lowerBlock(match.arms[arm].block),
+                                match.arms[arm].expression.has_value()
+                                    ? std::optional<FirExpressionId>{
+                                          lowerExpression(*match.arms[arm].expression)}
+                                    : std::nullopt,
+                                target.drops[arm]});
             }
             value = FirMatchExpression{lowerExpression(match.value), target.type, std::move(arms)};
         }

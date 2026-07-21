@@ -1680,7 +1680,13 @@ std::size_t completionExpressionEnd(
                     if (arm.guard.has_value()) {
                         include(*arm.guard);
                     }
-                    include(arm.expression);
+                    if (const auto *range = completionBlockRange(
+                            program, arm.block, delimiters)) {
+                        end = std::max(end, range->span.offset + range->span.length);
+                    }
+                    if (arm.expression.has_value()) {
+                        include(*arm.expression);
+                    }
                 }
             } else if constexpr (std::is_same_v<Value, ConditionalExpression>) {
                 include(value.condition);
