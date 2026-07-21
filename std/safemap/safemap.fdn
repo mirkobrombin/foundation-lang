@@ -1,0 +1,1022 @@
+package std.safemap
+
+import std.collections
+import std.text
+import std.time
+
+extern c fn stringHashNative(value String) u64 as foundation_runtime_string_hash_fnv1a
+
+// Reports that a map operation could not reach its owner task.
+enum Error {
+    Closed
+    Cancelled
+}
+
+// Holds one key and value from an atomic map snapshot.
+struct Pair<K, V> {
+    Key K
+    Value V
+}
+
+struct entry<K, V> {
+    key K
+    value V
+    bucket u64
+    written time.MonotonicInstant
+    ttl i64
+}
+
+struct state<K, V> {
+    entries own collections.List<entry<K, V>>
+    equal fn(K, K) bool
+    cloneKey fn(K) K
+    cloneValue fn(V) V
+    hash fn(K) u64
+    shardCount u64
+    ttl i64
+}
+
+struct setPayload<K, V> {
+    key K
+    value V
+}
+
+struct computePayload<K, V> {
+    key K
+    initial V
+    update fn(V) V
+}
+
+enum operation<K, V> {
+    Set(value setPayload<K, V>)
+    Get(key K)
+    Delete(key K)
+    Has(key K)
+    Len
+    Keys
+    Values
+    Snapshot
+    Clear
+    GetOrSet(value setPayload<K, V>)
+    Compute(value computePayload<K, V>)
+    ConfigureExpiry(nanoseconds i64)
+}
+
+enum response<K, V> {
+    Done
+    MaybeValue(value Option<V>)
+    Flag(value bool)
+    Length(value i32)
+    Keys(value own collections.List<K>)
+    Values(value own collections.List<V>)
+    Snapshot(value own collections.List<Pair<K, V>>)
+    Value(value V)
+}
+
+struct request<K, V> {
+    operation operation<K, V>
+    reply Sender<response<K, V>>
+}
+
+// Sends typed operations to one map owner without exposing its storage.
+struct Handle<K, V> {
+    sender Sender<request<K, V>>
+
+    // Creates another independently owned handle to the same map.
+    fn Clone(self) Handle<K, V> {
+        Handle<K, V> { sender = self.sender.clone() }
+    }
+
+    // Stores one owned key and value.
+    fn Set(self, $key K, $value V) Task<Result<void, Error>> {
+        spawn set<K, V>(self.sender.clone(), $key, $value)
+    }
+
+    // Returns an explicitly cloned value when the key is present.
+    fn Get(self, $key K) Task<Result<Option<V>, Error>> {
+        spawn get<K, V>(self.sender.clone(), $key)
+    }
+
+    // Removes a key and reports whether it existed.
+    fn Delete(self, $key K) Task<Result<bool, Error>> {
+        spawn delete<K, V>(self.sender.clone(), $key)
+    }
+
+    // Reports whether a non-expired key exists.
+    fn Has(self, $key K) Task<Result<bool, Error>> {
+        spawn has<K, V>(self.sender.clone(), $key)
+    }
+
+    // Returns the number of non-expired entries.
+    fn Len(self) Task<Result<i32, Error>> {
+        spawn length<K, V>(self.sender.clone())
+    }
+
+    // Returns cloned keys from one atomic snapshot.
+    fn Keys(self) Task<Result<own collections.List<K>, Error>> {
+        spawn keys<K, V>(self.sender.clone())
+    }
+
+    // Returns cloned values from one atomic snapshot.
+    fn Values(self) Task<Result<own collections.List<V>, Error>> {
+        spawn values<K, V>(self.sender.clone())
+    }
+
+    // Returns cloned key-value pairs from one atomic snapshot.
+    fn Snapshot(self) Task<Result<own collections.List<Pair<K, V>>, Error>> {
+        spawn snapshot<K, V>(self.sender.clone())
+    }
+
+    // Removes every entry.
+    fn Clear(self) Task<Result<void, Error>> {
+        spawn clear<K, V>(self.sender.clone())
+    }
+
+    // Returns the current clone or atomically stores the supplied value.
+    fn GetOrSet(self, $key K, $value V) Task<Result<V, Error>> {
+        spawn getOrSet<K, V>(self.sender.clone(), $key, $value)
+    }
+
+    // Atomically transforms an existing value or the supplied initial value.
+    fn Compute(
+        self,
+        $key K,
+        $initial V,
+        $update fn(V) V
+    ) Task<Result<V, Error>> {
+        spawn compute<K, V>(self.sender.clone(), $key, $initial, $update)
+    }
+}
+
+// Owns one task-safe map and closes it deterministically when dropped.
+struct Map<K, V> {
+    actor Task<void>
+    handle Handle<K, V>
+
+    fn Handle(self) Handle<K, V> {
+        self.handle.Clone()
+    }
+
+    fn Set(self, $key K, $value V) Task<Result<void, Error>> {
+        self.handle.Set($key, $value)
+    }
+
+    fn Get(self, $key K) Task<Result<Option<V>, Error>> {
+        self.handle.Get($key)
+    }
+
+    fn Delete(self, $key K) Task<Result<bool, Error>> {
+        self.handle.Delete($key)
+    }
+
+    fn Has(self, $key K) Task<Result<bool, Error>> {
+        self.handle.Has($key)
+    }
+
+    fn Len(self) Task<Result<i32, Error>> {
+        self.handle.Len()
+    }
+
+    fn Keys(self) Task<Result<own collections.List<K>, Error>> {
+        self.handle.Keys()
+    }
+
+    fn Values(self) Task<Result<own collections.List<V>, Error>> {
+        self.handle.Values()
+    }
+
+    fn Snapshot(self) Task<Result<own collections.List<Pair<K, V>>, Error>> {
+        self.handle.Snapshot()
+    }
+
+    fn Clear(self) Task<Result<void, Error>> {
+        self.handle.Clear()
+    }
+
+    fn GetOrSet(self, $key K, $value V) Task<Result<V, Error>> {
+        self.handle.GetOrSet($key, $value)
+    }
+
+    fn Compute(
+        self,
+        $key K,
+        $initial V,
+        $update fn(V) V
+    ) Task<Result<V, Error>> {
+        self.handle.Compute($key, $initial, $update)
+    }
+}
+
+// Owns a task-safe map with deterministic hash buckets and optional TTL.
+struct ShardedMap<K, V> {
+    map own Map<K, V>
+
+    fn Handle(self) Handle<K, V> {
+        self.map.Handle()
+    }
+
+    fn Set(self, $key K, $value V) Task<Result<void, Error>> {
+        self.map.Set($key, $value)
+    }
+
+    fn Get(self, $key K) Task<Result<Option<V>, Error>> {
+        self.map.Get($key)
+    }
+
+    fn Delete(self, $key K) Task<Result<bool, Error>> {
+        self.map.Delete($key)
+    }
+
+    fn Has(self, $key K) Task<Result<bool, Error>> {
+        self.map.Has($key)
+    }
+
+    fn Len(self) Task<Result<i32, Error>> {
+        self.map.Len()
+    }
+
+    fn Keys(self) Task<Result<own collections.List<K>, Error>> {
+        self.map.Keys()
+    }
+
+    fn Values(self) Task<Result<own collections.List<V>, Error>> {
+        self.map.Values()
+    }
+
+    fn Snapshot(self) Task<Result<own collections.List<Pair<K, V>>, Error>> {
+        self.map.Snapshot()
+    }
+
+    fn Clear(self) Task<Result<void, Error>> {
+        self.map.Clear()
+    }
+
+    fn GetOrSet(self, $key K, $value V) Task<Result<V, Error>> {
+        self.map.GetOrSet($key, $value)
+    }
+
+    fn Compute(
+        self,
+        $key K,
+        $initial V,
+        $update fn(V) V
+    ) Task<Result<V, Error>> {
+        self.map.Compute($key, $initial, $update)
+    }
+
+    // Changes the TTL applied to later writes. Zero disables expiry.
+    fn WithExpiry(self, duration time.Duration) Task<Result<void, Error>> {
+        spawn configureExpiry<K, V>(
+            self.map.handle.sender.clone(),
+            expiryNanoseconds(duration)
+        )
+    }
+}
+
+// Creates a map. Clone functions make every returned key and value explicit.
+fn New<K, V>(
+    $equal fn(K, K) bool,
+    $cloneKey fn(K) K,
+    $cloneValue fn(V) V
+) own Map<K, V> {
+    newMap<K, V>($equal, $cloneKey, $cloneValue, $singleShard<K>, 1)
+}
+
+// Creates a hash-bucketed map and rounds the shard count up to a power of two.
+fn NewSharded<K, V>(
+    $equal fn(K, K) bool,
+    $cloneKey fn(K) K,
+    $cloneValue fn(V) V,
+    $hash fn(K) u64,
+    shardCount i32
+) own ShardedMap<K, V> {
+    own ShardedMap<K, V> {
+        map = newMap<K, V>(
+            $equal,
+            $cloneKey,
+            $cloneValue,
+            $hash,
+            normalizedShardCount(shardCount)
+        )
+    }
+}
+
+fn StringEqual(left String, right String) bool {
+    left == right
+}
+
+fn CloneString(value String) String {
+    text.Copy(value)
+}
+
+// Computes FNV-1a over the UTF-8 bytes of a String.
+fn StringHasher(value String) u64 {
+    stringHashNative(value)
+}
+
+fn newMap<K, V>(
+    $equal fn(K, K) bool,
+    $cloneKey fn(K) K,
+    $cloneValue fn(V) V,
+    $hash fn(K) u64,
+    shardCount u64
+) own Map<K, V> {
+    const Channel { sender receiver } = channel<request<K, V>>(64)
+    const initial = own state<K, V> {
+        entries = collections.NewList<entry<K, V>>()
+        equal = equal
+        cloneKey = cloneKey
+        cloneValue = cloneValue
+        hash = hash
+        shardCount = shardCount
+        ttl = 0
+    }
+    const actor = spawn serve<K, V>($receiver, $initial)
+    own Map<K, V> {
+        actor = actor
+        handle = Handle<K, V> { sender = sender }
+    }
+}
+
+task serve<K, V>(
+    $receiver Receiver<request<K, V>>,
+    $initial own state<K, V>
+) void {
+    var inbox = receiver
+    var current = initial
+    while true {
+        select {
+            const incoming = inbox.receive(): {
+                const request { operation reply } = incoming
+                const result = apply(&current, $operation)
+                discard reply.send($result)
+            }
+            else error: {
+                discard error
+                return
+            }
+        }
+    }
+}
+
+fn apply<K, V>(
+    &current state<K, V>,
+    $operation operation<K, V>
+) response<K, V> {
+    match operation {
+        Set(value): applySet(&current, $value)
+        Get(key): .MaybeValue(value = getValue(&current, $key))
+        Delete(key): .Flag(value = deleteValue(&current, $key))
+        Has(key): .Flag(value = hasValue(&current, $key))
+        Len: .Length(value = currentLength(&current))
+        Keys: .Keys(value = currentKeys(&current))
+        Values: .Values(value = currentValues(&current))
+        Snapshot: .Snapshot(value = currentSnapshot(&current))
+        Clear: applyClear(&current)
+        GetOrSet(value): applyGetOrSet(&current, $value)
+        Compute(value): applyCompute(&current, $value)
+        ConfigureExpiry(nanoseconds): configureState(&current, nanoseconds)
+    }
+}
+
+fn applySet<K, V>(
+    &current state<K, V>,
+    $payload setPayload<K, V>
+) response<K, V> {
+    const setPayload { key value } = payload
+    setValue(&current, $key, $value)
+    .Done
+}
+
+fn applyClear<K, V>(&current state<K, V>) response<K, V> {
+    current.entries.Clear()
+    .Done
+}
+
+fn applyGetOrSet<K, V>(
+    &current state<K, V>,
+    $payload setPayload<K, V>
+) response<K, V> {
+    const setPayload { key value } = payload
+    .Value(value = getOrSetValue(&current, $key, $value))
+}
+
+fn applyCompute<K, V>(
+    &current state<K, V>,
+    $value computePayload<K, V>
+) response<K, V> {
+    const computePayload { key initial update } = value
+    .Value(value = computeValue(&current, $key, $initial, $update))
+}
+
+fn configureState<K, V>(
+    &current state<K, V>,
+    nanoseconds i64
+) response<K, V> {
+    current.ttl = nanoseconds
+    .Done
+}
+
+task set<K, V>(
+    $requests Sender<request<K, V>>,
+    $key K,
+    $value V
+) Result<void, Error> {
+    const result = spawn sendRequest(
+        $requests,
+        .Set(value = setPayload<K, V> { key = key value = value })
+    )
+    const received = $result.wait()
+    mapDone<K, V>($received)
+}
+
+task get<K, V>(
+    $requests Sender<request<K, V>>,
+    $key K
+) Result<Option<V>, Error> {
+    const result = spawn sendRequest($requests, .Get(key = key))
+    const received = $result.wait()
+    mapMaybeValue<K, V>($received)
+}
+
+task delete<K, V>(
+    $requests Sender<request<K, V>>,
+    $key K
+) Result<bool, Error> {
+    const result = spawn sendRequest($requests, .Delete(key = key))
+    const received = $result.wait()
+    mapFlag<K, V>($received)
+}
+
+task has<K, V>(
+    $requests Sender<request<K, V>>,
+    $key K
+) Result<bool, Error> {
+    const result = spawn sendRequest($requests, .Has(key = key))
+    const received = $result.wait()
+    mapFlag<K, V>($received)
+}
+
+task length<K, V>($requests Sender<request<K, V>>) Result<i32, Error> {
+    const result = spawn sendRequest($requests, .Len)
+    const received = $result.wait()
+    mapLength<K, V>($received)
+}
+
+task keys<K, V>(
+    $requests Sender<request<K, V>>
+) Result<own collections.List<K>, Error> {
+    const result = spawn sendRequest($requests, .Keys)
+    const received = $result.wait()
+    mapKeys<K, V>($received)
+}
+
+task values<K, V>(
+    $requests Sender<request<K, V>>
+) Result<own collections.List<V>, Error> {
+    const result = spawn sendRequest($requests, .Values)
+    const received = $result.wait()
+    mapValues<K, V>($received)
+}
+
+task snapshot<K, V>(
+    $requests Sender<request<K, V>>
+) Result<own collections.List<Pair<K, V>>, Error> {
+    const result = spawn sendRequest($requests, .Snapshot)
+    const received = $result.wait()
+    mapSnapshot<K, V>($received)
+}
+
+task clear<K, V>($requests Sender<request<K, V>>) Result<void, Error> {
+    const result = spawn sendRequest($requests, .Clear)
+    const received = $result.wait()
+    mapDone<K, V>($received)
+}
+
+task getOrSet<K, V>(
+    $requests Sender<request<K, V>>,
+    $key K,
+    $value V
+) Result<V, Error> {
+    const result = spawn sendRequest(
+        $requests,
+        .GetOrSet(value = setPayload<K, V> { key = key value = value })
+    )
+    const received = $result.wait()
+    mapValue<K, V>($received)
+}
+
+task compute<K, V>(
+    $requests Sender<request<K, V>>,
+    $key K,
+    $initial V,
+    $update fn(V) V
+) Result<V, Error> {
+    const result = spawn sendRequest($requests, .Compute(value = computePayload<K, V> {
+        key = key
+        initial = initial
+        update = update
+    }))
+    const received = $result.wait()
+    mapValue<K, V>($received)
+}
+
+task configureExpiry<K, V>(
+    $requests Sender<request<K, V>>,
+    nanoseconds i64
+) Result<void, Error> {
+    const result = spawn sendRequest(
+        $requests,
+        .ConfigureExpiry(nanoseconds = nanoseconds)
+    )
+    const received = $result.wait()
+    mapDone<K, V>($received)
+}
+
+task sendRequest<K, V>(
+    $requests Sender<request<K, V>>,
+    $operation operation<K, V>
+) Result<response<K, V>, Error> {
+    const Channel { sender receiver } = channel<response<K, V>>(1)
+    select {
+        requests.send(request<K, V> {
+            operation = operation
+            reply = sender
+        }): {
+            const received = receiver.receive()
+            return match received {
+                Ok(value): .Ok(value)
+                Err(error): .Err(mapChannelError(error))
+            }
+        }
+        else error: return .Err(mapChannelError(error))
+    }
+}
+
+fn mapChannelError(error ChannelError) Error {
+    match error {
+        Closed: .Closed
+        Cancelled: .Cancelled
+        Timeout: .Cancelled
+    }
+}
+
+fn mapDone<K, V>(
+    $value Result<response<K, V>, Error>
+) Result<void, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): requireDone($response)
+    }
+}
+
+fn requireDone<K, V>($value response<K, V>) Result<void, Error> {
+    match value {
+        Done: .Ok
+        MaybeValue(value): unexpectedResponse<Option<V>>($value)
+        Flag(value): unexpectedResponse<bool>($value)
+        Length(value): unexpectedResponse<i32>($value)
+        Keys(value): unexpectedResponse<own collections.List<K>>($value)
+        Values(value): unexpectedResponse<own collections.List<V>>($value)
+        Snapshot(value): unexpectedResponse<own collections.List<Pair<K, V>>>($value)
+        Value(value): unexpectedResponse<V>($value)
+    }
+}
+
+fn mapMaybeValue<K, V>(
+    $value Result<response<K, V>, Error>
+) Result<Option<V>, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): requireMaybeValue($response)
+    }
+}
+
+fn requireMaybeValue<K, V>(
+    $value response<K, V>
+) Result<Option<V>, Error> {
+    match value {
+        MaybeValue(found): .Ok(found)
+        Done: unexpectedDone()
+        Flag(value): unexpectedResponse<bool>($value)
+        Length(value): unexpectedResponse<i32>($value)
+        Keys(value): unexpectedResponse<own collections.List<K>>($value)
+        Values(value): unexpectedResponse<own collections.List<V>>($value)
+        Snapshot(value): unexpectedResponse<own collections.List<Pair<K, V>>>($value)
+        Value(value): unexpectedResponse<V>($value)
+    }
+}
+
+fn mapFlag<K, V>(
+    $value Result<response<K, V>, Error>
+) Result<bool, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): requireFlag($response)
+    }
+}
+
+fn requireFlag<K, V>($value response<K, V>) Result<bool, Error> {
+    match value {
+        Flag(found): .Ok(found)
+        Done: unexpectedDone()
+        MaybeValue(value): unexpectedResponse<Option<V>>($value)
+        Length(value): unexpectedResponse<i32>($value)
+        Keys(value): unexpectedResponse<own collections.List<K>>($value)
+        Values(value): unexpectedResponse<own collections.List<V>>($value)
+        Snapshot(value): unexpectedResponse<own collections.List<Pair<K, V>>>($value)
+        Value(value): unexpectedResponse<V>($value)
+    }
+}
+
+fn mapLength<K, V>(
+    $value Result<response<K, V>, Error>
+) Result<i32, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): requireLength($response)
+    }
+}
+
+fn requireLength<K, V>($value response<K, V>) Result<i32, Error> {
+    match value {
+        Length(found): .Ok(found)
+        Done: unexpectedDone()
+        MaybeValue(value): unexpectedResponse<Option<V>>($value)
+        Flag(value): unexpectedResponse<bool>($value)
+        Keys(value): unexpectedResponse<own collections.List<K>>($value)
+        Values(value): unexpectedResponse<own collections.List<V>>($value)
+        Snapshot(value): unexpectedResponse<own collections.List<Pair<K, V>>>($value)
+        Value(value): unexpectedResponse<V>($value)
+    }
+}
+
+fn mapKeys<K, V>(
+    $value Result<response<K, V>, Error>
+) Result<own collections.List<K>, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): requireKeys($response)
+    }
+}
+
+fn requireKeys<K, V>(
+    $value response<K, V>
+) Result<own collections.List<K>, Error> {
+    match value {
+        Keys(found): .Ok(found)
+        Done: unexpectedDone()
+        MaybeValue(value): unexpectedResponse<Option<V>>($value)
+        Flag(value): unexpectedResponse<bool>($value)
+        Length(value): unexpectedResponse<i32>($value)
+        Values(value): unexpectedResponse<own collections.List<V>>($value)
+        Snapshot(value): unexpectedResponse<own collections.List<Pair<K, V>>>($value)
+        Value(value): unexpectedResponse<V>($value)
+    }
+}
+
+fn mapValues<K, V>(
+    $value Result<response<K, V>, Error>
+) Result<own collections.List<V>, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): requireValues($response)
+    }
+}
+
+fn requireValues<K, V>(
+    $value response<K, V>
+) Result<own collections.List<V>, Error> {
+    match value {
+        Values(found): .Ok(found)
+        Done: unexpectedDone()
+        MaybeValue(value): unexpectedResponse<Option<V>>($value)
+        Flag(value): unexpectedResponse<bool>($value)
+        Length(value): unexpectedResponse<i32>($value)
+        Keys(value): unexpectedResponse<own collections.List<K>>($value)
+        Snapshot(value): unexpectedResponse<own collections.List<Pair<K, V>>>($value)
+        Value(value): unexpectedResponse<V>($value)
+    }
+}
+
+fn mapSnapshot<K, V>(
+    $value Result<response<K, V>, Error>
+) Result<own collections.List<Pair<K, V>>, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): requireSnapshot($response)
+    }
+}
+
+fn requireSnapshot<K, V>(
+    $value response<K, V>
+) Result<own collections.List<Pair<K, V>>, Error> {
+    match value {
+        Snapshot(found): .Ok(found)
+        Done: unexpectedDone()
+        MaybeValue(value): unexpectedResponse<Option<V>>($value)
+        Flag(value): unexpectedResponse<bool>($value)
+        Length(value): unexpectedResponse<i32>($value)
+        Keys(value): unexpectedResponse<own collections.List<K>>($value)
+        Values(value): unexpectedResponse<own collections.List<V>>($value)
+        Value(value): unexpectedResponse<V>($value)
+    }
+}
+
+fn mapValue<K, V>(
+    $value Result<response<K, V>, Error>
+) Result<V, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): requireValue($response)
+    }
+}
+
+fn requireValue<K, V>($value response<K, V>) Result<V, Error> {
+    match value {
+        Value(found): .Ok(found)
+        Done: unexpectedDone()
+        MaybeValue(value): unexpectedResponse<Option<V>>($value)
+        Flag(value): unexpectedResponse<bool>($value)
+        Length(value): unexpectedResponse<i32>($value)
+        Keys(value): unexpectedResponse<own collections.List<K>>($value)
+        Values(value): unexpectedResponse<own collections.List<V>>($value)
+        Snapshot(value): unexpectedResponse<own collections.List<Pair<K, V>>>($value)
+    }
+}
+
+fn unexpectedResponse<T>($value T) never {
+    discard value
+    panic("safemap response invariant failed")
+}
+
+fn unexpectedDone() never {
+    panic("safemap response invariant failed")
+}
+
+fn setValue<K, V>(&current state<K, V>, $key K, $value V) void {
+    var source = replace current.entries with collections.NewList<entry<K, V>>()
+    var restored = collections.NewList<entry<K, V>>()
+    var found = false
+    while !source.IsEmpty() {
+        var item = requiredEntry(source.PopFront())
+        if !found && keyMatches(current, key, item) {
+            discard replace item.value with cloneValue(current.cloneValue, value)
+            item.written = time.MonotonicNow()
+            item.ttl = current.ttl
+            found = true
+        }
+        restored.PushFront($item)
+    }
+    if found {
+        discard key
+        discard value
+    } else {
+        const bucket = bucketFor(current, key)
+        restored.PushFront(entry<K, V> {
+            key = key
+            value = value
+            bucket = bucket
+            written = time.MonotonicNow()
+            ttl = current.ttl
+        })
+    }
+    current.entries = restored
+}
+
+fn getValue<K, V>(&current state<K, V>, $key K) Option<V> {
+    var source = replace current.entries with collections.NewList<entry<K, V>>()
+    var restored = collections.NewList<entry<K, V>>()
+    var result Option<V> = .None
+    const now = time.MonotonicNow()
+    while !source.IsEmpty() {
+        const item = requiredEntry(source.PopFront())
+        if expired(item, now) {
+            discard item
+        } else {
+            if keyMatches(current, key, item) {
+                result = .Some(cloneValue(current.cloneValue, item.value))
+            }
+            restored.PushFront($item)
+        }
+    }
+    current.entries = restored
+    discard key
+    result
+}
+
+fn deleteValue<K, V>(&current state<K, V>, $key K) bool {
+    var source = replace current.entries with collections.NewList<entry<K, V>>()
+    var restored = collections.NewList<entry<K, V>>()
+    var deleted = false
+    const now = time.MonotonicNow()
+    while !source.IsEmpty() {
+        const item = requiredEntry(source.PopFront())
+        const stale = expired(item, now)
+        if stale || keyMatches(current, key, item) {
+            if !stale {
+                deleted = true
+            }
+            discard item
+        } else {
+            restored.PushFront($item)
+        }
+    }
+    current.entries = restored
+    discard key
+    deleted
+}
+
+fn hasValue<K, V>(&current state<K, V>, $key K) bool {
+    hasOption(getValue(&current, $key))
+}
+
+fn hasOption<T>($value Option<T>) bool {
+    match value {
+        None: false
+        Some(item): consumeFound($item)
+    }
+}
+
+fn consumeFound<T>($value T) bool {
+    discard value
+    true
+}
+
+fn currentLength<K, V>(&current state<K, V>) i32 {
+    removeExpired(&current)
+    current.entries.Len()
+}
+
+fn currentKeys<K, V>(&current state<K, V>) own collections.List<K> {
+    removeExpired(&current)
+    var source = replace current.entries with collections.NewList<entry<K, V>>()
+    var restored = collections.NewList<entry<K, V>>()
+    var result = collections.NewList<K>()
+    while !source.IsEmpty() {
+        const item = requiredEntry(source.PopFront())
+        result.PushFront(cloneValue(current.cloneKey, item.key))
+        restored.PushFront($item)
+    }
+    current.entries = restored
+    result
+}
+
+fn currentValues<K, V>(&current state<K, V>) own collections.List<V> {
+    removeExpired(&current)
+    var source = replace current.entries with collections.NewList<entry<K, V>>()
+    var restored = collections.NewList<entry<K, V>>()
+    var result = collections.NewList<V>()
+    while !source.IsEmpty() {
+        const item = requiredEntry(source.PopFront())
+        result.PushFront(cloneValue(current.cloneValue, item.value))
+        restored.PushFront($item)
+    }
+    current.entries = restored
+    result
+}
+
+fn currentSnapshot<K, V>(
+    &current state<K, V>
+) own collections.List<Pair<K, V>> {
+    removeExpired(&current)
+    var source = replace current.entries with collections.NewList<entry<K, V>>()
+    var restored = collections.NewList<entry<K, V>>()
+    var result = collections.NewList<Pair<K, V>>()
+    while !source.IsEmpty() {
+        const item = requiredEntry(source.PopFront())
+        result.PushFront(Pair<K, V> {
+            Key = cloneValue(current.cloneKey, item.key)
+            Value = cloneValue(current.cloneValue, item.value)
+        })
+        restored.PushFront($item)
+    }
+    current.entries = restored
+    result
+}
+
+fn getOrSetValue<K, V>(&current state<K, V>, $key K, $value V) V {
+    const clonedKey = cloneValue(current.cloneKey, key)
+    const existing = getValue(&current, $clonedKey)
+    match existing {
+        Some(found): existingValue($key, $value, $found)
+        None: storeDefault(&current, $key, $value)
+    }
+}
+
+fn existingValue<K, V>($key K, $value V, $found V) V {
+    discard key
+    discard value
+    found
+}
+
+fn storeDefault<K, V>(&current state<K, V>, $key K, $value V) V {
+    const result = cloneValue(current.cloneValue, value)
+    setValue(&current, $key, $value)
+    result
+}
+
+fn computeValue<K, V>(
+    &current state<K, V>,
+    $key K,
+    $initial V,
+    $update fn(V) V
+) V {
+    const clonedKey = cloneValue(current.cloneKey, key)
+    const existing = getValue(&current, $clonedKey)
+    const next = match existing {
+        None: cloneValue(update, initial)
+        Some(found): updateExisting($found, update)
+    }
+    discard initial
+    const stored = cloneValue(current.cloneValue, next)
+    setValue(&current, $key, $stored)
+    discard update
+    next
+}
+
+fn updateExisting<T>($value T, update fn(T) T) T {
+    const result = cloneValue(update, value)
+    discard value
+    result
+}
+
+fn removeExpired<K, V>(&current state<K, V>) void {
+    var source = replace current.entries with collections.NewList<entry<K, V>>()
+    var restored = collections.NewList<entry<K, V>>()
+    const now = time.MonotonicNow()
+    while !source.IsEmpty() {
+        const item = requiredEntry(source.PopFront())
+        if expired(item, now) {
+            discard item
+        } else {
+            restored.PushFront($item)
+        }
+    }
+    current.entries = restored
+}
+
+fn keyMatches<K, V>(current state<K, V>, key K, item entry<K, V>) bool {
+    if bucketFor(current, key) != item.bucket return false
+    equalValue(current.equal, key, item.key)
+}
+
+fn equalValue<T>(equal fn(T, T) bool, left T, right T) bool {
+    equal(left, right)
+}
+
+fn cloneValue<T>(clone fn(T) T, value T) T {
+    clone(value)
+}
+
+fn bucketFor<K, V>(current state<K, V>, key K) u64 {
+    hashValue(current.hash, key) % current.shardCount
+}
+
+fn hashValue<T>(hash fn(T) u64, value T) u64 {
+    hash(value)
+}
+
+fn singleShard<T>(value T) u64 {
+    discard value
+    0
+}
+
+fn normalizedShardCount(requested i32) u64 {
+    if requested <= 0 return 32
+    var result u64 = 1
+    const limit = u64.From(requested) else error {
+        discard error
+        return 32
+    }
+    while result < limit {
+        if result > 9223372036854775807 return result
+        result = result * 2
+    }
+    result
+}
+
+fn expiryNanoseconds(duration time.Duration) i64 {
+    if duration.Nanoseconds() <= 0 return 0
+    duration.Nanoseconds()
+}
+
+fn expired<K, V>(item entry<K, V>, now time.MonotonicInstant) bool {
+    if item.ttl <= 0 return false
+    const elapsed = now.Since(item.written) else error {
+        discard error
+        return false
+    }
+    elapsed.Nanoseconds() > item.ttl
+}
+
+fn requiredEntry<K, V>($value Option<entry<K, V>>) entry<K, V> {
+    match value {
+        None: missingEntry<K, V>()
+        Some(item): item
+    }
+}
+
+fn missingEntry<K, V>() entry<K, V> {
+    panic("safemap entry invariant failed")
+}

@@ -45,6 +45,16 @@ int main(void) {
         foundation_runtime_string_byte_at(&copied, 14, &byte) != 1) {
         return 7;
     }
+    const fdn_string hash_input = fdn_string_static("hello", 5);
+    if (foundation_runtime_string_hash_fnv1a(&hash_input) !=
+        UINT64_C(0xa430d84680aabd0b)) {
+        return 14;
+    }
+    const fdn_string empty_hash_input = fdn_string_static("", 0);
+    if (foundation_runtime_string_hash_fnv1a(&empty_hash_input) !=
+        UINT64_C(0xcbf29ce484222325)) {
+        return 15;
+    }
     if (foundation_runtime_string_slice(&copied, 1, 3, &sliced) != 0 ||
         !fdn_string_equal(sliced, fdn_string_static("\xc3\xa9", 2))) {
         return 8;

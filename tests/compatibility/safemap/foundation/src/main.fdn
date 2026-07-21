@@ -1,0 +1,135 @@
+package test.compatibility.safemap
+
+import std.collections
+import std.format
+import std.safemap
+import std.time
+
+fn cloneI32(value i32) i32 {
+    value
+}
+
+fn increment(value i32) i32 {
+    value + 1
+}
+
+fn failed(error safemap.Error) never {
+    discard error
+    panic("safemap compatibility operation failed")
+}
+
+fn requiredVoid($value Result<void, safemap.Error>) void {
+    match value {
+        Ok: complete()
+        Err(error): failed(error)
+    }
+}
+
+fn complete() void {
+    return
+}
+
+fn requiredBool($value Result<bool, safemap.Error>) bool {
+    match value {
+        Ok(found): found
+        Err(error): failed(error)
+    }
+}
+
+fn requiredI32($value Result<i32, safemap.Error>) i32 {
+    match value {
+        Ok(found): found
+        Err(error): failed(error)
+    }
+}
+
+fn requiredOptional(
+    $value Result<Option<i32>, safemap.Error>
+) Option<i32> {
+    match value {
+        Ok(found): found
+        Err(error): failed(error)
+    }
+}
+
+fn requiredList<T>(
+    $value Result<own collections.List<T>, safemap.Error>
+) own collections.List<T> {
+    match value {
+        Ok(found): found
+        Err(error): failed(error)
+    }
+}
+
+fn optionalValue($value Option<i32>) i32 {
+    match value {
+        None: -1
+        Some(found): found
+    }
+}
+
+fn waitFor(duration time.Duration) void {
+    const started = time.MonotonicNow()
+    var elapsed i64 = 0
+    while elapsed <= duration.Nanoseconds() {
+        const measured = time.MonotonicNow().Since(started) else error {
+            discard error
+            panic("monotonic clock moved backwards")
+        }
+        elapsed = measured.Nanoseconds()
+    }
+}
+
+fn main() i32 {
+    const mapping = safemap.New<String, i32>(
+        $safemap.StringEqual,
+        $safemap.CloneString,
+        $cloneI32
+    )
+    const first = mapping.Set("one", 1)
+    requiredVoid($first.wait())
+    const second = mapping.Set("two", 2)
+    requiredVoid($second.wait())
+    const get = mapping.Get("one")
+    print(format.I32(optionalValue(requiredOptional($get.wait()))))
+    const has = mapping.Has("two")
+    print(format.Bool(requiredBool($has.wait())))
+    const length = mapping.Len()
+    print(format.I32(requiredI32($length.wait())))
+    const existing = mapping.GetOrSet("one", 9)
+    print(format.I32(requiredI32($existing.wait())))
+    const computed = mapping.Compute("one", 0, $increment)
+    print(format.I32(requiredI32($computed.wait())))
+    const deleted = mapping.Delete("two")
+    print(format.Bool(requiredBool($deleted.wait())))
+    const keys = mapping.Keys()
+    print(format.I32(requiredList($keys.wait()).Len()))
+    const values = mapping.Values()
+    print(format.I32(requiredList($values.wait()).Len()))
+    const pairs = mapping.Snapshot()
+    print(format.I32(requiredList($pairs.wait()).Len()))
+    const cleared = mapping.Clear()
+    requiredVoid($cleared.wait())
+    const empty = mapping.Len()
+    print(format.I32(requiredI32($empty.wait())))
+    print(format.U64(safemap.StringHasher("hello")))
+
+    const sharded = safemap.NewSharded<String, i32>(
+        $safemap.StringEqual,
+        $safemap.CloneString,
+        $cloneI32,
+        $safemap.StringHasher,
+        3
+    )
+    const configured = sharded.WithExpiry(time.Milliseconds(1))
+    requiredVoid($configured.wait())
+    const stored = sharded.Set("short", 7)
+    requiredVoid($stored.wait())
+    const before = sharded.Has("short")
+    print(format.Bool(requiredBool($before.wait())))
+    waitFor(time.Milliseconds(2))
+    const after = sharded.Has("short")
+    print(format.Bool(requiredBool($after.wait())))
+    print("safemap compatibility ok")
+    0
+}

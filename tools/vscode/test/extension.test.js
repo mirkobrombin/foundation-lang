@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.114.0");
+    assert.equal(manifest.version, "0.115.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1353,6 +1353,13 @@ test("grammar and completions track compiler keywords", () => {
         "ring.Buffer.Len", "ring.Buffer.Space", "ring.Buffer.IsEmpty", "ring.Buffer.Push",
         "ring.Buffer.Pop", "ring.Buffer.Peek", "ring.Buffer.Drain", "ring.Buffer.Reset",
         "ring.ByteBuffer.Write", "ring.ByteBuffer.Read", "ring.ByteBuffer.Reset",
+        "std.safemap", "safemap.Error", "safemap.Pair", "safemap.Handle", "safemap.Map",
+        "safemap.ShardedMap", "safemap.New", "safemap.NewSharded", "safemap.StringEqual",
+        "safemap.CloneString", "safemap.StringHasher", "safemap.Handle.Clone",
+        "safemap.Map.Handle", "safemap.Map.Set", "safemap.Map.Get", "safemap.Map.Delete",
+        "safemap.Map.Has", "safemap.Map.Len", "safemap.Map.Keys", "safemap.Map.Values",
+        "safemap.Map.Snapshot", "safemap.Map.Clear", "safemap.Map.GetOrSet",
+        "safemap.Map.Compute", "safemap.ShardedMap.WithExpiry",
         "foundation.worker", "worker.Supervisor", "worker.NewSupervisor",
         "worker.Supervisor.Start", "worker.Supervisor.Shutdown", "worker.Supervisor.Cancel",
         "worker.Group", "worker.GroupNext", "worker.GroupWait", "worker.GroupWake",

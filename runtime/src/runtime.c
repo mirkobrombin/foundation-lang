@@ -756,6 +756,18 @@ int32_t foundation_runtime_string_compare(const fdn_string *left, const fdn_stri
     return 0;
 }
 
+uint64_t foundation_runtime_string_hash_fnv1a(const fdn_string *value) {
+    uint64_t hash = UINT64_C(14695981039346656037);
+    if (value == NULL || (value->data == NULL && value->length != 0)) {
+        fdn_panic_cstr("invalid string hash input");
+    }
+    for (size_t index = 0; index < value->length; ++index) {
+        hash ^= (uint8_t)value->data[index];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
 typedef struct fdn_string_builder {
     char *data;
     size_t length;

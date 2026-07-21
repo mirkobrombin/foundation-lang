@@ -200,6 +200,7 @@ int32_t foundation_runtime_string_byte_at(const fdn_string *value, uint64_t inde
 bool foundation_runtime_string_find(const fdn_string *value, const fdn_string *part,
                                     uint64_t *result);
 int32_t foundation_runtime_string_compare(const fdn_string *left, const fdn_string *right);
+uint64_t foundation_runtime_string_hash_fnv1a(const fdn_string *value);
 uint64_t foundation_runtime_string_builder_open(void);
 void foundation_runtime_string_builder_append(uint64_t handle, const fdn_string *value);
 bool foundation_runtime_string_builder_append_code_point(uint64_t handle, uint64_t value);

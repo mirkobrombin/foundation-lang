@@ -1,0 +1,64 @@
+package example.safemap
+
+import std.format
+import std.safemap
+
+fn cloneI32(value i32) i32 {
+    value
+}
+
+fn increment(value i32) i32 {
+    value + 1
+}
+
+fn failed(error safemap.Error) never {
+    discard error
+    panic("shared counter operation failed")
+}
+
+fn requireVoid($value Result<void, safemap.Error>) void {
+    match value {
+        Ok: complete()
+        Err(error): failed(error)
+    }
+}
+
+fn complete() void {
+    return
+}
+
+fn requireI32($value Result<i32, safemap.Error>) i32 {
+    match value {
+        Ok(found): found
+        Err(error): failed(error)
+    }
+}
+
+task seed($handle safemap.Handle<String, i32>, $name String, value i32) void {
+    const pending = handle.Set($name, value)
+    const stored = $pending.wait()
+    requireVoid($stored)
+}
+
+fn main() i32 {
+    const counters = safemap.NewSharded<String, i32>(
+        $safemap.StringEqual,
+        $safemap.CloneString,
+        $cloneI32,
+        $safemap.StringHasher,
+        8
+    )
+
+    const firstHandle = counters.Handle()
+    const secondHandle = counters.Handle()
+    const first = spawn seed($firstHandle, "builds", 40)
+    const second = spawn seed($secondHandle, "tests", 12)
+    $first.wait()
+    $second.wait()
+
+    const incremented = counters.Compute("builds", 0, $increment)
+    print("builds: " + format.I32(requireI32($incremented.wait())))
+    const count = counters.Len()
+    print("keys: " + format.I32(requireI32($count.wait())))
+    0
+}

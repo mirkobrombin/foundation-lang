@@ -1,0 +1,145 @@
+package test.safemap
+
+import std.safemap
+import std.collections
+import std.time
+
+fn cloneI32(value i32) i32 {
+    value
+}
+
+fn increment(value i32) i32 {
+    value + 1
+}
+
+fn requireVoid($value Result<void, safemap.Error>) void {
+    match value {
+        Ok: done()
+        Err(error): fail(error)
+    }
+}
+
+fn done() void {
+    return
+}
+
+fn requireBool($value Result<bool, safemap.Error>) bool {
+    match value {
+        Ok(found): found
+        Err(error): fail(error)
+    }
+}
+
+fn requireI32($value Result<i32, safemap.Error>) i32 {
+    match value {
+        Ok(found): found
+        Err(error): fail(error)
+    }
+}
+
+fn requireOptional(
+    $value Result<Option<i32>, safemap.Error>
+) Option<i32> {
+    match value {
+        Ok(found): found
+        Err(error): fail(error)
+    }
+}
+
+fn requireList<T>(
+    $value Result<own collections.List<T>, safemap.Error>
+) own collections.List<T> {
+    match value {
+        Ok(found): found
+        Err(error): fail(error)
+    }
+}
+
+fn optionalValue($value Option<i32>) i32 {
+    match value {
+        None: -1
+        Some(found): found
+    }
+}
+
+fn fail(error safemap.Error) never {
+    discard error
+    panic("safemap operation failed")
+}
+
+fn waitFor(duration time.Duration) void {
+    const started = time.MonotonicNow()
+    var elapsed i64 = 0
+    while elapsed <= duration.Nanoseconds() {
+        const measured = time.MonotonicNow().Since(started) else error {
+            discard error
+            panic("monotonic clock moved backwards")
+        }
+        elapsed = measured.Nanoseconds()
+    }
+}
+
+task store($handle safemap.Handle<String, i32>, $key String, value i32) void {
+    const pending = handle.Set($key, value)
+    const result = $pending.wait()
+    requireVoid($result)
+}
+
+fn main() i32 {
+    const mapping = safemap.New<String, i32>(
+        $safemap.StringEqual,
+        $safemap.CloneString,
+        $cloneI32
+    )
+    const first = mapping.Set("one", 1)
+    requireVoid($first.wait())
+    const second = mapping.Get("one")
+    if optionalValue(requireOptional($second.wait())) != 1 return 1
+
+    const handle = mapping.Handle()
+    const stored = spawn store($handle, "two", 2)
+    $stored.wait()
+    const count = mapping.Len()
+    if requireI32($count.wait()) != 2 return 2
+
+    const computed = mapping.Compute("one", 0, $increment)
+    if requireI32($computed.wait()) != 2 return 3
+    const existing = mapping.GetOrSet("one", 9)
+    if requireI32($existing.wait()) != 2 return 4
+    const keys = mapping.Keys()
+    const keyValues = requireList($keys.wait())
+    if keyValues.Len() != 2 return 5
+    const values = mapping.Values()
+    const valueValues = requireList($values.wait())
+    if valueValues.Len() != 2 return 6
+    const snapshot = mapping.Snapshot()
+    const pairs = requireList($snapshot.wait())
+    if pairs.Len() != 2 return 7
+    const deleted = mapping.Delete("two")
+    if !requireBool($deleted.wait()) return 8
+
+    const sharded = safemap.NewSharded<String, i32>(
+        $safemap.StringEqual,
+        $safemap.CloneString,
+        $cloneI32,
+        $safemap.StringHasher,
+        3
+    )
+    const configured = sharded.WithExpiry(time.Milliseconds(1))
+    requireVoid($configured.wait())
+    const expiring = sharded.Set("short", 7)
+    requireVoid($expiring.wait())
+    const present = sharded.Has("short")
+    if !requireBool($present.wait()) return 9
+    waitFor(time.Milliseconds(2))
+    const expired = sharded.Has("short")
+    if requireBool($expired.wait()) return 10
+
+    const cleared = mapping.Clear()
+    requireVoid($cleared.wait())
+    const empty = mapping.Len()
+    if requireI32($empty.wait()) != 0 return 11
+
+    print("safemap ok")
+    0
+}
