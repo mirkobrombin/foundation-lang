@@ -20,9 +20,17 @@ extern c fn nextDirectoryNative(handle u64, &name String) i32 as foundation_runt
 extern c fn closeDirectoryNative(handle u64) i32 as foundation_runtime_fs_close_directory
 extern c fn isDirectoryNative(path String, &result bool) i32 as foundation_runtime_fs_is_directory
 extern c fn modifiedNative(path String, &result u64) i32 as foundation_runtime_fs_modified
+@blocking
+extern c fn createPrivateDirectoryNative(path String) i32 as foundation_runtime_fs_create_private_directory
 
 @blocking
 extern c fn readTextLimitedNative(path String, limit u64, &result String) i32 as foundation_runtime_fs_read_text_limited
+
+@blocking
+extern c fn readPrivateTextLimitedNative(path String, limit u64, &result String) i32 as foundation_runtime_fs_read_private_text_limited
+
+@blocking
+extern c fn writePrivateTextAtomicNative(path String, value String, limit u64) i32 as foundation_runtime_fs_write_private_text_atomic
 
 fn errorFor(status i32) Error {
     if status == 1 {
@@ -65,6 +73,32 @@ task ReadTextLimited($path String, limit u64) Result<String, Error> {
     if status == 0 {
         return .Ok(result)
     }
+    .Err(readErrorFor(status))
+}
+
+// Reads one bounded UTF-8 regular file without following symbolic links or reparse points.
+task ReadPrivateTextLimited($path String, limit u64) Result<String, Error> {
+    var result = ""
+    const status = readPrivateTextLimitedNative(path, limit, &result)
+    if status == 0 return .Ok(result)
+    .Err(readErrorFor(status))
+}
+
+// Creates a directory tree with owner-only permissions where the platform supports them.
+task CreatePrivateDirectory($path String) Result<void, Error> {
+    const status = createPrivateDirectoryNative(path)
+    if status == 0 return .Ok
+    .Err(errorFor(status))
+}
+
+// Atomically replaces one UTF-8 file with owner-only permissions and a size limit.
+task WritePrivateTextAtomic(
+    $path String,
+    $value String,
+    limit u64
+) Result<void, Error> {
+    const status = writePrivateTextAtomicNative(path, value, limit)
+    if status == 0 return .Ok
     .Err(readErrorFor(status))
 }
 

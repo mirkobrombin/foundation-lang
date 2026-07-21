@@ -1,0 +1,511 @@
+package foundation.scheduler
+
+import std.collections
+import std.concurrent
+import std.format
+import std.fs
+import std.json
+import std.parse
+import std.path
+import std.text
+import std.time
+
+// Reports persistent scheduler state failures.
+enum StoreError {
+    InvalidName
+    InvalidData
+    NotFound
+    Permission
+    TooLarge
+    Closed
+    Cancelled
+    Io
+}
+
+// Stores one completed job execution.
+struct JobRecord {
+    Name String
+    Cron String
+    LastRun time.Instant
+    LastStatus String
+    LastLatency time.Duration
+}
+
+// Persists job records as bounded JSON files in one private directory.
+struct JobStore {
+    directory String
+
+    fn Clone(self) JobStore {
+        JobStore { directory = text.Copy(self.directory) }
+    }
+
+    // Atomically replaces one validated job record.
+    fn Save(self, $record JobRecord) Task<Result<void, StoreError>> {
+        spawn saveRecord(text.Copy(self.directory), $record)
+    }
+
+    // Loads one validated job record by name.
+    fn Load(self, name String) Task<Result<JobRecord, StoreError>> {
+        spawn loadRecord(text.Copy(self.directory), text.Copy(name))
+    }
+
+    // Lists every valid JSON record in stable name order.
+    fn List(self) Task<Result<own collections.List<JobRecord>, StoreError>> {
+        spawn listRecords(text.Copy(self.directory))
+    }
+}
+
+// Creates and secures a persistent scheduler directory.
+task NewJobStore($directory String) Result<own JobStore, StoreError> {
+    if text.IsEmpty(directory) {
+        discard directory
+        return .Err(.InvalidName)
+    }
+    const retained = text.Copy(directory)
+    const creating = spawn fs.CreatePrivateDirectory($directory)
+    const created = $creating.wait()
+    match created {
+        Ok: .Ok(own JobStore { directory = retained })
+        Err(error): {
+            discard retained
+            .Err(mapStoreFileError(error))
+        }
+    }
+}
+
+task saveRecord(
+    $directory String,
+    $record JobRecord
+) Result<void, StoreError> {
+    if !validJobName(record.Name) {
+        discard directory
+        discard record
+        return .Err(.InvalidName)
+    }
+    if record.LastLatency.IsNegative() {
+        discard directory
+        discard record
+        return .Err(.InvalidData)
+    }
+    const name = text.Copy(record.Name)
+    const value = encodeRecord($record)
+    const destination = recordPath(directory, name)
+    discard directory
+    discard name
+    const writing = spawn fs.WritePrivateTextAtomic($destination, $value, 1048576)
+    const written = $writing.wait()
+    match written {
+        Ok: .Ok
+        Err(error): .Err(mapStoreFileError(error))
+    }
+}
+
+task loadRecord(
+    $directory String,
+    $name String
+) Result<JobRecord, StoreError> {
+    if !validJobName(name) {
+        discard directory
+        discard name
+        return .Err(.InvalidName)
+    }
+    const destination = recordPath(directory, name)
+    discard directory
+    discard name
+    const reading = spawn fs.ReadPrivateTextLimited($destination, 1048576)
+    const read = $reading.wait()
+    const source = match read {
+        Ok(value): value
+        Err(error): {
+            return .Err(mapStoreFileError(error))
+        }
+    }
+    const decoded = decodeRecord(source)
+    discard source
+    decoded
+}
+
+task listRecords(
+    $directory String
+) Result<own collections.List<JobRecord>, StoreError> {
+    const opened = fs.OpenDir(directory)
+    var reader = match opened {
+        Ok(value): value
+        Err(error): {
+            return .Err(mapStoreFileError(error))
+        }
+    }
+    var names = collections.NewList<String>()
+    var failure Option<StoreError> = .None
+    var running = true
+    while running {
+        const selected = reader.Next()
+        match selected {
+            Ok(value): match value {
+                None: {
+                    running = false
+                }
+                Some(entry): {
+                    const candidate = recordName(entry)
+                    discard entry
+                    match candidate {
+                        None: {}
+                        Some(name): names.PushFront($name)
+                    }
+                }
+            }
+            Err(error): {
+                failure = .Some(mapStoreFileError(error))
+                running = false
+            }
+        }
+    }
+    discard reader.Close()
+    discard reader
+    match failure {
+        None: {}
+        Some(error): {
+            return .Err(error)
+        }
+    }
+    var records = collections.NewList<JobRecord>()
+    while !names.IsEmpty() {
+        const selectedName = names.PopFront()
+        const name = requiredName($selectedName)
+        const loading = spawn loadRecord(text.Copy(directory), $name)
+        const loaded = $loading.wait()
+        match loaded {
+            Ok(record): records.PushFront($record)
+            Err(error): {
+                discard error
+            }
+        }
+    }
+    discard names
+    discard directory
+    const compare fn(JobRecord, JobRecord) i32 = compareRecords
+    const sorted = collections.Sort($records, compare)
+    .Ok(sorted)
+}
+
+fn encodeRecord($record JobRecord) String {
+    const JobRecord { Name Cron LastRun LastStatus LastLatency } = record
+    var builder = text.NewBuilder()
+    writeText(&builder, "{\n  \"name\": ")
+    writeJsonString(&builder, Name)
+    writeText(&builder, ",\n  \"cron\": ")
+    writeJsonString(&builder, Cron)
+    writeText(&builder, ",\n  \"last_run\": ")
+    writeText(&builder, format.U64(LastRun.Unix()))
+    writeText(&builder, ",\n  \"last_status\": ")
+    writeJsonString(&builder, LastStatus)
+    writeText(&builder, ",\n  \"last_latency_ns\": ")
+    writeText(&builder, format.I64(LastLatency.Nanoseconds()))
+    writeText(&builder, "\n}\n")
+    const result = builder.Finish() else error {
+        discard error
+        panic("scheduler store builder failed")
+    }
+    discard builder
+    discard Name
+    discard Cron
+    discard LastStatus
+    result
+}
+
+fn writeJsonString(
+    &builder text.Builder,
+    value String
+) void {
+    writeText(&builder, "\"")
+    const length = text.ByteLen(value)
+    var offset u64 = 0
+    var start u64 = 0
+    while offset < length {
+        const byte = requiredByte(value, offset)
+        if byte == 34 || byte == 92 || byte < 32 {
+            writeSlice(&builder, value, start, offset)
+            writeEscapedByte(&builder, byte)
+            start = offset + 1
+        }
+        offset = offset + 1
+    }
+    writeSlice(&builder, value, start, length)
+    writeText(&builder, "\"")
+}
+
+fn writeEscapedByte(
+    &builder text.Builder,
+    value u64
+) void {
+    if value == 34 {
+        writeText(&builder, "\\\"")
+        return
+    }
+    if value == 92 {
+        writeText(&builder, "\\\\")
+        return
+    }
+    if value == 8 {
+        writeText(&builder, "\\b")
+        return
+    }
+    if value == 9 {
+        writeText(&builder, "\\t")
+        return
+    }
+    if value == 10 {
+        writeText(&builder, "\\n")
+        return
+    }
+    if value == 12 {
+        writeText(&builder, "\\f")
+        return
+    }
+    if value == 13 {
+        writeText(&builder, "\\r")
+        return
+    }
+    writeText(&builder, "\\u00")
+    writeHex(&builder, value / 16)
+    writeHex(&builder, value % 16)
+}
+
+fn writeHex(&builder text.Builder, value u64) void {
+    const code = value + 48 if value < 10 else value - 10 + 97
+    const written = builder.WriteCodePoint(code) else error {
+        discard error
+        panic("scheduler store hex write failed")
+    }
+    discard written
+}
+
+fn writeSlice(
+    &builder text.Builder,
+    value String,
+    start u64,
+    end u64
+) void {
+    if start == end return
+    const part = text.Slice(value, start, end) else error {
+        discard error
+        panic("scheduler store string boundary failed")
+    }
+    writeText(&builder, part)
+    discard part
+}
+
+fn writeText(&builder text.Builder, value String) void {
+    const written = builder.Write(value) else error {
+        discard error
+        panic("scheduler store write failed")
+    }
+    discard written
+}
+
+fn decodeRecord(source String) Result<JobRecord, StoreError> {
+    const parsed = json.Parse(source) else error {
+        discard error
+        return .Err(.InvalidData)
+    }
+    match parsed {
+        Object(object): recordFromObject($object)
+        Null: .Err(.InvalidData)
+        Bool(value): {
+            discard value
+            .Err(.InvalidData)
+        }
+        Number(value): {
+            discard value
+            .Err(.InvalidData)
+        }
+        Text(value): {
+            discard value
+            .Err(.InvalidData)
+        }
+        Array(value): {
+            discard value
+            .Err(.InvalidData)
+        }
+    }
+}
+
+fn recordFromObject($object own json.Object) Result<JobRecord, StoreError> {
+    var fields = object
+    const name = takeText(&fields, "name") else error {
+        discard fields
+        return .Err(error)
+    }
+    const cron = takeText(&fields, "cron") else error {
+        discard name
+        discard fields
+        return .Err(error)
+    }
+    const lastRun = takeU64(&fields, "last_run") else error {
+        discard name
+        discard cron
+        discard fields
+        return .Err(error)
+    }
+    const status = takeText(&fields, "last_status") else error {
+        discard name
+        discard cron
+        discard fields
+        return .Err(error)
+    }
+    const latency = takeU64(&fields, "last_latency_ns") else error {
+        discard name
+        discard cron
+        discard status
+        discard fields
+        return .Err(error)
+    }
+    if fields.Len() != 0 || !validJobName(name) {
+        discard name
+        discard cron
+        discard status
+        discard fields
+        return .Err(.InvalidData)
+    }
+    discard fields
+    .Ok(JobRecord {
+        Name = name
+        Cron = cron
+        LastRun = time.FromUnix(lastRun)
+        LastStatus = status
+        LastLatency = time.Nanoseconds(latency)
+    })
+}
+
+fn takeText(
+    &object json.Object,
+    key String
+) Result<String, StoreError> {
+    const selected = object.Take(key)
+    match selected {
+        None: .Err(.InvalidData)
+        Some(value): match value {
+            Text(result): .Ok(result)
+            Null: .Err(.InvalidData)
+            Bool(item): {
+                discard item
+                .Err(.InvalidData)
+            }
+            Number(item): {
+                discard item
+                .Err(.InvalidData)
+            }
+            Array(item): {
+                discard item
+                .Err(.InvalidData)
+            }
+            Object(item): {
+                discard item
+                .Err(.InvalidData)
+            }
+        }
+    }
+}
+
+fn takeU64(
+    &object json.Object,
+    key String
+) Result<u64, StoreError> {
+    const selected = object.Take(key)
+    match selected {
+        None: .Err(.InvalidData)
+        Some(value): match value {
+            Number(source): {
+                const parsed = parse.U64(source) else error {
+                    discard error
+                    discard source
+                    return .Err(.InvalidData)
+                }
+                discard source
+                .Ok(parsed)
+            }
+            Null: .Err(.InvalidData)
+            Bool(item): {
+                discard item
+                .Err(.InvalidData)
+            }
+            Text(item): {
+                discard item
+                .Err(.InvalidData)
+            }
+            Array(item): {
+                discard item
+                .Err(.InvalidData)
+            }
+            Object(item): {
+                discard item
+                .Err(.InvalidData)
+            }
+        }
+    }
+}
+
+fn recordPath(directory String, name String) String {
+    path.Join(directory, name + ".json")
+}
+
+fn recordName(entry String) Option<String> {
+    if !text.EndsWith(entry, ".json") return .None
+    const length = text.ByteLen(entry)
+    if length <= 5 return .None
+    const name = text.Slice(entry, 0, length - 5) else error {
+        discard error
+        return .None
+    }
+    if !validJobName(name) {
+        discard name
+        return .None
+    }
+    .Some(name)
+}
+
+fn requiredName($value Option<String>) String {
+    match value {
+        None: panic("scheduler store name invariant failed")
+        Some(name): name
+    }
+}
+
+fn validJobName(name String) bool {
+    if text.IsEmpty(name) || text.Equal(name, ".") || text.Equal(name, "..") ||
+        text.Contains(name, "/") || text.Contains(name, "\\") {
+        return false
+    }
+    const length = text.ByteLen(name)
+    var offset u64 = 0
+    while offset < length {
+        if requiredByte(name, offset) == 0 return false
+        offset = offset + 1
+    }
+    true
+}
+
+fn requiredByte(value String, offset u64) u64 {
+    const byte = text.ByteAt(value, offset) else error {
+        discard error
+        panic("scheduler store byte invariant failed")
+    }
+    byte
+}
+
+fn compareRecords(left JobRecord, right JobRecord) i32 {
+    text.Compare(left.Name, right.Name)
+}
+
+fn mapStoreFileError(error fs.Error) StoreError {
+    match error {
+        NotFound: .NotFound
+        Permission: .Permission
+        InvalidPath: .InvalidName
+        InvalidUtf8: .InvalidData
+        LineTooLong: .TooLarge
+        TooLarge: .TooLarge
+        Closed: .Closed
+        Io: .Io
+    }
+}

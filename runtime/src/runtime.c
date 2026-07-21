@@ -27,7 +27,9 @@ static SRWLOCK fdn_stdout_lock = SRWLOCK_INIT;
 static SRWLOCK fdn_uuid_lock = SRWLOCK_INIT;
 #else
 #include <dirent.h>
+#include <fcntl.h>
 #include <stdatomic.h>
+#include <unistd.h>
 #if defined(__linux__)
 #include <sys/random.h>
 #endif
@@ -1760,6 +1762,502 @@ int32_t foundation_runtime_fs_read_text_limited(const fdn_string *path, uint64_t
     result->length = length;
     result->owned = 1;
     return 0;
+}
+
+int32_t foundation_runtime_fs_read_private_text_limited(const fdn_string *path,
+                                                        uint64_t max_length,
+                                                        fdn_string *result) {
+    char chunk[4096];
+    char *data = NULL;
+    size_t length = 0;
+    size_t capacity = 0;
+    const size_t limit = max_length > (uint64_t)SIZE_MAX ? SIZE_MAX : (size_t)max_length;
+    if (result == NULL) {
+        fdn_panic_cstr("private file text output is null");
+    }
+    fdn_string_drop(result);
+    *result = fdn_string_static("", 0);
+#if defined(_WIN32)
+    {
+        wchar_t *native_path = fdn_windows_path(path);
+        HANDLE file;
+        BY_HANDLE_FILE_INFORMATION info;
+        if (native_path == NULL) {
+            return 3;
+        }
+        file = CreateFileW(native_path, GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        fdn_dealloc(native_path);
+        if (file == INVALID_HANDLE_VALUE) {
+            return fdn_windows_fs_status(GetLastError());
+        }
+        if (GetFileInformationByHandle(file, &info) == 0 ||
+            (info.dwFileAttributes &
+             (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+            (void)CloseHandle(file);
+            return 3;
+        }
+        for (;;) {
+            DWORD count = 0;
+            if (ReadFile(file, chunk, (DWORD)sizeof(chunk), &count, NULL) == 0) {
+                fdn_dealloc(data);
+                (void)CloseHandle(file);
+                return 4;
+            }
+            if (count == 0) {
+                break;
+            }
+            if ((size_t)count > limit - length) {
+                fdn_dealloc(data);
+                (void)CloseHandle(file);
+                return 5;
+            }
+            {
+                const size_t required = length + (size_t)count;
+                if (required > capacity) {
+                    size_t next_capacity = capacity == 0 ? sizeof(chunk) : capacity;
+                    char *grown;
+                    if (next_capacity > limit) {
+                        next_capacity = limit;
+                    }
+                    while (next_capacity < required) {
+                        next_capacity = next_capacity > limit / 2 ? limit : next_capacity * 2;
+                    }
+                    grown = fdn_alloc(next_capacity);
+                    if (length != 0) {
+                        (void)memcpy(grown, data, length);
+                    }
+                    fdn_dealloc(data);
+                    data = grown;
+                    capacity = next_capacity;
+                }
+                (void)memcpy(data + length, chunk, (size_t)count);
+                length = required;
+            }
+        }
+        if (CloseHandle(file) == 0) {
+            fdn_dealloc(data);
+            return 4;
+        }
+    }
+#else
+    {
+        char *native_path = fdn_native_path(path);
+        int flags = O_RDONLY;
+        int file;
+        struct stat info;
+#if defined(O_CLOEXEC)
+        flags |= O_CLOEXEC;
+#endif
+#if defined(O_NOFOLLOW)
+        flags |= O_NOFOLLOW;
+#endif
+        if (native_path == NULL) {
+            return 3;
+        }
+        file = open(native_path, flags);
+        fdn_dealloc(native_path);
+        if (file < 0) {
+#if defined(ELOOP)
+            if (errno == ELOOP) {
+                return 3;
+            }
+#endif
+            return fdn_fs_status(errno);
+        }
+        if (fstat(file, &info) != 0 || !S_ISREG(info.st_mode)) {
+            (void)close(file);
+            return 3;
+        }
+        for (;;) {
+            const ssize_t count = read(file, chunk, sizeof(chunk));
+            if (count < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                fdn_dealloc(data);
+                (void)close(file);
+                return 4;
+            }
+            if (count == 0) {
+                break;
+            }
+            if ((size_t)count > limit - length) {
+                fdn_dealloc(data);
+                (void)close(file);
+                return 5;
+            }
+            {
+                const size_t required = length + (size_t)count;
+                if (required > capacity) {
+                    size_t next_capacity = capacity == 0 ? sizeof(chunk) : capacity;
+                    char *grown;
+                    if (next_capacity > limit) {
+                        next_capacity = limit;
+                    }
+                    while (next_capacity < required) {
+                        next_capacity = next_capacity > limit / 2 ? limit : next_capacity * 2;
+                    }
+                    grown = fdn_alloc(next_capacity);
+                    if (length != 0) {
+                        (void)memcpy(grown, data, length);
+                    }
+                    fdn_dealloc(data);
+                    data = grown;
+                    capacity = next_capacity;
+                }
+                (void)memcpy(data + length, chunk, (size_t)count);
+                length = required;
+            }
+        }
+        if (close(file) != 0) {
+            fdn_dealloc(data);
+            return 4;
+        }
+    }
+#endif
+    if (!fdn_utf8_valid(data, length)) {
+        fdn_dealloc(data);
+        return 6;
+    }
+    if (length == 0) {
+        fdn_dealloc(data);
+        return 0;
+    }
+    result->data = data;
+    result->length = length;
+    result->owned = 1;
+    return 0;
+}
+
+#if defined(_WIN32)
+static int32_t fdn_windows_create_private_directory_path(wchar_t *path) {
+    size_t offset;
+    const size_t length = wcslen(path);
+    size_t first = 0;
+    if (length == 0) {
+        return 3;
+    }
+    if (length >= 3 && path[1] == L':' &&
+        (path[2] == L'\\' || path[2] == L'/')) {
+        first = 3;
+    } else if (length >= 2 &&
+               (path[0] == L'\\' || path[0] == L'/') &&
+               (path[1] == L'\\' || path[1] == L'/')) {
+        unsigned int separators = 0;
+        first = 2;
+        while (first < length && separators < 2) {
+            if (path[first] == L'\\' || path[first] == L'/') {
+                ++separators;
+            }
+            ++first;
+        }
+    }
+    for (offset = first; offset <= length; ++offset) {
+        wchar_t saved;
+        DWORD attributes;
+        if (offset != length && path[offset] != L'\\' && path[offset] != L'/') {
+            continue;
+        }
+        if (offset == 0 || (offset > 0 &&
+                            (path[offset - 1] == L'\\' || path[offset - 1] == L'/'))) {
+            continue;
+        }
+        saved = path[offset];
+        path[offset] = L'\0';
+        if (CreateDirectoryW(path, NULL) == 0 && GetLastError() != ERROR_ALREADY_EXISTS) {
+            const int32_t status = fdn_windows_fs_status(GetLastError());
+            path[offset] = saved;
+            return status;
+        }
+        attributes = GetFileAttributesW(path);
+        path[offset] = saved;
+        if (attributes == INVALID_FILE_ATTRIBUTES ||
+            (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+            return 3;
+        }
+    }
+    return 0;
+}
+#else
+static int32_t fdn_posix_create_private_directory_path(char *path) {
+    size_t offset;
+    size_t length = strlen(path);
+    const size_t first = length != 0 && path[0] == '/' ? 1 : 0;
+    if (length == 0) {
+        return 3;
+    }
+    while (length > first && path[length - 1] == '/') {
+        path[--length] = '\0';
+    }
+    if (first == 1 && length == 1) {
+        return 3;
+    }
+    for (offset = first; offset <= length; ++offset) {
+        char saved;
+        struct stat info;
+        int created = 0;
+        if (offset != length && path[offset] != '/') {
+            continue;
+        }
+        if (offset == 0 || (offset > 0 && path[offset - 1] == '/')) {
+            continue;
+        }
+        saved = path[offset];
+        path[offset] = '\0';
+        if (mkdir(path, S_IRWXU) == 0) {
+            created = 1;
+        } else if (errno != EEXIST) {
+            const int32_t mkdir_status = fdn_fs_status(errno);
+            path[offset] = saved;
+            return mkdir_status;
+        }
+        if (stat(path, &info) != 0) {
+            const int32_t stat_status = fdn_fs_status(errno);
+            path[offset] = saved;
+            return stat_status;
+        }
+        if (!S_ISDIR(info.st_mode)) {
+            path[offset] = saved;
+            return 3;
+        }
+        if ((created != 0 || offset == length) && chmod(path, S_IRWXU) != 0) {
+            const int32_t chmod_status = fdn_fs_status(errno);
+            path[offset] = saved;
+            return chmod_status;
+        }
+        path[offset] = saved;
+    }
+    return 0;
+}
+#endif
+
+int32_t foundation_runtime_fs_create_private_directory(const fdn_string *path) {
+#if defined(_WIN32)
+    wchar_t *native_path = fdn_windows_path(path);
+    int32_t status;
+    if (native_path == NULL) {
+        return 3;
+    }
+    status = fdn_windows_create_private_directory_path(native_path);
+    fdn_dealloc(native_path);
+    return status;
+#else
+    char *native_path = fdn_native_path(path);
+    int32_t status;
+    if (native_path == NULL) {
+        return 3;
+    }
+    status = fdn_posix_create_private_directory_path(native_path);
+    fdn_dealloc(native_path);
+    return status;
+#endif
+}
+
+#if defined(_WIN32)
+static wchar_t *fdn_windows_parent_path(const wchar_t *path) {
+    const wchar_t *backslash = wcsrchr(path, L'\\');
+    const wchar_t *slash = wcsrchr(path, L'/');
+    const wchar_t *separator = backslash;
+    wchar_t *result;
+    size_t length;
+    if (separator == NULL || (slash != NULL && slash > separator)) {
+        separator = slash;
+    }
+    if (separator == NULL) {
+        result = fdn_alloc(2 * sizeof(*result));
+        result[0] = L'.';
+        result[1] = L'\0';
+        return result;
+    }
+    if (separator == path) {
+        length = 1;
+    } else if (separator == path + 2 && path[1] == L':') {
+        length = 3;
+    } else {
+        length = (size_t)(separator - path);
+    }
+    result = fdn_alloc((length + 1) * sizeof(*result));
+    (void)memcpy(result, path, length * sizeof(*result));
+    result[length] = L'\0';
+    return result;
+}
+
+static int32_t fdn_windows_write_private_text_atomic(const wchar_t *path,
+                                                     const fdn_string *value) {
+    wchar_t *directory = fdn_windows_parent_path(path);
+    wchar_t temporary[MAX_PATH];
+    HANDLE file = INVALID_HANDLE_VALUE;
+    size_t offset = 0;
+    int32_t status = 4;
+    temporary[0] = L'\0';
+    if (GetTempFileNameW(directory, L"fdn", 0, temporary) == 0) {
+        status = fdn_windows_fs_status(GetLastError());
+        goto cleanup;
+    }
+    file = CreateFileW(temporary, GENERIC_WRITE, 0, NULL, TRUNCATE_EXISTING,
+                       FILE_ATTRIBUTE_TEMPORARY, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        status = fdn_windows_fs_status(GetLastError());
+        goto cleanup;
+    }
+    while (offset < value->length) {
+        const size_t remaining = value->length - offset;
+        const DWORD requested =
+            remaining > (size_t)UINT32_MAX ? UINT32_MAX : (DWORD)remaining;
+        DWORD written = 0;
+        if (WriteFile(file, value->data + offset, requested, &written, NULL) == 0 ||
+            written == 0) {
+            status = fdn_windows_fs_status(GetLastError());
+            goto cleanup;
+        }
+        offset += (size_t)written;
+    }
+    if (FlushFileBuffers(file) == 0) {
+        status = 4;
+        goto cleanup;
+    }
+    if (CloseHandle(file) == 0) {
+        file = INVALID_HANDLE_VALUE;
+        status = 4;
+        goto cleanup;
+    }
+    file = INVALID_HANDLE_VALUE;
+    if (MoveFileExW(temporary, path,
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
+        status = fdn_windows_fs_status(GetLastError());
+        goto cleanup;
+    }
+    temporary[0] = L'\0';
+    status = 0;
+
+cleanup:
+    if (file != INVALID_HANDLE_VALUE) {
+        (void)CloseHandle(file);
+    }
+    if (temporary[0] != L'\0') {
+        (void)DeleteFileW(temporary);
+    }
+    fdn_dealloc(directory);
+    return status;
+}
+#else
+static char *fdn_posix_parent_path(const char *path) {
+    const char *separator = strrchr(path, '/');
+    char *result;
+    size_t length;
+    if (separator == NULL) {
+        result = fdn_alloc(2);
+        result[0] = '.';
+        result[1] = '\0';
+        return result;
+    }
+    length = separator == path ? 1 : (size_t)(separator - path);
+    result = fdn_alloc(length + 1);
+    (void)memcpy(result, path, length);
+    result[length] = '\0';
+    return result;
+}
+
+static int32_t fdn_posix_write_private_text_atomic(const char *path,
+                                                   const fdn_string *value) {
+    char *directory = fdn_posix_parent_path(path);
+    const size_t directory_length = strlen(directory);
+    static const char suffix[] = "/.fdn.XXXXXX";
+    char *temporary;
+    int file;
+    size_t offset = 0;
+    int32_t status = 4;
+    if (directory_length > SIZE_MAX - sizeof(suffix)) {
+        fdn_dealloc(directory);
+        return 3;
+    }
+    temporary = fdn_alloc(directory_length + sizeof(suffix));
+    (void)memcpy(temporary, directory, directory_length);
+    (void)memcpy(temporary + directory_length, suffix, sizeof(suffix));
+    fdn_dealloc(directory);
+    file = mkstemp(temporary);
+    if (file < 0) {
+        status = fdn_fs_status(errno);
+        fdn_dealloc(temporary);
+        return status;
+    }
+    if (fchmod(file, S_IRUSR | S_IWUSR) != 0) {
+        status = fdn_fs_status(errno);
+        goto cleanup;
+    }
+    while (offset < value->length) {
+        const size_t remaining = value->length - offset;
+        const size_t requested = remaining > (size_t)INT_MAX ? (size_t)INT_MAX : remaining;
+        const ssize_t written = write(file, value->data + offset, requested);
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            status = fdn_fs_status(errno);
+            goto cleanup;
+        }
+        if (written == 0) {
+            goto cleanup;
+        }
+        offset += (size_t)written;
+    }
+    if (fsync(file) != 0 || close(file) != 0) {
+        file = -1;
+        goto cleanup;
+    }
+    file = -1;
+    if (rename(temporary, path) != 0) {
+        status = fdn_fs_status(errno);
+        goto cleanup;
+    }
+    status = 0;
+
+cleanup:
+    if (file >= 0) {
+        (void)close(file);
+    }
+    if (status != 0) {
+        (void)unlink(temporary);
+    }
+    fdn_dealloc(temporary);
+    return status;
+}
+#endif
+
+int32_t foundation_runtime_fs_write_private_text_atomic(const fdn_string *path,
+                                                        const fdn_string *value,
+                                                        uint64_t max_length) {
+    if (value == NULL || (value->data == NULL && value->length != 0)) {
+        return 4;
+    }
+    if (value->length > max_length) {
+        return 5;
+    }
+#if defined(_WIN32)
+    {
+        wchar_t *native_path = fdn_windows_path(path);
+        int32_t status;
+        if (native_path == NULL) {
+            return 3;
+        }
+        status = fdn_windows_write_private_text_atomic(native_path, value);
+        fdn_dealloc(native_path);
+        return status;
+    }
+#else
+    {
+        char *native_path = fdn_native_path(path);
+        int32_t status;
+        if (native_path == NULL) {
+            return 3;
+        }
+        status = fdn_posix_write_private_text_atomic(native_path, value);
+        fdn_dealloc(native_path);
+        return status;
+    }
+#endif
 }
 
 uint64_t foundation_runtime_fs_live_directories(void) {

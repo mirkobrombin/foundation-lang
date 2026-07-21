@@ -4593,6 +4593,18 @@ void emitFunctionValueAdapter(std::ostringstream &out, const FirProgram &program
     out << "}\n\n";
 }
 
+void emitFunctionValueAdapterPrototype(std::ostringstream &out, const FirProgram &program,
+                                       FirFunctionId id) {
+    const auto &function = program.functions[id];
+    out << "static " << cType(function.returnType) << ' '
+        << functionAdapterName(program, id) << "(void *fdn_env";
+    for (std::size_t index = 0; index < function.parameters.size(); ++index) {
+        const auto local = function.parameters[index];
+        out << ", " << cType(function.locals[local].type) << " fdn_arg_" << index;
+    }
+    out << ");\n";
+}
+
 void emitCAbiParameters(std::ostringstream &out, const FirFunction &function,
                         bool includeNames) {
     if (function.parameters.empty()) {
@@ -5174,6 +5186,9 @@ std::string emitCImpl(const FirProgram &source, std::string_view sourcePath,
         }
         emitSignature(out, program, index);
         out << ";\n";
+    }
+    for (const auto function : functionValueUses) {
+        emitFunctionValueAdapterPrototype(out, program, function);
     }
     out << '\n';
 

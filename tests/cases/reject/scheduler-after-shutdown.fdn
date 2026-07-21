@@ -1,0 +1,9 @@
+import foundation.scheduler
+
+fn main() i32 {
+    const active = scheduler.New()
+    discard active.Shutdown()
+    const starting = active.Start()
+    discard starting
+    0
+}

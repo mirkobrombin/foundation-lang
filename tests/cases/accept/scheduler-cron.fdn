@@ -1,0 +1,127 @@
+import foundation.scheduler
+import std.concurrent
+import std.time
+
+task signal(
+    $cancel concurrent.Cancellation,
+    $sender Sender<void>
+) void {
+    if cancel.IsRequested() return
+    discard sender.send()
+}
+
+fn signalFactory(
+    $sender Sender<void>
+) transferable fn($concurrent.Cancellation) Task<void> {
+    fn($cancel concurrent.Cancellation) Task<void> capture($sender) {
+        spawn signal($cancel, sender.clone())
+    }
+}
+
+task await($receiver Receiver<void>) bool {
+    const received = receiver.receive()
+    match received {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn requireStore(
+    $result Result<own scheduler.JobStore, scheduler.StoreError>
+) own scheduler.JobStore {
+    match result {
+        Ok(store): store
+        Err(error): {
+            discard error
+            panic("scheduler cron store creation failed")
+        }
+    }
+}
+
+fn invalidStore(
+    $result Result<own scheduler.JobStore, scheduler.StoreError>
+) bool {
+    match result {
+        Ok(store): {
+            discard store
+            false
+        }
+        Err(error): match error {
+            InvalidName: true
+            InvalidData: false
+            NotFound: false
+            Permission: false
+            TooLarge: false
+            Closed: false
+            Cancelled: false
+            Io: false
+        }
+    }
+}
+
+fn requireStoreWrite($result Result<void, scheduler.StoreError>) void {
+    match result {
+        Ok: {}
+        Err(error): {
+            discard error
+            panic("scheduler cron store write failed")
+        }
+    }
+}
+
+fn requireScheduler($result Result<void, scheduler.Error>) void {
+    match result {
+        Ok: {}
+        Err(error): {
+            discard error
+            panic("scheduler cron operation failed")
+        }
+    }
+}
+
+fn main() i32 {
+    const invalidOpening = spawn scheduler.NewJobStore("")
+    if !invalidStore($invalidOpening.wait()) return 1
+    const exact = scheduler.Cron.Parse("0 3 15 1 4") else error {
+        discard error
+        return 2
+    }
+    if !exact.Matches(time.FromUnix(1768446000)) ||
+        exact.Matches(time.FromUnix(1768446060)) {
+        return 3
+    }
+    print("cron exact")
+
+    const root = "scheduler-cron-" + UUID.NewV4().String()
+    const opening = spawn scheduler.NewJobStore($root)
+    const store = requireStore($opening.wait())
+    const saving = store.Save(scheduler.JobRecord {
+        Name = "catchup"
+        Cron = "0 3 15 1 4"
+        LastRun = time.FromUnix(1736910000)
+        LastStatus = "ok"
+        LastLatency = time.Zero()
+    })
+    requireStoreWrite($saving.wait())
+
+    const Channel { sender receiver } = channel<void>(1)
+    const factory = signalFactory($sender)
+    const job = scheduler.NewJob("catchup", "0 3 15 1 4", $factory) else error {
+        discard error
+        discard store
+        return 4
+    }
+    const active = scheduler.NewWithStore($store)
+    const registering = active.Register($job)
+    requireScheduler($registering.wait())
+    const ticking = active.Tick(time.FromUnix(1768446000))
+    requireScheduler($ticking.wait())
+    const waiting = spawn await($receiver)
+    if !$waiting.wait() return 5
+    requireScheduler($active.Shutdown())
+    print("cron catch-up")
+    0
+}

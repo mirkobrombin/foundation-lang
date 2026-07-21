@@ -1,0 +1,965 @@
+package foundation.scheduler
+
+import foundation.worker
+import std.collections
+import std.concurrent
+import std.parse
+import std.text
+import std.time
+
+// Reports an invalid five-field cron expression.
+enum CronError {
+    FieldCount
+    InvalidField
+    OutOfRange
+}
+
+// Reports scheduler lifecycle and registration failures.
+enum Error {
+    EmptyName
+    InvalidCron(error CronError)
+    DuplicateName
+    AlreadyStarted
+    Closed
+    Cancelled
+    Store(error StoreError)
+}
+
+enum cronField {
+    Any
+    Exact(value u64)
+}
+
+struct cronCursor {
+    offset u64
+}
+
+// Stores one validated five-field minute, hour, day, month, and weekday expression.
+struct Cron {
+    minute cronField
+    hour cronField
+    day cronField
+    month cronField
+    weekday cronField
+
+    // Reports whether a UTC instant matches this expression.
+    fn Matches(self, instant time.Instant) bool {
+        const parts = utcParts(instant.Unix())
+        fieldMatches(self.minute, parts.minute) &&
+            fieldMatches(self.hour, parts.hour) &&
+            fieldMatches(self.day, parts.day) &&
+            fieldMatches(self.month, parts.month) &&
+            fieldMatches(self.weekday, parts.weekday)
+    }
+}
+
+methods Cron {
+    // Parses the v2-compatible five-field cron subset.
+    fn Parse(expression String) Result<Cron, CronError> {
+        var cursor = cronCursor { offset = 0 }
+        const minute = parseCronField(expression, &cursor, 0, 59) else error {
+            return .Err(error)
+        }
+        const hour = parseCronField(expression, &cursor, 0, 23) else error {
+            return .Err(error)
+        }
+        const day = parseCronField(expression, &cursor, 1, 31) else error {
+            return .Err(error)
+        }
+        const month = parseCronField(expression, &cursor, 1, 12) else error {
+            return .Err(error)
+        }
+        const weekday = parseCronField(expression, &cursor, 0, 6) else error {
+            return .Err(error)
+        }
+        skipWhitespace(expression, &cursor)
+        if cursor.offset != text.ByteLen(expression) {
+            return .Err(.FieldCount)
+        }
+        .Ok(Cron {
+            minute = minute
+            hour = hour
+            day = day
+            month = month
+            weekday = weekday
+        })
+    }
+}
+
+// Describes a named recurring task factory.
+struct Job {
+    Name String
+    Cron String
+    cron Cron
+    handler transferable fn($concurrent.Cancellation) Task<void>
+}
+
+// Creates a validated recurring job.
+fn NewJob(
+    $name String,
+    expression String,
+    $handler transferable fn($concurrent.Cancellation) Task<void>
+) Result<Job, Error> {
+    if text.IsEmpty(name) return .Err(.EmptyName)
+    const cron = Cron.Parse(expression) else error {
+        return .Err(.InvalidCron(error = error))
+    }
+    .Ok(Job {
+        Name = name
+        Cron = text.Copy(expression)
+        cron = cron
+        handler = handler
+    })
+}
+
+enum response {
+    Accepted
+    Rejected(error Error)
+}
+
+struct registerRequest {
+    job Job
+    lastRun Option<time.Instant>
+    reply Sender<response>
+}
+
+struct taskRequest {
+    factory transferable fn($concurrent.Cancellation) Task<void>
+    delay time.Duration
+    reply Sender<response>
+}
+
+struct tickRequest {
+    instant time.Instant
+    reply Sender<response>
+}
+
+struct stopRequest {
+    cancel bool
+}
+
+enum operation {
+    Register(value registerRequest)
+    Start(reply Sender<response>)
+    Enqueue(value taskRequest)
+    Tick(value tickRequest)
+    Stop(value stopRequest)
+}
+
+struct scheduledJob {
+    job Job
+    lastRun Option<time.Instant>
+}
+
+struct schedulerState {
+    jobs own collections.List<scheduledJob>
+    supervisor own worker.Supervisor
+    cancellation concurrent.CancellationSource
+    storeDirectory String
+    failureSender Sender<StoreError>
+    failure Option<StoreError>
+    started bool
+    stopping bool
+    cancel bool
+}
+
+// Sends commands to one scheduler owner task.
+struct Handle {
+    sender Sender<operation>
+    storeDirectory String
+
+    fn Clone(self) Handle {
+        Handle {
+            sender = self.sender.clone()
+            storeDirectory = text.Copy(self.storeDirectory)
+        }
+    }
+
+    // Registers a unique recurring job before or after Start.
+    fn Register(self, $job Job) Task<Result<void, Error>> {
+        spawn register(
+            self.sender.clone(),
+            text.Copy(self.storeDirectory),
+            $job
+        )
+    }
+
+    // Starts automatic UTC cron evaluation.
+    fn Start(self) Task<Result<void, Error>> {
+        spawn start(self.sender.clone())
+    }
+
+    // Creates one task for immediate execution.
+    fn Enqueue(
+        self,
+        $factory transferable fn($concurrent.Cancellation) Task<void>
+    ) Task<Result<void, Error>> {
+        spawn enqueue(self.sender.clone(), $factory, time.Zero())
+    }
+
+    // Creates one task after a cooperative delay.
+    fn ScheduleAfter(
+        self,
+        delay time.Duration,
+        $factory transferable fn($concurrent.Cancellation) Task<void>
+    ) Task<Result<void, Error>> {
+        spawn enqueue(self.sender.clone(), $factory, delay)
+    }
+
+    // Evaluates all jobs at an explicit UTC instant.
+    fn Tick(self, instant time.Instant) Task<Result<void, Error>> {
+        spawn tick(self.sender.clone(), instant)
+    }
+}
+
+// Owns the scheduler actor and every task accepted by it.
+struct Scheduler {
+    actor Task<Option<StoreError>>
+    handle Handle
+
+    fn Handle(self) Handle {
+        self.handle.Clone()
+    }
+
+    fn Register(self, $job Job) Task<Result<void, Error>> {
+        self.handle.Register($job)
+    }
+
+    fn Start(self) Task<Result<void, Error>> {
+        self.handle.Start()
+    }
+
+    fn Enqueue(
+        self,
+        $factory transferable fn($concurrent.Cancellation) Task<void>
+    ) Task<Result<void, Error>> {
+        self.handle.Enqueue($factory)
+    }
+
+    fn ScheduleAfter(
+        self,
+        delay time.Duration,
+        $factory transferable fn($concurrent.Cancellation) Task<void>
+    ) Task<Result<void, Error>> {
+        self.handle.ScheduleAfter(delay, $factory)
+    }
+
+    fn Tick(self, instant time.Instant) Task<Result<void, Error>> {
+        self.handle.Tick(instant)
+    }
+
+    // Stops automatic evaluation and drains every accepted task.
+    fn Shutdown($self) Result<void, Error> {
+        stopScheduler($self, false)
+    }
+
+    // Stops automatic evaluation, cancels running tasks, and joins them.
+    fn Cancel($self) Result<void, Error> {
+        stopScheduler($self, true)
+    }
+}
+
+// Creates a dormant scheduler. Register jobs, then call Start.
+fn New() own Scheduler {
+    newScheduler("", "")
+}
+
+// Creates a dormant scheduler backed by a validated persistent store.
+fn NewWithStore($store own JobStore) own Scheduler {
+    const JobStore { directory } = store
+    newScheduler(text.Copy(directory), $directory)
+}
+
+fn newScheduler(
+    $handleStoreDirectory String,
+    $stateStoreDirectory String
+) own Scheduler {
+    const Channel { sender receiver } = channel<operation>(64)
+    const Channel {
+        sender as failureSender
+        receiver as failureReceiver
+    } = channel<StoreError>(1)
+    const initial = own schedulerState {
+        jobs = collections.NewList<scheduledJob>()
+        supervisor = worker.NewSupervisor()
+        cancellation = concurrent.NewCancellationSource()
+        storeDirectory = stateStoreDirectory
+        failureSender = failureSender
+        failure = .None
+        started = false
+        stopping = false
+        cancel = false
+    }
+    const actor = spawn serve($receiver, $failureReceiver, $initial)
+    own Scheduler {
+        actor = actor
+        handle = Handle {
+            sender = sender
+            storeDirectory = handleStoreDirectory
+        }
+    }
+}
+
+task register(
+    $sender Sender<operation>,
+    $storeDirectory String,
+    $job Job
+) Result<void, Error> {
+    const Job { Name Cron cron handler } = job
+    var lastRun Option<time.Instant> = .None
+    if !text.IsEmpty(storeDirectory) {
+        const loading = spawn loadRecord(
+            text.Copy(storeDirectory),
+            text.Copy(Name)
+        )
+        const loaded = $loading.wait()
+        match loaded {
+            Ok(record): {
+                const JobRecord {
+                    Name as storedName
+                    Cron as storedCron
+                    LastRun
+                    LastStatus
+                    LastLatency
+                } = record
+                discard storedName
+                discard storedCron
+                discard LastStatus
+                discard LastLatency
+                lastRun = .Some(LastRun)
+            }
+            Err(error): match error {
+                NotFound: {}
+                InvalidName: {
+                    return .Err(.Store(error = .InvalidName))
+                }
+                InvalidData: {
+                    return .Err(.Store(error = .InvalidData))
+                }
+                Permission: {
+                    return .Err(.Store(error = .Permission))
+                }
+                TooLarge: {
+                    return .Err(.Store(error = .TooLarge))
+                }
+                Closed: {
+                    return .Err(.Store(error = .Closed))
+                }
+                Cancelled: {
+                    return .Err(.Store(error = .Cancelled))
+                }
+                Io: {
+                    return .Err(.Store(error = .Io))
+                }
+            }
+        }
+    }
+    discard storeDirectory
+    const prepared = Job { Name = Name Cron = Cron cron = cron handler = handler }
+    const Channel { sender as reply receiver } = channel<response>(0)
+    select {
+        sender.send(.Register(value = registerRequest {
+            job = prepared
+            lastRun = lastRun
+            reply = reply
+        })): {
+            const received = receiver.receive()
+            return responseResult($received)
+        }
+        else error: {
+            return .Err(mapChannelError(error))
+        }
+    }
+}
+
+task start($sender Sender<operation>) Result<void, Error> {
+    const Channel { sender as reply receiver } = channel<response>(0)
+    select {
+        sender.send(.Start(reply = reply)): {
+            const received = receiver.receive()
+            return responseResult($received)
+        }
+        else error: {
+            return .Err(mapChannelError(error))
+        }
+    }
+}
+
+task enqueue(
+    $sender Sender<operation>,
+    $factory transferable fn($concurrent.Cancellation) Task<void>,
+    delay time.Duration
+) Result<void, Error> {
+    const Channel { sender as reply receiver } = channel<response>(0)
+    select {
+        sender.send(.Enqueue(value = taskRequest {
+            factory = factory
+            delay = delay
+            reply = reply
+        })): {
+            const received = receiver.receive()
+            return responseResult($received)
+        }
+        else error: {
+            return .Err(mapChannelError(error))
+        }
+    }
+}
+
+task tick(
+    $sender Sender<operation>,
+    instant time.Instant
+) Result<void, Error> {
+    const Channel { sender as reply receiver } = channel<response>(0)
+    select {
+        sender.send(.Tick(value = tickRequest { instant = instant reply = reply })): {
+            const received = receiver.receive()
+            return responseResult($received)
+        }
+        else error: {
+            return .Err(mapChannelError(error))
+        }
+    }
+}
+
+fn stopScheduler(
+    $scheduler own Scheduler,
+    cancel bool
+) Result<void, Error> {
+    const Scheduler { actor handle } = scheduler
+    const Handle { sender storeDirectory } = handle
+    discard storeDirectory
+    const stopping = spawn requestStop($sender, cancel)
+    const result = $stopping.wait()
+    const requestError Option<Error> = match result {
+        Ok: .None
+        Err(error): .Some(error)
+    }
+    const failure = $actor.wait()
+    finishStop($failure, $requestError)
+}
+
+fn finishStop(
+    $failure Option<StoreError>,
+    $requestError Option<Error>
+) Result<void, Error> {
+    match failure {
+        None: match requestError {
+            None: .Ok
+            Some(error): .Err(error)
+        }
+        Some(error): .Err(.Store(error = error))
+    }
+}
+
+task requestStop(
+    $sender Sender<operation>,
+    cancel bool
+) Result<void, Error> {
+    select {
+        sender.send(.Stop(value = stopRequest { cancel = cancel })): return .Ok
+        else error: {
+            return .Err(mapChannelError(error))
+        }
+    }
+}
+
+task serve(
+    $receiver Receiver<operation>,
+    $failures Receiver<StoreError>,
+    $initial own schedulerState
+) Option<StoreError> {
+    var inbox = receiver
+    var failureInbox = failures
+    var current = initial
+    while !current.stopping {
+        if current.started {
+            select {
+                const incoming = inbox.receive(): {
+                    applyOperation(&current, $incoming)
+                }
+                const failure = failureInbox.receive(): {
+                    failScheduler(&current, failure)
+                }
+                timeout 1.seconds: {
+                    runDue(&current, time.Now())
+                }
+                else error: {
+                    closeFromChannel(&current, error)
+                }
+            }
+        } else {
+            const incoming = inbox.receive()
+            match incoming {
+                Ok(value): applyOperation(&current, $value)
+                Err(error): closeFromChannel(&current, error)
+            }
+        }
+    }
+    const finishing = spawn finish($current, $failureInbox)
+    const finished = $finishing.wait()
+    finished
+}
+
+fn applyOperation(
+    &current schedulerState,
+    $incoming operation
+) void {
+    match incoming {
+        Register(request): registerJob(&current, $request)
+        Start(reply): startScheduler(&current, $reply)
+        Enqueue(request): enqueueTask(&current, $request)
+        Tick(request): tickJobs(&current, $request)
+        Stop(request): requestStopping(&current, $request)
+    }
+}
+
+fn registerJob(
+    &current schedulerState,
+    $request registerRequest
+) void {
+    const registerRequest { job lastRun reply } = request
+    if containsName(&current, job.Name) {
+        current.supervisor.Start(spawn respond(
+            $reply,
+            .Rejected(error = .DuplicateName)
+            ))
+        discard job
+        return
+    }
+    current.jobs.PushFront(scheduledJob { job = job lastRun = lastRun })
+    current.supervisor.Start(spawn respond($reply, .Accepted))
+}
+
+fn startScheduler(
+    &current schedulerState,
+    $reply Sender<response>
+) void {
+    if current.started {
+        current.supervisor.Start(spawn respond(
+            $reply,
+            .Rejected(error = .AlreadyStarted)
+            ))
+        return
+    }
+    current.started = true
+    current.supervisor.Start(spawn respond($reply, .Accepted))
+}
+
+fn enqueueTask(
+    &current schedulerState,
+    $request taskRequest
+) void {
+    const taskRequest { factory delay reply } = request
+    const token = current.cancellation.Token()
+    if delay.Nanoseconds() <= 0 {
+        const pending = factory($token)
+        current.supervisor.Start($pending)
+    } else {
+        current.supervisor.Start(spawn waitDelay($factory, $token, delay))
+    }
+    current.supervisor.Start(spawn respond($reply, .Accepted))
+}
+
+fn tickJobs(
+    &current schedulerState,
+    $request tickRequest
+) void {
+    const tickRequest { instant reply } = request
+    runDue(&current, instant)
+    current.supervisor.Start(spawn respond($reply, .Accepted))
+}
+
+fn requestStopping(
+    &current schedulerState,
+    $request stopRequest
+) void {
+    const stopRequest { cancel } = request
+    current.stopping = true
+    current.cancel = cancel
+}
+
+fn closeFromChannel(
+    &current schedulerState,
+    error ChannelError
+) void {
+    discard error
+    current.stopping = true
+    current.cancel = true
+}
+
+fn failScheduler(
+    &current schedulerState,
+    error StoreError
+) void {
+    current.failure = .Some(error)
+    current.stopping = true
+    current.cancel = true
+}
+
+task finish(
+    $current own schedulerState,
+    $failureInbox Receiver<StoreError>
+) Option<StoreError> {
+    const schedulerState {
+        jobs
+        supervisor
+        cancellation
+        storeDirectory
+        failureSender
+        failure
+        started
+        stopping
+        cancel
+    } = current
+    discard jobs
+    discard started
+    discard stopping
+    discard storeDirectory
+    discard failureSender
+    const Channel { sender receiver } = channel<void>(0)
+    const draining = spawn drain($supervisor, $cancellation, cancel, $sender)
+    var completed = receiver
+    var failures = failureInbox
+    var result = failure
+    var waiting = true
+    var receivingFailures = true
+    while waiting {
+        if receivingFailures {
+            select {
+                completed.receive(): {
+                    waiting = false
+                }
+                const trailing = failures.receive(): {
+                    result = firstFailure(result, trailing)
+                }
+                else error: {
+                    discard error
+                    receivingFailures = false
+                }
+            }
+        } else {
+            discard completed.receive()
+            waiting = false
+        }
+    }
+    $draining.wait()
+    discard completed
+    discard failures
+    result
+}
+
+task drain(
+    $supervisor own worker.Supervisor,
+    $cancellation concurrent.CancellationSource,
+    cancel bool,
+    $completed Sender<void>
+) void {
+    if cancel {
+        cancellation.Cancel()
+        supervisor.Cancel()
+    } else {
+        supervisor.Shutdown()
+    }
+    discard cancellation
+    discard completed.send()
+}
+
+fn firstFailure(
+    current Option<StoreError>,
+    incoming StoreError
+) Option<StoreError> {
+    match current {
+        None: .Some(incoming)
+        Some(error): {
+            discard incoming
+            .Some(error)
+        }
+    }
+}
+
+fn runDue(
+    &current schedulerState,
+    instant time.Instant
+) void {
+    var pending = replace current.jobs with collections.NewList<scheduledJob>()
+    var processed = collections.NewList<scheduledJob>()
+    while !pending.IsEmpty() {
+        const scheduled = scheduledJobValue(pending.PopFront())
+        const scheduledJob { job lastRun } = scheduled
+        const Job { Name Cron cron handler } = job
+        if due(cron, instant, lastRun) {
+            const token = current.cancellation.Token()
+            const pendingTask = handler($token)
+            if text.IsEmpty(current.storeDirectory) {
+                current.supervisor.Start($pendingTask)
+            } else {
+                current.supervisor.Start(spawn persistRun(
+                    $pendingTask,
+                    text.Copy(current.storeDirectory),
+                    text.Copy(Name),
+                    text.Copy(Cron),
+                    instant,
+                    time.MonotonicNow(),
+                    current.failureSender.clone()
+                    ))
+            }
+            processed.PushFront(scheduledJob {
+                job = Job { Name = Name Cron = Cron cron = cron handler = handler }
+                lastRun = .Some(instant)
+            })
+        } else {
+            processed.PushFront(scheduledJob {
+                job = Job { Name = Name Cron = Cron cron = cron handler = handler }
+                lastRun = lastRun
+            })
+        }
+    }
+    while !processed.IsEmpty() {
+        current.jobs.PushFront(scheduledJobValue(processed.PopFront()))
+    }
+}
+
+task persistRun(
+    $pending Task<void>,
+    $directory String,
+    $name String,
+    $cron String,
+    instant time.Instant,
+    started time.MonotonicInstant,
+    $failures Sender<StoreError>
+) void {
+    $pending.wait()
+    const finished = time.MonotonicNow()
+    const elapsed = finished.Since(started)
+    const latency = durationOrZero($elapsed)
+    const saving = spawn saveRecord($directory, JobRecord {
+        Name = name
+        Cron = cron
+        LastRun = instant
+        LastStatus = "ok"
+        LastLatency = latency
+    })
+    const saved = $saving.wait()
+    match saved {
+        Ok: {
+            discard failures
+        }
+        Err(error): {
+            discard failures.send(error)
+        }
+    }
+}
+
+fn durationOrZero($value Result<time.Duration, time.Error>) time.Duration {
+    match value {
+        Ok(duration): duration
+        Err(error): {
+            discard error
+            time.Zero()
+        }
+    }
+}
+
+fn containsName(
+    &current schedulerState,
+    name String
+) bool {
+    var pending = replace current.jobs with collections.NewList<scheduledJob>()
+    var processed = collections.NewList<scheduledJob>()
+    var found = false
+    while !pending.IsEmpty() {
+        const scheduled = scheduledJobValue(pending.PopFront())
+        if text.Equal(scheduled.job.Name, name) {
+            found = true
+        }
+        processed.PushFront($scheduled)
+    }
+    while !processed.IsEmpty() {
+        current.jobs.PushFront(scheduledJobValue(processed.PopFront()))
+    }
+    found
+}
+
+task waitDelay(
+    $factory transferable fn($concurrent.Cancellation) Task<void>,
+    $cancel concurrent.Cancellation,
+    delay time.Duration
+) void {
+    const Channel { sender receiver } = channel<void>(0)
+    var endpoint = receiver
+    select {
+        endpoint.receive(): {
+            discard sender
+            discard endpoint
+            discard factory
+            discard cancel
+        }
+        timeout durationNanoseconds(delay): {
+            discard sender
+            discard endpoint
+            const pending = factory($cancel)
+            $pending.wait()
+        }
+        else error: {
+            discard error
+            discard sender
+            discard endpoint
+            discard factory
+            discard cancel
+        }
+    }
+}
+
+task respond(
+    $reply Sender<response>,
+    $value response
+) void {
+    discard reply.send(value)
+}
+
+fn responseResult(
+    $received Result<response, ChannelError>
+) Result<void, Error> {
+    match received {
+        Ok(value): match value {
+            Accepted: .Ok
+            Rejected(error): .Err(error)
+        }
+        Err(error): .Err(mapChannelError(error))
+    }
+}
+
+fn durationNanoseconds(delay time.Duration) u64 {
+    const value = u64.From(delay.Nanoseconds()) else error {
+        discard error
+        panic("scheduler duration invariant failed")
+    }
+    value
+}
+
+fn mapChannelError(error ChannelError) Error {
+    match error {
+        Closed: .Closed
+        Cancelled: .Cancelled
+        Timeout: .Cancelled
+    }
+}
+
+fn scheduledJobValue($value Option<scheduledJob>) scheduledJob {
+    match value {
+        None: panic("scheduler job invariant failed")
+        Some(job): job
+    }
+}
+
+fn due(
+    cron Cron,
+    instant time.Instant,
+    lastRun Option<time.Instant>
+) bool {
+    const minute = instant.Unix() / 60
+    match lastRun {
+        None: cron.Matches(instant)
+        Some(previous): {
+            const previousMinute = previous.Unix() / 60
+            if minute <= previousMinute return false
+            const elapsed = minute - previousMinute
+            const maximum u64 = 2635200
+            const steps = maximum if elapsed > maximum else elapsed
+            var offset u64 = 1
+            while offset <= steps {
+                const candidate = previousMinute + offset
+                if cron.Matches(time.FromUnix(candidate * 60)) return true
+                offset = offset + 1
+            }
+            false
+        }
+    }
+}
+
+struct utcComponents {
+    minute u64
+    hour u64
+    day u64
+    month u64
+    weekday u64
+}
+
+fn utcParts(seconds u64) utcComponents {
+    const days = seconds / 86400
+    const z = days + 719468
+    const era = z / 146097
+    const dayOfEra = z - era * 146097
+    const yearOfEra = (
+        dayOfEra - dayOfEra / 1460 + dayOfEra / 36524 - dayOfEra / 146096
+    ) / 365
+    const dayOfYear = dayOfEra - (
+        365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100
+    )
+    const monthPart = (dayOfYear * 5 + 2) / 153
+    const day = dayOfYear - (monthPart * 153 + 2) / 5 + 1
+    const month = monthPart + 3 if monthPart < 10 else monthPart - 9
+    utcComponents {
+        minute = (seconds / 60) % 60
+        hour = (seconds / 3600) % 24
+        day = day
+        month = month
+        weekday = (days + 4) % 7
+    }
+}
+
+fn parseCronField(
+    expression String,
+    &cursor cronCursor,
+    minimum u64,
+    maximum u64
+) Result<cronField, CronError> {
+    skipWhitespace(expression, &cursor)
+    const length = text.ByteLen(expression)
+    if cursor.offset >= length return .Err(.FieldCount)
+    const start = cursor.offset
+    while cursor.offset < length && !isWhitespace(byteAt(expression, cursor.offset)) {
+        cursor.offset = cursor.offset + 1
+    }
+    const token = text.Slice(expression, start, cursor.offset) else error {
+        discard error
+        return .Err(.InvalidField)
+    }
+    if text.Equal(token, "*") return .Ok(.Any)
+    const value = parse.U64(token) else error {
+        discard error
+        return .Err(.InvalidField)
+    }
+    if value < minimum || value > maximum return .Err(.OutOfRange)
+    .Ok(.Exact(value = value))
+}
+
+fn skipWhitespace(
+    expression String,
+    &cursor cronCursor
+) void {
+    const length = text.ByteLen(expression)
+    while cursor.offset < length && isWhitespace(byteAt(expression, cursor.offset)) {
+        cursor.offset = cursor.offset + 1
+    }
+}
+
+fn byteAt(expression String, offset u64) u64 {
+    const value = text.ByteAt(expression, offset) else error {
+        discard error
+        panic("scheduler cron byte invariant failed")
+    }
+    value
+}
+
+fn isWhitespace(value u64) bool {
+    value == 32 || value == 9
+}
+
+fn fieldMatches(field cronField, value u64) bool {
+    match field {
+        Any: true
+        Exact(expected): expected == value
+    }
+}

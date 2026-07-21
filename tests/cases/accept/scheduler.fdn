@@ -1,0 +1,64 @@
+import foundation.scheduler
+import std.concurrent
+import std.time
+
+task report(
+    $cancel concurrent.Cancellation,
+    $sender Sender<void>
+) void {
+    if cancel.IsRequested() return
+    discard sender.send()
+}
+
+fn makeHandler(
+    $sender Sender<void>
+) transferable fn($concurrent.Cancellation) Task<void> {
+    fn($cancel concurrent.Cancellation) Task<void> capture($sender) {
+        spawn report($cancel, sender.clone())
+    }
+}
+
+task await($receiver Receiver<void>) void {
+    discard receiver.receive()
+}
+
+task tickWithHandle(
+    $handle scheduler.Handle,
+    instant time.Instant
+) Result<void, scheduler.Error> {
+    const ticking = handle.Tick(instant)
+    const ticked = $ticking.wait()
+    ticked
+}
+
+fn expect($result Result<void, scheduler.Error>) void {
+    match result {
+        Ok: {}
+        Err(error): {
+            discard error
+            panic("unexpected scheduler error")
+        }
+    }
+}
+
+fn main() i32 {
+    const Channel { sender receiver } = channel<void>(1)
+    const handler = makeHandler($sender)
+    const job = scheduler.NewJob("daily", "0 3 * * *", $handler) else error {
+        discard error
+        return 1
+    }
+    const active = scheduler.New()
+    const registered = active.Register($job)
+    expect($registered.wait())
+    const handle = active.Handle()
+    const first = spawn tickWithHandle($handle, time.FromUnix(1768446000))
+    expect($first.wait())
+    const waiting = spawn await($receiver)
+    $waiting.wait()
+    print("scheduled")
+    const duplicate = active.Tick(time.FromUnix(1768446000))
+    expect($duplicate.wait())
+    expect($active.Shutdown())
+    0
+}

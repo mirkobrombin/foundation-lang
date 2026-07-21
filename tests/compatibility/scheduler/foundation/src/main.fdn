@@ -1,0 +1,443 @@
+package test.compatibility.scheduler
+
+import foundation.scheduler
+import std.collections
+import std.concurrent
+import std.text
+import std.time
+
+task signal(
+    $cancel concurrent.Cancellation,
+    $sender Sender<void>
+) void {
+    if cancel.IsRequested() return
+    discard sender.send()
+}
+
+task idle($cancel concurrent.Cancellation) void {
+    discard cancel
+}
+
+fn signalFactory(
+    $sender Sender<void>
+) transferable fn($concurrent.Cancellation) Task<void> {
+    fn($cancel concurrent.Cancellation) Task<void> capture($sender) {
+        spawn signal($cancel, sender.clone())
+    }
+}
+
+fn idleFactory($cancel concurrent.Cancellation) Task<void> {
+    spawn idle($cancel)
+}
+
+fn require($value Result<void, scheduler.Error>) void {
+    match value {
+        Ok: {}
+        Err(error): {
+            discard error
+            panic("scheduler compatibility operation failed")
+        }
+    }
+}
+
+fn invalidCronRejected() bool {
+    const result = scheduler.NewJob("invalid", "60 * * * *", $idleFactory)
+    match result {
+        Ok(job): {
+            discard job
+            false
+        }
+        Err(error): match error {
+            InvalidCron(error): {
+                discard error
+                true
+            }
+            EmptyName: false
+            DuplicateName: false
+            AlreadyStarted: false
+            Closed: false
+            Cancelled: false
+            Store(error): {
+                discard error
+                false
+            }
+        }
+    }
+}
+
+fn duplicateRejected($value Result<void, scheduler.Error>) bool {
+    match value {
+        Ok: false
+        Err(error): match error {
+            DuplicateName: true
+            EmptyName: false
+            InvalidCron(error): {
+                discard error
+                false
+            }
+            AlreadyStarted: false
+            Closed: false
+            Cancelled: false
+            Store(error): {
+                discard error
+                false
+            }
+        }
+    }
+}
+
+fn alreadyStarted($value Result<void, scheduler.Error>) bool {
+    match value {
+        Ok: false
+        Err(error): match error {
+            AlreadyStarted: true
+            EmptyName: false
+            InvalidCron(error): {
+                discard error
+                false
+            }
+            DuplicateName: false
+            Closed: false
+            Cancelled: false
+            Store(error): {
+                discard error
+                false
+            }
+        }
+    }
+}
+
+fn requireSignal($value Result<void, ChannelError>) void {
+    match value {
+        Ok: {}
+        Err(error): {
+            discard error
+            panic("scheduler compatibility signal failed")
+        }
+    }
+}
+
+fn cancellationClosed($value Result<void, ChannelError>) bool {
+    match value {
+        Ok: false
+        Err(error): match error {
+            Closed: true
+            Cancelled: true
+            Timeout: false
+        }
+    }
+}
+
+fn requireStore(
+    $value Result<own scheduler.JobStore, scheduler.StoreError>
+) own scheduler.JobStore {
+    match value {
+        Ok(store): store
+        Err(error): {
+            discard error
+            panic("scheduler compatibility store open failed")
+        }
+    }
+}
+
+fn requireStoreWrite($value Result<void, scheduler.StoreError>) void {
+    match value {
+        Ok: {}
+        Err(error): {
+            discard error
+            panic("scheduler compatibility store write failed")
+        }
+    }
+}
+
+fn requireRecord(
+    $value Result<scheduler.JobRecord, scheduler.StoreError>
+) scheduler.JobRecord {
+    match value {
+        Ok(record): record
+        Err(error): {
+            discard error
+            panic("scheduler compatibility store read failed")
+        }
+    }
+}
+
+fn requireRecords(
+    $value Result<own collections.List<scheduler.JobRecord>, scheduler.StoreError>
+) own collections.List<scheduler.JobRecord> {
+    match value {
+        Ok(records): records
+        Err(error): {
+            discard error
+            panic("scheduler compatibility store list failed")
+        }
+    }
+}
+
+fn validStoredRecord($record scheduler.JobRecord) bool {
+    const scheduler.JobRecord { Name Cron LastRun LastStatus LastLatency } = record
+    const valid = text.Equal(Name, "stored") &&
+        text.Equal(Cron, "* * * * *") &&
+        LastRun.Unix() == 1768446000 &&
+        text.Equal(LastStatus, "ok \"quoted\" \\ value") &&
+        LastLatency.Nanoseconds() == 42000000
+    discard Name
+    discard Cron
+    discard LastStatus
+    valid
+}
+
+fn invalidStoreName($value Result<scheduler.JobRecord, scheduler.StoreError>) bool {
+    match value {
+        Ok(record): {
+            discard record
+            false
+        }
+        Err(error): match error {
+            InvalidName: true
+            InvalidData: false
+            NotFound: false
+            Permission: false
+            TooLarge: false
+            Closed: false
+            Cancelled: false
+            Io: false
+        }
+    }
+}
+
+task verifyStore($directory String) i32 {
+    const opening = spawn scheduler.NewJobStore($directory)
+    const opened = $opening.wait()
+    const store = requireStore($opened)
+    const saving = store.Save(scheduler.JobRecord {
+        Name = "stored"
+        Cron = "* * * * *"
+        LastRun = time.FromUnix(1768446000)
+        LastStatus = "ok \"quoted\" \\ value"
+        LastLatency = time.Milliseconds(42)
+    })
+    const saved = $saving.wait()
+    requireStoreWrite($saved)
+
+    const loading = store.Load("stored")
+    const loadedResult = $loading.wait()
+    const loaded = requireRecord($loadedResult)
+    if !validStoredRecord($loaded) {
+        discard store
+        return 1
+    }
+    print("store round trip")
+
+    const listing = store.List()
+    const listedRecords = $listing.wait()
+    var records = requireRecords($listedRecords)
+    if records.Len() != 1 {
+        return 2
+    }
+    const listed = records.PopFront()
+    match listed {
+        None: {
+            return 3
+        }
+        Some(record): {
+            if !validStoredRecord($record) {
+                return 4
+            }
+        }
+    }
+    discard records
+    print("store list: 1")
+
+    const invalid = store.Load("../escape")
+    const invalidResult = $invalid.wait()
+    if !invalidStoreName($invalidResult) {
+        discard store
+        return 5
+    }
+    print("invalid store name rejected")
+    discard store
+    0
+}
+
+task verifySchedulerStore($directory String) i32 {
+    const opening = spawn scheduler.NewJobStore(text.Copy(directory))
+    const opened = $opening.wait()
+    const store = requireStore($opened)
+    const Channel { sender receiver } = channel<void>(1)
+    const handler = signalFactory($sender)
+    const job = scheduler.NewJob("heartbeat", "* * * * *", $handler) else error {
+        discard error
+        discard store
+        discard directory
+        return 1
+    }
+    const active = scheduler.NewWithStore($store)
+    const registering = active.Register($job)
+    const registered = $registering.wait()
+    require($registered)
+    const starting = active.Start()
+    const started = $starting.wait()
+    require($started)
+    const signalled = receiver.receive()
+    requireSignal($signalled)
+    require($active.Shutdown())
+
+    const readingStore = spawn scheduler.NewJobStore(text.Copy(directory))
+    const readingOpened = $readingStore.wait()
+    const persistedStore = requireStore($readingOpened)
+    const loading = persistedStore.Load("heartbeat")
+    const loadedResult = $loading.wait()
+    const loaded = requireRecord($loadedResult)
+    const scheduler.JobRecord {
+        Name
+        Cron
+        LastRun
+        LastStatus
+        LastLatency
+    } = loaded
+    if !text.Equal(Name, "heartbeat") || !text.Equal(Cron, "* * * * *") ||
+        LastRun.Unix() == 0 || !text.Equal(LastStatus, "ok") ||
+        LastLatency.IsNegative() {
+        discard Name
+        discard Cron
+        discard LastStatus
+        discard persistedStore
+        discard directory
+        return 2
+    }
+    discard Name
+    discard Cron
+    discard LastStatus
+    print("scheduler persisted state")
+
+    const future = time.Now().Unix() + 3600
+    const updating = persistedStore.Save(scheduler.JobRecord {
+        Name = "heartbeat"
+        Cron = "* * * * *"
+        LastRun = time.FromUnix(future)
+        LastStatus = "ok"
+        LastLatency = time.Zero()
+    })
+    const updated = $updating.wait()
+    requireStoreWrite($updated)
+    discard persistedStore
+
+    const restoringStore = spawn scheduler.NewJobStore($directory)
+    const restoringOpened = $restoringStore.wait()
+    const restoredStore = requireStore($restoringOpened)
+    const Channel { sender as secondSender receiver as secondReceiver } = channel<void>(1)
+    const secondHandler = signalFactory($secondSender)
+    const secondJob = scheduler.NewJob(
+        "heartbeat",
+        "* * * * *",
+        $secondHandler
+    ) else error {
+        discard error
+        discard restoredStore
+        return 3
+    }
+    const restored = scheduler.NewWithStore($restoredStore)
+    const registeringRestored = restored.Register($secondJob)
+    const registeredRestored = $registeringRestored.wait()
+    require($registeredRestored)
+    const ticking = restored.Tick(time.Now())
+    const ticked = $ticking.wait()
+    require($ticked)
+    select {
+        secondReceiver.receive(): {
+            discard restored
+            return 4
+        }
+        timeout 1.milliseconds: {}
+        else error: {
+            discard error
+            discard restored
+            return 5
+        }
+    }
+    require($restored.Shutdown())
+    print("scheduler restored state")
+    0
+}
+
+task runCompatibility($storeDirectory String) i32 {
+    if !invalidCronRejected() return 1
+    print("invalid cron rejected")
+
+    const Channel { sender as cronSender receiver as cronReceiver } = channel<void>(1)
+    const cronFactory = signalFactory($cronSender)
+    const job = scheduler.NewJob("heartbeat", "* * * * *", $cronFactory) else error {
+        discard error
+        return 2
+    }
+    const active = scheduler.New()
+    const registering = active.Register($job)
+    const registered = $registering.wait()
+    require($registered)
+
+    const duplicate = scheduler.NewJob("heartbeat", "* * * * *", $idleFactory) else error {
+        discard error
+        return 3
+    }
+    const registeringDuplicate = active.Register($duplicate)
+    const duplicateResult = $registeringDuplicate.wait()
+    if !duplicateRejected($duplicateResult) return 4
+    print("duplicate rejected")
+
+    const starting = active.Start()
+    const started = $starting.wait()
+    require($started)
+    const startingAgain = active.Start()
+    const startedAgain = $startingAgain.wait()
+    if !alreadyStarted($startedAgain) return 5
+    print("already started rejected")
+
+    const Channel {
+        sender as immediateSender
+        receiver as immediateReceiver
+    } = channel<void>(1)
+    const immediateFactory = signalFactory($immediateSender)
+    const enqueuing = active.Enqueue($immediateFactory)
+    const enqueued = $enqueuing.wait()
+    require($enqueued)
+
+    const Channel { sender as delayedSender receiver as delayedReceiver } = channel<void>(1)
+    const delayedFactory = signalFactory($delayedSender)
+    const scheduling = active.ScheduleAfter(time.Milliseconds(10), $delayedFactory)
+    const scheduled = $scheduling.wait()
+    require($scheduled)
+
+    const immediate = immediateReceiver.receive()
+    requireSignal($immediate)
+    print("enqueued")
+    const delayed = delayedReceiver.receive()
+    requireSignal($delayed)
+    print("delayed")
+    const cron = cronReceiver.receive()
+    requireSignal($cron)
+    print("cron")
+
+    const Channel { sender as cancelledSender receiver as cancelledReceiver } = channel<void>(1)
+    const cancelledFactory = signalFactory($cancelledSender)
+    const schedulingCancelled = active.ScheduleAfter(time.Seconds(3600), $cancelledFactory)
+    const scheduledCancelled = $schedulingCancelled.wait()
+    require($scheduledCancelled)
+    require($active.Cancel())
+    const cancelled = cancelledReceiver.receive()
+    if !cancellationClosed($cancelled) return 6
+    print("cancelled delay")
+    const storeCheck = spawn verifyStore(text.Copy(storeDirectory))
+    const storeCode = $storeCheck.wait()
+    if storeCode != 0 return 10 + storeCode
+    const schedulerStoreCheck = spawn verifySchedulerStore($storeDirectory)
+    const schedulerStoreCode = $schedulerStoreCheck.wait()
+    if schedulerStoreCode != 0 return 20 + schedulerStoreCode
+    print("scheduler compatibility ok")
+    0
+}
+
+fn main(arguments [String]) i32 {
+    const pending = spawn runCompatibility(text.Copy(arguments[0]))
+    $pending.wait()
+}

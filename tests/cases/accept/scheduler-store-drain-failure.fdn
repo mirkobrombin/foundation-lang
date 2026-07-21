@@ -1,0 +1,105 @@
+import foundation.scheduler
+import std.concurrent
+import std.fs
+import std.path
+import std.text
+import std.time
+
+task blockDestination(
+    $cancel concurrent.Cancellation,
+    $destination String
+) void {
+    discard cancel
+    const creating = spawn fs.CreatePrivateDirectory($destination)
+    const created = $creating.wait()
+    match created {
+        Ok: {}
+        Err(error): {
+            discard error
+            panic("scheduler failure destination creation failed")
+        }
+    }
+    const Channel { sender receiver } = channel<void>(0)
+    var endpoint = receiver
+    select {
+        endpoint.receive(): {}
+        timeout 20.milliseconds: {}
+        else error: {
+            discard error
+        }
+    }
+    discard sender
+    discard endpoint
+}
+
+fn blockFactory(
+    $destination String
+) transferable fn($concurrent.Cancellation) Task<void> {
+    fn($cancel concurrent.Cancellation) Task<void> capture($destination) {
+        spawn blockDestination($cancel, text.Copy(destination))
+    }
+}
+
+fn requireStore(
+    $result Result<own scheduler.JobStore, scheduler.StoreError>
+) own scheduler.JobStore {
+    match result {
+        Ok(store): store
+        Err(error): {
+            discard error
+            panic("scheduler store creation failed")
+        }
+    }
+}
+
+fn expect($result Result<void, scheduler.Error>) void {
+    match result {
+        Ok: {}
+        Err(error): {
+            discard error
+            panic("unexpected scheduler error")
+        }
+    }
+}
+
+fn storeFailure($result Result<void, scheduler.Error>) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            Store(error): {
+                discard error
+                true
+            }
+            EmptyName: false
+            InvalidCron(error): {
+                discard error
+                false
+            }
+            DuplicateName: false
+            AlreadyStarted: false
+            Closed: false
+            Cancelled: false
+        }
+    }
+}
+
+fn main() i32 {
+    const root = "scheduler-failure-" + UUID.NewV4().String()
+    const destination = path.Join(text.Copy(root), "blocked.json")
+    const factory = blockFactory($destination)
+    const opening = spawn scheduler.NewJobStore($root)
+    const store = requireStore($opening.wait())
+    const job = scheduler.NewJob("blocked", "* * * * *", $factory) else error {
+        discard error
+        discard store
+        return 1
+    }
+    const active = scheduler.NewWithStore($store)
+    const registering = active.Register($job)
+    expect($registering.wait())
+    const ticking = active.Tick(time.FromUnix(1768446000))
+    expect($ticking.wait())
+    if !storeFailure($active.Shutdown()) return 2
+    print("store failure surfaced")
+    0
+}

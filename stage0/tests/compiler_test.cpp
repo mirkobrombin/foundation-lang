@@ -2021,6 +2021,41 @@ fn main() i32 {
            "named function value receives an invocation adapter");
 }
 
+void taskFunctionValuesReceiveEarlyAdapterPrototypes() {
+    constexpr std::string_view source = R"(
+task idle() void {}
+
+fn make() Task<void> {
+    spawn idle()
+}
+
+task invoke($factory transferable fn() Task<void>) void {
+    const pending = factory()
+    $pending.wait()
+}
+
+fn main() i32 {
+    const factory transferable fn() Task<void> = make
+    const pending = spawn invoke($factory)
+    $pending.wait()
+    0
+}
+)";
+    const auto checked = check(source);
+    expect(!checked.diagnostics.hasErrors(),
+           "task function value adapter fixture has no diagnostics");
+    if (!checked.fir.has_value()) {
+        expect(false, "task function value adapter fixture lowers to FIR");
+        return;
+    }
+    const auto generated = foundation::emitC(*checked.fir, "task-function-value.fdn");
+    const auto reference = generated.find(".fdn_call = &");
+    const auto prototype = generated.find("_value_adapter(void *fdn_env);");
+    expect(reference != std::string::npos && prototype != std::string::npos &&
+               prototype < reference,
+           "task poll sees a function value adapter prototype before first use");
+}
+
 void servicesAndActionsLowerToStaticApplicationMetadata() {
     constexpr std::string_view source = R"(
 attribute Managed(value bool) targets(service)
@@ -2364,6 +2399,7 @@ int main() {
     blockingImportsLowerToTaskSuspension();
     callbackImportsLowerToReactorSuspension();
     closuresLowerToDeterministicFunctionValues();
+    taskFunctionValuesReceiveEarlyAdapterPrototypes();
     servicesAndActionsLowerToStaticApplicationMetadata();
     applicationPlanValidatesStaticDependencyGraph();
     openAPIGenerationUsesValidatedRouteGraph();

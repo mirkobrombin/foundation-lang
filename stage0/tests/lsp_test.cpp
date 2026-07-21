@@ -2709,6 +2709,137 @@ void parallelPoolExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void schedulerPackageExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string completeContents =
+        "package sample\n"
+        "\n"
+        "import foundation.scheduler\n"
+        "import std.concurrent\n"
+        "\n"
+        "task idle($cancel concurrent.Cancellation) void {\n"
+        "    discard cancel\n"
+        "}\n"
+        "\n"
+        "fn idleFactory($cancel concurrent.Cancellation) Task<void> {\n"
+        "    spawn idle($cancel)\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    const job = scheduler.NewJob(\"daily\", \"0 3 * * *\", $idleFactory) else error {\n"
+        "        discard error\n"
+        "        return 1\n"
+        "    }\n"
+        "    const active = scheduler.New()\n"
+        "    const registering = active.Register($job)\n"
+        "    discard registering\n"
+        "    const handle = active.Handle()\n"
+        "    discard handle\n"
+        "    discard active\n"
+        "    0\n"
+        "}\n";
+    const std::string completionContents =
+        "package sample\n"
+        "\n"
+        "import foundation.scheduler\n"
+        "import std.concurrent\n"
+        "\n"
+        "task idle($cancel concurrent.Cancellation) void {\n"
+        "    discard cancel\n"
+        "}\n"
+        "\n"
+        "fn idleFactory($cancel concurrent.Cancellation) Task<void> {\n"
+        "    spawn idle($cancel)\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    const job = scheduler.NewJob(\"daily\", \"0 3 * * *\", $idleFactory) else error {\n"
+        "        discard error\n"
+        "        return 1\n"
+        "    }\n"
+        "    const active = scheduler.New()\n"
+        "    const registering = active.Register($job)\n"
+        "    discard registering\n"
+        "    const handle = active.Handle()\n"
+        "    handle.\n"
+        "    discard active\n"
+        "    0\n"
+        "}\n";
+    writeFile(source, completeContents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(completeContents) +
+        "\"}}}";
+    const auto change =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":2},\"contentChanges\":[{\"text\":\"" +
+        jsonEscape(completionContents) + "\"}]}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(251, "hover", 2, 12)) +
+        frame(request(252, "hover", 14, 31)) +
+        frame(request(253, "signatureHelp", 14, 48)) +
+        frame(request(254, "definition", 14, 31)) +
+        frame(request(255, "hover", 19, 38)) +
+        frame(request(256, "hover", 21, 28)) + frame(change) +
+        frame(request(257, "completion", 22, 11)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto packageHover = responseFor(transcript, 251);
+    const auto jobHover = responseFor(transcript, 252);
+    const auto jobSignature = responseFor(transcript, 253);
+    const auto jobDefinition = responseFor(transcript, 254);
+    const auto registerHover = responseFor(transcript, 255);
+    const auto handleHover = responseFor(transcript, 256);
+    const auto members = responseFor(transcript, 257);
+
+    expect(status == 0, "scheduler language server transcript exits cleanly");
+    expect(errors.str().empty(), "scheduler requests write no server errors");
+    expect(packageHover.find("foundation.scheduler") != std::string::npos,
+           "scheduler package import receives hover");
+    expect(jobHover.find("fn NewJob") != std::string::npos &&
+               jobHover.find("validated recurring job") != std::string::npos,
+           "scheduler job construction receives typed hover and documentation");
+    expect(jobSignature.find("fn NewJob") != std::string::npos &&
+               jobSignature.find("transferable fn") != std::string::npos,
+           "scheduler job construction receives ownership-aware signature help");
+    expect(jobDefinition.find("foundation/scheduler/scheduler.fdn") != std::string::npos,
+           "scheduler job construction navigates to framework source");
+    expect(registerHover.find("fn Register") != std::string::npos &&
+               registerHover.find("Task<Result<void, Error>>") != std::string::npos,
+           "scheduler registration hover exposes its task result");
+    expect(handleHover.find("fn Handle") != std::string::npos &&
+               handleHover.find("Handle") != std::string::npos,
+           "scheduler handle hover exposes the transferable control surface");
+    expect(members.find("\"label\":\"Register\"") != std::string::npos &&
+               members.find("\"label\":\"Start\"") != std::string::npos &&
+               members.find("\"label\":\"Tick\"") != std::string::npos &&
+               members.find("\"label\":\"ScheduleAfter\"") != std::string::npos,
+           "scheduler handle completion exposes its compiler-backed methods");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void rawPointersExposeEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fdn";
@@ -4054,6 +4185,7 @@ int main() {
     pluginPackageExposesEditorDetails();
     supervisorPackageExposesEditorDetails();
     parallelPoolExposesEditorDetails();
+    schedulerPackageExposesEditorDetails();
     rawPointersExposeEditorDetails();
     servicesAndActionsExposeEditorDetails();
     derivedValidationExposesEditorDetails();

@@ -274,6 +274,13 @@ int32_t foundation_runtime_fs_is_directory(const fdn_string *path, bool *result)
 int32_t foundation_runtime_fs_modified(const fdn_string *path, uint64_t *unix_seconds);
 int32_t foundation_runtime_fs_read_text_limited(const fdn_string *path, uint64_t max_length,
                                                 fdn_string *result);
+int32_t foundation_runtime_fs_read_private_text_limited(const fdn_string *path,
+                                                        uint64_t max_length,
+                                                        fdn_string *result);
+int32_t foundation_runtime_fs_create_private_directory(const fdn_string *path);
+int32_t foundation_runtime_fs_write_private_text_atomic(const fdn_string *path,
+                                                        const fdn_string *value,
+                                                        uint64_t max_length);
 uint64_t foundation_runtime_fs_live_directories(void);
 int32_t foundation_runtime_net_resolve(const fdn_string *host, uint64_t port,
                                        uint64_t *addresses);
