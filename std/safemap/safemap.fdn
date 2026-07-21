@@ -44,7 +44,7 @@ struct setPayload<K, V> {
 struct computePayload<K, V> {
     key K
     initial V
-    update fn(V) V
+    update transferable fn(V) V
 }
 
 enum operation<K, V> {
@@ -142,7 +142,7 @@ struct Handle<K, V> {
         self,
         $key K,
         $initial V,
-        $update fn(V) V
+        $update transferable fn(V) V
     ) Task<Result<V, Error>> {
         spawn compute<K, V>(self.sender.clone(), $key, $initial, $update)
     }
@@ -201,7 +201,7 @@ struct Map<K, V> {
         self,
         $key K,
         $initial V,
-        $update fn(V) V
+        $update transferable fn(V) V
     ) Task<Result<V, Error>> {
         self.handle.Compute($key, $initial, $update)
     }
@@ -259,7 +259,7 @@ struct ShardedMap<K, V> {
         self,
         $key K,
         $initial V,
-        $update fn(V) V
+        $update transferable fn(V) V
     ) Task<Result<V, Error>> {
         self.map.Compute($key, $initial, $update)
     }
@@ -510,7 +510,7 @@ task compute<K, V>(
     $requests Sender<request<K, V>>,
     $key K,
     $initial V,
-    $update fn(V) V
+    $update transferable fn(V) V
 ) Result<V, Error> {
     const result = spawn sendRequest($requests, .Compute(value = computePayload<K, V> {
         key = key
@@ -920,7 +920,7 @@ fn computeValue<K, V>(
     &current state<K, V>,
     $key K,
     $initial V,
-    $update fn(V) V
+    $update transferable fn(V) V
 ) V {
     const clonedKey = cloneValue(current.cloneKey, key)
     const existing = getValue(&current, $clonedKey)

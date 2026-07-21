@@ -203,6 +203,11 @@ if(FOUNDATION_BUILD_FUZZERS)
         COPYONLY
     )
     configure_file(
+        tests/fuzz/corpus/transferable-functions.fdn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/transferable-functions.fdn"
+        COPYONLY
+    )
+    configure_file(
         tests/fuzz/corpus/result-else-without-binding.fdn
         "${FOUNDATION_FUZZ_CORPUS_DIR}/result-else-without-binding.fdn"
         COPYONLY
@@ -1239,6 +1244,14 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.worker-pool-function
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool-function.fdn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool-function.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
         NAME stage0.run.worker-pool-channel-allocations
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -1258,7 +1271,12 @@ if(BUILD_TESTING)
     )
     foreach(worker_pool_case IN ITEMS
             worker-pool-stored-task
-            worker-pool-custom-drop)
+            worker-pool-custom-drop
+            worker-pool-function-capture
+            worker-pool-function-borrow
+            worker-pool-function-unqualified
+            worker-pool-function-generic
+            worker-pool-function-unconstrained)
         add_test(
             NAME stage0.check.${worker_pool_case}
             COMMAND ${CMAKE_COMMAND}

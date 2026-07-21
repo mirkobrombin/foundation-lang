@@ -2410,6 +2410,7 @@ void functionValuesExposeTargetOwnershipModes() {
         "fn inspect(value String) bool { value == \"ready\" }\n"
         "fn mutate(&value Value) void { value.count = value.count + 1 }\n"
         "fn take($value String) i32 { if value == \"owned\" { return 1 } 0 }\n"
+        "fn hold<T transferable>($value T) T { value }\n"
         "fn main() i32 {\n"
         "    const check = inspect\n"
         "    const editor = mutate\n"
@@ -2422,6 +2423,7 @@ void functionValuesExposeTargetOwnershipModes() {
         "    const size = consumer($payload)\n"
         "    const plus fn(i32) i32 = fn(number) { number + 1 }\n"
         "    const answer = plus(41)\n"
+        "    const portable transferable fn() void = fn() void {}\n"
         "    if ready { return size }\n"
         "    value.count\n"
         "}\n";
@@ -2444,9 +2446,10 @@ void functionValuesExposeTargetOwnershipModes() {
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
-    std::istringstream input(frame(initialize) + frame(open) + frame(request(141, 12, 20)) +
-                             frame(request(142, 13, 6)) + frame(request(143, 14, 19)) +
-                             frame(request(144, 15, 34)) + frame(request(145, 16, 21)) +
+    std::istringstream input(frame(initialize) + frame(open) + frame(request(141, 13, 20)) +
+                             frame(request(142, 14, 6)) + frame(request(143, 15, 19)) +
+                             frame(request(144, 16, 34)) + frame(request(145, 17, 21)) +
+                             frame(request(146, 18, 12)) + frame(request(147, 5, 4)) +
                              frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
@@ -2457,6 +2460,8 @@ void functionValuesExposeTargetOwnershipModes() {
     const auto consumerHover = responseFor(transcript, 143);
     const auto inferredParameterHover = responseFor(transcript, 144);
     const auto inferredFunctionHover = responseFor(transcript, 145);
+    const auto transferableFunctionHover = responseFor(transcript, 146);
+    const auto transferableConstraintHover = responseFor(transcript, 147);
 
     expect(status == 0, "function value hover transcript exits cleanly");
     expect(errors.str().empty(), "function value hover requests write no server errors");
@@ -2470,6 +2475,12 @@ void functionValuesExposeTargetOwnershipModes() {
            "inferred closure parameters expose their semantic type");
     expect(inferredFunctionHover.find("plus fn(i32) i32") != std::string::npos,
            "inferred closures expose their complete contextual signature");
+    expect(transferableFunctionHover.find("portable transferable fn() void") !=
+               std::string::npos,
+           "transferable closure values expose their executor transfer guarantee");
+    expect(transferableConstraintHover.find("fn hold<T transferable>($value T) T") !=
+               std::string::npos,
+           "generic function hover preserves transferable type constraints");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);

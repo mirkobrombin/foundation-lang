@@ -64,7 +64,12 @@ fn Values(self) Task<Result<own collections.List<V>, Error>>
 fn Snapshot(self) Task<Result<own collections.List<Pair<K, V>>, Error>>
 fn Clear(self) Task<Result<void, Error>>
 fn GetOrSet(self, $key K, $value V) Task<Result<V, Error>>
-fn Compute(self, $key K, $initial V, $update fn(V) V) Task<Result<V, Error>>
+fn Compute(
+    self,
+    $key K,
+    $initial V,
+    $update transferable fn(V) V
+) Task<Result<V, Error>>
 ```
 
 Every operation is a task because it may wait for the owner. `GetOrSet` and `Compute` are atomic

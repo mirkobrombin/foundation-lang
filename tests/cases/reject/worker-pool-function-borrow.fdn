@@ -1,0 +1,16 @@
+import foundation.worker
+
+task invoke($operation transferable fn() void) void {
+    operation()
+}
+
+fn main() i32 {
+    var count = 0
+    const operation transferable fn() void = fn() void capture(&count) {
+        count = count + 1
+    }
+    const pool = worker.NewPool(1)
+    pool.Start(spawn invoke($operation))
+    pool.Shutdown()
+    0
+}

@@ -201,6 +201,20 @@ task parallelMessage($message String) void {
     print(message)
 }
 
+task parallelOperation($operation transferable fn() void) void {
+    operation()
+}
+
+fn portableMessage($message String) transferable fn() void {
+    fn() void capture($message) {
+        print(message)
+    }
+}
+
+fn transferableIdentity<T transferable>($value T) T {
+    value
+}
+
 fn apply<T>($value T, operation fn(T) T) T {
     operation(value)
 }
@@ -494,8 +508,10 @@ fn main(args [String]) i32 {
     background.Shutdown()
     const workers = worker.NewPool(2)
     workers.Start(spawn parallelMessage("parallel " + "task"))
-    workers.Start(spawn parallelMessage("parallel " + "task"))
+    const portable = portableMessage("parallel " + "task")
+    workers.Start(spawn parallelOperation($portable))
     workers.Shutdown()
+    const transferToken = transferableIdentity<i32>(42)
     if (inRange(current, 5, 5) || false) && nextByteCount == 11925602364 &&
         platformMatches && pathMatches && jsonMatches && timeMatches && argumentCount == 0 &&
         uuidMatches &&
@@ -504,7 +520,7 @@ fn main(args [String]) i32 {
         !beforeCancellation && afterCancellation && channelMatches && postfixValue == 42 &&
         widened == 120 && narrowed == 4 && decimal64 == 1.5 && emptyStringMatches &&
         emptyListMatches && workflowValue == 42 && pipelineValue == 41 && sagaValue == 42 &&
-        ignoredFailureValue == 42 {
+        ignoredFailureValue == 42 && transferToken == 42 {
         return match state {
             Running: resultOr(verified, 0) + counterValue + directCounterValue +
                 sequenceValue + callbackValue - 20

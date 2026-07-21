@@ -205,8 +205,10 @@ std::string displayTypeSyntax(const TypeSyntax &type) {
         return std::string(type.name == "[raw]" ? "*" : "*const ") +
                displayTypeSyntax(type.arguments[0]);
     }
-    if (type.name == "[function]" && !type.arguments.empty()) {
-        std::string result = "fn(";
+    if ((type.name == "[function]" || type.name == "[transferable-function]") &&
+        !type.arguments.empty()) {
+        std::string result =
+            type.name == "[transferable-function]" ? "transferable fn(" : "fn(";
         for (std::size_t index = 1; index < type.arguments.size(); ++index) {
             if (index != 1) {
                 result += ", ";
@@ -243,7 +245,8 @@ std::string displayTypeSyntax(const TypeSyntax &type) {
     return result;
 }
 
-std::string typeParameterSuffix(const std::vector<std::string> &parameters) {
+std::string typeParameterSuffix(const std::vector<std::string> &parameters,
+                                const std::vector<bool> *transferable = nullptr) {
     if (parameters.empty()) {
         return {};
     }
@@ -253,6 +256,10 @@ std::string typeParameterSuffix(const std::vector<std::string> &parameters) {
             result += ", ";
         }
         result += parameters[index];
+        if (transferable != nullptr && index < transferable->size() &&
+            (*transferable)[index]) {
+            result += " transferable";
+        }
     }
     result += '>';
     return result;
@@ -307,7 +314,8 @@ std::string functionDetail(const Function &function) {
         }
     }
     std::string result = prefix + shortName(function.name) +
-                         typeParameterSuffix(function.typeParameters) + '(';
+                         typeParameterSuffix(function.typeParameters,
+                                             &function.transferableTypeParameters) + '(';
     for (std::size_t index = 0; index < function.parameters.size(); ++index) {
         if (index != 0) {
             result += ", ";
@@ -843,7 +851,8 @@ class IndexBuilder {
             return '[' + displayType(type.arguments[0], function) + ']';
         }
         if (type.kind == TypeKind::Function && !type.arguments.empty()) {
-            std::string result = "fn(";
+            std::string result =
+                isTransferableFunction(type) ? "transferable fn(" : "fn(";
             for (std::size_t index = 1; index < type.arguments.size(); ++index) {
                 if (index != 1) {
                     result += ", ";

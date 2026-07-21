@@ -463,6 +463,11 @@
         "body": "fn(${1:i32}) ${2:i32}",
         "description": "Declare a function value type"
     },
+    "Transferable function value type": {
+        "prefix": "transferfn",
+        "body": "transferable fn(${1:i32}) ${2:i32}",
+        "description": "Declare a function value type safe to move between executors"
+    },
     "Closure": {
         "prefix": "closure",
         "body": [

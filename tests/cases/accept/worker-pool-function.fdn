@@ -1,0 +1,44 @@
+import foundation.worker
+
+task invoke($operation transferable fn() void) void {
+    operation()
+}
+
+fn report() void {
+    print("portable named")
+}
+
+fn make($label String) transferable fn() void {
+    fn() void capture($label) {
+        print(label)
+    }
+}
+
+fn observe<T>(value T) void {}
+
+fn hold<T transferable>($value T) transferable fn() void {
+    fn() void capture($value) {
+        observe(value)
+    }
+}
+
+fn main() i32 {
+    const portable transferable fn() void = report
+    const local fn() void = portable
+    local()
+    const operation = make("portable closure")
+    const pool = worker.NewPool(1)
+    pool.Start(spawn invoke($report))
+    pool.Start(spawn invoke($operation))
+    const directLabel = "direct closure"
+    pool.Start(spawn invoke(fn() void capture($directLabel) {
+        print(directLabel)
+    }))
+    const token = 42
+    const genericOperation = hold<i32>($token)
+    pool.Start(spawn invoke($genericOperation))
+    const inferredOperation = hold(7)
+    pool.Start(spawn invoke($inferredOperation))
+    pool.Shutdown()
+    0
+}

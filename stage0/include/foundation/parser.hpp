@@ -46,7 +46,7 @@ class Parser {
     bool match(TokenKind kind);
     const Token &expect(TokenKind kind, const char *code, const char *message);
     std::pair<std::string, SourceSpan> qualifiedName(const char *code, const char *message);
-    std::vector<std::string> typeParameters();
+    std::vector<std::string> typeParameters(std::vector<bool> *transferable = nullptr);
     TypeSyntax typeSyntax(const char *code, const char *message);
     StructDeclaration structDeclaration(bool service = false);
     void methodsDeclaration();
@@ -112,6 +112,7 @@ class Parser {
     std::size_t expressionNodes_{};
     std::size_t typeDepth_{};
     std::vector<std::string> activeTypeParameters_;
+    std::vector<bool> activeTransferableTypeParameters_;
     bool expressionLimitReported_{};
     bool structLiteralsAllowed_{true};
     bool installBuiltins_{};

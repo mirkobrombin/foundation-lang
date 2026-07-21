@@ -725,8 +725,13 @@ class Analyzer {
         if (isMachineScalar(type) || type == stringType) {
             return true;
         }
+        if (type.kind == TypeKind::Parameter) {
+            const auto &constraints =
+                program_.functions[currentFunction_].transferableTypeParameters;
+            return type.declaration < constraints.size() && constraints[type.declaration];
+        }
         if (type.kind == TypeKind::Function) {
-            return true;
+            return isTransferableFunction(type);
         }
         if ((type.kind == TypeKind::Channel || type.kind == TypeKind::Sender ||
              type.kind == TypeKind::Receiver) &&
@@ -775,6 +780,22 @@ class Analyzer {
         }
         active.erase(key);
         return safe;
+    }
+
+    void verifyTransferableTypeArguments(FirFunctionId function,
+                                         const std::vector<Type> &arguments,
+                                         SourceSpan span) {
+        const auto &constraints = program_.functions[function].transferableTypeParameters;
+        for (std::size_t index = 0;
+             index < constraints.size() && index < arguments.size(); ++index) {
+            if (constraints[index] && !parallelTransferSafe(arguments[index])) {
+                diagnostics_.error(
+                    "FDN2185",
+                    "type argument is not safe to transfer between threads: " +
+                        displayType(arguments[index]),
+                    span);
+            }
+        }
     }
 
     bool isParallelPoolStart(const Type &base, const Function &function,
@@ -3169,6 +3190,7 @@ class Analyzer {
                 const auto typeArguments = completeInference(
                     inferred, program_.functions[functionId].typeParameters, expression.span,
                     name->name);
+                verifyTransferableTypeArguments(functionId, typeArguments, expression.span);
                 std::vector<Type> parts;
                 parts.push_back(substitute(signature.returnType, typeArguments));
                 for (std::size_t index = 0; index < signature.parameters.size(); ++index) {
@@ -3178,14 +3200,18 @@ class Analyzer {
                     parts.push_back(functionValueParameterType(
                         substitute(signature.parameters[index], typeArguments), mode));
                 }
-                type = Type{TypeKind::Function, 0, std::move(parts)};
+                const auto qualifier = expected.has_value() &&
+                                               isTransferableFunction(*expected)
+                                           ? transferableFunctionQualifier
+                                           : 0;
+                type = Type{TypeKind::Function, qualifier, std::move(parts)};
                 model_.functionValueTargets[id] =
                     FunctionValueTarget{functionId, std::move(typeArguments)};
             }
         } else if (const auto *unary = std::get_if<UnaryExpression>(&expression.value)) {
             type = analyzeUnary(id, *unary, expected, expression.span);
         } else if (const auto *ownership = std::get_if<OwnershipExpression>(&expression.value)) {
-            type = analyzeOwnership(id, *ownership, expression.span);
+            type = analyzeOwnership(id, *ownership, expected, expression.span);
         } else if (const auto *spawn = std::get_if<SpawnExpression>(&expression.value)) {
             type = analyzeSpawn(id, *spawn, expression.span);
         } else if (const auto *binary = std::get_if<BinaryExpression>(&expression.value)) {
@@ -3221,7 +3247,7 @@ class Analyzer {
     }
 
     Type analyzeOwnership(AstExpressionId id, const OwnershipExpression &ownership,
-                          SourceSpan span) {
+                          std::optional<Type> expected, SourceSpan span) {
         if (ownership.operation == OwnershipOperator::Transfer) {
             if (const auto *member = std::get_if<MemberExpression>(
                     &program_.expressions[ownership.operand].value);
@@ -3254,7 +3280,7 @@ class Analyzer {
                 model_.taskWaitTargets[id] = TaskWaitTarget{*member->base};
                 return task.arguments.front();
             }
-            const auto value = analyzeExpression(ownership.operand, std::nullopt,
+            const auto value = analyzeExpression(ownership.operand, expected,
                                                  ExpressionUse::Consume);
             if (value.kind == TypeKind::View || value.kind == TypeKind::Edit) {
                 diagnostics_.error("FDN2068", "cannot transfer a borrowed value", span);
@@ -3630,7 +3656,10 @@ class Analyzer {
                                   : ParameterMode::Bootstrap;
             parts.push_back(functionValueParameterType(signature.parameters[index], mode));
         }
-        const Type closureType{TypeKind::Function, 0, std::move(parts)};
+        const auto qualifier = contextual.has_value() && isTransferableFunction(*contextual)
+                                   ? transferableFunctionQualifier
+                                   : 0;
+        const Type closureType{TypeKind::Function, qualifier, std::move(parts)};
         if (contextual.has_value()) {
             requireSame(*contextual, closureType, span, "closure signature");
         }
@@ -3718,6 +3747,25 @@ class Analyzer {
             captureSources.push_back(*source);
             captureModes.push_back(captureMode);
             captureTypes.push_back(type);
+        }
+
+        if (isTransferableFunction(closureType)) {
+            for (std::size_t index = 0; index < captureTypes.size(); ++index) {
+                if (captureModes[index] == CaptureMode::View ||
+                    captureModes[index] == CaptureMode::Edit) {
+                    diagnostics_.error(
+                        "FDN2185",
+                        "transferable function cannot borrow capture " +
+                            closure.captures[index].name,
+                        closure.captures[index].span);
+                } else if (!parallelTransferSafe(captureTypes[index])) {
+                    diagnostics_.error(
+                        "FDN2185",
+                        "transferable function capture is not safe to transfer between threads: " +
+                            displayType(captureTypes[index]),
+                        closure.captures[index].span);
+                }
+            }
         }
 
         if (captureTypes.size() != closure.captures.size()) {
@@ -4482,6 +4530,7 @@ class Analyzer {
         }
         const auto typeArguments = completeInference(
             inferred, program_.functions[function].typeParameters, span, call.callee);
+        verifyTransferableTypeArguments(function, typeArguments, span);
         std::vector<std::optional<CallTarget::ContractConversion>> conversions(arguments.size());
         for (std::size_t source = 0; source < count; ++source) {
             const auto parameter = argumentParameters[source];
@@ -6143,7 +6192,8 @@ class Analyzer {
         currentTypeParameterNames_ = parameters;
         for (std::size_t index = 0; index < parameters.size(); ++index) {
             const auto &name = parameters[index];
-            if (isBuiltinType(name) || structs_.contains(name) || enums_.contains(name) ||
+            if (name == "transferable" || isBuiltinType(name) || structs_.contains(name) ||
+                enums_.contains(name) ||
                 contracts_.contains(name) ||
                 !typeParameters_.emplace(name, index).second) {
                 diagnostics_.error("FDN2042", "duplicate or shadowing type parameter " + name,
@@ -6228,6 +6278,8 @@ class Analyzer {
             base = Type{TypeKind::Edit};
         } else if (syntax.name == "[function]") {
             base = Type{TypeKind::Function};
+        } else if (syntax.name == "[transferable-function]") {
+            base = Type{TypeKind::Function, transferableFunctionQualifier};
         } else if (syntax.name == "Task") {
             base = Type{TypeKind::Task};
         } else if (syntax.name == "Channel") {
@@ -6403,7 +6455,9 @@ class Analyzer {
              pattern.kind == TypeKind::Array || pattern.kind == TypeKind::Slice ||
              pattern.kind == TypeKind::Own || pattern.kind == TypeKind::View ||
              pattern.kind == TypeKind::Edit) &&
-            pattern.kind == actual.kind && pattern.declaration == actual.declaration &&
+            pattern.kind == actual.kind &&
+            (pattern.kind == TypeKind::Function ||
+             pattern.declaration == actual.declaration) &&
             pattern.arguments.size() == actual.arguments.size()) {
             for (std::size_t index = 0; index < pattern.arguments.size(); ++index) {
                 inferType(pattern.arguments[index], actual.arguments[index], inferred, span,
@@ -6931,7 +6985,7 @@ class Analyzer {
             return '[' + displayType(type.arguments.front()) + ']';
         }
         if (type.kind == TypeKind::Function && !type.arguments.empty()) {
-            std::string name = "fn(";
+            std::string name = isTransferableFunction(type) ? "transferable fn(" : "fn(";
             for (std::size_t index = 1; index < type.arguments.size(); ++index) {
                 if (index != 1) {
                     name += ", ";
@@ -6993,6 +7047,19 @@ class Analyzer {
         }
         if (expected.kind == TypeKind::RawConst && actual.kind == TypeKind::Raw &&
             expected.arguments == actual.arguments) {
+            return;
+        }
+        if (expected.kind == TypeKind::Function && expected.declaration == 0 &&
+            isTransferableFunction(actual) && expected.arguments == actual.arguments) {
+            return;
+        }
+        if ((expected.kind == TypeKind::View || expected.kind == TypeKind::Edit) &&
+            expected.kind == actual.kind && expected.declaration == actual.declaration &&
+            expected.arguments.size() == 1 && actual.arguments.size() == 1 &&
+            expected.arguments.front().kind == TypeKind::Function &&
+            expected.arguments.front().declaration == 0 &&
+            isTransferableFunction(actual.arguments.front()) &&
+            expected.arguments.front().arguments == actual.arguments.front().arguments) {
             return;
         }
         if ((expected.kind == TypeKind::Raw || expected.kind == TypeKind::RawConst) &&

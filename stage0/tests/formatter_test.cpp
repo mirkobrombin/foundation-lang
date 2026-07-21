@@ -82,6 +82,9 @@ void preservesLineSensitiveSyntax() {
         "fn identity < T > (value T) T {\n"
         "value\n"
         "}\n"
+        "fn portable < T transferable > ($value T) T {\n"
+        "value\n"
+        "}\n"
         "fn main() i32 {\n"
         "const typed fn(i32) i32 = identity < i32 >\n"
         "const low = 1\n"
@@ -103,6 +106,9 @@ void preservesLineSensitiveSyntax() {
     expect(!formatted.diagnostics.hasErrors(), "generic and comparison source formats");
     expect(formatted.contents.find("identity<i32>") != std::string::npos,
            "generic application stays compact");
+    expect(formatted.contents.find("portable<T transferable>($value T)") !=
+               std::string::npos,
+           "transferable generic constraints stay compact");
     expect(formatted.contents.find("low < high") != std::string::npos,
            "comparison operators receive canonical spaces");
     expect(formatted.contents.find("low < high > low") != std::string::npos,

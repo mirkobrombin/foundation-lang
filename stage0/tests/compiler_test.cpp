@@ -1959,7 +1959,8 @@ fn apply<T>($value T, operation fn(T) T) T {
 }
 
 fn main() i32 {
-    const direct fn(i32) i32 = double
+    const portable transferable fn(i32) i32 = double
+    const direct fn(i32) i32 = portable
     const factor = 2
     const closure = fn(value i32) i32 capture(factor) {
         value * factor
@@ -1973,10 +1974,41 @@ fn main() i32 {
     expect(!second.diagnostics.hasErrors(), "repeated closure program has no diagnostics");
     expect(first.program.functions.size() == 4 && first.program.functions[2].closure,
            "anonymous function remains a closure in the AST");
+    if (!first.semantic.has_value()) {
+        expect(false, "closure program retains semantic function qualifiers");
+        return;
+    }
+    const auto &main = first.semantic->functions[first.semantic->main];
+    const auto portable = std::find_if(main.locals.begin(), main.locals.end(), [](const auto &local) {
+        return local.name == "portable";
+    });
+    const auto direct = std::find_if(main.locals.begin(), main.locals.end(), [](const auto &local) {
+        return local.name == "direct";
+    });
+    expect(portable != main.locals.end() && foundation::isTransferableFunction(portable->type),
+           "transferable function guarantee remains in the semantic type");
+    expect(direct != main.locals.end() && direct->type.kind == foundation::TypeKind::Function &&
+               !foundation::isTransferableFunction(direct->type),
+           "transferable function values can weaken to ordinary function types");
     if (!first.fir.has_value() || !second.fir.has_value()) {
         expect(false, "closure program lowers to FIR");
         return;
     }
+    const auto &firMain = first.fir->functions[first.fir->main];
+    const auto firPortable =
+        std::find_if(firMain.locals.begin(), firMain.locals.end(), [](const auto &local) {
+            return local.name == "portable";
+        });
+    const auto firDirect =
+        std::find_if(firMain.locals.begin(), firMain.locals.end(), [](const auto &local) {
+            return local.name == "direct";
+        });
+    expect(firPortable != firMain.locals.end() &&
+               foundation::isTransferableFunction(firPortable->type),
+           "transferable function guarantee reaches FIR validation");
+    expect(firDirect != firMain.locals.end() &&
+               !foundation::isTransferableFunction(firDirect->type),
+           "function guarantee weakening reaches FIR validation");
 
     const auto firstC = foundation::emitC(*first.fir, "closures.fdn");
     const auto secondC = foundation::emitC(*second.fir, "closures.fdn");

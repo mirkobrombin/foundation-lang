@@ -65,11 +65,37 @@ fn main() i32 {
 ```
 
 `Pool.Start` requires a direct `spawn` expression. Owned primitive values, `String`, arrays,
-function values, directional channels, and aggregates composed from transferable fields can cross
-into the pool. Borrows, slices, contracts, and task handles cannot cross. A custom-drop struct must
-opt in with `@concurrent.Transferable()`, and every field must still pass the structural check.
+`transferable fn` values, directional channels, and aggregates composed from transferable fields
+can cross into the pool. Ordinary function values, borrows, slices, contracts, and task handles
+cannot cross. A custom-drop struct must opt in with `@concurrent.Transferable()`, and every field
+must still pass the structural check.
 This prevents a native resource handle or executor-local value from moving to another thread by
 accident while preserving explicit transfer for safe containers.
+
+```foundation
+task invoke($operation transferable fn() void) void {
+    operation()
+}
+
+const label = "parallel"
+const operation transferable fn() void = fn() void capture($label) {
+    print(label)
+}
+pool.Start(spawn invoke($operation))
+```
+
+Generic factories keep the guarantee explicit:
+
+```foundation
+fn make<T transferable>($value T) transferable fn() void {
+    fn() void capture($value) {
+        observe(value)
+    }
+}
+```
+
+An explicit or inferred type argument that contains a borrow, task handle, ordinary function
+value, or thread-affine custom-drop field is rejected at the application site.
 
 Each worker owns a cooperative executor for the transferred task and any child tasks it creates.
 Channels synchronize their state and route remote wakes through the destination executor mailbox,

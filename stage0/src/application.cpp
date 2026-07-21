@@ -1213,7 +1213,8 @@ std::string sourceTypeName(const FirProgram &program, const Type &type,
         return '[' + sourceTypeName(program, type.arguments.front(), rootPackage, aliases) + ']';
     }
     if (type.kind == TypeKind::Function && !type.arguments.empty()) {
-        std::string result = "fn(";
+        std::string result =
+            isTransferableFunction(type) ? "transferable fn(" : "fn(";
         for (std::size_t index = 1; index < type.arguments.size(); ++index) {
             if (index != 1) {
                 result += ", ";

@@ -1,0 +1,22 @@
+import foundation.worker
+
+struct Handle {
+    value i32
+
+    fn drop(&self) void {
+        self.value = 0
+    }
+}
+
+task invoke($operation transferable fn() void) void {
+    operation()
+}
+
+fn main() i32 {
+    const handle = Handle { value = 42 }
+    const operation transferable fn() void = fn() void capture($handle) {}
+    const pool = worker.NewPool(1)
+    pool.Start(spawn invoke($operation))
+    pool.Shutdown()
+    0
+}

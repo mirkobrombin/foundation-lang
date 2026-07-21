@@ -231,7 +231,25 @@ std::vector<bool> genericDelimiters(const std::vector<Token> &tokens) {
         if (tokens[index].kind != TokenKind::Less) {
             continue;
         }
-        const auto closing = typeArgumentListClosingToken(tokens, index);
+        std::optional<std::size_t> closing;
+        const auto functionParameters = index >= 2 &&
+                                        tokens[index - 1].kind == TokenKind::Identifier &&
+                                        (tokens[index - 2].kind == TokenKind::Fn ||
+                                         tokens[index - 2].kind == TokenKind::Task);
+        if (functionParameters) {
+            for (auto current = index + 1; current < tokens.size(); ++current) {
+                if (tokens[current].kind == TokenKind::Greater) {
+                    closing = current;
+                    break;
+                }
+                if (tokens[current].kind != TokenKind::Identifier &&
+                    tokens[current].kind != TokenKind::Comma) {
+                    break;
+                }
+            }
+        } else {
+            closing = typeArgumentListClosingToken(tokens, index);
+        }
         if (!closing.has_value() || *closing + 1 >= tokens.size()) {
             continue;
         }

@@ -844,8 +844,10 @@ std::string displayTypeSyntax(const TypeSyntax &type) {
         return std::string(type.name == "[raw]" ? "*" : "*const ") +
                displayTypeSyntax(type.arguments[0]);
     }
-    if (type.name == "[function]" && !type.arguments.empty()) {
-        std::string result = "fn(";
+    if ((type.name == "[function]" || type.name == "[transferable-function]") &&
+        !type.arguments.empty()) {
+        std::string result =
+            type.name == "[transferable-function]" ? "transferable fn(" : "fn(";
         for (std::size_t index = 1; index < type.arguments.size(); ++index) {
             if (index != 1) {
                 result += ", ";
@@ -909,7 +911,8 @@ std::string displaySemanticType(const ProjectAnalysis &analysis, const Type &typ
         return '[' + displaySemanticType(analysis, type.arguments.front()) + ']';
     }
     if (type.kind == TypeKind::Function && !type.arguments.empty()) {
-        std::string result = "fn(";
+        std::string result =
+            isTransferableFunction(type) ? "transferable fn(" : "fn(";
         for (std::size_t index = 1; index < type.arguments.size(); ++index) {
             if (index != 1) {
                 result += ", ";
@@ -1055,7 +1058,8 @@ emptyTestAt(const ProjectAnalysis &analysis, std::size_t sourceId, std::size_t o
     return std::nullopt;
 }
 
-std::string typeParametersSuffix(const std::vector<std::string> &parameters) {
+std::string typeParametersSuffix(const std::vector<std::string> &parameters,
+                                 const std::vector<bool> *transferable = nullptr) {
     if (parameters.empty()) {
         return {};
     }
@@ -1065,6 +1069,10 @@ std::string typeParametersSuffix(const std::vector<std::string> &parameters) {
             result += ", ";
         }
         result += parameters[index];
+        if (transferable != nullptr && index < transferable->size() &&
+            (*transferable)[index]) {
+            result += " transferable";
+        }
     }
     result += '>';
     return result;
@@ -1114,7 +1122,8 @@ std::string functionDetail(const Function &function) {
         }
     }
     std::string result = prefix + shortName(function.name) +
-                         typeParametersSuffix(function.typeParameters) + '(';
+                         typeParametersSuffix(function.typeParameters,
+                                              &function.transferableTypeParameters) + '(';
     for (std::size_t index = 0; index < function.parameters.size(); ++index) {
         if (index != 0) {
             result += ", ";
@@ -4300,7 +4309,8 @@ class LanguageServer {
                 "const",    "var",
                 "return",  "discard", "if",      "else",   "while", "for", "in", "break",
                 "continue", "select", "timeout", "match", "capture",
-                "replace", "with",    "own",     "view",   "edit",   "true",  "false",
+                "replace", "with",    "own",     "view",   "edit",   "transferable",
+                "true", "false",
             };
             for (const auto keyword : keywords) {
                 addCompletion(items, std::string(keyword), 14);

@@ -1,0 +1,13 @@
+fn observe<T>(value T) void {}
+
+fn hold<T transferable>($value T) transferable fn() void {
+    fn() void capture($value) {
+        observe(value)
+    }
+}
+
+fn main() i32 {
+    const operation = hold(42)
+    operation()
+    0
+}

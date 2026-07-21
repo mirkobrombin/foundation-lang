@@ -588,7 +588,7 @@ const Token &Parser::expect(TokenKind kind, const char *code, const char *messag
     return current();
 }
 
-std::vector<std::string> Parser::typeParameters() {
+std::vector<std::string> Parser::typeParameters(std::vector<bool> *transferable) {
     std::vector<std::string> parameters;
     if (!match(TokenKind::Less)) {
         return parameters;
@@ -596,6 +596,13 @@ std::vector<std::string> Parser::typeParameters() {
     do {
         parameters.push_back(
             expect(TokenKind::Identifier, "FDN1061", "expected type parameter").text);
+        if (transferable != nullptr) {
+            transferable->push_back(false);
+            if (check(TokenKind::Identifier) && current().text == "transferable") {
+                advance();
+                transferable->back() = true;
+            }
+        }
     } while (match(TokenKind::Comma));
     expect(TokenKind::Greater, "FDN1062", "expected > after type parameters");
     return parameters;
@@ -627,9 +634,16 @@ TypeSyntax Parser::typeSyntax(const char *code, const char *message) {
         --typeDepth_;
         return type;
     }
-    if (match(TokenKind::Fn)) {
-        const auto start = previous();
-        TypeSyntax type{"[function]", {}, start.span};
+    const auto transferableFunction =
+        check(TokenKind::Identifier) && current().text == "transferable" &&
+        peek(1).kind == TokenKind::Fn;
+    if (transferableFunction || match(TokenKind::Fn)) {
+        const auto start = transferableFunction ? advance() : previous();
+        if (transferableFunction) {
+            advance();
+        }
+        TypeSyntax type{transferableFunction ? "[transferable-function]" : "[function]", {},
+                        start.span};
         expect(TokenKind::LeftParen, "FDN1120", "expected ( in function type");
         if (!check(TokenKind::RightParen)) {
             do {
@@ -1333,7 +1347,8 @@ Function Parser::function(bool external, bool task) {
     expect(task ? TokenKind::Task : TokenKind::Fn, "FDN1002",
            task ? "expected task" : "expected fn");
     const auto name = expect(TokenKind::Identifier, "FDN1003", "expected function name");
-    auto typeParameters = this->typeParameters();
+    std::vector<bool> transferableTypeParameters;
+    auto typeParameters = this->typeParameters(&transferableTypeParameters);
     expect(TokenKind::LeftParen, "FDN1004", "expected ( after function name");
 
     std::vector<Parameter> parameters;
@@ -1355,9 +1370,14 @@ Function Parser::function(bool external, bool task) {
     }
     if (hasBody) {
         auto previousTypeParameters = std::move(activeTypeParameters_);
+        auto previousTransferableTypeParameters =
+            std::move(activeTransferableTypeParameters_);
         activeTypeParameters_ = typeParameters;
+        activeTransferableTypeParameters_ = transferableTypeParameters;
         body = block(tailResult);
         activeTypeParameters_ = std::move(previousTypeParameters);
+        activeTransferableTypeParameters_ =
+            std::move(previousTransferableTypeParameters);
     } else {
         program_.blocks.push_back({{}, start.span});
         body = program_.blocks.size() - 1;
@@ -1365,10 +1385,11 @@ Function Parser::function(bool external, bool task) {
     Function result{name.text, std::move(typeParameters), std::move(parameters),
                     std::move(returnType), body, isExported(name.text), start.span, {}, {},
                     std::nullopt, {}, std::nullopt, true, false, {}, {}, false, false, false,
-                    std::nullopt, std::nullopt, false, std::nullopt, std::nullopt};
+                    std::nullopt, std::nullopt, false, std::nullopt, std::nullopt, false, {}};
     result.cSymbol = std::move(cSymbol);
     result.hasBody = hasBody;
     result.task = task;
+    result.transferableTypeParameters = std::move(transferableTypeParameters);
     return result;
 }
 
@@ -1383,7 +1404,7 @@ Function Parser::testDeclaration() {
     Function result{"$test." + std::to_string(start.span.offset), {}, {},
                     TypeSyntax{"void", {}, start.span}, body, false, start.span, {}, {},
                     std::nullopt, {}, std::nullopt, true, false, {}, {}, false, false, false,
-                    name.text, std::nullopt, false, std::nullopt, std::nullopt};
+                    name.text, std::nullopt, false, std::nullopt, std::nullopt, false, {}};
     result.testNameSpan = name.span;
     return result;
 }
@@ -1434,7 +1455,7 @@ Function Parser::method(const std::string &owner,
     Function result{name.text, typeParameters, std::move(parameters), std::move(returnType), body,
                     isExported(name.text), start.span, {}, {}, access, owner, std::nullopt, true,
                     false, {}, {}, false, false, false, std::nullopt, std::nullopt, action,
-                    std::nullopt, std::nullopt};
+                    std::nullopt, std::nullopt, false, {}};
     result.action = action;
     return result;
 }
@@ -1480,7 +1501,7 @@ ContractMethod Parser::contractMethod(const std::string &owner,
             {name.text, typeParameters, std::move(functionParameters), returnType, body,
              isExported(name.text), start.span, {}, {}, access, owner, std::nullopt, true, false,
              {}, {}, false, false, false, std::nullopt, std::nullopt, false, std::nullopt,
-             std::nullopt});
+             std::nullopt, false, {}});
     }
     return {name.text, access, std::move(parameters), std::move(returnType),
             isExported(name.text), start.span, defaultFunction, {}};
@@ -2541,6 +2562,7 @@ AstExpressionId Parser::functionExpression(const Token &start) {
     Function function;
     function.name = "$closure_" + std::to_string(program_.functions.size());
     function.typeParameters = activeTypeParameters_;
+    function.transferableTypeParameters = activeTransferableTypeParameters_;
     function.parameters = std::move(parameters);
     function.returnType = std::move(returnType);
     function.body = body;

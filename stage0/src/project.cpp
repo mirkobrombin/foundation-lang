@@ -103,7 +103,8 @@ bool intrinsicType(std::string_view name) {
            name == "NumberError" ||
            name == "Task" || name == "Channel" || name == "Sender" ||
            name == "Receiver" || name == "[array]" || name == "[slice]" ||
-           name == "[function]" || name == "[raw]" || name == "[raw-const]" ||
+           name == "[function]" || name == "[transferable-function]" ||
+           name == "[raw]" || name == "[raw-const]" ||
            name == "own" || name == "view" || name == "edit";
 }
 

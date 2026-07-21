@@ -55,6 +55,13 @@ struct Type {
     bool operator==(const Type &) const = default;
 };
 
+inline constexpr std::size_t transferableFunctionQualifier = 1;
+
+[[nodiscard]] inline bool isTransferableFunction(const Type &type) {
+    return type.kind == TypeKind::Function &&
+           type.declaration == transferableFunctionQualifier;
+}
+
 inline const Type invalidType{TypeKind::Invalid, 0, {}};
 inline const Type voidType{TypeKind::Void, 0, {}};
 inline const Type neverType{TypeKind::Never, 0, {}};

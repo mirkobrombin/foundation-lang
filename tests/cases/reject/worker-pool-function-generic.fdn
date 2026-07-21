@@ -1,0 +1,18 @@
+struct Handle {
+    value i32
+
+    fn drop(&self) void {
+        self.value = 0
+    }
+}
+
+fn hold<T transferable>($value T) transferable fn() void {
+    fn() void capture($value) {}
+}
+
+fn main() i32 {
+    const handle = Handle { value = 42 }
+    const operation = hold($handle)
+    discard operation
+    0
+}

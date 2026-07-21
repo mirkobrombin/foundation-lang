@@ -9,7 +9,8 @@ checked text inspection, portable path joining, JSON parsing, UTC time formattin
 package-defined attributes with metadata-safe aggregate values. It also verifies prelude UUID
 parsing, canonical formatting, Nil, and process-monotonic version 7 generation.
 Typed pipeline chaining, bounded retry, and reverse saga compensation are exercised by the same
-executable.
+executable. The worker section includes an owned closure environment qualified with
+`transferable fn` and a generic function constrained by `<T transferable>`.
 
 The complete accepted 1.0 syntax and its implementation table live in
 `../../docs/language.md`. The 24-chapter newcomer tour remains in

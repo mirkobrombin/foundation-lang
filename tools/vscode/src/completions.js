@@ -114,6 +114,7 @@ const staticCompletions = [
     { label: "own", kind: "Keyword", detail: "Create or declare an exclusive owner" },
     { label: "view", kind: "Keyword", detail: "Create or declare a shared borrow" },
     { label: "edit", kind: "Keyword", detail: "Create or declare an exclusive mutable borrow" },
+    { label: "transferable", kind: "Keyword", detail: "Require a function environment that can move between executors" },
     { label: "true", kind: "Constant" },
     { label: "false", kind: "Constant" },
     { label: "i8", kind: "TypeParameter" },
@@ -318,7 +319,7 @@ const staticCompletions = [
     { label: "safemap.Map.Snapshot", kind: "Method", detail: "fn Snapshot(self) Task<Result<own collections.List<Pair<K, V>>, Error>>", insertText: "Snapshot()" },
     { label: "safemap.Map.Clear", kind: "Method", detail: "fn Clear(self) Task<Result<void, Error>>", insertText: "Clear()" },
     { label: "safemap.Map.GetOrSet", kind: "Method", detail: "fn GetOrSet(self, $key K, $value V) Task<Result<V, Error>>", insertText: "GetOrSet(\\$${1:key}, \\$${2:value})" },
-    { label: "safemap.Map.Compute", kind: "Method", detail: "fn Compute(self, $key K, $initial V, $update fn(V) V) Task<Result<V, Error>>", insertText: "Compute(\\$${1:key}, \\$${2:initial}, \\$${3:update})" },
+    { label: "safemap.Map.Compute", kind: "Method", detail: "fn Compute(self, $key K, $initial V, $update transferable fn(V) V) Task<Result<V, Error>>", insertText: "Compute(\\$${1:key}, \\$${2:initial}, \\$${3:update})" },
     { label: "safemap.ShardedMap.WithExpiry", kind: "Method", detail: "fn WithExpiry(self, duration time.Duration) Task<Result<void, Error>>", insertText: "WithExpiry(${1:duration})" },
     { label: "lock.Error", kind: "Enum", detail: "lock owner task failure" },
     { label: "lock.Handle", kind: "Struct", detail: "clonable keyed locker handle" },
@@ -1235,6 +1236,12 @@ const staticCompletions = [
         kind: "TypeParameter",
         detail: "function value type",
         insertText: "fn(${1:parameters}) ${2:R}"
+    },
+    {
+        label: "transferable fn(...) R",
+        kind: "TypeParameter",
+        detail: "function value safe to move between executors",
+        insertText: "transferable fn(${1:parameters}) ${2:R}"
     },
     {
         label: "[N]T",

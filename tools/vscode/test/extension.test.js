@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.117.0");
+    assert.equal(manifest.version, "0.118.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1486,6 +1486,8 @@ test("grammar and completions track compiler keywords", () => {
         assert.ok(completionLabels.has(sequence));
     }
     assert.ok(completionLabels.has("fn(...) R"));
+    assert.ok(completionLabels.has("transferable"));
+    assert.ok(completionLabels.has("transferable fn(...) R"));
     const snippets = readJson("snippets/foundation.json");
     assert.equal(snippets["Validated model"].prefix, "validmodel");
     assert.match(snippets["Validated model"].body.join("\n"),
@@ -1629,6 +1631,16 @@ test("tracks function values and explicit closure captures", () => {
     assert.equal(byLabel.get("capture").kind, "Keyword");
     assert.equal(byLabel.get("Callback").insertText, "Callback { call = ${1:call} }");
     assert.match(grammar.repository.functionTypes.patterns[0].begin, /fn/);
+    assert.match(grammar.repository.functionTypes.patterns[0].begin, /transferable/);
+    assert.match(grammar.repository.functionTypes.patterns[0].beginCaptures[1].name,
+        /concurrency/);
+    const constrainedParameters = grammar.repository.functionTypeParameters.patterns[0];
+    assert.match(constrainedParameters.patterns.find((pattern) =>
+        pattern.match === "\\btransferable\\b"
+    ).name, /concurrency/);
+    assert.match(grammar.repository.functionDefinitions.patterns[0].patterns.find((pattern) =>
+        pattern.include === "#functionTypeParameters"
+    ).include, /functionTypeParameters/);
     const inferred = grammar.repository.inferredClosureParameters.patterns[0];
     const inferredBegin = new RegExp(inferred.begin);
     assert.match("fn(value) capture(factor) {", inferredBegin);
@@ -1642,6 +1654,7 @@ test("tracks function values and explicit closure captures", () => {
         pattern.name === "variable.other.capture.foundation"
     ).name, /capture/);
     assert.equal(snippets["Function value type"].prefix, "fntype");
+    assert.equal(snippets["Transferable function value type"].prefix, "transferfn");
     assert.equal(snippets.Closure.prefix, "closure");
     assert.equal(snippets["Contextually inferred closure"].prefix, "closureinfer");
     assert.equal(snippets["Owning closure"].prefix, "closureown");

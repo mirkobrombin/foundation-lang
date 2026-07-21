@@ -408,6 +408,7 @@ struct Function {
     std::optional<StateTransitionFunction> stateTransition;
     std::optional<WorkflowFunction> workflow;
     bool inferredReturn{};
+    std::vector<bool> transferableTypeParameters;
 };
 
 enum class StructKind {
