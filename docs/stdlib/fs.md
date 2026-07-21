@@ -15,6 +15,7 @@ task ReadTextLimited($path String, limit u64) Result<String, Error>
 task ReadPrivateTextLimited($path String, limit u64) Result<String, Error>
 task CreatePrivateDirectory($path String) Result<void, Error>
 task WritePrivateTextAtomic($path String, $value String, limit u64) Result<void, Error>
+task DeletePrivateFile($path String) Result<void, Error>
 ```
 
 `LineReader.Next` returns one owned line at a time as
@@ -45,6 +46,10 @@ exist there.
 the destination directory, flushes it, and replaces the destination with one rename operation.
 POSIX files are mode `0600`; Windows files inherit the private directory ACL. A failed write removes
 the temporary file and leaves the previous destination intact.
+
+`DeletePrivateFile` removes only a regular file. It refuses symbolic links and Windows reparse
+points and returns `NotFound` when the path does not exist. Higher-level stores may deliberately map
+that condition to idempotent deletion.
 
 Both readers own opaque runtime handles. `Close` is idempotent at the Foundation layer, and custom
 drop closes any live handle during normal scope cleanup. The bootstrap handle representation is an

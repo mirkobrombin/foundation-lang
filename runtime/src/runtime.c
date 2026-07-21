@@ -2260,6 +2260,57 @@ int32_t foundation_runtime_fs_write_private_text_atomic(const fdn_string *path,
 #endif
 }
 
+int32_t foundation_runtime_fs_delete_private_file(const fdn_string *path) {
+#if defined(_WIN32)
+    wchar_t *native_path = fdn_windows_path(path);
+    DWORD attributes;
+    int32_t status;
+    if (native_path == NULL) {
+        return 3;
+    }
+    attributes = GetFileAttributesW(native_path);
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        status = fdn_windows_fs_status(GetLastError());
+        fdn_dealloc(native_path);
+        return status;
+    }
+    if ((attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        fdn_dealloc(native_path);
+        return 3;
+    }
+    if (DeleteFileW(native_path) == 0) {
+        status = fdn_windows_fs_status(GetLastError());
+        fdn_dealloc(native_path);
+        return status;
+    }
+    fdn_dealloc(native_path);
+    return 0;
+#else
+    char *native_path = fdn_native_path(path);
+    struct stat info;
+    int32_t status;
+    if (native_path == NULL) {
+        return 3;
+    }
+    if (lstat(native_path, &info) != 0) {
+        status = fdn_fs_status(errno);
+        fdn_dealloc(native_path);
+        return status;
+    }
+    if (!S_ISREG(info.st_mode)) {
+        fdn_dealloc(native_path);
+        return 3;
+    }
+    if (unlink(native_path) != 0) {
+        status = fdn_fs_status(errno);
+        fdn_dealloc(native_path);
+        return status;
+    }
+    fdn_dealloc(native_path);
+    return 0;
+#endif
+}
+
 uint64_t foundation_runtime_fs_live_directories(void) {
     return fdn_handle_count_read(&fdn_live_directory_count);
 }

@@ -2840,6 +2840,81 @@ void schedulerPackageExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void secretsPackageExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fdn";
+    const std::string contents =
+        "package sample\n"
+        "import foundation.secrets\n"
+        "import std.bytes\n"
+        "fn main() i32 {\n"
+        "    const memory = secrets.NewMemoryStore()\n"
+        "    const cipher = secrets.NewCipherStore(\n"
+        "        memory.Clone(),\n"
+        "        bytes.FromText(\"0123456789abcdef0123456789abcdef\")\n"
+        "    )\n"
+        "    discard cipher\n"
+        "    const loading = memory.Get(\"token\")\n"
+        "    discard loading\n"
+        "    0\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) +
+        "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(261, "hover", 1, 12)) +
+        frame(request(262, "hover", 4, 31)) +
+        frame(request(263, "signatureHelp", 6, 15)) +
+        frame(request(264, "definition", 4, 31)) +
+        frame(request(265, "hover", 10, 28)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto packageHover = responseFor(transcript, 261);
+    const auto constructorHover = responseFor(transcript, 262);
+    const auto cipherSignature = responseFor(transcript, 263);
+    const auto definition = responseFor(transcript, 264);
+    const auto getHover = responseFor(transcript, 265);
+
+    expect(status == 0, "secrets language server transcript exits cleanly");
+    expect(errors.str().empty(), "secrets requests write no server errors");
+    expect(packageHover.find("foundation.secrets") != std::string::npos,
+           "secrets package import receives hover");
+    expect(constructorHover.find("fn NewMemoryStore") != std::string::npos &&
+               constructorHover.find("empty in-process store") != std::string::npos,
+           "secrets memory constructor receives typed hover and documentation");
+    expect(cipherSignature.find("fn NewCipherStore") != std::string::npos &&
+               cipherSignature.find("own Bytes") != std::string::npos,
+           "secrets cipher construction receives ownership-aware signature help");
+    expect(definition.find("foundation/secrets/secrets.fdn") != std::string::npos,
+           "secrets memory construction navigates to framework source");
+    expect(getHover.find("fn Get") != std::string::npos &&
+               getHover.find("Task<Result<own Bytes, Error>>") != std::string::npos,
+           "secrets get hover exposes its owned task result");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void rawPointersExposeEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fdn";
@@ -4186,6 +4261,7 @@ int main() {
     supervisorPackageExposesEditorDetails();
     parallelPoolExposesEditorDetails();
     schedulerPackageExposesEditorDetails();
+    secretsPackageExposesEditorDetails();
     rawPointersExposeEditorDetails();
     servicesAndActionsExposeEditorDetails();
     derivedValidationExposesEditorDetails();

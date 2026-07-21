@@ -22,5 +22,14 @@ characters, impossible lengths, and nonzero unused tail bits. `HmacSha256` retur
 32-byte digest. `ConstantTimeEqual` compares equal-length values without a data-dependent early
 exit and is the required comparison for authentication tags.
 
+`EncodeBase64` and `DecodeBase64` provide canonical padded standard Base64 for protocols that
+require it. `EncryptAES256GCM` and `DecryptAES256GCM` require a 32-byte key and use the supplied
+String as associated data. Encryption returns `nonce || ciphertext || tag` with a 12-byte random
+nonce and 16-byte authentication tag. Authentication failure never returns partial plaintext.
+
+`SecretMemory` is a low-level synchronized store used by `foundation.secrets`. It copies values on
+set and get, supports explicit shared ownership through `Clone`, and clears native key/value memory
+on replacement, deletion, and final close. Application code should prefer the framework store.
+
 The package does not expose its runtime handle or mutable byte storage. Native code receives
 opaque handles through the Foundation runtime ABI.

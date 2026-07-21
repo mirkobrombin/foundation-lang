@@ -32,6 +32,9 @@ extern c fn readPrivateTextLimitedNative(path String, limit u64, &result String)
 @blocking
 extern c fn writePrivateTextAtomicNative(path String, value String, limit u64) i32 as foundation_runtime_fs_write_private_text_atomic
 
+@blocking
+extern c fn deletePrivateFileNative(path String) i32 as foundation_runtime_fs_delete_private_file
+
 fn errorFor(status i32) Error {
     if status == 1 {
         return .NotFound
@@ -100,6 +103,13 @@ task WritePrivateTextAtomic(
     const status = writePrivateTextAtomicNative(path, value, limit)
     if status == 0 return .Ok
     .Err(readErrorFor(status))
+}
+
+// Deletes one regular file without following symbolic links or reparse points.
+task DeletePrivateFile($path String) Result<void, Error> {
+    const status = deletePrivateFileNative(path)
+    if status == 0 return .Ok
+    .Err(errorFor(status))
 }
 
 struct LineReader {

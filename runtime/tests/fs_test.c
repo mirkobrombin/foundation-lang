@@ -211,7 +211,8 @@ int main(int argc, char **argv) {
         }
         path = fdn_string_static(private_link, strlen(private_link));
         if (foundation_runtime_fs_read_private_text_limited(&path, UINT64_C(7), &text) != 3 ||
-            text.length != 0 || unlink(private_link) != 0) {
+            text.length != 0 || foundation_runtime_fs_delete_private_file(&path) != 3 ||
+            unlink(private_link) != 0) {
             fdn_string_drop(&text);
             (void)remove(argv[3]);
             return 33;
@@ -221,7 +222,9 @@ int main(int argc, char **argv) {
     path = fdn_string_static(argv[3], strlen(argv[3]));
     root_length = snprintf(private_root, sizeof(private_root), "%s-dir", argv[3]);
     nested_length = snprintf(private_nested, sizeof(private_nested), "%s/nested", private_root);
-    if (remove(argv[3]) != 0 || root_length < 0 || nested_length < 0 ||
+    if (foundation_runtime_fs_delete_private_file(&path) != 0 ||
+        foundation_runtime_fs_delete_private_file(&path) != 1 ||
+        root_length < 0 || nested_length < 0 ||
         (size_t)root_length >= sizeof(private_root) ||
         (size_t)nested_length >= sizeof(private_nested)) {
         return 28;

@@ -230,10 +230,31 @@ int32_t foundation_runtime_bytes_to_text(uint64_t handle, fdn_string *result);
 void foundation_runtime_bytes_close(uint64_t *handle);
 int32_t foundation_runtime_base64url_encode(uint64_t handle, fdn_string *result);
 int32_t foundation_runtime_base64url_decode(const fdn_string *value, uint64_t *result);
+int32_t foundation_runtime_base64_encode(uint64_t handle, fdn_string *result);
+int32_t foundation_runtime_base64_decode(const fdn_string *value, uint64_t *result);
 int32_t foundation_runtime_hmac_sha256(uint64_t key_handle, uint64_t value_handle,
                                        uint64_t *result);
 bool foundation_runtime_bytes_constant_time_equal(uint64_t left_handle,
                                                   uint64_t right_handle);
+int32_t foundation_runtime_aes256_gcm_encrypt(uint64_t key_handle,
+                                              uint64_t value_handle,
+                                              const fdn_string *associated_data,
+                                              uint64_t *result);
+int32_t foundation_runtime_aes256_gcm_decrypt(uint64_t key_handle,
+                                              uint64_t value_handle,
+                                              const fdn_string *associated_data,
+                                              uint64_t *result);
+uint64_t foundation_runtime_secret_memory_open(void);
+uint64_t foundation_runtime_secret_memory_retain(uint64_t handle);
+int32_t foundation_runtime_secret_memory_set(uint64_t handle,
+                                             const fdn_string *key,
+                                             uint64_t value_handle);
+int32_t foundation_runtime_secret_memory_get(uint64_t handle,
+                                             const fdn_string *key,
+                                             uint64_t *result);
+int32_t foundation_runtime_secret_memory_delete(uint64_t handle,
+                                                const fdn_string *key);
+void foundation_runtime_secret_memory_close(uint64_t *handle);
 uint64_t foundation_runtime_time_unix_seconds(void);
 uint64_t foundation_runtime_time_monotonic_nanoseconds(void);
 int32_t foundation_runtime_time_format_utc(uint64_t unix_seconds, fdn_string *result);
@@ -281,6 +302,7 @@ int32_t foundation_runtime_fs_create_private_directory(const fdn_string *path);
 int32_t foundation_runtime_fs_write_private_text_atomic(const fdn_string *path,
                                                         const fdn_string *value,
                                                         uint64_t max_length);
+int32_t foundation_runtime_fs_delete_private_file(const fdn_string *path);
 uint64_t foundation_runtime_fs_live_directories(void);
 int32_t foundation_runtime_net_resolve(const fdn_string *host, uint64_t port,
                                        uint64_t *addresses);
