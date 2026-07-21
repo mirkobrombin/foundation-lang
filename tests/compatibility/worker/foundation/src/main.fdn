@@ -1,0 +1,127 @@
+package test.compatibility.worker
+
+import foundation.worker
+import std.format as format
+
+fn channelFailure(error ChannelError) never {
+    discard error
+    panic("worker compatibility channel failed")
+}
+
+fn requiredVoid($result Result<void, ChannelError>) void {
+    match result {
+        Ok: {}
+        Err(error): channelFailure(error)
+    }
+}
+
+fn requiredI32($result Result<i32, ChannelError>) i32 {
+    match result {
+        Ok(value): value
+        Err(error): channelFailure(error)
+    }
+}
+
+task parallelJob(
+    id i32,
+    $started Sender<i32>,
+    $release Receiver<void>,
+    $completed Sender<i32>
+) void {
+    const startedResult = started.send(id)
+    requiredVoid($startedResult)
+    const releaseResult = release.receive()
+    requiredVoid($releaseResult)
+    const completedResult = completed.send(id)
+    requiredVoid($completedResult)
+}
+
+task cancellationJob(
+    $started Sender<void>,
+    $blocked Receiver<void>
+) void {
+    const startedResult = started.send()
+    requiredVoid($startedResult)
+    const result = blocked.receive()
+    match result {
+        Ok: panic("worker compatibility cancellation was not requested")
+        Err(error): match error {
+            Cancelled: print("cancelled running task")
+            Closed: channelFailure(error)
+            Timeout: channelFailure(error)
+        }
+    }
+}
+
+task runCompatibility() i32 {
+    const Channel { sender as startedSender receiver as startedReceiver } = channel<i32>(3)
+    const Channel { sender as completedSender receiver as completedReceiver } = channel<i32>(3)
+    const Channel { sender as firstRelease receiver as firstWait } = channel<void>(1)
+    const Channel { sender as secondRelease receiver as secondWait } = channel<void>(1)
+    const Channel { sender as thirdRelease receiver as thirdWait } = channel<void>(1)
+
+    const pool = worker.NewPool(2)
+    pool.Start(spawn parallelJob(1, startedSender.clone(), $firstWait, completedSender.clone()))
+    pool.Start(spawn parallelJob(2, startedSender.clone(), $secondWait, completedSender.clone()))
+    pool.Start(spawn parallelJob(3, startedSender.clone(), $thirdWait, completedSender.clone()))
+    discard startedSender
+    discard completedSender
+
+    var starts = startedReceiver
+    const firstResult = starts.receive()
+    const first = requiredI32($firstResult)
+    const secondResult = starts.receive()
+    const second = requiredI32($secondResult)
+    if first + second != 3 return 1
+    const admissionTimeout u64 = 1000000
+    select {
+        const early = starts.receive(): {
+            discard early
+            return 2
+        }
+        timeout admissionTimeout: {}
+        else error: channelFailure(error)
+    }
+    print("parallel limit: 2")
+
+    const firstReleased = firstRelease.send()
+    requiredVoid($firstReleased)
+    const thirdResult = starts.receive()
+    const third = requiredI32($thirdResult)
+    if third != 3 return 3
+    const secondReleased = secondRelease.send()
+    requiredVoid($secondReleased)
+    const thirdReleased = thirdRelease.send()
+    requiredVoid($thirdReleased)
+    pool.Shutdown()
+
+    var completions = completedReceiver
+    const firstCompletedResult = completions.receive()
+    const firstCompleted = requiredI32($firstCompletedResult)
+    const secondCompletedResult = completions.receive()
+    const secondCompleted = requiredI32($secondCompletedResult)
+    const thirdCompletedResult = completions.receive()
+    const thirdCompleted = requiredI32($thirdCompletedResult)
+    const completed = firstCompleted + secondCompleted + thirdCompleted
+    if completed != 6 return 4
+    print("completed: 3")
+    print("shutdown drained")
+
+    const Channel { sender as readySender receiver as readyReceiver } = channel<void>(1)
+    const Channel { sender as blockedSender receiver as blockedReceiver } = channel<void>(0)
+    const cancelled = worker.NewPool(1)
+    cancelled.Start(spawn cancellationJob($readySender, $blockedReceiver))
+    var ready = readyReceiver
+    const readyResult = ready.receive()
+    requiredVoid($readyResult)
+    cancelled.Cancel()
+    discard blockedSender
+    print("cancellation joined")
+    print("worker compatibility ok")
+    0
+}
+
+fn main() i32 {
+    const pending = spawn runCompatibility()
+    $pending.wait()
+}
