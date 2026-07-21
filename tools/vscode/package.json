@@ -2,7 +2,7 @@
     "name": "foundation-lang",
     "displayName": "Foundation Lang",
     "description": "Language support for Foundation Lang",
-    "version": "0.122.0",
+    "version": "0.123.0",
     "publisher": "mirkobrombin",
     "license": "MIT",
     "engines": {
@@ -30,7 +30,7 @@
                     "foundation"
                 ],
                 "extensions": [
-                    ".fdn"
+                    ".fn"
                 ],
                 "configuration": "./language-configuration.json"
             },

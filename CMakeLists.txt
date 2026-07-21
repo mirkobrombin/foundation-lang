@@ -102,12 +102,12 @@ install(TARGETS foundationc foundation-ls RUNTIME DESTINATION ${CMAKE_INSTALL_BI
 install(DIRECTORY runtime/include/ DESTINATION runtime/include FILES_MATCHING PATTERN "*.h")
 install(DIRECTORY runtime/src/ DESTINATION runtime/src
         FILES_MATCHING PATTERN "*.c" PATTERN "*.h")
-install(DIRECTORY std/ DESTINATION std FILES_MATCHING PATTERN "*.fdn")
-install(DIRECTORY foundation/ DESTINATION foundation FILES_MATCHING PATTERN "*.fdn")
+install(DIRECTORY std/ DESTINATION std FILES_MATCHING PATTERN "*.fn")
+install(DIRECTORY foundation/ DESTINATION foundation FILES_MATCHING PATTERN "*.fn")
 install(DIRECTORY docs/ DESTINATION docs FILES_MATCHING PATTERN "*.md")
 install(DIRECTORY examples/ DESTINATION examples
         FILES_MATCHING
-        PATTERN "*.fdn"
+        PATTERN "*.fn"
         PATTERN "*.c"
         PATTERN "*.h"
         PATTERN "*.md"
@@ -168,99 +168,113 @@ if(FOUNDATION_BUILD_FUZZERS)
     set(FOUNDATION_FUZZ_CORPUS_DIR "${CMAKE_CURRENT_BINARY_DIR}/fuzz-corpus")
     file(MAKE_DIRECTORY "${FOUNDATION_FUZZ_CORPUS_DIR}")
     configure_file(
-        tests/fuzz/corpus/bootstrap.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/bootstrap.fdn"
+        tests/fuzz/corpus/bootstrap.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/bootstrap.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/typed-attributes.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/typed-attributes.fdn"
+        tests/fuzz/corpus/typed-attributes.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/typed-attributes.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/serializer.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/serializer.fdn"
+        tests/fuzz/corpus/serializer.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/serializer.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/pipeline-middleware.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/pipeline-middleware.fdn"
+        tests/fuzz/corpus/pipeline-middleware.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/pipeline-middleware.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/cancellation.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/cancellation.fdn"
+        tests/fuzz/corpus/cancellation.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/cancellation.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/task-suspension.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/task-suspension.fdn"
+        tests/fuzz/corpus/task-suspension.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/task-suspension.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/supervisor.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/supervisor.fdn"
+        tests/fuzz/corpus/supervisor.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/supervisor.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/callback.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/callback.fdn"
+        tests/fuzz/corpus/callback.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/callback.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/closures.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/closures.fdn"
+        tests/fuzz/corpus/closures.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/closures.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/transferable-functions.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/transferable-functions.fdn"
+        tests/fuzz/corpus/transferable-functions.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/transferable-functions.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/result-else-without-binding.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/result-else-without-binding.fdn"
+        tests/fuzz/corpus/result-else-without-binding.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/result-else-without-binding.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/network.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/network.fdn"
+        tests/fuzz/corpus/network.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/network.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/generic-lookahead.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/generic-lookahead.fdn"
+        tests/fuzz/corpus/generic-lookahead.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/generic-lookahead.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/raw-pointers.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/raw-pointers.fdn"
+        tests/fuzz/corpus/raw-pointers.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/raw-pointers.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/services.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/services.fdn"
+        tests/fuzz/corpus/services.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/services.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/application-plan.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/application-plan.fdn"
+        tests/fuzz/corpus/application-plan.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/application-plan.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/match-guards.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/match-guards.fdn"
+        tests/fuzz/corpus/match-guards.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/match-guards.fn"
         COPYONLY
     )
     configure_file(
-        tests/fuzz/corpus/select-timeout.fdn
-        "${FOUNDATION_FUZZ_CORPUS_DIR}/select-timeout.fdn"
+        tests/fuzz/corpus/select-timeout.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/select-timeout.fn"
         COPYONLY
     )
 endif()
 
 include(CTest)
 if(BUILD_TESTING)
+    add_test(
+        NAME repository.source-extension
+        COMMAND ${CMAKE_COMMAND}
+            -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-source-extension.cmake
+    )
+    add_test(
+        NAME stage0.check.retired-source-extension
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fn
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/retired-source-extension
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-retired-source-extension.cmake
+    )
     add_test(
         NAME tooling.sdk.relocated
         COMMAND ${CMAKE_COMMAND}
@@ -608,15 +622,15 @@ if(BUILD_TESTING)
         NAME tooling.test.cli
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSUCCESS=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/test-declarations.fdn
-            -DISOLATION=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/test-isolation.fdn
+            -DSUCCESS=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/test-declarations.fn
+            -DISOLATION=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/test-isolation.fn
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-tests.cmake
     )
     add_test(
         NAME stage0.check.test-empty-name
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/test-empty-name.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/test-empty-name.fn
             -DCODE=FDN2211
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -624,7 +638,7 @@ if(BUILD_TESTING)
         NAME stage0.check.test-duplicate-name
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/test-duplicate-name.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/test-duplicate-name.fn
             -DCODE=FDN2211
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -632,9 +646,9 @@ if(BUILD_TESTING)
         NAME tooling.formatter.cli
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/formatter/messy.fdn
-            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/formatter/expected.fdn
-            -DINVALID=${CMAKE_CURRENT_SOURCE_DIR}/tests/formatter/invalid.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/formatter/messy.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/formatter/expected.fn
+            -DINVALID=${CMAKE_CURRENT_SOURCE_DIR}/tests/formatter/invalid.fn
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/formatter-project
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-format.cmake
     )
@@ -652,7 +666,7 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/lint-profile
-            -DINVALID=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/unknown-associated-function.fdn
+            -DINVALID=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/unknown-associated-function.fn
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/lint-project
             -DTARGET=${CMAKE_SYSTEM_NAME}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-lint.cmake
@@ -738,18 +752,18 @@ if(BUILD_TESTING)
     add_test(
         NAME stage0.check.plugins
         COMMAND foundationc check
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugins.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugins.fn
     )
     add_test(
         NAME stage0.check.plugin-wasm-policy
         COMMAND foundationc check
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-policy.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-policy.fn
     )
     add_test(
         NAME stage0.run.plugin-wasm-policy
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-policy.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-policy.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-policy.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -759,7 +773,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-policy.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-policy.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/plugin-wasm-policy.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugin-wasm-policy-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-policy.out
@@ -770,13 +784,13 @@ if(BUILD_TESTING)
     add_test(
         NAME stage0.check.plugin-wasm-discovery
         COMMAND foundationc check
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-discovery.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-discovery.fn
     )
     add_test(
         NAME stage0.run.plugin-wasm-discovery
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-discovery.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-discovery.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-discovery.out
             "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/wasm-discovery"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
@@ -787,7 +801,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-discovery.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-discovery.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/plugin-wasm-discovery.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugin-wasm-discovery-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-discovery.out
@@ -800,7 +814,7 @@ if(BUILD_TESTING)
         NAME stage0.run.plugins
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugins.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugins.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugins.out
             "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_plugin_fixture>;$<TARGET_FILE:foundation_plugin_start_fail>"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
@@ -811,7 +825,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugins.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugins.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/plugins.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugins-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugins.out
@@ -843,7 +857,7 @@ if(BUILD_TESTING)
         NAME stage0.run.plugin-duplicate
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-duplicate.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-duplicate.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-duplicate.out
             "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_plugin_fixture>"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
@@ -854,7 +868,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-duplicate.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-duplicate.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/plugin-duplicate.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugin-duplicate-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-duplicate.out
@@ -867,13 +881,13 @@ if(BUILD_TESTING)
     add_test(
         NAME stage0.check.plugin-factories
         COMMAND foundationc check
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-factories.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-factories.fn
     )
     add_test(
         NAME stage0.run.plugin-factories
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-factories.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-factories.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-factories.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -883,7 +897,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-factories.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-factories.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/plugin-factories.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugin-factories-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-factories.out
@@ -894,13 +908,13 @@ if(BUILD_TESTING)
     add_test(
         NAME stage0.check.plugin-sandbox
         COMMAND foundationc check
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox.fn
     )
     add_test(
         NAME stage0.run.plugin-sandbox
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox.out
             "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_plugin_sandbox_helper>"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
@@ -911,7 +925,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/plugin-sandbox.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugin-sandbox-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox.out
@@ -926,13 +940,13 @@ if(BUILD_TESTING)
     add_test(
         NAME stage0.check.plugin-sandbox-reject
         COMMAND foundationc check
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox-reject.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox-reject.fn
     )
     add_test(
         NAME stage0.run.plugin-sandbox-reject
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox-reject.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox-reject.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox-reject.out
             "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_plugin_sandbox_helper>"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
@@ -943,7 +957,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox-reject.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox-reject.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/plugin-sandbox-reject.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugin-sandbox-reject-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-sandbox-reject.out
@@ -983,34 +997,34 @@ if(BUILD_TESTING)
     add_test(NAME runtime.allocation-counters COMMAND foundation_runtime_counter_test)
     add_test(
         NAME stage0.check.accept
-        COMMAND foundationc check ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fdn
+        COMMAND foundationc check ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fn
     )
     add_test(
         NAME stage0.check.comments
-        COMMAND foundationc check ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/comments.fdn
+        COMMAND foundationc check ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/comments.fn
     )
     add_test(
         NAME stage0.check.ownership-markers
         COMMAND foundationc check
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership-markers.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership-markers.fn
     )
     add_test(
         NAME stage0.run.ownership-markers
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership-markers.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership-markers.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership-markers.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
         NAME stage0.emit.accept
         COMMAND foundationc emit-c
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fn
             -o ${CMAKE_CURRENT_BINARY_DIR}/hello.c
     )
     add_test(
         NAME stage0.run.accept
-        COMMAND foundationc run ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fdn
+        COMMAND foundationc run ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fn
     )
     set_tests_properties(stage0.run.accept PROPERTIES
         PASS_REGULAR_EXPRESSION "hello from foundation"
@@ -1018,13 +1032,13 @@ if(BUILD_TESTING)
     add_test(
         NAME stage0.check.state-machine
         COMMAND foundationc check
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.fn
     )
     add_test(
         NAME stage0.run.state-machine
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1034,7 +1048,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/state-machine.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/state-machine-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.out
@@ -1046,7 +1060,7 @@ if(BUILD_TESTING)
         NAME stage0.check.state-machine-unknown-state
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/state-machine-unknown-state.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/state-machine-unknown-state.fn
             -DCODE=FDN1210
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -1054,20 +1068,20 @@ if(BUILD_TESTING)
         NAME stage0.check.state-machine-borrowed-payload
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/state-machine-borrowed-payload.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/state-machine-borrowed-payload.fn
             -DCODE=FDN2011
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(
         NAME stage0.check.workflows
         COMMAND foundationc check
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.fn
     )
     add_test(
         NAME stage0.run.workflows
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1077,7 +1091,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/workflows.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/workflows-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.out
@@ -1089,7 +1103,7 @@ if(BUILD_TESTING)
         NAME stage0.emit.workflows-metadata
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.fn
             -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/workflows.metadata.first.json
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/workflows.metadata.second.json
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.metadata.json
@@ -1098,13 +1112,13 @@ if(BUILD_TESTING)
     add_test(
         NAME stage0.check.pipeline-middleware
         COMMAND foundationc check
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pipeline-middleware.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pipeline-middleware.fn
     )
     add_test(
         NAME stage0.run.pipeline-middleware
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pipeline-middleware.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pipeline-middleware.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pipeline-middleware.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1114,7 +1128,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pipeline-middleware.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pipeline-middleware.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/pipeline-middleware.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/pipeline-middleware-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pipeline-middleware.out
@@ -1148,7 +1162,7 @@ if(BUILD_TESTING)
         NAME stage0.check.package-keyword-import-alias
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/package-keyword-import-alias.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/package-keyword-import-alias.fn
             -DCODE=FDN1093
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -1156,7 +1170,7 @@ if(BUILD_TESTING)
         NAME stage0.check.pipeline-builder-use-after-then
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/pipeline-builder-use-after-then.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/pipeline-builder-use-after-then.fn
             -DCODE=FDN2065
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -1175,7 +1189,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${workflow_reject_name}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${workflow_reject_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${workflow_reject_name}.fn
                 -DCODE=${workflow_reject_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -1184,7 +1198,7 @@ if(BUILD_TESTING)
         NAME stage0.run.tasks
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tasks.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tasks.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tasks.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1194,7 +1208,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tasks.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tasks.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/tasks.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/tasks
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tasks.out
@@ -1208,7 +1222,7 @@ if(BUILD_TESTING)
         NAME stage0.run.cancellation
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/cancellation.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/cancellation.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/cancellation.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1218,7 +1232,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/cancellation.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/cancellation.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/cancellation.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/cancellation
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/cancellation.out
@@ -1232,7 +1246,7 @@ if(BUILD_TESTING)
         NAME stage0.run.supervisor
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/supervisor.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/supervisor.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/supervisor.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1242,7 +1256,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/supervisor.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/supervisor.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/supervisor.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/supervisor
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/supervisor.out
@@ -1256,7 +1270,7 @@ if(BUILD_TESTING)
         NAME stage0.check.supervisor-result-task
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/supervisor-result-task.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/supervisor-result-task.fn
             -DCODE=FDN2011
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -1264,7 +1278,7 @@ if(BUILD_TESTING)
         NAME stage0.run.task-group
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-group.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-group.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-group.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1274,7 +1288,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-group.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-group.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/task-group.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/task-group
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-group.out
@@ -1289,7 +1303,7 @@ if(BUILD_TESTING)
         NAME stage0.run.worker-pool
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1299,7 +1313,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/worker-pool.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/worker-pool
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool.out
@@ -1314,7 +1328,7 @@ if(BUILD_TESTING)
         NAME stage0.run.worker-pool-channel
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool-channel.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool-channel.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool-channel.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1322,7 +1336,7 @@ if(BUILD_TESTING)
         NAME stage0.run.worker-pool-function
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool-function.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool-function.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool-function.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1332,7 +1346,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool-channel.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool-channel.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/worker-pool-channel.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/worker-pool-channel
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/worker-pool-channel.out
@@ -1356,7 +1370,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${worker_pool_case}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${worker_pool_case}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${worker_pool_case}.fn
                 -DCODE=FDN2185
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -1365,7 +1379,7 @@ if(BUILD_TESTING)
         NAME stage0.check.worker-pool-result-task
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/worker-pool-result-task.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/worker-pool-result-task.fn
             -DCODE=FDN2011
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -1373,7 +1387,7 @@ if(BUILD_TESTING)
         NAME stage0.check.worker-pool-after-shutdown
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/worker-pool-after-shutdown.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/worker-pool-after-shutdown.fn
             -DCODE=FDN2065
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -1381,7 +1395,7 @@ if(BUILD_TESTING)
         NAME stage0.check.scheduler-after-shutdown
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/scheduler-after-shutdown.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/scheduler-after-shutdown.fn
             -DCODE=FDN2065
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -1389,7 +1403,7 @@ if(BUILD_TESTING)
         NAME stage0.run.scheduler
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/scheduler.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/scheduler.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/scheduler.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1397,7 +1411,7 @@ if(BUILD_TESTING)
         NAME stage0.run.scheduler-cron
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/scheduler-cron.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/scheduler-cron.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/scheduler-cron.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1405,7 +1419,7 @@ if(BUILD_TESTING)
         NAME stage0.run.scheduler-store-drain-failure
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/scheduler-store-drain-failure.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/scheduler-store-drain-failure.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/scheduler-store-drain-failure.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1413,7 +1427,7 @@ if(BUILD_TESTING)
         NAME stage0.run.channels
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/channels.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/channels.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/channels.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1423,7 +1437,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/channels.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/channels.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/channels.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/channels
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/channels.out
@@ -1443,7 +1457,7 @@ if(BUILD_TESTING)
             NAME stage0.run.${channel_case}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${channel_case}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${channel_case}.fn
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${channel_case}.out
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
         )
@@ -1453,7 +1467,7 @@ if(BUILD_TESTING)
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
                 -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${channel_case}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${channel_case}.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/${channel_case}.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${channel_case}
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${channel_case}.out
@@ -1474,7 +1488,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${channel_clone_name}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${channel_clone_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${channel_clone_name}.fn
                 -DCODE=${channel_clone_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -1483,7 +1497,7 @@ if(BUILD_TESTING)
         NAME stage0.run.blocking-native
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/blocking-native.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/blocking-native.fn
             -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/blocking_native.c
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/blocking-native.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
@@ -1492,7 +1506,7 @@ if(BUILD_TESTING)
         NAME stage0.run.resiliency-rate-limit
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.fn
             -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/blocking_native.c
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
@@ -1501,7 +1515,7 @@ if(BUILD_TESTING)
         NAME stage0.run.resiliency-policies
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.fn
             -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/resiliency_native.c
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
@@ -1510,7 +1524,7 @@ if(BUILD_TESTING)
         NAME stage0.run.raw-pointers
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/raw-pointers.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/raw-pointers.fn
             -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/raw_pointers.c
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/raw-pointers.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
@@ -1519,7 +1533,7 @@ if(BUILD_TESTING)
         NAME stage0.run.service-actions
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/service-actions.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/service-actions.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/service-actions.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1527,7 +1541,7 @@ if(BUILD_TESTING)
         NAME stage0.run.services-example
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/services/src/main.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/services/src/main.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/services/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1612,7 +1626,7 @@ if(BUILD_TESTING)
         NAME stage0.run.hosting
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hosting.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hosting.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hosting.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1620,7 +1634,7 @@ if(BUILD_TESTING)
         NAME stage0.run.hosting-allocations
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hosting.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hosting.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hosting.out
             -DASSERT_ALLOCATIONS=1
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
@@ -1629,7 +1643,7 @@ if(BUILD_TESTING)
         NAME stage0.run.health
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/health.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/health.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/health.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -1637,7 +1651,7 @@ if(BUILD_TESTING)
         NAME stage0.run.health-allocations
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/health.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/health.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/health.out
             -DASSERT_ALLOCATIONS=1
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
@@ -1646,7 +1660,7 @@ if(BUILD_TESTING)
         NAME stage0.emit.service-actions-metadata
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/service-actions.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/service-actions.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/service-actions.metadata.json
             -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/service-actions-first.json
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/service-actions-second.json
@@ -1656,7 +1670,7 @@ if(BUILD_TESTING)
         NAME stage0.emit.application-plan
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/application-plan.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/application-plan.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/application-plan.json
             -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/application-plan-first.json
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/application-plan-second.json
@@ -1679,8 +1693,8 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/services
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-project
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-project-inspection.fdn
-            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/application-host.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-project-inspection.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/application-host.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/examples/services/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1690,7 +1704,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/web-app-host
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-app-host-inspection.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-app-host-inspection.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/examples/web-app/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1700,8 +1714,8 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-packages
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-packages
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-packages-inspection.fdn
-            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-packages/expected-host.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-packages-inspection.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-packages/expected-host.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-packages/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host-packages.cmake
     )
@@ -1711,8 +1725,8 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-fallible
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-fallible
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-fallible-inspection.fdn
-            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-fallible/expected-host.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-fallible-inspection.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-fallible/expected-host.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-fallible/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1722,8 +1736,8 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient-inspection.fdn
-            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient/expected-host.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient-inspection.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient/expected-host.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1733,8 +1747,8 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-scope
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-scope
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-scope-inspection.fdn
-            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-scope/expected-host.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-scope-inspection.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-scope/expected-host.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-scope/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1744,8 +1758,8 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-di
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-di
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-di-inspection.fdn
-            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-di/expected-host.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-di-inspection.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-di/expected-host.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-di/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1755,8 +1769,8 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-inspection.fdn
-            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web/expected-host.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-inspection.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web/expected-host.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1766,7 +1780,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-regex
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-regex
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-regex-inspection.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-regex-inspection.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-regex/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1776,7 +1790,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-activation
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-activation
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-activation-inspection.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-activation-inspection.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-activation/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1786,7 +1800,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-middleware
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-middleware
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-middleware-inspection.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-middleware-inspection.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-middleware/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1806,7 +1820,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-bind
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-bind
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-bind-inspection.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-bind-inspection.fn
             -DGENERATED_C=${CMAKE_CURRENT_BINARY_DIR}/application-host-bind.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/application-host-bind-allocations
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-bind/expected.out
@@ -1823,7 +1837,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/configuration-migration
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/configuration-migration
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/configuration-migration-inspection.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/configuration-migration-inspection.fn
             -DGENERATED_C=${CMAKE_CURRENT_BINARY_DIR}/configuration-migration.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/configuration-migration-allocations
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/configuration-migration/expected.out
@@ -1855,7 +1869,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-stale
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-stale-inspection.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-stale-inspection.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host-stale.cmake
     )
@@ -1865,8 +1879,8 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient-fallible
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient-fallible
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient-fallible-inspection.fdn
-            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient-fallible/expected-host.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-transient-fallible-inspection.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient-fallible/expected-host.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-transient-fallible/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1876,8 +1890,8 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-dispatcher
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-dispatcher
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-dispatcher-inspection.fdn
-            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-dispatcher/expected-host.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-dispatcher-inspection.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-dispatcher/expected-host.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-dispatcher/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1887,8 +1901,8 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-task-dispatcher
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-task-dispatcher
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-task-dispatcher-inspection.fdn
-            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-task-dispatcher/expected-host.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-task-dispatcher-inspection.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-task-dispatcher/expected-host.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-task-dispatcher/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1898,8 +1912,8 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-events
             -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/application-host-events
-            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-events-inspection.fdn
-            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-events/expected-host.fdn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/application-host-events-inspection.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-events/expected-host.fn
             -DEXPECTED_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-events/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-host.cmake
     )
@@ -1981,9 +1995,9 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DAPPLICATION_COMMAND=emit-app-host
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${application_host_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${application_host_name}.fn
                 -DCODE=${application_host_code}
-                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${application_host_name}.fdn
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${application_host_name}.fn
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-reject.cmake
         )
     endforeach()
@@ -2005,7 +2019,7 @@ if(BUILD_TESTING)
             NAME stage0.emit.${application_name}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${application_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${application_name}.fn
                 -DCODE=${application_code}
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${application_name}.json
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-application-reject.cmake
@@ -2016,7 +2030,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${action_case}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${action_case}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${action_case}.fn
                 -DCODE=FDN2215
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -2027,7 +2041,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/blocking-native.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/blocking-native.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/blocking-native.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/blocking-native
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/blocking-native.out
@@ -2046,7 +2060,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/resiliency-rate-limit.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/resiliency-rate-limit
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.out
@@ -2067,7 +2081,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/resiliency-policies.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/resiliency-policies
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.out
@@ -2086,7 +2100,7 @@ if(BUILD_TESTING)
         NAME stage0.run.callback-native
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.fn
             -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/callback_native.c
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
@@ -2097,7 +2111,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/callback-native.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/callback-native
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.out
@@ -2125,7 +2139,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${blocking_name}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${blocking_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${blocking_name}.fn
                 -DCODE=${blocking_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -2149,7 +2163,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${callback_name}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${callback_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${callback_name}.fn
                 -DCODE=${callback_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -2175,7 +2189,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${select_reject}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${select_reject}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${select_reject}.fn
                 -DCODE=${select_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -2184,7 +2198,7 @@ if(BUILD_TESTING)
         NAME stage0.run.task-suspension
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-suspension.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-suspension.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-suspension.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2194,7 +2208,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-suspension.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-suspension.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/task-suspension.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/task-suspension
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-suspension.out
@@ -2226,7 +2240,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${task_name}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${task_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${task_name}.fn
                 -DCODE=${task_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -2235,7 +2249,7 @@ if(BUILD_TESTING)
         NAME stage0.check.reject
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/legacy-semicolon.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/legacy-semicolon.fn
             -DCODE=FDN0001
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -2243,7 +2257,7 @@ if(BUILD_TESTING)
         NAME stage0.check.legacy-let
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/legacy-let.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/legacy-let.fn
             -DCODE=FDN1184
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -2259,7 +2273,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${legacy_mode_name}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${legacy_mode_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${legacy_mode_name}.fn
                 -DCODE=${legacy_mode_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -2268,7 +2282,7 @@ if(BUILD_TESTING)
         NAME stage0.check.unterminated-block-comment
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/unterminated-block-comment.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/unterminated-block-comment.fn
             -DCODE=FDN0006
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -2276,7 +2290,7 @@ if(BUILD_TESTING)
         NAME stage0.check.missing
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/does-not-exist.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/does-not-exist.fn
             -DCODE=FDN3001
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -2284,7 +2298,7 @@ if(BUILD_TESTING)
         NAME stage0.check.type-mismatch
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/type-mismatch.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/type-mismatch.fn
             -DCODE=FDN2011
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -2292,7 +2306,7 @@ if(BUILD_TESTING)
         NAME stage0.run.typed-attributes
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-attributes.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-attributes.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-attributes.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2300,7 +2314,7 @@ if(BUILD_TESTING)
         NAME stage0.emit.typed-attributes-metadata
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-attributes.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-attributes.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-attributes.metadata.json
             -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/typed-attributes-first.json
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/typed-attributes-second.json
@@ -2329,7 +2343,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${attribute_name}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${attribute_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${attribute_name}.fn
                 -DCODE=${attribute_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -2338,7 +2352,7 @@ if(BUILD_TESTING)
         NAME stage0.run.typed-control
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-control.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-control.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/typed-control.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2346,7 +2360,7 @@ if(BUILD_TESTING)
         NAME stage0.run.main-arguments
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/main-arguments.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/main-arguments.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/main-arguments.out
             "-DPROGRAM_ARGS=alpha;two words"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
@@ -2357,7 +2371,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/main-arguments.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/main-arguments.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/main-arguments.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/main-arguments
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/main-arguments.out
@@ -2370,7 +2384,7 @@ if(BUILD_TESTING)
         NAME stage0.run.platform-current
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/platform-current.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/platform-current.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/platform-current.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2380,7 +2394,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/platform-current.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/platform-current.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/platform-current.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/platform-current
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/platform-current.out
@@ -2392,7 +2406,7 @@ if(BUILD_TESTING)
         NAME stage0.check.target-unknown
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/target-unknown.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/target-unknown.fn
             -DCODE=FDN1142
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -2400,7 +2414,7 @@ if(BUILD_TESTING)
         NAME stage0.check.target-duplicate
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/target-duplicate.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/target-duplicate.fn
             -DCODE=FDN1144
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -2408,7 +2422,7 @@ if(BUILD_TESTING)
         NAME stage0.run.environment
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/environment.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/environment.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/environment.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2421,7 +2435,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/environment.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/environment.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/environment.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/environment
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/environment.out
@@ -2436,7 +2450,7 @@ if(BUILD_TESTING)
         NAME stage0.run.text-path
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-path.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-path.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-path.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2444,7 +2458,7 @@ if(BUILD_TESTING)
         NAME stage0.run.bytes-crypto
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/bytes-crypto.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/bytes-crypto.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/bytes-crypto.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2454,7 +2468,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/bytes-crypto.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/bytes-crypto.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/bytes-crypto.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/bytes-crypto
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/bytes-crypto.out
@@ -2468,7 +2482,7 @@ if(BUILD_TESTING)
         NAME stage0.run.secrets
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets.out
             -DPROGRAM_ARGS=${CMAKE_CURRENT_BINARY_DIR}/secrets-store
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
@@ -2481,7 +2495,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/secrets.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/secrets
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets.out
@@ -2501,7 +2515,7 @@ if(BUILD_TESTING)
         NAME stage0.run.secrets-concurrent
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets-concurrent.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets-concurrent.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets-concurrent.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2511,7 +2525,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets-concurrent.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets-concurrent.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/secrets-concurrent.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/secrets-concurrent
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets-concurrent.out
@@ -2529,7 +2543,7 @@ if(BUILD_TESTING)
         NAME stage0.run.auth-hs256
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-hs256.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-hs256.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-hs256.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2539,7 +2553,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-hs256.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-hs256.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/auth-hs256.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/auth-hs256
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-hs256.out
@@ -2552,7 +2566,7 @@ if(BUILD_TESTING)
         NAME stage0.run.auth-web
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-web.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-web.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-web.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2562,7 +2576,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-web.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-web.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/auth-web.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/auth-web
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/auth-web.out
@@ -2577,7 +2591,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-path.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-path.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/text-path.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/text-path
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-path.out
@@ -2589,7 +2603,7 @@ if(BUILD_TESTING)
         NAME stage0.run.text-builder-format
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-builder-format.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-builder-format.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-builder-format.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2599,7 +2613,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-builder-format.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-builder-format.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/text-builder-format.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/text-builder-format
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/text-builder-format.out
@@ -2611,7 +2625,7 @@ if(BUILD_TESTING)
         NAME stage0.run.pattern
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pattern.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pattern.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pattern.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2621,7 +2635,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pattern.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pattern.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/pattern.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/pattern
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pattern.out
@@ -2633,7 +2647,7 @@ if(BUILD_TESTING)
         NAME stage0.run.json-values
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-values.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-values.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-values.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2643,7 +2657,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-values.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-values.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/json-values.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/json-values
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-values.out
@@ -2655,7 +2669,7 @@ if(BUILD_TESTING)
         NAME stage0.run.json-stringify
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-stringify.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-stringify.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-stringify.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2665,7 +2679,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-stringify.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-stringify.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/json-stringify.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/json-stringify
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-stringify.out
@@ -2677,7 +2691,7 @@ if(BUILD_TESTING)
         NAME stage0.run.serializer
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/serializer.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/serializer.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/serializer.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2687,7 +2701,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/serializer.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/serializer.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/serializer.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/serializer
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/serializer.out
@@ -2723,7 +2737,7 @@ if(BUILD_TESTING)
         NAME stage0.run.parse-values
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2731,7 +2745,7 @@ if(BUILD_TESTING)
         NAME stage0.run.uuid-values
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/uuid-values.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/uuid-values.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/uuid-values.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2741,7 +2755,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/uuid-values.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/uuid-values.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/uuid-values.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/uuid-values
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/uuid-values.out
@@ -2755,7 +2769,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/parse-values.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/parse-values
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.out
@@ -2768,7 +2782,7 @@ if(BUILD_TESTING)
         NAME stage0.run.field-borrows
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-borrows.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-borrows.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-borrows.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2778,7 +2792,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-borrows.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-borrows.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/field-borrows.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/field-borrows
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-borrows.out
@@ -2790,7 +2804,7 @@ if(BUILD_TESTING)
         NAME stage0.check.conflicting-field-borrow
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/conflicting-field-borrow.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/conflicting-field-borrow.fn
             -DCODE=FDN2073
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -2798,7 +2812,7 @@ if(BUILD_TESTING)
         NAME stage0.run.filesystem-lines
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-lines.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-lines.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-lines.out
             "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs/lines.jsonl"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
@@ -2809,7 +2823,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-lines.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-lines.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/filesystem-lines.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/filesystem-lines
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-lines.out
@@ -2822,7 +2836,7 @@ if(BUILD_TESTING)
         NAME stage0.run.filesystem-read-text
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-read-text.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-read-text.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-read-text.out
             "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs/lines.jsonl"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
@@ -2833,7 +2847,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-read-text.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-read-text.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/filesystem-read-text.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/filesystem-read-text
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-read-text.out
@@ -2849,7 +2863,7 @@ if(BUILD_TESTING)
         NAME stage0.run.network-tcp
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.fn
             -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/net_server.c
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
@@ -2860,7 +2874,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/network-tcp.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/network-tcp
             -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/net_server.c
@@ -2878,7 +2892,7 @@ if(BUILD_TESTING)
         NAME stage0.run.web-server
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2888,7 +2902,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-server.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-server
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.out
@@ -2905,7 +2919,7 @@ if(BUILD_TESTING)
         NAME stage0.run.web-cors
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2915,7 +2929,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-cors.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-cors
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.out
@@ -2932,7 +2946,7 @@ if(BUILD_TESTING)
         NAME stage0.run.web-routing
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2942,7 +2956,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-routing.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-routing
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.out
@@ -2959,7 +2973,7 @@ if(BUILD_TESTING)
         NAME stage0.run.web-middleware
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-middleware.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-middleware.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-middleware.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -2969,7 +2983,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-middleware.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-middleware.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-middleware.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-middleware
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-middleware.out
@@ -3005,7 +3019,7 @@ if(BUILD_TESTING)
         NAME stage0.run.web-protocol-errors
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3015,7 +3029,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-protocol-errors.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-protocol-errors
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.out
@@ -3032,7 +3046,7 @@ if(BUILD_TESTING)
         NAME stage0.run.filesystem-directory
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-directory.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-directory.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-directory.out
             "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
@@ -3043,7 +3057,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-directory.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-directory.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/filesystem-directory.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/filesystem-directory
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-directory.out
@@ -3056,7 +3070,7 @@ if(BUILD_TESTING)
         NAME stage0.run.time-filesystem
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/time-filesystem.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/time-filesystem.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/time-filesystem.out
             "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs/lines.jsonl"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
@@ -3067,7 +3081,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/time-filesystem.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/time-filesystem.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/time-filesystem.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/time-filesystem
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/time-filesystem.out
@@ -3080,7 +3094,7 @@ if(BUILD_TESTING)
         NAME stage0.check.main-arguments
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/main-arguments.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/main-arguments.fn
             -DCODE=FDN2007
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3088,7 +3102,7 @@ if(BUILD_TESTING)
         NAME stage0.check.len-invalid
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/len-invalid.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/len-invalid.fn
             -DCODE=FDN2011
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3096,7 +3110,7 @@ if(BUILD_TESTING)
         NAME stage0.run.language-tour
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/language-tour/main.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/language-tour/main.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/language-tour/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3208,7 +3222,7 @@ if(BUILD_TESTING)
         NAME stage0.run.struct-values
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/struct-values.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/struct-values.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/struct-values.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3216,7 +3230,7 @@ if(BUILD_TESTING)
         NAME stage0.run.field-defaults
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-defaults.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-defaults.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-defaults.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3226,7 +3240,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-defaults.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-defaults.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/field-defaults.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/field-defaults
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/field-defaults.out
@@ -3238,7 +3252,7 @@ if(BUILD_TESTING)
         NAME stage0.run.options-migration
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/options-migration.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/options-migration.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/options-migration.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3248,7 +3262,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/options-migration.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/options-migration.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/options-migration.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/options-migration
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/options-migration.out
@@ -3260,7 +3274,7 @@ if(BUILD_TESTING)
         NAME stage0.check.field-default-type
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/field-default-type.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/field-default-type.fn
             -DCODE=FDN2011
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3268,7 +3282,7 @@ if(BUILD_TESTING)
         NAME stage0.check.attribute-field-default
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/attribute-field-default.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/attribute-field-default.fn
             -DCODE=FDN2160
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3276,7 +3290,7 @@ if(BUILD_TESTING)
         NAME stage0.check.struct-missing-field
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/struct-missing-field.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/struct-missing-field.fn
             -DCODE=FDN2027
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3284,7 +3298,7 @@ if(BUILD_TESTING)
         NAME stage0.run.enum-match
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/enum-match.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/enum-match.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/enum-match.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3292,7 +3306,7 @@ if(BUILD_TESTING)
         NAME stage0.run.match-blocks
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-blocks.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-blocks.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-blocks.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3302,7 +3316,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-blocks.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-blocks.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/match-blocks.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/match-blocks
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-blocks.out
@@ -3314,7 +3328,7 @@ if(BUILD_TESTING)
         NAME stage0.check.match-block-tail
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-block-tail.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-block-tail.fn
             -DCODE=FDN2011
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3322,7 +3336,7 @@ if(BUILD_TESTING)
         NAME stage0.run.named-enum-payloads
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/named-enum-payloads.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/named-enum-payloads.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/named-enum-payloads.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3332,7 +3346,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/named-enum-payloads.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/named-enum-payloads.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/named-enum-payloads.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/named-enum-payloads
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/named-enum-payloads.out
@@ -3344,7 +3358,7 @@ if(BUILD_TESTING)
         NAME stage0.run.match-guards
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-guards.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-guards.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-guards.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3354,7 +3368,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-guards.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-guards.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/match-guards.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/match-guards
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-guards.out
@@ -3374,7 +3388,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${match_guard_name}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${match_guard_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${match_guard_name}.fn
                 -DCODE=${match_guard_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -3383,7 +3397,7 @@ if(BUILD_TESTING)
         NAME stage0.check.named-enum-payload-unknown
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/named-enum-payload-unknown.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/named-enum-payload-unknown.fn
             -DCODE=FDN2206
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3391,7 +3405,7 @@ if(BUILD_TESTING)
         NAME stage0.check.unnamed-enum-payload-label
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/unnamed-enum-payload-label.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/unnamed-enum-payload-label.fn
             -DCODE=FDN2209
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3399,7 +3413,7 @@ if(BUILD_TESTING)
         NAME stage0.check.match-literal-nonexhaustive
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-literal-nonexhaustive.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-literal-nonexhaustive.fn
             -DCODE=FDN2040
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3407,7 +3421,7 @@ if(BUILD_TESTING)
         NAME stage0.check.match-literal-duplicate
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-literal-duplicate.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-literal-duplicate.fn
             -DCODE=FDN2039
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3415,7 +3429,7 @@ if(BUILD_TESTING)
         NAME stage0.check.match-literal-after-binding
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-literal-after-binding.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-literal-after-binding.fn
             -DCODE=FDN2039
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3423,7 +3437,7 @@ if(BUILD_TESTING)
         NAME stage0.check.match-literal-unsupported
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-literal-unsupported.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-literal-unsupported.fn
             -DCODE=FDN2210
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3431,7 +3445,7 @@ if(BUILD_TESTING)
         NAME stage0.run.conditionals
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/conditionals.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/conditionals.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/conditionals.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3439,7 +3453,7 @@ if(BUILD_TESTING)
         NAME stage0.run.empty-tests
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/empty-tests.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/empty-tests.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/empty-tests.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3447,7 +3461,7 @@ if(BUILD_TESTING)
         NAME stage0.check.empty-test-number
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/empty-test-number.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/empty-test-number.fn
             -DCODE=FDN2220
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3455,7 +3469,7 @@ if(BUILD_TESTING)
         NAME stage0.check.empty-test-edit-method
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/empty-test-edit-method.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/empty-test-edit-method.fn
             -DCODE=FDN2220
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3463,7 +3477,7 @@ if(BUILD_TESTING)
         NAME stage0.check.conditional-branch-mismatch
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/conditional-branch-mismatch.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/conditional-branch-mismatch.fn
             -DCODE=FDN2011
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3471,7 +3485,7 @@ if(BUILD_TESTING)
         NAME stage0.check.conditional-missing-value
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/conditional-missing-value.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/conditional-missing-value.fn
             -DCODE=FDN1178
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3479,7 +3493,7 @@ if(BUILD_TESTING)
         NAME stage0.check.conditional-maybe-transferred
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/conditional-maybe-transferred.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/conditional-maybe-transferred.fn
             -DCODE=FDN2066
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3487,7 +3501,7 @@ if(BUILD_TESTING)
         NAME stage0.check.short-guard-multiline
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/short-guard-multiline.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/short-guard-multiline.fn
             -DCODE=FDN1173
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3495,7 +3509,7 @@ if(BUILD_TESTING)
         NAME stage0.run.loop-jumps
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/loop-jumps.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/loop-jumps.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/loop-jumps.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3503,7 +3517,7 @@ if(BUILD_TESTING)
         NAME stage0.check.break-outside-loop
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/break-outside-loop.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/break-outside-loop.fn
             -DCODE=FDN2200
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3511,7 +3525,7 @@ if(BUILD_TESTING)
         NAME stage0.check.continue-outside-loop
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/continue-outside-loop.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/continue-outside-loop.fn
             -DCODE=FDN2200
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3519,7 +3533,7 @@ if(BUILD_TESTING)
         NAME stage0.check.break-value
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/break-value.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/break-value.fn
             -DCODE=FDN1179
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3527,7 +3541,7 @@ if(BUILD_TESTING)
         NAME stage0.run.for-sequences
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-sequences.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-sequences.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-sequences.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3537,7 +3551,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-sequences.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-sequences.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/for-sequences.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/for-sequences
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-sequences.out
@@ -3551,7 +3565,7 @@ if(BUILD_TESTING)
         NAME stage0.run.for-iterators
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-iterators.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-iterators.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-iterators.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3561,7 +3575,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-iterators.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-iterators.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/for-iterators.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/for-iterators
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/for-iterators.out
@@ -3575,7 +3589,7 @@ if(BUILD_TESTING)
         NAME stage0.check.for-iterator-next
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-iterator-next.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-iterator-next.fn
             -DCODE=FDN2204
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3583,7 +3597,7 @@ if(BUILD_TESTING)
         NAME stage0.check.for-iterator-edit
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-iterator-edit.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-iterator-edit.fn
             -DCODE=FDN2205
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3591,7 +3605,7 @@ if(BUILD_TESTING)
         NAME stage0.check.for-non-sequence
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-non-sequence.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-non-sequence.fn
             -DCODE=FDN2201
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3599,7 +3613,7 @@ if(BUILD_TESTING)
         NAME stage0.check.for-edit-immutable
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-edit-immutable.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-edit-immutable.fn
             -DCODE=FDN2202
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3607,7 +3621,7 @@ if(BUILD_TESTING)
         NAME stage0.check.for-task-rvalue
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-task-rvalue.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-task-rvalue.fn
             -DCODE=FDN2203
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3615,7 +3629,7 @@ if(BUILD_TESTING)
         NAME stage0.check.for-transfer-sequence
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-transfer-sequence.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/for-transfer-sequence.fn
             -DCODE=FDN2067
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3623,7 +3637,7 @@ if(BUILD_TESTING)
         NAME stage0.check.match-exhaustive
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-non-exhaustive.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/match-non-exhaustive.fn
             -DCODE=FDN2040
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3631,7 +3645,7 @@ if(BUILD_TESTING)
         NAME stage0.run.generic-values
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-values.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-values.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-values.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3639,45 +3653,45 @@ if(BUILD_TESTING)
         NAME stage0.run.generic-lookahead
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-lookahead.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-lookahead.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-lookahead.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
         NAME stage0.run.primitive-values
         COMMAND foundationc run
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/primitive-values.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/primitive-values.fn
     )
     add_test(
         NAME stage0.run.u64-values
         COMMAND foundationc run
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/u64-values.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/u64-values.fn
     )
     add_test(
         NAME stage0.run.usize-values
         COMMAND foundationc run
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/usize-values.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/usize-values.fn
     )
     add_test(
         NAME stage0.run.machine-scalars
         COMMAND foundationc run
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/machine-scalars.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/machine-scalars.fn
     )
     add_test(
         NAME stage0.run.named-arguments
         COMMAND foundationc run
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/named-arguments.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/named-arguments.fn
     )
     add_test(
         NAME stage0.run.range
         COMMAND foundationc run
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/range.fdn
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/range.fn
     )
     add_test(
         NAME stage0.check.u64-negative
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/u64-negative.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/u64-negative.fn
             -DCODE=FDN2005
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3685,7 +3699,7 @@ if(BUILD_TESTING)
         NAME stage0.check.usize-negative
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/usize-negative.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/usize-negative.fn
             -DCODE=FDN2005
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3693,7 +3707,7 @@ if(BUILD_TESTING)
         NAME stage0.check.scalar-literal-overflow
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/scalar-literal-overflow.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/scalar-literal-overflow.fn
             -DCODE=FDN2005
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3701,7 +3715,7 @@ if(BUILD_TESTING)
         NAME stage0.check.float-remainder
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/float-remainder.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/float-remainder.fn
             -DCODE=FDN2011
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3709,7 +3723,7 @@ if(BUILD_TESTING)
         NAME stage0.check.named-argument-unknown
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/named-argument-unknown.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/named-argument-unknown.fn
             -DCODE=FDN2206
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3717,7 +3731,7 @@ if(BUILD_TESTING)
         NAME stage0.check.named-argument-duplicate
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/named-argument-duplicate.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/named-argument-duplicate.fn
             -DCODE=FDN2208
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3725,7 +3739,7 @@ if(BUILD_TESTING)
         NAME stage0.check.named-argument-positional
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/named-argument-positional.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/named-argument-positional.fn
             -DCODE=FDN2207
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3733,7 +3747,7 @@ if(BUILD_TESTING)
         NAME stage0.run.ownership
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3741,7 +3755,7 @@ if(BUILD_TESTING)
         NAME stage0.run.owned-places
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/owned-places.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/owned-places.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/owned-places.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3757,7 +3771,7 @@ if(BUILD_TESTING)
         NAME stage0.run.queue-values
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/queue-values.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/queue-values.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/queue-values.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3767,7 +3781,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/queue-values.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/queue-values.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/queue-values.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/queue-values
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/queue-values.out
@@ -3779,7 +3793,7 @@ if(BUILD_TESTING)
         NAME stage0.check.queue-transfer
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/queue-transfer.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/queue-transfer.fn
             -DCODE=FDN2065
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3787,7 +3801,7 @@ if(BUILD_TESTING)
         NAME stage0.run.ring-values
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.fn
             -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ring_native.c
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
@@ -3798,7 +3812,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/ring-values.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/ring-values
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.out
@@ -3811,7 +3825,7 @@ if(BUILD_TESTING)
         NAME stage0.check.ring-push-result
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/ring-push-result.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/ring-push-result.fn
             -DCODE=FDN2051
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -3819,7 +3833,7 @@ if(BUILD_TESTING)
         NAME stage0.emit.ring-values-deterministic
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.fn
             -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/ring-values-first.c
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/ring-values-second.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
@@ -3828,7 +3842,7 @@ if(BUILD_TESTING)
         NAME stage0.run.safemap
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/safemap.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/safemap.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/safemap.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3838,7 +3852,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/safemap.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/safemap.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/safemap.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/safemap
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/safemap.out
@@ -3853,7 +3867,7 @@ if(BUILD_TESTING)
         NAME stage0.emit.safemap-deterministic
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/safemap.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/safemap.fn
             -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/safemap-first.c
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/safemap-second.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
@@ -3887,7 +3901,7 @@ if(BUILD_TESTING)
         NAME stage0.run.lock
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/lock.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/lock.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/lock.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3897,7 +3911,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/lock.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/lock.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/lock.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/lock
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/lock.out
@@ -3912,7 +3926,7 @@ if(BUILD_TESTING)
         NAME stage0.emit.lock-deterministic
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/lock.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/lock.fn
             -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/lock-first.c
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/lock-second.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
@@ -3967,7 +3981,7 @@ if(BUILD_TESTING)
         NAME stage0.run.events
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3975,7 +3989,7 @@ if(BUILD_TESTING)
         NAME stage0.run.events-concurrent
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events-concurrent.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events-concurrent.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events-concurrent.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -3985,7 +3999,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events-concurrent.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events-concurrent.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/events-concurrent.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/events-concurrent
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events-concurrent.out
@@ -4002,7 +4016,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/events.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/events
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events.out
@@ -4037,14 +4051,14 @@ if(BUILD_TESTING)
         NAME stage0.run.replace-panic-order
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/panic/replace-order.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/panic/replace-order.fn
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-replace-panic.cmake
     )
     add_test(
         NAME stage0.run.sequences
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/sequences.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/sequences.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/sequences.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -4052,7 +4066,7 @@ if(BUILD_TESTING)
         NAME stage0.run.methods-contracts
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/methods-contracts.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/methods-contracts.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/methods-contracts.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -4060,7 +4074,7 @@ if(BUILD_TESTING)
         NAME stage0.run.contract-inheritance
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -4070,7 +4084,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/contract-inheritance.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/contract-inheritance
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.out
@@ -4082,7 +4096,7 @@ if(BUILD_TESTING)
         NAME stage0.emit.contract-inheritance-deterministic
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.fn
             -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/contract-inheritance-first.c
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/contract-inheritance-second.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
@@ -4091,7 +4105,7 @@ if(BUILD_TESTING)
         NAME stage0.run.function-values
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/function-values.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/function-values.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/function-values.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -4099,7 +4113,7 @@ if(BUILD_TESTING)
         NAME stage0.run.closures
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -4107,7 +4121,7 @@ if(BUILD_TESTING)
         NAME stage0.run.closure-inference
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closure-inference.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closure-inference.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closure-inference.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -4117,7 +4131,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closure-inference.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closure-inference.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/closure-inference-allocations.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/closure-inference-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closure-inference.out
@@ -4129,7 +4143,7 @@ if(BUILD_TESTING)
         NAME stage0.run.result-else-without-binding
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/result-else-without-binding.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/result-else-without-binding.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/result-else-without-binding.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -4139,7 +4153,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/result-else-without-binding.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/result-else-without-binding.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/result-else-without-binding-allocations.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/result-else-without-binding-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/result-else-without-binding.out
@@ -4151,7 +4165,7 @@ if(BUILD_TESTING)
         NAME stage0.emit.result-else-without-binding-deterministic
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/result-else-without-binding.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/result-else-without-binding.fn
             -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/result-else-without-binding-first.c
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/result-else-without-binding-second.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
@@ -4160,7 +4174,7 @@ if(BUILD_TESTING)
         NAME stage0.emit.closures-deterministic
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.fn
             -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/closures-first.c
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/closures-second.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
@@ -4171,7 +4185,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/panic/closure-trace.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/panic/closure-trace.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/closure-panic.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/closure-panic
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
@@ -4306,7 +4320,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${method_name}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${method_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${method_name}.fn
                 -DCODE=${method_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -4339,7 +4353,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${closure_name}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${closure_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${closure_name}.fn
                 -DCODE=${closure_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -4353,7 +4367,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${function_value_name}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${function_value_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${function_value_name}.fn
                 -DCODE=${function_value_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -4381,7 +4395,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${c_abi_name}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${c_abi_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${c_abi_name}.fn
                 -DCODE=${c_abi_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -4400,7 +4414,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${raw_pointer_name}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${raw_pointer_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${raw_pointer_name}.fn
                 -DCODE=${raw_pointer_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )
@@ -4412,7 +4426,7 @@ if(BUILD_TESTING)
                 COMMAND ${CMAKE_COMMAND}
                     -DCOMPILER=$<TARGET_FILE:foundationc>
                     -DC_COMPILER=${CMAKE_C_COMPILER}
-                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${crypto_case}.fdn
+                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${crypto_case}.fn
                     -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/${crypto_case}-sanitized.c
                     -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${crypto_case}-sanitized
                     -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${crypto_case}.out
@@ -4427,7 +4441,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/options-migration.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/options-migration.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/options-migration-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/options-migration-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/options-migration.out
@@ -4440,7 +4454,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/parse-values-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/parse-values-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/parse-values.out
@@ -4454,7 +4468,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-stringify.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-stringify.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/json-stringify-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/json-stringify-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/json-stringify.out
@@ -4467,7 +4481,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/serializer.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/serializer.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/serializer-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/serializer-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/serializer.out
@@ -4495,7 +4509,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/ownership-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/ownership-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership.out
@@ -4508,7 +4522,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/sequences.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/sequences.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/sequences-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/sequences-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/sequences.out
@@ -4521,7 +4535,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/methods-contracts.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/methods-contracts.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/methods-contracts-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/methods-contracts-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/methods-contracts.out
@@ -4534,7 +4548,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/contract-inheritance-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/contract-inheritance-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-inheritance.out
@@ -4547,7 +4561,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/closures-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/closures-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.out
@@ -4560,7 +4574,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closure-inference.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closure-inference.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/closure-inference-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/closure-inference-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closure-inference.out
@@ -4586,7 +4600,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/ring-values-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/ring-values-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ring-values.out
@@ -4601,7 +4615,7 @@ if(BUILD_TESTING)
                 COMMAND ${CMAKE_COMMAND}
                     -DCOMPILER=$<TARGET_FILE:foundationc>
                     -DC_COMPILER=${CMAKE_C_COMPILER}
-                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${cross_executor_case}.fdn
+                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${cross_executor_case}.fn
                     -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/${cross_executor_case}-sanitized.c
                     -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${cross_executor_case}-sanitized
                     -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${cross_executor_case}.out
@@ -4619,7 +4633,7 @@ if(BUILD_TESTING)
                         -DCOMPILER=$<TARGET_FILE:foundationc>
                         -DC_COMPILER=${CMAKE_C_COMPILER}
                         -DTHREAD_SANITIZER=ON
-                        -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${cross_executor_case}.fdn
+                        -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${cross_executor_case}.fn
                         -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/${cross_executor_case}-thread-sanitized.c
                         -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${cross_executor_case}-thread-sanitized
                         -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${cross_executor_case}.out
@@ -4637,7 +4651,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/scheduler.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/scheduler.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/scheduler-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/scheduler-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/scheduler.out
@@ -4662,7 +4676,7 @@ if(BUILD_TESTING)
                     -DCOMPILER=$<TARGET_FILE:foundationc>
                     -DC_COMPILER=${CMAKE_C_COMPILER}
                     -DTHREAD_SANITIZER=ON
-                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/scheduler.fdn
+                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/scheduler.fn
                     -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/scheduler-thread-sanitized.c
                     -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/scheduler-thread-sanitized
                     -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/scheduler.out
@@ -4686,7 +4700,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets-concurrent.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets-concurrent.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/secrets-concurrent-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/secrets-concurrent-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets-concurrent.out
@@ -4707,7 +4721,7 @@ if(BUILD_TESTING)
                     -DCOMPILER=$<TARGET_FILE:foundationc>
                     -DC_COMPILER=${CMAKE_C_COMPILER}
                     -DTHREAD_SANITIZER=ON
-                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets-concurrent.fdn
+                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets-concurrent.fn
                     -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/secrets-concurrent-thread-sanitized.c
                     -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/secrets-concurrent-thread-sanitized
                     -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/secrets-concurrent.out
@@ -4727,7 +4741,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/events-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/events-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events.out
@@ -4740,7 +4754,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events-concurrent.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events-concurrent.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/events-concurrent-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/events-concurrent-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/events-concurrent.out
@@ -4785,7 +4799,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-suspension.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-suspension.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/task-suspension-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/task-suspension-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/task-suspension.out
@@ -4800,7 +4814,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/supervisor.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/supervisor.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/supervisor-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/supervisor-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/supervisor.out
@@ -4815,7 +4829,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/blocking-native.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/blocking-native.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/blocking-native-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/blocking-native-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/blocking-native.out
@@ -4833,7 +4847,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/resiliency-rate-limit-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/resiliency-rate-limit-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.out
@@ -4853,7 +4867,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/resiliency-policies-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/resiliency-policies-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.out
@@ -4873,7 +4887,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/callback-native-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/callback-native-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.out
@@ -4891,7 +4905,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-read-text.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-read-text.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/filesystem-read-text-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/filesystem-read-text-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/filesystem-read-text.out
@@ -4908,7 +4922,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/network-tcp-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/network-tcp-sanitized
                 -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/net_server.c
@@ -4927,7 +4941,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-server-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-server-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.out
@@ -4945,7 +4959,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-cors-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-cors-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.out
@@ -4963,7 +4977,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-routing-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-routing-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.out
@@ -4981,7 +4995,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-middleware.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-middleware.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-middleware-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-middleware-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-middleware.out
@@ -5035,7 +5049,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.fn
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/web-protocol-errors-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-protocol-errors-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.out
@@ -5053,7 +5067,7 @@ if(BUILD_TESTING)
         NAME stage0.check.use-after-move
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/use-after-move.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/use-after-move.fn
             -DCODE=FDN2065
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5061,7 +5075,7 @@ if(BUILD_TESTING)
         NAME stage0.check.new-nonconstruct
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/new-nonconstruct.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/new-nonconstruct.fn
             -DCODE=FDN2191
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5069,7 +5083,7 @@ if(BUILD_TESTING)
         NAME stage0.check.edit-marker-missing
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/edit-marker-missing.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/edit-marker-missing.fn
             -DCODE=FDN2192
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5077,7 +5091,7 @@ if(BUILD_TESTING)
         NAME stage0.check.transfer-marker-missing
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/transfer-marker-missing.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/transfer-marker-missing.fn
             -DCODE=FDN2193
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5085,7 +5099,7 @@ if(BUILD_TESTING)
         NAME stage0.check.read-marker-invalid
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/read-marker-invalid.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/read-marker-invalid.fn
             -DCODE=FDN2194
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5093,7 +5107,7 @@ if(BUILD_TESTING)
         NAME stage0.check.use-after-transfer
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/use-after-transfer.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/use-after-transfer.fn
             -DCODE=FDN2065
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5101,7 +5115,7 @@ if(BUILD_TESTING)
         NAME stage0.check.function-edit-marker-missing
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/function-edit-marker-missing.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/function-edit-marker-missing.fn
             -DCODE=FDN2192
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5109,7 +5123,7 @@ if(BUILD_TESTING)
         NAME stage0.check.function-transfer-marker-missing
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/function-transfer-marker-missing.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/function-transfer-marker-missing.fn
             -DCODE=FDN2193
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5117,7 +5131,7 @@ if(BUILD_TESTING)
         NAME stage0.check.double-consumption
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/double-consumption.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/double-consumption.fn
             -DCODE=FDN2065
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5125,7 +5139,7 @@ if(BUILD_TESTING)
         NAME stage0.check.move-while-borrowed
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/move-while-borrowed.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/move-while-borrowed.fn
             -DCODE=FDN2067
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5133,7 +5147,7 @@ if(BUILD_TESTING)
         NAME stage0.check.maybe-moved
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/maybe-moved.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/maybe-moved.fn
             -DCODE=FDN2066
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5141,7 +5155,7 @@ if(BUILD_TESTING)
         NAME stage0.check.conflicting-borrow
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/conflicting-borrow.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/conflicting-borrow.fn
             -DCODE=FDN2073
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5149,7 +5163,7 @@ if(BUILD_TESTING)
         NAME stage0.check.field-assignment-without-edit
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/field-assignment-without-edit.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/field-assignment-without-edit.fn
             -DCODE=FDN2077
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5157,7 +5171,7 @@ if(BUILD_TESTING)
         NAME stage0.check.owned-field-move
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/owned-field-move.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/owned-field-move.fn
             -DCODE=FDN2078
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5165,7 +5179,7 @@ if(BUILD_TESTING)
         NAME stage0.check.edit-immutable
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/edit-immutable.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/edit-immutable.fn
             -DCODE=FDN2072
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5173,7 +5187,7 @@ if(BUILD_TESTING)
         NAME stage0.check.stored-borrow
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/stored-borrow.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/stored-borrow.fn
             -DCODE=FDN2074
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5181,7 +5195,7 @@ if(BUILD_TESTING)
         NAME stage0.check.borrow-return
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/borrow-return.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/borrow-return.fn
             -DCODE=FDN2063
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5189,7 +5203,7 @@ if(BUILD_TESTING)
         NAME stage0.check.borrow-field
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/borrow-field.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/borrow-field.fn
             -DCODE=FDN2062
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5197,7 +5211,7 @@ if(BUILD_TESTING)
         NAME stage0.check.loop-move
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/loop-move.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/loop-move.fn
             -DCODE=FDN2079
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5205,7 +5219,7 @@ if(BUILD_TESTING)
         NAME stage0.check.short-circuit-move
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/short-circuit-move.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/short-circuit-move.fn
             -DCODE=FDN2066
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5213,16 +5227,16 @@ if(BUILD_TESTING)
         NAME stage0.run.index-out-of-bounds
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/index-out-of-bounds.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/index-out-of-bounds.fn
             -DPATTERN=index.out.of.bounds
-            -DTRACE_PATTERN=index-out-of-bounds.fdn:3:11
+            -DTRACE_PATTERN=index-out-of-bounds.fn:3:11
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
     add_test(
         NAME stage0.check.empty-array
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/empty-array.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/empty-array.fn
             -DCODE=FDN2081
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5230,7 +5244,7 @@ if(BUILD_TESTING)
         NAME stage0.check.array-length-mismatch
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/array-length-mismatch.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/array-length-mismatch.fn
             -DCODE=FDN2082
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5238,7 +5252,7 @@ if(BUILD_TESTING)
         NAME stage0.check.mixed-array
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/mixed-array.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/mixed-array.fn
             -DCODE=FDN2011
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5246,7 +5260,7 @@ if(BUILD_TESTING)
         NAME stage0.check.immutable-index
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/immutable-index.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/immutable-index.fn
             -DCODE=FDN2077
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5254,7 +5268,7 @@ if(BUILD_TESTING)
         NAME stage0.check.owned-array-element
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/owned-array-element.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/owned-array-element.fn
             -DCODE=FDN2083
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5262,7 +5276,7 @@ if(BUILD_TESTING)
         NAME stage0.check.nested-slice
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/nested-slice.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/nested-slice.fn
             -DCODE=FDN2080
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5270,7 +5284,7 @@ if(BUILD_TESTING)
         NAME stage0.check.negative-array-length
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/negative-array-length.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/negative-array-length.fn
             -DCODE=FDN1080
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5278,7 +5292,7 @@ if(BUILD_TESTING)
         NAME stage0.check.large-array-length
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/large-array-length.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/large-array-length.fn
             -DCODE=FDN2080
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5286,7 +5300,7 @@ if(BUILD_TESTING)
         NAME stage0.check.stored-slice
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/stored-slice.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/stored-slice.fn
             -DCODE=FDN2074
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5294,7 +5308,7 @@ if(BUILD_TESTING)
         NAME stage0.check.returned-slice
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/returned-slice.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/returned-slice.fn
             -DCODE=FDN2063
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5302,7 +5316,7 @@ if(BUILD_TESTING)
         NAME stage0.check.string-index
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/string-index.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/string-index.fn
             -DCODE=FDN2084
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5310,7 +5324,7 @@ if(BUILD_TESTING)
         NAME stage0.check.negative-index
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/negative-index.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/negative-index.fn
             -DCODE=FDN2005
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5318,7 +5332,7 @@ if(BUILD_TESTING)
         NAME stage0.check.array-length-overflow
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/array-length-overflow.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/array-length-overflow.fn
             -DCODE=FDN1080
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5326,7 +5340,7 @@ if(BUILD_TESTING)
         NAME stage0.check.recursive-array
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/recursive-array.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/recursive-array.fn
             -DCODE=FDN2023
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5334,14 +5348,14 @@ if(BUILD_TESTING)
         NAME stage0.check.invalid-utf8
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/invalid-utf8.fdn
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/invalid-utf8.fn
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-invalid-utf8.cmake
     )
     add_test(
         NAME stage0.check.unhandled-result
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/unhandled-result.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/unhandled-result.fn
             -DCODE=FDN2052
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5349,7 +5363,7 @@ if(BUILD_TESTING)
         NAME stage0.check.discarded-result-expression
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/discarded-result-expression.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/discarded-result-expression.fn
             -DCODE=FDN2051
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5359,7 +5373,7 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DC_COMPILER=${CMAKE_C_COMPILER}
             -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/panic-trace.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/panic-trace.fn
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/panic-trace.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/panic-trace
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
@@ -5370,7 +5384,7 @@ if(BUILD_TESTING)
         NAME stage0.check.generic-inference
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/generic-inference.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/generic-inference.fn
             -DCODE=FDN2045
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5378,7 +5392,7 @@ if(BUILD_TESTING)
         NAME stage0.run.divide-zero
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/divide-zero.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/divide-zero.fn
             -DPATTERN=division.by.zero
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
@@ -5386,7 +5400,7 @@ if(BUILD_TESTING)
         NAME stage0.run.overflow
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/overflow.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/overflow.fn
             -DPATTERN=i32.overflow
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
@@ -5394,7 +5408,7 @@ if(BUILD_TESTING)
         NAME stage0.run.u64-overflow
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/u64-overflow.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/u64-overflow.fn
             -DPATTERN=u64.overflow
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
@@ -5402,7 +5416,7 @@ if(BUILD_TESTING)
         NAME stage0.run.u64-underflow
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/u64-underflow.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/u64-underflow.fn
             -DPATTERN=u64.overflow
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
@@ -5410,7 +5424,7 @@ if(BUILD_TESTING)
         NAME stage0.run.remainder-zero
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/remainder-zero.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/remainder-zero.fn
             -DPATTERN=remainder.by.zero
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
@@ -5418,7 +5432,7 @@ if(BUILD_TESTING)
         NAME stage0.run.subtract-overflow
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/subtract-overflow.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/subtract-overflow.fn
             -DPATTERN=i32.overflow
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
@@ -5426,7 +5440,7 @@ if(BUILD_TESTING)
         NAME stage0.run.multiply-overflow
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/multiply-overflow.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/multiply-overflow.fn
             -DPATTERN=i32.overflow
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
@@ -5434,7 +5448,7 @@ if(BUILD_TESTING)
         NAME stage0.run.negate-overflow
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/negate-overflow.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/negate-overflow.fn
             -DPATTERN=i32.overflow
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
@@ -5442,7 +5456,7 @@ if(BUILD_TESTING)
         NAME stage0.run.i8-overflow
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/i8-overflow.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/i8-overflow.fn
             -DPATTERN=i8.overflow
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
@@ -5450,7 +5464,7 @@ if(BUILD_TESTING)
         NAME stage0.run.i64-divide-overflow
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/i64-divide-overflow.fdn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/i64-divide-overflow.fn
             -DPATTERN=i64.overflow
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
@@ -5481,7 +5495,7 @@ if(BUILD_TESTING)
             NAME stage0.check.${owned_place_name}
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${owned_place_name}.fdn
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${owned_place_name}.fn
                 -DCODE=${owned_place_code}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
         )

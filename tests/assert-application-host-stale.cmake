@@ -7,7 +7,7 @@ file(REMOVE_RECURSE "${PROJECT}")
 file(COPY "${SOURCE}/" DESTINATION "${PROJECT}")
 file(REMOVE "${GENERATED}")
 
-set(application "${PROJECT}/src/main.fdn")
+set(application "${PROJECT}/src/main.fn")
 file(READ "${application}" source)
 string(REPLACE
     "@web.Query(\"limit\") limit i32,"

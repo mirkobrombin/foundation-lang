@@ -117,7 +117,7 @@ builtins for operations that cannot yet be expressed, but every builtin must hav
 - conformance tests shared by every supported compiler implementation.
 
 The bootstrap binary currently receives the standard-library source root at its own build time and
-adds every sorted `.fdn` file to a project. This makes official packages available without copying
+adds every sorted `.fn` file to a project. This makes official packages available without copying
 them into examples while preserving their Foundation implementation. It is temporary: the product
 toolchain must locate its installed standard library and resolve external packages through versioned
 manifests and a lock file.

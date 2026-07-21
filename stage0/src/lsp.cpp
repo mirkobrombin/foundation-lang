@@ -156,7 +156,7 @@ constexpr std::array builtinEditorInfos{
 }
 
 [[nodiscard]] std::string builtinDefinitionUri(const BuiltinEditorInfo &builtin) {
-    return "foundation-builtin://foundation/" + std::string(builtin.name) + ".fdn";
+    return "foundation-builtin://foundation/" + std::string(builtin.name) + ".fn";
 }
 
 [[nodiscard]] std::string builtinVirtualDocument(const BuiltinEditorInfo &builtin) {
@@ -2800,7 +2800,7 @@ class LanguageServer {
         }
         auto target = symbol;
         const auto &definitionSource = analysis->sources[target->definition.source];
-        if (definitionSource.path.ends_with(".foundation.generated.fdn") &&
+        if (definitionSource.path.ends_with(".foundation.generated.fn") &&
             target->id.kind == LanguageSymbolKind::Method &&
             target->id.owner < analysis->program.functions.size()) {
             const auto &owner = analysis->program.functions[target->id.owner].ownerType;

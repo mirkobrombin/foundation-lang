@@ -35,7 +35,7 @@ bool projectSource(const ProjectAnalysis &analysis, std::size_t source,
         return false;
     }
     const auto &input = analysis.sources[source];
-    if (input.path.ends_with(".foundation.generated.fdn") || generatedSource(input.contents)) {
+    if (input.path.ends_with(".foundation.generated.fn") || generatedSource(input.contents)) {
         return false;
     }
     if (!projectSources.empty()) {

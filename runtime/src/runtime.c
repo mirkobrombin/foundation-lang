@@ -2164,7 +2164,7 @@ static int32_t fdn_posix_write_private_text_atomic(const char *path,
                                                    const fdn_string *value) {
     char *directory = fdn_posix_parent_path(path);
     const size_t directory_length = strlen(directory);
-    static const char suffix[] = "/.fdn.XXXXXX";
+    static const char suffix[] = "/.fn.XXXXXX";
     char *temporary;
     int file;
     size_t offset = 0;

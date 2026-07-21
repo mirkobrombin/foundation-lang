@@ -14,7 +14,7 @@ endif()
 if(NOT error MATCHES "foundation panic: allocation failed")
     message(FATAL_ERROR "allocation panic message is missing:\n${error}")
 endif()
-if(NOT error MATCHES "at main.allocate \\(allocation.fdn:9:5\\)")
+if(NOT error MATCHES "at main.allocate \\(allocation.fn:9:5\\)")
     message(FATAL_ERROR "allocation panic lost its Foundation location:\n${error}")
 endif()
 

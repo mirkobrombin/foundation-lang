@@ -1,7 +1,7 @@
 # Foundation Lang for VS Code
 
-This extension adds `.fdn` syntax highlighting, language-aware editor pairs, snippets, and
-completions for declarations in the current document.
+This extension adds `.fn` syntax highlighting, language-aware editor pairs, snippets, and
+completions for declarations in the current project.
 
 ## Development
 

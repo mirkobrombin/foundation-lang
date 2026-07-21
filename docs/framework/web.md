@@ -237,7 +237,7 @@ constructor failures, and zero live allocations. The runtime task fixture proves
 forwarding across the adapter's nested synchronous wait. The
 `application-host-web-middleware` fixture proves global, nested group, and route ordering plus
 global handling of an unmatched route. The
-lower-level `web-server.fdn` and `web-routing.fdn` fixtures cover manual handlers, precedence,
+lower-level `web-server.fn` and `web-routing.fn` fixtures cover manual handlers, precedence,
 method backtracking, integer, alpha, and portable regex constraints, catch-all capture, 404/405
 selection, and registration failures.
 

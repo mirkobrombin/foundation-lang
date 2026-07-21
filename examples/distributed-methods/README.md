@@ -1,18 +1,16 @@
 # Distributed methods example
 
-This project keeps the `Profile` contract, one implementing `User` type, its constructor, and its
-methods in separate files within the owning package. It is the executable fixture for contract
-conformance, method aggregation, and compiler-backed editor features.
+This project splits one `User` type across the files that own its declaration, constructor, and
+methods. The type still implements `Profile` as a single composite declaration, which makes the
+example useful for both contract checks and the editor's cross-file view.
 
-Open `app/src/main.fdn`, then try:
+Open `app/src/main.fn`, then try:
 
-- Hover `New`, `Rename`, `AddScore`, and `User` for declarations and documentation.
-- Place the cursor inside a call to see the active parameter and its documentation.
-- Type `user.` for fields and methods with documented completion items.
-- Ctrl+click a method to open the source file that owns it.
-- Open Type Hierarchy on `Profile` or Go to Implementations to reach `User`.
-- Run `Foundation: Peek Composite Type` on `User` to browse and edit every source declaration
-  without leaving the current editor.
+- Hover a declaration or stop inside a call to inspect its signature and documentation.
+- Type `user.` to complete fields and methods, then follow a method to the file that owns it.
+- Open Type Hierarchy on `Profile` to reach `User`.
+- Run `Foundation: Peek Composite Type` on `User` to browse and edit every contributing source
+  file in one view.
 
 ```sh
 foundationc package verify examples/distributed-methods/app

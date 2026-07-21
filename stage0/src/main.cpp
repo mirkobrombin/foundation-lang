@@ -24,7 +24,7 @@ void printUsage(std::ostream &output) {
            << "  foundationc emit-app-plan <source-or-project> -o <output.json>\n"
            << "  foundationc emit-openapi <source-or-project> -o <output.json>"
               " [--title <title>] [--version <version>]\n"
-           << "  foundationc emit-app-host <source-or-project> -o <output.fdn>\n"
+           << "  foundationc emit-app-host <source-or-project> -o <output.fn>\n"
            << "  foundationc build <source-or-project> -o <executable> [--native <input>]...\n"
            << "  foundationc run <source-or-project> [--native <input>]... [-- <argument>...]\n"
            << "  foundationc test <source-or-project> [--native <input>]...\n"

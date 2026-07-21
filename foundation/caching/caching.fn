@@ -1,0 +1,1328 @@
+package foundation.caching
+
+import std.bytes
+import std.collections
+import std.text
+import std.time
+
+// Reports that a cache operation could not complete.
+enum Error {
+    Closed
+    Cancelled
+    InvalidTTL
+}
+
+// Reports invalid in-memory cache construction.
+enum ConfigurationError {
+    InvalidTTL
+    InvalidMaxEntries
+}
+
+// Defines expiry and capacity defaults for an in-memory cache.
+struct Policy {
+    DefaultTTL time.Duration = time.Zero()
+    MaxEntries i32 = 10000
+}
+
+// Describes a typed cache with explicit ownership at every value boundary.
+contract Cache<T, E> {
+    fn Get(self, $key String) Task<Result<Option<T>, E>>
+    fn Set(
+        self,
+        $key String,
+        $value T,
+        ttl time.Duration
+    ) Task<Result<void, E>>
+    fn Invalidate(self, $key String) Task<Result<void, E>>
+}
+
+// Describes a cache backend that stores independent owned byte sequences.
+contract DistributedCache<E> {
+    // Creates an independently owned handle to the same backend.
+    fn Fork(self) own DistributedCache<E>
+    fn Get(
+        self,
+        $key String
+    ) Task<Result<Option<own bytes.Bytes>, E>>
+    fn Set(
+        self,
+        $key String,
+        $value own bytes.Bytes,
+        ttl time.Duration
+    ) Task<Result<void, E>>
+    fn Delete(self, $key String) Task<Result<void, E>>
+}
+
+// Preserves backend and codec failures without flattening either domain.
+enum BridgeError<B, C> {
+    Transport(error Error)
+    Backend(error B)
+    Encode(error C)
+    Decode(error C)
+}
+
+struct entry<T> {
+    key String
+    value T
+    written time.MonotonicInstant
+    ttl i64
+    sequence u64
+}
+
+struct state<T> {
+    entries own collections.List<entry<T>>
+    cloneValue fn(T) T
+    defaultTTL i64
+    maxEntries i32
+    nextSequence u64
+}
+
+struct setPayload<T> {
+    key String
+    value T
+    ttl i64
+}
+
+enum operation<T> {
+    Get(key String)
+    Set(value setPayload<T>)
+    Invalidate(key String)
+    Len
+}
+
+enum response<T> {
+    Done
+    MaybeValue(value Option<T>)
+    Length(value i32)
+}
+
+struct request<T> {
+    operation operation<T>
+    reply Sender<response<T>>
+}
+
+// Sends operations to one cache owner task.
+struct Handle<T> implements Cache<T, Error> {
+    sender Sender<request<T>>
+
+    // Creates another independently owned handle to the same cache.
+    fn Clone(self) Handle<T> {
+        Handle<T> { sender = self.sender.clone() }
+    }
+
+    // Returns an explicitly cloned value when the key is present and live.
+    fn Get(self, $key String) Task<Result<Option<T>, Error>> {
+        spawn get<T>(self.sender.clone(), $key)
+    }
+
+    // Stores one value with a per-write TTL. Zero selects the policy default.
+    fn Set(
+        self,
+        $key String,
+        $value T,
+        ttl time.Duration
+    ) Task<Result<void, Error>> {
+        spawn set<T>(
+            self.sender.clone(),
+            $key,
+            $value,
+            ttl.Nanoseconds()
+        )
+    }
+
+    // Removes a key. Missing keys are successful no-ops.
+    fn Invalidate(self, $key String) Task<Result<void, Error>> {
+        spawn invalidate<T>(self.sender.clone(), $key)
+    }
+
+    // Returns the number of live entries after purging expired values.
+    fn Len(self) Task<Result<i32, Error>> {
+        spawn length<T>(self.sender.clone())
+    }
+}
+
+// Owns one bounded task-safe cache and closes it deterministically when dropped.
+struct InMemory<T> implements Cache<T, Error> {
+    actor Task<void>
+    handle Handle<T>
+
+    fn Handle(self) Handle<T> {
+        self.handle.Clone()
+    }
+
+    fn Get(self, $key String) Task<Result<Option<T>, Error>> {
+        self.handle.Get($key)
+    }
+
+    fn Set(
+        self,
+        $key String,
+        $value T,
+        ttl time.Duration
+    ) Task<Result<void, Error>> {
+        self.handle.Set($key, $value, ttl)
+    }
+
+    fn Invalidate(self, $key String) Task<Result<void, Error>> {
+        self.handle.Invalidate($key)
+    }
+
+    fn Len(self) Task<Result<i32, Error>> {
+        self.handle.Len()
+    }
+}
+
+// Creates an in-memory cache with the default limits.
+fn New<T>($cloneValue fn(T) T) own InMemory<T> {
+    newCache<T>($cloneValue, 0, 10000)
+}
+
+// Creates an in-memory cache with validated expiry and capacity policy.
+fn NewWith<T>(
+    $cloneValue fn(T) T,
+    policy Policy
+) Result<own InMemory<T>, ConfigurationError> {
+    if policy.DefaultTTL.IsNegative() {
+        return .Err(.InvalidTTL)
+    }
+    if policy.MaxEntries < 0 {
+        return .Err(.InvalidMaxEntries)
+    }
+    .Ok(newCache<T>(
+        $cloneValue,
+        policy.DefaultTTL.Nanoseconds(),
+        policy.MaxEntries
+    ))
+}
+
+fn newCache<T>(
+    $cloneValue fn(T) T,
+    defaultTTL i64,
+    maxEntries i32
+) own InMemory<T> {
+    const Channel { sender receiver } = channel<request<T>>(64)
+    const initial = own state<T> {
+        entries = collections.NewList<entry<T>>()
+        cloneValue = cloneValue
+        defaultTTL = defaultTTL
+        maxEntries = maxEntries
+        nextSequence = 0
+    }
+    const actor = spawn serve<T>($receiver, $initial)
+    own InMemory<T> {
+        actor = actor
+        handle = Handle<T> { sender = sender }
+    }
+}
+
+task serve<T>(
+    $receiver Receiver<request<T>>,
+    $initial own state<T>
+) void {
+    var inbox = receiver
+    var current = initial
+    while true {
+        select {
+            const incoming = inbox.receive(): {
+                const request { operation reply } = incoming
+                const result = apply<T>(&current, $operation)
+                discard reply.send($result)
+            }
+            else error: {
+                discard error
+                return
+            }
+        }
+    }
+}
+
+fn apply<T>(&current state<T>, $operation operation<T>) response<T> {
+    purgeExpired<T>(&current)
+    match operation {
+        Get(key): .MaybeValue(value = getValue<T>(&current, $key))
+        Set(value): applySet<T>(&current, $value)
+        Invalidate(key): applyInvalidate<T>(&current, $key)
+        Len: .Length(value = current.entries.Len())
+    }
+}
+
+fn applySet<T>(
+    &current state<T>,
+    $payload setPayload<T>
+) response<T> {
+    const setPayload { key value ttl } = payload
+    const selectedTTL = effectiveTTL(current, ttl)
+    storeValue<T>(&current, $key, $value, selectedTTL)
+    .Done
+}
+
+fn applyInvalidate<T>(&current state<T>, $key String) response<T> {
+    removeKey<T>(&current, $key)
+    .Done
+}
+
+task get<T>(
+    $requests Sender<request<T>>,
+    $key String
+) Result<Option<T>, Error> {
+    const result = spawn sendRequest<T>($requests, .Get(key = key))
+    const received = $result.wait()
+    mapMaybeValue<T>($received)
+}
+
+task set<T>(
+    $requests Sender<request<T>>,
+    $key String,
+    $value T,
+    ttl i64
+) Result<void, Error> {
+    if ttl < 0 {
+        discard requests
+        discard key
+        discard value
+        return .Err(.InvalidTTL)
+    }
+    const result = spawn sendRequest<T>($requests, .Set(value = setPayload<T> {
+        key = key
+        value = value
+        ttl = ttl
+    }))
+    const received = $result.wait()
+    mapDone<T>($received)
+}
+
+task invalidate<T>(
+    $requests Sender<request<T>>,
+    $key String
+) Result<void, Error> {
+    const result = spawn sendRequest<T>($requests, .Invalidate(key = key))
+    const received = $result.wait()
+    mapDone<T>($received)
+}
+
+task length<T>($requests Sender<request<T>>) Result<i32, Error> {
+    const result = spawn sendRequest<T>($requests, .Len)
+    const received = $result.wait()
+    mapLength<T>($received)
+}
+
+task sendRequest<T>(
+    $requests Sender<request<T>>,
+    $operation operation<T>
+) Result<response<T>, Error> {
+    const Channel { sender receiver } = channel<response<T>>(1)
+    select {
+        requests.send(request<T> {
+            operation = operation
+            reply = sender
+        }): {
+            const received = receiver.receive()
+            return match received {
+                Ok(value): .Ok(value)
+                Err(error): .Err(mapChannelError(error))
+            }
+        }
+        else error: return .Err(mapChannelError(error))
+    }
+}
+
+fn mapChannelError(error ChannelError) Error {
+    match error {
+        Closed: .Closed
+        Cancelled: .Cancelled
+        Timeout: .Cancelled
+    }
+}
+
+fn mapDone<T>(
+    $value Result<response<T>, Error>
+) Result<void, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): requireDone<T>($response)
+    }
+}
+
+fn requireDone<T>($value response<T>) Result<void, Error> {
+    match value {
+        Done: .Ok
+        MaybeValue(value): unexpectedResponse<Option<T>>($value)
+        Length(value): unexpectedResponse<i32>($value)
+    }
+}
+
+fn mapMaybeValue<T>(
+    $value Result<response<T>, Error>
+) Result<Option<T>, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): requireMaybeValue<T>($response)
+    }
+}
+
+fn requireMaybeValue<T>(
+    $value response<T>
+) Result<Option<T>, Error> {
+    match value {
+        MaybeValue(found): .Ok(found)
+        Done: unexpectedDone()
+        Length(value): unexpectedResponse<i32>($value)
+    }
+}
+
+fn mapLength<T>(
+    $value Result<response<T>, Error>
+) Result<i32, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): requireLength<T>($response)
+    }
+}
+
+fn requireLength<T>($value response<T>) Result<i32, Error> {
+    match value {
+        Length(found): .Ok(found)
+        Done: unexpectedDone()
+        MaybeValue(value): unexpectedResponse<Option<T>>($value)
+    }
+}
+
+fn unexpectedResponse<T>($value T) never {
+    discard value
+    panic("caching response invariant failed")
+}
+
+fn unexpectedDone() never {
+    panic("caching response invariant failed")
+}
+
+fn effectiveTTL<T>(current state<T>, ttl i64) i64 {
+    ttl if ttl > 0 else current.defaultTTL
+}
+
+fn storeValue<T>(
+    &current state<T>,
+    $key String,
+    $value T,
+    ttl i64
+) void {
+    removeKey<T>(&current, text.Copy(key))
+    if current.maxEntries > 0 && current.entries.Len() >= current.maxEntries {
+        evictOldest<T>(&current)
+    }
+    const sequence = current.nextSequence
+    current.nextSequence = current.nextSequence + 1
+    current.entries.PushFront(entry<T> {
+        key = key
+        value = value
+        written = time.MonotonicNow()
+        ttl = ttl
+        sequence = sequence
+    })
+}
+
+fn getValue<T>(&current state<T>, $key String) Option<T> {
+    var source = replace current.entries with collections.NewList<entry<T>>()
+    var restored = collections.NewList<entry<T>>()
+    var result Option<T> = .None
+    while !source.IsEmpty() {
+        const item = requiredEntry<T>(source.PopFront())
+        if item.key == key {
+            result = .Some(cloneValue<T>(current.cloneValue, item.value))
+        }
+        restored.PushFront($item)
+    }
+    current.entries = restored
+    discard key
+    result
+}
+
+fn removeKey<T>(&current state<T>, $key String) void {
+    var source = replace current.entries with collections.NewList<entry<T>>()
+    var restored = collections.NewList<entry<T>>()
+    while !source.IsEmpty() {
+        const item = requiredEntry<T>(source.PopFront())
+        if item.key == key {
+            discard item
+        } else {
+            restored.PushFront($item)
+        }
+    }
+    current.entries = restored
+    discard key
+}
+
+fn purgeExpired<T>(&current state<T>) void {
+    const now = time.MonotonicNow()
+    var source = replace current.entries with collections.NewList<entry<T>>()
+    var restored = collections.NewList<entry<T>>()
+    while !source.IsEmpty() {
+        const item = requiredEntry<T>(source.PopFront())
+        if isExpired<T>(item, now) {
+            discard item
+        } else {
+            restored.PushFront($item)
+        }
+    }
+    current.entries = restored
+}
+
+fn isExpired<T>(item entry<T>, now time.MonotonicInstant) bool {
+    if item.ttl <= 0 {
+        return false
+    }
+    const elapsed = now.Since(item.written) else error {
+        discard error
+        return false
+    }
+    elapsed.Nanoseconds() >= item.ttl
+}
+
+fn evictOldest<T>(&current state<T>) void {
+    const oldest = oldestSequence<T>(&current)
+    var source = replace current.entries with collections.NewList<entry<T>>()
+    var restored = collections.NewList<entry<T>>()
+    var removed = false
+    while !source.IsEmpty() {
+        const item = requiredEntry<T>(source.PopFront())
+        if !removed && item.sequence == oldest {
+            discard item
+            removed = true
+        } else {
+            restored.PushFront($item)
+        }
+    }
+    current.entries = restored
+}
+
+fn oldestSequence<T>(&current state<T>) u64 {
+    var source = replace current.entries with collections.NewList<entry<T>>()
+    var restored = collections.NewList<entry<T>>()
+    var oldest u64 = 0
+    var selected = false
+    while !source.IsEmpty() {
+        const item = requiredEntry<T>(source.PopFront())
+        if !selected || item.sequence < oldest {
+            oldest = item.sequence
+            selected = true
+        }
+        restored.PushFront($item)
+    }
+    current.entries = restored
+    oldest
+}
+
+fn cloneValue<T>(clone fn(T) T, value T) T {
+    clone(value)
+}
+
+fn requiredEntry<T>($value Option<entry<T>>) entry<T> {
+    match value {
+        None: missingEntry<T>()
+        Some(item): item
+    }
+}
+
+fn missingEntry<T>() entry<T> {
+    panic("caching entry invariant failed")
+}
+
+struct byteEntry {
+    key String
+    value own bytes.Bytes
+    written time.MonotonicInstant
+    ttl i64
+    sequence u64
+}
+
+struct byteState {
+    entries own collections.List<byteEntry>
+    defaultTTL i64
+    maxEntries i32
+    nextSequence u64
+}
+
+struct byteSetPayload {
+    key String
+    value own bytes.Bytes
+    ttl i64
+}
+
+enum byteOperation {
+    Get(key String)
+    Set(value byteSetPayload)
+    Delete(key String)
+    Len
+}
+
+enum byteResponse {
+    Done
+    MaybeValue(value Option<own bytes.Bytes>)
+    Length(value i32)
+}
+
+struct byteRequest {
+    operation byteOperation
+    reply Sender<byteResponse>
+}
+
+// Sends byte-cache operations to one owner task.
+struct DistributedHandle implements DistributedCache<Error> {
+    sender Sender<byteRequest>
+
+    fn Clone(self) DistributedHandle {
+        DistributedHandle { sender = self.sender.clone() }
+    }
+
+    fn Fork(self) own DistributedCache<Error> {
+        own DistributedHandle { sender = self.sender.clone() }
+    }
+
+    fn Get(
+        self,
+        $key String
+    ) Task<Result<Option<own bytes.Bytes>, Error>> {
+        spawn getBytes(self.sender.clone(), $key)
+    }
+
+    fn Set(
+        self,
+        $key String,
+        $value own bytes.Bytes,
+        ttl time.Duration
+    ) Task<Result<void, Error>> {
+        spawn setBytes(
+            self.sender.clone(),
+            $key,
+            $value,
+            ttl.Nanoseconds()
+        )
+    }
+
+    fn Delete(self, $key String) Task<Result<void, Error>> {
+        spawn deleteBytes(self.sender.clone(), $key)
+    }
+
+    fn Len(self) Task<Result<i32, Error>> {
+        spawn byteLength(self.sender.clone())
+    }
+}
+
+// Owns a bounded task-safe byte cache for local distributed-backend use.
+struct DistributedInMemory implements DistributedCache<Error> {
+    actor Task<void>
+    handle DistributedHandle
+
+    fn Handle(self) DistributedHandle {
+        self.handle.Clone()
+    }
+
+    fn Fork(self) own DistributedCache<Error> {
+        self.handle.Fork()
+    }
+
+    fn Get(
+        self,
+        $key String
+    ) Task<Result<Option<own bytes.Bytes>, Error>> {
+        self.handle.Get($key)
+    }
+
+    fn Set(
+        self,
+        $key String,
+        $value own bytes.Bytes,
+        ttl time.Duration
+    ) Task<Result<void, Error>> {
+        self.handle.Set($key, $value, ttl)
+    }
+
+    fn Delete(self, $key String) Task<Result<void, Error>> {
+        self.handle.Delete($key)
+    }
+
+    fn Len(self) Task<Result<i32, Error>> {
+        self.handle.Len()
+    }
+}
+
+// Creates an in-memory byte backend with the default limits.
+fn NewDistributed() own DistributedInMemory {
+    newDistributedCache(0, 10000)
+}
+
+// Creates an in-memory byte backend with validated policy.
+fn NewDistributedWith(
+    policy Policy
+) Result<own DistributedInMemory, ConfigurationError> {
+    if policy.DefaultTTL.IsNegative() {
+        return .Err(.InvalidTTL)
+    }
+    if policy.MaxEntries < 0 {
+        return .Err(.InvalidMaxEntries)
+    }
+    .Ok(newDistributedCache(
+        policy.DefaultTTL.Nanoseconds(),
+        policy.MaxEntries
+    ))
+}
+
+fn newDistributedCache(
+    defaultTTL i64,
+    maxEntries i32
+) own DistributedInMemory {
+    const Channel { sender receiver } = channel<byteRequest>(64)
+    const initial = own byteState {
+        entries = collections.NewList<byteEntry>()
+        defaultTTL = defaultTTL
+        maxEntries = maxEntries
+        nextSequence = 0
+    }
+    const actor = spawn serveBytes($receiver, $initial)
+    own DistributedInMemory {
+        actor = actor
+        handle = DistributedHandle { sender = sender }
+    }
+}
+
+task serveBytes(
+    $receiver Receiver<byteRequest>,
+    $initial own byteState
+) void {
+    var inbox = receiver
+    var current = initial
+    while true {
+        select {
+            const incoming = inbox.receive(): {
+                const byteRequest { operation reply } = incoming
+                const result = applyBytes(&current, $operation)
+                discard reply.send($result)
+            }
+            else error: {
+                discard error
+                return
+            }
+        }
+    }
+}
+
+fn applyBytes(
+    &current byteState,
+    $operation byteOperation
+) byteResponse {
+    purgeExpiredBytes(&current)
+    match operation {
+        Get(key): .MaybeValue(value = getByteValue(&current, $key))
+        Set(value): applyByteSet(&current, $value)
+        Delete(key): applyByteDelete(&current, $key)
+        Len: .Length(value = current.entries.Len())
+    }
+}
+
+fn applyByteSet(
+    &current byteState,
+    $payload byteSetPayload
+) byteResponse {
+    const byteSetPayload { key value ttl } = payload
+    const selectedTTL = byteEffectiveTTL(current, ttl)
+    storeByteValue(&current, $key, $value, selectedTTL)
+    .Done
+}
+
+fn applyByteDelete(
+    &current byteState,
+    $key String
+) byteResponse {
+    removeByteKey(&current, $key)
+    .Done
+}
+
+task getBytes(
+    $requests Sender<byteRequest>,
+    $key String
+) Result<Option<own bytes.Bytes>, Error> {
+    const result = spawn sendByteRequest($requests, .Get(key = key))
+    const received = $result.wait()
+    mapByteMaybeValue($received)
+}
+
+task setBytes(
+    $requests Sender<byteRequest>,
+    $key String,
+    $value own bytes.Bytes,
+    ttl i64
+) Result<void, Error> {
+    if ttl < 0 {
+        discard requests
+        discard key
+        discard value
+        return .Err(.InvalidTTL)
+    }
+    const result = spawn sendByteRequest($requests, .Set(value = byteSetPayload {
+        key = key
+        value = value
+        ttl = ttl
+    }))
+    const received = $result.wait()
+    mapByteDone($received)
+}
+
+task deleteBytes(
+    $requests Sender<byteRequest>,
+    $key String
+) Result<void, Error> {
+    const result = spawn sendByteRequest($requests, .Delete(key = key))
+    const received = $result.wait()
+    mapByteDone($received)
+}
+
+task byteLength(
+    $requests Sender<byteRequest>
+) Result<i32, Error> {
+    const result = spawn sendByteRequest($requests, .Len)
+    const received = $result.wait()
+    mapByteLength($received)
+}
+
+task sendByteRequest(
+    $requests Sender<byteRequest>,
+    $operation byteOperation
+) Result<byteResponse, Error> {
+    const Channel { sender receiver } = channel<byteResponse>(1)
+    select {
+        requests.send(byteRequest {
+            operation = operation
+            reply = sender
+        }): {
+            const received = receiver.receive()
+            return match received {
+                Ok(value): .Ok(value)
+                Err(error): .Err(mapChannelError(error))
+            }
+        }
+        else error: return .Err(mapChannelError(error))
+    }
+}
+
+fn mapByteDone(
+    $value Result<byteResponse, Error>
+) Result<void, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): requireByteDone($response)
+    }
+}
+
+fn requireByteDone(
+    $value byteResponse
+) Result<void, Error> {
+    match value {
+        Done: .Ok
+        MaybeValue(value): unexpectedResponse<Option<own bytes.Bytes>>($value)
+        Length(value): unexpectedResponse<i32>($value)
+    }
+}
+
+fn mapByteMaybeValue(
+    $value Result<byteResponse, Error>
+) Result<Option<own bytes.Bytes>, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): requireByteMaybeValue($response)
+    }
+}
+
+fn requireByteMaybeValue(
+    $value byteResponse
+) Result<Option<own bytes.Bytes>, Error> {
+    match value {
+        MaybeValue(found): .Ok(found)
+        Done: unexpectedDone()
+        Length(value): unexpectedResponse<i32>($value)
+    }
+}
+
+fn mapByteLength(
+    $value Result<byteResponse, Error>
+) Result<i32, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): requireByteLength($response)
+    }
+}
+
+fn requireByteLength(
+    $value byteResponse
+) Result<i32, Error> {
+    match value {
+        Length(found): .Ok(found)
+        Done: unexpectedDone()
+        MaybeValue(value): unexpectedResponse<Option<own bytes.Bytes>>($value)
+    }
+}
+
+fn byteEffectiveTTL(current byteState, ttl i64) i64 {
+    ttl if ttl > 0 else current.defaultTTL
+}
+
+fn storeByteValue(
+    &current byteState,
+    $key String,
+    $value own bytes.Bytes,
+    ttl i64
+) void {
+    removeByteKey(&current, text.Copy(key))
+    if current.maxEntries > 0 && current.entries.Len() >= current.maxEntries {
+        evictOldestByte(&current)
+    }
+    const sequence = current.nextSequence
+    current.nextSequence = current.nextSequence + 1
+    current.entries.PushFront(byteEntry {
+        key = key
+        value = value
+        written = time.MonotonicNow()
+        ttl = ttl
+        sequence = sequence
+    })
+}
+
+fn getByteValue(
+    &current byteState,
+    $key String
+) Option<own bytes.Bytes> {
+    var source = replace current.entries with collections.NewList<byteEntry>()
+    var restored = collections.NewList<byteEntry>()
+    var result Option<own bytes.Bytes> = .None
+    while !source.IsEmpty() {
+        const item = requiredByteEntry(source.PopFront())
+        if item.key == key {
+            result = .Some(copyBytes(item.value))
+        }
+        restored.PushFront($item)
+    }
+    current.entries = restored
+    discard key
+    result
+}
+
+fn copyBytes(value bytes.Bytes) own bytes.Bytes {
+    const copied = value.Copy() else error {
+        discard error
+        panic("caching byte invariant failed")
+    }
+    copied
+}
+
+fn removeByteKey(
+    &current byteState,
+    $key String
+) void {
+    var source = replace current.entries with collections.NewList<byteEntry>()
+    var restored = collections.NewList<byteEntry>()
+    while !source.IsEmpty() {
+        const item = requiredByteEntry(source.PopFront())
+        if item.key == key {
+            discard item
+        } else {
+            restored.PushFront($item)
+        }
+    }
+    current.entries = restored
+    discard key
+}
+
+fn purgeExpiredBytes(&current byteState) void {
+    const now = time.MonotonicNow()
+    var source = replace current.entries with collections.NewList<byteEntry>()
+    var restored = collections.NewList<byteEntry>()
+    while !source.IsEmpty() {
+        const item = requiredByteEntry(source.PopFront())
+        if isByteExpired(item, now) {
+            discard item
+        } else {
+            restored.PushFront($item)
+        }
+    }
+    current.entries = restored
+}
+
+fn isByteExpired(
+    item byteEntry,
+    now time.MonotonicInstant
+) bool {
+    if item.ttl <= 0 {
+        return false
+    }
+    const elapsed = now.Since(item.written) else error {
+        discard error
+        return false
+    }
+    elapsed.Nanoseconds() >= item.ttl
+}
+
+fn evictOldestByte(&current byteState) void {
+    const oldest = oldestByteSequence(&current)
+    var source = replace current.entries with collections.NewList<byteEntry>()
+    var restored = collections.NewList<byteEntry>()
+    var removed = false
+    while !source.IsEmpty() {
+        const item = requiredByteEntry(source.PopFront())
+        if !removed && item.sequence == oldest {
+            discard item
+            removed = true
+        } else {
+            restored.PushFront($item)
+        }
+    }
+    current.entries = restored
+}
+
+fn oldestByteSequence(&current byteState) u64 {
+    var source = replace current.entries with collections.NewList<byteEntry>()
+    var restored = collections.NewList<byteEntry>()
+    var oldest u64 = 0
+    var selected = false
+    while !source.IsEmpty() {
+        const item = requiredByteEntry(source.PopFront())
+        if !selected || item.sequence < oldest {
+            oldest = item.sequence
+            selected = true
+        }
+        restored.PushFront($item)
+    }
+    current.entries = restored
+    oldest
+}
+
+fn requiredByteEntry(
+    $value Option<byteEntry>
+) byteEntry {
+    match value {
+        None: missingByteEntry()
+        Some(item): item
+    }
+}
+
+fn missingByteEntry() byteEntry {
+    panic("caching byte entry invariant failed")
+}
+
+struct bridgeSetPayload<T> {
+    key String
+    value T
+    ttl time.Duration
+}
+
+enum bridgeOperation<T> {
+    Get(key String)
+    Set(value bridgeSetPayload<T>)
+    Invalidate(key String)
+}
+
+enum bridgeResponse<T, B, C> {
+    Done(value Result<void, BridgeError<B, C>>)
+    MaybeValue(value Result<Option<T>, BridgeError<B, C>>)
+}
+
+struct bridgeRequest<T, B, C> {
+    operation bridgeOperation<T>
+    reply Sender<bridgeResponse<T, B, C>>
+}
+
+struct bridgeState<T, B, C> {
+    backend own DistributedCache<B>
+    encode transferable fn(T) Result<own bytes.Bytes, C>
+    decode transferable fn(bytes.Bytes) Result<T, C>
+}
+
+// Sends typed operations to one distributed bridge owner task.
+struct BridgeHandle<T, B, C> implements Cache<T, BridgeError<B, C>> {
+    sender Sender<bridgeRequest<T, B, C>>
+
+    fn Clone(self) BridgeHandle<T, B, C> {
+        BridgeHandle<T, B, C> { sender = self.sender.clone() }
+    }
+
+    fn Get(
+        self,
+        $key String
+    ) Task<Result<Option<T>, BridgeError<B, C>>> {
+        spawn bridgeHandleGet<T, B, C>(self.sender.clone(), $key)
+    }
+
+    fn Set(
+        self,
+        $key String,
+        $value T,
+        ttl time.Duration
+    ) Task<Result<void, BridgeError<B, C>>> {
+        spawn bridgeHandleSet<T, B, C>(
+            self.sender.clone(),
+            $key,
+            $value,
+            ttl
+        )
+    }
+
+    fn Invalidate(
+        self,
+        $key String
+    ) Task<Result<void, BridgeError<B, C>>> {
+        spawn bridgeHandleInvalidate<T, B, C>(self.sender.clone(), $key)
+    }
+}
+
+// Converts typed values to and from a pluggable distributed byte backend.
+struct Bridge<T, B, C> implements Cache<T, BridgeError<B, C>> {
+    actor Task<void>
+    handle BridgeHandle<T, B, C>
+
+    fn Handle(self) BridgeHandle<T, B, C> {
+        self.handle.Clone()
+    }
+
+    fn Get(
+        self,
+        $key String
+    ) Task<Result<Option<T>, BridgeError<B, C>>> {
+        self.handle.Get($key)
+    }
+
+    fn Set(
+        self,
+        $key String,
+        $value T,
+        ttl time.Duration
+    ) Task<Result<void, BridgeError<B, C>>> {
+        self.handle.Set($key, $value, ttl)
+    }
+
+    fn Invalidate(
+        self,
+        $key String
+    ) Task<Result<void, BridgeError<B, C>>> {
+        self.handle.Invalidate($key)
+    }
+}
+
+// Creates a typed bridge over any cloneable distributed byte backend.
+fn NewBridge<T, B, C>(
+    $backend own DistributedCache<B>,
+    $encode transferable fn(T) Result<own bytes.Bytes, C>,
+    $decode transferable fn(bytes.Bytes) Result<T, C>
+) own Bridge<T, B, C> {
+    const Channel { sender receiver } = channel<bridgeRequest<T, B, C>>(64)
+    const initial = own bridgeState<T, B, C> {
+        backend = backend
+        encode = encode
+        decode = decode
+    }
+    const actor = spawn serveBridge<T, B, C>($receiver, $initial)
+    own Bridge<T, B, C> {
+        actor = actor
+        handle = BridgeHandle<T, B, C> { sender = sender }
+    }
+}
+
+task serveBridge<T, B, C>(
+    $receiver Receiver<bridgeRequest<T, B, C>>,
+    $initial own bridgeState<T, B, C>
+) void {
+    var inbox = receiver
+    var current = initial
+    while true {
+        select {
+            const incoming = inbox.receive(): {
+                const bridgeRequest { operation reply } = incoming
+                const result = applyBridge<T, B, C>(&current, $operation)
+                discard reply.send($result)
+            }
+            else error: {
+                discard error
+                return
+            }
+        }
+    }
+}
+
+fn applyBridge<T, B, C>(
+    &current bridgeState<T, B, C>,
+    $operation bridgeOperation<T>
+) bridgeResponse<T, B, C> {
+    match operation {
+        Get(key): .MaybeValue(value = bridgeGetValue<T, B, C>(
+            &current,
+            $key
+        ))
+        Set(value): .Done(value = bridgeSetValue<T, B, C>(
+            &current,
+            $value
+        ))
+        Invalidate(key): .Done(value = bridgeInvalidateValue<T, B, C>(
+            &current,
+            $key
+        ))
+    }
+}
+
+fn bridgeGetValue<T, B, C>(
+    &current bridgeState<T, B, C>,
+    $key String
+) Result<Option<T>, BridgeError<B, C>> {
+    const pending = current.backend.Get($key)
+    const received = $pending.wait()
+    match received {
+        Err(error): .Err(.Backend(error = error))
+        Ok(value): decodeOptional<T, B, C>($value, current.decode)
+    }
+}
+
+fn decodeOptional<T, B, C>(
+    $value Option<own bytes.Bytes>,
+    decode fn(bytes.Bytes) Result<T, C>
+) Result<Option<T>, BridgeError<B, C>> {
+    match value {
+        None: .Ok(.None)
+        Some(encoded): decodePresent<T, B, C>($encoded, decode)
+    }
+}
+
+fn decodePresent<T, B, C>(
+    $value own bytes.Bytes,
+    decode fn(bytes.Bytes) Result<T, C>
+) Result<Option<T>, BridgeError<B, C>> {
+    const decoded = decode(value) else error {
+        discard value
+        return .Err(.Decode(error = error))
+    }
+    discard value
+    .Ok(.Some(decoded))
+}
+
+fn bridgeSetValue<T, B, C>(
+    &current bridgeState<T, B, C>,
+    $payload bridgeSetPayload<T>
+) Result<void, BridgeError<B, C>> {
+    const bridgeSetPayload { key value ttl } = payload
+    const encoded = invokeEncoder<T, C>(current.encode, value) else error {
+        discard key
+        return .Err(.Encode(error = error))
+    }
+    const pending = current.backend.Set($key, $encoded, ttl)
+    const received = $pending.wait()
+    match received {
+        Ok: .Ok
+        Err(error): .Err(.Backend(error = error))
+    }
+}
+
+fn invokeEncoder<T, C>(
+    encode fn(T) Result<own bytes.Bytes, C>,
+    value T
+) Result<own bytes.Bytes, C> {
+    encode(value)
+}
+
+fn bridgeInvalidateValue<T, B, C>(
+    &current bridgeState<T, B, C>,
+    $key String
+) Result<void, BridgeError<B, C>> {
+    const pending = current.backend.Delete($key)
+    const received = $pending.wait()
+    match received {
+        Ok: .Ok
+        Err(error): .Err(.Backend(error = error))
+    }
+}
+
+task bridgeHandleGet<T, B, C>(
+    $requests Sender<bridgeRequest<T, B, C>>,
+    $key String
+) Result<Option<T>, BridgeError<B, C>> {
+    const result = spawn sendBridgeRequest<T, B, C>(
+        $requests,
+        .Get(key = key)
+    )
+    const received = $result.wait()
+    match received {
+        Err(error): .Err(.Transport(error = error))
+        Ok(response): requireBridgeMaybeValue<T, B, C>($response)
+    }
+}
+
+task bridgeHandleSet<T, B, C>(
+    $requests Sender<bridgeRequest<T, B, C>>,
+    $key String,
+    $value T,
+    ttl time.Duration
+) Result<void, BridgeError<B, C>> {
+    const result = spawn sendBridgeRequest<T, B, C>($requests, .Set(
+        value = bridgeSetPayload<T> {
+            key = key
+            value = value
+            ttl = ttl
+        }
+    ))
+    const received = $result.wait()
+    match received {
+        Err(error): .Err(.Transport(error = error))
+        Ok(response): requireBridgeDone<T, B, C>($response)
+    }
+}
+
+task bridgeHandleInvalidate<T, B, C>(
+    $requests Sender<bridgeRequest<T, B, C>>,
+    $key String
+) Result<void, BridgeError<B, C>> {
+    const result = spawn sendBridgeRequest<T, B, C>(
+        $requests,
+        .Invalidate(key = key)
+    )
+    const received = $result.wait()
+    match received {
+        Err(error): .Err(.Transport(error = error))
+        Ok(response): requireBridgeDone<T, B, C>($response)
+    }
+}
+
+task sendBridgeRequest<T, B, C>(
+    $requests Sender<bridgeRequest<T, B, C>>,
+    $operation bridgeOperation<T>
+) Result<bridgeResponse<T, B, C>, Error> {
+    const Channel { sender receiver } = channel<bridgeResponse<T, B, C>>(1)
+    select {
+        requests.send(bridgeRequest<T, B, C> {
+            operation = operation
+            reply = sender
+        }): {
+            const received = receiver.receive()
+            return match received {
+                Ok(value): .Ok(value)
+                Err(error): .Err(mapChannelError(error))
+            }
+        }
+        else error: return .Err(mapChannelError(error))
+    }
+}
+
+fn requireBridgeDone<T, B, C>(
+    $value bridgeResponse<T, B, C>
+) Result<void, BridgeError<B, C>> {
+    match value {
+        Done(result): result
+        MaybeValue(result): unexpectedResponse<
+            Result<Option<T>, BridgeError<B, C>>
+        >($result)
+    }
+}
+
+fn requireBridgeMaybeValue<T, B, C>(
+    $value bridgeResponse<T, B, C>
+) Result<Option<T>, BridgeError<B, C>> {
+    match value {
+        MaybeValue(result): result
+        Done(result): unexpectedResponse<
+            Result<void, BridgeError<B, C>>
+        >($result)
+    }
+}

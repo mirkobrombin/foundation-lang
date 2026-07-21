@@ -38,7 +38,7 @@ test("registers Foundation source files", () => {
         value.language === "foundation");
 
     assert.equal(language.id, "foundation");
-    assert.deepEqual(language.extensions, [".fdn"]);
+    assert.deepEqual(language.extensions, [".fn"]);
     assert.equal(grammar.language, "foundation");
     assert.equal(grammar.scopeName, "source.foundation");
     assert.ok(fs.existsSync(path.join(extensionRoot, grammar.path)));
@@ -115,11 +115,11 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /registerDocumentFormattingEditProvider/);
     assert.match(languageClient, /registerDocumentRangeFormattingEditProvider/);
     assert.match(languageClient, /textDocument\/rangeFormatting/);
-    assert.match(languageClient, /createFileSystemWatcher\("\*\*\/\*\.fdn"\)/);
+    assert.match(languageClient, /createFileSystemWatcher\("\*\*\/\*\.fn"\)/);
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.122.0");
+    assert.equal(manifest.version, "0.123.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -275,13 +275,13 @@ test("renders compiler-provided builtin documents", async () => {
         return { contents: "// Built into the Foundation compiler.\n\nfn print(value String) void\n" };
     };
 
-    const document = await client.builtinDocument({ path: "/print.fdn" });
+    const document = await client.builtinDocument({ path: "/print.fn" });
     assert.equal(document, "// Built into the Foundation compiler.\n\nfn print(value String) void\n");
     assert.deepEqual(requests, [{
         method: "foundation/builtinDocument",
         params: { name: "print" }
     }]);
-    assert.equal(await client.builtinDocument({ path: "/not a builtin.fdn" }), "");
+    assert.equal(await client.builtinDocument({ path: "/not a builtin.fn" }), "");
     assert.equal(requests.length, 1);
 });
 
@@ -296,7 +296,7 @@ test("frames language server messages across stream chunks", () => {
     const second = encodeMessage({
         jsonrpc: "2.0",
         method: "textDocument/publishDiagnostics",
-        params: { uri: "file:///tmp/main.fdn", diagnostics: [] }
+        params: { uri: "file:///tmp/main.fn", diagnostics: [] }
     });
     const stream = Buffer.concat([first, second]);
 
@@ -348,7 +348,7 @@ test("filters empty-test inlay hints independently", async () => {
         }
     ];
     const hints = await client.inlayHints(
-        { uri: { toString: () => "file:///main.fdn" } },
+        { uri: { toString: () => "file:///main.fn" } },
         { start: { line: 0, character: 0 }, end: { line: 3, character: 0 } },
         undefined
     );
@@ -409,14 +409,14 @@ test("maps all package definition locations", async () => {
     };
     client.request = async () => [
         {
-            uri: "file:///tmp/first.fdn",
+            uri: "file:///tmp/first.fn",
             range: {
                 start: { line: 0, character: 8 },
                 end: { line: 0, character: 22 }
             }
         },
         {
-            uri: "file:///tmp/second.fdn",
+            uri: "file:///tmp/second.fn",
             range: {
                 start: { line: 0, character: 8 },
                 end: { line: 0, character: 22 }
@@ -425,13 +425,13 @@ test("maps all package definition locations", async () => {
     ];
 
     const locations = await client.definition(
-        { uri: { toString: () => "file:///tmp/main.fdn" } },
+        { uri: { toString: () => "file:///tmp/main.fn" } },
         new Position(1, 12)
     );
 
     assert.equal(locations.length, 2);
-    assert.equal(locations[0].uri.value, "file:///tmp/first.fdn");
-    assert.equal(locations[1].uri.value, "file:///tmp/second.fdn");
+    assert.equal(locations[0].uri.value, "file:///tmp/first.fn");
+    assert.equal(locations[1].uri.value, "file:///tmp/second.fn");
     assert.equal(locations[1].range.start.character, 8);
 });
 
@@ -502,7 +502,7 @@ test("maps documented completions and parameter signature help", async () => {
                 },
                 foundationTypes: [{
                     label: "User",
-                    uri: "file:///tmp/user.fdn",
+                    uri: "file:///tmp/user.fn",
                     position: { line: 1, character: 7 }
                 }],
                 parameters: [{
@@ -513,7 +513,7 @@ test("maps documented completions and parameter signature help", async () => {
                     },
                     foundationTypes: [{
                         label: "StringBox",
-                        uri: "file:///tmp/string_box.fdn",
+                        uri: "file:///tmp/string_box.fn",
                         position: { line: 2, character: 7 }
                     }]
                 }]
@@ -522,7 +522,7 @@ test("maps documented completions and parameter signature help", async () => {
             activeParameter: 0
         };
     };
-    const document = { uri: { toString: () => "file:///tmp/main.fdn" } };
+    const document = { uri: { toString: () => "file:///tmp/main.fn" } };
     const position = { line: 4, character: 9 };
 
     const completions = await client.completions(document, position);
@@ -536,7 +536,7 @@ test("maps documented completions and parameter signature help", async () => {
     assert.equal(signature.signatures[0].documentation.value,
         "Replaces the displayed profile name.\n\n**Types**: " +
         "[User](command:foundation.openTypeDefinition?" +
-        "%5B%22file%3A%2F%2F%2Ftmp%2Fuser.fdn%22%2C%7B%22line%22%3A1%2C" +
+        "%5B%22file%3A%2F%2F%2Ftmp%2Fuser.fn%22%2C%7B%22line%22%3A1%2C" +
         "%22character%22%3A7%7D%5D)");
     assert.deepEqual(signature.signatures[0].documentation.isTrusted, {
         enabledCommands: ["foundation.openTypeDefinition"]
@@ -580,17 +580,17 @@ test("combines textual hover docs with semantic type actions", async () => {
         },
         foundationTypes: [{
             label: "User",
-            uri: "file:///tmp/user.fdn",
+            uri: "file:///tmp/user.fn",
             position: { line: 1, character: 7 }
         }],
         foundationComposite: {
-            uri: "file:///tmp/user.fdn",
+            uri: "file:///tmp/user.fn",
             position: { line: 1, character: 7 }
         }
     });
 
     const hover = await client.hover(
-        { uri: { toString: () => "file:///tmp/main.fdn" } },
+        { uri: { toString: () => "file:///tmp/main.fn" } },
         { line: 3, character: 5 }
     );
 
@@ -620,7 +620,7 @@ test("opens compiler-resolved nominal types", async () => {
         }
     }
     const revealed = [];
-    const target = { uri: "file:///project/profile/user.fdn" };
+    const target = { uri: "file:///project/profile/user.fn" };
     const editor = {
         revealRange(range) {
             revealed.push(range);
@@ -648,7 +648,7 @@ test("opens compiler-resolved nominal types", async () => {
     };
 
     await client.openTypeDefinition(
-        "file:///project/profile/user.fdn",
+        "file:///project/profile/user.fn",
         { line: 4, character: 7 }
     );
 
@@ -714,7 +714,7 @@ test("maps structural folding and selection ranges", async () => {
             }
         }];
     };
-    const document = { uri: { toString: () => "file:///tmp/main.fdn" } };
+    const document = { uri: { toString: () => "file:///tmp/main.fn" } };
 
     const folds = await client.foldingRanges(document);
     const selections = await client.selectionRanges(document, [new Position(7, 17)]);
@@ -760,7 +760,7 @@ test("maps language server formatting edits", async () => {
             newText: "    value"
         }];
     };
-    const document = { uri: { toString: () => "file:///tmp/main.fdn" } };
+    const document = { uri: { toString: () => "file:///tmp/main.fn" } };
     const range = new Range(1, 0, 2, 0);
     const edits = await client.rangeFormatting(document, range, { tabSize: 4 }, null);
 
@@ -819,7 +819,7 @@ test("maps compiler quick fixes to workspace edits", async () => {
             isPreferred: true,
             edit: {
                 changes: {
-                    "file:///tmp/main.fdn": [{
+                    "file:///tmp/main.fn": [{
                         range: {
                             start: { line: 4, character: 4 },
                             end: { line: 4, character: 4 }
@@ -830,7 +830,7 @@ test("maps compiler quick fixes to workspace edits", async () => {
             }
         }];
     };
-    const document = { uri: { toString: () => "file:///tmp/main.fdn" } };
+    const document = { uri: { toString: () => "file:///tmp/main.fn" } };
     const range = new Range(4, 8, 4, 8);
     const diagnostic = {
         range: new Range(4, 4, 4, 16),
@@ -892,7 +892,7 @@ test("maps reference code lenses to clickable VS Code locations", async () => {
             command: {
                 title: "Peek Composite Type",
                 command: "foundation.openCompositeType",
-                arguments: ["file:///tmp/main.fdn", { line: 1, character: 3 }]
+                arguments: ["file:///tmp/main.fn", { line: 1, character: 3 }]
             }
         },
         {
@@ -904,10 +904,10 @@ test("maps reference code lenses to clickable VS Code locations", async () => {
                 title: "1 reference",
                 command: "editor.action.showReferences",
                 arguments: [
-                    "file:///tmp/main.fdn",
+                    "file:///tmp/main.fn",
                     { line: 1, character: 3 },
                     [{
-                        uri: "file:///tmp/main.fdn",
+                        uri: "file:///tmp/main.fn",
                         range: {
                             start: { line: 2, character: 12 },
                             end: { line: 2, character: 15 }
@@ -919,12 +919,12 @@ test("maps reference code lenses to clickable VS Code locations", async () => {
     ];
 
     const lenses = await client.codeLenses({
-        uri: { toString: () => "file:///tmp/main.fdn" }
+        uri: { toString: () => "file:///tmp/main.fn" }
     });
 
     assert.equal(lenses.length, 2);
     assert.equal(lenses[0].command.title, "Peek Composite Type");
-    assert.equal(lenses[0].command.arguments[0].value, "file:///tmp/main.fdn");
+    assert.equal(lenses[0].command.arguments[0].value, "file:///tmp/main.fn");
     assert.deepEqual(lenses[0].command.arguments[1], new Position(1, 3));
     assert.equal(lenses[1].command.title, "1 reference");
     assert.equal(lenses[1].command.arguments[2][0].range.start.line, 2);
@@ -965,7 +965,7 @@ test("opens composite sources in the native peek editor", async () => {
         fragments: [{
             key: "struct-prefix",
             kind: "struct",
-            uri: "file:///project/profile/user.fdn",
+            uri: "file:///project/profile/user.fn",
             range: {
                 start: { line: 0, character: 0 },
                 end: { line: 3, character: 1 }
@@ -973,7 +973,7 @@ test("opens composite sources in the native peek editor", async () => {
         }, {
             key: "method:rename",
             kind: "method",
-            uri: "file:///project/profile/rename.fdn",
+            uri: "file:///project/profile/rename.fn",
             range: {
                 start: { line: 2, character: 0 },
                 end: { line: 5, character: 1 }
@@ -981,7 +981,7 @@ test("opens composite sources in the native peek editor", async () => {
         }, {
             key: "struct-suffix",
             kind: "struct",
-            uri: "file:///project/profile/user.fdn",
+            uri: "file:///project/profile/user.fn",
             range: {
                 start: { line: 3, character: 0 },
                 end: { line: 3, character: 1 }
@@ -989,14 +989,14 @@ test("opens composite sources in the native peek editor", async () => {
         }]
     });
 
-    await client.openCompositeType("file:///project/profile/user.fdn", new Position(0, 7));
+    await client.openCompositeType("file:///project/profile/user.fn", new Position(0, 7));
 
     assert.equal(calls.length, 1);
     assert.equal(calls[0][0], "editor.action.showReferences");
-    assert.equal(calls[0][1].value, "file:///project/profile/user.fdn");
+    assert.equal(calls[0][1].value, "file:///project/profile/user.fn");
     assert.deepEqual(calls[0][2], new Position(0, 7));
     assert.equal(calls[0][3].length, 2);
-    assert.equal(calls[0][3][1].uri.value, "file:///project/profile/rename.fdn");
+    assert.equal(calls[0][3][1].uri.value, "file:///project/profile/rename.fn");
 });
 
 test("round trips compiler type hierarchy identities", async () => {
@@ -1021,7 +1021,7 @@ test("round trips compiler type hierarchy identities", async () => {
         name: "Named",
         kind: 11,
         detail: "contract Named",
-        uri: "file:///tmp/main.fdn",
+        uri: "file:///tmp/main.fn",
         range: {
             start: { line: 1, character: 9 },
             end: { line: 1, character: 14 }
@@ -1034,7 +1034,7 @@ test("round trips compiler type hierarchy identities", async () => {
             kind: "contract",
             name: "Named",
             scope: "type:sample",
-            uri: "file:///tmp/main.fdn"
+            uri: "file:///tmp/main.fn"
         }
     };
     const requests = [];
@@ -1103,14 +1103,14 @@ test("maps compiler call hierarchy edges to VS Code calls", async () => {
         name: "add",
         kind: 12,
         detail: "fn add() i32",
-        uri: "file:///tmp/main.fdn",
+        uri: "file:///tmp/main.fn",
         range,
         selectionRange: range,
         data: {
             kind: "function",
             name: "add",
             scope: "function:sample",
-            uri: "file:///tmp/main.fdn"
+            uri: "file:///tmp/main.fn"
         }
     };
     const methods = [];
@@ -1755,7 +1755,7 @@ test("collects generic declarations and type parameters", () => {
 
 test("tracks generic syntax used by the language tour", () => {
     const source = fs.readFileSync(
-        path.join(repositoryRoot, "examples/language-tour/main.fdn"),
+        path.join(repositoryRoot, "examples/language-tour/main.fn"),
         "utf8"
     );
     const labels = new Set(collectCompletions(source).map((entry) => entry.label));

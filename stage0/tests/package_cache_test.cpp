@@ -45,7 +45,7 @@ struct Fixture {
                  << "version 1.0.0\n"
                  << "sdk ^0.1.0\n"
                  << "source src\n";
-        std::ofstream code(source / "src" / "main.fdn", std::ios::binary);
+        std::ofstream code(source / "src" / "main.fn", std::ios::binary);
         code << "package sample.lib\n";
     }
 
@@ -81,7 +81,7 @@ void cacheCorruptionIsRejected() {
     if (!installed.value.has_value()) {
         return;
     }
-    std::ofstream changed(*installed.value / "src" / "main.fdn", std::ios::binary);
+    std::ofstream changed(*installed.value / "src" / "main.fn", std::ios::binary);
     changed << "package sample.changed\n";
     changed.close();
     const foundation::LockedPackage locked{value.manifest.name, value.manifest.version,
@@ -161,7 +161,7 @@ void cachePruningRemovesOnlyUnreferencedAndInterruptedEntries() {
     const auto keptInstall = foundation::installPackageInCache(fixture.cache, kept);
     expect(keptInstall.value.has_value(), "kept cache fixture installs");
 
-    std::ofstream(fixture.source / "src" / "main.fdn", std::ios::binary)
+    std::ofstream(fixture.source / "src" / "main.fn", std::ios::binary)
         << "package sample.changed\n";
     const auto discarded = candidate(fixture);
     const auto discardedInstall = foundation::installPackageInCache(fixture.cache, discarded);

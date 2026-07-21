@@ -57,7 +57,7 @@ struct Fixture {
                  << "sdk ^0.1.0\n"
                  << "source src\n"
                  << dependencies;
-        std::ofstream source(directory / "src" / "main.fdn", std::ios::binary);
+        std::ofstream source(directory / "src" / "main.fn", std::ios::binary);
         source << "package " << name << '\n';
     }
 
@@ -79,7 +79,7 @@ void lockedProjectsLoadVerifiedSources() {
         fixture.app / "foundation.lock", resolution.lock);
     expect(written.errors.empty(), "locked project fixture writes");
     const auto discovered =
-        foundation::discoverPackageManifest(fixture.app / "src" / "main.fdn");
+        foundation::discoverPackageManifest(fixture.app / "src" / "main.fn");
     expect(discovered.has_value() && discovered->filename() == "foundation.package",
            "manifest discovery walks from a source file");
     const auto loaded = foundation::loadLockedPackageProject(
@@ -95,7 +95,7 @@ void lockedProjectsRejectChangedPathsAndTargets() {
     const auto written = foundation::writePackageLockAtomically(
         fixture.app / "foundation.lock", resolution.lock);
     expect(written.errors.empty(), "changed path fixture lock writes");
-    std::ofstream(fixture.dependency / "src" / "main.fdn", std::ios::binary)
+    std::ofstream(fixture.dependency / "src" / "main.fn", std::ios::binary)
         << "package sample.changed\n";
     const auto changed = foundation::loadLockedPackageProject(
         fixture.app / "foundation.package", *foundation::parsePackageVersion("0.1.0"),
@@ -139,7 +139,7 @@ void testSourcesStayOutOfProductionProjects() {
         << "source src\n"
         << "test_source tests\n"
         << "dependency sample.lib 1.0.0 path ../dependency scope test\n";
-    std::ofstream(fixture.app / "tests" / "check.fdn", std::ios::binary)
+    std::ofstream(fixture.app / "tests" / "check.fn", std::ios::binary)
         << "package sample.app\n";
     const auto resolution = fixture.resolve();
     const auto written = foundation::writePackageLockAtomically(
@@ -163,11 +163,11 @@ void testSourcesStayOutOfProductionProjects() {
                std::any_of(project->sources.begin(), project->sources.end(),
                            [&](const auto &source) { return source.path.ends_with(suffix); });
     };
-    expect(production.has_value() && !contains(production, "tests/check.fdn") &&
-               !contains(production, "packages/sample.lib/src/main.fdn"),
+    expect(production.has_value() && !contains(production, "tests/check.fn") &&
+               !contains(production, "packages/sample.lib/src/main.fn"),
            "production analysis excludes test sources and test dependencies");
-    expect(test.has_value() && contains(test, "tests/check.fdn") &&
-               contains(test, "packages/sample.lib/src/main.fdn"),
+    expect(test.has_value() && contains(test, "tests/check.fn") &&
+               contains(test, "packages/sample.lib/src/main.fn"),
            "test analysis includes root tests and test dependencies");
 
     std::filesystem::remove_all(fixture.dependency);

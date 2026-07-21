@@ -323,8 +323,8 @@ std::optional<std::vector<std::filesystem::path>> formatterSources(
         return std::nullopt;
     }
     if (std::filesystem::is_regular_file(status)) {
-        if (input.extension() != ".fdn") {
-            std::cerr << "foundationc: expected a .fdn source file\n";
+        if (input.extension() != ".fn") {
+            std::cerr << "foundationc: expected a .fn source file\n";
             return std::nullopt;
         }
         return std::vector<std::filesystem::path>{input};
@@ -379,7 +379,7 @@ std::optional<std::vector<std::filesystem::path>> formatterSources(
                 (name == "build" || (!name.empty() && name[0] == '.'))) {
                 current.disable_recursion_pending();
             } else if (!error && entry.is_regular_file(error) &&
-                       entry.path().extension() == ".fdn") {
+                       entry.path().extension() == ".fn") {
                 sources.push_back(entry.path());
             }
             current.increment(error);
@@ -394,7 +394,7 @@ std::optional<std::vector<std::filesystem::path>> formatterSources(
         return left.generic_string() < right.generic_string();
     });
     if (sources.empty()) {
-        std::cerr << "foundationc: no .fdn source files found under " << input.string()
+        std::cerr << "foundationc: no .fn source files found under " << input.string()
                   << '\n';
         return std::nullopt;
     }
@@ -601,7 +601,7 @@ std::optional<SourceOverlay> deriveProjectSource(const ProjectAnalysis &analysis
     }
 
     const auto sourcePath = std::filesystem::path(analysis.sources.front().identity)
-                                .parent_path() / ".foundation.generated.fdn";
+                                .parent_path() / ".foundation.generated.fn";
     return SourceOverlay{sourcePath, generated};
 }
 
@@ -859,8 +859,8 @@ namespace {
 
 int emitApplicationHostSourceFile(const std::filesystem::path &source,
                                   const std::filesystem::path &output) {
-    if (output.extension() != ".fdn") {
-        std::cerr << "foundationc: generated source output must use the .fdn extension\n";
+    if (output.extension() != ".fn") {
+        std::cerr << "foundationc: generated source output must use the .fn extension\n";
         return 2;
     }
 

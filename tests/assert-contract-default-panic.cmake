@@ -12,10 +12,10 @@ if(result EQUAL 0)
     message(FATAL_ERROR "default contract panic project unexpectedly succeeded:\n${output}")
 endif()
 
-string(FIND "${error}" "at trace.defaultapp.PrincipalImpl.Cause (app/main.fdn:9:9)" concrete_frame)
-string(FIND "${error}" "at trace.defaults.Failure.Fail (lib/lib.fdn:7:14)" default_frame)
-string(FIND "${error}" "at trace.defaultapp.run (app/main.fdn:20:11)" contract_frame)
-string(FIND "${error}" "at trace.defaultapp.main (app/main.fdn:25:5)" main_frame)
+string(FIND "${error}" "at trace.defaultapp.PrincipalImpl.Cause (app/main.fn:9:9)" concrete_frame)
+string(FIND "${error}" "at trace.defaults.Failure.Fail (lib/lib.fn:7:14)" default_frame)
+string(FIND "${error}" "at trace.defaultapp.run (app/main.fn:20:11)" contract_frame)
+string(FIND "${error}" "at trace.defaultapp.main (app/main.fn:25:5)" main_frame)
 if(concrete_frame LESS 0 OR default_frame LESS 0 OR contract_frame LESS 0 OR
    main_frame LESS 0 OR concrete_frame GREATER_EQUAL default_frame OR
    default_frame GREATER_EQUAL contract_frame OR contract_frame GREATER_EQUAL main_frame)

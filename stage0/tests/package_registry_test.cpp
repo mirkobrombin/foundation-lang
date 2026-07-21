@@ -37,7 +37,7 @@ struct Fixture {
                  << "version " << version << '\n'
                  << "sdk ^0.1.0\n"
                  << "source src\n";
-        std::ofstream source(directory / "src" / "main.fdn", std::ios::binary);
+        std::ofstream source(directory / "src" / "main.fn", std::ios::binary);
         source << "package " << name << '\n';
     }
 };

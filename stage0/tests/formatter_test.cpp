@@ -265,15 +265,15 @@ void rejectsInvalidSourceWithoutChangingIt() {
 void preservesEstablishedFoundationStyle() {
     const auto root = std::filesystem::path(FOUNDATION_TEST_SOURCE_DIR);
     const std::vector<std::filesystem::path> sources{
-        root / "examples/language-tour/main.fdn",
-        root / "std/json/json.fdn",
-        root / "tests/cases/accept/primitive-values.fdn",
-        root / "tests/cases/accept/sequences.fdn",
-        root / "tests/cases/accept/typed-attributes.fdn",
-        root / "tests/cases/accept/raw-pointers.fdn",
-        root / "tests/cases/accept/closures.fdn",
-        root / "tests/cases/accept/service-actions.fdn",
-        root / "tests/cases/accept/text-path.fdn",
+        root / "examples/language-tour/main.fn",
+        root / "std/json/json.fn",
+        root / "tests/cases/accept/primitive-values.fn",
+        root / "tests/cases/accept/sequences.fn",
+        root / "tests/cases/accept/typed-attributes.fn",
+        root / "tests/cases/accept/raw-pointers.fn",
+        root / "tests/cases/accept/closures.fn",
+        root / "tests/cases/accept/service-actions.fn",
+        root / "tests/cases/accept/text-path.fn",
     };
     for (const auto &source : sources) {
         std::ifstream input(source, std::ios::binary);
@@ -298,7 +298,7 @@ void formatsRepositorySources() {
     for (const auto &sourceRoot : sourceRoots) {
         for (const auto &entry : std::filesystem::recursive_directory_iterator(sourceRoot)) {
             const auto path = entry.path().generic_string();
-            if (entry.is_regular_file() && entry.path().extension() == ".fdn" &&
+            if (entry.is_regular_file() && entry.path().extension() == ".fn" &&
                 path.find("/malformed-") == std::string::npos) {
                 sources.push_back(entry.path());
             }

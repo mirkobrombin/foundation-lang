@@ -163,7 +163,7 @@ std::string responseFor(std::string_view transcript, int id) {
 void diagnosticsUseUnsavedCompilerInput() {
     const auto root = temporaryRoot();
     std::filesystem::create_directories(root);
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     {
         std::ofstream file(source, std::ios::binary);
         file << "package sample\nfn main() i32 { 0 }\n";
@@ -338,7 +338,7 @@ void diagnosticsUseUnsavedCompilerInput() {
 
 void namedArgumentsSelectDeclaredSignatureParameter() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "fn compose(first i32, second i32, third i32) i32 {\n"
@@ -412,7 +412,7 @@ void namedArgumentsSelectDeclaredSignatureParameter() {
 
 void namedEnumPayloadsExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "enum Command {\n"
@@ -490,7 +490,7 @@ void namedEnumPayloadsExposeEditorDetails() {
 
 void testDeclarationsExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "test \"addition works\" {\n"
@@ -604,7 +604,7 @@ void invalidJsonRpcEnvelopeIsRejected() {
 void unopenedLibraryDoesNotRequireMain() {
     const auto root = temporaryRoot();
     std::filesystem::create_directories(root);
-    const auto source = root / "library.fdn";
+    const auto source = root / "library.fn";
     const auto rootUri = fileUri(root);
     const auto sourceUri = fileUri(source);
     const auto initialize =
@@ -641,9 +641,9 @@ void importedPackagesExposeHoverAndAllDefinitions() {
     const auto library = root / "library";
     std::filesystem::create_directories(app);
     std::filesystem::create_directories(library);
-    const auto appSource = app / "main.fdn";
-    const auto firstSource = library / "first.fdn";
-    const auto secondSource = library / "second.fdn";
+    const auto appSource = app / "main.fn";
+    const auto firstSource = library / "first.fn";
+    const auto secondSource = library / "second.fn";
     {
         std::ofstream file(appSource, std::ios::binary);
         file << "package sample.app\n"
@@ -712,8 +712,8 @@ void completionsRespectScopesAndMemberAccess() {
     const auto root = temporaryRoot();
     const auto widgets = root / "widgets";
     std::filesystem::create_directories(widgets);
-    const auto library = widgets / "widgets.fdn";
-    const auto source = root / "main.fdn";
+    const auto library = widgets / "widgets.fn";
+    const auto source = root / "main.fn";
     const auto libraryContents =
         "package widgets\n"
         "contract Reader {\n"
@@ -866,7 +866,7 @@ void completionsRespectScopesAndMemberAccess() {
 
 void numericConversionsExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "fn main() i32 {\n"
@@ -927,7 +927,7 @@ void numericConversionsExposeEditorDetails() {
 
 void fieldDefaultsExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "struct Settings {\n"
@@ -981,7 +981,7 @@ void fieldDefaultsExposeEditorDetails() {
 void foldingAndSelectionRangesFollowCompilerTokens() {
     const auto root = temporaryRoot();
     std::filesystem::create_directories(root);
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const auto contents =
         "package sample\n"
         "import std.text\n"
@@ -1057,7 +1057,7 @@ void foldingAndSelectionRangesFollowCompilerTokens() {
 void semanticNavigationSeparatesHomonyms() {
     const auto root = temporaryRoot();
     std::filesystem::create_directories(root);
-    const auto source = root / "types.fdn";
+    const auto source = root / "types.fn";
     const auto rootUri = fileUri(root);
     const auto sourceUri = fileUri(source);
     const auto initialize =
@@ -1154,7 +1154,7 @@ void semanticNavigationSeparatesHomonyms() {
 void formatsUnsavedDocumentsAndRanges() {
     const auto root = temporaryRoot();
     std::filesystem::create_directories(root);
-    const auto source = root / "format.fdn";
+    const auto source = root / "format.fn";
     const auto rootUri = fileUri(root);
     const auto sourceUri = fileUri(source);
     const auto initialize =
@@ -1225,7 +1225,7 @@ void formatsUnsavedDocumentsAndRanges() {
 void offersCompilerBackedDiscardQuickFixes() {
     const auto root = temporaryRoot();
     std::filesystem::create_directories(root);
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const auto sourceUri = fileUri(source);
     const auto initialize =
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
@@ -1292,7 +1292,7 @@ void offersCompilerBackedDiscardQuickFixes() {
 void contractImplementationsIncludeInheritedAndDelegatedTypes() {
     const auto root = temporaryRoot();
     std::filesystem::create_directories(root);
-    const auto source = root / "contracts.fdn";
+    const auto source = root / "contracts.fn";
     const auto rootUri = fileUri(root);
     const auto sourceUri = fileUri(source);
     const auto initialize =
@@ -1414,7 +1414,7 @@ void contractImplementationsIncludeInheritedAndDelegatedTypes() {
 void callHierarchySeparatesHomonymousMethods() {
     const auto root = temporaryRoot();
     std::filesystem::create_directories(root);
-    const auto source = root / "calls.fdn";
+    const auto source = root / "calls.fn";
     const auto rootUri = fileUri(root);
     const auto sourceUri = fileUri(source);
     const auto initialize =
@@ -1477,8 +1477,8 @@ void lockedPackageWorkspaceLoadsCachedDependencies() {
     const auto app = root / "apps" / "sample";
     const auto dependencyRoot = root / "registry" / "example.greeting" / "1.0.0";
     const auto cache = root / "cache";
-    const auto appSource = app / "src" / "main.fdn";
-    const auto dependencySource = dependencyRoot / "src" / "greeting.fdn";
+    const auto appSource = app / "src" / "main.fn";
+    const auto dependencySource = dependencyRoot / "src" / "greeting.fn";
     const auto appContents = std::string{
         "package example.app\n\n"
         "import example.greeting\n\n"
@@ -1559,7 +1559,7 @@ void lockedPackageWorkspaceLoadsCachedDependencies() {
     expect(environment.valid(), "language server test sets the package cache environment");
     const auto rootUri = fileUri(root);
     const auto sourceUri = fileUri(appSource);
-    const auto cachedSourceUri = fileUri(*installed.value / "src" / "greeting.fdn");
+    const auto cachedSourceUri = fileUri(*installed.value / "src" / "greeting.fn");
     const auto initialize =
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{"
         "\"rootUri\":\"" +
@@ -1614,11 +1614,11 @@ void workspaceFoldersAreIndependentAndDynamic() {
     std::filesystem::create_directories(first);
     std::filesystem::create_directories(second);
     {
-        std::ofstream source(first / "alpha.fdn", std::ios::binary);
+        std::ofstream source(first / "alpha.fn", std::ios::binary);
         source << "package alpha\nfn AlphaValue() i32 { 1 }\n";
     }
     {
-        std::ofstream source(second / "beta.fdn", std::ios::binary);
+        std::ofstream source(second / "beta.fn", std::ios::binary);
         source << "package beta\nfn BetaValue() i32 { 2 }\n";
     }
     const auto firstUri = fileUri(first);
@@ -1673,8 +1673,8 @@ void diagnosticsStayScopedToTheirWorkspace() {
     const auto second = root / "second";
     std::filesystem::create_directories(first);
     std::filesystem::create_directories(second);
-    const auto firstSource = fileUri(first / "alpha.fdn");
-    const auto secondSource = fileUri(second / "beta.fdn");
+    const auto firstSource = fileUri(first / "alpha.fn");
+    const auto secondSource = fileUri(second / "beta.fn");
     const auto initialize =
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{"
         "\"workspaceFolders\":[{\"uri\":\"" +
@@ -1733,7 +1733,7 @@ void diagnosticsStayScopedToTheirWorkspace() {
 
 void semanticIntelliSenseKeepsDocumentationTextual() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "attribute Source() targets(parameter)\n"
@@ -1815,10 +1815,10 @@ void semanticIntelliSenseKeepsDocumentationTextual() {
 
 void distributedMethodsExposeDocumentationAndParameters() {
     const auto root = temporaryRoot();
-    const auto app = root / "app" / "main.fdn";
-    const auto user = root / "profile" / "user.fdn";
-    const auto create = root / "profile" / "create.fdn";
-    const auto rename = root / "profile" / "rename.fdn";
+    const auto app = root / "app" / "main.fn";
+    const auto user = root / "profile" / "user.fn";
+    const auto create = root / "profile" / "create.fn";
+    const auto rename = root / "profile" / "rename.fn";
     const std::string userContents =
         "package sample.profile\n"
         "// A profile edited across source files.\n"
@@ -2010,7 +2010,7 @@ void distributedMethodsExposeDocumentationAndParameters() {
 
 void channelOperationsExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "task work($sender Sender<String>) void {\n"
@@ -2086,7 +2086,7 @@ void channelOperationsExposeEditorDetails() {
 
 void selectExposesEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "task work($receiver Receiver<String>, delay u64) Result<void, ChannelError> {\n"
@@ -2152,7 +2152,7 @@ void selectExposesEditorDetails() {
 
 void matchGuardsExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "enum Reading {\n"
@@ -2209,7 +2209,7 @@ void matchGuardsExposeEditorDetails() {
 
 void forLoopsExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "fn main() i32 {\n"
@@ -2277,7 +2277,7 @@ void forLoopsExposeEditorDetails() {
 
 void blockingImportsExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "@blocking\n"
@@ -2339,7 +2339,7 @@ void blockingImportsExposeEditorDetails() {
 
 void callbackImportsExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "@callback(cancel = sample_native_cancel)\n"
@@ -2403,7 +2403,7 @@ void callbackImportsExposeEditorDetails() {
 
 void functionValuesExposeTargetOwnershipModes() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "struct Value { count i32 }\n"
@@ -2488,7 +2488,7 @@ void functionValuesExposeTargetOwnershipModes() {
 
 void pluginPackageExposesEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "import foundation.plugin\n"
@@ -2561,7 +2561,7 @@ void pluginPackageExposesEditorDetails() {
            "native plugin loader receives compiler-backed documentation");
     expect(nameHover.find("fn Name(self) String") != std::string::npos,
            "native plugin methods receive typed hover");
-    expect(definition.find("foundation/plugin/plugin.fdn") != std::string::npos,
+    expect(definition.find("foundation/plugin/plugin.fn") != std::string::npos,
            "native plugin loader navigates to framework source");
     expect(signature.find("fn LoadNative(path String)") != std::string::npos,
            "native plugin loader receives signature help");
@@ -2583,7 +2583,7 @@ void pluginPackageExposesEditorDetails() {
 
 void supervisorPackageExposesEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "import foundation.worker\n"
@@ -2639,7 +2639,7 @@ void supervisorPackageExposesEditorDetails() {
     expect(startHover.find("Start") != std::string::npos &&
                startHover.find("Task<void>") != std::string::npos,
            "supervisor start hover exposes the detached task contract");
-    expect(definition.find("foundation/worker/worker.fdn") != std::string::npos,
+    expect(definition.find("foundation/worker/worker.fn") != std::string::npos,
            "supervisor constructor navigates to framework source");
 
     std::error_code error;
@@ -2648,7 +2648,7 @@ void supervisorPackageExposesEditorDetails() {
 
 void parallelPoolExposesEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "import foundation.worker\n"
@@ -2702,7 +2702,7 @@ void parallelPoolExposesEditorDetails() {
     expect(startHover.find("Start") != std::string::npos &&
                startHover.find("directly spawned task") != std::string::npos,
            "parallel pool start hover exposes direct task transfer");
-    expect(definition.find("foundation/worker/worker.fdn") != std::string::npos,
+    expect(definition.find("foundation/worker/worker.fn") != std::string::npos,
            "parallel pool constructor navigates to framework source");
 
     std::error_code error;
@@ -2711,7 +2711,7 @@ void parallelPoolExposesEditorDetails() {
 
 void schedulerPackageExposesEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string completeContents =
         "package sample\n"
         "\n"
@@ -2822,7 +2822,7 @@ void schedulerPackageExposesEditorDetails() {
     expect(jobSignature.find("fn NewJob") != std::string::npos &&
                jobSignature.find("transferable fn") != std::string::npos,
            "scheduler job construction receives ownership-aware signature help");
-    expect(jobDefinition.find("foundation/scheduler/scheduler.fdn") != std::string::npos,
+    expect(jobDefinition.find("foundation/scheduler/scheduler.fn") != std::string::npos,
            "scheduler job construction navigates to framework source");
     expect(registerHover.find("fn Register") != std::string::npos &&
                registerHover.find("Task<Result<void, Error>>") != std::string::npos,
@@ -2842,7 +2842,7 @@ void schedulerPackageExposesEditorDetails() {
 
 void secretsPackageExposesEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "import foundation.secrets\n"
@@ -2905,7 +2905,7 @@ void secretsPackageExposesEditorDetails() {
     expect(cipherSignature.find("fn NewCipherStore") != std::string::npos &&
                cipherSignature.find("own Bytes") != std::string::npos,
            "secrets cipher construction receives ownership-aware signature help");
-    expect(definition.find("foundation/secrets/secrets.fdn") != std::string::npos,
+    expect(definition.find("foundation/secrets/secrets.fn") != std::string::npos,
            "secrets memory construction navigates to framework source");
     expect(getHover.find("fn Get") != std::string::npos &&
                getHover.find("Task<Result<own Bytes, Error>>") != std::string::npos,
@@ -2917,7 +2917,7 @@ void secretsPackageExposesEditorDetails() {
 
 void rawPointersExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "\n"
@@ -3007,7 +3007,7 @@ void rawPointersExposeEditorDetails() {
 
 void compilerBuiltinsExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "fn main() i32 {\n"
         "    print(\"ready\")\n"
@@ -3086,7 +3086,7 @@ void compilerBuiltinsExposeEditorDetails() {
            "panic calls receive parameter signature help");
     expect(responseFor(transcript, 187).find("capacity u64") != std::string::npos,
            "channel calls receive capacity signature help");
-    expect(responseFor(transcript, 188).find("foundation-builtin://foundation/print.fdn") !=
+    expect(responseFor(transcript, 188).find("foundation-builtin://foundation/print.fn") !=
                std::string::npos,
            "builtin definition opens its compiler-provided virtual document");
     expect(responseFor(transcript, 189).find("fn print(value String) void") !=
@@ -3101,7 +3101,7 @@ void compilerBuiltinsExposeEditorDetails() {
 
 void preludeUUIDExposesEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "fn parseUUID(value String) Result<UUID, UUIDError> {\n"
@@ -3158,7 +3158,7 @@ void preludeUUIDExposesEditorDetails() {
 
 void parseBoolExposesEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "import std.parse\n"
@@ -3213,7 +3213,7 @@ void parseBoolExposesEditorDetails() {
 
 void emptyTestsExposeResolvedMeaning() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "fn main() i32 {\n"
@@ -3267,7 +3267,7 @@ void emptyTestsExposeResolvedMeaning() {
 
 void servicesAndActionsExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "\n"
@@ -3337,7 +3337,7 @@ void servicesAndActionsExposeEditorDetails() {
 
 void derivedValidationExposesEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "\n"
@@ -3403,7 +3403,7 @@ void derivedValidationExposesEditorDetails() {
     expect(signature.find("fn Validate(self) own Errors") != std::string::npos,
            "derived validation exposes compiler-backed signature help");
     expect(definition.find(sourceUri) != std::string::npos &&
-               definition.find(".foundation.generated.fdn") == std::string::npos,
+               definition.find(".foundation.generated.fn") == std::string::npos,
            "derived validation definition returns to its source struct");
     expect(patternHover.find("attribute Pattern(expression String)") != std::string::npos &&
                patternHover.find("portable safe pattern") != std::string::npos,
@@ -3418,7 +3418,7 @@ void derivedValidationExposesEditorDetails() {
 
 void derivedSerializerExposesEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "\n"
@@ -3490,7 +3490,7 @@ void derivedSerializerExposesEditorDetails() {
                signature.find("policy Policy") != std::string::npos,
            "derived serializer exposes compiler-backed signature help");
     expect(definition.find(sourceUri) != std::string::npos &&
-               definition.find(".foundation.generated.fdn") == std::string::npos,
+               definition.find(".foundation.generated.fn") == std::string::npos,
            "derived serializer definition returns to its source struct");
     expect(completion.find("MarshalWith") != std::string::npos &&
                completion.find("ToJSON") != std::string::npos,
@@ -3507,7 +3507,7 @@ void derivedSerializerExposesEditorDetails() {
 
 void openAPIAttributesExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "\n"
@@ -3573,7 +3573,7 @@ void openAPIAttributesExposeEditorDetails() {
 
 void authenticationPackagesExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "\n"
@@ -3644,7 +3644,7 @@ void authenticationPackagesExposeEditorDetails() {
     expect(authSignature.find("fn SignToken(payload Payload, secret Bytes)") !=
                std::string::npos,
            "auth calls receive compiler-backed signature help");
-    expect(definition.find("auth.fdn") != std::string::npos,
+    expect(definition.find("auth.fn") != std::string::npos,
            "auth functions navigate to their SDK declaration");
     expect(claimsHover.find("struct StandardClaims") != std::string::npos &&
                claimsHover.find("common claims used by services") != std::string::npos,
@@ -3656,7 +3656,7 @@ void authenticationPackagesExposeEditorDetails() {
 
 void resiliencyPackagesExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "\n"
@@ -3739,7 +3739,7 @@ void resiliencyPackagesExposeEditorDetails() {
     expect(limiterSignature.find("fn NewRateLimiter") != std::string::npos &&
                limiterSignature.find("burst i32") != std::string::npos,
            "rate limiter calls receive compiler-backed signature help");
-    expect(limiterDefinition.find("resiliency.fdn") != std::string::npos,
+    expect(limiterDefinition.find("resiliency.fn") != std::string::npos,
            "rate limiter functions navigate to their SDK declaration");
     expect(allowHover.find("fn Allow") != std::string::npos &&
                allowHover.find("operation may proceed") != std::string::npos,
@@ -3761,7 +3761,7 @@ void resiliencyPackagesExposeEditorDetails() {
 
 void runtimePipelinePackageExposesEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string completeContents =
         "package sample\n"
         "\n"
@@ -3860,7 +3860,7 @@ void runtimePipelinePackageExposesEditorDetails() {
     expect(thenSignature.find("fn Then") != std::string::npos &&
                thenSignature.find("handler") != std::string::npos,
            "runtime pipeline terminal receives ownership-aware signature help");
-    expect(newDefinition.find("foundation/pipeline/pipeline.fdn") != std::string::npos,
+    expect(newDefinition.find("foundation/pipeline/pipeline.fn") != std::string::npos,
            "runtime pipeline construction navigates to framework source");
     expect(processHover.find("fn Process") != std::string::npos &&
                processHover.find("Result") != std::string::npos,
@@ -3874,7 +3874,7 @@ void runtimePipelinePackageExposesEditorDetails() {
 
 void ringPackageExposesEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string completeContents =
         "package sample\n"
         "\n"
@@ -3957,7 +3957,7 @@ void ringPackageExposesEditorDetails() {
            "ring constructor hover exposes its typed contract");
     expect(newSignature.find("fn New<T>(capacity i32)") != std::string::npos,
            "ring construction receives compiler-backed signature help");
-    expect(newDefinition.find("ring.fdn") != std::string::npos,
+    expect(newDefinition.find("ring.fn") != std::string::npos,
            "ring functions navigate to their SDK declaration");
     expect(pushHover.find("fn Push") != std::string::npos &&
                pushHover.find("returns it unchanged when full") != std::string::npos,
@@ -3974,7 +3974,7 @@ void ringPackageExposesEditorDetails() {
 
 void webActivationExposesEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "\n"
@@ -4075,7 +4075,7 @@ void webActivationExposesEditorDetails() {
 
 void manualWebMiddlewareExposesEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "\n"
@@ -4209,7 +4209,7 @@ void manualWebMiddlewareExposesEditorDetails() {
 
 void stateMachinesExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "\n"
@@ -4283,7 +4283,7 @@ void stateMachinesExposeEditorDetails() {
 
 void workflowsExposeEditorDetails() {
     const auto root = temporaryRoot();
-    const auto source = root / "main.fdn";
+    const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
         "\n"
@@ -4374,7 +4374,7 @@ void workflowsExposeEditorDetails() {
 
 void codeStandardWarningsFollowTheManifestProfile() {
     const auto root = temporaryRoot();
-    const auto source = root / "src" / "api.fdn";
+    const auto source = root / "src" / "api.fn";
     const std::string contents =
         "package sample\n"
         "\n"

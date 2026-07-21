@@ -195,7 +195,7 @@ class FoundationLanguageClient {
             "function", "method", "struct", "property", "enum", "enumMember",
             "interface", "decorator", "parameter", "variable"
         ], ["declaration"]);
-        const sourceWatcher = this.vscode.workspace.createFileSystemWatcher("**/*.fdn");
+        const sourceWatcher = this.vscode.workspace.createFileSystemWatcher("**/*.fn");
         const manifestWatcher = this.vscode.workspace.createFileSystemWatcher(
             "**/foundation.package"
         );
@@ -803,7 +803,7 @@ class FoundationLanguageClient {
 
     async builtinDocument(uri) {
         const filename = uri.path.split("/").pop() || "";
-        const name = filename.endsWith(".fdn") ? filename.slice(0, -4) : "";
+        const name = filename.endsWith(".fn") ? filename.slice(0, -3) : "";
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
             return "";
         }

@@ -21,10 +21,10 @@ when every file is formatted.
 
 `foundationc format --write <source-or-project>` validates the complete input before writing.
 Each changed file is replaced through a temporary file in the same directory while preserving its
-permissions. Symbolic links are never replaced. Project traversal reads `.fdn` files recursively
+permissions. Symbolic links are never replaced. Project traversal reads `.fn` files recursively
 and skips hidden directories and directories named `build`.
 
-Stdout mode accepts one `.fdn` file. Invalid command input returns status 2. Syntax, read, or write
+Stdout mode accepts one `.fn` file. Invalid command input returns status 2. Syntax, read, or write
 failure returns status 1 and prints a diagnostic.
 
 ## Editor

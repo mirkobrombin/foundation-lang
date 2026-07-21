@@ -54,8 +54,8 @@ foundation::PackageManifest manifest() {
 
 void snapshotsAreDeterministicAndSensitive() {
     Fixture fixture;
-    fixture.write("src/z.fdn", "module sample.z\n");
-    fixture.write("src/nested/a.fdn", "module sample.a\n");
+    fixture.write("src/z.fn", "module sample.z\n");
+    fixture.write("src/nested/a.fn", "module sample.a\n");
     const auto first = foundation::inspectPackageSource(fixture.root, manifest());
     const auto second = foundation::inspectPackageSource(fixture.root, manifest());
     expect(first.value.has_value() && second.value.has_value(), "package source is inspected");
@@ -63,9 +63,9 @@ void snapshotsAreDeterministicAndSensitive() {
                first.value->digest == second.value->digest,
            "package source digest is deterministic");
     expect(first.value.has_value() && first.value->files.size() == 2 &&
-               first.value->files[0].path == "src/nested/a.fdn",
+               first.value->files[0].path == "src/nested/a.fn",
            "package source inventory is sorted");
-    fixture.write("src/z.fdn", "module sample.changed\n");
+    fixture.write("src/z.fn", "module sample.changed\n");
     const auto changed = foundation::inspectPackageSource(fixture.root, manifest());
     expect(first.value.has_value() && changed.value.has_value() &&
                first.value->digest != changed.value->digest,
@@ -74,15 +74,15 @@ void snapshotsAreDeterministicAndSensitive() {
 
 void snapshotsRejectSymlinksAndCaseCollisions() {
     Fixture fixture;
-    fixture.write("src/name.fdn", "module sample.name\n");
-    fixture.write("src/Name.fdn", "module sample.other\n");
+    fixture.write("src/name.fn", "module sample.name\n");
+    fixture.write("src/Name.fn", "module sample.other\n");
     const auto collision = foundation::inspectPackageSource(fixture.root, manifest());
     expect(hasCode(collision.errors, "FDN4036"), "case-folded source collisions are rejected");
 
-    std::filesystem::remove(fixture.root / "src" / "Name.fdn");
+    std::filesystem::remove(fixture.root / "src" / "Name.fn");
     std::error_code error;
-    std::filesystem::create_symlink(fixture.root / "src" / "name.fdn",
-                                    fixture.root / "src" / "alias.fdn", error);
+    std::filesystem::create_symlink(fixture.root / "src" / "name.fn",
+                                    fixture.root / "src" / "alias.fn", error);
     if (!error) {
         const auto symlink = foundation::inspectPackageSource(fixture.root, manifest());
         expect(hasCode(symlink.errors, "FDN4033"), "source symlinks are rejected");
@@ -92,12 +92,12 @@ void snapshotsRejectSymlinksAndCaseCollisions() {
 void snapshotsIncludeTestSources() {
     Fixture fixture;
     std::filesystem::create_directories(fixture.root / "tests");
-    fixture.write("src/main.fdn", "package sample.package\n");
+    fixture.write("src/main.fn", "package sample.package\n");
     auto withTests = manifest();
     withTests.testSource = "tests";
-    fixture.write("tests/main.fdn", "package sample.package\n");
+    fixture.write("tests/main.fn", "package sample.package\n");
     const auto first = foundation::inspectPackageSource(fixture.root, withTests);
-    fixture.write("tests/main.fdn", "package sample.changed\n");
+    fixture.write("tests/main.fn", "package sample.changed\n");
     const auto changed = foundation::inspectPackageSource(fixture.root, withTests);
     expect(first.value.has_value() && first.value->files.size() == 2,
            "package snapshot inventories production and test sources");

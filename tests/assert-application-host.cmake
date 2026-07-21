@@ -52,7 +52,7 @@ if(NOT run_output STREQUAL expected_output)
     message(FATAL_ERROR "generated application output mismatch")
 endif()
 
-set(protected "${PROJECT}/src/manual.fdn")
+set(protected "${PROJECT}/src/manual.fn")
 file(WRITE "${protected}" "package example.services\n\nfn Manual() void {}\n")
 execute_process(
     COMMAND "${COMPILER}" emit-app-host "${PROJECT}" -o "${protected}"

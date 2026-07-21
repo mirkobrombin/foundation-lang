@@ -256,8 +256,8 @@ fn main() i32 {
     expect(first.fir.has_value() && second.fir.has_value(),
            "const source lowers to FIR repeatedly");
     if (first.fir.has_value() && second.fir.has_value()) {
-        expect(foundation::emitC(*first.fir, "comments.fdn") ==
-                   foundation::emitC(*second.fir, "comments.fdn"),
+        expect(foundation::emitC(*first.fir, "comments.fn") ==
+                   foundation::emitC(*second.fir, "comments.fn"),
                "comments do not affect deterministic C emission");
     }
 
@@ -296,8 +296,8 @@ fn main() i32 {
     if (!first.fir.has_value() || !second.fir.has_value()) {
         return;
     }
-    const auto firstC = foundation::emitC(*first.fir, "tasks.fdn");
-    const auto secondC = foundation::emitC(*second.fir, "tasks.fdn");
+    const auto firstC = foundation::emitC(*first.fir, "tasks.fn");
+    const auto secondC = foundation::emitC(*second.fir, "tasks.fn");
     expect(firstC == secondC, "task C emission is deterministic");
     expect(firstC.find("fdn_task_spawn") != std::string::npos,
            "spawn lowers to the runtime executor");
@@ -335,8 +335,8 @@ fn main() i32 {
     if (!first.fir.has_value() || !second.fir.has_value()) {
         return;
     }
-    const auto firstC = foundation::emitC(*first.fir, "task-suspension.fdn");
-    const auto secondC = foundation::emitC(*second.fir, "task-suspension.fdn");
+    const auto firstC = foundation::emitC(*first.fir, "task-suspension.fn");
+    const auto secondC = foundation::emitC(*second.fir, "task-suspension.fn");
     expect(firstC == secondC, "stackless task C emission is deterministic");
     expect(firstC.find("fdn_task_poll_wait") != std::string::npos,
            "nested wait uses non-blocking runtime polling");
@@ -373,8 +373,8 @@ fn main() i32 {
     if (!first.fir.has_value() || !second.fir.has_value()) {
         return;
     }
-    const auto firstC = foundation::emitC(*first.fir, "dynamic-timeout.fdn");
-    const auto secondC = foundation::emitC(*second.fir, "dynamic-timeout.fdn");
+    const auto firstC = foundation::emitC(*first.fir, "dynamic-timeout.fn");
+    const auto secondC = foundation::emitC(*second.fir, "dynamic-timeout.fn");
     expect(firstC == secondC, "dynamic timeout C emission is deterministic");
     expect(firstC.find("UINT64_MAX -") != std::string::npos,
            "dynamic timeout addition saturates before suspension");
@@ -818,7 +818,7 @@ fn main(args [String]) i32 {
         return;
     }
 
-    const auto generated = foundation::emitC(*result.fir, "args.fdn");
+    const auto generated = foundation::emitC(*result.fir, "args.fn");
     expect(generated.find("static int32_t fdn_program_main(fdn_view_slice_string") !=
                std::string::npos,
            "Foundation main remains a typed internal function");
@@ -851,7 +851,7 @@ fn main(args [String]) i32 {
         expect(false, "len program lowers to FIR");
         return;
     }
-    const auto generated = foundation::emitC(*result.fir, "len.fdn");
+    const auto generated = foundation::emitC(*result.fir, "len.fn");
     expect(generated.find(".fdn_length") != std::string::npos,
            "slice length reads the portable slice representation");
     expect(generated.find("UINT64_C(2)") != std::string::npos,
@@ -884,7 +884,7 @@ fn main() i32 {
         return;
     }
 
-    const auto generated = foundation::emitC(*result.fir, "u64.fdn");
+    const auto generated = foundation::emitC(*result.fir, "u64.fn");
     expect(generated.find("UINT64_C(18446744073709551615)") != std::string::npos,
            "maximum u64 literal is emitted without truncation");
     expect(generated.find("fdn_u64_add") != std::string::npos,
@@ -940,7 +940,7 @@ fn main() i32 {
         return;
     }
 
-    const auto generated = foundation::emitC(*result.fir, "scalars.fdn");
+    const auto generated = foundation::emitC(*result.fir, "scalars.fn");
     const auto header = foundation::emitCHeader(*result.fir);
     for (const auto type : {"int8_t", "int16_t", "int32_t", "int64_t", "intptr_t",
                             "uint8_t", "uint16_t", "uint32_t", "uint64_t", "size_t",
@@ -1215,12 +1215,12 @@ fn main() i32 {
     if (!result.fir.has_value()) {
         return;
     }
-    const auto generated = foundation::emitC(*result.fir, "panic.fdn");
+    const auto generated = foundation::emitC(*result.fir, "panic.fn");
     expect(generated.find("fdn_panic") != std::string::npos,
            "panic lowers to the fatal runtime operation");
     expect(generated.find("fdn_frame_enter") != std::string::npos,
            "generated functions enter Foundation frames");
-    expect(generated.find("\"panic.fdn\"") != std::string::npos,
+    expect(generated.find("\"panic.fn\"") != std::string::npos,
            "generated frames retain the source path");
     expect(generated.find("return ;") == std::string::npos,
            "panic closes a non-void function without a C return value");
@@ -1251,7 +1251,7 @@ fn main() i32 {
         return;
     }
 
-    const auto generated = foundation::emitC(*result.fir, "diverging.fdn");
+    const auto generated = foundation::emitC(*result.fir, "diverging.fn");
     expect(generated.find("_Noreturn void fdn_fn_stop_0") != std::string::npos,
            "direct panic marks its Foundation function as diverging");
     expect(generated.find("_Noreturn void fdn_fn_calculate_1") != std::string::npos,
@@ -1695,7 +1695,7 @@ void diagnosticsBoundLongSourceExcerpts() {
     foundation::Diagnostics diagnostics;
     diagnostics.error("FDN9999", "bounded diagnostic", {4000, 4096, 1, 4001});
 
-    const auto rendered = foundation::renderDiagnostics("long.fdn", source, diagnostics);
+    const auto rendered = foundation::renderDiagnostics("long.fn", source, diagnostics);
     expect(rendered.size() < 512, "long diagnostic source excerpts are bounded");
     expect(rendered.find("...") != std::string::npos,
            "bounded diagnostic source excerpts mark omitted text");
@@ -1704,7 +1704,7 @@ void diagnosticsBoundLongSourceExcerpts() {
 
     foundation::Diagnostics newlineDiagnostics;
     newlineDiagnostics.error("FDN9998", "newline diagnostic", {5, 1, 1, 6});
-    const auto newline = foundation::renderDiagnostics("newline.fdn", "value\nnext",
+    const auto newline = foundation::renderDiagnostics("newline.fn", "value\nnext",
                                                        newlineDiagnostics);
     expect(newline.find("1 | value") != std::string::npos,
            "diagnostic at a newline renders the preceding source line");
@@ -1740,11 +1740,11 @@ fn main() i32 { 0 }
     foundation::Diagnostics projectDiagnostics;
     projectDiagnostics.error("FDN9997", "second source", {0, 1, 1, 1, 1});
     const std::vector<foundation::DiagnosticSource> sources{
-        {"first.fdn", "first\n"},
-        {"second.fdn", "second\n"},
+        {"first.fn", "first\n"},
+        {"second.fn", "second\n"},
     };
     const auto rendered = foundation::renderDiagnostics(sources, projectDiagnostics);
-    expect(rendered.find("second.fdn:1:1") != std::string::npos,
+    expect(rendered.find("second.fn:1:1") != std::string::npos,
            "project diagnostic selects the originating file");
     expect(rendered.find("1 | second") != std::string::npos,
            "project diagnostic selects the originating source text");
@@ -1785,8 +1785,8 @@ fn main() i32 {
         return;
     }
 
-    const auto firstC = foundation::emitC(*first.fir, "ffi.fdn");
-    const auto secondC = foundation::emitC(*second.fir, "ffi.fdn");
+    const auto firstC = foundation::emitC(*first.fir, "ffi.fn");
+    const auto secondC = foundation::emitC(*second.fir, "ffi.fn");
     const auto firstHeader = foundation::emitCHeader(*first.fir);
     const auto secondHeader = foundation::emitCHeader(*second.fir);
     expect(firstC == secondC, "C ABI source emission is deterministic");
@@ -1833,7 +1833,7 @@ fn main() i32 {
         return;
     }
 
-    const auto generated = foundation::emitC(*result.fir, "raw.fdn");
+    const auto generated = foundation::emitC(*result.fir, "raw.fn");
     const auto header = foundation::emitCHeader(*result.fir);
     expect(generated.find("foundation_raw_values(void);") != std::string::npos,
            "raw pointer import receives a C prototype");
@@ -1881,8 +1881,8 @@ fn main() i32 {
     }
     expect(foundBlockingCall, "blocking C call remains an explicit FIR suspension point");
 
-    const auto firstC = foundation::emitC(*first.fir, "blocking.fdn");
-    const auto secondC = foundation::emitC(*second.fir, "blocking.fdn");
+    const auto firstC = foundation::emitC(*first.fir, "blocking.fn");
+    const auto secondC = foundation::emitC(*second.fir, "blocking.fn");
     expect(firstC == secondC, "blocking C emission is deterministic");
     expect(firstC.find("fdn_blocking_poll") != std::string::npos &&
                firstC.find("fdn_blocking_job_") != std::string::npos &&
@@ -1931,8 +1931,8 @@ fn main() i32 {
     }
     expect(foundCallbackCall, "callback C call remains an explicit FIR suspension point");
 
-    const auto firstC = foundation::emitC(*first.fir, "callback.fdn");
-    const auto secondC = foundation::emitC(*second.fir, "callback.fdn");
+    const auto firstC = foundation::emitC(*first.fir, "callback.fn");
+    const auto secondC = foundation::emitC(*second.fir, "callback.fn");
     expect(firstC == secondC, "callback C emission is deterministic");
     expect(firstC.find(
                "void foundation_native_read(uint64_t, int32_t *, fdn_reactor_operation *);") !=
@@ -2010,8 +2010,8 @@ fn main() i32 {
                !foundation::isTransferableFunction(firDirect->type),
            "function guarantee weakening reaches FIR validation");
 
-    const auto firstC = foundation::emitC(*first.fir, "closures.fdn");
-    const auto secondC = foundation::emitC(*second.fir, "closures.fdn");
+    const auto firstC = foundation::emitC(*first.fir, "closures.fn");
+    const auto secondC = foundation::emitC(*second.fir, "closures.fn");
     expect(firstC == secondC, "closure C emission is deterministic");
     expect(firstC.find("fdn_call") != std::string::npos,
            "function values use a typed invocation pointer");
@@ -2048,7 +2048,7 @@ fn main() i32 {
         expect(false, "task function value adapter fixture lowers to FIR");
         return;
     }
-    const auto generated = foundation::emitC(*checked.fir, "task-function-value.fdn");
+    const auto generated = foundation::emitC(*checked.fir, "task-function-value.fn");
     const auto reference = generated.find(".fdn_call = &");
     const auto prototype = generated.find("_value_adapter(void *fdn_env);");
     expect(reference != std::string::npos && prototype != std::string::npos &&
@@ -2107,14 +2107,14 @@ fn main() i32 {
     expect(metadata.find("\"kind\":\"service\"") != std::string::npos &&
                metadata.find("\"kind\":\"action\"") != std::string::npos,
            "service and action emit static application metadata");
-    expect(foundation::emitC(*first.fir, "service.fdn") ==
-               foundation::emitC(*second.fir, "service.fdn"),
+    expect(foundation::emitC(*first.fir, "service.fn") ==
+               foundation::emitC(*second.fir, "service.fn"),
            "service and action C emission is deterministic");
 }
 
 void applicationPlanValidatesStaticDependencyGraph() {
     const auto source = std::filesystem::path(FOUNDATION_TEST_SOURCE_DIR) /
-                        "tests/cases/accept/application-plan.fdn";
+                        "tests/cases/accept/application-plan.fn";
     auto analysis = foundation::analyzeProject(source);
     expect(!analysis.diagnostics.hasErrors(), "application plan fixture has no diagnostics");
     expect(analysis.semantic.has_value(), "application plan fixture has a semantic model");
@@ -2186,7 +2186,7 @@ void applicationHostEmitsTypedFoundationSource() {
     }
     const auto generatedSource = std::find_if(
         analysis.sources.begin(), analysis.sources.end(), [](const auto &candidate) {
-            return candidate.path.ends_with(".foundation.generated.fdn");
+            return candidate.path.ends_with(".foundation.generated.fn");
         });
     expect(generatedSource != analysis.sources.end(),
            "application host example includes its compiler-derived source");
@@ -2226,7 +2226,7 @@ void projectDiagnosticsRetainTheirSource() {
         expect(diagnostic.span.source < project->sources.size(),
                "multiple-main diagnostic has a valid source ID");
         if (diagnostic.span.source < project->sources.size()) {
-            expect(project->sources[diagnostic.span.source].path == "second/main.fdn",
+            expect(project->sources[diagnostic.span.source].path == "second/main.fn",
                    "multiple-main diagnostic points to the second entry point");
         }
         return;
@@ -2239,20 +2239,20 @@ void standardLibrarySourceIsLoadedOnce() {
         std::filesystem::path(FOUNDATION_TEST_SOURCE_DIR) / "std";
     std::size_t sourceCount{};
     for (const auto &entry : std::filesystem::recursive_directory_iterator(standardRoot)) {
-        if (entry.is_regular_file() && entry.path().extension() == ".fdn") {
+        if (entry.is_regular_file() && entry.path().extension() == ".fn") {
             ++sourceCount;
         }
     }
     const auto frameworkRoot =
         std::filesystem::path(FOUNDATION_TEST_SOURCE_DIR) / "foundation";
     for (const auto &entry : std::filesystem::recursive_directory_iterator(frameworkRoot)) {
-        if (entry.is_regular_file() && entry.path().extension() == ".fdn") {
+        if (entry.is_regular_file() && entry.path().extension() == ".fn") {
             ++sourceCount;
         }
     }
 
     const auto source = std::filesystem::relative(
-        standardRoot / "collections/list.fdn", std::filesystem::current_path());
+        standardRoot / "collections/list.fn", std::filesystem::current_path());
     foundation::Diagnostics diagnostics;
     const auto project = foundation::loadProject(source, diagnostics);
     expect(project.has_value(), "relative standard library source is loaded");
@@ -2335,7 +2335,7 @@ fn main() i32 { 0 }
         function.packageName = "sample.docs";
     }
     foundation::ProjectAnalysis analysis;
-    analysis.sources.emplace_back("api.fdn", std::string(source), "api.fdn", "sample.docs");
+    analysis.sources.emplace_back("api.fn", std::string(source), "api.fn", "sample.docs");
     analysis.program = std::move(checked.program);
     analysis.semantic = std::move(checked.semantic);
     const auto first = foundation::emitDocumentation(analysis);

@@ -4,7 +4,7 @@ endif()
 
 file(REMOVE_RECURSE "${PROJECT}")
 file(COPY "${SOURCE}/" DESTINATION "${PROJECT}")
-file(GLOB_RECURSE source_before RELATIVE "${PROJECT}" "${PROJECT}/*.fdn")
+file(GLOB_RECURSE source_before RELATIVE "${PROJECT}" "${PROJECT}/*.fn")
 
 execute_process(
     COMMAND "${COMPILER}" test "${PROJECT}"
@@ -16,7 +16,7 @@ if(NOT test_result EQUAL 0)
     message(FATAL_ERROR "compiler-derived validation failed:\n${test_output}${test_error}")
 endif()
 
-file(GLOB_RECURSE source_after RELATIVE "${PROJECT}" "${PROJECT}/*.fdn")
+file(GLOB_RECURSE source_after RELATIVE "${PROJECT}" "${PROJECT}/*.fn")
 if(NOT source_after STREQUAL source_before)
     message(FATAL_ERROR "compiler-derived validation changed the project source inventory")
 endif()

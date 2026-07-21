@@ -1016,6 +1016,16 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
     for (const auto &overlay : overlays) {
         overlayContents[sourceIdentity(overlay.path).generic_string()] = overlay.contents;
     }
+    const auto regularInput = std::filesystem::is_regular_file(input, error);
+    if (error) {
+        diagnostics.error("FDN3001", "cannot inspect source input", {0, 0, 1, 1});
+        return std::nullopt;
+    }
+    if (regularInput && input.extension() != ".fn") {
+        diagnostics.error("FDN3007", "source file must use the .fn extension",
+                          {0, 0, 1, 1});
+        return std::nullopt;
+    }
     const auto directoryInput = std::filesystem::is_directory(input, error);
     if (error) {
         diagnostics.error("FDN3001", "cannot inspect source input", {0, 0, 1, 1});
@@ -1062,7 +1072,7 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
                 const std::filesystem::recursive_directory_iterator end;
                 while (!error && iterator != end) {
                     if (iterator->is_regular_file(error) && !error &&
-                        iterator->path().extension() == ".fdn") {
+                        iterator->path().extension() == ".fn") {
                         sourcePaths.push_back(iterator->path());
                     }
                     iterator.increment(error);
@@ -1075,7 +1085,7 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
                 for (const auto &overlay : overlays) {
                     const auto identity = sourceIdentity(overlay.path);
                     const auto relative = identity.lexically_relative(sourceRoot);
-                    if (overlay.path.extension() == ".fdn" && !relative.empty() &&
+                    if (overlay.path.extension() == ".fn" && !relative.empty() &&
                         *relative.begin() != "..") {
                         sourcePaths.push_back(overlay.path);
                     }
@@ -1103,7 +1113,7 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
             }
         }
         if (paths.empty()) {
-            diagnostics.error("FDN3002", "package project contains no .fdn source files",
+            diagnostics.error("FDN3002", "package project contains no .fn source files",
                               {0, 0, 1, 1});
             return std::nullopt;
         }
@@ -1112,7 +1122,7 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
         const std::filesystem::recursive_directory_iterator end;
         while (!error && iterator != end) {
             if (iterator->is_regular_file(error) && !error &&
-                iterator->path().extension() == ".fdn") {
+                iterator->path().extension() == ".fn") {
                 paths.push_back(iterator->path());
             }
             iterator.increment(error);
@@ -1129,7 +1139,7 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
         for (const auto &overlay : overlays) {
             const auto identity = sourceIdentity(overlay.path);
             const auto relative = identity.lexically_relative(inputIdentity);
-            if (overlay.path.extension() == ".fdn" && !relative.empty() &&
+            if (overlay.path.extension() == ".fn" && !relative.empty() &&
                 *relative.begin() != ".." && seen.insert(identity.generic_string()).second) {
                 paths.push_back(overlay.path);
             }
@@ -1139,7 +1149,7 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
                    right.lexically_relative(input).generic_string();
         });
         if (paths.empty()) {
-            diagnostics.error("FDN3002", "project contains no .fdn source files", {0, 0, 1, 1});
+            diagnostics.error("FDN3002", "project contains no .fn source files", {0, 0, 1, 1});
             return std::nullopt;
         }
     } else {
@@ -1148,7 +1158,7 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
         const auto inputDirectory = inputIdentity.parent_path();
         for (const auto &overlay : overlays) {
             const auto identity = sourceIdentity(overlay.path);
-            if (overlay.path.extension() == ".fdn" && identity != inputIdentity &&
+            if (overlay.path.extension() == ".fn" && identity != inputIdentity &&
                 identity.parent_path() == inputDirectory) {
                 paths.push_back(overlay.path);
             }
@@ -1177,7 +1187,7 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
         const std::filesystem::recursive_directory_iterator end;
         while (!error && iterator != end) {
             if (iterator->is_regular_file(error) && !error &&
-                iterator->path().extension() == ".fdn") {
+                iterator->path().extension() == ".fn") {
                 libraryPaths.push_back(iterator->path());
             }
             iterator.increment(error);

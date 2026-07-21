@@ -7,7 +7,7 @@
             "command": "../../build/dev/foundationc",
             "args": [
                 "run",
-                "main.fdn"
+                "main.fn"
             ],
             "group": {
                 "kind": "build",

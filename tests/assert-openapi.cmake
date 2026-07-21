@@ -39,7 +39,7 @@ execute_process(
     OUTPUT_VARIABLE lint_output
     ERROR_VARIABLE lint_error
 )
-if(NOT lint_result EQUAL 0 OR lint_error MATCHES "\\.foundation\\.generated\\.fdn")
+if(NOT lint_result EQUAL 0 OR lint_error MATCHES "\\.foundation\\.generated\\.fn")
     message(FATAL_ERROR "OpenAPI project exposed generated source to lint:\n${lint_output}${lint_error}")
 endif()
 

@@ -45,7 +45,7 @@ bool projectSource(const ProjectAnalysis &analysis, SourceSpan span,
         return false;
     }
     const auto &source = analysis.sources[span.source];
-    if (source.path.ends_with(".foundation.generated.fdn") || generatedSource(source.contents)) {
+    if (source.path.ends_with(".foundation.generated.fn") || generatedSource(source.contents)) {
         return false;
     }
     if (!projectSources.empty()) {
