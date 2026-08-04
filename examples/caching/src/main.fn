@@ -148,9 +148,9 @@ fn main() i32 {
         return 1
     }
     requireVoid($local.Set(
-        "profile:1",
-        Profile { Name = "Ada" Age = 36 },
-        time.Zero()
+            "profile:1",
+            Profile { Name = "Ada" Age = 36 },
+            time.Zero()
         ).wait())
     print("local:" + label(requireProfile($local.Get("profile:1").wait())))
 
@@ -165,17 +165,17 @@ fn main() i32 {
         $decodeProfile
     )
     requireBridgeVoid($bridge.Set(
-        "profile:2",
-        Profile { Name = "Grace" Age = 37 },
-        time.Zero()
+            "profile:2",
+            Profile { Name = "Grace" Age = 37 },
+            time.Zero()
         ).wait())
     print("bridge:" + label(requireBridgeProfile(
-        $bridge.Get("profile:2").wait()
-        )))
+                $bridge.Get("profile:2").wait()
+            )))
 
     waitFor(time.Milliseconds(3))
     print("expired:" + format.Bool(isMissing(
-        $local.Get("profile:1").wait()
-        )))
+                $local.Get("profile:1").wait()
+            )))
     0
 }

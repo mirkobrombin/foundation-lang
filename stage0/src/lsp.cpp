@@ -2500,6 +2500,43 @@ class LanguageServer {
                         "channel operation completes before the monotonic duration. The duration "
                         "may be a unit literal or a dynamic `u64` nanosecond expression. Deadline "
                         "addition saturates instead of wrapping.";
+                } else if (keyword == "after") {
+                    const auto lineStart = found->offset == 0
+                                               ? 0
+                                               : source.contents.rfind('\n', found->offset - 1) + 1;
+                    const auto prefix = std::string_view(source.contents).substr(
+                        lineStart, found->offset - lineStart);
+                    auto event = std::string("Expire");
+                    if (const auto declaration = prefix.find("on ");
+                        declaration != std::string_view::npos) {
+                        auto begin = declaration + 3;
+                        while (begin < prefix.size() &&
+                               std::isspace(static_cast<unsigned char>(prefix[begin])) != 0) {
+                            ++begin;
+                        }
+                        auto end = begin;
+                        while (end < prefix.size() &&
+                               (std::isalnum(static_cast<unsigned char>(prefix[end])) != 0 ||
+                                prefix[end] == '_')) {
+                            ++end;
+                        }
+                        if (end != begin) {
+                            event = std::string(prefix.substr(begin, end - begin));
+                        }
+                    }
+                    const auto accessor =
+                        (!event.empty() &&
+                         std::isupper(static_cast<unsigned char>(event.front())) != 0
+                             ? std::string("TimeoutFor")
+                             : std::string("timeoutFor")) +
+                        event;
+                    documentation =
+                        "```foundation\non " + event +
+                        " from Pending to Expired after 30.seconds\n```\n\nDeclares one "
+                        "positive compile-time timeout for each "
+                        "source state. The compiler retains the duration in metadata and "
+                        "generates a typed `" + accessor +
+                        "` accessor for runtime binding.";
                 } else if (keyword == "blocking" && found->offset != 0 &&
                            source.contents[found->offset - 1] == '@') {
                     documentation =
@@ -4305,7 +4342,8 @@ class LanguageServer {
             constexpr std::string_view keywords[] = {
                 "package", "import", "as",      "extern", "struct", "service", "enum",  "contract",
                 "attribute", "implements", "extends", "delegate", "methods", "fn", "action", "task", "test",
-                "spawn", "unsafe",
+                "state_machine", "state", "on", "from", "to", "after", "pipeline", "saga",
+                "step", "using", "retry", "exponential", "max", "compensate", "spawn", "unsafe",
                 "const",    "var",
                 "return",  "discard", "if",      "else",   "while", "for", "in", "break",
                 "continue", "select", "timeout", "match", "capture",

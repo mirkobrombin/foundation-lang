@@ -222,17 +222,17 @@ fn main() i32 {
     if status($expiring.Dispatch(request("expiring"))) != 200 return 28
 
     const invalidCapacity = policyRejected($rateWeb.RateLimitWithPolicy<AppError>(
-        1,
-        1,
-        time.Milliseconds(1),
-        0
+            1,
+            1,
+            time.Milliseconds(1),
+            0
         ))
     if !invalidCapacity return 29
     const invalidTTL = policyRejected($rateWeb.RateLimitWithPolicy<AppError>(
-        1,
-        1,
-        time.Zero(),
-        1
+            1,
+            1,
+            time.Zero(),
+            1
         ))
     if !invalidTTL return 30
 

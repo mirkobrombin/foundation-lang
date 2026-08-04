@@ -1,0 +1,60 @@
+state_machine Timer {
+    state Pending
+    state Expired
+
+    on Expire from Pending to Expired after 50.milliseconds
+}
+
+state_machine OwnedTimer {
+    state Waiting(label String)
+    state Expired
+
+    on Expire from Waiting to Expired after 1.seconds
+}
+
+fn timeoutMatches(value Timer, expected Option<u64>) bool {
+    const actual = Timer.TimeoutForExpire(value)
+    match actual {
+        None: match expected {
+            None: true
+            Some(duration): false
+        }
+        Some(duration): match expected {
+            None: false
+            Some(wanted): duration == wanted
+        }
+    }
+}
+
+fn ownedTimeoutPreservesState(value OwnedTimer) bool {
+    const duration = OwnedTimer.TimeoutForExpire(value)
+    const covered = match duration {
+        None: false
+        Some(nanoseconds): nanoseconds == 1000000000
+    }
+    if !covered return false
+    match value {
+        Waiting(label): label == "owned"
+        Expired: false
+    }
+}
+
+fn main() i32 {
+    var timer Timer = .Pending
+    if !timeoutMatches(timer, .Some(50000000)) return 1
+    if !timeoutMatches(.Expired, .None) return 2
+    timer.Expire() else error {
+        discard error
+        return 3
+    }
+    if !timeoutMatches(timer, .None) return 4
+    var owned OwnedTimer = .Waiting(label = "owned")
+    if !ownedTimeoutPreservesState(owned) return 5
+    const retained = match owned {
+        Waiting(label): label == "owned"
+        Expired: false
+    }
+    if !retained return 6
+    print("state timeout ok")
+    0
+}

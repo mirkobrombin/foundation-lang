@@ -255,6 +255,40 @@ void formatsWorkflowCompensation() {
            "workflow formatting is idempotent");
 }
 
+void indentsNestedCallsByDepth() {
+    constexpr std::string_view source =
+        "fn main()i32{\n"
+        "if !accepted(\n"
+        "register(\n"
+        "1,\n"
+        "2\n"
+        "),\n"
+        "3\n"
+        "){\n"
+        "return 1\n"
+        "}\n"
+        "0\n"
+        "}\n";
+    constexpr std::string_view expected =
+        "fn main() i32 {\n"
+        "    if !accepted(\n"
+        "        register(\n"
+        "            1,\n"
+        "            2\n"
+        "        ),\n"
+        "        3\n"
+        "    ) {\n"
+        "        return 1\n"
+        "    }\n"
+        "    0\n"
+        "}\n";
+    const auto formatted = foundation::formatSource(source);
+    expect(!formatted.diagnostics.hasErrors(), "nested calls format without diagnostics");
+    expect(formatted.contents == expected, "nested calls retain one indent per call depth");
+    expect(foundation::formatSource(formatted.contents).contents == formatted.contents,
+           "nested call formatting is idempotent");
+}
+
 void rejectsInvalidSourceWithoutChangingIt() {
     constexpr std::string_view source = "fn main( {\n";
     const auto formatted = foundation::formatSource(source);
@@ -333,6 +367,7 @@ int main() {
     keepsTaskOwnershipCompact();
     formatsNestedCallableSignatures();
     formatsWorkflowCompensation();
+    indentsNestedCallsByDepth();
     rejectsInvalidSourceWithoutChangingIt();
     preservesEstablishedFoundationStyle();
     formatsRepositorySources();

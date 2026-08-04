@@ -250,6 +250,7 @@ class Lowerer {
             FirStateTransitionFunction transition;
             transition.sourceVariants = source.stateTransition->sourceVariants;
             transition.destinationVariant = source.stateTransition->destinationVariant;
+            transition.timeoutNanoseconds = source.stateTransition->timeoutNanoseconds;
             if (source.stateTransition->destinationParameter.has_value()) {
                 const auto parameter = *source.stateTransition->destinationParameter;
                 if (parameter < semantic.parameters.size()) {
@@ -257,6 +258,11 @@ class Lowerer {
                 }
             }
             function.stateTransition = std::move(transition);
+        }
+        if (source.stateTimeout.has_value()) {
+            function.stateTimeout = FirStateTimeoutFunction{
+                source.stateTimeout->sourceVariants,
+                source.stateTimeout->nanoseconds};
         }
         if (semantic.workflow.has_value()) {
             const auto &sourceWorkflow = *semantic.workflow;
@@ -297,7 +303,7 @@ class Lowerer {
                                        local.borrowedClosure});
         }
         if (!source.hasBody || source.stateTransition.has_value() ||
-            source.workflow.has_value()) {
+            source.stateTimeout.has_value() || source.workflow.has_value()) {
             return function;
         }
         current_ = &function;

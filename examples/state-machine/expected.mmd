@@ -1,5 +1,6 @@
 stateDiagram-v2
-    Draft --> Cancelled
-    Draft --> Submitted
-    Submitted --> Cancelled
-    Submitted --> Paid
+    Draft --> Cancelled : Cancel
+    Draft --> Submitted : Submit
+    Submitted --> Cancelled : Cancel
+    Submitted --> Expired : Expire after 60.seconds
+    Submitted --> Paid : Pay

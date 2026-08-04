@@ -1,8 +1,9 @@
 digraph FSM {
     rankdir=LR;
     node [shape=box style=rounded];
-    Draft -> Cancelled;
-    Draft -> Submitted;
-    Submitted -> Cancelled;
-    Submitted -> Paid;
+    Draft -> Cancelled [label="Cancel"];
+    Draft -> Submitted [label="Submit"];
+    Submitted -> Cancelled [label="Cancel"];
+    Submitted -> Expired [label="Expire after 60.seconds"];
+    Submitted -> Paid [label="Pay"];
 }

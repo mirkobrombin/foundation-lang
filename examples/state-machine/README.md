@@ -1,9 +1,13 @@
 # State machine example
 
-This project declares a closed state machine with typed transition payloads. The compiler checks
-every state and transition, generates edit methods, and can render the same typed graph without
-runtime reflection. Its managed machine runs a reusable pre-commit guard, ordered exit and enter
-effects, lifecycle listeners, history, and timeout polling.
+This project declares an order lifecycle as a closed state machine whose transitions carry typed
+payloads. The declaration is used both for executable edit methods and for the Mermaid or Graphviz
+graph emitted by `foundationc`, without inspecting the machine through runtime reflection.
+
+The managed machine shows where policy attaches to that graph. A guard runs before a transition is
+committed, exit and enter effects follow declaration order, and listeners can inspect history. The
+`Expire` transition owns its `60.seconds` timeout rule, which the runtime polls against a monotonic
+clock.
 
 ```sh
 foundationc run examples/state-machine

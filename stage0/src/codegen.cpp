@@ -1201,7 +1201,7 @@ void markDivergingFunctions(FirProgram &program) {
         changed = false;
         for (auto &function : program.functions) {
             if (function.hasBody && !function.stateTransition.has_value() &&
-                !function.workflow.has_value() &&
+                !function.stateTimeout.has_value() && !function.workflow.has_value() &&
                 !function.diverges &&
                 blockFlow(program, function, function.body) == ControlFlow::Diverges) {
                 function.diverges = true;
@@ -4839,6 +4839,52 @@ void emitStateTransitionBody(std::ostringstream &out, const FirProgram &program,
     out << "    return " << result << ";\n";
 }
 
+void emitStateTimeoutBody(std::ostringstream &out, const FirProgram &program,
+                          const FirFunction &function) {
+    if (!function.stateTimeout.has_value() || function.parameters.size() != 1 ||
+        function.returnType.kind != TypeKind::Enum ||
+        function.returnType.declaration >= program.enums.size() ||
+        program.enums[function.returnType.declaration].variants.size() < 2 ||
+        !program.enums[function.returnType.declaration].variants[1].payload.has_value()) {
+        internalError("invalid state timeout function");
+    }
+    const auto &timeout = *function.stateTimeout;
+    const auto stateLocal = function.parameters.front();
+    const auto &stateType = function.locals[stateLocal].type;
+    const auto borrowed = stateType.kind == TypeKind::View &&
+                          stateType.arguments.size() == 1 &&
+                          stateType.arguments.front().kind == TypeKind::Enum;
+    if (stateType.kind != TypeKind::Enum && !borrowed) {
+        internalError("invalid state timeout parameter");
+    }
+    const auto machineType = borrowed ? stateType.arguments.front() : stateType;
+    const auto state = localName(function, stateLocal);
+    const auto result = "fdn_timeout_result";
+    out << "    " << cType(function.returnType) << ' ' << result << " = {0};\n";
+    out << "    if (";
+    for (std::size_t index = 0; index < timeout.sourceVariants.size(); ++index) {
+        if (index != 0) {
+            out << " || ";
+        }
+        out << state << (borrowed ? "->fdn_tag == " : ".fdn_tag == ")
+            << enumTag(machineType.declaration, timeout.sourceVariants[index]);
+    }
+    if (timeout.sourceVariants.empty()) {
+        out << "false";
+    }
+    out << ") {\n";
+    out << "        " << result << ".fdn_tag = "
+        << enumTag(function.returnType.declaration, 1) << ";\n";
+    out << "        " << result << ".fdn_data." << payloadName(1)
+        << " = UINT64_C(" << timeout.nanoseconds << ");\n";
+    out << "    } else {\n";
+    out << "        " << result << ".fdn_tag = "
+        << enumTag(function.returnType.declaration, 0) << ";\n";
+    out << "    }\n";
+    out << "    fdn_frame_leave(&fdn_frame_current);\n";
+    out << "    return " << result << ";\n";
+}
+
 std::string workflowArgument(const FirProgram &program, FirFunctionId target,
                              const std::string &value, bool borrowed) {
     const auto &function = program.functions[target];
@@ -5313,6 +5359,14 @@ std::string emitCImpl(const FirProgram &source, std::string_view sourcePath,
         }
         if (function.stateTransition.has_value()) {
             emitStateTransitionBody(out, program, function);
+            out << "}\n";
+            if (index + 1 != program.functions.size()) {
+                out << '\n';
+            }
+            continue;
+        }
+        if (function.stateTimeout.has_value()) {
+            emitStateTimeoutBody(out, program, function);
             out << "}\n";
             if (index + 1 != program.functions.size()) {
                 out << '\n';

@@ -496,6 +496,12 @@ struct FirStateTransitionFunction {
     std::vector<FirVariantId> sourceVariants;
     FirVariantId destinationVariant{};
     std::optional<FirLocalId> destinationParameter;
+    std::optional<std::uint64_t> timeoutNanoseconds;
+};
+
+struct FirStateTimeoutFunction {
+    std::vector<FirVariantId> sourceVariants;
+    std::uint64_t nanoseconds{};
 };
 
 enum class FirWorkflowKind {
@@ -555,6 +561,7 @@ struct FirFunction {
     bool action{};
     std::optional<FirStateTransitionFunction> stateTransition;
     std::optional<FirWorkflowFunction> workflow;
+    std::optional<FirStateTimeoutFunction> stateTimeout;
 };
 
 struct FirStructField {

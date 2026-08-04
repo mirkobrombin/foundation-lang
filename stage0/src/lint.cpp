@@ -212,9 +212,14 @@ Diagnostics lintProject(const ProjectAnalysis &analysis, CodeStandardProfile pro
             }
         }
         for (const auto &symbol : index.symbols()) {
+            const auto generatedStateTimeout =
+                (symbol.id.kind == LanguageSymbolKind::Function ||
+                 symbol.id.kind == LanguageSymbolKind::Method) &&
+                symbol.id.owner < analysis.program.functions.size() &&
+                analysis.program.functions[symbol.id.owner].stateTimeout.has_value();
             if (!projectSource(analysis, symbol.definition.source, projectSources) ||
                 !exportedSymbol(analysis, symbol, exportedTypes, contracts) ||
-                !symbol.documentation.empty()) {
+                !symbol.documentation.empty() || generatedStateTimeout) {
                 continue;
             }
             findings.push_back({"FCS2001",

@@ -35,6 +35,23 @@ state_machine Doc {
     on Name($name String) from Draft to Named(name)
 }
 
+state_machine Timer {
+    state Waiting
+    state Expired
+
+    on Expire from Waiting to Expired after 1.nanoseconds
+}
+
+enum TimerTrigger {
+    Expire
+}
+
+enum TimeoutOverlapState {
+    First
+    Second
+    Shared
+}
+
 enum DocTrigger {
     Rename(name String)
 }
@@ -65,6 +82,81 @@ fn cloneDocTrigger(value DocTrigger) DocTrigger {
     match value {
         Rename(name): .Rename(name = text.Copy(name))
     }
+}
+
+fn cloneTimer(value Timer) Timer {
+    match value {
+        Waiting: .Waiting
+        Expired: .Expired
+    }
+}
+
+fn cloneTimerTrigger(value TimerTrigger) TimerTrigger {
+    match value {
+        Expire: .Expire
+    }
+}
+
+fn timerTimeout(value Timer) Option<u64> {
+    Timer.TimeoutForExpire(value)
+}
+
+fn zeroTimerTimeout(value Timer) Option<u64> {
+    match value {
+        Waiting: .Some(0)
+        Expired: .None
+    }
+}
+
+fn cloneTimeoutOverlapState(value TimeoutOverlapState) TimeoutOverlapState {
+    match value {
+        First: .First
+        Second: .Second
+        Shared: .Shared
+    }
+}
+
+fn firstOverlapTimeout(value TimeoutOverlapState) Option<u64> {
+    match value {
+        First: .Some(1)
+        Second: .None
+        Shared: .Some(1)
+    }
+}
+
+fn secondOverlapTimeout(value TimeoutOverlapState) Option<u64> {
+    match value {
+        First: .None
+        Second: .Some(1)
+        Shared: .Some(1)
+    }
+}
+
+fn changingTimeout(value TimeoutOverlapState) Option<u64> {
+    match value {
+        First: .Some(1)
+        Second: .None
+        Shared: .Some(2)
+    }
+}
+
+fn timeoutOverlapCode(value TimeoutOverlapState) i32 {
+    match value {
+        First: 1
+        Second: 2
+        Shared: 3
+    }
+}
+
+fn rejectOverlapTimeout(
+    &value TimeoutOverlapState
+) Result<void, MachineError> {
+    discard value
+    .Err(.InvalidTransition)
+}
+
+fn expireTimer(&value Timer) Result<void, TimerTransitionError> {
+    value.Expire()
 }
 
 fn start(&job Job) Result<void, MachineError> {
@@ -341,6 +433,7 @@ fn expectCommitted(
                 false
             }
             InvalidTimeout: false
+            OverlappingTimeout: false
         }
     }
 }
@@ -368,6 +461,7 @@ fn expectRejected(
                 false
             }
             InvalidTimeout: false
+            OverlappingTimeout: false
         }
     }
 }
@@ -408,6 +502,7 @@ fn expectGuardRejected(
                 false
             }
             InvalidTimeout: false
+            OverlappingTimeout: false
         }
     }
 }
@@ -626,6 +721,7 @@ fn timeoutRejected(
                 false
             }
             InvalidTimeout: true
+            OverlappingTimeout: false
         }
     }
 }
@@ -705,6 +801,273 @@ fn expiredTimeout() bool {
     }
 }
 
+fn timeoutRegistrationAccepted(
+    $value Result<void, fsm.TimeoutRegistrationError>
+) bool {
+    match value {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn timeoutRegistrationRejected(
+    $value Result<void, fsm.TimeoutRegistrationError>,
+    expected i32
+) bool {
+    match value {
+        Ok: false
+        Err(error): match error {
+            SourceNotCovered: expected == 1
+            DuplicateSource: expected == 2
+            InvalidTimeout: expected == 3
+        }
+    }
+}
+
+fn requiredTimeoutRule<S, G>(
+    $value Option<fsm.TimeoutRule<S, G>>
+) fsm.TimeoutRule<S, G> {
+    match value {
+        None: panic("missing timeout rule")
+        Some(rule): rule
+    }
+}
+
+fn timerIsWaiting(value Timer) bool {
+    match value {
+        Waiting: true
+        Expired: false
+    }
+}
+
+fn timerIsExpired(value Timer) bool {
+    match value {
+        Waiting: false
+        Expired: true
+    }
+}
+
+fn timerTriggerIsExpire(value TimerTrigger) bool {
+    match value {
+        Expire: true
+    }
+}
+
+fn declarativeTimeout() bool {
+    var initial Timer = .Waiting
+    var machine = fsm.New<Timer, TimerTrigger, TimerTransitionError, LogError>(
+        $initial,
+        $cloneTimer,
+        $cloneTimerTrigger
+    )
+    const unbound = machine.CheckTimeouts()
+    match unbound {
+        Ok(result): match result {
+            NoRule: unboundTimeoutSucceeded()
+            Pending: {
+                return false
+            }
+            Applied(report): {
+                discard report
+                return false
+            }
+        }
+        Err(error): {
+            discard error
+            return false
+        }
+    }
+    if !timeoutRegistrationRejected(
+        $machine.BindTimeout(.Expired, .Expire, $timerTimeout, $expireTimer),
+        1
+    ) {
+        return false
+    }
+    if !timeoutRegistrationRejected(
+        $machine.BindTimeout(
+            .Waiting,
+            .Expire,
+            $zeroTimerTimeout,
+            $expireTimer
+        ),
+        3
+    ) {
+        return false
+    }
+    if !timeoutRegistrationAccepted(
+        $machine.BindTimeout(.Waiting, .Expire, $timerTimeout, $expireTimer)
+    ) {
+        return false
+    }
+    if !timeoutRegistrationRejected(
+        $machine.BindTimeout(.Waiting, .Expire, $timerTimeout, $expireTimer),
+        2
+    ) {
+        return false
+    }
+
+    var rules = machine.TimeoutRules()
+    if rules.Len() != 1 return false
+    const rule = requiredTimeoutRule(rules.PopFront())
+    const fsm.TimeoutRule { Source Trigger Duration } = rule
+    if !timerIsWaiting(Source) return false
+    if !timerTriggerIsExpire(Trigger) return false
+    if Duration.Nanoseconds() != 1 return false
+    if !rules.IsEmpty() return false
+
+    var applied = false
+    while !applied {
+        const checked = machine.CheckTimeouts()
+        match checked {
+            Ok(result): match result {
+                NoRule: {
+                    return false
+                }
+                Pending: {
+                    applied = false
+                }
+                Applied(report): {
+                    if !report.IsClean() return false
+                    applied = true
+                }
+            }
+            Err(error): {
+                discard error
+                return false
+            }
+        }
+    }
+    if !timerIsExpired(machine.Snapshot()) return false
+    if machine.HistoryLen() != 1 return false
+    const finished = machine.CheckTimeouts()
+    match finished {
+        Ok(result): match result {
+            NoRule: true
+            Pending: false
+            Applied(report): {
+                discard report
+                false
+            }
+        }
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn overlappingTimeoutRejected() bool {
+    var initial TimeoutOverlapState = .Shared
+    var machine = fsm.New<TimeoutOverlapState, Trigger, MachineError, LogError>(
+        $initial,
+        $cloneTimeoutOverlapState,
+        $cloneTrigger
+    )
+    if !timeoutRegistrationAccepted(
+        $machine.BindTimeout(
+            .First,
+            .Finish,
+            $firstOverlapTimeout,
+            $rejectOverlapTimeout
+        )
+    ) {
+        return false
+    }
+    if !timeoutRegistrationAccepted(
+        $machine.BindTimeout(
+            .Second,
+            .Finish,
+            $secondOverlapTimeout,
+            $rejectOverlapTimeout
+        )
+    ) {
+        return false
+    }
+
+    const checked = machine.CheckTimeouts()
+    const rejected = match checked {
+        Ok(result): {
+            discard result
+            false
+        }
+        Err(error): match error {
+            Transition(error): {
+                discard error
+                false
+            }
+            Guard(error): {
+                discard error
+                false
+            }
+            Clock(error): {
+                discard error
+                false
+            }
+            InvalidTimeout: false
+            OverlappingTimeout: true
+        }
+    }
+    if !rejected return false
+
+    var rules = machine.TimeoutRules()
+    if rules.Len() != 2 return false
+    const first = requiredTimeoutRule(rules.PopFront())
+    const second = requiredTimeoutRule(rules.PopFront())
+    if timeoutOverlapCode(first.Source) != 1 return false
+    if timeoutOverlapCode(second.Source) != 2 return false
+    rules.IsEmpty()
+}
+
+fn changingTimeoutRejected() bool {
+    var initial TimeoutOverlapState = .Shared
+    var machine = fsm.New<TimeoutOverlapState, Trigger, MachineError, LogError>(
+        $initial,
+        $cloneTimeoutOverlapState,
+        $cloneTrigger
+    )
+    if !timeoutRegistrationAccepted(
+        $machine.BindTimeout(
+            .First,
+            .Finish,
+            $changingTimeout,
+            $rejectOverlapTimeout
+        )
+    ) {
+        return false
+    }
+
+    const checked = machine.CheckTimeouts()
+    match checked {
+        Ok(result): {
+            discard result
+            false
+        }
+        Err(error): match error {
+            Transition(error): {
+                discard error
+                false
+            }
+            Guard(error): {
+                discard error
+                false
+            }
+            Clock(error): {
+                discard error
+                false
+            }
+            InvalidTimeout: true
+            OverlappingTimeout: false
+        }
+    }
+}
+
+fn unboundTimeoutSucceeded() void {
+    return
+}
+
 fn main() i32 {
     var initial Job = .Idle
     var machine = fsm.New<Job, Trigger, MachineError, LogError>(
@@ -743,6 +1106,9 @@ fn main() i32 {
     if !guardedRejection() return 18
     if !bestEffortEffects() return 19
     if !stoppedEffects() return 20
+    if !declarativeTimeout() return 21
+    if !overlappingTimeoutRejected() return 22
+    if !changingTimeoutRejected() return 23
     print("fsm machine ok")
     0
 }

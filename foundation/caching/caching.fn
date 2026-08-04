@@ -223,9 +223,9 @@ fn NewWith<T>(
         return .Err(.InvalidMaxEntries)
     }
     .Ok(newCache<T>(
-        $cloneValue,
-        policy.DefaultTTL.Nanoseconds(),
-        policy.MaxEntries
+            $cloneValue,
+            policy.DefaultTTL.Nanoseconds(),
+            policy.MaxEntries
         ))
 }
 
@@ -708,8 +708,8 @@ fn NewDistributedWith(
         return .Err(.InvalidMaxEntries)
     }
     .Ok(newDistributedCache(
-        policy.DefaultTTL.Nanoseconds(),
-        policy.MaxEntries
+            policy.DefaultTTL.Nanoseconds(),
+            policy.MaxEntries
         ))
 }
 
@@ -1206,16 +1206,16 @@ fn applyBridge<T, B, C>(
 ) bridgeResponse<T, B, C> {
     match operation {
         Get(key): .MaybeValue(value = bridgeGetValue<T, B, C>(
-            &current,
-            $key
+                &current,
+                $key
             ))
         Set(value): .Done(value = bridgeSetValue<T, B, C>(
-            &current,
-            $value
+                &current,
+                $value
             ))
         Invalidate(key): .Done(value = bridgeInvalidateValue<T, B, C>(
-            &current,
-            $key
+                &current,
+                $key
             ))
     }
 }
@@ -1312,7 +1312,7 @@ task bridgeHandleSet<T, B, C>(
     ttl time.Duration
 ) Result<void, BridgeError<B, C>> {
     const result = spawn sendBridgeRequest<T, B, C>($requests, .Set(
-        value = bridgeSetPayload<T> {
+            value = bridgeSetPayload<T> {
         key = key
         value = value
         ttl = ttl

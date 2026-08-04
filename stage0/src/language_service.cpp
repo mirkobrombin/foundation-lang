@@ -754,9 +754,13 @@ class IndexBuilder {
             auto scope = typeMember ? "method:" + function.ownerType
                                     : "function:" + function.packageName;
             const auto name = shortName(function.name);
+            const auto definition = function.stateTimeout.has_value()
+                                        ? function.span
+                                        : identifierSpan(analysis_, function.span, name);
             addSymbol({symbol, name, functionDetail(function), std::move(scope),
-                       identifierSpan(analysis_, function.span, name),
-                       !standardSource(function.span) && name != "main" && name != "drop"});
+                       definition,
+                       !standardSource(function.span) && name != "main" && name != "drop"},
+                      !function.stateTimeout.has_value());
         }
     }
 
@@ -940,6 +944,9 @@ class IndexBuilder {
              ++function) {
             const auto &declaration = analysis_.program.functions[function];
             const auto &semanticFunction = semantic_->functions[function];
+            if (declaration.stateTimeout.has_value()) {
+                continue;
+            }
             for (std::size_t parameter = 0;
                  parameter < declaration.parameters.size() &&
                  parameter < semanticFunction.parameters.size();

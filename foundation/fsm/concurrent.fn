@@ -1,0 +1,579 @@
+package foundation.fsm
+
+import std.collections
+import std.time
+
+// Reports that an owner-task operation could not complete.
+enum ConcurrentError<TE> {
+    // The machine owner no longer accepts requests.
+    Closed
+
+    // The caller was cancelled while waiting for the owner.
+    Cancelled
+
+    // The serialized machine operation failed before commit.
+    Machine(error ApplyError<TE>)
+}
+
+struct concurrentApply<S, G, TE> {
+    trigger G
+    transition transferable fn(&S) Result<void, TE>
+}
+
+struct concurrentTimeout<S, G, TE> {
+    duration time.Duration
+    trigger G
+    transition transferable fn(&S) Result<void, TE>
+}
+
+enum concurrentOperation<S, G, TE> {
+    Snapshot
+    History
+    HistoryLen
+    Elapsed
+    TimeoutRules
+    Apply(value concurrentApply<S, G, TE>)
+    CheckTimeout(value concurrentTimeout<S, G, TE>)
+    CheckTimeouts
+}
+
+enum concurrentResponse<S, G, TE, LE> {
+    Snapshot(value S)
+    History(value own collections.List<Record<S, G>>)
+    HistoryLen(value i32)
+    Elapsed(value Result<time.Duration, time.Error>)
+    TimeoutRules(value own collections.List<TimeoutRule<S, G>>)
+    Apply(value Result<own ApplyReport<TE, LE>, ApplyError<TE>>)
+    CheckTimeout(value Result<TimeoutResult<TE, LE>, ApplyError<TE>>)
+    CheckTimeouts(value Result<TimeoutSweepResult<TE, LE>, ApplyError<TE>>)
+}
+
+struct concurrentRequest<S, G, TE, LE> {
+    operation concurrentOperation<S, G, TE>
+    reply Sender<concurrentResponse<S, G, TE, LE>>
+}
+
+// Sends serialized operations to one machine owner task.
+struct Handle<S, G, TE, LE> {
+    sender Sender<concurrentRequest<S, G, TE, LE>>
+
+    // Creates another independently owned handle to the same machine.
+    fn Clone(self) Handle<S, G, TE, LE> {
+        Handle<S, G, TE, LE> { sender = self.sender.clone() }
+    }
+
+    // Returns an independent snapshot from one serialized observation.
+    fn Snapshot(self) Task<Result<S, ConcurrentError<TE>>> {
+        spawn concurrentSnapshot<S, G, TE, LE>(self.sender.clone())
+    }
+
+    // Returns independent history records in chronological order.
+    fn History(
+        self
+    ) Task<Result<own collections.List<Record<S, G>>, ConcurrentError<TE>>> {
+        spawn concurrentHistory<S, G, TE, LE>(self.sender.clone())
+    }
+
+    // Returns the committed transition count.
+    fn HistoryLen(self) Task<Result<i32, ConcurrentError<TE>>> {
+        spawn concurrentHistoryLen<S, G, TE, LE>(self.sender.clone())
+    }
+
+    // Returns the monotonic duration since the latest committed transition.
+    fn Elapsed(
+        self
+    ) Task<Result<time.Duration, ConcurrentError<TE>>> {
+        spawn concurrentElapsed<S, G, TE, LE>(self.sender.clone())
+    }
+
+    // Returns timeout rules in registration order.
+    fn TimeoutRules(
+        self
+    ) Task<Result<own collections.List<TimeoutRule<S, G>>, ConcurrentError<TE>>> {
+        spawn concurrentTimeoutRules<S, G, TE, LE>(self.sender.clone())
+    }
+
+    // Serializes one transition against every other handle operation.
+    fn Apply(
+        self,
+        $trigger G,
+        $transition transferable fn(&S) Result<void, TE>
+    ) Task<Result<own ApplyReport<TE, LE>, ConcurrentError<TE>>> {
+        spawn concurrentApplyTransition<S, G, TE, LE>(
+            self.sender.clone(),
+            $trigger,
+            $transition
+        )
+    }
+
+    // Checks one explicit timeout inside the owner task.
+    fn CheckTimeout(
+        self,
+        duration time.Duration,
+        $trigger G,
+        $transition transferable fn(&S) Result<void, TE>
+    ) Task<Result<TimeoutResult<TE, LE>, ConcurrentError<TE>>> {
+        spawn concurrentCheckTimeout<S, G, TE, LE>(
+            self.sender.clone(),
+            duration,
+            $trigger,
+            $transition
+        )
+    }
+
+    // Checks the declarative timeout rule inside the owner task.
+    fn CheckTimeouts(
+        self
+    ) Task<Result<TimeoutSweepResult<TE, LE>, ConcurrentError<TE>>> {
+        spawn concurrentCheckTimeouts<S, G, TE, LE>(self.sender.clone())
+    }
+}
+
+// Owns the sole mutable machine instance and its request task.
+struct ConcurrentMachine<S, G, TE, LE> {
+    actor Task<void>
+    handle Handle<S, G, TE, LE>
+
+    // Creates another independently owned handle to the same machine.
+    fn Handle(self) Handle<S, G, TE, LE> {
+        self.handle.Clone()
+    }
+
+    // Returns an independent snapshot from one serialized observation.
+    fn Snapshot(self) Task<Result<S, ConcurrentError<TE>>> {
+        self.handle.Snapshot()
+    }
+
+    // Returns independent history records in chronological order.
+    fn History(
+        self
+    ) Task<Result<own collections.List<Record<S, G>>, ConcurrentError<TE>>> {
+        self.handle.History()
+    }
+
+    // Returns the committed transition count.
+    fn HistoryLen(self) Task<Result<i32, ConcurrentError<TE>>> {
+        self.handle.HistoryLen()
+    }
+
+    // Returns the monotonic duration since the latest committed transition.
+    fn Elapsed(
+        self
+    ) Task<Result<time.Duration, ConcurrentError<TE>>> {
+        self.handle.Elapsed()
+    }
+
+    // Returns timeout rules in registration order.
+    fn TimeoutRules(
+        self
+    ) Task<Result<own collections.List<TimeoutRule<S, G>>, ConcurrentError<TE>>> {
+        self.handle.TimeoutRules()
+    }
+
+    // Serializes one transition against every other handle operation.
+    fn Apply(
+        self,
+        $trigger G,
+        $transition transferable fn(&S) Result<void, TE>
+    ) Task<Result<own ApplyReport<TE, LE>, ConcurrentError<TE>>> {
+        self.handle.Apply($trigger, $transition)
+    }
+
+    // Checks one explicit timeout inside the owner task.
+    fn CheckTimeout(
+        self,
+        duration time.Duration,
+        $trigger G,
+        $transition transferable fn(&S) Result<void, TE>
+    ) Task<Result<TimeoutResult<TE, LE>, ConcurrentError<TE>>> {
+        self.handle.CheckTimeout(duration, $trigger, $transition)
+    }
+
+    // Checks the declarative timeout rule inside the owner task.
+    fn CheckTimeouts(
+        self
+    ) Task<Result<TimeoutSweepResult<TE, LE>, ConcurrentError<TE>>> {
+        self.handle.CheckTimeouts()
+    }
+}
+
+// Transfers a fully configured machine to one bounded owner task.
+fn NewConcurrent<S, G, TE, LE>(
+    $machine own Machine<S, G, TE, LE>,
+    capacity u64
+) own ConcurrentMachine<S, G, TE, LE> {
+    if capacity == 0 {
+        panic("concurrent fsm capacity must be greater than zero")
+    }
+    const Channel { sender receiver } = channel<concurrentRequest<S, G, TE, LE>>(
+        capacity
+    )
+    const handle = Handle<S, G, TE, LE> { sender = sender }
+    const actor = spawn serveConcurrent<S, G, TE, LE>($receiver, $machine)
+    own ConcurrentMachine<S, G, TE, LE> {
+        actor = actor
+        handle = handle
+    }
+}
+
+task serveConcurrent<S, G, TE, LE>(
+    $receiver Receiver<concurrentRequest<S, G, TE, LE>>,
+    $machine own Machine<S, G, TE, LE>
+) void {
+    var inbox = receiver
+    var current = machine
+    while true {
+        select {
+            const incoming = inbox.receive(): {
+                const concurrentRequest { operation reply } = incoming
+                const result = applyConcurrent(&current, $operation)
+                discard reply.send($result)
+            }
+            else error: {
+                discard error
+                return
+            }
+        }
+    }
+}
+
+fn applyConcurrent<S, G, TE, LE>(
+    &machine Machine<S, G, TE, LE>,
+    $operation concurrentOperation<S, G, TE>
+) concurrentResponse<S, G, TE, LE> {
+    match operation {
+        Snapshot: .Snapshot(value = machine.Snapshot())
+        History: .History(value = machine.History())
+        HistoryLen: .HistoryLen(value = machine.HistoryLen())
+        Elapsed: .Elapsed(value = machine.Elapsed())
+        TimeoutRules: .TimeoutRules(value = machine.TimeoutRules())
+        Apply(value): applyConcurrentTransition(&machine, $value)
+        CheckTimeout(value): applyConcurrentTimeout(&machine, $value)
+        CheckTimeouts: .CheckTimeouts(value = machine.CheckTimeouts())
+    }
+}
+
+fn applyConcurrentTransition<S, G, TE, LE>(
+    &machine Machine<S, G, TE, LE>,
+    $value concurrentApply<S, G, TE>
+) concurrentResponse<S, G, TE, LE> {
+    const concurrentApply { trigger transition } = value
+    .Apply(value = machine.Apply(trigger, $transition))
+}
+
+fn applyConcurrentTimeout<S, G, TE, LE>(
+    &machine Machine<S, G, TE, LE>,
+    $value concurrentTimeout<S, G, TE>
+) concurrentResponse<S, G, TE, LE> {
+    const concurrentTimeout { duration trigger transition } = value
+    .CheckTimeout(value = machine.CheckTimeout(duration, trigger, $transition))
+}
+
+task concurrentSnapshot<S, G, TE, LE>(
+    $requests Sender<concurrentRequest<S, G, TE, LE>>
+) Result<S, ConcurrentError<TE>> {
+    const pending = spawn sendConcurrentRequest<S, G, TE, LE>(
+        $requests,
+        .Snapshot
+    )
+    const received = $pending.wait()
+    requireConcurrentSnapshot<S, G, TE, LE>($received)
+}
+
+task concurrentHistory<S, G, TE, LE>(
+    $requests Sender<concurrentRequest<S, G, TE, LE>>
+) Result<own collections.List<Record<S, G>>, ConcurrentError<TE>> {
+    const pending = spawn sendConcurrentRequest<S, G, TE, LE>(
+        $requests,
+        .History
+    )
+    const received = $pending.wait()
+    requireConcurrentHistory<S, G, TE, LE>($received)
+}
+
+task concurrentHistoryLen<S, G, TE, LE>(
+    $requests Sender<concurrentRequest<S, G, TE, LE>>
+) Result<i32, ConcurrentError<TE>> {
+    const pending = spawn sendConcurrentRequest<S, G, TE, LE>(
+        $requests,
+        .HistoryLen
+    )
+    const received = $pending.wait()
+    requireConcurrentHistoryLen<S, G, TE, LE>($received)
+}
+
+task concurrentElapsed<S, G, TE, LE>(
+    $requests Sender<concurrentRequest<S, G, TE, LE>>
+) Result<time.Duration, ConcurrentError<TE>> {
+    const pending = spawn sendConcurrentRequest<S, G, TE, LE>(
+        $requests,
+        .Elapsed
+    )
+    const received = $pending.wait()
+    requireConcurrentElapsed<S, G, TE, LE>($received)
+}
+
+task concurrentTimeoutRules<S, G, TE, LE>(
+    $requests Sender<concurrentRequest<S, G, TE, LE>>
+) Result<own collections.List<TimeoutRule<S, G>>, ConcurrentError<TE>> {
+    const pending = spawn sendConcurrentRequest<S, G, TE, LE>(
+        $requests,
+        .TimeoutRules
+    )
+    const received = $pending.wait()
+    requireConcurrentTimeoutRules<S, G, TE, LE>($received)
+}
+
+task concurrentApplyTransition<S, G, TE, LE>(
+    $requests Sender<concurrentRequest<S, G, TE, LE>>,
+    $trigger G,
+    $transition transferable fn(&S) Result<void, TE>
+) Result<own ApplyReport<TE, LE>, ConcurrentError<TE>> {
+    const operation = concurrentApply<S, G, TE> {
+        trigger = trigger
+        transition = transition
+    }
+    const pending = spawn sendConcurrentRequest<S, G, TE, LE>(
+        $requests,
+        .Apply(value = operation)
+    )
+    const received = $pending.wait()
+    requireConcurrentApply<S, G, TE, LE>($received)
+}
+
+task concurrentCheckTimeout<S, G, TE, LE>(
+    $requests Sender<concurrentRequest<S, G, TE, LE>>,
+    duration time.Duration,
+    $trigger G,
+    $transition transferable fn(&S) Result<void, TE>
+) Result<TimeoutResult<TE, LE>, ConcurrentError<TE>> {
+    const operation = concurrentTimeout<S, G, TE> {
+        duration = duration
+        trigger = trigger
+        transition = transition
+    }
+    const pending = spawn sendConcurrentRequest<S, G, TE, LE>(
+        $requests,
+        .CheckTimeout(value = operation)
+    )
+    const received = $pending.wait()
+    requireConcurrentCheckTimeout<S, G, TE, LE>($received)
+}
+
+task concurrentCheckTimeouts<S, G, TE, LE>(
+    $requests Sender<concurrentRequest<S, G, TE, LE>>
+) Result<TimeoutSweepResult<TE, LE>, ConcurrentError<TE>> {
+    const pending = spawn sendConcurrentRequest<S, G, TE, LE>(
+        $requests,
+        .CheckTimeouts
+    )
+    const received = $pending.wait()
+    requireConcurrentCheckTimeouts<S, G, TE, LE>($received)
+}
+
+task sendConcurrentRequest<S, G, TE, LE>(
+    $requests Sender<concurrentRequest<S, G, TE, LE>>,
+    $operation concurrentOperation<S, G, TE>
+) Result<concurrentResponse<S, G, TE, LE>, ConcurrentError<TE>> {
+    const Channel { sender receiver } = channel<concurrentResponse<S, G, TE, LE>>(1)
+    select {
+        requests.send(concurrentRequest<S, G, TE, LE> {
+            operation = operation
+            reply = sender
+        }): {
+            const received = receiver.receive()
+            return match received {
+                Ok(value): .Ok(value)
+                Err(error): .Err(concurrentChannelError<TE>(error))
+            }
+        }
+        else error: return .Err(concurrentChannelError<TE>(error))
+    }
+}
+
+fn concurrentChannelError<TE>(error ChannelError) ConcurrentError<TE> {
+    match error {
+        Closed: .Closed
+        Cancelled: .Cancelled
+        Timeout: .Cancelled
+    }
+}
+
+fn requireConcurrentSnapshot<S, G, TE, LE>(
+    $value Result<concurrentResponse<S, G, TE, LE>, ConcurrentError<TE>>
+) Result<S, ConcurrentError<TE>> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): match response {
+            Snapshot(snapshot): .Ok(snapshot)
+            History(history): unexpectedConcurrentResponse($history)
+            HistoryLen(length): unexpectedConcurrentResponse(length)
+            Elapsed(elapsed): unexpectedConcurrentResponse($elapsed)
+            TimeoutRules(rules): unexpectedConcurrentResponse($rules)
+            Apply(result): unexpectedConcurrentResponse($result)
+            CheckTimeout(result): unexpectedConcurrentResponse($result)
+            CheckTimeouts(result): unexpectedConcurrentResponse($result)
+        }
+    }
+}
+
+fn requireConcurrentHistory<S, G, TE, LE>(
+    $value Result<concurrentResponse<S, G, TE, LE>, ConcurrentError<TE>>
+) Result<own collections.List<Record<S, G>>, ConcurrentError<TE>> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): match response {
+            History(history): .Ok(history)
+            Snapshot(snapshot): unexpectedConcurrentResponse($snapshot)
+            HistoryLen(length): unexpectedConcurrentResponse(length)
+            Elapsed(elapsed): unexpectedConcurrentResponse($elapsed)
+            TimeoutRules(rules): unexpectedConcurrentResponse($rules)
+            Apply(result): unexpectedConcurrentResponse($result)
+            CheckTimeout(result): unexpectedConcurrentResponse($result)
+            CheckTimeouts(result): unexpectedConcurrentResponse($result)
+        }
+    }
+}
+
+fn requireConcurrentHistoryLen<S, G, TE, LE>(
+    $value Result<concurrentResponse<S, G, TE, LE>, ConcurrentError<TE>>
+) Result<i32, ConcurrentError<TE>> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): match response {
+            HistoryLen(length): .Ok(length)
+            Snapshot(snapshot): unexpectedConcurrentResponse($snapshot)
+            History(history): unexpectedConcurrentResponse($history)
+            Elapsed(elapsed): unexpectedConcurrentResponse($elapsed)
+            TimeoutRules(rules): unexpectedConcurrentResponse($rules)
+            Apply(result): unexpectedConcurrentResponse($result)
+            CheckTimeout(result): unexpectedConcurrentResponse($result)
+            CheckTimeouts(result): unexpectedConcurrentResponse($result)
+        }
+    }
+}
+
+fn requireConcurrentElapsed<S, G, TE, LE>(
+    $value Result<concurrentResponse<S, G, TE, LE>, ConcurrentError<TE>>
+) Result<time.Duration, ConcurrentError<TE>> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): match response {
+            Elapsed(result): match result {
+                Ok(duration): .Ok(duration)
+                Err(error): .Err(.Machine(error = .Clock(error = error)))
+            }
+            Snapshot(snapshot): unexpectedConcurrentResponse($snapshot)
+            History(history): unexpectedConcurrentResponse($history)
+            HistoryLen(length): unexpectedConcurrentResponse(length)
+            TimeoutRules(rules): unexpectedConcurrentResponse($rules)
+            Apply(result): unexpectedConcurrentResponse($result)
+            CheckTimeout(result): unexpectedConcurrentResponse($result)
+            CheckTimeouts(result): unexpectedConcurrentResponse($result)
+        }
+    }
+}
+
+fn requireConcurrentTimeoutRules<S, G, TE, LE>(
+    $value Result<concurrentResponse<S, G, TE, LE>, ConcurrentError<TE>>
+) Result<own collections.List<TimeoutRule<S, G>>, ConcurrentError<TE>> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): match response {
+            TimeoutRules(rules): .Ok(rules)
+            Snapshot(snapshot): unexpectedConcurrentResponse($snapshot)
+            History(history): unexpectedConcurrentResponse($history)
+            HistoryLen(length): unexpectedConcurrentResponse(length)
+            Elapsed(elapsed): unexpectedConcurrentResponse($elapsed)
+            Apply(result): unexpectedConcurrentResponse($result)
+            CheckTimeout(result): unexpectedConcurrentResponse($result)
+            CheckTimeouts(result): unexpectedConcurrentResponse($result)
+        }
+    }
+}
+
+fn requireConcurrentApply<S, G, TE, LE>(
+    $value Result<concurrentResponse<S, G, TE, LE>, ConcurrentError<TE>>
+) Result<own ApplyReport<TE, LE>, ConcurrentError<TE>> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): match response {
+            Apply(result): concurrentApplyResult<TE, LE>($result)
+            Snapshot(snapshot): unexpectedConcurrentResponse($snapshot)
+            History(history): unexpectedConcurrentResponse($history)
+            HistoryLen(length): unexpectedConcurrentResponse(length)
+            Elapsed(elapsed): unexpectedConcurrentResponse($elapsed)
+            TimeoutRules(rules): unexpectedConcurrentResponse($rules)
+            CheckTimeout(result): unexpectedConcurrentResponse($result)
+            CheckTimeouts(result): unexpectedConcurrentResponse($result)
+        }
+    }
+}
+
+fn requireConcurrentCheckTimeout<S, G, TE, LE>(
+    $value Result<concurrentResponse<S, G, TE, LE>, ConcurrentError<TE>>
+) Result<TimeoutResult<TE, LE>, ConcurrentError<TE>> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): match response {
+            CheckTimeout(result): concurrentTimeoutResult<TE, LE>($result)
+            Snapshot(snapshot): unexpectedConcurrentResponse($snapshot)
+            History(history): unexpectedConcurrentResponse($history)
+            HistoryLen(length): unexpectedConcurrentResponse(length)
+            Elapsed(elapsed): unexpectedConcurrentResponse($elapsed)
+            TimeoutRules(rules): unexpectedConcurrentResponse($rules)
+            Apply(result): unexpectedConcurrentResponse($result)
+            CheckTimeouts(result): unexpectedConcurrentResponse($result)
+        }
+    }
+}
+
+fn requireConcurrentCheckTimeouts<S, G, TE, LE>(
+    $value Result<concurrentResponse<S, G, TE, LE>, ConcurrentError<TE>>
+) Result<TimeoutSweepResult<TE, LE>, ConcurrentError<TE>> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): match response {
+            CheckTimeouts(result): concurrentTimeoutSweepResult<TE, LE>($result)
+            Snapshot(snapshot): unexpectedConcurrentResponse($snapshot)
+            History(history): unexpectedConcurrentResponse($history)
+            HistoryLen(length): unexpectedConcurrentResponse(length)
+            Elapsed(elapsed): unexpectedConcurrentResponse($elapsed)
+            TimeoutRules(rules): unexpectedConcurrentResponse($rules)
+            Apply(result): unexpectedConcurrentResponse($result)
+            CheckTimeout(result): unexpectedConcurrentResponse($result)
+        }
+    }
+}
+
+fn concurrentApplyResult<TE, LE>(
+    $value Result<own ApplyReport<TE, LE>, ApplyError<TE>>
+) Result<own ApplyReport<TE, LE>, ConcurrentError<TE>> {
+    match value {
+        Ok(report): .Ok(report)
+        Err(error): .Err(.Machine(error = error))
+    }
+}
+
+fn concurrentTimeoutResult<TE, LE>(
+    $value Result<TimeoutResult<TE, LE>, ApplyError<TE>>
+) Result<TimeoutResult<TE, LE>, ConcurrentError<TE>> {
+    match value {
+        Ok(result): .Ok(result)
+        Err(error): .Err(.Machine(error = error))
+    }
+}
+
+fn concurrentTimeoutSweepResult<TE, LE>(
+    $value Result<TimeoutSweepResult<TE, LE>, ApplyError<TE>>
+) Result<TimeoutSweepResult<TE, LE>, ConcurrentError<TE>> {
+    match value {
+        Ok(result): .Ok(result)
+        Err(error): .Err(.Machine(error = error))
+    }
+}
+
+fn unexpectedConcurrentResponse<T>($value T) never {
+    discard value
+    panic("concurrent fsm response invariant failed")
+}

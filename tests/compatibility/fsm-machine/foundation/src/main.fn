@@ -11,8 +11,22 @@ state_machine Job {
     on Confirm from Draft to Confirmed
 }
 
+state_machine Flow {
+    state Idle
+    state Active
+    state Done
+    state Cancelled
+
+    on Activate from Idle to Active
+    on Complete from Active to Done
+    on Cancel from Idle, Active, Done, Cancelled to Cancelled
+}
+
 enum Trigger {
     Manual
+    Activate
+    Complete
+    Cancel
 }
 
 enum Log {
@@ -29,11 +43,75 @@ fn cloneJob(value Job) Job {
 fn cloneTrigger(value Trigger) Trigger {
     match value {
         Manual: .Manual
+        Activate: .Activate
+        Complete: .Complete
+        Cancel: .Cancel
+    }
+}
+
+fn cloneFlow(value Flow) Flow {
+    match value {
+        Idle: .Idle
+        Active: .Active
+        Done: .Done
+        Cancelled: .Cancelled
     }
 }
 
 fn confirm(&job Job) Result<void, JobTransitionError> {
     job.Confirm()
+}
+
+fn activate(&flow Flow) Result<void, FlowTransitionError> {
+    flow.Activate()
+}
+
+fn complete(&flow Flow) Result<void, FlowTransitionError> {
+    flow.Complete()
+}
+
+fn cancel(&flow Flow) Result<void, FlowTransitionError> {
+    flow.Cancel()
+}
+
+fn flowStateName(value Flow) String {
+    match value {
+        Idle: "idle"
+        Active: "active"
+        Done: "done"
+        Cancelled: "cancelled"
+    }
+}
+
+fn hookExit(event fsm.Event<Flow, Trigger>) Result<void, FlowTransitionError> {
+    print("hook exit " + flowStateName(event.From))
+    .Ok
+}
+
+fn hookEnter(event fsm.Event<Flow, Trigger>) Result<void, FlowTransitionError> {
+    print("hook enter " + flowStateName(event.To))
+    .Ok
+}
+
+fn requireFlowApply(
+    $value Result<
+    own fsm.ApplyReport<FlowTransitionError, Log>,
+    fsm.ApplyError<FlowTransitionError>
+    >
+) void {
+    match value {
+        Ok(report): {
+            if !report.IsClean() {
+                discard report
+                panic("fsm wildcard compatibility callbacks failed")
+            }
+            discard report
+        }
+        Err(error): {
+            discard error
+            panic("fsm wildcard compatibility transition failed")
+        }
+    }
 }
 
 fn stateName(value Job) String {
@@ -55,6 +133,9 @@ fn eventName(value fsm.EventType) String {
 fn triggerName(value Trigger) String {
     match value {
         Manual: "manual"
+        Activate: "activate"
+        Complete: "complete"
+        Cancel: "cancel"
     }
 }
 
@@ -149,6 +230,7 @@ fn rejected(
                 false
             }
             InvalidTimeout: false
+            OverlappingTimeout: false
         }
     }
 }
@@ -181,6 +263,7 @@ fn guardRejected(
                 false
             }
             InvalidTimeout: false
+            OverlappingTimeout: false
         }
     }
 }
@@ -229,5 +312,27 @@ fn main() i32 {
     } else {
         "false"
     })
+
+    var flowInitial Flow = .Idle
+    var flow = fsm.New<Flow, Trigger, FlowTransitionError, Log>(
+        $flowInitial,
+        $cloneFlow,
+        $cloneTrigger
+    )
+    flow.OnExit($hookExit, events.Priority.Normal) else error {
+        discard error
+        return 5
+    }
+    flow.OnEnter($hookEnter, events.Priority.Normal) else error {
+        discard error
+        return 6
+    }
+    print("wildcard-initial:" + flowStateName(flow.Snapshot()))
+    requireFlowApply($flow.Apply(.Activate, $activate))
+    requireFlowApply($flow.Apply(.Complete, $complete))
+    requireFlowApply($flow.Apply(.Cancel, $cancel))
+    print("wildcard-current:" + flowStateName(flow.Snapshot()))
+    requireFlowApply($flow.Apply(.Cancel, $cancel))
+    print("wildcard-self:" + flowStateName(flow.Snapshot()))
     0
 }

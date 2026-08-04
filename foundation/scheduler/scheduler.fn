@@ -521,8 +521,8 @@ fn registerJob(
     const registerRequest { job lastRun reply } = request
     if containsName(&current, job.Name) {
         current.supervisor.Start(spawn respond(
-            $reply,
-            .Rejected(error = .DuplicateName)
+                $reply,
+                .Rejected(error = .DuplicateName)
             ))
         discard job
         return
@@ -537,8 +537,8 @@ fn startScheduler(
 ) void {
     if current.started {
         current.supervisor.Start(spawn respond(
-            $reply,
-            .Rejected(error = .AlreadyStarted)
+                $reply,
+                .Rejected(error = .AlreadyStarted)
             ))
         return
     }
@@ -695,13 +695,13 @@ fn runDue(
                 current.supervisor.Start($pendingTask)
             } else {
                 current.supervisor.Start(spawn persistRun(
-                    $pendingTask,
-                    text.Copy(current.storeDirectory),
-                    text.Copy(Name),
-                    text.Copy(Cron),
-                    instant,
-                    time.MonotonicNow(),
-                    current.failureSender.clone()
+                        $pendingTask,
+                        text.Copy(current.storeDirectory),
+                        text.Copy(Name),
+                        text.Copy(Cron),
+                        instant,
+                        time.MonotonicNow(),
+                        current.failureSender.clone()
                     ))
             }
             processed.PushFront(scheduledJob {

@@ -437,16 +437,12 @@ class Writer {
             bracketBraceDepths_.begin(), bracketBraceDepths_.begin() + bracketCount,
             [threshold](std::size_t depth) { return depth >= threshold; });
         const auto nested = nestedParens != 0 || nestedBrackets != 0;
-        const auto nestedFunctions = nestedParens + nestedBrackets > 1
-                                         ? std::count(parenFunctions_.begin(),
-                                                      parenFunctions_.begin() + parenCount,
-                                                      true)
-                                         : std::size_t{};
+        const auto nestedDepth = nestedParens + nestedBrackets;
         const auto braceCount = braceClosureExtras_.size();
         const auto closureExtras = std::count(braceClosureExtras_.begin(),
                                               braceClosureExtras_.begin() + braceCount, true);
         output_.append(
-            (braces + (nested ? 1 : 0) + nestedFunctions + closureExtras) * 4, ' ');
+            (braces + nestedDepth + closureExtras) * 4, ' ');
         if (continuation_ && !nested) {
             output_.append(4, ' ');
         }
@@ -470,11 +466,9 @@ class Writer {
             braceClosureExtras_.pop_back();
         } else if (kind == TokenKind::LeftParen) {
             parenBraceDepths_.push_back(braceDepth_);
-            parenFunctions_.push_back(lastToken_ == TokenKind::Fn);
             parenOpeningLines_.push_back(line);
         } else if (kind == TokenKind::RightParen && !parenBraceDepths_.empty()) {
             parenBraceDepths_.pop_back();
-            parenFunctions_.pop_back();
             parenOpeningLines_.pop_back();
         } else if (kind == TokenKind::LeftBracket) {
             bracketBraceDepths_.push_back(braceDepth_);
@@ -490,7 +484,6 @@ class Writer {
     std::size_t braceDepth_{};
     std::vector<bool> braceClosureExtras_;
     std::vector<std::size_t> parenBraceDepths_;
-    std::vector<bool> parenFunctions_;
     std::vector<std::size_t> parenOpeningLines_;
     std::vector<std::size_t> bracketBraceDepths_;
     std::unordered_set<std::size_t> compensationLines_;

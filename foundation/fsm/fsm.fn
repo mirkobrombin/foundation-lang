@@ -114,6 +114,56 @@ enum TimeoutResult<TE, LE> {
     Applied(report own ApplyReport<TE, LE>)
 }
 
+// Describes one registered timeout without exposing its executable callback.
+struct TimeoutRule<S, G> {
+    // The source state represented by the rule.
+    Source S
+
+    // The typed trigger recorded when the timeout commits.
+    Trigger G
+
+    // The positive duration required before the rule may commit.
+    Duration time.Duration
+}
+
+// Distinguishes rule discovery from pending and committed timeout checks.
+enum TimeoutSweepResult<TE, LE> {
+    // No registered timeout applies to the current state.
+    NoRule
+
+    // One rule applies but its duration has not elapsed.
+    Pending
+
+    // One rule applied and committed a transition.
+    Applied(report own ApplyReport<TE, LE>)
+}
+
+// Reports invalid or overlapping timeout registration.
+enum TimeoutRegistrationError {
+    // The supplied rule does not cover its declared source state.
+    SourceNotCovered
+
+    // Another registered rule covers the same source state.
+    DuplicateSource
+
+    // The supplied rule produced an unsupported duration.
+    InvalidTimeout
+}
+
+struct timeoutBinding<S, G, TE> {
+    order u64
+    source S
+    trigger G
+    durationNanoseconds u64
+    rule fn(S) Option<u64>
+    transition fn(&S) Result<void, TE>
+}
+
+struct timeoutRuleSnapshot<S, G> {
+    order u64
+    rule TimeoutRule<S, G>
+}
+
 // Separates transition, guard, clock, and timeout failures that occur
 // before commit.
 enum ApplyError<TE> {
@@ -126,8 +176,11 @@ enum ApplyError<TE> {
     // The monotonic clock moved behind the state-entry reference.
     Clock(error time.Error)
 
-    // A timeout duration was zero or negative.
+    // A timeout duration was zero, too large, or changed after registration.
     InvalidTimeout
+
+    // More than one custom timeout rule covers the current state.
+    OverlappingTimeout
 }
 
 // Owns one typed state value, guards, effects, immutable history, and
@@ -141,6 +194,8 @@ struct Machine<S, G, TE, LE> {
     exitEffects own events.Bus<Event<S, G>, TE>
     enterEffects own events.Bus<Event<S, G>, TE>
     listeners own events.Bus<Event<S, G>, LE>
+    timeoutBindings own collections.List<own timeoutBinding<S, G, TE>>
+    nextTimeoutOrder u64
     effectPolicy EffectPolicy
     enteredAt time.MonotonicInstant
 
@@ -210,6 +265,86 @@ struct Machine<S, G, TE, LE> {
         self.enterEffects.Subscribe($effect, priority)
     }
 
+    // Registers one declarative timeout rule and its executable transition.
+    fn BindTimeout(
+        &self,
+        source S,
+        trigger G,
+        $rule fn(S) Option<u64>,
+        $transition fn(&S) Result<void, TE>
+    ) Result<void, TimeoutRegistrationError> {
+        const duration = requiredTimeoutDuration(rule(source)) else error {
+            discard rule
+            discard transition
+            return .Err(error)
+        }
+
+        var empty = collections.NewList<own timeoutBinding<S, G, TE>>()
+        var pending = replace self.timeoutBindings with empty
+        var visited = collections.NewList<own timeoutBinding<S, G, TE>>()
+        var duplicate = false
+        while !pending.IsEmpty() {
+            const binding = requiredTimeoutBinding(pending.PopFront())
+            if timeoutCovers(invokeTimeoutRule(binding.rule, source)) ||
+                timeoutCovers(invokeTimeoutRule(rule, binding.source)) {
+                duplicate = true
+            }
+            visited.PushFront($binding)
+        }
+        restoreTimeoutBindings(&self.timeoutBindings, $pending, $visited)
+        if duplicate {
+            discard rule
+            discard transition
+            return .Err(.DuplicateSource)
+        }
+
+        self.timeoutBindings.PushFront(own timeoutBinding<S, G, TE> {
+            order = self.nextTimeoutOrder
+            source = cloneValue(self.cloneState, source)
+            trigger = cloneValue(self.cloneTrigger, trigger)
+            durationNanoseconds = duration
+            rule = rule
+            transition = transition
+        })
+        self.nextTimeoutOrder = self.nextTimeoutOrder + 1
+        .Ok
+    }
+
+    // Returns independent timeout rule snapshots in registration order.
+    fn TimeoutRules(&self) own collections.List<TimeoutRule<S, G>> {
+        var empty = collections.NewList<own timeoutBinding<S, G, TE>>()
+        var pending = replace self.timeoutBindings with empty
+        var restored = collections.NewList<own timeoutBinding<S, G, TE>>()
+        var snapshots = collections.NewList<timeoutRuleSnapshot<S, G>>()
+        while !pending.IsEmpty() {
+            const binding = requiredTimeoutBinding(pending.PopFront())
+            snapshots.PushFront(timeoutRuleSnapshot<S, G> {
+                order = binding.order
+                rule = TimeoutRule<S, G> {
+                    Source = cloneValue(self.cloneState, binding.source)
+                    Trigger = cloneValue(self.cloneTrigger, binding.trigger)
+                    Duration = time.Nanoseconds(binding.durationNanoseconds)
+                }
+            })
+            restored.PushFront($binding)
+        }
+        restoreTimeoutBindings(&self.timeoutBindings, $pending, $restored)
+        const compare fn(
+            timeoutRuleSnapshot<S, G>,
+            timeoutRuleSnapshot<S, G>
+        ) i32 = compareTimeoutRuleSnapshots
+        var ordered = collections.Sort($snapshots, compare)
+        var result = collections.NewList<TimeoutRule<S, G>>()
+        while !ordered.IsEmpty() {
+            const snapshot = requiredTimeoutRuleSnapshot(ordered.PopFront())
+            const timeoutRuleSnapshot { order rule } = snapshot
+            discard order
+            result.PushFront($rule)
+        }
+        discard ordered
+        result
+    }
+
     // Applies one transition to an independent candidate and commits it
     // only after the transition and every guard succeed.
     fn Apply(
@@ -254,6 +389,95 @@ struct Machine<S, G, TE, LE> {
             return .Err(error)
         }
         .Ok(.Applied(report = report))
+    }
+
+    // Checks the declarative timeout rule for the current state.
+    fn CheckTimeouts(
+        &self
+    ) Result<TimeoutSweepResult<TE, LE>, ApplyError<TE>> {
+        var empty = collections.NewList<own timeoutBinding<S, G, TE>>()
+        var pending = replace self.timeoutBindings with empty
+        var visited = collections.NewList<own timeoutBinding<S, G, TE>>()
+        var selected Option<own timeoutBinding<S, G, TE>> = .None
+        var selectedNanoseconds u64 = 0
+        var matches i32 = 0
+        while !pending.IsEmpty() {
+            const binding = requiredTimeoutBinding(pending.PopFront())
+            const duration = invokeTimeoutRule(binding.rule, self.state)
+            match duration {
+                None: visited.PushFront($binding)
+                Some(nanoseconds): {
+                    if !validTimeoutNanoseconds(nanoseconds) ||
+                        nanoseconds != binding.durationNanoseconds {
+                        visited.PushFront($binding)
+                        const selectedValue = replace selected with .None
+                        match selectedValue {
+                            None: {}
+                            Some(value): visited.PushFront($value)
+                        }
+                        restoreTimeoutBindings(
+                            &self.timeoutBindings,
+                            $pending,
+                            $visited
+                        )
+                        return .Err(.InvalidTimeout)
+                    }
+                    matches = matches + 1
+                    if matches == 1 {
+                        selected = .Some(binding)
+                        selectedNanoseconds = nanoseconds
+                    } else {
+                        visited.PushFront($binding)
+                    }
+                    discard nanoseconds
+                }
+            }
+        }
+
+        if matches == 0 {
+            restoreTimeoutBindings(&self.timeoutBindings, $pending, $visited)
+            return .Ok(.NoRule)
+        }
+        if matches > 1 {
+            const selectedValue = replace selected with .None
+            match selectedValue {
+                None: {}
+                Some(value): visited.PushFront($value)
+            }
+            restoreTimeoutBindings(&self.timeoutBindings, $pending, $visited)
+            return .Err(.OverlappingTimeout)
+        }
+
+        const binding = requiredTimeoutBinding(
+            replace selected with .None
+        )
+        const elapsed = self.Elapsed() else error {
+            visited.PushFront($binding)
+            restoreTimeoutBindings(&self.timeoutBindings, $pending, $visited)
+            return .Err(.Clock(error = error))
+        }
+        const limit = time.Nanoseconds(selectedNanoseconds)
+        if elapsed.Nanoseconds() < limit.Nanoseconds() {
+            visited.PushFront($binding)
+            restoreTimeoutBindings(&self.timeoutBindings, $pending, $visited)
+            return .Ok(.Pending)
+        }
+
+        var candidate = cloneValue(self.cloneState, self.state)
+        const applied = invokeTimeoutTransition(binding.transition, &candidate)
+        const selectedTrigger = cloneValue(self.cloneTrigger, binding.trigger)
+        visited.PushFront($binding)
+        restoreTimeoutBindings(&self.timeoutBindings, $pending, $visited)
+        match applied {
+            Ok: {
+                const report = self.guardAndCommit($candidate, selectedTrigger)
+                else error {
+                    return .Err(error)
+                }
+                .Ok(.Applied(report = report))
+            }
+            Err(error): .Err(.Transition(error = error))
+        }
     }
 
     fn guardAndCommit(
@@ -437,6 +661,8 @@ fn NewWithEffectPolicy<S, G, TE, LE>(
         exitEffects = events.NewBus<Event<S, G>, TE>(strategy)
         enterEffects = events.NewBus<Event<S, G>, TE>(strategy)
         listeners = events.NewBus<Event<S, G>, LE>(.BestEffort)
+        timeoutBindings = collections.NewList<own timeoutBinding<S, G, TE>>()
+        nextTimeoutOrder = 0
         effectPolicy = effectPolicy
         enteredAt = time.MonotonicNow()
     }
@@ -444,6 +670,99 @@ fn NewWithEffectPolicy<S, G, TE, LE>(
 
 fn cloneValue<T>(clone fn(T) T, value T) T {
     clone(value)
+}
+
+fn requiredTimeoutDuration(
+    value Option<u64>
+) Result<u64, TimeoutRegistrationError> {
+    match value {
+        None: .Err(.SourceNotCovered)
+        Some(nanoseconds): {
+            if !validTimeoutNanoseconds(nanoseconds) {
+                return .Err(.InvalidTimeout)
+            }
+            .Ok(nanoseconds)
+        }
+    }
+}
+
+fn validTimeoutNanoseconds(value u64) bool {
+    value > 0 && value <= 9223372036854775807
+}
+
+fn timeoutCovers(value Option<u64>) bool {
+    match value {
+        None: false
+        Some(nanoseconds): validTimeoutNanoseconds(nanoseconds)
+    }
+}
+
+fn invokeTimeoutRule<S>(
+    rule fn(S) Option<u64>,
+    state S
+) Option<u64> {
+    rule(state)
+}
+
+fn invokeTimeoutTransition<S, TE>(
+    transition fn(&S) Result<void, TE>,
+    &state S
+) Result<void, TE> {
+    transition(&state)
+}
+
+fn requiredTimeoutBinding<S, G, TE>(
+    $value Option<own timeoutBinding<S, G, TE>>
+) own timeoutBinding<S, G, TE> {
+    match value {
+        None: missingTimeoutBinding<S, G, TE>()
+        Some(binding): binding
+    }
+}
+
+fn missingTimeoutBinding<S, G, TE>() own timeoutBinding<S, G, TE> {
+    panic("fsm timeout binding invariant failed")
+}
+
+fn compareTimeoutRuleSnapshots<S, G>(
+    left timeoutRuleSnapshot<S, G>,
+    right timeoutRuleSnapshot<S, G>
+) i32 {
+    if left.order > right.order return -1
+    if left.order < right.order return 1
+    0
+}
+
+fn requiredTimeoutRuleSnapshot<S, G>(
+    $value Option<timeoutRuleSnapshot<S, G>>
+) timeoutRuleSnapshot<S, G> {
+    match value {
+        None: missingTimeoutRuleSnapshot<S, G>()
+        Some(snapshot): snapshot
+    }
+}
+
+fn missingTimeoutRuleSnapshot<S, G>() timeoutRuleSnapshot<S, G> {
+    panic("fsm timeout snapshot invariant failed")
+}
+
+fn restoreTimeoutBindings<S, G, TE>(
+    &target collections.List<own timeoutBinding<S, G, TE>>,
+    $pending own collections.List<own timeoutBinding<S, G, TE>>,
+    $visited own collections.List<own timeoutBinding<S, G, TE>>
+) void {
+    var pendingValues = pending
+    var visitedValues = visited
+    while !pendingValues.IsEmpty() {
+        visitedValues.PushFront(
+            requiredTimeoutBinding(pendingValues.PopFront())
+        )
+    }
+    while !visitedValues.IsEmpty() {
+        target.PushFront(requiredTimeoutBinding(visitedValues.PopFront()))
+    }
+    discard pendingValues
+    discard visitedValues
 }
 
 fn cloneRecord<S, G, TE, LE>(

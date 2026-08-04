@@ -62,5 +62,5 @@ fn startFailed(error plugin.SandboxError) bool {
 
 fn stopFailed(error plugin.SandboxError) i32 {
     print(error.Detail)
-    -1
+    - 1
 }

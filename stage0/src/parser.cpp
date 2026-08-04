@@ -944,6 +944,7 @@ void Parser::stateMachineDeclaration() {
         std::vector<Token> sources;
         Token destination;
         std::optional<Token> destinationArgument;
+        std::optional<std::uint64_t> timeoutNanoseconds;
     };
     std::vector<PendingTransition> transitions;
     auto sawTransition = false;
@@ -1013,6 +1014,58 @@ void Parser::stateMachineDeclaration() {
                 expect(TokenKind::RightParen, "FDN1206",
                        "expected ) after destination payload");
             }
+            if (check(TokenKind::Identifier) && current().text == "after") {
+                advance();
+                const auto amount = expect(TokenKind::Integer, "FDN1250",
+                                           "expected state timeout duration amount");
+                expect(TokenKind::Dot, "FDN1251", "expected . in timeout duration");
+                const auto unit = expect(TokenKind::Identifier, "FDN1252",
+                                         "expected timeout duration unit");
+                std::uint64_t magnitude{};
+                const auto conversion = std::from_chars(
+                    amount.text.data(), amount.text.data() + amount.text.size(), magnitude);
+                if (conversion.ec != std::errc{} ||
+                    conversion.ptr != amount.text.data() + amount.text.size()) {
+                    diagnostics_.error("FDN1016", "integer is outside the supported range",
+                                       amount.span);
+                }
+                std::uint64_t multiplier{};
+                if (unit.text == "seconds") {
+                    multiplier = UINT64_C(1000000000);
+                } else if (unit.text == "milliseconds") {
+                    multiplier = UINT64_C(1000000);
+                } else if (unit.text == "microseconds") {
+                    multiplier = UINT64_C(1000);
+                } else if (unit.text == "nanoseconds") {
+                    multiplier = 1;
+                } else {
+                    diagnostics_.error("FDN1253",
+                                       "unknown state timeout duration unit " + unit.text,
+                                       unit.span);
+                }
+                if (multiplier != 0 &&
+                    (magnitude > UINT64_MAX / multiplier ||
+                     magnitude * multiplier > INT64_MAX)) {
+                    diagnostics_.error("FDN1254",
+                                       "state timeout duration is outside the supported range",
+                                       amount.span);
+                } else if (magnitude == 0) {
+                    diagnostics_.error("FDN1255", "state timeout duration must be positive",
+                                       amount.span);
+                } else if (multiplier != 0) {
+                    transition.timeoutNanoseconds = magnitude * multiplier;
+                }
+                if (!transition.parameters.empty()) {
+                    diagnostics_.error("FDN1256",
+                                       "state timeout transition cannot require parameters",
+                                       transition.event.span);
+                }
+                if (transition.destinationArgument.has_value()) {
+                    diagnostics_.error("FDN1257",
+                                       "state timeout destination cannot require a payload",
+                                       transition.destination.span);
+                }
+            }
             transitions.push_back(std::move(transition));
             continue;
         }
@@ -1048,6 +1101,7 @@ void Parser::stateMachineDeclaration() {
         return static_cast<std::size_t>(std::distance(states.begin(), found));
     };
 
+    std::vector<std::size_t> timeoutSources;
     for (auto &transition : transitions) {
         StateTransitionFunction metadata;
         for (const auto &source : transition.sources) {
@@ -1058,6 +1112,17 @@ void Parser::stateMachineDeclaration() {
                                        source.span);
                 } else {
                     metadata.sourceVariants.push_back(*state);
+                    if (transition.timeoutNanoseconds.has_value()) {
+                        if (std::find(timeoutSources.begin(), timeoutSources.end(), *state) !=
+                            timeoutSources.end()) {
+                            diagnostics_.error(
+                                "FDN1258",
+                                "state accepts more than one declarative timeout rule",
+                                source.span);
+                        } else {
+                            timeoutSources.push_back(*state);
+                        }
+                    }
                 }
             }
         }
@@ -1090,6 +1155,7 @@ void Parser::stateMachineDeclaration() {
                             std::distance(transition.parameters.begin(), found));
             }
         }
+        metadata.timeoutNanoseconds = transition.timeoutNanoseconds;
 
         TypeSyntax machineType{name.text, {}, name.span};
         Parameter receiver{"self", TypeSyntax{"edit", {machineType}, name.span}, name.span, {},
@@ -1117,6 +1183,31 @@ void Parser::stateMachineDeclaration() {
         function.ownerType = name.text;
         function.stateTransition = std::move(metadata);
         program_.functions.push_back(std::move(function));
+
+        if (transition.timeoutNanoseconds.has_value()) {
+            TypeSyntax timeoutMachineType{name.text, {}, name.span};
+            Parameter state{"state", timeoutMachineType, name.span, {},
+                            ParameterMode::Read};
+            TypeSyntax timeoutReturn{
+                "Option", {TypeSyntax{"u64", {}, transition.event.span}},
+                transition.event.span};
+            program_.blocks.push_back({{}, transition.event.span});
+
+            Function accessor;
+            accessor.name = std::string(isExported(transition.event.text) ? "TimeoutFor"
+                                                                          : "timeoutFor") +
+                            transition.event.text;
+            accessor.parameters.push_back(std::move(state));
+            accessor.returnType = std::move(timeoutReturn);
+            accessor.body = program_.blocks.size() - 1;
+            accessor.exported = isExported(transition.event.text);
+            accessor.span = transition.event.span;
+            accessor.ownerType = name.text;
+            accessor.stateTimeout = StateTimeoutFunction{
+                program_.functions.back().stateTransition->sourceVariants,
+                *transition.timeoutNanoseconds};
+            program_.functions.push_back(std::move(accessor));
+        }
     }
 }
 
@@ -1410,7 +1501,8 @@ Function Parser::function(bool external, bool task) {
     Function result{name.text, std::move(typeParameters), std::move(parameters),
                     std::move(returnType), body, isExported(name.text), start.span, {}, {},
                     std::nullopt, {}, std::nullopt, true, false, {}, {}, false, false, false,
-                    std::nullopt, std::nullopt, false, std::nullopt, std::nullopt, false, {}};
+                    std::nullopt, std::nullopt, false, std::nullopt, std::nullopt, false, {},
+                    std::nullopt};
     result.cSymbol = std::move(cSymbol);
     result.hasBody = hasBody;
     result.task = task;
@@ -1429,7 +1521,8 @@ Function Parser::testDeclaration() {
     Function result{"$test." + std::to_string(start.span.offset), {}, {},
                     TypeSyntax{"void", {}, start.span}, body, false, start.span, {}, {},
                     std::nullopt, {}, std::nullopt, true, false, {}, {}, false, false, false,
-                    name.text, std::nullopt, false, std::nullopt, std::nullopt, false, {}};
+                    name.text, std::nullopt, false, std::nullopt, std::nullopt, false, {},
+                    std::nullopt};
     result.testNameSpan = name.span;
     return result;
 }
@@ -1480,7 +1573,7 @@ Function Parser::method(const std::string &owner,
     Function result{name.text, typeParameters, std::move(parameters), std::move(returnType), body,
                     isExported(name.text), start.span, {}, {}, access, owner, std::nullopt, true,
                     false, {}, {}, false, false, false, std::nullopt, std::nullopt, action,
-                    std::nullopt, std::nullopt, false, {}};
+                    std::nullopt, std::nullopt, false, {}, std::nullopt};
     result.action = action;
     return result;
 }
@@ -1526,7 +1619,7 @@ ContractMethod Parser::contractMethod(const std::string &owner,
             {name.text, typeParameters, std::move(functionParameters), returnType, body,
              isExported(name.text), start.span, {}, {}, access, owner, std::nullopt, true, false,
              {}, {}, false, false, false, std::nullopt, std::nullopt, false, std::nullopt,
-             std::nullopt, false, {}});
+             std::nullopt, false, {}, std::nullopt});
     }
     return {name.text, access, std::move(parameters), std::move(returnType),
             isExported(name.text), start.span, defaultFunction, {}};

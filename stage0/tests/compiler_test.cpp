@@ -2281,13 +2281,16 @@ state_machine Order {
     state Submitted
     state Paid
     state Cancelled
+    state Expired
 
     on Submit from Draft to Submitted
     on Pay from Submitted to Paid
     on Cancel from Draft, Submitted to Cancelled
+    on Expire from Submitted to Expired after 50.milliseconds
 }
 
 fn main() i32 {
+    discard Order.TimeoutForExpire(.Submitted)
     0
 }
 )";
@@ -2310,11 +2313,20 @@ fn main() i32 {
            "one state machine can be selected explicitly or by default");
     expect(first == second, "state-machine diagram emission is deterministic");
     expect(first == "stateDiagram-v2\n"
-                    "    Draft --> Cancelled\n"
-                    "    Draft --> Submitted\n"
-                    "    Submitted --> Cancelled\n"
-                    "    Submitted --> Paid\n",
+                    "    Draft --> Cancelled : Cancel\n"
+                    "    Draft --> Submitted : Submit\n"
+                    "    Submitted --> Cancelled : Cancel\n"
+                    "    Submitted --> Expired : Expire after 50.milliseconds\n"
+                    "    Submitted --> Paid : Pay\n",
            "Mermaid transitions are sorted and complete");
+
+    const auto metadata = foundation::emitMetadata(*checked.fir);
+    expect(metadata.find("\"timeoutNanoseconds\":50000000") != std::string::npos,
+           "state timeout remains available in typed metadata");
+    const auto generated = foundation::emitC(*checked.fir, "state-timeout.fn");
+    expect(generated.find("fdn_timeout_result") != std::string::npos &&
+               generated.find("UINT64_C(50000000)") != std::string::npos,
+           "state timeout accessor lowers to a typed Option value");
 
     foundation::Diagnostics graphvizDiagnostics;
     const auto graphviz = foundation::emitStateMachineDiagram(
@@ -2322,7 +2334,11 @@ fn main() i32 {
         foundation::StateMachineDiagramFormat::Graphviz);
     expect(!graphvizDiagnostics.hasErrors() &&
                graphviz.find("digraph FSM {\n") == 0 &&
-               graphviz.find("Draft -> Submitted;") != std::string::npos &&
+               graphviz.find("Draft -> Submitted [label=\"Submit\"];") !=
+                   std::string::npos &&
+               graphviz.find(
+                   "Submitted -> Expired [label=\"Expire after 50.milliseconds\"];") !=
+                   std::string::npos &&
                graphviz.ends_with("}\n"),
            "Graphviz emission uses the same typed transition graph");
 
@@ -2356,6 +2372,52 @@ fn main() i32 {
         expect(ambiguous.empty() && hasCode(ambiguousDiagnostics, "FDN2421"),
                "multiple state machines require an explicit selection");
     }
+
+    const auto zeroTimeout = check(R"(
+state_machine Invalid {
+    state Pending
+    state Expired
+    on Expire from Pending to Expired after 0.seconds
+}
+fn main() i32 { 0 }
+)");
+    expect(hasCode(zeroTimeout.diagnostics, "FDN1255"),
+           "state timeouts require a positive duration");
+
+    const auto overflowingTimeout = check(R"(
+state_machine Invalid {
+    state Pending
+    state Expired
+    on Expire from Pending to Expired after 9223372036854775808.nanoseconds
+}
+fn main() i32 { 0 }
+)");
+    expect(hasCode(overflowingTimeout.diagnostics, "FDN1254"),
+           "state timeouts fit the signed monotonic duration range");
+
+    const auto parameterTimeout = check(R"(
+state_machine Invalid {
+    state Pending
+    state Expired
+    on Expire(reason i32) from Pending to Expired after 1.seconds
+}
+fn main() i32 { 0 }
+)");
+    expect(hasCode(parameterTimeout.diagnostics, "FDN1256"),
+           "state timeouts reject caller-supplied parameters");
+
+    const auto duplicateTimeout = check(R"(
+state_machine Invalid {
+    state Pending
+    state First
+    state Second
+    on FirstTimeout from Pending to First after 1.seconds
+    on SecondTimeout from Pending to Second after 2.seconds
+}
+fn main() i32 { 0 }
+)");
+    expect(hasCode(duplicateTimeout.diagnostics, "FDN1258"),
+           "one source state accepts one declarative timeout");
 }
 
 void applicationHostEmitsTypedFoundationSource() {

@@ -312,9 +312,9 @@ fn main() i32 {
 
     const backend = caching.NewDistributed()
     requireVoid($backend.Set(
-        "profile",
-        bytes.FromText("{\"name\":\"Ada\"}"),
-        time.Zero()
+            "profile",
+            bytes.FromText("{\"name\":\"Ada\"}"),
+            time.Zero()
         ).wait())
     if requireText($backend.Get("profile").wait()) != "{\"name\":\"Ada\"}" {
         return 13
@@ -333,17 +333,17 @@ fn main() i32 {
         $decodeText
     )
     requireBridgeVoid($bridge.Set(
-        "typed",
-        "Foundation",
-        time.Zero()
+            "typed",
+            "Foundation",
+            time.Zero()
         ).wait())
     if requireBridgeText($bridge.Get("typed").wait()) != "Foundation" return 16
     requireBridgeVoid($bridge.Invalidate("typed").wait())
     if requireBridgeText($bridge.Get("typed").wait()) != "" return 17
     if !isEncodeFailure($bridge.Set(
-        "typed",
-        "invalid",
-        time.Zero()
+            "typed",
+            "invalid",
+            time.Zero()
         ).wait()) {
         return 18
     }

@@ -71,7 +71,7 @@ fn main() i32 {
     const payload = extract($pair)
 
     print(previous + current + inside + holder.value + left + values[0] +
-          analyzedPrevious + analyzed[0] + payload)
+        analyzedPrevious + analyzed[0] + payload)
     discard holder
     0
 }

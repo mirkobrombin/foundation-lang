@@ -4,6 +4,7 @@
 #include <set>
 #include <sstream>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -82,9 +83,21 @@ std::optional<FirEnumId> transitionMachine(const FirProgram &program,
     return machineType.declaration;
 }
 
-std::set<std::pair<std::string, std::string>> transitions(const FirProgram &program,
-                                                          FirEnumId machine) {
-    std::set<std::pair<std::string, std::string>> result;
+struct Edge {
+    std::string source;
+    std::string destination;
+    std::string event;
+    std::optional<std::uint64_t> timeoutNanoseconds;
+
+    bool operator<(const Edge &other) const {
+        return std::tie(source, destination, event, timeoutNanoseconds) <
+               std::tie(other.source, other.destination, other.event,
+                        other.timeoutNanoseconds);
+    }
+};
+
+std::set<Edge> transitions(const FirProgram &program, FirEnumId machine) {
+    std::set<Edge> result;
     const auto &declaration = program.enums[machine];
     for (const auto &function : program.functions) {
         const auto owner = transitionMachine(program, function);
@@ -96,31 +109,61 @@ std::set<std::pair<std::string, std::string>> transitions(const FirProgram &prog
             continue;
         }
         const auto &destination = declaration.variants[transition.destinationVariant].name;
+        const auto separator = function.name.rfind('.');
+        const auto event = separator == std::string::npos
+                               ? function.name
+                               : function.name.substr(separator + 1);
         for (const auto source : transition.sourceVariants) {
             if (source < declaration.variants.size()) {
-                result.emplace(declaration.variants[source].name, destination);
+                result.insert({declaration.variants[source].name, destination, event,
+                               transition.timeoutNanoseconds});
             }
         }
     }
     return result;
 }
 
-std::string emitMermaid(const std::set<std::pair<std::string, std::string>> &edges) {
+std::string formatDuration(std::uint64_t nanoseconds) {
+    constexpr auto second = UINT64_C(1000000000);
+    constexpr auto millisecond = UINT64_C(1000000);
+    constexpr auto microsecond = UINT64_C(1000);
+    if (nanoseconds % second == 0) {
+        return std::to_string(nanoseconds / second) + ".seconds";
+    }
+    if (nanoseconds % millisecond == 0) {
+        return std::to_string(nanoseconds / millisecond) + ".milliseconds";
+    }
+    if (nanoseconds % microsecond == 0) {
+        return std::to_string(nanoseconds / microsecond) + ".microseconds";
+    }
+    return std::to_string(nanoseconds) + ".nanoseconds";
+}
+
+std::string edgeLabel(const Edge &edge) {
+    if (!edge.timeoutNanoseconds.has_value()) {
+        return edge.event;
+    }
+    return edge.event + " after " + formatDuration(*edge.timeoutNanoseconds);
+}
+
+std::string emitMermaid(const std::set<Edge> &edges) {
     std::ostringstream output;
     output << "stateDiagram-v2\n";
-    for (const auto &[source, destination] : edges) {
-        output << "    " << source << " --> " << destination << '\n';
+    for (const auto &edge : edges) {
+        output << "    " << edge.source << " --> " << edge.destination << " : "
+               << edgeLabel(edge) << '\n';
     }
     return output.str();
 }
 
-std::string emitGraphviz(const std::set<std::pair<std::string, std::string>> &edges) {
+std::string emitGraphviz(const std::set<Edge> &edges) {
     std::ostringstream output;
     output << "digraph FSM {\n"
            << "    rankdir=LR;\n"
            << "    node [shape=box style=rounded];\n";
-    for (const auto &[source, destination] : edges) {
-        output << "    " << source << " -> " << destination << ";\n";
+    for (const auto &edge : edges) {
+        output << "    " << edge.source << " -> " << edge.destination
+               << " [label=\"" << edgeLabel(edge) << "\"];\n";
     }
     output << "}\n";
     return output.str();

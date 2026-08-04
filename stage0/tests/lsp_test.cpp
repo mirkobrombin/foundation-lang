@@ -3225,6 +3225,9 @@ void fsmPackageExposesEditorDetails() {
                members.find("\"label\":\"Subscribe\"") != std::string::npos &&
                members.find("\"label\":\"Apply\"") != std::string::npos &&
                members.find("\"label\":\"Elapsed\"") != std::string::npos &&
+               members.find("\"label\":\"BindTimeout\"") != std::string::npos &&
+               members.find("\"label\":\"TimeoutRules\"") != std::string::npos &&
+               members.find("\"label\":\"CheckTimeouts\"") != std::string::npos &&
                members.find("\"label\":\"CheckTimeout\"") != std::string::npos,
            "FSM completion exposes compiler-backed lifecycle methods");
     expect(reportMembers.find("\"label\":\"IsClean\"") != std::string::npos &&
@@ -4685,7 +4688,7 @@ void stateMachinesExposeEditorDetails() {
         "    state Draft\n"
         "    state Submitted\n"
         "\n"
-        "    on Submit from Draft to Submitted\n"
+        "    on Submit from Draft to Submitted after 5.seconds\n"
         "}\n"
         "\n"
         "fn main() i32 {\n"
@@ -4720,7 +4723,8 @@ void stateMachinesExposeEditorDetails() {
         frame(initialize) + frame(open) + frame(request(181, "hover", 2, 15)) +
         frame(request(182, "hover", 6, 8)) +
         frame(request(183, "completion", 11, 10)) +
-        frame(request(184, "signatureHelp", 11, 17)) + frame(shutdown) + frame(exit));
+        frame(request(184, "signatureHelp", 11, 17)) +
+        frame(request(185, "hover", 6, 40)) + frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
@@ -4729,6 +4733,7 @@ void stateMachinesExposeEditorDetails() {
     const auto transitionHover = responseFor(transcript, 182);
     const auto completion = responseFor(transcript, 183);
     const auto signature = responseFor(transcript, 184);
+    const auto timeoutHover = responseFor(transcript, 185);
 
     expect(status == 0, "state machine language server transcript exits cleanly");
     expect(errors.str().empty(), "state machine requests write no server errors");
@@ -4744,6 +4749,9 @@ void stateMachinesExposeEditorDetails() {
     expect(signature.find("fn Submit(&self) Result<void, OrderTransitionError>") !=
                std::string::npos,
            "state transition calls receive compiler-backed signature help");
+    expect(timeoutHover.find("TimeoutForSubmit") != std::string::npos &&
+               timeoutHover.find("compile-time timeout") != std::string::npos,
+           "state timeout clauses receive generated accessor hover");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);

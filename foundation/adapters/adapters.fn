@@ -378,7 +378,7 @@ task serve<T>(
                     }
                     Get(name): {
                         discard reply.send(.MaybeValue(
-                            value = getValue(&current, $name)
+                                value = getValue(&current, $name)
                             ))
                     }
                     SetDefault(name): {
@@ -387,17 +387,17 @@ task serve<T>(
                     }
                     Default: {
                         discard reply.send(.DefaultValue(
-                            value = getDefault(&current)
+                                value = getDefault(&current)
                             ))
                     }
                     Has(name): {
                         discard reply.send(.Flag(
-                            value = hasValue(&current, $name)
+                                value = hasValue(&current, $name)
                             ))
                     }
                     Names: {
                         discard reply.send(.Names(
-                            value = currentNames(&current)
+                                value = currentNames(&current)
                             ))
                     }
                     Remove(value): {
@@ -444,7 +444,7 @@ task serve<T>(
                     }
                     CloneEvent(value): {
                         discard reply.send(.Value(
-                            value = cloneEventValue(&current, value.id)
+                                value = cloneEventValue(&current, value.id)
                             ))
                     }
                     FinishEvent(value): {
@@ -931,11 +931,11 @@ fn startRegisterDispatch<T>(
     const dispatchRegister { id name done } = value
     const hooks = snapshotRegisterHooks(&current)
     current.supervisor.Start(spawn dispatchRegistered<T>(
-        $hooks,
-        current.registry.clone(),
-        id,
-        $name,
-        $done
+            $hooks,
+            current.registry.clone(),
+            id,
+            $name,
+            $done
         ))
 }
 

@@ -1,0 +1,341 @@
+import foundation.fsm
+import foundation.worker
+import std.collections
+import std.time
+
+struct Counter {
+    Value i32
+}
+
+enum Trigger {
+    Increment
+}
+
+enum TransitionError {
+    Rejected
+}
+
+enum ListenerError {
+    Rejected
+}
+
+fn cloneCounter(value Counter) Counter {
+    Counter { Value = value.Value }
+}
+
+fn cloneTrigger(value Trigger) Trigger {
+    match value {
+        Increment: .Increment
+    }
+}
+
+fn increment(&counter Counter) Result<void, TransitionError> {
+    counter.Value = counter.Value + 1
+    .Ok
+}
+
+fn requireReport(
+    $value Result<
+    own fsm.ApplyReport<TransitionError, ListenerError>,
+    fsm.ConcurrentError<TransitionError>
+    >
+) void {
+    match value {
+        Ok(report): {
+            if !report.IsClean() {
+                discard report
+                panic("concurrent fsm callback failure")
+            }
+            discard report
+        }
+        Err(error): {
+            discard error
+            panic("concurrent fsm apply failed")
+        }
+    }
+}
+
+fn requireLength(
+    $value Result<i32, fsm.ConcurrentError<TransitionError>>
+) i32 {
+    match value {
+        Ok(length): length
+        Err(error): {
+            discard error
+            panic("concurrent fsm history length failed")
+        }
+    }
+}
+
+task applyOnce(
+    $handle fsm.Handle<Counter, Trigger, TransitionError, ListenerError>
+) void {
+    const pending = handle.Apply(.Increment, $increment)
+    const applied = $pending.wait()
+    requireReport($applied)
+}
+
+task waitUntilHistory(
+    $handle fsm.Handle<Counter, Trigger, TransitionError, ListenerError>,
+    expected i32
+) i32 {
+    while true {
+        const pending = handle.HistoryLen()
+        const received = $pending.wait()
+        const length = requireLength($received)
+        if length >= expected return length
+    }
+    0
+}
+
+fn snapshotValue(
+    $value Result<Counter, fsm.ConcurrentError<TransitionError>>
+) i32 {
+    match value {
+        Ok(counter): counter.Value
+        Err(error): {
+            discard error
+            panic("concurrent fsm snapshot failed")
+        }
+    }
+}
+
+fn requiredRecord(
+    $value Option<fsm.Record<Counter, Trigger>>
+) fsm.Record<Counter, Trigger> {
+    match value {
+        None: panic("concurrent fsm history record missing")
+        Some(record): record
+    }
+}
+
+fn isIncrement(value Trigger) bool {
+    match value {
+        Increment: true
+    }
+}
+
+fn historyIsSequential(
+    $value Result<
+    own collections.List<fsm.Record<Counter, Trigger>>,
+    fsm.ConcurrentError<TransitionError>
+    >
+) bool {
+    match value {
+        Ok(history): {
+            var records = history
+            var expected = 0
+            while !records.IsEmpty() {
+                const record = requiredRecord(records.PopFront())
+                const fsm.Record { From To Trigger Timestamp } = record
+                discard Timestamp
+                if From.Value != expected return false
+                if To.Value != expected + 1 return false
+                if !isIncrement(Trigger) return false
+                expected = expected + 1
+            }
+            discard records
+            expected == 8
+        }
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn elapsedIsValid(
+    $value Result<time.Duration, fsm.ConcurrentError<TransitionError>>
+) bool {
+    match value {
+        Ok(duration): !duration.IsNegative()
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn timeoutRuleCount(
+    $value Result<
+    own collections.List<fsm.TimeoutRule<Counter, Trigger>>,
+    fsm.ConcurrentError<TransitionError>
+    >
+) i32 {
+    match value {
+        Ok(rules): {
+            const length = rules.Len()
+            discard rules
+            length
+        }
+        Err(error): {
+            discard error
+            panic("concurrent fsm timeout rules failed")
+        }
+    }
+}
+
+fn timeoutPending(
+    $value Result<
+    fsm.TimeoutResult<TransitionError, ListenerError>,
+    fsm.ConcurrentError<TransitionError>
+    >
+) bool {
+    match value {
+        Ok(result): match result {
+            Pending: true
+            Applied(report): {
+                discard report
+                false
+            }
+        }
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn invalidTimeout(
+    $value Result<
+    fsm.TimeoutResult<TransitionError, ListenerError>,
+    fsm.ConcurrentError<TransitionError>
+    >
+) bool {
+    match value {
+        Ok(result): {
+            discard result
+            false
+        }
+        Err(error): match error {
+            Closed: false
+            Cancelled: false
+            Machine(machineError): match machineError {
+                Transition(error): {
+                    discard error
+                    false
+                }
+                Guard(error): {
+                    discard error
+                    false
+                }
+                Clock(error): {
+                    discard error
+                    false
+                }
+                InvalidTimeout: true
+                OverlappingTimeout: false
+            }
+        }
+    }
+}
+
+fn noTimeoutRule(
+    $value Result<
+    fsm.TimeoutSweepResult<TransitionError, ListenerError>,
+    fsm.ConcurrentError<TransitionError>
+    >
+) bool {
+    match value {
+        Ok(result): match result {
+            NoRule: true
+            Pending: false
+            Applied(report): {
+                discard report
+                false
+            }
+        }
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn closedResult(
+    $value Result<Counter, fsm.ConcurrentError<TransitionError>>
+) bool {
+    match value {
+        Ok(counter): {
+            discard counter
+            false
+        }
+        Err(error): match error {
+            Closed: true
+            Cancelled: true
+            Machine(machineError): {
+                discard machineError
+                false
+            }
+        }
+    }
+}
+
+fn main() i32 {
+    var initial = Counter { Value = 0 }
+    var machine = fsm.New<Counter, Trigger, TransitionError, ListenerError>(
+        $initial,
+        $cloneCounter,
+        $cloneTrigger
+    )
+    const concurrent = fsm.NewConcurrent($machine, 16)
+    const pool = worker.NewPool(4)
+    pool.Start(spawn applyOnce(concurrent.Handle()))
+    pool.Start(spawn applyOnce(concurrent.Handle()))
+    pool.Start(spawn applyOnce(concurrent.Handle()))
+    pool.Start(spawn applyOnce(concurrent.Handle()))
+    pool.Start(spawn applyOnce(concurrent.Handle()))
+    pool.Start(spawn applyOnce(concurrent.Handle()))
+    pool.Start(spawn applyOnce(concurrent.Handle()))
+    pool.Start(spawn applyOnce(concurrent.Handle()))
+
+    const waiting = spawn waitUntilHistory(concurrent.Handle(), 8)
+    const waited = $waiting.wait()
+    if waited != 8 return 1
+    pool.Shutdown()
+
+    const snapshot = concurrent.Snapshot()
+    const snapshotResult = $snapshot.wait()
+    if snapshotValue($snapshotResult) != 8 return 2
+
+    const history = concurrent.History()
+    const historyResult = $history.wait()
+    if !historyIsSequential($historyResult) return 3
+
+    const elapsed = concurrent.Elapsed()
+    const elapsedResult = $elapsed.wait()
+    if !elapsedIsValid($elapsedResult) return 4
+
+    const rules = concurrent.TimeoutRules()
+    const rulesResult = $rules.wait()
+    if timeoutRuleCount($rulesResult) != 0 return 5
+
+    const invalid = concurrent.CheckTimeout(
+        time.Nanoseconds(0),
+        .Increment,
+        $increment
+    )
+    const invalidResult = $invalid.wait()
+    if !invalidTimeout($invalidResult) return 6
+
+    const pendingTimeout = concurrent.CheckTimeout(
+        time.Seconds(3600),
+        .Increment,
+        $increment
+    )
+    const timeoutResult = $pendingTimeout.wait()
+    if !timeoutPending($timeoutResult) return 7
+
+    const sweep = concurrent.CheckTimeouts()
+    const sweepResult = $sweep.wait()
+    if !noTimeoutRule($sweepResult) return 8
+
+    const orphan = concurrent.Handle()
+    discard concurrent
+    const closed = orphan.Snapshot()
+    const closedValue = $closed.wait()
+    if !closedResult($closedValue) return 9
+
+    print("fsm concurrent ok")
+    0
+}

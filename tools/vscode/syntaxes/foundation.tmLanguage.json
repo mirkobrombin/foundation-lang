@@ -283,14 +283,18 @@
                     }
                 },
                 {
-                    "match": "^\\s*(on)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\([^\\n)]*\\))?\\s+(from)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\s*,\\s*[A-Za-z_][A-Za-z0-9_]*)*)\\s+(to)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "match": "^\\s*(on)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\([^\\n)]*\\))?\\s+(from)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\s*,\\s*[A-Za-z_][A-Za-z0-9_]*)*)\\s+(to)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\(\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\))?(?:\\s+(after)\\s+([0-9]+)(\\.)(seconds|milliseconds|microseconds|nanoseconds))?",
                     "captures": {
                         "1": { "name": "keyword.declaration.function.foundation" },
                         "2": { "name": "entity.name.function.foundation" },
                         "3": { "name": "keyword.control.transition.foundation" },
                         "4": { "name": "entity.name.type.variant.foundation" },
                         "5": { "name": "keyword.control.transition.foundation" },
-                        "6": { "name": "entity.name.type.variant.foundation" }
+                        "6": { "name": "entity.name.type.variant.foundation" },
+                        "7": { "name": "keyword.control.transition.foundation" },
+                        "8": { "name": "constant.numeric.integer.foundation" },
+                        "9": { "name": "punctuation.accessor.foundation" },
+                        "10": { "name": "support.type.duration.foundation" }
                     }
                 },
                 {
@@ -659,7 +663,7 @@
                 },
                 {
                     "name": "keyword.control.foundation",
-                    "match": "\\b(return|discard|if|else|while|for|in|break|continue|match|capture|replace|with|new|spawn|select|timeout|unsafe|step|using|retry|exponential|max|compensate)\\b"
+                    "match": "\\b(return|discard|if|else|while|for|in|break|continue|match|capture|replace|with|new|spawn|select|timeout|unsafe|state|on|from|to|after|step|using|retry|exponential|max|compensate)\\b"
                 },
                 {
                     "name": "constant.language.boolean.foundation",

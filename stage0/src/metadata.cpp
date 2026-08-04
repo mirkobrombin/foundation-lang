@@ -273,6 +273,9 @@ void emitStateTransitionDeclaration(std::ostringstream &out, const FirProgram &p
         out << ",\"payloadParameter\":";
         emitString(out, function.locals[*transition.destinationParameter].name);
     }
+    if (transition.timeoutNanoseconds.has_value()) {
+        out << ",\"timeoutNanoseconds\":" << *transition.timeoutNanoseconds;
+    }
     out << ",\"attributes\":";
     emitUses(out, program, function.attributes);
     out << '}';

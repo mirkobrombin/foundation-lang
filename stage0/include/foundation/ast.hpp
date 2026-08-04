@@ -356,6 +356,12 @@ struct StateTransitionFunction {
     std::vector<std::size_t> sourceVariants;
     std::size_t destinationVariant{};
     std::optional<std::size_t> destinationParameter;
+    std::optional<std::uint64_t> timeoutNanoseconds;
+};
+
+struct StateTimeoutFunction {
+    std::vector<std::size_t> sourceVariants;
+    std::uint64_t nanoseconds{};
 };
 
 enum class WorkflowKind {
@@ -409,6 +415,7 @@ struct Function {
     std::optional<WorkflowFunction> workflow;
     bool inferredReturn{};
     std::vector<bool> transferableTypeParameters;
+    std::optional<StateTimeoutFunction> stateTimeout;
 };
 
 enum class StructKind {

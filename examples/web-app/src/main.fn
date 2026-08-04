@@ -219,9 +219,9 @@ fn serveFailure($error web.ServeError<FoundationWebError>) bool {
 fn serveForever() i32 {
     const application = BuildFoundationApplication()
     var server = serverOr(web.NewServer<FoundationWebError>(
-        "127.0.0.1",
-        8080,
-        $application
+            "127.0.0.1",
+            8080,
+            $application
         ))
     print("listening on http://127.0.0.1:" + format.U64(server.Port()))
 

@@ -216,9 +216,9 @@ fn main() i32 {
         return 7
     }
     if registrationCode($router.Map(
-        .GET,
-        "/files/{name:regex(^[a-z]+\\.txt$)}",
-        parameterHandler("name")
+            .GET,
+            "/files/{name:regex(^[a-z]+\\.txt$)}",
+            parameterHandler("name")
         )) != 0 {
         return 34
     }

@@ -1723,7 +1723,9 @@ class Analyzer {
                                 "FDN2137",
                                 "drop must have signature fn drop(edit) void", function.span);
                         }
-                    } else if (!functions_.emplace(function.name, index).second) {
+                    } else if (!functions_.emplace(function.ownerType + '.' + methodName,
+                                                   index)
+                                    .second) {
                         diagnostics_.error("FDN2001", "duplicate associated function " +
                                                                methodName,
                                            function.span);
@@ -2143,6 +2145,39 @@ class Analyzer {
                 diagnostics_.error("FDN2199",
                                    "state transition must return Result<void, E>",
                                    function.returnType.span);
+            }
+            return;
+        }
+
+        if (function.stateTimeout.has_value()) {
+            const auto owner = enums_.find(function.ownerType);
+            if (owner == enums_.end() || owner->second >= program_.enums.size() ||
+                !program_.enums[owner->second].stateMachine) {
+                diagnostics_.error("FDN2230", "state timeout owner is not a state machine",
+                                   function.span);
+                return;
+            }
+            const auto machine = Type{TypeKind::Enum, owner->second};
+            const auto readableMachine = isCopyParameterType(machine)
+                                             ? machine
+                                             : Type{TypeKind::View, 0, {machine}};
+            if (semantic.parameterTypes.size() != 1) {
+                diagnostics_.error("FDN2231", "state timeout accessor requires one state",
+                                   function.span);
+            } else {
+                requireSame(readableMachine, semantic.parameterTypes.front(), function.span,
+                            "state timeout accessor state");
+            }
+            if (!isOption(semantic.returnType) ||
+                semantic.returnType.arguments.size() != 1 ||
+                semantic.returnType.arguments.front() != u64Type) {
+                diagnostics_.error("FDN2232", "state timeout accessor must return Option<u64>",
+                                   function.returnType.span);
+            }
+            const auto &timeout = *function.stateTimeout;
+            if (timeout.sourceVariants.empty() || timeout.nanoseconds == 0) {
+                diagnostics_.error("FDN2233", "state timeout metadata is invalid",
+                                   function.span);
             }
             return;
         }
@@ -4946,12 +4981,17 @@ class Analyzer {
                 return Type{TypeKind::Enum, result->second,
                             {*targetType, Type{TypeKind::Enum, numberError->second, {}}}};
             }
-            auto structName = name->name;
-            if (!structs_.contains(structName) && structName.find('.') == std::string::npos &&
-                !currentPackage().empty()) {
-                structName = std::string(currentPackage()) + '.' + structName;
+            auto ownerName = name->name;
+            if (!structs_.contains(ownerName) && !enums_.contains(ownerName) &&
+                ownerName.find('.') == std::string::npos && !currentPackage().empty()) {
+                ownerName = std::string(currentPackage()) + '.' + ownerName;
             }
-            if (structs_.contains(structName)) {
+            const auto associatedName = ownerName + '.' + member.member;
+            const auto associated = functions_.find(associatedName);
+            if ((structs_.contains(ownerName) || enums_.contains(ownerName)) &&
+                associated != functions_.end() &&
+                !program_.functions[associated->second].receiver.has_value() &&
+                !program_.functions[associated->second].ownerType.empty()) {
                 if (!member.invoked) {
                     diagnostics_.error("FDN2190", "associated function must be called", span);
                     return invalidType;
@@ -4961,19 +5001,7 @@ class Analyzer {
                         "FDN2043",
                         "associated function type arguments belong on the owner type", span);
                 }
-                const auto associatedName = structName + '.' + member.member;
-                const auto found = functions_.find(associatedName);
-                if (found == functions_.end() ||
-                    program_.functions[found->second].receiver.has_value() ||
-                    program_.functions[found->second].ownerType.empty()) {
-                    for (const auto argument : member.arguments) {
-                        static_cast<void>(analyzeExpression(argument));
-                    }
-                    diagnostics_.error("FDN2190",
-                                       "unknown associated function " + member.member, span);
-                    return invalidType;
-                }
-                const auto &declaration = program_.functions[found->second];
+                const auto &declaration = program_.functions[associated->second];
                 if (declaration.packageName != currentPackage() && !declaration.exported) {
                     diagnostics_.error("FDN3008",
                                        "associated function " + member.member +
@@ -4985,6 +5013,14 @@ class Analyzer {
                     CallExpression{associatedName, name->typeArguments, member.arguments,
                                    member.argumentNames, member.argumentNameSpans},
                     span);
+            }
+            if (structs_.contains(ownerName)) {
+                for (const auto argument : member.arguments) {
+                    static_cast<void>(analyzeExpression(argument));
+                }
+                diagnostics_.error("FDN2190",
+                                   "unknown associated function " + member.member, span);
+                return invalidType;
             }
             auto enumName = name->name;
             if (!enums_.contains(enumName) && enumName.find('.') == std::string::npos &&

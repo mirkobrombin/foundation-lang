@@ -294,9 +294,9 @@ fn main() i32 {
     discard finalServer
 
     var errorServer = serverOr(web.NewServer<AppError>(
-        "127.0.0.1",
-        0,
-        own ErrorApplication {}
+            "127.0.0.1",
+            0,
+            own ErrorApplication {}
         ))
     errorServer.ConfigureCORS(["*"])
     const errorRunning = spawn exchange(

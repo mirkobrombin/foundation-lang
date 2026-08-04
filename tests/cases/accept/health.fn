@@ -100,26 +100,26 @@ fn missingReport() health.NamedReport<Details> {
 fn main() i32 {
     var registry = health.NewRegistry<Details>()
     if !registered(registry.Register(
-        "database",
-        checker(.Healthy, "primary")
+            "database",
+            checker(.Healthy, "primary")
         )) {
         return 1
     }
     if !registered(registry.Register(
-        "cache",
-        checker(.Degraded, "warming")
+            "cache",
+            checker(.Degraded, "warming")
         )) {
         return 2
     }
     if !duplicate(registry.Register(
-        "database",
-        checker(.Unhealthy, "duplicate")
+            "database",
+            checker(.Unhealthy, "duplicate")
         )) {
         return 3
     }
     if !emptyName(registry.Register(
-        "",
-        checker(.Unhealthy, "empty")
+            "",
+            checker(.Unhealthy, "empty")
         )) {
         return 4
     }

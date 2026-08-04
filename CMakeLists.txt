@@ -278,6 +278,11 @@ if(FOUNDATION_BUILD_FUZZERS)
         "${FOUNDATION_FUZZ_CORPUS_DIR}/state-machine.fn"
         COPYONLY
     )
+    configure_file(
+        tests/cases/accept/state-machine-timeout.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/state-machine-timeout.fn"
+        COPYONLY
+    )
 endif()
 
 include(CTest)
@@ -1078,6 +1083,42 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
     add_test(
+        NAME stage0.check.state-machine-timeout
+        COMMAND foundationc check
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine-timeout.fn
+    )
+    add_test(
+        NAME stage0.run.state-machine-timeout
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine-timeout.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine-timeout.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.state-machine-timeout-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine-timeout.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/state-machine-timeout.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/state-machine-timeout-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine-timeout.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.state-machine-timeout-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine-timeout.fn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/state-machine-timeout-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/state-machine-timeout-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
         NAME tooling.fsm.cli
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -1139,6 +1180,40 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fsm-machine.fn
             -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/fsm-machine-first.c
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/fsm-machine-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.run.fsm-concurrent
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fsm-concurrent.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fsm-concurrent.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.fsm-concurrent-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fsm-concurrent.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/fsm-concurrent.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/fsm-concurrent-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fsm-concurrent.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.fsm-concurrent-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fsm-concurrent.fn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/fsm-concurrent-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/fsm-concurrent-second.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
     )
     add_test(
@@ -5018,7 +5093,7 @@ if(BUILD_TESTING)
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
             )
         endif()
-        foreach(cross_executor_case IN ITEMS worker-pool-channel safemap lock)
+        foreach(cross_executor_case IN ITEMS worker-pool-channel safemap lock fsm-concurrent)
             add_test(
                 NAME stage0.run.${cross_executor_case}-sanitized
                 COMMAND ${CMAKE_COMMAND}

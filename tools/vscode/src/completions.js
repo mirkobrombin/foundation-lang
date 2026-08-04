@@ -78,6 +78,11 @@ const staticCompletions = [
     { label: "service", kind: "Keyword", detail: "Declare a Foundation service" },
     { label: "action", kind: "Keyword", detail: "Declare a typed action handler" },
     { label: "state_machine", kind: "Keyword", detail: "Declare a typed state machine" },
+    { label: "state", kind: "Keyword", detail: "Declare a closed state machine variant" },
+    { label: "on", kind: "Keyword", detail: "Declare a typed state transition" },
+    { label: "from", kind: "Keyword", detail: "Select transition source states" },
+    { label: "to", kind: "Keyword", detail: "Select a transition destination state" },
+    { label: "after", kind: "Keyword", detail: "Declare a compile-time state timeout" },
     { label: "pipeline", kind: "Keyword", detail: "Declare a typed pipeline" },
     { label: "saga", kind: "Keyword", detail: "Declare a compensated workflow" },
     { label: "step", kind: "Keyword", detail: "Declare an ordered workflow step" },
@@ -245,6 +250,9 @@ const staticCompletions = [
     { label: "fsm.EffectFailure", kind: "Struct", detail: "typed exit or enter effect failure" },
     { label: "fsm.ApplyReport", kind: "Struct", detail: "non-blocking callback failures for a committed transition" },
     { label: "fsm.TimeoutResult", kind: "Enum", detail: "pending timeout or committed apply report" },
+    { label: "fsm.TimeoutRule", kind: "Struct", detail: "independent declarative timeout snapshot" },
+    { label: "fsm.TimeoutSweepResult", kind: "Enum", detail: "missing, pending, or committed timeout rule" },
+    { label: "fsm.TimeoutRegistrationError", kind: "Enum", detail: "invalid or overlapping timeout rule" },
     { label: "fsm.ApplyError", kind: "Enum", detail: "pre-commit transition, guard, clock, or timeout failure" },
     { label: "fsm.ListenerFailure", kind: "Struct", detail: "listener failure and lifecycle phase" },
     {
@@ -320,6 +328,24 @@ const staticCompletions = [
         kind: "Method",
         detail: "fn Elapsed(self) Result<time.Duration, time.Error>",
         insertText: "Elapsed()"
+    },
+    {
+        label: "fsm.Machine.BindTimeout",
+        kind: "Method",
+        detail: "fn BindTimeout(&self, source S, trigger G, $rule fn(S) Option<u64>, $transition fn(&S) Result<void, TE>) Result<void, TimeoutRegistrationError>",
+        insertText: "BindTimeout(${1:source}, ${2:trigger}, \\$${3:rule}, \\$${4:transition})"
+    },
+    {
+        label: "fsm.Machine.TimeoutRules",
+        kind: "Method",
+        detail: "fn TimeoutRules(&self) own collections.List<TimeoutRule<S, G>>",
+        insertText: "TimeoutRules()"
+    },
+    {
+        label: "fsm.Machine.CheckTimeouts",
+        kind: "Method",
+        detail: "fn CheckTimeouts(&self) Result<TimeoutSweepResult<TE, LE>, ApplyError<TE>>",
+        insertText: "CheckTimeouts()"
     },
     {
         label: "fsm.Machine.CheckTimeout",
