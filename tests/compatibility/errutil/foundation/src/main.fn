@@ -1,0 +1,90 @@
+package test.compatibility.errutil
+
+import std.collections
+import std.errors
+import std.format
+
+enum failure {
+    First
+    Second
+}
+
+fn message(value failure) String {
+    match value {
+        First: "first"
+        Second: "second"
+    }
+}
+
+fn requiredFailure($value Option<failure>) failure {
+    match value {
+        None: panic("errutil compatibility value missing")
+        Some(error): error
+    }
+}
+
+fn requiredMany(
+    $value Result<void, own errors.Many<failure>>
+) own errors.Many<failure> {
+    match value {
+        Ok: panic("errutil compatibility aggregate missing")
+        Err(failures): failures
+    }
+}
+
+fn joined($value Result<void, own errors.Many<failure>>) bool {
+    match value {
+        Ok: false
+        Err(failures): {
+            discard failures
+            true
+        }
+    }
+}
+
+fn emptyJoin($value Result<void, own errors.Many<failure>>) bool {
+    match value {
+        Ok: true
+        Err(failures): {
+            discard failures
+            false
+        }
+    }
+}
+
+fn main() i32 {
+    var aggregate = errors.NewMany<failure>()
+    print("empty:" + format.Bool(aggregate.IsEmpty()) + ":" +
+        aggregate.Message(message))
+    aggregate.Append(.First)
+    aggregate.Append(.Second)
+    print("many:" + format.I32(aggregate.Len()) + ":" +
+        format.Bool(!aggregate.IsEmpty()) + ":" + aggregate.Message(message))
+
+    var unwrapped = aggregate.IntoList()
+    const first = requiredFailure(unwrapped.PopFront())
+    const second = requiredFailure(unwrapped.PopFront())
+    print("unwrap:" + message(first) + ":" + message(second))
+    discard unwrapped
+
+    var values = collections.NewList<failure>()
+    values.PushFront(.Second)
+    values.PushFront(.First)
+    print("join:" + format.Bool(joined(errors.Join($values))))
+    const empty = collections.NewList<failure>()
+    print("join-empty:" + format.Bool(emptyJoin(errors.Join($empty))))
+
+    const coded = errors.WithCode<failure>("E42", failure.Second)
+    print("coded:" + errors.CodedMessage<failure>(coded, message))
+
+    const completed = errors.NewMany<failure>()
+    const finished = completed.Finish()
+    match finished {
+        Ok: print("finish:true")
+        Err(failures): {
+            discard failures
+            print("finish:false")
+        }
+    }
+    0
+}

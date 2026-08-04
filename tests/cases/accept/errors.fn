@@ -1,0 +1,101 @@
+package test.errors
+
+import std.collections
+import std.errors
+
+enum failure {
+    First
+    Second
+    Third
+}
+
+fn failureMessage(value failure) String {
+    match value {
+        First: "first"
+        Second: "second"
+        Third: "third"
+    }
+}
+
+fn requiredFailure($value Option<failure>) failure {
+    match value {
+        None: panic("error fixture value missing")
+        Some(error): error
+    }
+}
+
+fn isFailure(value failure, expected failure) bool {
+    match value {
+        First: match expected { First: true Second: false Third: false }
+        Second: match expected { First: false Second: true Third: false }
+        Third: match expected { First: false Second: false Third: true }
+    }
+}
+
+fn finishEmpty($value Result<void, own errors.Many<failure>>) bool {
+    match value {
+        Ok: true
+        Err(failures): {
+            discard failures
+            false
+        }
+    }
+}
+
+fn requiredMany(
+    $value Result<void, own errors.Many<failure>>
+) own errors.Many<failure> {
+    match value {
+        Ok: panic("error aggregate unexpectedly empty")
+        Err(failures): failures
+    }
+}
+
+fn main() i32 {
+    var aggregate = errors.NewMany<failure>()
+    if !aggregate.IsEmpty() || aggregate.Len() != 0 return 1
+    if aggregate.Message(failureMessage) != "" return 2
+
+    aggregate.Append(.First)
+    if aggregate.Message(failureMessage) != "first" return 3
+    aggregate.Append(.Second)
+    aggregate.Append(.Third)
+    if aggregate.Len() != 3 return 4
+    if aggregate.Message(failureMessage) !=
+        "multiple errors occurred: first; second; third" {
+        return 5
+    }
+
+    var ordered = aggregate.IntoList()
+    if !isFailure(requiredFailure(ordered.PopFront()), .First) return 6
+    if !isFailure(requiredFailure(ordered.PopFront()), .Second) return 7
+    if !isFailure(requiredFailure(ordered.PopFront()), .Third) return 8
+    if !ordered.IsEmpty() return 9
+    discard ordered
+
+    const empty = errors.NewMany<failure>()
+    if !finishEmpty($empty.Finish()) return 10
+
+    var pending = collections.NewList<failure>()
+    pending.PushFront(.Second)
+    pending.PushFront(.First)
+    var joined = requiredMany(errors.Join($pending))
+    if joined.Message(failureMessage) !=
+        "multiple errors occurred: first; second" {
+        discard joined
+        return 11
+    }
+    discard joined
+
+    const none = collections.NewList<failure>()
+    if !finishEmpty(errors.Join($none)) return 12
+
+    const coded = errors.WithCode<failure>("E42", failure.Second)
+    if errors.CodedMessage<failure>(coded, failureMessage) !=
+        "[E42] second" {
+        return 13
+    }
+
+    print("errors ok")
+    0
+}

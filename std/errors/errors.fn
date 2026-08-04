@@ -1,0 +1,146 @@
+package std.errors
+
+import std.collections
+import std.text
+
+// Aggregates one typed error or several typed errors in append order.
+struct Many<E> {
+    values own collections.List<E>
+
+    // Returns the number of collected errors.
+    fn Len(self) i32 {
+        self.values.Len()
+    }
+
+    // Reports whether no errors have been collected.
+    fn IsEmpty(self) bool {
+        self.values.IsEmpty()
+    }
+
+    // Appends one non-optional typed error.
+    fn Append(&self, $error E) void {
+        self.values.PushFront($error)
+    }
+
+    // Renders the aggregate without discarding its typed values.
+    fn Message(&self, render fn(E) String) String {
+        if self.values.IsEmpty() return ""
+
+        var ready = reverseValues(
+            replace self.values with collections.NewList<E>()
+        )
+        var restored = collections.NewList<E>()
+        var builder = text.NewBuilder()
+        if ready.Len() > 1 {
+            writeMessage(&builder, "multiple errors occurred: ")
+        }
+
+        var first = true
+        while !ready.IsEmpty() {
+            const current = requiredValue(ready.PopFront())
+            if !first {
+                writeMessage(&builder, "; ")
+            }
+            const message = render(current)
+            writeMessage(&builder, message)
+            restored.PushFront($current)
+            first = false
+        }
+        self.values = restored
+        finishMessage(&builder)
+    }
+
+    // Consumes the aggregate and returns errors in append order.
+    fn IntoList($self) own collections.List<E> {
+        const Many { values } = self
+        reverseValues($values)
+    }
+
+    // Returns Ok when empty or the complete owned aggregate as Err.
+    fn Finish($self) Result<void, own Many<E>> {
+        if self.values.IsEmpty() {
+            discard self
+            return .Ok
+        }
+        .Err(self)
+    }
+}
+
+// Associates a stable string code with one typed error.
+struct Coded<E> {
+    // Stable code suitable for transport and machine inspection.
+    Code String
+
+    // Original typed error value.
+    Error E
+}
+
+// Creates an empty typed error aggregate.
+fn NewMany<E>() own Many<E> {
+    own Many<E> { values = collections.NewList<E>() }
+}
+
+// Converts an ordered error list into Ok or one aggregate Err.
+fn Join<E>(
+    $values own collections.List<E>
+) Result<void, own Many<E>> {
+    if values.IsEmpty() {
+        discard values
+        return .Ok
+    }
+    .Err(own Many<E> { values = reverseValues($values) })
+}
+
+// Wraps one non-optional typed error with a string code.
+fn WithCode<E>($code String, $error E) Coded<E> {
+    Coded<E> { Code = code Error = error }
+}
+
+// Renders a coded error as `[code] message`.
+fn CodedMessage<E>(value Coded<E>, render fn(E) String) String {
+    var builder = text.NewBuilder()
+    writeMessage(&builder, "[")
+    writeMessage(&builder, value.Code)
+    writeMessage(&builder, "] ")
+    const message = render(value.Error)
+    writeMessage(&builder, message)
+    finishMessage(&builder)
+}
+
+fn reverseValues<E>(
+    $values own collections.List<E>
+) own collections.List<E> {
+    var source = values
+    var result = collections.NewList<E>()
+    while !source.IsEmpty() {
+        result.PushFront(requiredValue(source.PopFront()))
+    }
+    result
+}
+
+fn requiredValue<E>($value Option<E>) E {
+    match value {
+        None: missingValue<E>()
+        Some(error): error
+    }
+}
+
+fn missingValue<E>() E {
+    panic("error aggregate invariant failed")
+}
+
+fn writeMessage(&builder text.Builder, value String) void {
+    const written = builder.Write(value) else error {
+        discard error
+        panic("error message builder is closed")
+    }
+    discard written
+}
+
+fn finishMessage(&builder text.Builder) String {
+    const message = builder.Finish() else error {
+        discard error
+        panic("error message builder is closed")
+    }
+    message
+}

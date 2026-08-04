@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.130.0");
+    assert.equal(manifest.version, "0.131.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1289,6 +1289,10 @@ test("grammar and completions track compiler keywords", () => {
         "bytes.EncodeBase64URL", "bytes.DecodeBase64URL", "bytes.HmacSha256",
         "bytes.ConstantTimeEqual", "bytes.Bytes.Copy", "bytes.Bytes.Len",
         "bytes.Bytes.At", "bytes.Bytes.Text", "bytes.Bytes.Close",
+        "std.errors", "errors.Many", "errors.Coded", "errors.NewMany", "errors.Join",
+        "errors.WithCode", "errors.CodedMessage", "errors.Many.Len",
+        "errors.Many.IsEmpty", "errors.Many.Append", "errors.Many.Message",
+        "errors.Many.IntoList", "errors.Many.Finish",
         "std.pattern", "pattern.IsValid", "pattern.Matches",
         "foundation.hosting", "hosting.Host", "hosting.HostedService",
         "hosting.BackgroundService", "hosting.RunReport", "hosting.RunReason", "hosting.State",

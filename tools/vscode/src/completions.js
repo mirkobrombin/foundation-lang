@@ -165,6 +165,7 @@ const staticCompletions = [
     { label: "std.concurrent", kind: "Module", detail: "Cancellation and executor transfer" },
     { label: "@concurrent.Transferable()", kind: "Keyword", detail: "Opt a custom-drop owner into structural executor transfer", insertText: "@concurrent.Transferable()" },
     { label: "std.bytes", kind: "Module", detail: "Owned binary data and cryptographic encoding" },
+    { label: "std.errors", kind: "Module", detail: "Typed recoverable error aggregation" },
     { label: "std.pattern", kind: "Module", detail: "Portable bounded pattern matching" },
     { label: "std.ring", kind: "Module", detail: "Preallocated bounded FIFO buffers" },
     { label: "std.safemap", kind: "Module", detail: "Actor-owned task-safe maps" },
@@ -241,6 +242,38 @@ const staticCompletions = [
     { label: "health.Report", kind: "Struct", detail: "typed health status, duration, and details" },
     { label: "health.NamedReport", kind: "Struct", detail: "registered checker name and report" },
     { label: "health.Status", kind: "Enum", detail: "healthy, degraded, or unhealthy status" },
+    { label: "errors.Many", kind: "Struct", detail: "owned typed errors in append order" },
+    { label: "errors.Coded", kind: "Struct", detail: "typed error with a stable string code" },
+    {
+        label: "errors.NewMany",
+        kind: "Function",
+        detail: "fn NewMany<E>() own Many<E>",
+        insertText: "errors.NewMany<${1:Error}>()"
+    },
+    {
+        label: "errors.Join",
+        kind: "Function",
+        detail: "fn Join<E>($values own List<E>) Result<void, own Many<E>>",
+        insertText: "errors.Join(\\$${1:values})"
+    },
+    {
+        label: "errors.WithCode",
+        kind: "Function",
+        detail: "fn WithCode<E>($code String, $error E) Coded<E>",
+        insertText: "errors.WithCode<${1:Error}>(\\$${2:code}, \\$${3:error})"
+    },
+    {
+        label: "errors.CodedMessage",
+        kind: "Function",
+        detail: "fn CodedMessage<E>(value Coded<E>, render fn(E) String) String",
+        insertText: "errors.CodedMessage<${1:Error}>(${2:value}, ${3:render})"
+    },
+    { label: "errors.Many.Len", kind: "Method", detail: "fn Len(self) i32", insertText: "Len()" },
+    { label: "errors.Many.IsEmpty", kind: "Method", detail: "fn IsEmpty(self) bool", insertText: "IsEmpty()" },
+    { label: "errors.Many.Append", kind: "Method", detail: "fn Append(&self, $error E) void", insertText: "Append(\\$${1:error})" },
+    { label: "errors.Many.Message", kind: "Method", detail: "fn Message(&self, render fn(E) String) String", insertText: "Message(${1:render})" },
+    { label: "errors.Many.IntoList", kind: "Method", detail: "fn IntoList($self) own List<E>", insertText: "IntoList()" },
+    { label: "errors.Many.Finish", kind: "Method", detail: "fn Finish($self) Result<void, own Many<E>>", insertText: "Finish()" },
     { label: "fsm.Machine", kind: "Struct", detail: "owned typed state machine lifecycle" },
     { label: "fsm.Event", kind: "Struct", detail: "immutable transition lifecycle snapshots" },
     { label: "fsm.Record", kind: "Struct", detail: "immutable chronological transition record" },

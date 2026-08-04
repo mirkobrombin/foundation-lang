@@ -194,6 +194,11 @@ if(FOUNDATION_BUILD_FUZZERS)
         COPYONLY
     )
     configure_file(
+        tests/fuzz/corpus/errors.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/errors.fn"
+        COPYONLY
+    )
+    configure_file(
         tests/fuzz/corpus/pipeline-middleware.fn
         "${FOUNDATION_FUZZ_CORPUS_DIR}/pipeline-middleware.fn"
         COPYONLY
@@ -1823,6 +1828,32 @@ if(BUILD_TESTING)
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/health.out
             -DASSERT_ALLOCATIONS=1
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.errors
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/errors.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/errors.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.errors-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/errors.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/errors.out
+            -DASSERT_ALLOCATIONS=1
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.emit.errors-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/errors.fn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/errors-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/errors-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
     )
     add_test(
         NAME stage0.emit.service-actions-metadata
@@ -5015,6 +5046,19 @@ if(BUILD_TESTING)
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/align-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/align-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/align.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.errors-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/errors.fn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/errors-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/errors-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/errors.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
