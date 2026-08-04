@@ -1,6 +1,7 @@
 package test.caching
 
 import foundation.caching
+import foundation.worker
 import std.bytes
 import std.time
 
@@ -39,6 +40,67 @@ fn requireOptional(
     }
 }
 
+fn requireDuration(
+    $value Result<time.Duration, time.DurationError>
+) time.Duration {
+    match value {
+        Ok(duration): duration
+        Err(error): {
+            discard error
+            panic("duration parsing failed")
+        }
+    }
+}
+
+fn isInvalidConfigurationTTL(
+    $value Result<
+    own caching.InMemory<i32>,
+    caching.ConfigurationError
+    >
+) bool {
+    match value {
+        Ok(cache): {
+            discard cache
+            false
+        }
+        Err(error): match error {
+            InvalidTTL: true
+            InvalidMaxEntries: false
+        }
+    }
+}
+
+fn isInvalidMaxEntries(
+    $value Result<
+    own caching.InMemory<i32>,
+    caching.ConfigurationError
+    >
+) bool {
+    match value {
+        Ok(cache): {
+            discard cache
+            false
+        }
+        Err(error): match error {
+            InvalidTTL: false
+            InvalidMaxEntries: true
+        }
+    }
+}
+
+fn isInvalidWriteTTL(
+    $value Result<void, caching.Error>
+) bool {
+    match value {
+        Ok: false
+        Err(error): match error {
+            InvalidTTL: true
+            Closed: false
+            Cancelled: false
+        }
+    }
+}
+
 fn optionalValue($value Option<i32>) i32 {
     match value {
         None: -1
@@ -69,6 +131,18 @@ fn requireText(
     match value {
         Err(error): fail(error)
         Ok(found): optionalText($found)
+    }
+}
+
+fn requireBytes(
+    $value Result<Option<own bytes.Bytes>, caching.Error>
+) own bytes.Bytes {
+    match value {
+        Err(error): fail(error)
+        Ok(found): match found {
+            None: panic("cached bytes are missing")
+            Some(content): content
+        }
     }
 }
 
@@ -111,8 +185,8 @@ fn requireBridgeVoid(
 
 fn requireBridgeText(
     $value Result<
-        Option<String>,
-        caching.BridgeError<caching.Error, CodecError>
+    Option<String>,
+    caching.BridgeError<caching.Error, CodecError>
     >
 ) String {
     match value {
@@ -133,8 +207,8 @@ fn failBridge(
 
 fn isEncodeFailure(
     $value Result<
-        void,
-        caching.BridgeError<caching.Error, CodecError>
+    void,
+    caching.BridgeError<caching.Error, CodecError>
     >
 ) bool {
     match value {
@@ -154,42 +228,104 @@ fn isCodecInvalid(error CodecError) bool {
     }
 }
 
+task store(
+    $handle caching.Handle<i32>,
+    $key String,
+    value i32
+) void {
+    const pending = handle.Set($key, value, time.Zero())
+    const result = $pending.wait()
+    requireVoid($result)
+}
+
+task waitUntilCount(
+    $handle caching.Handle<i32>,
+    expected i32
+) i32 {
+    while true {
+        const pending = handle.Len()
+        const result = $pending.wait()
+        const count = requireI32($result)
+        if count >= expected return count
+    }
+    0
+}
+
 fn main() i32 {
+    const negative = requireDuration($time.Duration.Parse("-1ms"))
+    const invalidTTLConfiguration = caching.NewWith<i32>(
+        $cloneI32,
+        caching.Policy { DefaultTTL = negative }
+    )
+    if !isInvalidConfigurationTTL($invalidTTLConfiguration) {
+        return 1
+    }
+    const invalidCapacityConfiguration = caching.NewWith<i32>(
+        $cloneI32,
+        caching.Policy { MaxEntries = -1 }
+    )
+    if !isInvalidMaxEntries($invalidCapacityConfiguration) {
+        return 2
+    }
+
     const cache = caching.NewWith<i32>(
         $cloneI32,
         caching.Policy {
-            DefaultTTL = time.Milliseconds(2)
-            MaxEntries = 2
-        }
+        DefaultTTL = time.Milliseconds(2)
+        MaxEntries = 2
+    }
     ) else error {
         discard error
-        return 1
+        return 3
     }
+
+    if !isInvalidWriteTTL($cache.Set("invalid", 0, negative).wait()) return 4
 
     requireVoid($cache.Set("one", 1, time.Zero()).wait())
     requireVoid($cache.Set("two", 2, time.Zero()).wait())
-    if optionalValue(requireOptional($cache.Get("one").wait())) != 1 return 2
+    if optionalValue(requireOptional($cache.Get("one").wait())) != 1 return 5
 
     requireVoid($cache.Set("three", 3, time.Zero()).wait())
-    if optionalValue(requireOptional($cache.Get("one").wait())) != -1 return 3
-    if requireI32($cache.Len().wait()) != 2 return 4
+    if optionalValue(requireOptional($cache.Get("one").wait())) != -1 return 6
+    if requireI32($cache.Len().wait()) != 2 return 7
 
     requireVoid($cache.Invalidate("two").wait())
-    if requireI32($cache.Len().wait()) != 1 return 5
+    if requireI32($cache.Len().wait()) != 1 return 8
     waitFor(time.Milliseconds(3))
-    if requireI32($cache.Len().wait()) != 0 return 6
+    if requireI32($cache.Len().wait()) != 0 return 9
+
+    const unbounded = caching.NewWith<i32>(
+        $cloneI32,
+        caching.Policy { MaxEntries = 0 }
+    ) else error {
+        discard error
+        return 10
+    }
+    const workers = worker.NewPool(3)
+    workers.Start(spawn store(unbounded.Handle(), "one", 1))
+    workers.Start(spawn store(unbounded.Handle(), "two", 2))
+    workers.Start(spawn store(unbounded.Handle(), "three", 3))
+    const waiting = spawn waitUntilCount(unbounded.Handle(), 3)
+    if $waiting.wait() != 3 return 11
+    workers.Shutdown()
+    if requireI32($unbounded.Len().wait()) != 3 return 12
 
     const backend = caching.NewDistributed()
     requireVoid($backend.Set(
         "profile",
         bytes.FromText("{\"name\":\"Ada\"}"),
         time.Zero()
-    ).wait())
+        ).wait())
     if requireText($backend.Get("profile").wait()) != "{\"name\":\"Ada\"}" {
-        return 7
+        return 13
+    }
+    var copied = requireBytes($backend.Get("profile").wait())
+    discard copied.Close()
+    if requireText($backend.Get("profile").wait()) != "{\"name\":\"Ada\"}" {
+        return 14
     }
     requireVoid($backend.Delete("profile").wait())
-    if requireText($backend.Get("profile").wait()) != "" return 8
+    if requireText($backend.Get("profile").wait()) != "" return 15
 
     const bridge = caching.NewBridge<String, caching.Error, CodecError>(
         backend.Fork(),
@@ -200,16 +336,16 @@ fn main() i32 {
         "typed",
         "Foundation",
         time.Zero()
-    ).wait())
-    if requireBridgeText($bridge.Get("typed").wait()) != "Foundation" return 9
+        ).wait())
+    if requireBridgeText($bridge.Get("typed").wait()) != "Foundation" return 16
     requireBridgeVoid($bridge.Invalidate("typed").wait())
-    if requireBridgeText($bridge.Get("typed").wait()) != "" return 10
+    if requireBridgeText($bridge.Get("typed").wait()) != "" return 17
     if !isEncodeFailure($bridge.Set(
         "typed",
         "invalid",
         time.Zero()
-    ).wait()) {
-        return 11
+        ).wait()) {
+        return 18
     }
 
     print("caching ok")

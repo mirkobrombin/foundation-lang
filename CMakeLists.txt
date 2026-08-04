@@ -183,6 +183,11 @@ if(FOUNDATION_BUILD_FUZZERS)
         COPYONLY
     )
     configure_file(
+        tests/fuzz/corpus/caching.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/caching.fn"
+        COPYONLY
+    )
+    configure_file(
         tests/fuzz/corpus/pipeline-middleware.fn
         "${FOUNDATION_FUZZ_CORPUS_DIR}/pipeline-middleware.fn"
         COPYONLY
@@ -3839,6 +3844,69 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
     )
     add_test(
+        NAME stage0.run.caching
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/caching.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/caching.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.caching-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/caching.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/caching.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/caching
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/caching.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+            -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.caching-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/caching.fn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/caching-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/caching-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.run.caching-example
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/caching
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/caching/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.caching-example-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/caching
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/caching-example.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/caching-example
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/caching/expected.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+            -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
         NAME stage0.run.safemap
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -4609,6 +4677,45 @@ if(BUILD_TESTING)
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )
+        add_test(
+            NAME stage0.run.caching-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/caching.fn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/caching-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/caching-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/caching.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+                -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            add_test(
+                NAME stage0.run.caching-thread-sanitized
+                COMMAND ${CMAKE_COMMAND}
+                    -DCOMPILER=$<TARGET_FILE:foundationc>
+                    -DC_COMPILER=${CMAKE_C_COMPILER}
+                    -DTHREAD_SANITIZER=ON
+                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/caching.fn
+                    -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/caching-thread-sanitized.c
+                    -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/caching-thread-sanitized
+                    -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/caching.out
+                    -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                    -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+                    -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
+                    -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                    -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                    -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+                    -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+            )
+        endif()
         foreach(cross_executor_case IN ITEMS worker-pool-channel safemap lock)
             add_test(
                 NAME stage0.run.${cross_executor_case}-sanitized

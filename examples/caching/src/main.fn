@@ -1,0 +1,181 @@
+package example.caching
+
+import foundation.caching
+import foundation.serializer
+import std.bytes
+import std.format
+import std.text
+import std.time
+
+@serializer.Serializable()
+// Stores one cached profile value.
+struct Profile {
+    // The display name retained by the cache.
+    Name String
+
+    // The age retained by the cache.
+    Age i32
+}
+
+fn cloneProfile(value Profile) Profile {
+    Profile { Name = text.Copy(value.Name) Age = value.Age }
+}
+
+fn encodeProfile(
+    value Profile
+) Result<own bytes.Bytes, serializer.Error> {
+    const encoded = value.Marshal() else error {
+        return .Err(error)
+    }
+    .Ok(bytes.FromText(encoded))
+}
+
+fn decodeProfile(
+    value bytes.Bytes
+) Result<Profile, serializer.Error> {
+    const encoded = value.Text() else error {
+        discard error
+        return .Err(serializer.Error {
+            Kind = .Custom
+            Message = "cached bytes are not UTF-8"
+        })
+    }
+    Profile.Unmarshal(encoded)
+}
+
+fn fail(error caching.Error) never {
+    discard error
+    panic("cache operation failed")
+}
+
+fn failBridge(
+    $error caching.BridgeError<caching.Error, serializer.Error>
+) never {
+    discard error
+    panic("cache bridge operation failed")
+}
+
+fn requireVoid($value Result<void, caching.Error>) void {
+    match value {
+        Ok: done()
+        Err(error): fail(error)
+    }
+}
+
+fn done() void {
+    return
+}
+
+fn requireProfile(
+    $value Result<Option<Profile>, caching.Error>
+) Profile {
+    match value {
+        Err(error): fail(error)
+        Ok(found): match found {
+            None: panic("cached profile is missing")
+            Some(profile): profile
+        }
+    }
+}
+
+fn requireBridgeVoid(
+    $value Result<
+    void,
+    caching.BridgeError<caching.Error, serializer.Error>
+    >
+) void {
+    match value {
+        Ok: done()
+        Err(error): failBridge($error)
+    }
+}
+
+fn requireBridgeProfile(
+    $value Result<
+    Option<Profile>,
+    caching.BridgeError<caching.Error, serializer.Error>
+    >
+) Profile {
+    match value {
+        Err(error): failBridge($error)
+        Ok(found): match found {
+            None: panic("bridged profile is missing")
+            Some(profile): profile
+        }
+    }
+}
+
+fn label(value Profile) String {
+    value.Name + ":" + format.I32(value.Age)
+}
+
+fn isMissing(
+    $value Result<Option<Profile>, caching.Error>
+) bool {
+    match value {
+        Err(error): fail(error)
+        Ok(found): match found {
+            None: true
+            Some(profile): {
+                discard profile
+                false
+            }
+        }
+    }
+}
+
+fn waitFor(duration time.Duration) void {
+    const started = time.MonotonicNow()
+    var elapsed i64 = 0
+    while elapsed <= duration.Nanoseconds() {
+        const measured = time.MonotonicNow().Since(started) else error {
+            discard error
+            panic("monotonic clock moved backwards")
+        }
+        elapsed = measured.Nanoseconds()
+    }
+}
+
+fn main() i32 {
+    const local = caching.NewWith<Profile>(
+        $cloneProfile,
+        caching.Policy {
+        DefaultTTL = time.Milliseconds(2)
+        MaxEntries = 128
+    }
+    ) else error {
+        discard error
+        return 1
+    }
+    requireVoid($local.Set(
+        "profile:1",
+        Profile { Name = "Ada" Age = 36 },
+        time.Zero()
+        ).wait())
+    print("local:" + label(requireProfile($local.Get("profile:1").wait())))
+
+    const backend = caching.NewDistributed()
+    const bridge = caching.NewBridge<
+    Profile,
+    caching.Error,
+    serializer.Error
+    >(
+        backend.Fork(),
+        $encodeProfile,
+        $decodeProfile
+    )
+    requireBridgeVoid($bridge.Set(
+        "profile:2",
+        Profile { Name = "Grace" Age = 37 },
+        time.Zero()
+        ).wait())
+    print("bridge:" + label(requireBridgeProfile(
+        $bridge.Get("profile:2").wait()
+        )))
+
+    waitFor(time.Milliseconds(3))
+    print("expired:" + format.Bool(isMissing(
+        $local.Get("profile:1").wait()
+        )))
+    0
+}

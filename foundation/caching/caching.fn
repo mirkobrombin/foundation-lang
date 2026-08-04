@@ -7,32 +7,48 @@ import std.time
 
 // Reports that a cache operation could not complete.
 enum Error {
+    // The cache owner no longer accepts requests.
     Closed
+
+    // The operation was cancelled before its response arrived.
     Cancelled
+
+    // A write supplied a negative expiry duration.
     InvalidTTL
 }
 
 // Reports invalid in-memory cache construction.
 enum ConfigurationError {
+    // The default expiry duration is negative.
     InvalidTTL
+
+    // The maximum entry count is negative.
     InvalidMaxEntries
 }
 
 // Defines expiry and capacity defaults for an in-memory cache.
 struct Policy {
+    // Supplies the expiry selected by a zero write TTL.
     DefaultTTL time.Duration = time.Zero()
+
+    // Limits stored entries. Zero permits an unbounded count.
     MaxEntries i32 = 10000
 }
 
 // Describes a typed cache with explicit ownership at every value boundary.
 contract Cache<T, E> {
+    // Loads one value when its key is present and live.
     fn Get(self, $key String) Task<Result<Option<T>, E>>
+
+    // Stores one value with an explicit or policy-selected TTL.
     fn Set(
         self,
         $key String,
         $value T,
         ttl time.Duration
     ) Task<Result<void, E>>
+
+    // Removes one key. Missing keys remain successful no-ops.
     fn Invalidate(self, $key String) Task<Result<void, E>>
 }
 
@@ -40,24 +56,37 @@ contract Cache<T, E> {
 contract DistributedCache<E> {
     // Creates an independently owned handle to the same backend.
     fn Fork(self) own DistributedCache<E>
+
+    // Loads an independent byte value when the key is present and live.
     fn Get(
         self,
         $key String
     ) Task<Result<Option<own bytes.Bytes>, E>>
+
+    // Stores owned bytes with an explicit or policy-selected TTL.
     fn Set(
         self,
         $key String,
         $value own bytes.Bytes,
         ttl time.Duration
     ) Task<Result<void, E>>
+
+    // Removes one key. Missing keys remain successful no-ops.
     fn Delete(self, $key String) Task<Result<void, E>>
 }
 
 // Preserves backend and codec failures without flattening either domain.
 enum BridgeError<B, C> {
+    // The bridge owner task could not exchange a request or response.
     Transport(error Error)
+
+    // The distributed backend rejected an operation.
     Backend(error B)
+
+    // The codec could not encode the supplied typed value.
     Encode(error C)
+
+    // The codec could not decode the stored bytes.
     Decode(error C)
 }
 
@@ -141,19 +170,22 @@ struct Handle<T> implements Cache<T, Error> {
     }
 }
 
-// Owns one bounded task-safe cache and closes it deterministically when dropped.
+// Owns one bounded task-safe cache with deterministic drop.
 struct InMemory<T> implements Cache<T, Error> {
     actor Task<void>
     handle Handle<T>
 
+    // Creates another independently owned handle to the same cache.
     fn Handle(self) Handle<T> {
         self.handle.Clone()
     }
 
+    // Returns an explicitly cloned value when the key is present and live.
     fn Get(self, $key String) Task<Result<Option<T>, Error>> {
         self.handle.Get($key)
     }
 
+    // Stores one value with a per-write TTL. Zero selects the policy default.
     fn Set(
         self,
         $key String,
@@ -163,10 +195,12 @@ struct InMemory<T> implements Cache<T, Error> {
         self.handle.Set($key, $value, ttl)
     }
 
+    // Removes a key. Missing keys are successful no-ops.
     fn Invalidate(self, $key String) Task<Result<void, Error>> {
         self.handle.Invalidate($key)
     }
 
+    // Returns the number of live entries after purging expired values.
     fn Len(self) Task<Result<i32, Error>> {
         self.handle.Len()
     }
@@ -192,7 +226,7 @@ fn NewWith<T>(
         $cloneValue,
         policy.DefaultTTL.Nanoseconds(),
         policy.MaxEntries
-    ))
+        ))
 }
 
 fn newCache<T>(
@@ -570,14 +604,17 @@ struct byteRequest {
 struct DistributedHandle implements DistributedCache<Error> {
     sender Sender<byteRequest>
 
+    // Creates another concrete handle to the same byte cache.
     fn Clone(self) DistributedHandle {
         DistributedHandle { sender = self.sender.clone() }
     }
 
+    // Creates another backend contract owner for the same byte cache.
     fn Fork(self) own DistributedCache<Error> {
         own DistributedHandle { sender = self.sender.clone() }
     }
 
+    // Returns an independent byte copy when the key is present and live.
     fn Get(
         self,
         $key String
@@ -585,6 +622,7 @@ struct DistributedHandle implements DistributedCache<Error> {
         spawn getBytes(self.sender.clone(), $key)
     }
 
+    // Stores owned bytes with a per-write TTL. Zero selects the policy default.
     fn Set(
         self,
         $key String,
@@ -599,10 +637,12 @@ struct DistributedHandle implements DistributedCache<Error> {
         )
     }
 
+    // Removes a key. Missing keys are successful no-ops.
     fn Delete(self, $key String) Task<Result<void, Error>> {
         spawn deleteBytes(self.sender.clone(), $key)
     }
 
+    // Returns the number of live entries after purging expired values.
     fn Len(self) Task<Result<i32, Error>> {
         spawn byteLength(self.sender.clone())
     }
@@ -613,14 +653,17 @@ struct DistributedInMemory implements DistributedCache<Error> {
     actor Task<void>
     handle DistributedHandle
 
+    // Creates another concrete handle to the same byte cache.
     fn Handle(self) DistributedHandle {
         self.handle.Clone()
     }
 
+    // Creates another backend contract owner for the same byte cache.
     fn Fork(self) own DistributedCache<Error> {
         self.handle.Fork()
     }
 
+    // Returns an independent byte copy when the key is present and live.
     fn Get(
         self,
         $key String
@@ -628,6 +671,7 @@ struct DistributedInMemory implements DistributedCache<Error> {
         self.handle.Get($key)
     }
 
+    // Stores owned bytes with a per-write TTL. Zero selects the policy default.
     fn Set(
         self,
         $key String,
@@ -637,10 +681,12 @@ struct DistributedInMemory implements DistributedCache<Error> {
         self.handle.Set($key, $value, ttl)
     }
 
+    // Removes a key. Missing keys are successful no-ops.
     fn Delete(self, $key String) Task<Result<void, Error>> {
         self.handle.Delete($key)
     }
 
+    // Returns the number of live entries after purging expired values.
     fn Len(self) Task<Result<i32, Error>> {
         self.handle.Len()
     }
@@ -664,7 +710,7 @@ fn NewDistributedWith(
     .Ok(newDistributedCache(
         policy.DefaultTTL.Nanoseconds(),
         policy.MaxEntries
-    ))
+        ))
 }
 
 fn newDistributedCache(
@@ -758,11 +804,12 @@ task setBytes(
         discard value
         return .Err(.InvalidTTL)
     }
-    const result = spawn sendByteRequest($requests, .Set(value = byteSetPayload {
+    const operation byteOperation = .Set(value = byteSetPayload {
         key = key
         value = value
         ttl = ttl
-    }))
+    })
+    const result = spawn sendByteRequest($requests, $operation)
     const received = $result.wait()
     mapByteDone($received)
 }
@@ -1039,10 +1086,12 @@ struct bridgeState<T, B, C> {
 struct BridgeHandle<T, B, C> implements Cache<T, BridgeError<B, C>> {
     sender Sender<bridgeRequest<T, B, C>>
 
+    // Creates another concrete handle to the same typed bridge.
     fn Clone(self) BridgeHandle<T, B, C> {
         BridgeHandle<T, B, C> { sender = self.sender.clone() }
     }
 
+    // Loads and decodes one typed value when the backend key is present.
     fn Get(
         self,
         $key String
@@ -1050,6 +1099,7 @@ struct BridgeHandle<T, B, C> implements Cache<T, BridgeError<B, C>> {
         spawn bridgeHandleGet<T, B, C>(self.sender.clone(), $key)
     }
 
+    // Encodes and stores one typed value with the requested TTL.
     fn Set(
         self,
         $key String,
@@ -1064,6 +1114,7 @@ struct BridgeHandle<T, B, C> implements Cache<T, BridgeError<B, C>> {
         )
     }
 
+    // Removes one backend key without decoding its former value.
     fn Invalidate(
         self,
         $key String
@@ -1077,10 +1128,12 @@ struct Bridge<T, B, C> implements Cache<T, BridgeError<B, C>> {
     actor Task<void>
     handle BridgeHandle<T, B, C>
 
+    // Creates another concrete handle to the same typed bridge.
     fn Handle(self) BridgeHandle<T, B, C> {
         self.handle.Clone()
     }
 
+    // Loads and decodes one typed value when the backend key is present.
     fn Get(
         self,
         $key String
@@ -1088,6 +1141,7 @@ struct Bridge<T, B, C> implements Cache<T, BridgeError<B, C>> {
         self.handle.Get($key)
     }
 
+    // Encodes and stores one typed value with the requested TTL.
     fn Set(
         self,
         $key String,
@@ -1097,6 +1151,7 @@ struct Bridge<T, B, C> implements Cache<T, BridgeError<B, C>> {
         self.handle.Set($key, $value, ttl)
     }
 
+    // Removes one backend key without decoding its former value.
     fn Invalidate(
         self,
         $key String
@@ -1153,15 +1208,15 @@ fn applyBridge<T, B, C>(
         Get(key): .MaybeValue(value = bridgeGetValue<T, B, C>(
             &current,
             $key
-        ))
+            ))
         Set(value): .Done(value = bridgeSetValue<T, B, C>(
             &current,
             $value
-        ))
+            ))
         Invalidate(key): .Done(value = bridgeInvalidateValue<T, B, C>(
             &current,
             $key
-        ))
+            ))
     }
 }
 
@@ -1258,11 +1313,11 @@ task bridgeHandleSet<T, B, C>(
 ) Result<void, BridgeError<B, C>> {
     const result = spawn sendBridgeRequest<T, B, C>($requests, .Set(
         value = bridgeSetPayload<T> {
-            key = key
-            value = value
-            ttl = ttl
-        }
-    ))
+        key = key
+        value = value
+        ttl = ttl
+    }
+        ))
     const received = $result.wait()
     match received {
         Err(error): .Err(.Transport(error = error))
@@ -1311,7 +1366,7 @@ fn requireBridgeDone<T, B, C>(
     match value {
         Done(result): result
         MaybeValue(result): unexpectedResponse<
-            Result<Option<T>, BridgeError<B, C>>
+        Result<Option<T>, BridgeError<B, C>>
         >($result)
     }
 }
@@ -1322,7 +1377,7 @@ fn requireBridgeMaybeValue<T, B, C>(
     match value {
         MaybeValue(result): result
         Done(result): unexpectedResponse<
-            Result<void, BridgeError<B, C>>
+        Result<void, BridgeError<B, C>>
         >($result)
     }
 }

@@ -1,0 +1,25 @@
+package fuzz.caching
+
+import foundation.caching
+import std.time
+
+fn cloneI32(value i32) i32 {
+    value
+}
+
+fn main() i32 {
+    const cache = caching.NewWith<i32>(
+        $cloneI32,
+        caching.Policy {
+        DefaultTTL = time.Seconds(1)
+        MaxEntries = 32
+    }
+    ) else error {
+        discard error
+        return 1
+    }
+    const pending = cache.Get("answer")
+    discard pending
+    discard cache
+    0
+}

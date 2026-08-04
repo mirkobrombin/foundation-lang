@@ -2840,6 +2840,125 @@ void schedulerPackageExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void cachingPackageExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fn";
+    const std::string completeContents =
+        "package sample\n"
+        "\n"
+        "import foundation.caching\n"
+        "import std.time\n"
+        "\n"
+        "fn cloneI32(value i32) i32 {\n"
+        "    value\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    const cache = caching.New<i32>($cloneI32)\n"
+        "    const pending = cache.Get(\"answer\")\n"
+        "    discard pending\n"
+        "    const handle = cache.Handle()\n"
+        "    discard handle\n"
+        "    discard cache\n"
+        "    0\n"
+        "}\n";
+    const std::string completionContents =
+        "package sample\n"
+        "\n"
+        "import foundation.caching\n"
+        "import std.time\n"
+        "\n"
+        "fn cloneI32(value i32) i32 {\n"
+        "    value\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    const cache = caching.New<i32>($cloneI32)\n"
+        "    const pending = cache.Get(\"answer\")\n"
+        "    discard pending\n"
+        "    const handle = cache.Handle()\n"
+        "    handle.\n"
+        "    discard cache\n"
+        "    0\n"
+        "}\n";
+    writeFile(source, completeContents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(completeContents) +
+        "\"}}}";
+    const auto change =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":2},\"contentChanges\":[{\"text\":\"" +
+        jsonEscape(completionContents) + "\"}]}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(261, "hover", 2, 12)) +
+        frame(request(262, "hover", 10, 28)) +
+        frame(request(263, "signatureHelp", 10, 43)) +
+        frame(request(264, "definition", 10, 28)) +
+        frame(request(265, "hover", 11, 27)) +
+        frame(request(266, "hover", 13, 27)) + frame(change) +
+        frame(request(267, "completion", 14, 11)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto packageHover = responseFor(transcript, 261);
+    const auto constructorHover = responseFor(transcript, 262);
+    const auto constructorSignature = responseFor(transcript, 263);
+    const auto constructorDefinition = responseFor(transcript, 264);
+    const auto getHover = responseFor(transcript, 265);
+    const auto handleHover = responseFor(transcript, 266);
+    const auto members = responseFor(transcript, 267);
+
+    expect(status == 0, "caching language server transcript exits cleanly");
+    expect(errors.str().empty(), "caching requests write no server errors");
+    expect(packageHover.find("foundation.caching") != std::string::npos,
+           "caching package import receives hover");
+    expect(constructorHover.find("fn New<T>") != std::string::npos &&
+               constructorHover.find("default limits") != std::string::npos,
+           "cache construction receives typed hover and documentation");
+    expect(constructorSignature.find("fn New<T>") != std::string::npos &&
+               constructorSignature.find("cloneValue fn(T) T") != std::string::npos,
+           "cache construction receives ownership-aware signature help");
+    expect(constructorDefinition.find("foundation/caching/caching.fn") !=
+               std::string::npos,
+           "cache construction navigates to framework source");
+    expect(getHover.find("fn Get") != std::string::npos &&
+               getHover.find("Task<Result<Option<T>, Error>>") != std::string::npos &&
+               getHover.find("explicitly cloned value") != std::string::npos,
+           "cache get hover exposes its cloned task result");
+    expect(handleHover.find("fn Handle") != std::string::npos &&
+               handleHover.find("Handle<T>") != std::string::npos &&
+               handleHover.find("independently owned handle") != std::string::npos,
+           "cache handle hover exposes its typed sender");
+    expect(members.find("\"label\":\"Get\"") != std::string::npos &&
+               members.find("\"label\":\"Set\"") != std::string::npos &&
+               members.find("\"label\":\"Invalidate\"") != std::string::npos &&
+               members.find("\"label\":\"Len\"") != std::string::npos &&
+               members.find("\"label\":\"Clone\"") != std::string::npos,
+           "cache handle completion exposes its compiler-backed methods");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void secretsPackageExposesEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fn";
@@ -4463,6 +4582,7 @@ int main() {
     supervisorPackageExposesEditorDetails();
     parallelPoolExposesEditorDetails();
     schedulerPackageExposesEditorDetails();
+    cachingPackageExposesEditorDetails();
     secretsPackageExposesEditorDetails();
     rawPointersExposeEditorDetails();
     servicesAndActionsExposeEditorDetails();
