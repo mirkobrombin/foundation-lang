@@ -1,0 +1,8 @@
+package test.alignoverflow
+
+import std.align
+
+fn main() i32 {
+    discard align.UpU8(255, 2)
+    0
+}

@@ -1,0 +1,8 @@
+package test.aligninvalid
+
+import std.align
+
+fn main() i32 {
+    discard align.UpU64(1, 3)
+    0
+}

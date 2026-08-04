@@ -1,0 +1,18 @@
+package test.compatibility.align
+
+import std.align
+import std.format
+
+fn main() i32 {
+    print("u8:" + format.U8(align.UpU8(5, 4)) + ":" +
+        format.U8(align.DownU8(5, 4)))
+    print("u16:" + format.U16(align.UpU16(257, 256)) + ":" +
+        format.U16(align.DownU16(511, 256)))
+    print("u32:" + format.U32(align.UpU32(65537, 65536)) + ":" +
+        format.U32(align.DownU32(131071, 65536)))
+    print("u64:" + format.U64(align.UpU64(4294967297, 4294967296)) + ":" +
+        format.U64(align.DownU64(8589934591, 4294967296)))
+    print("usize:" + format.Usize(align.UpUsize(4660, 256)) + ":" +
+        format.Usize(align.DownUsize(4660, 256)))
+    0
+}

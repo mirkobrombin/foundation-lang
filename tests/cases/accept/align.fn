@@ -1,0 +1,25 @@
+package test.align
+
+import std.align
+
+fn main() i32 {
+    if align.UpU8(0, 4) != 0 return 1
+    if align.UpU8(1, 4) != 4 return 2
+    if align.UpU8(4, 4) != 4 return 3
+    if align.DownU8(5, 4) != 4 return 4
+
+    if align.UpU16(255, 256) != 256 return 5
+    if align.DownU16(511, 256) != 256 return 6
+
+    if align.UpU32(65537, 65536) != 131072 return 7
+    if align.DownU32(131071, 65536) != 65536 return 8
+
+    if align.UpU64(4294967297, 4294967296) != 8589934592 return 9
+    if align.DownU64(8589934591, 4294967296) != 4294967296 return 10
+
+    if align.UpUsize(4660, 256) != 4864 return 11
+    if align.DownUsize(4660, 256) != 4608 return 12
+
+    print("align ok")
+    0
+}

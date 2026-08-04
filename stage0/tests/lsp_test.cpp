@@ -4091,6 +4091,78 @@ void ringPackageExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void alignPackageExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fn";
+    const std::string contents =
+        "package sample\n"
+        "\n"
+        "import std.align\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    const upper = align.UpU64(4097, 4096)\n"
+        "    const lower = align.DownUsize(4097, 4096)\n"
+        "    0 if upper == 8192 && lower == 4096 else 1\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(246, "hover", 2, 12)) +
+        frame(request(247, "hover", 5, 26)) +
+        frame(request(248, "signatureHelp", 5, 39)) +
+        frame(request(249, "definition", 5, 26)) +
+        frame(request(250, "hover", 6, 26)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto packageHover = responseFor(transcript, 246);
+    const auto upHover = responseFor(transcript, 247);
+    const auto upSignature = responseFor(transcript, 248);
+    const auto upDefinition = responseFor(transcript, 249);
+    const auto downHover = responseFor(transcript, 250);
+
+    expect(status == 0, "align language server transcript exits cleanly");
+    expect(errors.str().empty(), "align requests write no server errors");
+    expect(packageHover.find("std.align") != std::string::npos,
+           "align package import receives hover");
+    expect(upHover.find("fn UpU64(value u64, alignment u64) u64") !=
+                   std::string::npos &&
+               upHover.find("power-of-two boundary") != std::string::npos,
+           "upward alignment receives typed hover and documentation");
+    expect(upSignature.find("fn UpU64(value u64, alignment u64) u64") !=
+                   std::string::npos &&
+               upSignature.find("alignment u64") != std::string::npos,
+           "upward alignment receives signature help");
+    expect(upDefinition.find("std/align/align.fn") != std::string::npos,
+           "alignment functions resolve to their SDK declaration");
+    expect(downHover.find("fn DownUsize(value usize, alignment usize) usize") !=
+                   std::string::npos &&
+               downHover.find("native-size value downward") != std::string::npos,
+           "native-size downward alignment receives typed hover");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void webActivationExposesEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fn";
@@ -4592,6 +4664,7 @@ int main() {
     authenticationPackagesExposeEditorDetails();
     runtimePipelinePackageExposesEditorDetails();
     ringPackageExposesEditorDetails();
+    alignPackageExposesEditorDetails();
     resiliencyPackagesExposeEditorDetails();
     webActivationExposesEditorDetails();
     manualWebMiddlewareExposesEditorDetails();

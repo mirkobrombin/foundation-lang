@@ -1,0 +1,84 @@
+package std.align
+
+// Aligns an unsigned 8-bit value upward to a power-of-two boundary.
+fn UpU8(value u8, alignment u8) u8 {
+    requireAlignment(u64.From(alignment))
+    const remainder = value % alignment
+    if remainder == 0 return value
+    value + (alignment - remainder)
+}
+
+// Aligns an unsigned 8-bit value downward to a power-of-two boundary.
+fn DownU8(value u8, alignment u8) u8 {
+    requireAlignment(u64.From(alignment))
+    value - (value % alignment)
+}
+
+// Aligns an unsigned 16-bit value upward to a power-of-two boundary.
+fn UpU16(value u16, alignment u16) u16 {
+    requireAlignment(u64.From(alignment))
+    const remainder = value % alignment
+    if remainder == 0 return value
+    value + (alignment - remainder)
+}
+
+// Aligns an unsigned 16-bit value downward to a power-of-two boundary.
+fn DownU16(value u16, alignment u16) u16 {
+    requireAlignment(u64.From(alignment))
+    value - (value % alignment)
+}
+
+// Aligns an unsigned 32-bit value upward to a power-of-two boundary.
+fn UpU32(value u32, alignment u32) u32 {
+    requireAlignment(u64.From(alignment))
+    const remainder = value % alignment
+    if remainder == 0 return value
+    value + (alignment - remainder)
+}
+
+// Aligns an unsigned 32-bit value downward to a power-of-two boundary.
+fn DownU32(value u32, alignment u32) u32 {
+    requireAlignment(u64.From(alignment))
+    value - (value % alignment)
+}
+
+// Aligns an unsigned 64-bit value upward to a power-of-two boundary.
+fn UpU64(value u64, alignment u64) u64 {
+    requireAlignment(alignment)
+    const remainder = value % alignment
+    if remainder == 0 return value
+    value + (alignment - remainder)
+}
+
+// Aligns an unsigned 64-bit value downward to a power-of-two boundary.
+fn DownU64(value u64, alignment u64) u64 {
+    requireAlignment(alignment)
+    value - (value % alignment)
+}
+
+// Aligns an unsigned native-size value upward to a power-of-two boundary.
+fn UpUsize(value usize, alignment usize) usize {
+    requireAlignment(u64.From(alignment))
+    const remainder = value % alignment
+    if remainder == 0 return value
+    value + (alignment - remainder)
+}
+
+// Aligns an unsigned native-size value downward to a power-of-two boundary.
+fn DownUsize(value usize, alignment usize) usize {
+    requireAlignment(u64.From(alignment))
+    value - (value % alignment)
+}
+
+fn requireAlignment(alignment u64) void {
+    if alignment == 0 {
+        panic("align: alignment must be a power of two")
+    }
+    var remaining = alignment
+    while remaining % 2 == 0 {
+        remaining = remaining / 2
+    }
+    if remaining != 1 {
+        panic("align: alignment must be a power of two")
+    }
+}

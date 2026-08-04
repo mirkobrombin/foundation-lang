@@ -1,0 +1,8 @@
+package test.alignzero
+
+import std.align
+
+fn main() i32 {
+    discard align.DownU64(1, 0)
+    0
+}

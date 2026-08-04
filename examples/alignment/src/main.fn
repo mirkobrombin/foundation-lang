@@ -1,0 +1,12 @@
+package example.alignment
+
+import std.align
+import std.format
+
+fn main() i32 {
+    const requested usize = 4100
+    const page usize = 4096
+    print("previous:" + format.Usize(align.DownUsize(requested, page)))
+    print("next:" + format.Usize(align.UpUsize(requested, page)))
+    0
+}
