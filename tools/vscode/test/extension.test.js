@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.128.0");
+    assert.equal(manifest.version, "0.129.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1299,8 +1299,12 @@ test("grammar and completions track compiler keywords", () => {
         "health.NamedReport", "health.Status", "health.NewRegistry", "health.NewReport",
         "health.StatusText", "health.Registry.Register", "health.Registry.CheckAll",
         "foundation.fsm", "fsm.Machine", "fsm.Event", "fsm.Record", "fsm.EventType",
-        "fsm.ApplyError", "fsm.ListenerFailure", "fsm.New", "fsm.Machine.Snapshot",
+        "fsm.ApplyError", "fsm.ApplyReport", "fsm.TimeoutResult", "fsm.GuardEvent",
+        "fsm.EffectPolicy", "fsm.EffectFailure", "fsm.ListenerFailure", "fsm.New",
+        "fsm.NewWithEffectPolicy", "fsm.Machine.Snapshot", "fsm.ApplyReport.IsClean",
+        "fsm.ApplyReport.EffectFailures", "fsm.ApplyReport.ListenerFailures",
         "fsm.Machine.HistoryLen", "fsm.Machine.History", "fsm.Machine.Subscribe",
+        "fsm.Machine.Guard", "fsm.Machine.OnExit", "fsm.Machine.OnEnter",
         "fsm.Machine.Apply", "fsm.Machine.Elapsed", "fsm.Machine.CheckTimeout",
         "foundation.plugin", "plugin.Plugin", "plugin.NativePlugin", "plugin.Registry",
         "plugin.FactoryRegistry", "plugin.ExecSandbox",

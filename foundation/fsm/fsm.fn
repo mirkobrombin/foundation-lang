@@ -61,14 +61,67 @@ struct ListenerFailure<E> {
     Error events.PublishError<E>
 }
 
-// Separates rejected transitions, committed observer failures, and
-// timeout failures.
-enum ApplyError<TE, LE> {
+// Carries independent snapshots to one reusable transition guard.
+struct GuardEvent<S, G> {
+    // The state snapshot captured before the transition.
+    From S
+
+    // The candidate state produced by the transition.
+    To S
+
+    // The typed trigger supplied by the caller.
+    Trigger G
+}
+
+// Chooses whether effect execution stops or collects every effect error.
+enum EffectPolicy {
+    // Stops later effects after the first failure.
+    StopOnFirstError
+
+    // Runs every exit and enter effect after a committed transition.
+    BestEffort
+}
+
+// Associates one effect publication failure with the affected phase.
+struct EffectFailure<E> {
+    // The ExitState or EnterState phase whose effects failed.
+    Type EventType
+
+    // The ordered effect failures reported by the event bus.
+    Error events.PublishError<E>
+}
+
+// Reports non-blocking callback failures for one committed transition.
+struct ApplyReport<TE, LE> {
+    // Ordered failures from exit and enter effects.
+    EffectFailures own collections.List<EffectFailure<TE>>
+
+    // Ordered failures from lifecycle listeners.
+    ListenerFailures own collections.List<ListenerFailure<LE>>
+
+    // Returns true when every non-blocking callback succeeded.
+    fn IsClean(self) bool {
+        self.EffectFailures.IsEmpty() && self.ListenerFailures.IsEmpty()
+    }
+}
+
+// Distinguishes a pending timeout from one committed transition report.
+enum TimeoutResult<TE, LE> {
+    // The state has not reached the requested timeout.
+    Pending
+
+    // The timeout committed a transition and produced this report.
+    Applied(report own ApplyReport<TE, LE>)
+}
+
+// Separates transition, guard, clock, and timeout failures that occur
+// before commit.
+enum ApplyError<TE> {
     // The executable state transition rejected the current state.
     Transition(error TE)
 
-    // One or more post-commit lifecycle publications failed.
-    Listeners(errors own collections.List<ListenerFailure<LE>>)
+    // A reusable guard rejected the transition candidate.
+    Guard(error events.PublishError<TE>)
 
     // The monotonic clock moved behind the state-entry reference.
     Clock(error time.Error)
@@ -77,14 +130,18 @@ enum ApplyError<TE, LE> {
     InvalidTimeout
 }
 
-// Owns one typed state value, immutable history, and ordered
+// Owns one typed state value, guards, effects, immutable history, and
 // lifecycle listeners.
 struct Machine<S, G, TE, LE> {
     state S
     cloneState fn(S) S
     cloneTrigger fn(G) G
     history own collections.List<Record<S, G>>
+    guards own events.Bus<GuardEvent<S, G>, TE>
+    exitEffects own events.Bus<Event<S, G>, TE>
+    enterEffects own events.Bus<Event<S, G>, TE>
     listeners own events.Bus<Event<S, G>, LE>
+    effectPolicy EffectPolicy
     enteredAt time.MonotonicInstant
 
     // Returns an independent snapshot of the current state.
@@ -126,17 +183,44 @@ struct Machine<S, G, TE, LE> {
         self.listeners.Subscribe($listener, priority)
     }
 
+    // Registers one pre-commit guard with stable priority and ordering.
+    fn Guard(
+        &self,
+        $guard fn(GuardEvent<S, G>) Result<void, TE>,
+        priority events.Priority
+    ) Result<void, events.SubscribeError> {
+        self.guards.Subscribe($guard, priority)
+    }
+
+    // Registers one post-commit exit effect.
+    fn OnExit(
+        &self,
+        $effect fn(Event<S, G>) Result<void, TE>,
+        priority events.Priority
+    ) Result<void, events.SubscribeError> {
+        self.exitEffects.Subscribe($effect, priority)
+    }
+
+    // Registers one post-commit enter effect.
+    fn OnEnter(
+        &self,
+        $effect fn(Event<S, G>) Result<void, TE>,
+        priority events.Priority
+    ) Result<void, events.SubscribeError> {
+        self.enterEffects.Subscribe($effect, priority)
+    }
+
     // Applies one transition to an independent candidate and commits it
-    // only after the transition succeeds.
+    // only after the transition and every guard succeed.
     fn Apply(
         &self,
         trigger G,
         $transition fn(&S) Result<void, TE>
-    ) Result<void, ApplyError<TE, LE>> {
+    ) Result<own ApplyReport<TE, LE>, ApplyError<TE>> {
         var candidate = cloneValue(self.cloneState, self.state)
         const applied = transition(&candidate)
         match applied {
-            Ok: self.commit($candidate, trigger)
+            Ok: self.guardAndCommit($candidate, trigger)
             Err(error): .Err(.Transition(error = error))
         }
     }
@@ -153,7 +237,7 @@ struct Machine<S, G, TE, LE> {
         duration time.Duration,
         trigger G,
         $transition fn(&S) Result<void, TE>
-    ) Result<bool, ApplyError<TE, LE>> {
+    ) Result<TimeoutResult<TE, LE>, ApplyError<TE>> {
         if duration.IsNegative() || duration.Nanoseconds() == 0 {
             discard transition
             return .Err(.InvalidTimeout)
@@ -164,30 +248,50 @@ struct Machine<S, G, TE, LE> {
         }
         if elapsed.Nanoseconds() < duration.Nanoseconds() {
             discard transition
-            return .Ok(false)
+            return .Ok(.Pending)
         }
-        self.Apply(trigger, $transition) else error {
+        const report = self.Apply(trigger, $transition) else error {
             return .Err(error)
         }
-        .Ok(true)
+        .Ok(.Applied(report = report))
+    }
+
+    fn guardAndCommit(
+        &self,
+        $next S,
+        trigger G
+    ) Result<own ApplyReport<TE, LE>, ApplyError<TE>> {
+        const checked = self.guards.Publish(GuardEvent<S, G> {
+            From = cloneValue(self.cloneState, self.state)
+            To = cloneValue(self.cloneState, next)
+            Trigger = cloneValue(self.cloneTrigger, trigger)
+        })
+        match checked {
+            Ok: .Ok(self.commit($next, trigger))
+            Err(error): {
+                discard next
+                .Err(.Guard(error = error))
+            }
+        }
     }
 
     fn commit(
         &self,
         $next S,
         trigger G
-    ) Result<void, ApplyError<TE, LE>> {
+    ) own ApplyReport<TE, LE> {
         const before = cloneValue(self.cloneState, self.state)
         const after = cloneValue(self.cloneState, next)
         const timestamp = time.Now()
-        var failures = collections.NewList<ListenerFailure<LE>>()
+        var listenerFailures = collections.NewList<ListenerFailure<LE>>()
+        var effectFailures = collections.NewList<EffectFailure<TE>>()
         self.publish(
             .BeforeTransition,
             before,
             after,
             trigger,
             timestamp,
-            &failures
+            &listenerFailures
         )
 
         const previous = replace self.state with next
@@ -200,17 +304,80 @@ struct Machine<S, G, TE, LE> {
         })
         self.enteredAt = time.MonotonicNow()
 
-        self.publish(.ExitState, before, after, trigger, timestamp, &failures)
-        self.publish(.EnterState, before, after, trigger, timestamp, &failures)
+        const exitFailed = self.publishEffect(
+            &self.exitEffects,
+            .ExitState,
+            before,
+            after,
+            trigger,
+            timestamp,
+            &effectFailures
+        )
+        self.publish(
+            .ExitState,
+            before,
+            after,
+            trigger,
+            timestamp,
+            &listenerFailures
+        )
+        if !exitFailed || runsEveryEffect(self.effectPolicy) {
+            discard self.publishEffect(
+                &self.enterEffects,
+                .EnterState,
+                before,
+                after,
+                trigger,
+                timestamp,
+                &effectFailures
+            )
+        }
+        self.publish(
+            .EnterState,
+            before,
+            after,
+            trigger,
+            timestamp,
+            &listenerFailures
+        )
         self.publish(
             .AfterTransition,
             before,
             after,
             trigger,
             timestamp,
-            &failures
+            &listenerFailures
         )
-        finishApply<TE, LE>($failures)
+        finishApply<TE, LE>($effectFailures, $listenerFailures)
+    }
+
+    fn publishEffect(
+        &self,
+        &bus events.Bus<Event<S, G>, TE>,
+        kind EventType,
+        before S,
+        after S,
+        trigger G,
+        timestamp time.Instant,
+        &failures collections.List<EffectFailure<TE>>
+    ) bool {
+        const published = bus.Publish(Event<S, G> {
+            Type = kind
+            From = cloneValue(self.cloneState, before)
+            To = cloneValue(self.cloneState, after)
+            Trigger = cloneValue(self.cloneTrigger, trigger)
+            Timestamp = timestamp
+        })
+        match published {
+            Ok: false
+            Err(error): {
+                failures.PushFront(EffectFailure<TE> {
+                    Type = kind
+                    Error = error
+                })
+                true
+            }
+        }
     }
 
     fn publish(
@@ -245,12 +412,32 @@ fn New<S, G, TE, LE>(
     $cloneState fn(S) S,
     $cloneTrigger fn(G) G
 ) own Machine<S, G, TE, LE> {
+    NewWithEffectPolicy<S, G, TE, LE>(
+        $initial,
+        $cloneState,
+        $cloneTrigger,
+        .BestEffort
+    )
+}
+
+// Creates a machine with one explicit post-commit effect policy.
+fn NewWithEffectPolicy<S, G, TE, LE>(
+    $initial S,
+    $cloneState fn(S) S,
+    $cloneTrigger fn(G) G,
+    effectPolicy EffectPolicy
+) own Machine<S, G, TE, LE> {
+    const strategy = effectStrategy(effectPolicy)
     own Machine<S, G, TE, LE> {
         state = initial
         cloneState = cloneState
         cloneTrigger = cloneTrigger
         history = collections.NewList<Record<S, G>>()
+        guards = events.NewBus<GuardEvent<S, G>, TE>(.StopOnFirstError)
+        exitEffects = events.NewBus<Event<S, G>, TE>(strategy)
+        enterEffects = events.NewBus<Event<S, G>, TE>(strategy)
         listeners = events.NewBus<Event<S, G>, LE>(.BestEffort)
+        effectPolicy = effectPolicy
         enteredAt = time.MonotonicNow()
     }
 }
@@ -289,20 +476,37 @@ fn publishedSuccessfully() void {
 }
 
 fn finishApply<TE, LE>(
-    $failures own collections.List<ListenerFailure<LE>>
-) Result<void, ApplyError<TE, LE>> {
-    if failures.IsEmpty() {
-        discard failures
-        return .Ok
+    $effectFailures own collections.List<EffectFailure<TE>>,
+    $listenerFailures own collections.List<ListenerFailure<LE>>
+) own ApplyReport<TE, LE> {
+    own ApplyReport<TE, LE> {
+        EffectFailures = orderEffectFailures($effectFailures)
+        ListenerFailures = orderListenerFailures($listenerFailures)
     }
+}
 
+fn orderListenerFailures<E>(
+    $failures own collections.List<ListenerFailure<E>>
+) own collections.List<ListenerFailure<E>> {
     var pending = failures
-    var ordered = collections.NewList<ListenerFailure<LE>>()
+    var ordered = collections.NewList<ListenerFailure<E>>()
     while !pending.IsEmpty() {
         ordered.PushFront(requiredFailure(pending.PopFront()))
     }
     discard pending
-    .Err(.Listeners(errors = ordered))
+    ordered
+}
+
+fn orderEffectFailures<E>(
+    $failures own collections.List<EffectFailure<E>>
+) own collections.List<EffectFailure<E>> {
+    var pending = failures
+    var ordered = collections.NewList<EffectFailure<E>>()
+    while !pending.IsEmpty() {
+        ordered.PushFront(requiredEffectFailure(pending.PopFront()))
+    }
+    discard pending
+    ordered
 }
 
 fn requiredFailure<E>(
@@ -316,4 +520,31 @@ fn requiredFailure<E>(
 
 fn missingFailure<E>() ListenerFailure<E> {
     panic("fsm listener invariant failed")
+}
+
+fn requiredEffectFailure<E>(
+    $value Option<EffectFailure<E>>
+) EffectFailure<E> {
+    match value {
+        None: missingEffectFailure<E>()
+        Some(failure): failure
+    }
+}
+
+fn missingEffectFailure<E>() EffectFailure<E> {
+    panic("fsm effect invariant failed")
+}
+
+fn runsEveryEffect(policy EffectPolicy) bool {
+    match policy {
+        StopOnFirstError: false
+        BestEffort: true
+    }
+}
+
+fn effectStrategy(policy EffectPolicy) events.Strategy {
+    match policy {
+        StopOnFirstError: .StopOnFirstError
+        BestEffort: .BestEffort
+    }
 }

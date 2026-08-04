@@ -1128,6 +1128,7 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/fsm-machine-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fsm-machine.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
@@ -1139,6 +1140,14 @@ if(BUILD_TESTING)
             -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/fsm-machine-first.c
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/fsm-machine-second.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.check.fsm-guard-error-type
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/fsm-guard-error-type.fn
+            -DCODE=FDN2011
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
     add_test(
         NAME stage0.check.state-machine-unknown-state

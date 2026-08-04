@@ -1,0 +1,49 @@
+import foundation.events
+import foundation.fsm
+
+enum State {
+    Idle
+}
+
+enum Trigger {
+    Start
+}
+
+enum OperationError {
+    Rejected
+}
+
+enum ListenerError {
+    Rejected
+}
+
+fn cloneState(value State) State {
+    match value {
+        Idle: .Idle
+    }
+}
+
+fn cloneTrigger(value Trigger) Trigger {
+    match value {
+        Start: .Start
+    }
+}
+
+fn wrongGuard(
+    event fsm.GuardEvent<State, Trigger>
+) Result<void, ListenerError> {
+    discard event
+    .Ok
+}
+
+fn main() i32 {
+    var initial State = .Idle
+    var machine = fsm.New<State, Trigger, OperationError, ListenerError>(
+        $initial,
+        $cloneState,
+        $cloneTrigger
+    )
+    const registered = machine.Guard($wrongGuard, events.Priority.Normal)
+    discard registered
+    0
+}

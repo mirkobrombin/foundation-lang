@@ -4,7 +4,7 @@ import foundation.events
 import foundation.fsm
 import std.collections
 
-state_machine Order {
+state_machine Job {
     state Draft
     state Confirmed
 
@@ -15,11 +15,11 @@ enum Trigger {
     Manual
 }
 
-enum HandlerError {
+enum Log {
     Rejected
 }
 
-fn cloneOrder(value Order) Order {
+fn cloneJob(value Job) Job {
     match value {
         Draft: .Draft
         Confirmed: .Confirmed
@@ -32,11 +32,11 @@ fn cloneTrigger(value Trigger) Trigger {
     }
 }
 
-fn confirm(&order Order) Result<void, OrderTransitionError> {
-    order.Confirm()
+fn confirm(&job Job) Result<void, JobTransitionError> {
+    job.Confirm()
 }
 
-fn stateName(value Order) String {
+fn stateName(value Job) String {
     match value {
         Draft: "draft"
         Confirmed: "confirmed"
@@ -58,7 +58,7 @@ fn triggerName(value Trigger) String {
     }
 }
 
-fn observe(event fsm.Event<Order, Trigger>) Result<void, HandlerError> {
+fn observe(event fsm.Event<Job, Trigger>) Result<void, Log> {
     print(
         eventName(event.Type) + ":" + stateName(event.From) + "->" +
         stateName(event.To)
@@ -66,11 +66,38 @@ fn observe(event fsm.Event<Order, Trigger>) Result<void, HandlerError> {
     .Ok
 }
 
+fn rejectConfirm(
+    event fsm.GuardEvent<Job, Trigger>
+) Result<void, JobTransitionError> {
+    discard event
+    .Err(.InvalidState)
+}
+
+fn exitEffect(
+    event fsm.Event<Job, Trigger>
+) Result<void, JobTransitionError> {
+    discard event
+    print("effect exit")
+    .Ok
+}
+
+fn enterEffect(
+    event fsm.Event<Job, Trigger>
+) Result<void, JobTransitionError> {
+    discard event
+    print("effect enter")
+    .Ok
+}
+
 fn requireApply(
-    $value Result<void, fsm.ApplyError<OrderTransitionError, HandlerError>>
+    $value Result<own fsm.ApplyReport<JobTransitionError, Log>, fsm.ApplyError<JobTransitionError>>
 ) void {
     match value {
-        Ok: {}
+        Ok(report): {
+            if !report.IsClean() {
+                panic("fsm compatibility callbacks failed")
+            }
+        }
         Err(error): {
             discard error
             panic("fsm compatibility transition failed")
@@ -79,8 +106,8 @@ fn requireApply(
 }
 
 fn requiredRecord(
-    $value Option<fsm.Record<Order, Trigger>>
-) fsm.Record<Order, Trigger> {
+    $value Option<fsm.Record<Job, Trigger>>
+) fsm.Record<Job, Trigger> {
     match value {
         None: panic("fsm compatibility history missing")
         Some(record): record
@@ -88,7 +115,7 @@ fn requiredRecord(
 }
 
 fn printHistory(
-    $history own collections.List<fsm.Record<Order, Trigger>>
+    $history own collections.List<fsm.Record<Job, Trigger>>
 ) void {
     var records = history
     const record = requiredRecord(records.PopFront())
@@ -102,16 +129,19 @@ fn printHistory(
 }
 
 fn rejected(
-    $value Result<void, fsm.ApplyError<OrderTransitionError, HandlerError>>
+    $value Result<own fsm.ApplyReport<JobTransitionError, Log>, fsm.ApplyError<JobTransitionError>>
 ) bool {
     match value {
-        Ok: false
+        Ok(report): {
+            discard report
+            false
+        }
         Err(error): match error {
             Transition(error): match error {
                 InvalidState: true
             }
-            Listeners(errors): {
-                discard errors
+            Guard(error): {
+                discard error
                 false
             }
             Clock(error): {
@@ -123,16 +153,72 @@ fn rejected(
     }
 }
 
+fn guardRejected(
+    $value Result<own fsm.ApplyReport<JobTransitionError, Log>, fsm.ApplyError<JobTransitionError>>
+) bool {
+    match value {
+        Ok(report): {
+            discard report
+            false
+        }
+        Err(error): match error {
+            Transition(error): {
+                discard error
+                false
+            }
+            Guard(error): match error {
+                Reentrant: false
+                Handler(error): match error {
+                    InvalidState: true
+                }
+                Handlers(errors): {
+                    discard errors
+                    false
+                }
+            }
+            Clock(error): {
+                discard error
+                false
+            }
+            InvalidTimeout: false
+        }
+    }
+}
+
 fn main() i32 {
-    var initial Order = .Draft
-    var machine = fsm.New<Order, Trigger, OrderTransitionError, HandlerError>(
-        $initial,
-        $cloneOrder,
+    var blockedInitial Job = .Draft
+    var blocked = fsm.New<Job, Trigger, JobTransitionError, Log>(
+        $blockedInitial,
+        $cloneJob,
         $cloneTrigger
     )
-    machine.Subscribe($observe, events.Priority.Normal) else error {
+    blocked.Guard($rejectConfirm, events.Priority.Normal) else error {
         discard error
         return 1
+    }
+    print("guarded:" + if guardRejected($blocked.Apply(.Manual, $confirm)) {
+        "true"
+    } else {
+        "false"
+    })
+
+    var initial Job = .Draft
+    var machine = fsm.New<Job, Trigger, JobTransitionError, Log>(
+        $initial,
+        $cloneJob,
+        $cloneTrigger
+    )
+    machine.OnExit($exitEffect, events.Priority.Normal) else error {
+        discard error
+        return 2
+    }
+    machine.OnEnter($enterEffect, events.Priority.Normal) else error {
+        discard error
+        return 3
+    }
+    machine.Subscribe($observe, events.Priority.Normal) else error {
+        discard error
+        return 4
     }
     print("initial:" + stateName(machine.Snapshot()))
     requireApply($machine.Apply(.Manual, $confirm))

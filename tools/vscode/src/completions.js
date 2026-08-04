@@ -240,7 +240,12 @@ const staticCompletions = [
     { label: "fsm.Event", kind: "Struct", detail: "immutable transition lifecycle snapshots" },
     { label: "fsm.Record", kind: "Struct", detail: "immutable chronological transition record" },
     { label: "fsm.EventType", kind: "Enum", detail: "ordered transition lifecycle phase" },
-    { label: "fsm.ApplyError", kind: "Enum", detail: "transition, listener, clock, or timeout failure" },
+    { label: "fsm.GuardEvent", kind: "Struct", detail: "independent pre-commit transition snapshots" },
+    { label: "fsm.EffectPolicy", kind: "Enum", detail: "best-effort or stop-on-first-error effects" },
+    { label: "fsm.EffectFailure", kind: "Struct", detail: "typed exit or enter effect failure" },
+    { label: "fsm.ApplyReport", kind: "Struct", detail: "non-blocking callback failures for a committed transition" },
+    { label: "fsm.TimeoutResult", kind: "Enum", detail: "pending timeout or committed apply report" },
+    { label: "fsm.ApplyError", kind: "Enum", detail: "pre-commit transition, guard, clock, or timeout failure" },
     { label: "fsm.ListenerFailure", kind: "Struct", detail: "listener failure and lifecycle phase" },
     {
         label: "fsm.New",
@@ -249,11 +254,25 @@ const staticCompletions = [
         insertText: "fsm.New<${1:S}, ${2:G}, ${3:TE}, ${4:LE}>(\\$${5:initial}, \\$${6:cloneState}, \\$${7:cloneTrigger})"
     },
     {
+        label: "fsm.NewWithEffectPolicy",
+        kind: "Function",
+        detail: "fn NewWithEffectPolicy<S, G, TE, LE>($initial S, $cloneState fn(S) S, $cloneTrigger fn(G) G, effectPolicy EffectPolicy) own Machine<S, G, TE, LE>",
+        insertText: "fsm.NewWithEffectPolicy<${1:S}, ${2:G}, ${3:TE}, ${4:LE}>(\\$${5:initial}, \\$${6:cloneState}, \\$${7:cloneTrigger}, ${8:policy})"
+    },
+    {
         label: "fsm.Machine.Snapshot",
         kind: "Method",
         detail: "fn Snapshot(self) S",
         insertText: "Snapshot()"
     },
+    {
+        label: "fsm.ApplyReport.IsClean",
+        kind: "Method",
+        detail: "fn IsClean(self) bool",
+        insertText: "IsClean()"
+    },
+    { label: "fsm.ApplyReport.EffectFailures", kind: "Field", detail: "ordered committed effect failures" },
+    { label: "fsm.ApplyReport.ListenerFailures", kind: "Field", detail: "ordered lifecycle listener failures" },
     {
         label: "fsm.Machine.HistoryLen",
         kind: "Method",
@@ -273,9 +292,27 @@ const staticCompletions = [
         insertText: "Subscribe(\\$${1:listener}, ${2:priority})"
     },
     {
+        label: "fsm.Machine.Guard",
+        kind: "Method",
+        detail: "fn Guard(&self, $guard fn(GuardEvent<S, G>) Result<void, TE>, priority events.Priority) Result<void, events.SubscribeError>",
+        insertText: "Guard(\\$${1:guard}, ${2:priority})"
+    },
+    {
+        label: "fsm.Machine.OnExit",
+        kind: "Method",
+        detail: "fn OnExit(&self, $effect fn(Event<S, G>) Result<void, TE>, priority events.Priority) Result<void, events.SubscribeError>",
+        insertText: "OnExit(\\$${1:effect}, ${2:priority})"
+    },
+    {
+        label: "fsm.Machine.OnEnter",
+        kind: "Method",
+        detail: "fn OnEnter(&self, $effect fn(Event<S, G>) Result<void, TE>, priority events.Priority) Result<void, events.SubscribeError>",
+        insertText: "OnEnter(\\$${1:effect}, ${2:priority})"
+    },
+    {
         label: "fsm.Machine.Apply",
         kind: "Method",
-        detail: "fn Apply(&self, trigger G, $transition fn(&S) Result<void, TE>) Result<void, ApplyError<TE, LE>>",
+        detail: "fn Apply(&self, trigger G, $transition fn(&S) Result<void, TE>) Result<own ApplyReport<TE, LE>, ApplyError<TE>>",
         insertText: "Apply(${1:trigger}, \\$${2:transition})"
     },
     {
@@ -287,7 +324,7 @@ const staticCompletions = [
     {
         label: "fsm.Machine.CheckTimeout",
         kind: "Method",
-        detail: "fn CheckTimeout(&self, duration time.Duration, trigger G, $transition fn(&S) Result<void, TE>) Result<bool, ApplyError<TE, LE>>",
+        detail: "fn CheckTimeout(&self, duration time.Duration, trigger G, $transition fn(&S) Result<void, TE>) Result<TimeoutResult<TE, LE>, ApplyError<TE>>",
         insertText: "CheckTimeout(${1:duration}, ${2:trigger}, \\$${3:transition})"
     },
     { label: "plugin.Plugin", kind: "Interface", detail: "typed plugin lifecycle contract" },

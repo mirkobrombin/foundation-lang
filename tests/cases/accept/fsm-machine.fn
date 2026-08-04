@@ -22,6 +22,12 @@ enum LogError {
     Rejected
 }
 
+enum MachineError {
+    InvalidTransition
+    GuardRejected
+    EffectRejected
+}
+
 state_machine Doc {
     state Draft
     state Named(name String)
@@ -61,19 +67,28 @@ fn cloneDocTrigger(value DocTrigger) DocTrigger {
     }
 }
 
-fn start(&job Job) Result<void, JobTransitionError> {
-    job.Start(7)
-}
-
-fn finish(&job Job) Result<void, JobTransitionError> {
-    job.Finish(0)
-}
-
-fn mutateThenReject(&job Job) Result<void, JobTransitionError> {
-    job.Start(99) else error {
-        return .Err(error)
+fn start(&job Job) Result<void, MachineError> {
+    job.Start(7) else error {
+        discard error
+        return .Err(.InvalidTransition)
     }
-    .Err(.InvalidState)
+    .Ok
+}
+
+fn finish(&job Job) Result<void, MachineError> {
+    job.Finish(0) else error {
+        discard error
+        return .Err(.InvalidTransition)
+    }
+    .Ok
+}
+
+fn mutateThenReject(&job Job) Result<void, MachineError> {
+    job.Start(99) else error {
+        discard error
+        return .Err(.InvalidTransition)
+    }
+    .Err(.InvalidTransition)
 }
 
 fn nameDoc(
@@ -88,6 +103,38 @@ fn reject(event fsm.Event<Job, Trigger>) Result<void, LogError> {
     .Err(.Rejected)
 }
 
+fn rejectCandidate(
+    event fsm.GuardEvent<Job, Trigger>
+) Result<void, MachineError> {
+    const fsm.GuardEvent { From To Trigger } = event
+    if stateCode($From) == 0 && stateCode($To) == 7 &&
+        triggerCode(Trigger) == 1 {
+        return .Err(.GuardRejected)
+    }
+    .Err(.InvalidTransition)
+}
+
+fn shouldNotRunGuard(
+    event fsm.GuardEvent<Job, Trigger>
+) Result<void, MachineError> {
+    discard event
+    panic("guard fail-fast invariant failed")
+}
+
+fn rejectEffect(
+    event fsm.Event<Job, Trigger>
+) Result<void, MachineError> {
+    discard event
+    .Err(.EffectRejected)
+}
+
+fn shouldNotRunEffect(
+    event fsm.Event<Job, Trigger>
+) Result<void, MachineError> {
+    discard event
+    panic("effect stop invariant failed")
+}
+
 fn requiredFailure<E>(
     $value Option<fsm.ListenerFailure<E>>
 ) fsm.ListenerFailure<E> {
@@ -95,6 +142,64 @@ fn requiredFailure<E>(
         None: panic("missing listener failure")
         Some(failure): failure
     }
+}
+
+fn requiredEffectFailure<E>(
+    $value Option<fsm.EffectFailure<E>>
+) fsm.EffectFailure<E> {
+    match value {
+        None: panic("missing effect failure")
+        Some(failure): failure
+    }
+}
+
+fn requiredMachineError(
+    $value Option<MachineError>
+) MachineError {
+    match value {
+        None: panic("missing machine error")
+        Some(error): error
+    }
+}
+
+fn isEffectRejected(error MachineError) bool {
+    match error {
+        InvalidTransition: false
+        GuardRejected: false
+        EffectRejected: true
+    }
+}
+
+fn machineErrorsMatch(
+    $error events.PublishError<MachineError>,
+    expected i32,
+    failFast bool
+) bool {
+    match error {
+        Reentrant: false
+        Handler(error): failFast && expected == 1 && isEffectRejected(error)
+        Handlers(errors): {
+            if failFast return false
+            var pending = errors
+            if pending.Len() != expected return false
+            while !pending.IsEmpty() {
+                if !isEffectRejected(requiredMachineError(pending.PopFront())) {
+                    return false
+                }
+            }
+            true
+        }
+    }
+}
+
+fn effectFailureMatches(
+    $failure fsm.EffectFailure<MachineError>,
+    phase i32,
+    expected i32,
+    failFast bool
+) bool {
+    const fsm.EffectFailure { Type Error } = failure
+    phaseCode(Type) == phase && machineErrorsMatch($Error, expected, failFast)
 }
 
 fn requiredListenerError(
@@ -190,7 +295,9 @@ fn ownedSnapshots() bool {
         $nameDoc
     )
     match renamed {
-        Ok: {}
+        Ok(report): {
+            if !report.IsClean() return false
+        }
         Err(error): {
             discard error
             return false
@@ -211,16 +318,24 @@ fn ownedSnapshots() bool {
 }
 
 fn expectCommitted(
-    $result Result<void, fsm.ApplyError<JobTransitionError, LogError>>
+    $result Result<own fsm.ApplyReport<MachineError, LogError>, fsm.ApplyError<MachineError>>
 ) bool {
     match result {
-        Ok: false
+        Ok(report): {
+            const fsm.ApplyReport { EffectFailures ListenerFailures } = report
+            if !EffectFailures.IsEmpty() return false
+            discard EffectFailures
+            expectListenerFailures($ListenerFailures)
+        }
         Err(error): match error {
             Transition(error): {
                 discard error
                 false
             }
-            Listeners(errors): expectListenerFailures($errors)
+            Guard(error): {
+                discard error
+                false
+            }
             Clock(error): {
                 discard error
                 false
@@ -231,16 +346,21 @@ fn expectCommitted(
 }
 
 fn expectRejected(
-    $result Result<void, fsm.ApplyError<JobTransitionError, LogError>>
+    $result Result<own fsm.ApplyReport<MachineError, LogError>, fsm.ApplyError<MachineError>>
 ) bool {
     match result {
-        Ok: false
+        Ok(report): {
+            discard report
+            false
+        }
         Err(error): match error {
             Transition(error): match error {
-                InvalidState: true
+                InvalidTransition: true
+                GuardRejected: false
+                EffectRejected: false
             }
-            Listeners(errors): {
-                discard errors
+            Guard(error): {
+                discard error
                 false
             }
             Clock(error): {
@@ -250,6 +370,177 @@ fn expectRejected(
             InvalidTimeout: false
         }
     }
+}
+
+fn guardErrorMatches(
+    $error events.PublishError<MachineError>
+) bool {
+    match error {
+        Reentrant: false
+        Handler(error): match error {
+            InvalidTransition: false
+            GuardRejected: true
+            EffectRejected: false
+        }
+        Handlers(errors): {
+            discard errors
+            false
+        }
+    }
+}
+
+fn expectGuardRejected(
+    $result Result<own fsm.ApplyReport<MachineError, LogError>, fsm.ApplyError<MachineError>>
+) bool {
+    match result {
+        Ok(report): {
+            discard report
+            false
+        }
+        Err(error): match error {
+            Transition(error): {
+                discard error
+                false
+            }
+            Guard(error): guardErrorMatches($error)
+            Clock(error): {
+                discard error
+                false
+            }
+            InvalidTimeout: false
+        }
+    }
+}
+
+fn expectBestEffortReport(
+    $result Result<own fsm.ApplyReport<MachineError, LogError>, fsm.ApplyError<MachineError>>
+) bool {
+    match result {
+        Ok(report): {
+            const fsm.ApplyReport { EffectFailures ListenerFailures } = report
+            var effects = EffectFailures
+            if effects.Len() != 2 return false
+            if !effectFailureMatches(
+                requiredEffectFailure(effects.PopFront()),
+                2,
+                2,
+                false
+            ) {
+                return false
+            }
+            if !effectFailureMatches(
+                requiredEffectFailure(effects.PopFront()),
+                3,
+                1,
+                false
+            ) {
+                return false
+            }
+            if !effects.IsEmpty() return false
+            expectListenerFailures($ListenerFailures)
+        }
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn expectStoppedEffectReport(
+    $result Result<own fsm.ApplyReport<MachineError, LogError>, fsm.ApplyError<MachineError>>
+) bool {
+    match result {
+        Ok(report): {
+            const fsm.ApplyReport { EffectFailures ListenerFailures } = report
+            if !ListenerFailures.IsEmpty() return false
+            discard ListenerFailures
+            var effects = EffectFailures
+            if effects.Len() != 1 return false
+            if !effectFailureMatches(
+                requiredEffectFailure(effects.PopFront()),
+                2,
+                1,
+                true
+            ) {
+                return false
+            }
+            effects.IsEmpty()
+        }
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn guardedRejection() bool {
+    var initial Job = .Idle
+    var machine = fsm.New<Job, Trigger, MachineError, LogError>(
+        $initial,
+        $cloneJob,
+        $cloneTrigger
+    )
+    machine.Guard($rejectCandidate, events.Priority.High) else error {
+        discard error
+        return false
+    }
+    machine.Guard($shouldNotRunGuard, events.Priority.Low) else error {
+        discard error
+        return false
+    }
+    if !expectGuardRejected($machine.Apply(.Start, $start)) return false
+    stateCode($machine.Snapshot()) == 0 && machine.HistoryLen() == 0
+}
+
+fn bestEffortEffects() bool {
+    var initial Job = .Idle
+    var machine = fsm.New<Job, Trigger, MachineError, LogError>(
+        $initial,
+        $cloneJob,
+        $cloneTrigger
+    )
+    machine.OnExit($rejectEffect, events.Priority.High) else error {
+        discard error
+        return false
+    }
+    machine.OnExit($rejectEffect, events.Priority.Low) else error {
+        discard error
+        return false
+    }
+    machine.OnEnter($rejectEffect, events.Priority.Normal) else error {
+        discard error
+        return false
+    }
+    machine.Subscribe($reject, events.Priority.Normal) else error {
+        discard error
+        return false
+    }
+    if !expectBestEffortReport($machine.Apply(.Start, $start)) return false
+    stateCode($machine.Snapshot()) == 7 && machine.HistoryLen() == 1
+}
+
+fn stoppedEffects() bool {
+    var initial Job = .Idle
+    var machine = fsm.NewWithEffectPolicy<Job, Trigger, MachineError, LogError>(
+        $initial,
+        $cloneJob,
+        $cloneTrigger,
+        .StopOnFirstError
+    )
+    machine.OnExit($rejectEffect, events.Priority.High) else error {
+        discard error
+        return false
+    }
+    machine.OnExit($shouldNotRunEffect, events.Priority.Low) else error {
+        discard error
+        return false
+    }
+    machine.OnEnter($shouldNotRunEffect, events.Priority.High) else error {
+        discard error
+        return false
+    }
+    if !expectStoppedEffectReport($machine.Apply(.Start, $start)) return false
+    stateCode($machine.Snapshot()) == 7 && machine.HistoryLen() == 1
 }
 
 fn stateCode($value Job) i32 {
@@ -289,7 +580,7 @@ fn recordMatches(
 }
 
 fn expectHistory(
-    &machine fsm.Machine<Job, Trigger, JobTransitionError, LogError>
+    &machine fsm.Machine<Job, Trigger, MachineError, LogError>
 ) bool {
     var history = machine.History()
     if history.Len() != 2 return false
@@ -299,10 +590,23 @@ fn expectHistory(
     machine.HistoryLen() == 2
 }
 
-fn invalidTimeout(
-    &machine fsm.Machine<Job, Trigger, JobTransitionError, LogError>
+fn requireDuration(
+    $value Result<time.Duration, time.DurationError>
+) time.Duration {
+    match value {
+        Ok(duration): duration
+        Err(error): {
+            discard error
+            panic("duration parsing failed")
+        }
+    }
+}
+
+fn timeoutRejected(
+    &machine fsm.Machine<Job, Trigger, MachineError, LogError>,
+    duration time.Duration
 ) bool {
-    const checked = machine.CheckTimeout(time.Zero(), .Finish, $finish)
+    const checked = machine.CheckTimeout(duration, .Finish, $finish)
     match checked {
         Ok(expired): {
             discard expired
@@ -313,8 +617,8 @@ fn invalidTimeout(
                 discard error
                 false
             }
-            Listeners(errors): {
-                discard errors
+            Guard(error): {
+                discard error
                 false
             }
             Clock(error): {
@@ -326,12 +630,26 @@ fn invalidTimeout(
     }
 }
 
+fn invalidTimeout(
+    &machine fsm.Machine<Job, Trigger, MachineError, LogError>
+) bool {
+    if !timeoutRejected(&machine, time.Zero()) return false
+    const negative = requireDuration($time.Duration.Parse("-1ns"))
+    timeoutRejected(&machine, negative)
+}
+
 fn futureTimeout(
-    &machine fsm.Machine<Job, Trigger, JobTransitionError, LogError>
+    &machine fsm.Machine<Job, Trigger, MachineError, LogError>
 ) bool {
     const checked = machine.CheckTimeout(time.Seconds(60), .Finish, $finish)
     match checked {
-        Ok(expired): !expired
+        Ok(result): match result {
+            Pending: true
+            Applied(report): {
+                discard report
+                false
+            }
+        }
         Err(error): {
             discard error
             false
@@ -341,14 +659,16 @@ fn futureTimeout(
 
 fn expiredTimeout() bool {
     var initial Job = .Idle
-    var machine = fsm.New<Job, Trigger, JobTransitionError, LogError>(
+    var machine = fsm.New<Job, Trigger, MachineError, LogError>(
         $initial,
         $cloneJob,
         $cloneTrigger
     )
     const started = machine.Apply(.Start, $start)
     match started {
-        Ok: {}
+        Ok(report): {
+            if !report.IsClean() return false
+        }
         Err(error): {
             discard error
             return false
@@ -370,8 +690,14 @@ fn expiredTimeout() bool {
         $finish
     )
     match checked {
-        Ok(expired): expired && stateCode($machine.Snapshot()) == 100 &&
-            machine.HistoryLen() == 2
+        Ok(result): match result {
+            Pending: false
+            Applied(report): {
+                const clean = report.IsClean()
+                clean && stateCode($machine.Snapshot()) == 100 &&
+                    machine.HistoryLen() == 2
+            }
+        }
         Err(error): {
             discard error
             false
@@ -381,7 +707,7 @@ fn expiredTimeout() bool {
 
 fn main() i32 {
     var initial Job = .Idle
-    var machine = fsm.New<Job, Trigger, JobTransitionError, LogError>(
+    var machine = fsm.New<Job, Trigger, MachineError, LogError>(
         $initial,
         $cloneJob,
         $cloneTrigger
@@ -414,6 +740,9 @@ fn main() i32 {
     discard elapsed
     if !ownedSnapshots() return 16
     if !expiredTimeout() return 17
+    if !guardedRejection() return 18
+    if !bestEffortEffects() return 19
+    if !stoppedEffects() return 20
     print("fsm machine ok")
     0
 }

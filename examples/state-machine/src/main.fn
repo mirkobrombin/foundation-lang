@@ -82,6 +82,53 @@ fn observe(event fsm.Event<Order, OrderTrigger>) Result<void, LogError> {
     .Ok
 }
 
+fn submissionGuard(
+    event fsm.GuardEvent<Order, OrderTrigger>
+) Result<void, OrderTransitionError> {
+    const sourceIsDraft = isDraft(event.From)
+    const destinationIsSubmitted = isSubmitted(event.To)
+    const requestedSubmission = isSubmit(event.Trigger)
+    if sourceIsDraft && destinationIsSubmitted && requestedSubmission return .Ok
+    .Err(.InvalidState)
+}
+
+fn isDraft(value Order) bool {
+    match value {
+        Draft: true
+        _: false
+    }
+}
+
+fn isSubmitted(value Order) bool {
+    match value {
+        Submitted: true
+        _: false
+    }
+}
+
+fn isSubmit(value OrderTrigger) bool {
+    match value {
+        Submit: true
+        _: false
+    }
+}
+
+fn recordExit(
+    event fsm.Event<Order, OrderTrigger>
+) Result<void, OrderTransitionError> {
+    discard event
+    print("effect exit")
+    .Ok
+}
+
+fn recordEnter(
+    event fsm.Event<Order, OrderTrigger>
+) Result<void, OrderTransitionError> {
+    discard event
+    print("effect enter")
+    .Ok
+}
+
 fn managedDemo() i32 {
     var initial Order = .Draft
     var machine = fsm.New<Order, OrderTrigger, OrderTransitionError, LogError>(
@@ -89,14 +136,27 @@ fn managedDemo() i32 {
         $cloneOrder,
         $cloneTrigger
     )
+    machine.Guard($submissionGuard, events.Priority.Normal) else error {
+        discard error
+        return 1
+    }
+    machine.OnExit($recordExit, events.Priority.Normal) else error {
+        discard error
+        return 1
+    }
+    machine.OnEnter($recordEnter, events.Priority.Normal) else error {
+        discard error
+        return 1
+    }
     machine.Subscribe($observe, events.Priority.Normal) else error {
         discard error
         return 1
     }
-    machine.Apply(.Submit, $submitTransition) else error {
+    const applied = machine.Apply(.Submit, $submitTransition) else error {
         discard error
         return 2
     }
+    if !applied.IsClean() return 2
     if machine.HistoryLen() != 1 return 3
 
     const snapshot = machine.Snapshot()
@@ -112,7 +172,7 @@ fn managedDemo() i32 {
     if history.Len() != 1 return 5
     discard history
 
-    const pending = machine.CheckTimeout(
+    const checked = machine.CheckTimeout(
         time.Seconds(60),
         .Pay,
         $payTransition
@@ -120,7 +180,14 @@ fn managedDemo() i32 {
         discard error
         return 6
     }
-    if pending return 7
+    const pending = match checked {
+        Pending: true
+        Applied(report): {
+            discard report
+            false
+        }
+    }
+    if !pending return 7
     0
 }
 

@@ -2,6 +2,8 @@ invalid transition
 paid
 cancelled
 before
+effect exit
 exit
+effect enter
 enter
 after

@@ -3107,9 +3107,20 @@ void fsmPackageExposesEditorDetails() {
         "    machine.Snapshot()\n"
         "}\n"
         "\n"
+        "fn clean(\n"
+        "    report fsm.ApplyReport<TransitionError, ListenerError>\n"
+        ") bool {\n"
+        "    report.IsClean()\n"
+        "}\n"
+        "\n"
         "fn main() i32 {\n"
         "    0\n"
         "}\n";
+    auto reportCompletionContents = completeContents;
+    const auto reportCall = reportCompletionContents.find("report.IsClean()");
+    expect(reportCall != std::string::npos, "FSM report completion fixture is valid");
+    reportCompletionContents.replace(reportCall, std::string("report.IsClean()").size(),
+                                     "report.");
     const std::string completionContents =
         "package sample\n"
         "\n"
@@ -3163,6 +3174,11 @@ void fsmPackageExposesEditorDetails() {
                "\"},\"position\":{\"line\":" + std::to_string(line) +
                ",\"character\":" + std::to_string(character) + "}}}";
     };
+    const auto reportChange =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":3},\"contentChanges\":[{\"text\":\"" +
+        jsonEscape(reportCompletionContents) + "\"}]}}";
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
@@ -3170,8 +3186,10 @@ void fsmPackageExposesEditorDetails() {
         frame(initialize) + frame(open) + frame(request(801, "hover", 2, 12)) +
         frame(request(802, "hover", 21, 20)) +
         frame(request(803, "definition", 21, 20)) +
-        frame(request(804, "hover", 23, 18)) + frame(change) +
-        frame(request(805, "completion", 23, 12)) + frame(shutdown) + frame(exit));
+        frame(request(804, "hover", 23, 18)) +
+        frame(request(806, "hover", 29, 13)) + frame(change) +
+        frame(request(805, "completion", 23, 12)) + frame(reportChange) +
+        frame(request(807, "completion", 29, 11)) + frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
@@ -3180,7 +3198,9 @@ void fsmPackageExposesEditorDetails() {
     const auto machineHover = responseFor(transcript, 802);
     const auto machineDefinition = responseFor(transcript, 803);
     const auto snapshotHover = responseFor(transcript, 804);
+    const auto reportHover = responseFor(transcript, 806);
     const auto members = responseFor(transcript, 805);
+    const auto reportMembers = responseFor(transcript, 807);
 
     expect(status == 0, "FSM language server transcript exits cleanly");
     expect(errors.str().empty(), "FSM requests write no server errors");
@@ -3194,13 +3214,23 @@ void fsmPackageExposesEditorDetails() {
     expect(snapshotHover.find("fn Snapshot") != std::string::npos &&
                snapshotHover.find("independent snapshot") != std::string::npos,
            "FSM snapshot hover exposes its independent result");
+    expect(reportHover.find("fn IsClean") != std::string::npos &&
+               reportHover.find("non-blocking callback succeeded") != std::string::npos,
+           "FSM apply report hover exposes committed callback status");
     expect(members.find("\"label\":\"Snapshot\"") != std::string::npos &&
                members.find("\"label\":\"History\"") != std::string::npos &&
+               members.find("\"label\":\"Guard\"") != std::string::npos &&
+               members.find("\"label\":\"OnExit\"") != std::string::npos &&
+               members.find("\"label\":\"OnEnter\"") != std::string::npos &&
                members.find("\"label\":\"Subscribe\"") != std::string::npos &&
                members.find("\"label\":\"Apply\"") != std::string::npos &&
                members.find("\"label\":\"Elapsed\"") != std::string::npos &&
                members.find("\"label\":\"CheckTimeout\"") != std::string::npos,
            "FSM completion exposes compiler-backed lifecycle methods");
+    expect(reportMembers.find("\"label\":\"IsClean\"") != std::string::npos &&
+               reportMembers.find("\"label\":\"EffectFailures\"") != std::string::npos &&
+               reportMembers.find("\"label\":\"ListenerFailures\"") != std::string::npos,
+           "FSM apply report completion exposes status and typed failures");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);
