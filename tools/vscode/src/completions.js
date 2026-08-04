@@ -167,6 +167,7 @@ const staticCompletions = [
     { label: "foundation.worker", kind: "Module", detail: "Supervised application tasks" },
     { label: "foundation.hosting", kind: "Module", detail: "Owned application lifecycle" },
     { label: "foundation.health", kind: "Module", detail: "Typed deterministic health checks" },
+    { label: "foundation.fsm", kind: "Module", detail: "Typed state machine lifecycle and history" },
     { label: "foundation.plugin", kind: "Module", detail: "Validated native plugin lifecycle" },
     { label: "foundation.pipeline", kind: "Module", detail: "Typed runtime onion middleware", insertText: "foundation.pipeline as pipes" },
     { label: "foundation.bind", kind: "Module", detail: "Compiler-generated typed struct binding" },
@@ -235,6 +236,60 @@ const staticCompletions = [
     { label: "health.Report", kind: "Struct", detail: "typed health status, duration, and details" },
     { label: "health.NamedReport", kind: "Struct", detail: "registered checker name and report" },
     { label: "health.Status", kind: "Enum", detail: "healthy, degraded, or unhealthy status" },
+    { label: "fsm.Machine", kind: "Struct", detail: "owned typed state machine lifecycle" },
+    { label: "fsm.Event", kind: "Struct", detail: "immutable transition lifecycle snapshots" },
+    { label: "fsm.Record", kind: "Struct", detail: "immutable chronological transition record" },
+    { label: "fsm.EventType", kind: "Enum", detail: "ordered transition lifecycle phase" },
+    { label: "fsm.ApplyError", kind: "Enum", detail: "transition, listener, clock, or timeout failure" },
+    { label: "fsm.ListenerFailure", kind: "Struct", detail: "listener failure and lifecycle phase" },
+    {
+        label: "fsm.New",
+        kind: "Function",
+        detail: "fn New<S, G, TE, LE>($initial S, $cloneState fn(S) S, $cloneTrigger fn(G) G) own Machine<S, G, TE, LE>",
+        insertText: "fsm.New<${1:S}, ${2:G}, ${3:TE}, ${4:LE}>(\\$${5:initial}, \\$${6:cloneState}, \\$${7:cloneTrigger})"
+    },
+    {
+        label: "fsm.Machine.Snapshot",
+        kind: "Method",
+        detail: "fn Snapshot(self) S",
+        insertText: "Snapshot()"
+    },
+    {
+        label: "fsm.Machine.HistoryLen",
+        kind: "Method",
+        detail: "fn HistoryLen(self) i32",
+        insertText: "HistoryLen()"
+    },
+    {
+        label: "fsm.Machine.History",
+        kind: "Method",
+        detail: "fn History(&self) own collections.List<Record<S, G>>",
+        insertText: "History()"
+    },
+    {
+        label: "fsm.Machine.Subscribe",
+        kind: "Method",
+        detail: "fn Subscribe(&self, $listener fn(Event<S, G>) Result<void, LE>, priority events.Priority) Result<void, events.SubscribeError>",
+        insertText: "Subscribe(\\$${1:listener}, ${2:priority})"
+    },
+    {
+        label: "fsm.Machine.Apply",
+        kind: "Method",
+        detail: "fn Apply(&self, trigger G, $transition fn(&S) Result<void, TE>) Result<void, ApplyError<TE, LE>>",
+        insertText: "Apply(${1:trigger}, \\$${2:transition})"
+    },
+    {
+        label: "fsm.Machine.Elapsed",
+        kind: "Method",
+        detail: "fn Elapsed(self) Result<time.Duration, time.Error>",
+        insertText: "Elapsed()"
+    },
+    {
+        label: "fsm.Machine.CheckTimeout",
+        kind: "Method",
+        detail: "fn CheckTimeout(&self, duration time.Duration, trigger G, $transition fn(&S) Result<void, TE>) Result<bool, ApplyError<TE, LE>>",
+        insertText: "CheckTimeout(${1:duration}, ${2:trigger}, \\$${3:transition})"
+    },
     { label: "plugin.Plugin", kind: "Interface", detail: "typed plugin lifecycle contract" },
     { label: "plugin.NativePlugin", kind: "Struct", detail: "owned validated native plugin" },
     { label: "plugin.Registry", kind: "Struct", detail: "owned deterministic plugin registry" },

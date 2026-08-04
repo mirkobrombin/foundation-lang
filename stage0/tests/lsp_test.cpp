@@ -3077,6 +3077,135 @@ void adaptersPackageExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void fsmPackageExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fn";
+    const std::string completeContents =
+        "package sample\n"
+        "\n"
+        "import foundation.fsm\n"
+        "\n"
+        "enum State {\n"
+        "    Idle\n"
+        "}\n"
+        "\n"
+        "enum Trigger {\n"
+        "    Start\n"
+        "}\n"
+        "\n"
+        "enum TransitionError {\n"
+        "    Rejected\n"
+        "}\n"
+        "\n"
+        "enum ListenerError {\n"
+        "    Rejected\n"
+        "}\n"
+        "\n"
+        "fn inspect(\n"
+        "    machine fsm.Machine<State, Trigger, TransitionError, ListenerError>\n"
+        ") State {\n"
+        "    machine.Snapshot()\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    0\n"
+        "}\n";
+    const std::string completionContents =
+        "package sample\n"
+        "\n"
+        "import foundation.fsm\n"
+        "\n"
+        "enum State {\n"
+        "    Idle\n"
+        "}\n"
+        "\n"
+        "enum Trigger {\n"
+        "    Start\n"
+        "}\n"
+        "\n"
+        "enum TransitionError {\n"
+        "    Rejected\n"
+        "}\n"
+        "\n"
+        "enum ListenerError {\n"
+        "    Rejected\n"
+        "}\n"
+        "\n"
+        "fn inspect(\n"
+        "    machine fsm.Machine<State, Trigger, TransitionError, ListenerError>\n"
+        ") State {\n"
+        "    machine.\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    0\n"
+        "}\n";
+    writeFile(source, completeContents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(completeContents) +
+        "\"}}}";
+    const auto change =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":2},\"contentChanges\":[{\"text\":\"" +
+        jsonEscape(completionContents) + "\"}]}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(801, "hover", 2, 12)) +
+        frame(request(802, "hover", 21, 20)) +
+        frame(request(803, "definition", 21, 20)) +
+        frame(request(804, "hover", 23, 18)) + frame(change) +
+        frame(request(805, "completion", 23, 12)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto packageHover = responseFor(transcript, 801);
+    const auto machineHover = responseFor(transcript, 802);
+    const auto machineDefinition = responseFor(transcript, 803);
+    const auto snapshotHover = responseFor(transcript, 804);
+    const auto members = responseFor(transcript, 805);
+
+    expect(status == 0, "FSM language server transcript exits cleanly");
+    expect(errors.str().empty(), "FSM requests write no server errors");
+    expect(packageHover.find("foundation.fsm") != std::string::npos,
+           "FSM package import receives hover");
+    expect(machineHover.find("Machine<S, G, TE, LE>") != std::string::npos &&
+               machineHover.find("typed state value") != std::string::npos,
+           "FSM machine type receives typed hover and documentation");
+    expect(machineDefinition.find("foundation/fsm/fsm.fn") != std::string::npos,
+           "FSM machine type navigates to framework source");
+    expect(snapshotHover.find("fn Snapshot") != std::string::npos &&
+               snapshotHover.find("independent snapshot") != std::string::npos,
+           "FSM snapshot hover exposes its independent result");
+    expect(members.find("\"label\":\"Snapshot\"") != std::string::npos &&
+               members.find("\"label\":\"History\"") != std::string::npos &&
+               members.find("\"label\":\"Subscribe\"") != std::string::npos &&
+               members.find("\"label\":\"Apply\"") != std::string::npos &&
+               members.find("\"label\":\"Elapsed\"") != std::string::npos &&
+               members.find("\"label\":\"CheckTimeout\"") != std::string::npos,
+           "FSM completion exposes compiler-backed lifecycle methods");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void secretsPackageExposesEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fn";
@@ -4774,6 +4903,7 @@ int main() {
     schedulerPackageExposesEditorDetails();
     cachingPackageExposesEditorDetails();
     adaptersPackageExposesEditorDetails();
+    fsmPackageExposesEditorDetails();
     secretsPackageExposesEditorDetails();
     rawPointersExposeEditorDetails();
     servicesAndActionsExposeEditorDetails();

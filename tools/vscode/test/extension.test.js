@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.127.0");
+    assert.equal(manifest.version, "0.128.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1298,6 +1298,10 @@ test("grammar and completions track compiler keywords", () => {
         "foundation.health", "health.Registry", "health.Checker", "health.Report",
         "health.NamedReport", "health.Status", "health.NewRegistry", "health.NewReport",
         "health.StatusText", "health.Registry.Register", "health.Registry.CheckAll",
+        "foundation.fsm", "fsm.Machine", "fsm.Event", "fsm.Record", "fsm.EventType",
+        "fsm.ApplyError", "fsm.ListenerFailure", "fsm.New", "fsm.Machine.Snapshot",
+        "fsm.Machine.HistoryLen", "fsm.Machine.History", "fsm.Machine.Subscribe",
+        "fsm.Machine.Apply", "fsm.Machine.Elapsed", "fsm.Machine.CheckTimeout",
         "foundation.plugin", "plugin.Plugin", "plugin.NativePlugin", "plugin.Registry",
         "plugin.FactoryRegistry", "plugin.ExecSandbox",
         "plugin.ErrorKind", "plugin.Error", "plugin.NamedError",

@@ -1,0 +1,147 @@
+package test.compatibility.fsm_machine
+
+import foundation.events
+import foundation.fsm
+import std.collections
+
+state_machine Order {
+    state Draft
+    state Confirmed
+
+    on Confirm from Draft to Confirmed
+}
+
+enum Trigger {
+    Manual
+}
+
+enum HandlerError {
+    Rejected
+}
+
+fn cloneOrder(value Order) Order {
+    match value {
+        Draft: .Draft
+        Confirmed: .Confirmed
+    }
+}
+
+fn cloneTrigger(value Trigger) Trigger {
+    match value {
+        Manual: .Manual
+    }
+}
+
+fn confirm(&order Order) Result<void, OrderTransitionError> {
+    order.Confirm()
+}
+
+fn stateName(value Order) String {
+    match value {
+        Draft: "draft"
+        Confirmed: "confirmed"
+    }
+}
+
+fn eventName(value fsm.EventType) String {
+    match value {
+        BeforeTransition: "before"
+        ExitState: "exit"
+        EnterState: "enter"
+        AfterTransition: "after"
+    }
+}
+
+fn triggerName(value Trigger) String {
+    match value {
+        Manual: "manual"
+    }
+}
+
+fn observe(event fsm.Event<Order, Trigger>) Result<void, HandlerError> {
+    print(
+        eventName(event.Type) + ":" + stateName(event.From) + "->" +
+        stateName(event.To)
+    )
+    .Ok
+}
+
+fn requireApply(
+    $value Result<void, fsm.ApplyError<OrderTransitionError, HandlerError>>
+) void {
+    match value {
+        Ok: {}
+        Err(error): {
+            discard error
+            panic("fsm compatibility transition failed")
+        }
+    }
+}
+
+fn requiredRecord(
+    $value Option<fsm.Record<Order, Trigger>>
+) fsm.Record<Order, Trigger> {
+    match value {
+        None: panic("fsm compatibility history missing")
+        Some(record): record
+    }
+}
+
+fn printHistory(
+    $history own collections.List<fsm.Record<Order, Trigger>>
+) void {
+    var records = history
+    const record = requiredRecord(records.PopFront())
+    const fsm.Record { From To Trigger Timestamp } = record
+    discard Timestamp
+    print(
+        "history:" + stateName(From) + "->" + stateName(To) + ":" +
+        triggerName(Trigger)
+    )
+    discard records
+}
+
+fn rejected(
+    $value Result<void, fsm.ApplyError<OrderTransitionError, HandlerError>>
+) bool {
+    match value {
+        Ok: false
+        Err(error): match error {
+            Transition(error): match error {
+                InvalidState: true
+            }
+            Listeners(errors): {
+                discard errors
+                false
+            }
+            Clock(error): {
+                discard error
+                false
+            }
+            InvalidTimeout: false
+        }
+    }
+}
+
+fn main() i32 {
+    var initial Order = .Draft
+    var machine = fsm.New<Order, Trigger, OrderTransitionError, HandlerError>(
+        $initial,
+        $cloneOrder,
+        $cloneTrigger
+    )
+    machine.Subscribe($observe, events.Priority.Normal) else error {
+        discard error
+        return 1
+    }
+    print("initial:" + stateName(machine.Snapshot()))
+    requireApply($machine.Apply(.Manual, $confirm))
+    print("current:" + stateName(machine.Snapshot()))
+    printHistory($machine.History())
+    print("invalid:" + if rejected($machine.Apply(.Manual, $confirm)) {
+        "true"
+    } else {
+        "false"
+    })
+    0
+}

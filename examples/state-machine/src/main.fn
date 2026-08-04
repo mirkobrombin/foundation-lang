@@ -1,5 +1,10 @@
 package example.state_machine
 
+import foundation.events
+import foundation.fsm
+import std.text
+import std.time
+
 // Tracks an order through submission, payment, or cancellation.
 state_machine Order {
     // The order has not been submitted.
@@ -22,6 +27,101 @@ state_machine Order {
 
     // Cancels an order before payment.
     on Cancel($reason String) from Draft, Submitted to Cancelled(reason)
+}
+
+// Identifies the application event that requested a transition.
+enum OrderTrigger {
+    // Requests draft submission.
+    Submit
+
+    // Requests payment.
+    Pay
+
+    // Requests cancellation.
+    Cancel
+}
+
+// Represents a lifecycle listener failure in this example.
+enum LogError {
+    // The listener rejected an event.
+    Rejected
+}
+
+fn cloneOrder(value Order) Order {
+    match value {
+        Draft: .Draft
+        Submitted: .Submitted
+        Paid(receipt): .Paid(receipt = receipt)
+        Cancelled(reason): .Cancelled(reason = text.Copy(reason))
+    }
+}
+
+fn cloneTrigger(value OrderTrigger) OrderTrigger {
+    match value {
+        Submit: .Submit
+        Pay: .Pay
+        Cancel: .Cancel
+    }
+}
+
+fn submitTransition(&order Order) Result<void, OrderTransitionError> {
+    order.Submit()
+}
+
+fn payTransition(&order Order) Result<void, OrderTransitionError> {
+    order.Pay(42)
+}
+
+fn observe(event fsm.Event<Order, OrderTrigger>) Result<void, LogError> {
+    match event.Type {
+        BeforeTransition: print("before")
+        ExitState: print("exit")
+        EnterState: print("enter")
+        AfterTransition: print("after")
+    }
+    .Ok
+}
+
+fn managedDemo() i32 {
+    var initial Order = .Draft
+    var machine = fsm.New<Order, OrderTrigger, OrderTransitionError, LogError>(
+        $initial,
+        $cloneOrder,
+        $cloneTrigger
+    )
+    machine.Subscribe($observe, events.Priority.Normal) else error {
+        discard error
+        return 1
+    }
+    machine.Apply(.Submit, $submitTransition) else error {
+        discard error
+        return 2
+    }
+    if machine.HistoryLen() != 1 return 3
+
+    const snapshot = machine.Snapshot()
+    const submitted = match snapshot {
+        Draft: false
+        Submitted: true
+        Paid(receipt): receipt == 42
+        Cancelled(reason): cancelledCode(reason) == 0
+    }
+    if !submitted return 4
+
+    var history = machine.History()
+    if history.Len() != 1 return 5
+    discard history
+
+    const pending = machine.CheckTimeout(
+        time.Seconds(60),
+        .Pay,
+        $payTransition
+    ) else error {
+        discard error
+        return 6
+    }
+    if pending return 7
+    0
 }
 
 fn paymentRejected(&order Order) bool {
@@ -98,5 +198,6 @@ fn main() i32 {
         Paid(receipt): receipt
         Cancelled(message): cancelledCode(message)
     }
-    cancelledResult
+    if cancelledResult != 0 return 11
+    managedDemo()
 }

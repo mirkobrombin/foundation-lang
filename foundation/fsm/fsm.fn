@@ -1,0 +1,319 @@
+package foundation.fsm
+
+import foundation.events
+import std.collections
+import std.time
+
+// Identifies one ordered lifecycle notification for a committed transition.
+enum EventType {
+    // Observes the source and destination snapshots before exit notification.
+    BeforeTransition
+
+    // Observes the committed transition as the source state exits.
+    ExitState
+
+    // Observes the committed transition as the destination state enters.
+    EnterState
+
+    // Observes the transition after every state notification.
+    AfterTransition
+}
+
+// Stores one immutable transition snapshot in chronological history.
+struct Record<S, G> {
+    // The state snapshot captured before the transition.
+    From S
+
+    // The state snapshot captured after the transition.
+    To S
+
+    // The typed trigger supplied by the caller.
+    Trigger G
+
+    // The wall-clock time captured once for the committed transition.
+    Timestamp time.Instant
+}
+
+// Carries immutable state snapshots to one lifecycle listener.
+struct Event<S, G> {
+    // The lifecycle phase being published.
+    Type EventType
+
+    // The state snapshot captured before the transition.
+    From S
+
+    // The state snapshot captured after the transition.
+    To S
+
+    // The typed trigger supplied by the caller.
+    Trigger G
+
+    // The wall-clock time shared by every phase of the transition.
+    Timestamp time.Instant
+}
+
+// Associates one listener publication failure with its lifecycle phase.
+struct ListenerFailure<E> {
+    // The lifecycle phase whose publication failed.
+    Type EventType
+
+    // The ordered handler failures reported by the event bus.
+    Error events.PublishError<E>
+}
+
+// Separates rejected transitions, committed observer failures, and
+// timeout failures.
+enum ApplyError<TE, LE> {
+    // The executable state transition rejected the current state.
+    Transition(error TE)
+
+    // One or more post-commit lifecycle publications failed.
+    Listeners(errors own collections.List<ListenerFailure<LE>>)
+
+    // The monotonic clock moved behind the state-entry reference.
+    Clock(error time.Error)
+
+    // A timeout duration was zero or negative.
+    InvalidTimeout
+}
+
+// Owns one typed state value, immutable history, and ordered
+// lifecycle listeners.
+struct Machine<S, G, TE, LE> {
+    state S
+    cloneState fn(S) S
+    cloneTrigger fn(G) G
+    history own collections.List<Record<S, G>>
+    listeners own events.Bus<Event<S, G>, LE>
+    enteredAt time.MonotonicInstant
+
+    // Returns an independent snapshot of the current state.
+    fn Snapshot(self) S {
+        cloneValue(self.cloneState, self.state)
+    }
+
+    // Returns the number of committed transitions retained in history.
+    fn HistoryLen(self) i32 {
+        self.history.Len()
+    }
+
+    // Returns independent transition records in chronological order.
+    fn History(&self) own collections.List<Record<S, G>> {
+        var empty = collections.NewList<Record<S, G>>()
+        var source = replace self.history with empty
+        var restored = collections.NewList<Record<S, G>>()
+        var snapshot = collections.NewList<Record<S, G>>()
+        while !source.IsEmpty() {
+            const record = requiredRecord(source.PopFront())
+            snapshot.PushFront(cloneRecord(self, record))
+            restored.PushFront($record)
+        }
+        while !restored.IsEmpty() {
+            self.history.PushFront(requiredRecord(restored.PopFront()))
+        }
+        discard source
+        discard restored
+        snapshot
+    }
+
+    // Registers one typed listener with stable priority and
+    // registration ordering.
+    fn Subscribe(
+        &self,
+        $listener fn(Event<S, G>) Result<void, LE>,
+        priority events.Priority
+    ) Result<void, events.SubscribeError> {
+        self.listeners.Subscribe($listener, priority)
+    }
+
+    // Applies one transition to an independent candidate and commits it
+    // only after the transition succeeds.
+    fn Apply(
+        &self,
+        trigger G,
+        $transition fn(&S) Result<void, TE>
+    ) Result<void, ApplyError<TE, LE>> {
+        var candidate = cloneValue(self.cloneState, self.state)
+        const applied = transition(&candidate)
+        match applied {
+            Ok: self.commit($candidate, trigger)
+            Err(error): .Err(.Transition(error = error))
+        }
+    }
+
+    // Returns the monotonic duration since the latest committed transition.
+    fn Elapsed(self) Result<time.Duration, time.Error> {
+        time.MonotonicNow().Since(self.enteredAt)
+    }
+
+    // Applies one transition when the current state has reached a
+    // positive timeout.
+    fn CheckTimeout(
+        &self,
+        duration time.Duration,
+        trigger G,
+        $transition fn(&S) Result<void, TE>
+    ) Result<bool, ApplyError<TE, LE>> {
+        if duration.IsNegative() || duration.Nanoseconds() == 0 {
+            discard transition
+            return .Err(.InvalidTimeout)
+        }
+        const elapsed = self.Elapsed() else error {
+            discard transition
+            return .Err(.Clock(error = error))
+        }
+        if elapsed.Nanoseconds() < duration.Nanoseconds() {
+            discard transition
+            return .Ok(false)
+        }
+        self.Apply(trigger, $transition) else error {
+            return .Err(error)
+        }
+        .Ok(true)
+    }
+
+    fn commit(
+        &self,
+        $next S,
+        trigger G
+    ) Result<void, ApplyError<TE, LE>> {
+        const before = cloneValue(self.cloneState, self.state)
+        const after = cloneValue(self.cloneState, next)
+        const timestamp = time.Now()
+        var failures = collections.NewList<ListenerFailure<LE>>()
+        self.publish(
+            .BeforeTransition,
+            before,
+            after,
+            trigger,
+            timestamp,
+            &failures
+        )
+
+        const previous = replace self.state with next
+        discard previous
+        self.history.PushFront(Record<S, G> {
+            From = cloneValue(self.cloneState, before)
+            To = cloneValue(self.cloneState, after)
+            Trigger = cloneValue(self.cloneTrigger, trigger)
+            Timestamp = timestamp
+        })
+        self.enteredAt = time.MonotonicNow()
+
+        self.publish(.ExitState, before, after, trigger, timestamp, &failures)
+        self.publish(.EnterState, before, after, trigger, timestamp, &failures)
+        self.publish(
+            .AfterTransition,
+            before,
+            after,
+            trigger,
+            timestamp,
+            &failures
+        )
+        finishApply<TE, LE>($failures)
+    }
+
+    fn publish(
+        &self,
+        kind EventType,
+        before S,
+        after S,
+        trigger G,
+        timestamp time.Instant,
+        &failures collections.List<ListenerFailure<LE>>
+    ) void {
+        const published = self.listeners.Publish(Event<S, G> {
+            Type = kind
+            From = cloneValue(self.cloneState, before)
+            To = cloneValue(self.cloneState, after)
+            Trigger = cloneValue(self.cloneTrigger, trigger)
+            Timestamp = timestamp
+        })
+        match published {
+            Ok: publishedSuccessfully()
+            Err(error): failures.PushFront(ListenerFailure<LE> {
+                Type = kind
+                Error = error
+            })
+        }
+    }
+}
+
+// Creates a machine around one explicit initial state and two clone functions.
+fn New<S, G, TE, LE>(
+    $initial S,
+    $cloneState fn(S) S,
+    $cloneTrigger fn(G) G
+) own Machine<S, G, TE, LE> {
+    own Machine<S, G, TE, LE> {
+        state = initial
+        cloneState = cloneState
+        cloneTrigger = cloneTrigger
+        history = collections.NewList<Record<S, G>>()
+        listeners = events.NewBus<Event<S, G>, LE>(.BestEffort)
+        enteredAt = time.MonotonicNow()
+    }
+}
+
+fn cloneValue<T>(clone fn(T) T, value T) T {
+    clone(value)
+}
+
+fn cloneRecord<S, G, TE, LE>(
+    machine Machine<S, G, TE, LE>,
+    record Record<S, G>
+) Record<S, G> {
+    Record<S, G> {
+        From = cloneValue(machine.cloneState, record.From)
+        To = cloneValue(machine.cloneState, record.To)
+        Trigger = cloneValue(machine.cloneTrigger, record.Trigger)
+        Timestamp = record.Timestamp
+    }
+}
+
+fn requiredRecord<S, G>(
+    $value Option<Record<S, G>>
+) Record<S, G> {
+    match value {
+        None: missingRecord<S, G>()
+        Some(record): record
+    }
+}
+
+fn missingRecord<S, G>() Record<S, G> {
+    panic("fsm history invariant failed")
+}
+
+fn publishedSuccessfully() void {
+    return
+}
+
+fn finishApply<TE, LE>(
+    $failures own collections.List<ListenerFailure<LE>>
+) Result<void, ApplyError<TE, LE>> {
+    if failures.IsEmpty() {
+        discard failures
+        return .Ok
+    }
+
+    var pending = failures
+    var ordered = collections.NewList<ListenerFailure<LE>>()
+    while !pending.IsEmpty() {
+        ordered.PushFront(requiredFailure(pending.PopFront()))
+    }
+    discard pending
+    .Err(.Listeners(errors = ordered))
+}
+
+fn requiredFailure<E>(
+    $value Option<ListenerFailure<E>>
+) ListenerFailure<E> {
+    match value {
+        None: missingFailure<E>()
+        Some(failure): failure
+    }
+}
+
+fn missingFailure<E>() ListenerFailure<E> {
+    panic("fsm listener invariant failed")
+}

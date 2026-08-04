@@ -1,0 +1,419 @@
+import foundation.events
+import foundation.fsm
+import std.collections
+import std.text
+import std.time
+
+state_machine Job {
+    state Idle
+    state Running(id i32)
+    state Done(code i32)
+
+    on Start(id i32) from Idle to Running(id)
+    on Finish(code i32) from Running to Done(code)
+}
+
+enum Trigger {
+    Start
+    Finish
+}
+
+enum LogError {
+    Rejected
+}
+
+state_machine Doc {
+    state Draft
+    state Named(name String)
+
+    on Name($name String) from Draft to Named(name)
+}
+
+enum DocTrigger {
+    Rename(name String)
+}
+
+fn cloneJob(value Job) Job {
+    match value {
+        Idle: .Idle
+        Running(id): .Running(id = id)
+        Done(code): .Done(code = code)
+    }
+}
+
+fn cloneTrigger(value Trigger) Trigger {
+    match value {
+        Start: .Start
+        Finish: .Finish
+    }
+}
+
+fn cloneDoc(value Doc) Doc {
+    match value {
+        Draft: .Draft
+        Named(name): .Named(name = text.Copy(name))
+    }
+}
+
+fn cloneDocTrigger(value DocTrigger) DocTrigger {
+    match value {
+        Rename(name): .Rename(name = text.Copy(name))
+    }
+}
+
+fn start(&job Job) Result<void, JobTransitionError> {
+    job.Start(7)
+}
+
+fn finish(&job Job) Result<void, JobTransitionError> {
+    job.Finish(0)
+}
+
+fn mutateThenReject(&job Job) Result<void, JobTransitionError> {
+    job.Start(99) else error {
+        return .Err(error)
+    }
+    .Err(.InvalidState)
+}
+
+fn nameDoc(
+    &document Doc
+) Result<void, DocTransitionError> {
+    var name = text.Copy("profile")
+    document.Name($name)
+}
+
+fn reject(event fsm.Event<Job, Trigger>) Result<void, LogError> {
+    discard event
+    .Err(.Rejected)
+}
+
+fn requiredFailure<E>(
+    $value Option<fsm.ListenerFailure<E>>
+) fsm.ListenerFailure<E> {
+    match value {
+        None: panic("missing listener failure")
+        Some(failure): failure
+    }
+}
+
+fn requiredListenerError(
+    $value Option<LogError>
+) LogError {
+    match value {
+        None: panic("missing listener error")
+        Some(error): error
+    }
+}
+
+fn listenerErrorMatches(
+    $error events.PublishError<LogError>
+) bool {
+    match error {
+        Reentrant: false
+        Handler(error): {
+            discard error
+            false
+        }
+        Handlers(errors): {
+            var pending = errors
+            if pending.Len() != 1 return false
+            const item = requiredListenerError(pending.PopFront())
+            const matched = match item {
+                Rejected: true
+            }
+            matched && pending.IsEmpty()
+        }
+    }
+}
+
+fn phaseCode(kind fsm.EventType) i32 {
+    match kind {
+        BeforeTransition: 1
+        ExitState: 2
+        EnterState: 3
+        AfterTransition: 4
+    }
+}
+
+fn expectFailure(
+    $failure fsm.ListenerFailure<LogError>,
+    expected i32
+) bool {
+    const fsm.ListenerFailure { Type Error } = failure
+    phaseCode(Type) == expected && listenerErrorMatches($Error)
+}
+
+fn expectListenerFailures(
+    $errors own collections.List<fsm.ListenerFailure<LogError>>
+) bool {
+    var pending = errors
+    if pending.Len() != 4 return false
+    if !expectFailure(requiredFailure(pending.PopFront()), 1) return false
+    if !expectFailure(requiredFailure(pending.PopFront()), 2) return false
+    if !expectFailure(requiredFailure(pending.PopFront()), 3) return false
+    if !expectFailure(requiredFailure(pending.PopFront()), 4) return false
+    pending.IsEmpty()
+}
+
+fn docStateName($value Doc) String {
+    match value {
+        Draft: ""
+        Named(name): name
+    }
+}
+
+fn docTriggerName($value DocTrigger) String {
+    match value {
+        Rename(name): name
+    }
+}
+
+fn requiredDocRecord(
+    $value Option<fsm.Record<Doc, DocTrigger>>
+) fsm.Record<Doc, DocTrigger> {
+    match value {
+        None: panic("missing document history record")
+        Some(record): record
+    }
+}
+
+fn ownedSnapshots() bool {
+    var initial Doc = .Draft
+    var machine = fsm.New<Doc, DocTrigger, DocTransitionError, LogError>(
+        $initial,
+        $cloneDoc,
+        $cloneDocTrigger
+    )
+    const renamed = machine.Apply(
+        .Rename(name = "manual"),
+        $nameDoc
+    )
+    match renamed {
+        Ok: {}
+        Err(error): {
+            discard error
+            return false
+        }
+    }
+
+    if docStateName($machine.Snapshot()) != "profile" return false
+    var history = machine.History()
+    if history.Len() != 1 return false
+    const record = requiredDocRecord(history.PopFront())
+    const fsm.Record { From To Trigger Timestamp } = record
+    discard Timestamp
+    if docStateName($From) != "" return false
+    if docStateName($To) != "profile" return false
+    if docTriggerName($Trigger) != "manual" return false
+    if !history.IsEmpty() return false
+    docStateName($machine.Snapshot()) == "profile"
+}
+
+fn expectCommitted(
+    $result Result<void, fsm.ApplyError<JobTransitionError, LogError>>
+) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            Transition(error): {
+                discard error
+                false
+            }
+            Listeners(errors): expectListenerFailures($errors)
+            Clock(error): {
+                discard error
+                false
+            }
+            InvalidTimeout: false
+        }
+    }
+}
+
+fn expectRejected(
+    $result Result<void, fsm.ApplyError<JobTransitionError, LogError>>
+) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            Transition(error): match error {
+                InvalidState: true
+            }
+            Listeners(errors): {
+                discard errors
+                false
+            }
+            Clock(error): {
+                discard error
+                false
+            }
+            InvalidTimeout: false
+        }
+    }
+}
+
+fn stateCode($value Job) i32 {
+    match value {
+        Idle: 0
+        Running(id): id
+        Done(code): 100 + code
+    }
+}
+
+fn triggerCode(value Trigger) i32 {
+    match value {
+        Start: 1
+        Finish: 2
+    }
+}
+
+fn requiredRecord(
+    $value Option<fsm.Record<Job, Trigger>>
+) fsm.Record<Job, Trigger> {
+    match value {
+        None: panic("missing history record")
+        Some(record): record
+    }
+}
+
+fn recordMatches(
+    $record fsm.Record<Job, Trigger>,
+    from i32,
+    to i32,
+    trigger i32
+) bool {
+    const fsm.Record { From To Trigger Timestamp } = record
+    const recent = Timestamp.Unix() <= time.Now().Unix()
+    stateCode($From) == from && stateCode($To) == to &&
+        triggerCode(Trigger) == trigger && recent
+}
+
+fn expectHistory(
+    &machine fsm.Machine<Job, Trigger, JobTransitionError, LogError>
+) bool {
+    var history = machine.History()
+    if history.Len() != 2 return false
+    if !recordMatches(requiredRecord(history.PopFront()), 0, 7, 1) return false
+    if !recordMatches(requiredRecord(history.PopFront()), 7, 100, 2) return false
+    if !history.IsEmpty() return false
+    machine.HistoryLen() == 2
+}
+
+fn invalidTimeout(
+    &machine fsm.Machine<Job, Trigger, JobTransitionError, LogError>
+) bool {
+    const checked = machine.CheckTimeout(time.Zero(), .Finish, $finish)
+    match checked {
+        Ok(expired): {
+            discard expired
+            false
+        }
+        Err(error): match error {
+            Transition(error): {
+                discard error
+                false
+            }
+            Listeners(errors): {
+                discard errors
+                false
+            }
+            Clock(error): {
+                discard error
+                false
+            }
+            InvalidTimeout: true
+        }
+    }
+}
+
+fn futureTimeout(
+    &machine fsm.Machine<Job, Trigger, JobTransitionError, LogError>
+) bool {
+    const checked = machine.CheckTimeout(time.Seconds(60), .Finish, $finish)
+    match checked {
+        Ok(expired): !expired
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn expiredTimeout() bool {
+    var initial Job = .Idle
+    var machine = fsm.New<Job, Trigger, JobTransitionError, LogError>(
+        $initial,
+        $cloneJob,
+        $cloneTrigger
+    )
+    const started = machine.Apply(.Start, $start)
+    match started {
+        Ok: {}
+        Err(error): {
+            discard error
+            return false
+        }
+    }
+
+    var elapsedNanoseconds i64 = 0
+    while elapsedNanoseconds == 0 {
+        const elapsed = machine.Elapsed() else error {
+            discard error
+            return false
+        }
+        elapsedNanoseconds = elapsed.Nanoseconds()
+    }
+
+    const checked = machine.CheckTimeout(
+        time.Nanoseconds(1),
+        .Finish,
+        $finish
+    )
+    match checked {
+        Ok(expired): expired && stateCode($machine.Snapshot()) == 100 &&
+            machine.HistoryLen() == 2
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn main() i32 {
+    var initial Job = .Idle
+    var machine = fsm.New<Job, Trigger, JobTransitionError, LogError>(
+        $initial,
+        $cloneJob,
+        $cloneTrigger
+    )
+    machine.Subscribe($reject, events.Priority.Normal) else error {
+        discard error
+        return 1
+    }
+
+    if !expectRejected($machine.Apply(.Start, $mutateThenReject)) return 2
+    if stateCode($machine.Snapshot()) != 0 return 3
+    if machine.HistoryLen() != 0 return 4
+
+    if !expectCommitted($machine.Apply(.Start, $start)) return 5
+    if stateCode($machine.Snapshot()) != 7 return 6
+    if machine.HistoryLen() != 1 return 7
+
+    if !expectCommitted($machine.Apply(.Finish, $finish)) return 8
+    if stateCode($machine.Snapshot()) != 100 return 9
+    if !expectHistory(&machine) return 10
+
+    if !expectRejected($machine.Apply(.Start, $start)) return 11
+    if machine.HistoryLen() != 2 return 12
+    if !invalidTimeout(&machine) return 13
+    if !futureTimeout(&machine) return 14
+    const elapsed = machine.Elapsed() else error {
+        discard error
+        return 15
+    }
+    discard elapsed
+    if !ownedSnapshots() return 16
+    if !expiredTimeout() return 17
+    print("fsm machine ok")
+    0
+}
