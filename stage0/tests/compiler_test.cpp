@@ -1262,6 +1262,104 @@ fn main() i32 {
            "explicit return does not emit a second frame epilogue");
 }
 
+void exhaustiveMatchExitsCloseGeneratedControlFlow() {
+    constexpr std::string_view source = R"(
+enum Outcome {
+    Ready
+    Failed
+}
+
+fn requireVoid(value Outcome) void {
+    match value {
+        Ready: {
+            return
+        }
+        Failed: panic("failed")
+    }
+}
+
+fn fail(value Outcome) never {
+    match value {
+        Ready: panic("ready")
+        Failed: panic("failed")
+    }
+}
+
+fn selectValue(value Outcome) i32 {
+    match value {
+        Ready: 7
+        Failed: fail(.Failed)
+    }
+}
+
+task fill($sender Sender<void>) void {
+    discard sender.send()
+}
+
+task exercise(value Outcome, $receiver Receiver<void>) i32 {
+    requireVoid(.Ready)
+    match value {
+        Ready: {
+            const received = receiver.receive()
+            match received {
+                Ok: {}
+                Err(error): {
+                    discard error
+                    return 1
+                }
+            }
+        }
+        Failed: fail(.Failed)
+    }
+    0
+}
+
+fn main() i32 {
+    if selectValue(.Ready) != 7 return 2
+    const Channel { sender receiver } = channel<void>(1)
+    const filling = spawn fill($sender)
+    $filling.wait()
+    const pending = spawn exercise(.Ready, $receiver)
+    $pending.wait()
+}
+)";
+    const auto result = check(source);
+    expect(!result.diagnostics.hasErrors(), "exhaustive exit matches have no diagnostics");
+    expect(result.fir.has_value(), "exhaustive exit matches lower to FIR");
+    if (!result.fir.has_value()) {
+        return;
+    }
+
+    auto storedTaskMatch = false;
+    for (const auto &function : result.fir->functions) {
+        if (!function.task) {
+            continue;
+        }
+        for (const auto &expression : function.expressions) {
+            const auto *match = std::get_if<foundation::FirMatchExpression>(&expression.value);
+            if (match != nullptr && match->valueStorage.has_value() &&
+                *match->valueStorage < function.locals.size()) {
+                storedTaskMatch = true;
+            }
+        }
+    }
+    expect(storedTaskMatch, "task matches retain their discriminant in the task frame");
+
+    const auto generated = foundation::emitC(*result.fir, "match-exits.fn");
+    expect(generated.find("_Noreturn void fdn_fn_requireVoid_") == std::string::npos,
+           "a returning match arm does not make its function diverging");
+    expect(generated.find("_Noreturn void fdn_fn_fail_") != std::string::npos,
+           "a fully diverging match retains the noreturn contract");
+    expect(generated.find("goto fdn_task_state_1") != std::string::npos,
+           "code after a returning helper remains in the task state machine");
+    expect(generated.find("goto fdn_match_done_") != std::string::npos,
+           "a resumed match arm bypasses transient matcher state");
+    expect(generated.find(" = {0};\n    bool fdn_tmp_") != std::string::npos,
+           "match results have a portable definite initializer");
+    expect(generated.find("fdn_panic_cstr(\"unreachable match\")") != std::string::npos,
+           "exhaustive exiting matches close their generated C control flow");
+}
+
 void syntaxFailuresHaveStableDiagnostics() {
     const auto legacySemicolon = check("fn main() i32 { print(\"bad\"); 0 }");
     expect(hasCode(legacySemicolon.diagnostics, "FDN0001"),
@@ -2390,6 +2488,7 @@ int main() {
     lightweightSyntaxCarriesVisibilityAndContext();
     panicLowersWithSourceFrames();
     divergingCallsCloseGeneratedControlFlow();
+    exhaustiveMatchExitsCloseGeneratedControlFlow();
     syntaxFailuresHaveStableDiagnostics();
     semanticFailuresHaveStableDiagnostics();
     diagnosticsBoundLongSourceExcerpts();

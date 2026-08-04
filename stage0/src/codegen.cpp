@@ -1043,9 +1043,10 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
         return !match->arms.empty() &&
                std::all_of(match->arms.begin(), match->arms.end(),
                            [&](const FirMatchArm &arm) {
-                               return blockFlow(program, function, arm.block) !=
-                                          ControlFlow::Continues ||
-                                      (arm.expression.has_value() &&
+                               const auto flow = blockFlow(program, function, arm.block);
+                               return flow == ControlFlow::Diverges ||
+                                      (flow == ControlFlow::Continues &&
+                                       arm.expression.has_value() &&
                                        expressionDiverges(program, function,
                                                           *arm.expression));
                            });
@@ -1055,12 +1056,16 @@ bool expressionDiverges(const FirProgram &program, const FirFunction &function,
         if (expressionDiverges(program, function, conditional->condition)) {
             return true;
         }
+        const auto thenFlow = blockFlow(program, function, conditional->thenBlock);
         const auto thenDiverges =
-            blockFlow(program, function, conditional->thenBlock) != ControlFlow::Continues ||
-            expressionDiverges(program, function, conditional->thenValue);
+            thenFlow == ControlFlow::Diverges ||
+            (thenFlow == ControlFlow::Continues &&
+             expressionDiverges(program, function, conditional->thenValue));
+        const auto elseFlow = blockFlow(program, function, conditional->elseBlock);
         const auto elseDiverges =
-            blockFlow(program, function, conditional->elseBlock) != ControlFlow::Continues ||
-            expressionDiverges(program, function, conditional->elseValue);
+            elseFlow == ControlFlow::Diverges ||
+            (elseFlow == ControlFlow::Continues &&
+             expressionDiverges(program, function, conditional->elseValue));
         return thenDiverges && elseDiverges;
     }
     return false;
@@ -2367,11 +2372,19 @@ class FunctionEmitter {
 
     EmittedExpression emitMatch(const FirMatchExpression &match, const Type &type, SourceSpan span,
                                 unsigned int depth) {
-        const auto value = emitExpression(match.value, depth);
+        auto value = emitExpression(match.value, depth);
         if (value.diverges) {
             return value;
         }
-        const auto allDiverge =
+        if (taskPoll_ && match.valueStorage.has_value()) {
+            const auto storage = *match.valueStorage;
+            const auto &storageType = function_.locals[storage].type;
+            emitMoveAssignment(out_, program_, storageType, localValue(storage), value.value,
+                               depth);
+            activateLocal(storage, depth);
+            value.value = localValue(storage);
+        }
+        const auto allExit =
             !match.arms.empty() &&
             std::all_of(match.arms.begin(), match.arms.end(), [&](const FirMatchArm &arm) {
                 return blockFlow(program_, function_, arm.block) != ControlFlow::Continues ||
@@ -2379,9 +2392,9 @@ class FunctionEmitter {
                         expressionDiverges(program_, function_, *arm.expression));
             });
         std::string temporary;
-        if (type != voidType && !allDiverge) {
+        if (type != voidType && !allExit) {
             temporary = nextTemporary();
-            out_ << indentation(depth) << cType(type) << ' ' << temporary << ";\n";
+            out_ << indentation(depth) << cType(type) << ' ' << temporary << " = {0};\n";
         }
 
         std::vector<std::optional<EmittedExpression>> patterns;
@@ -2394,6 +2407,8 @@ class FunctionEmitter {
         }
 
         const auto matched = nextTemporary();
+        const auto done = "fdn_match_done_" + matched;
+        auto needsDoneLabel = false;
         out_ << indentation(depth) << "bool " << matched << " = false;\n";
         const auto valueType = function_.expressions[match.value].type;
         const auto valueAccess =
@@ -2512,8 +2527,17 @@ class FunctionEmitter {
                          << ";\n";
                 }
                 emitDrops(arm.drops, armDepth);
-                emitDropValue(out_, program_, function_.expressions[match.value].type, value.value,
-                              armDepth);
+                if (taskPoll_ && match.valueStorage.has_value()) {
+                    emitLocalDrop(*match.valueStorage, armDepth);
+                } else {
+                    emitDropValue(out_, program_, function_.expressions[match.value].type,
+                                  value.value, armDepth);
+                }
+                if (guard.has_value()) {
+                    emitCleanups(*guard, armDepth);
+                }
+                out_ << indentation(armDepth) << "goto " << done << ";\n";
+                needsDoneLabel = true;
             }
             if (guard.has_value()) {
                 --armDepth;
@@ -2526,7 +2550,13 @@ class FunctionEmitter {
         emitLocation(span, depth + 1);
         out_ << indentation(depth + 1) << "fdn_invalid_enum_tag();\n";
         out_ << indentation(depth) << "}\n";
-        return {allDiverge ? std::string{} : temporary, allDiverge};
+        if (allExit) {
+            out_ << indentation(depth) << "fdn_panic_cstr(\"unreachable match\");\n";
+        }
+        if (needsDoneLabel) {
+            out_ << done << ":;\n";
+        }
+        return {allExit ? std::string{} : temporary, allExit};
     }
 
     EmittedExpression emitConditional(const FirConditionalExpression &conditional,

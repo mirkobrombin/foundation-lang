@@ -1,0 +1,57 @@
+// Selects the control-flow branch exercised by the match fixture.
+enum Outcome {
+    // Continues through the successful branch.
+    Ready
+
+    // Terminates through the failure branch.
+    Failed
+}
+
+fn requireVoid(value Outcome) void {
+    match value {
+        Ready: {
+            return
+        }
+        Failed: panic("failed")
+    }
+}
+
+fn fail(value Outcome) never {
+    match value {
+        Ready: panic("ready")
+        Failed: panic("failed")
+    }
+}
+
+task fill($sender Sender<void>) void {
+    discard sender.send()
+}
+
+task exercise(value Outcome, $receiver Receiver<void>) i32 {
+    requireVoid(.Ready)
+    match value {
+        Ready: {
+            const received = receiver.receive()
+            match received {
+                Ok: {}
+                Err(error): {
+                    discard error
+                    return 1
+                }
+            }
+        }
+        Failed: fail(.Failed)
+    }
+    0
+}
+
+fn main() i32 {
+    const Channel { sender receiver } = channel<void>(1)
+    const filling = spawn fill($sender)
+    $filling.wait()
+    const pending = spawn exercise(.Ready, $receiver)
+    const result = $pending.wait()
+    if result != 0 return 1
+    print("match exits")
+    0
+}

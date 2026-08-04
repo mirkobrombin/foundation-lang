@@ -1,0 +1,187 @@
+package test.compatibility.adapters
+
+import foundation.adapters
+import std.collections
+import std.format
+import std.text
+
+fn cloneI32(value i32) i32 {
+    value
+}
+
+fn requireVoid($value Result<void, adapters.Error>) void {
+    match value {
+        Ok: {}
+        Err(error): {
+            discard error
+            panic("adapter compatibility operation failed")
+        }
+    }
+}
+
+fn requireOptional(
+    $value Result<Option<i32>, adapters.Error>
+) Option<i32> {
+    match value {
+        Ok(found): found
+        Err(error): {
+            discard error
+            panic("adapter compatibility lookup failed")
+        }
+    }
+}
+
+fn requireBool($value Result<bool, adapters.Error>) bool {
+    match value {
+        Ok(found): found
+        Err(error): {
+            discard error
+            panic("adapter compatibility membership failed")
+        }
+    }
+}
+
+fn requireNames(
+    $value Result<own collections.List<String>, adapters.Error>
+) own collections.List<String> {
+    match value {
+        Ok(found): found
+        Err(error): {
+            discard error
+            panic("adapter compatibility names failed")
+        }
+    }
+}
+
+fn optionText($value Option<i32>) String {
+    match value {
+        None: "missing"
+        Some(found): format.I32(found)
+    }
+}
+
+task registered(
+    $handle adapters.Handle<i32>,
+    $label String,
+    $name String,
+    value i32
+) void {
+    const lookupName = text.Copy(name)
+    const reading = handle.Get($lookupName)
+    const readResult = $reading.wait()
+    if optionText($requireOptional($readResult)) != format.I32(value) {
+        panic("register callback could not reenter")
+    }
+    print(label + ":register:" + name + ":" + format.I32(value))
+}
+
+fn registerHook(
+    $handle adapters.Handle<i32>,
+    $label String
+) transferable fn($String, $i32) Task<void> {
+    fn($name String, $value i32) Task<void> capture($handle, $label) {
+        spawn registered(
+            handle.Clone(),
+            text.Copy(label),
+            $name,
+            value
+        )
+    }
+}
+
+task removed(
+    $handle adapters.Handle<i32>,
+    $label String,
+    $name String
+) void {
+    const lookupName = text.Copy(name)
+    const checking = handle.Has($lookupName)
+    const checked = $checking.wait()
+    if requireBool($checked) {
+        panic("remove callback could not reenter")
+    }
+    print(label + ":remove:" + name)
+}
+
+fn removeHook(
+    $handle adapters.Handle<i32>,
+    $label String
+) transferable fn($String) Task<void> {
+    fn($name String) Task<void> capture($handle, $label) {
+        spawn removed(handle.Clone(), text.Copy(label), $name)
+    }
+}
+
+task exercise() i32 {
+    const registry = adapters.New<i32>($cloneI32)
+    const firstRegister = registerHook(registry.Handle(), "first")
+    const secondRegister = registerHook(registry.Handle(), "second")
+    const firstRemove = removeHook(registry.Handle(), "first")
+    const secondRemove = removeHook(registry.Handle(), "second")
+    const addingFirstRegister = registry.OnRegister($firstRegister)
+    const firstRegisterResult = $addingFirstRegister.wait()
+    requireVoid($firstRegisterResult)
+    const addingSecondRegister = registry.OnRegister($secondRegister)
+    const secondRegisterResult = $addingSecondRegister.wait()
+    requireVoid($secondRegisterResult)
+    const addingFirstRemove = registry.OnRemove($firstRemove)
+    const firstRemoveResult = $addingFirstRemove.wait()
+    requireVoid($firstRemoveResult)
+    const addingSecondRemove = registry.OnRemove($secondRemove)
+    const secondRemoveResult = $addingSecondRemove.wait()
+    requireVoid($secondRemoveResult)
+
+    const registeringAlpha = registry.Register("alpha", 1)
+    const alphaResult = $registeringAlpha.wait()
+    requireVoid($alphaResult)
+    const registeringBeta = registry.Register("beta", 2)
+    const betaResult = $registeringBeta.wait()
+    requireVoid($betaResult)
+    const readingAlpha = registry.Get("alpha")
+    const alphaReadResult = $readingAlpha.wait()
+    const alphaValue = requireOptional($alphaReadResult)
+    print("get:alpha:" + optionText($alphaValue))
+    const selecting = registry.SetDefault("beta")
+    const selectResult = $selecting.wait()
+    requireVoid($selectResult)
+    const defaulting = registry.Default()
+    const defaultValue = $defaulting.wait()
+    print("default:" + format.I32(defaultValue))
+    const readingNames = registry.Names()
+    const namesResult = $readingNames.wait()
+    var names = requireNames($namesResult)
+    print("name:" + optionName(names.PopFront()))
+    print("name:" + optionName(names.PopFront()))
+
+    const removingAlpha = registry.Remove("alpha")
+    const alphaRemoveResult = $removingAlpha.wait()
+    requireVoid($alphaRemoveResult)
+    const removingMissing = registry.Remove("missing")
+    const missingRemoveResult = $removingMissing.wait()
+    requireVoid($missingRemoveResult)
+    const checkingAlpha = registry.Has("alpha")
+    const alphaHasResult = $checkingAlpha.wait()
+    print("has:alpha:" + format.Bool(requireBool($alphaHasResult)))
+    const clearing = registry.Clear()
+    const clearResult = $clearing.wait()
+    requireVoid($clearResult)
+    const registeringGamma = registry.Register("gamma", 3)
+    const gammaResult = $registeringGamma.wait()
+    requireVoid($gammaResult)
+    const defaultingAfterClear = registry.DefaultOr(9)
+    const fallback = $defaultingAfterClear.wait()
+    print("fallback:" + format.I32(fallback))
+    0
+}
+
+fn optionName($value Option<String>) String {
+    match value {
+        None: panic("adapter compatibility name missing")
+        Some(name): name
+    }
+}
+
+fn main() i32 {
+    const pending = spawn exercise()
+    $pending.wait()
+}

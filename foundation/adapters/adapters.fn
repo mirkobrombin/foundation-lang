@@ -1,0 +1,1503 @@
+package foundation.adapters
+
+import foundation.worker
+import std.collections
+import std.text
+
+// Reports that a registry operation could not reach its owner task.
+enum Error {
+    // The registry or hook owner is closed.
+    Closed
+
+    // The calling task was cancelled before completion.
+    Cancelled
+}
+
+struct entry<T> {
+    name String
+    adapter T
+}
+
+struct pendingEvent<T> {
+    id u64
+    adapter T
+}
+
+struct defaultValue<T> {
+    name Option<String>
+    adapter Option<T>
+}
+
+struct state<T> {
+    entries own collections.List<entry<T>>
+    pendingEvents own collections.List<pendingEvent<T>>
+    defaultName Option<String>
+    cloneValue fn(T) T
+    hooks Sender<hookOperation<T>>
+    nextEvent u64
+}
+
+struct registerRequest<T> {
+    name String
+    adapter T
+    callbacksDone Sender<void>
+}
+
+struct removeRequest {
+    name String
+    callbacksDone Sender<void>
+}
+
+struct eventRequest {
+    id u64
+}
+
+enum operation<T> {
+    Register(value registerRequest<T>)
+    Get(name String)
+    SetDefault(name String)
+    Default
+    Has(name String)
+    Names
+    Remove(value removeRequest)
+    Clear(callbacksDone Sender<void>)
+    CloneEvent(value eventRequest)
+    FinishEvent(value eventRequest)
+}
+
+enum response<T> {
+    Done
+    MaybeValue(value Option<T>)
+    DefaultValue(value defaultValue<T>)
+    Flag(value bool)
+    Names(value own collections.List<String>)
+    Value(value T)
+}
+
+struct request<T> {
+    operation operation<T>
+    reply Sender<response<T>>
+}
+
+struct registerInvocation<T> {
+    name String
+    adapter T
+    done Sender<void>
+}
+
+struct removeInvocation {
+    name String
+    done Sender<void>
+}
+
+struct registerHook<T> {
+    sender Sender<registerInvocation<T>>
+    order u64
+}
+
+struct removeHook {
+    sender Sender<removeInvocation>
+    order u64
+}
+
+struct addRegisterHook<T> {
+    callback transferable fn($String, $T) Task<void>
+    reply Sender<void>
+}
+
+struct addRemoveHook {
+    callback transferable fn($String) Task<void>
+    reply Sender<void>
+}
+
+struct dispatchRegister {
+    id u64
+    name String
+    done Sender<void>
+}
+
+struct dispatchRemove {
+    name String
+    done Sender<void>
+}
+
+struct hookEffect<T> {
+    operation hookOperation<T>
+    fallback Sender<void>
+    event Option<u64>
+}
+
+enum hookOperation<T> {
+    AddRegister(value addRegisterHook<T>)
+    AddRemove(value addRemoveHook)
+    DispatchRegister(value dispatchRegister)
+    DispatchRemove(value dispatchRemove)
+    Clear(reply Sender<void>)
+}
+
+struct hookState<T> {
+    registerHooks own collections.List<registerHook<T>>
+    removeHooks own collections.List<removeHook>
+    supervisor own worker.Supervisor
+    registry Sender<request<T>>
+    nextOrder u64
+}
+
+// Sends operations to one registry without exposing its storage.
+struct Handle<T> {
+    requests Sender<request<T>>
+    hooks Sender<hookOperation<T>>
+
+    // Creates another independently owned handle to the same registry.
+    fn Clone(self) Handle<T> {
+        Handle<T> {
+            requests = self.requests.clone()
+            hooks = self.hooks.clone()
+        }
+    }
+
+    // Stores or replaces one adapter and waits for the current register hooks.
+    fn Register(
+        self,
+        $name String,
+        $adapter T
+    ) Task<Result<void, Error>> {
+        spawn register<T>(self.requests.clone(), $name, $adapter)
+    }
+
+    // Returns an explicitly cloned adapter when the name is registered.
+    fn Get(self, $name String) Task<Result<Option<T>, Error>> {
+        spawn get<T>(self.requests.clone(), $name)
+    }
+
+    // Returns the named adapter or panics with a Foundation trace.
+    fn MustGet(self, $name String) Task<T> {
+        spawn mustGet<T>(self.requests.clone(), $name)
+    }
+
+    // Selects a default name without requiring it to be registered yet.
+    fn SetDefault(self, $name String) Task<Result<void, Error>> {
+        spawn setDefault<T>(self.requests.clone(), $name)
+    }
+
+    // Returns the selected adapter or panics when the default is unavailable.
+    fn Default(self) Task<T> {
+        spawn defaultAdapter<T>(self.requests.clone())
+    }
+
+    // Returns the selected adapter or the supplied fallback.
+    fn DefaultOr(self, $fallback T) Task<T> {
+        spawn defaultOr<T>(self.requests.clone(), $fallback)
+    }
+
+    // Reports whether a name is currently registered.
+    fn Has(self, $name String) Task<Result<bool, Error>> {
+        spawn has<T>(self.requests.clone(), $name)
+    }
+
+    // Returns registered names in deterministic bytewise order.
+    fn Names(self) Task<Result<own collections.List<String>, Error>> {
+        spawn names<T>(self.requests.clone())
+    }
+
+    // Removes a name and waits for the current remove hooks.
+    fn Remove(self, $name String) Task<Result<void, Error>> {
+        spawn remove<T>(self.requests.clone(), $name)
+    }
+
+    // Registers an ordered task factory invoked after each committed write.
+    fn OnRegister(
+        self,
+        $callback transferable fn($String, $T) Task<void>
+    ) Task<Result<void, Error>> {
+        spawn onRegister<T>(self.hooks.clone(), $callback)
+    }
+
+    // Registers an ordered task factory invoked after each remove request.
+    fn OnRemove(
+        self,
+        $callback transferable fn($String) Task<void>
+    ) Task<Result<void, Error>> {
+        spawn onRemove<T>(self.hooks.clone(), $callback)
+    }
+
+    // Removes adapters, the default selection, and every registered hook.
+    fn Clear(self) Task<Result<void, Error>> {
+        spawn clear<T>(self.requests.clone())
+    }
+}
+
+// Owns one task-safe adapter registry and its hook dispatcher.
+struct Registry<T> {
+    owner Task<void>
+    hookOwner Task<void>
+    handle Handle<T>
+
+    // Creates another independently owned handle to this registry.
+    fn Handle(self) Handle<T> {
+        self.handle.Clone()
+    }
+
+    // Stores or replaces one adapter and waits for the current register hooks.
+    fn Register(
+        self,
+        $name String,
+        $adapter T
+    ) Task<Result<void, Error>> {
+        self.handle.Register($name, $adapter)
+    }
+
+    // Returns an explicitly cloned adapter when the name is registered.
+    fn Get(self, $name String) Task<Result<Option<T>, Error>> {
+        self.handle.Get($name)
+    }
+
+    // Returns the named adapter or panics with a Foundation trace.
+    fn MustGet(self, $name String) Task<T> {
+        self.handle.MustGet($name)
+    }
+
+    // Selects a default name without requiring it to be registered yet.
+    fn SetDefault(self, $name String) Task<Result<void, Error>> {
+        self.handle.SetDefault($name)
+    }
+
+    // Returns the selected adapter or panics when the default is unavailable.
+    fn Default(self) Task<T> {
+        self.handle.Default()
+    }
+
+    // Returns the selected adapter or the supplied fallback.
+    fn DefaultOr(self, $fallback T) Task<T> {
+        self.handle.DefaultOr($fallback)
+    }
+
+    // Reports whether a name is currently registered.
+    fn Has(self, $name String) Task<Result<bool, Error>> {
+        self.handle.Has($name)
+    }
+
+    // Returns registered names in deterministic bytewise order.
+    fn Names(self) Task<Result<own collections.List<String>, Error>> {
+        self.handle.Names()
+    }
+
+    // Removes a name and waits for the current remove hooks.
+    fn Remove(self, $name String) Task<Result<void, Error>> {
+        self.handle.Remove($name)
+    }
+
+    // Registers an ordered task factory invoked after each committed write.
+    fn OnRegister(
+        self,
+        $callback transferable fn($String, $T) Task<void>
+    ) Task<Result<void, Error>> {
+        self.handle.OnRegister($callback)
+    }
+
+    // Registers an ordered task factory invoked after each remove request.
+    fn OnRemove(
+        self,
+        $callback transferable fn($String) Task<void>
+    ) Task<Result<void, Error>> {
+        self.handle.OnRemove($callback)
+    }
+
+    // Removes adapters, the default selection, and every registered hook.
+    fn Clear(self) Task<Result<void, Error>> {
+        self.handle.Clear()
+    }
+}
+
+// Creates an empty registry.
+// Returned adapters use one explicit clone function.
+fn New<T transferable>($cloneValue fn(T) T) own Registry<T> {
+    const Channel {
+        sender as requestSender
+        receiver as requestReceiver
+    } = channel<request<T>>(64)
+    const Channel {
+        sender as hookSender
+        receiver as hookReceiver
+    } = channel<hookOperation<T>>(64)
+    const hookOwner = spawn serveHooks<T>(
+        $hookReceiver,
+        requestSender.clone()
+    )
+    const initial = own state<T> {
+        entries = collections.NewList<entry<T>>()
+        pendingEvents = collections.NewList<pendingEvent<T>>()
+        defaultName = .None
+        cloneValue = cloneValue
+        hooks = hookSender.clone()
+        nextEvent = 0
+    }
+    const owner = spawn serve<T>($requestReceiver, $initial)
+    own Registry<T> {
+        owner = owner
+        hookOwner = hookOwner
+        handle = Handle<T> {
+            requests = requestSender
+            hooks = hookSender
+        }
+    }
+}
+
+task serve<T>(
+    $receiver Receiver<request<T>>,
+    $initial own state<T>
+) void {
+    var inbox = receiver
+    var current = initial
+    while true {
+        const received = inbox.receive()
+        match received {
+            Ok(incoming): {
+                const request { operation reply } = incoming
+                match operation {
+                    Register(value): {
+                        const effect = applyRegister(&current, $value)
+                        const hookEffect {
+                            operation as dispatch
+                            fallback
+                            event
+                        } = effect
+                        var hooks = current.hooks.clone()
+                        const sent = hooks.send(dispatch)
+                        match sent {
+                            Ok: {
+                                discard fallback
+                            }
+                            Err(error): {
+                                discard error
+                                discard fallback.send()
+                                removePendingEvent(&current, $event)
+                            }
+                        }
+                        discard reply.send(.Done)
+                    }
+                    Get(name): {
+                        discard reply.send(.MaybeValue(
+                            value = getValue(&current, $name)
+                            ))
+                    }
+                    SetDefault(name): {
+                        applySetDefault(&current, $name)
+                        discard reply.send(.Done)
+                    }
+                    Default: {
+                        discard reply.send(.DefaultValue(
+                            value = getDefault(&current)
+                            ))
+                    }
+                    Has(name): {
+                        discard reply.send(.Flag(
+                            value = hasValue(&current, $name)
+                            ))
+                    }
+                    Names: {
+                        discard reply.send(.Names(
+                            value = currentNames(&current)
+                            ))
+                    }
+                    Remove(value): {
+                        const effect = applyRemove<T>(&current, $value)
+                        const hookEffect {
+                            operation as dispatch
+                            fallback
+                            event
+                        } = effect
+                        var hooks = current.hooks.clone()
+                        const sent = hooks.send(dispatch)
+                        match sent {
+                            Ok: {
+                                discard fallback
+                            }
+                            Err(error): {
+                                discard error
+                                discard fallback.send()
+                                removePendingEvent(&current, $event)
+                            }
+                        }
+                        discard reply.send(.Done)
+                    }
+                    Clear(callbacksDone): {
+                        const effect = applyClear<T>(&current, $callbacksDone)
+                        const hookEffect {
+                            operation as dispatch
+                            fallback
+                            event
+                        } = effect
+                        var hooks = current.hooks.clone()
+                        const sent = hooks.send(dispatch)
+                        match sent {
+                            Ok: {
+                                discard fallback
+                            }
+                            Err(error): {
+                                discard error
+                                discard fallback.send()
+                                removePendingEvent(&current, $event)
+                            }
+                        }
+                        discard reply.send(.Done)
+                    }
+                    CloneEvent(value): {
+                        discard reply.send(.Value(
+                            value = cloneEventValue(&current, value.id)
+                            ))
+                    }
+                    FinishEvent(value): {
+                        discard removeEvent(&current, value.id)
+                        discard reply.send(.Done)
+                    }
+                }
+            }
+            Err(error): {
+                discard error
+                return
+            }
+        }
+    }
+}
+
+fn applyRegister<T>(
+    &current state<T>,
+    $value registerRequest<T>
+) hookEffect<T> {
+    const registerRequest { name adapter callbacksDone } = value
+    const fallback = callbacksDone.clone()
+    const eventName = text.Copy(name)
+    const eventAdapter = cloneAdapter(current.cloneValue, adapter)
+    setValue(&current, $name, $adapter)
+    const event = current.nextEvent
+    current.nextEvent = current.nextEvent + 1
+    current.pendingEvents.PushFront(pendingEvent<T> {
+        id = event
+        adapter = eventAdapter
+    })
+    hookEffect<T> {
+        operation = .DispatchRegister(value = dispatchRegister {
+            id = event
+            name = eventName
+            done = callbacksDone
+        })
+        fallback = fallback
+        event = .Some(event)
+    }
+}
+
+fn applySetDefault<T>(
+    &current state<T>,
+    $name String
+) void {
+    const previous = replace current.defaultName with .Some(name)
+    discard previous
+}
+
+fn applyRemove<T>(
+    &current state<T>,
+    $value removeRequest
+) hookEffect<T> {
+    const removeRequest { name callbacksDone } = value
+    const fallback = callbacksDone.clone()
+    removeValue(&current, name)
+    clearDefault(&current, name)
+    hookEffect<T> {
+        operation = .DispatchRemove(value = dispatchRemove {
+            name = name
+            done = callbacksDone
+        })
+        fallback = fallback
+        event = .None
+    }
+}
+
+fn applyClear<T>(
+    &current state<T>,
+    $callbacksDone Sender<void>
+) hookEffect<T> {
+    current.entries.Clear()
+    const previous = replace current.defaultName with .None
+    discard previous
+    const fallback = callbacksDone.clone()
+    hookEffect<T> {
+        operation = .Clear(reply = callbacksDone)
+        fallback = fallback
+        event = .None
+    }
+}
+
+task register<T>(
+    $requests Sender<request<T>>,
+    $name String,
+    $adapter T
+) Result<void, Error> {
+    const Channel {
+        sender as callbackSender
+        receiver as callbackReceiver
+    } = channel<void>(1)
+    const result = spawn sendRequest<T>(
+        $requests,
+        .Register(value = registerRequest<T> {
+        name = name
+        adapter = adapter
+        callbacksDone = callbackSender
+    })
+    )
+    const received = $result.wait()
+    match received {
+        Err(error): .Err(error)
+        Ok(value): {
+            const callbacks = spawn waitForCallbacks<T>(
+                $callbackReceiver,
+                $value
+            )
+            const completed = $callbacks.wait()
+            completed
+        }
+    }
+}
+
+task get<T>(
+    $requests Sender<request<T>>,
+    $name String
+) Result<Option<T>, Error> {
+    const result = spawn sendRequest<T>($requests, .Get(name = name))
+    const received = $result.wait()
+    mapMaybeValue<T>($received)
+}
+
+task mustGet<T>(
+    $requests Sender<request<T>>,
+    $name String
+) T {
+    const failureName = text.Copy(name)
+    const result = spawn get<T>($requests, $name)
+    const received = $result.wait()
+    match received {
+        Err(error): registryFailure(error)
+        Ok(value): requireNamed<T>($value, $failureName)
+    }
+}
+
+task setDefault<T>(
+    $requests Sender<request<T>>,
+    $name String
+) Result<void, Error> {
+    const result = spawn sendRequest<T>($requests, .SetDefault(name = name))
+    const received = $result.wait()
+    mapDone<T>($received)
+}
+
+task defaultAdapter<T>($requests Sender<request<T>>) T {
+    const result = spawn sendRequest<T>($requests, .Default)
+    const received = $result.wait()
+    match received {
+        Err(error): registryFailure(error)
+        Ok(value): requireDefaultResponse<T>($value)
+    }
+}
+
+task defaultOr<T>(
+    $requests Sender<request<T>>,
+    $fallback T
+) T {
+    const result = spawn sendRequest<T>($requests, .Default)
+    const received = $result.wait()
+    match received {
+        Err(error): useFallback<T>(error, $fallback)
+        Ok(value): defaultOrResponse<T>($value, $fallback)
+    }
+}
+
+task has<T>(
+    $requests Sender<request<T>>,
+    $name String
+) Result<bool, Error> {
+    const result = spawn sendRequest<T>($requests, .Has(name = name))
+    const received = $result.wait()
+    mapFlag<T>($received)
+}
+
+task names<T>(
+    $requests Sender<request<T>>
+) Result<own collections.List<String>, Error> {
+    const result = spawn sendRequest<T>($requests, .Names)
+    const received = $result.wait()
+    mapNames<T>($received)
+}
+
+task remove<T>(
+    $requests Sender<request<T>>,
+    $name String
+) Result<void, Error> {
+    const Channel {
+        sender as callbackSender
+        receiver as callbackReceiver
+    } = channel<void>(1)
+    const result = spawn sendRequest<T>(
+        $requests,
+        .Remove(value = removeRequest {
+        name = name
+        callbacksDone = callbackSender
+    })
+    )
+    const received = $result.wait()
+    match received {
+        Err(error): .Err(error)
+        Ok(value): {
+            const callbacks = spawn waitForCallbacks<T>(
+                $callbackReceiver,
+                $value
+            )
+            const completed = $callbacks.wait()
+            completed
+        }
+    }
+}
+
+task clear<T>($requests Sender<request<T>>) Result<void, Error> {
+    const Channel {
+        sender as callbackSender
+        receiver as callbackReceiver
+    } = channel<void>(1)
+    const result = spawn sendRequest<T>(
+        $requests,
+        .Clear(callbacksDone = callbackSender)
+    )
+    const received = $result.wait()
+    match received {
+        Err(error): .Err(error)
+        Ok(value): {
+            const callbacks = spawn waitForCallbacks<T>(
+                $callbackReceiver,
+                $value
+            )
+            const completed = $callbacks.wait()
+            completed
+        }
+    }
+}
+
+task onRegister<T>(
+    $hooks Sender<hookOperation<T>>,
+    $callback transferable fn($String, $T) Task<void>
+) Result<void, Error> {
+    const Channel { sender receiver } = channel<void>(1)
+    select {
+        hooks.send(.AddRegister(value = addRegisterHook<T> {
+            callback = callback
+            reply = sender
+        })): {
+            const acknowledged = receiver.receive()
+            return match acknowledged {
+                Ok: .Ok
+                Err(error): .Err(mapChannelError(error))
+            }
+        }
+        else error: return .Err(mapChannelError(error))
+    }
+}
+
+task onRemove<T>(
+    $hooks Sender<hookOperation<T>>,
+    $callback transferable fn($String) Task<void>
+) Result<void, Error> {
+    const Channel { sender receiver } = channel<void>(1)
+    select {
+        hooks.send(.AddRemove(value = addRemoveHook {
+            callback = callback
+            reply = sender
+        })): {
+            const acknowledged = receiver.receive()
+            return match acknowledged {
+                Ok: .Ok
+                Err(error): .Err(mapChannelError(error))
+            }
+        }
+        else error: return .Err(mapChannelError(error))
+    }
+}
+
+task sendRequest<T>(
+    $requests Sender<request<T>>,
+    $operation operation<T>
+) Result<response<T>, Error> {
+    const Channel { sender receiver } = channel<response<T>>(1)
+    select {
+        requests.send(request<T> {
+            operation = operation
+            reply = sender
+        }): {
+            const received = receiver.receive()
+            return match received {
+                Ok(value): .Ok(value)
+                Err(error): .Err(mapChannelError(error))
+            }
+        }
+        else error: return .Err(mapChannelError(error))
+    }
+}
+
+task waitForCallbacks<T>(
+    $receiver Receiver<void>,
+    $value response<T>
+) Result<void, Error> {
+    match value {
+        Done: {
+            const completed = receiver.receive()
+            return match completed {
+                Ok: .Ok
+                Err(error): .Err(mapChannelError(error))
+            }
+        }
+        MaybeValue(value): unexpectedResponse($value)
+        DefaultValue(value): unexpectedResponse($value)
+        Flag(value): unexpectedResponse(value)
+        Names(value): unexpectedResponse($value)
+        Value(value): unexpectedResponse($value)
+    }
+}
+
+fn mapDone<T>($value Result<response<T>, Error>) Result<void, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): match response {
+            Done: .Ok
+            MaybeValue(value): unexpectedResponse($value)
+            DefaultValue(value): unexpectedResponse($value)
+            Flag(value): unexpectedResponse(value)
+            Names(value): unexpectedResponse($value)
+            Value(value): unexpectedResponse($value)
+        }
+    }
+}
+
+fn mapMaybeValue<T>(
+    $value Result<response<T>, Error>
+) Result<Option<T>, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): match response {
+            MaybeValue(value): .Ok(value)
+            Done: unexpectedDone()
+            DefaultValue(value): unexpectedResponse($value)
+            Flag(value): unexpectedResponse(value)
+            Names(value): unexpectedResponse($value)
+            Value(value): unexpectedResponse($value)
+        }
+    }
+}
+
+fn mapFlag<T>($value Result<response<T>, Error>) Result<bool, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): match response {
+            Flag(value): .Ok(value)
+            Done: unexpectedDone()
+            MaybeValue(value): unexpectedResponse($value)
+            DefaultValue(value): unexpectedResponse($value)
+            Names(value): unexpectedResponse($value)
+            Value(value): unexpectedResponse($value)
+        }
+    }
+}
+
+fn mapNames<T>(
+    $value Result<response<T>, Error>
+) Result<own collections.List<String>, Error> {
+    match value {
+        Err(error): .Err(error)
+        Ok(response): match response {
+            Names(value): .Ok(value)
+            Done: unexpectedDone()
+            MaybeValue(value): unexpectedResponse($value)
+            DefaultValue(value): unexpectedResponse($value)
+            Flag(value): unexpectedResponse(value)
+            Value(value): unexpectedResponse($value)
+        }
+    }
+}
+
+fn mapChannelError(error ChannelError) Error {
+    match error {
+        Closed: .Closed
+        Cancelled: .Cancelled
+        Timeout: .Cancelled
+    }
+}
+
+task serveHooks<T>(
+    $receiver Receiver<hookOperation<T>>,
+    $registry Sender<request<T>>
+) void {
+    var inbox = receiver
+    var current = own hookState<T> {
+        registerHooks = collections.NewList<registerHook<T>>()
+        removeHooks = collections.NewList<removeHook>()
+        supervisor = worker.NewSupervisor()
+        registry = registry
+        nextOrder = 0
+    }
+    while true {
+        const received = inbox.receive()
+        match received {
+            Ok(operation): match operation {
+                AddRegister(value): {
+                    const reply = addRegister(&current, $value)
+                    discard reply.send()
+                }
+                AddRemove(value): {
+                    const reply = addRemove<T>(&current, $value)
+                    discard reply.send()
+                }
+                DispatchRegister(value): startRegisterDispatch(&current, $value)
+                DispatchRemove(value): startRemoveDispatch<T>(&current, $value)
+                Clear(reply): {
+                    clearHooks(&current)
+                    discard reply.send()
+                }
+            }
+            Err(error): {
+                discard error
+                break
+            }
+        }
+    }
+    current.registerHooks.Clear()
+    current.removeHooks.Clear()
+    const hookState {
+        registerHooks
+        removeHooks
+        supervisor
+        registry as registryEndpoint
+        nextOrder
+    } = current
+    discard registerHooks
+    discard removeHooks
+    discard registryEndpoint
+    discard nextOrder
+    supervisor.Shutdown()
+}
+
+fn addRegister<T>(
+    &current hookState<T>,
+    $value addRegisterHook<T>
+) Sender<void> {
+    const addRegisterHook { callback reply } = value
+    const Channel { sender receiver } = channel<registerInvocation<T>>(64)
+    current.supervisor.Start(spawn serveRegisterHook<T>($receiver, $callback))
+    current.registerHooks.PushFront(registerHook<T> {
+        sender = sender
+        order = current.nextOrder
+    })
+    current.nextOrder = current.nextOrder + 1
+    var hooks = replace current.registerHooks with collections.NewList<
+    registerHook<T>
+    >()
+    const compare fn(
+        registerHook<T>,
+        registerHook<T>
+    ) i32 = compareRegisterHooks<T>
+    current.registerHooks = collections.Sort($hooks, compare)
+    reply
+}
+
+fn addRemove<T>(
+    &current hookState<T>,
+    $value addRemoveHook
+) Sender<void> {
+    const addRemoveHook { callback reply } = value
+    const Channel { sender receiver } = channel<removeInvocation>(64)
+    current.supervisor.Start(spawn serveRemoveHook($receiver, $callback))
+    current.removeHooks.PushFront(removeHook {
+        sender = sender
+        order = current.nextOrder
+    })
+    current.nextOrder = current.nextOrder + 1
+    var hooks = replace current.removeHooks with collections.NewList<
+    removeHook
+    >()
+    const compare fn(removeHook, removeHook) i32 = compareRemoveHooks
+    current.removeHooks = collections.Sort($hooks, compare)
+    reply
+}
+
+fn startRegisterDispatch<T>(
+    &current hookState<T>,
+    $value dispatchRegister
+) void {
+    const dispatchRegister { id name done } = value
+    const hooks = snapshotRegisterHooks(&current)
+    current.supervisor.Start(spawn dispatchRegistered<T>(
+        $hooks,
+        current.registry.clone(),
+        id,
+        $name,
+        $done
+        ))
+}
+
+fn startRemoveDispatch<T>(
+    &current hookState<T>,
+    $value dispatchRemove
+) void {
+    const dispatchRemove { name done } = value
+    const hooks = snapshotRemoveHooks(&current)
+    current.supervisor.Start(spawn dispatchRemoved($hooks, $name, $done))
+}
+
+fn clearHooks<T>(&current hookState<T>) void {
+    current.registerHooks.Clear()
+    current.removeHooks.Clear()
+}
+
+task serveRegisterHook<T>(
+    $receiver Receiver<registerInvocation<T>>,
+    $callback transferable fn($String, $T) Task<void>
+) void {
+    var inbox = receiver
+    const supervisor = worker.NewSupervisor()
+    while true {
+        const received = inbox.receive()
+        match received {
+            Ok(invocation): startRegisterCallback(
+                supervisor,
+                callback,
+                $invocation
+            )
+            Err(error): {
+                discard error
+                break
+            }
+        }
+    }
+    supervisor.Shutdown()
+}
+
+fn startRegisterCallback<T>(
+    supervisor worker.Supervisor,
+    callback transferable fn($String, $T) Task<void>,
+    $invocation registerInvocation<T>
+) void {
+    const registerInvocation { name adapter done } = invocation
+    const pending = callback($name, $adapter)
+    supervisor.Start(spawn finishCallback($pending, $done))
+}
+
+task serveRemoveHook(
+    $receiver Receiver<removeInvocation>,
+    $callback transferable fn($String) Task<void>
+) void {
+    var inbox = receiver
+    const supervisor = worker.NewSupervisor()
+    while true {
+        const received = inbox.receive()
+        match received {
+            Ok(invocation): startRemoveCallback(
+                supervisor,
+                callback,
+                $invocation
+            )
+            Err(error): {
+                discard error
+                break
+            }
+        }
+    }
+    supervisor.Shutdown()
+}
+
+fn startRemoveCallback(
+    supervisor worker.Supervisor,
+    callback transferable fn($String) Task<void>,
+    $invocation removeInvocation
+) void {
+    const removeInvocation { name done } = invocation
+    const pending = callback($name)
+    supervisor.Start(spawn finishCallback($pending, $done))
+}
+
+task finishCallback($pending Task<void>, $done Sender<void>) void {
+    $pending.wait()
+    discard done.send()
+}
+
+task dispatchRegistered<T>(
+    $hooks own collections.List<registerHook<T>>,
+    $registry Sender<request<T>>,
+    id u64,
+    $name String,
+    $done Sender<void>
+) void {
+    var pending = hooks
+    while !pending.IsEmpty() {
+        const hook = requiredRegisterHook(pending.PopFront())
+        const value = spawn cloneEvent<T>(registry.clone(), id)
+        const adapter = $value.wait()
+        const Channel { sender receiver } = channel<void>(1)
+        var endpoint = hook.sender.clone()
+        const delivered = endpoint.send(registerInvocation<T> {
+            name = text.Copy(name)
+            adapter = adapter
+            done = sender
+        })
+        match delivered {
+            Ok: {
+                const callbackDone = receiver.receive()
+                discard callbackDone
+            }
+            Err(error): {
+                discard error
+            }
+        }
+        discard hook
+    }
+    const finished = spawn finishEvent<T>($registry, id)
+    const finishResult = $finished.wait()
+    discard finishResult
+    discard name
+    discard done.send()
+}
+
+task dispatchRemoved(
+    $hooks own collections.List<removeHook>,
+    $name String,
+    $done Sender<void>
+) void {
+    var pending = hooks
+    while !pending.IsEmpty() {
+        const hook = requiredRemoveHook(pending.PopFront())
+        const Channel { sender receiver } = channel<void>(1)
+        var endpoint = hook.sender.clone()
+        const delivered = endpoint.send(removeInvocation {
+            name = text.Copy(name)
+            done = sender
+        })
+        match delivered {
+            Ok: {
+                const callbackDone = receiver.receive()
+                discard callbackDone
+            }
+            Err(error): {
+                discard error
+            }
+        }
+        discard hook
+    }
+    discard name
+    discard done.send()
+}
+
+task cloneEvent<T>(
+    $requests Sender<request<T>>,
+    id u64
+) T {
+    const result = spawn sendRequest<T>(
+        $requests,
+        .CloneEvent(value = eventRequest { id = id })
+    )
+    const received = $result.wait()
+    match received {
+        Err(error): registryFailure(error)
+        Ok(value): requireValue<T>($value)
+    }
+}
+
+task finishEvent<T>(
+    $requests Sender<request<T>>,
+    id u64
+) Result<void, Error> {
+    const result = spawn sendRequest<T>(
+        $requests,
+        .FinishEvent(value = eventRequest { id = id })
+    )
+    const received = $result.wait()
+    mapDone<T>($received)
+}
+
+fn setValue<T>(
+    &current state<T>,
+    $name String,
+    $adapter T
+) void {
+    var pending = replace current.entries with collections.NewList<entry<T>>()
+    var stored = collections.NewList<entry<T>>()
+    var replaced = false
+    while !pending.IsEmpty() {
+        var item = requiredEntry(pending.PopFront())
+        if !replaced && item.name == name {
+            discard replace item.adapter with cloneAdapter(
+                current.cloneValue,
+                adapter
+            )
+            replaced = true
+        }
+        stored.PushFront($item)
+    }
+    if replaced {
+        discard name
+        discard adapter
+    } else {
+        stored.PushFront(entry<T> { name = name adapter = adapter })
+    }
+    current.entries = stored
+}
+
+fn getValue<T>(
+    &current state<T>,
+    $name String
+) Option<T> {
+    var pending = replace current.entries with collections.NewList<entry<T>>()
+    var restored = collections.NewList<entry<T>>()
+    var result Option<T> = .None
+    var found = false
+    while !pending.IsEmpty() {
+        const item = requiredEntry(pending.PopFront())
+        if !found && item.name == name {
+            result = .Some(cloneAdapter(current.cloneValue, item.adapter))
+            found = true
+        }
+        restored.PushFront($item)
+    }
+    current.entries = restored
+    discard name
+    result
+}
+
+fn hasValue<T>(&current state<T>, $name String) bool {
+    const value = getValue(&current, $name)
+    match value {
+        None: false
+        Some(adapter): consumeFound($adapter)
+    }
+}
+
+fn removeValue<T>(&current state<T>, name String) void {
+    var pending = replace current.entries with collections.NewList<entry<T>>()
+    var restored = collections.NewList<entry<T>>()
+    while !pending.IsEmpty() {
+        const item = requiredEntry(pending.PopFront())
+        if item.name == name {
+            discard item
+        } else {
+            restored.PushFront($item)
+        }
+    }
+    current.entries = restored
+}
+
+fn currentNames<T>(
+    &current state<T>
+) own collections.List<String> {
+    var pending = replace current.entries with collections.NewList<entry<T>>()
+    var restored = collections.NewList<entry<T>>()
+    var result = collections.NewList<String>()
+    while !pending.IsEmpty() {
+        const item = requiredEntry(pending.PopFront())
+        result.PushFront(text.Copy(item.name))
+        restored.PushFront($item)
+    }
+    current.entries = restored
+    const compare fn(String, String) i32 = compareNames
+    collections.Sort($result, compare)
+}
+
+fn getDefault<T>(&current state<T>) defaultValue<T> {
+    const selected = replace current.defaultName with .None
+    match selected {
+        None: defaultValue<T> { name = .None adapter = .None }
+        Some(name): getNamedDefault(&current, $name)
+    }
+}
+
+fn getNamedDefault<T>(
+    &current state<T>,
+    $name String
+) defaultValue<T> {
+    const lookupName = text.Copy(name)
+    const value = getValue(&current, $lookupName)
+    current.defaultName = .Some(text.Copy(name))
+    defaultValue<T> { name = .Some(name) adapter = value }
+}
+
+fn clearDefault<T>(&current state<T>, name String) void {
+    const selected = replace current.defaultName with .None
+    match selected {
+        None: {
+            return
+        }
+        Some(currentName): {
+            if currentName == name {
+                discard currentName
+            } else {
+                current.defaultName = .Some(currentName)
+            }
+        }
+    }
+}
+
+fn cloneEventValue<T>(&current state<T>, id u64) T {
+    var pending = replace current.pendingEvents with collections.NewList<
+    pendingEvent<T>
+    >()
+    var restored = collections.NewList<pendingEvent<T>>()
+    var result Option<T> = .None
+    var found = false
+    while !pending.IsEmpty() {
+        const item = requiredEvent(pending.PopFront())
+        if !found && item.id == id {
+            result = .Some(cloneAdapter(current.cloneValue, item.adapter))
+            found = true
+        }
+        restored.PushFront($item)
+    }
+    current.pendingEvents = restored
+    requiredEventAdapter($result)
+}
+
+fn removeEvent<T>(&current state<T>, id u64) bool {
+    var pending = replace current.pendingEvents with collections.NewList<
+    pendingEvent<T>
+    >()
+    var restored = collections.NewList<pendingEvent<T>>()
+    var removed = false
+    while !pending.IsEmpty() {
+        const item = requiredEvent(pending.PopFront())
+        if !removed && item.id == id {
+            discard item
+            removed = true
+        } else {
+            restored.PushFront($item)
+        }
+    }
+    current.pendingEvents = restored
+    removed
+}
+
+fn removePendingEvent<T>(
+    &current state<T>,
+    $event Option<u64>
+) void {
+    match event {
+        None: {
+            return
+        }
+        Some(id): {
+            discard removeEvent(&current, id)
+        }
+    }
+}
+
+fn snapshotRegisterHooks<T>(
+    &current hookState<T>
+) own collections.List<registerHook<T>> {
+    var pending = replace current.registerHooks with collections.NewList<
+    registerHook<T>
+    >()
+    var restored = collections.NewList<registerHook<T>>()
+    var snapshot = collections.NewList<registerHook<T>>()
+    while !pending.IsEmpty() {
+        const hook = requiredRegisterHook(pending.PopFront())
+        snapshot.PushFront(registerHook<T> {
+            sender = hook.sender.clone()
+            order = hook.order
+        })
+        restored.PushFront($hook)
+    }
+    const compare fn(
+        registerHook<T>,
+        registerHook<T>
+    ) i32 = compareRegisterHooks<T>
+    current.registerHooks = collections.Sort($restored, compare)
+    collections.Sort($snapshot, compare)
+}
+
+fn snapshotRemoveHooks<T>(
+    &current hookState<T>
+) own collections.List<removeHook> {
+    var pending = replace current.removeHooks with collections.NewList<
+    removeHook
+    >()
+    var restored = collections.NewList<removeHook>()
+    var snapshot = collections.NewList<removeHook>()
+    while !pending.IsEmpty() {
+        const hook = requiredRemoveHook(pending.PopFront())
+        snapshot.PushFront(removeHook {
+            sender = hook.sender.clone()
+            order = hook.order
+        })
+        restored.PushFront($hook)
+    }
+    const compare fn(removeHook, removeHook) i32 = compareRemoveHooks
+    current.removeHooks = collections.Sort($restored, compare)
+    collections.Sort($snapshot, compare)
+}
+
+fn compareRegisterHooks<T>(left registerHook<T>, right registerHook<T>) i32 {
+    compareOrder(left.order, right.order)
+}
+
+fn compareRemoveHooks(left removeHook, right removeHook) i32 {
+    compareOrder(left.order, right.order)
+}
+
+fn compareOrder(left u64, right u64) i32 {
+    if left < right return -1
+    if left > right return 1
+    0
+}
+
+fn compareNames(left String, right String) i32 {
+    text.Compare(left, right)
+}
+
+fn cloneAdapter<T>(clone fn(T) T, adapter T) T {
+    clone(adapter)
+}
+
+fn consumeFound<T>($value T) bool {
+    discard value
+    true
+}
+
+fn requireNamed<T>($value Option<T>, $name String) T {
+    match value {
+        None: panic("adapters: not found: " + name)
+        Some(adapter): {
+            discard name
+            adapter
+        }
+    }
+}
+
+fn requireDefaultResponse<T>($value response<T>) T {
+    match value {
+        DefaultValue(value): requireDefault<T>($value)
+        Done: unexpectedDone()
+        MaybeValue(value): unexpectedResponse($value)
+        Flag(value): unexpectedResponse(value)
+        Names(value): unexpectedResponse($value)
+        Value(value): unexpectedResponse($value)
+    }
+}
+
+fn requireDefault<T>($value defaultValue<T>) T {
+    const defaultValue { name adapter } = value
+    match name {
+        None: {
+            discard adapter
+            panic("adapters: no default set")
+        }
+        Some(selected): requireNamed<T>($adapter, $selected)
+    }
+}
+
+fn defaultOrResponse<T>($value response<T>, $fallback T) T {
+    match value {
+        DefaultValue(value): useDefaultOr<T>($value, $fallback)
+        Done: unexpectedDone()
+        MaybeValue(value): unexpectedResponse($value)
+        Flag(value): unexpectedResponse(value)
+        Names(value): unexpectedResponse($value)
+        Value(value): unexpectedResponse($value)
+    }
+}
+
+fn useDefaultOr<T>($value defaultValue<T>, $fallback T) T {
+    const defaultValue { name adapter } = value
+    discard name
+    match adapter {
+        None: fallback
+        Some(found): {
+            discard fallback
+            found
+        }
+    }
+}
+
+fn useFallback<T>(error Error, $fallback T) T {
+    discard error
+    fallback
+}
+
+fn requireValue<T>($value response<T>) T {
+    match value {
+        Value(value): value
+        Done: unexpectedDone()
+        MaybeValue(value): unexpectedResponse($value)
+        DefaultValue(value): unexpectedResponse($value)
+        Flag(value): unexpectedResponse(value)
+        Names(value): unexpectedResponse($value)
+    }
+}
+
+fn registryFailure(error Error) never {
+    match error {
+        Closed: panic("adapters: registry closed")
+        Cancelled: panic("adapters: registry operation cancelled")
+    }
+}
+
+fn unexpectedResponse<T>($value T) never {
+    discard value
+    panic("adapter registry response invariant failed")
+}
+
+fn unexpectedDone() never {
+    panic("adapter registry response invariant failed")
+}
+
+fn requiredEntry<T>($value Option<entry<T>>) entry<T> {
+    match value {
+        None: missingEntry<T>()
+        Some(item): item
+    }
+}
+
+fn missingEntry<T>() entry<T> {
+    panic("adapter registry entry invariant failed")
+}
+
+fn requiredEvent<T>($value Option<pendingEvent<T>>) pendingEvent<T> {
+    match value {
+        None: missingEvent<T>()
+        Some(item): item
+    }
+}
+
+fn missingEvent<T>() pendingEvent<T> {
+    panic("adapter registry event invariant failed")
+}
+
+fn requiredEventAdapter<T>($value Option<T>) T {
+    match value {
+        None: panic("adapter registry event invariant failed")
+        Some(adapter): adapter
+    }
+}
+
+fn requiredRegisterHook<T>(
+    $value Option<registerHook<T>>
+) registerHook<T> {
+    match value {
+        None: missingRegisterHook<T>()
+        Some(hook): hook
+    }
+}
+
+fn missingRegisterHook<T>() registerHook<T> {
+    panic("adapter registry hook invariant failed")
+}
+
+fn requiredRemoveHook($value Option<removeHook>) removeHook {
+    match value {
+        None: missingRemoveHook()
+        Some(hook): hook
+    }
+}
+
+fn missingRemoveHook() removeHook {
+    panic("adapter registry hook invariant failed")
+}

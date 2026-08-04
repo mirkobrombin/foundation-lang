@@ -820,7 +820,14 @@ class Lowerer {
                                     : std::nullopt,
                                 target.drops[arm]});
             }
-            value = FirMatchExpression{lowerExpression(match.value), target.type, std::move(arms)};
+            const auto matchValue = lowerExpression(match.value);
+            std::optional<FirLocalId> valueStorage;
+            if (current_->task) {
+                valueStorage = current_->locals.size();
+                current_->locals.push_back({"matchValue", model_.expressionTypes[match.value],
+                                            false, false, FirCaptureMode::Copy, false});
+            }
+            value = FirMatchExpression{matchValue, target.type, std::move(arms), valueStorage};
         }
 
         if (model_.expressionContractConversions[id].has_value()) {

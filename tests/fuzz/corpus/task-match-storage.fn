@@ -1,0 +1,27 @@
+enum State<T> {
+    Ready(value T)
+    Failed
+}
+
+task inspect<T>($receiver Receiver<State<T>>) bool {
+    const received = receiver.receive()
+    match received {
+        Ok(state): match state {
+            Ready(value): {
+                discard value
+                return true
+            }
+            Failed: {
+                return false
+            }
+        }
+        Err(error): {
+            discard error
+            return false
+        }
+    }
+}
+
+fn main() i32 {
+    0
+}

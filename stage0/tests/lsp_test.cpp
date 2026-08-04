@@ -2959,6 +2959,124 @@ void cachingPackageExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void adaptersPackageExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fn";
+    const std::string completeContents =
+        "package sample\n"
+        "\n"
+        "import foundation.adapters\n"
+        "\n"
+        "fn cloneI32(value i32) i32 {\n"
+        "    value\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    const registry = adapters.New<i32>($cloneI32)\n"
+        "    const handle = registry.Handle()\n"
+        "    const pending = handle.Register(\"answer\", 42)\n"
+        "    discard pending\n"
+        "    discard handle\n"
+        "    discard registry\n"
+        "    0\n"
+        "}\n";
+    const std::string completionContents =
+        "package sample\n"
+        "\n"
+        "import foundation.adapters\n"
+        "\n"
+        "fn cloneI32(value i32) i32 {\n"
+        "    value\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    const registry = adapters.New<i32>($cloneI32)\n"
+        "    const handle = registry.Handle()\n"
+        "    const pending = handle.Register(\"answer\", 42)\n"
+        "    discard pending\n"
+        "    handle.\n"
+        "    discard registry\n"
+        "    0\n"
+        "}\n";
+    writeFile(source, completeContents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(completeContents) +
+        "\"}}}";
+    const auto change =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":2},\"contentChanges\":[{\"text\":\"" +
+        jsonEscape(completionContents) + "\"}]}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(271, "hover", 2, 12)) +
+        frame(request(272, "hover", 9, 31)) +
+        frame(request(273, "signatureHelp", 9, 47)) +
+        frame(request(274, "definition", 9, 31)) +
+        frame(request(275, "hover", 10, 29)) +
+        frame(request(276, "hover", 11, 33)) + frame(change) +
+        frame(request(277, "completion", 13, 11)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto packageHover = responseFor(transcript, 271);
+    const auto constructorHover = responseFor(transcript, 272);
+    const auto constructorSignature = responseFor(transcript, 273);
+    const auto constructorDefinition = responseFor(transcript, 274);
+    const auto handleHover = responseFor(transcript, 275);
+    const auto registerHover = responseFor(transcript, 276);
+    const auto members = responseFor(transcript, 277);
+
+    expect(status == 0, "adapters language server transcript exits cleanly");
+    expect(errors.str().empty(), "adapters requests write no server errors");
+    expect(packageHover.find("foundation.adapters") != std::string::npos,
+           "adapters package import receives hover");
+    expect(constructorHover.find("fn New<T transferable>") != std::string::npos &&
+               constructorHover.find("explicit clone function") != std::string::npos,
+           "adapter registry construction receives typed hover and documentation");
+    expect(constructorSignature.find("fn New<T transferable>") != std::string::npos &&
+               constructorSignature.find("cloneValue fn(T) T") != std::string::npos,
+           "adapter registry construction receives ownership-aware signature help");
+    expect(constructorDefinition.find("foundation/adapters/adapters.fn") !=
+               std::string::npos,
+           "adapter registry construction navigates to framework source");
+    expect(handleHover.find("fn Handle") != std::string::npos &&
+               handleHover.find("Handle<T>") != std::string::npos &&
+               handleHover.find("independently owned handle") != std::string::npos,
+           "adapter registry handle hover exposes its transferable sender");
+    expect(registerHover.find("fn Register") != std::string::npos &&
+               registerHover.find("Task<Result<void, Error>>") != std::string::npos &&
+               registerHover.find("current register hooks") != std::string::npos,
+           "adapter registration hover exposes its joined callback result");
+    expect(members.find("\"label\":\"Register\"") != std::string::npos &&
+               members.find("\"label\":\"Get\"") != std::string::npos &&
+               members.find("\"label\":\"Default\"") != std::string::npos &&
+               members.find("\"label\":\"OnRegister\"") != std::string::npos &&
+               members.find("\"label\":\"Clear\"") != std::string::npos &&
+               members.find("\"label\":\"Clone\"") != std::string::npos,
+           "adapter handle completion exposes its compiler-backed methods");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void secretsPackageExposesEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fn";
@@ -4655,6 +4773,7 @@ int main() {
     parallelPoolExposesEditorDetails();
     schedulerPackageExposesEditorDetails();
     cachingPackageExposesEditorDetails();
+    adaptersPackageExposesEditorDetails();
     secretsPackageExposesEditorDetails();
     rawPointersExposeEditorDetails();
     servicesAndActionsExposeEditorDetails();

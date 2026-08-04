@@ -1,0 +1,20 @@
+package test.adapters_default
+
+import foundation.adapters
+
+fn cloneI32(value i32) i32 {
+    value
+}
+
+task exercise() void {
+    const registry = adapters.New<i32>($cloneI32)
+    const missing = registry.Default()
+    const found = $missing.wait()
+    discard found
+}
+
+fn main() i32 {
+    const pending = spawn exercise()
+    $pending.wait()
+    0
+}

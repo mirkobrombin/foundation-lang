@@ -1,0 +1,99 @@
+package example.adapters
+
+import foundation.adapters
+import std.collections
+import std.text
+
+// Describes one selectable transport adapter.
+struct Transport {
+    // The protocol label returned to callers.
+    Protocol String
+}
+
+fn cloneTransport(value Transport) Transport {
+    Transport { Protocol = text.Copy(value.Protocol) }
+}
+
+fn requireVoid($value Result<void, adapters.Error>) void {
+    match value {
+        Ok: {}
+        Err(error): fail(error)
+    }
+}
+
+fn requireNames(
+    $value Result<own collections.List<String>, adapters.Error>
+) own collections.List<String> {
+    match value {
+        Ok(found): found
+        Err(error): fail(error)
+    }
+}
+
+fn requireName($value Option<String>) String {
+    match value {
+        None: panic("adapter name is missing")
+        Some(name): name
+    }
+}
+
+fn fail(error adapters.Error) never {
+    discard error
+    panic("adapter registry operation failed")
+}
+
+task registered($name String, $transport Transport) void {
+    print("registered:" + name + ":" + transport.Protocol)
+}
+
+fn registerHook() transferable fn($String, $Transport) Task<void> {
+    fn($name String, $transport Transport) Task<void> {
+        spawn registered($name, $transport)
+    }
+}
+
+task removed($name String) void {
+    print("removed:" + name)
+}
+
+fn removeHook() transferable fn($String) Task<void> {
+    fn($name String) Task<void> {
+        spawn removed($name)
+    }
+}
+
+task exercise() i32 {
+    const registry = adapters.New<Transport>($cloneTransport)
+    const addingRegisterHook = registry.OnRegister($registerHook())
+    const registerHookResult = $addingRegisterHook.wait()
+    requireVoid($registerHookResult)
+    const addingRemoveHook = registry.OnRemove($removeHook())
+    const removeHookResult = $addingRemoveHook.wait()
+    requireVoid($removeHookResult)
+
+    const registering = registry.Register(
+        "http",
+        Transport { Protocol = "HTTP/2" }
+    )
+    const registerResult = $registering.wait()
+    requireVoid($registerResult)
+    const selecting = registry.SetDefault("http")
+    const selectResult = $selecting.wait()
+    requireVoid($selectResult)
+    const readingDefault = registry.Default()
+    const selected = $readingDefault.wait()
+    print("selected:" + selected.Protocol)
+    const readingNames = registry.Names()
+    const namesResult = $readingNames.wait()
+    var names = requireNames($namesResult)
+    print("name:" + requireName(names.PopFront()))
+    const removing = registry.Remove("http")
+    const removeResult = $removing.wait()
+    requireVoid($removeResult)
+    0
+}
+
+fn main() i32 {
+    const pending = spawn exercise()
+    $pending.wait()
+}

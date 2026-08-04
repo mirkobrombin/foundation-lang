@@ -325,6 +325,7 @@ struct FirMatchExpression {
     FirExpressionId value{};
     Type type{invalidType};
     std::vector<FirMatchArm> arms;
+    std::optional<FirLocalId> valueStorage;
 };
 
 struct FirConditionalExpression {

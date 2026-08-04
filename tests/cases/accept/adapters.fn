@@ -1,0 +1,517 @@
+package test.adapters
+
+import foundation.adapters
+import foundation.worker
+import std.collections
+import std.text
+import std.time
+
+fn cloneI32(value i32) i32 {
+    value
+}
+
+fn cloneString(value String) String {
+    text.Copy(value)
+}
+
+fn requireVoid($value Result<void, adapters.Error>) void {
+    match value {
+        Ok: {
+            return
+        }
+        Err(error): fail(error)
+    }
+}
+
+fn requireBool($value Result<bool, adapters.Error>) bool {
+    match value {
+        Ok(found): found
+        Err(error): fail(error)
+    }
+}
+
+fn requireOptional(
+    $value Result<Option<i32>, adapters.Error>
+) Option<i32> {
+    match value {
+        Ok(found): found
+        Err(error): fail(error)
+    }
+}
+
+fn requireNames(
+    $value Result<own collections.List<String>, adapters.Error>
+) own collections.List<String> {
+    match value {
+        Ok(found): found
+        Err(error): fail(error)
+    }
+}
+
+fn requireI32($value Option<i32>) i32 {
+    match value {
+        None: panic("adapter missing")
+        Some(found): found
+    }
+}
+
+fn requireString($value Result<String, ChannelError>) String {
+    match value {
+        Ok(found): found
+        Err(error): {
+            discard error
+            panic("adapter hook channel failed")
+        }
+    }
+}
+
+fn requireSender(
+    $value Result<Sender<void>, ChannelError>
+) Sender<void> {
+    match value {
+        Ok(found): found
+        Err(error): {
+            discard error
+            panic("adapter release channel failed")
+        }
+    }
+}
+
+fn requireAdapterString(
+    $value Result<Option<String>, adapters.Error>
+) String {
+    match value {
+        Err(error): fail(error)
+        Ok(found): match found {
+            None: panic("string adapter missing")
+            Some(adapter): adapter
+        }
+    }
+}
+
+fn requireName($value Option<String>) String {
+    match value {
+        None: panic("missing adapter name")
+        Some(found): found
+    }
+}
+
+fn fail(error adapters.Error) never {
+    discard error
+    panic("adapter registry operation failed")
+}
+
+fn isClosed(error adapters.Error) bool {
+    match error {
+        Closed: true
+        Cancelled: false
+    }
+}
+
+task registered(
+    $handle adapters.Handle<i32>,
+    $events Sender<String>,
+    $name String,
+    value i32
+) void {
+    const lookupName = text.Copy(name)
+    const pending = handle.Get($lookupName)
+    const received = $pending.wait()
+    const found = requireOptional($received)
+    if requireI32($found) != value {
+        panic("register hook observed stale adapter")
+    }
+    discard events.send("register:" + name)
+}
+
+fn registerHook(
+    $handle adapters.Handle<i32>,
+    $events Sender<String>
+) transferable fn($String, $i32) Task<void> {
+    fn($name String, $value i32) Task<void> capture($handle, $events) {
+        spawn registered(handle.Clone(), events.clone(), $name, value)
+    }
+}
+
+task removed(
+    $handle adapters.Handle<i32>,
+    $events Sender<String>,
+    $name String
+) void {
+    const lookupName = text.Copy(name)
+    const pending = handle.Has($lookupName)
+    const received = $pending.wait()
+    if requireBool($received) {
+        panic("remove hook observed registered adapter")
+    }
+    discard events.send("remove:" + name)
+}
+
+fn removeHook(
+    $handle adapters.Handle<i32>,
+    $events Sender<String>
+) transferable fn($String) Task<void> {
+    fn($name String) Task<void> capture($handle, $events) {
+        spawn removed(handle.Clone(), events.clone(), $name)
+    }
+}
+
+task noEvent($events Receiver<String>) bool {
+    select {
+        const event = events.receive(): {
+            discard event
+            return false
+        }
+        timeout 10.milliseconds: return true
+        else error: {
+            discard error
+            return true
+        }
+    }
+}
+
+task orderedRegister(
+    $events Sender<String>,
+    $prefix String,
+    $name String,
+    value i32
+) void {
+    discard value
+    discard events.send(prefix + ":register:" + name)
+}
+
+fn orderedRegisterHook(
+    $events Sender<String>,
+    $prefix String
+) transferable fn($String, $i32) Task<void> {
+    fn($name String, $value i32) Task<void> capture($events, $prefix) {
+        spawn orderedRegister(
+            events.clone(),
+            text.Copy(prefix),
+            $name,
+            value
+        )
+    }
+}
+
+task orderedRemove(
+    $events Sender<String>,
+    $prefix String,
+    $name String
+) void {
+    discard events.send(prefix + ":remove:" + name)
+}
+
+fn orderedRemoveHook(
+    $events Sender<String>,
+    $prefix String
+) transferable fn($String) Task<void> {
+    fn($name String) Task<void> capture($events, $prefix) {
+        spawn orderedRemove(events.clone(), text.Copy(prefix), $name)
+    }
+}
+
+task blockedRegister(
+    $releases Sender<Sender<void>>,
+    $events Sender<String>,
+    $name String,
+    value i32
+) void {
+    discard value
+    const release = channel<void>(1)
+    const Channel { sender receiver } = release
+    discard events.send("snapshot:start:" + text.Copy(name))
+    discard releases.send($sender)
+    const released = receiver.receive()
+    match released {
+        Ok: {}
+        Err(error): {
+            discard error
+            panic("snapshot release failed")
+        }
+    }
+    discard events.send("snapshot:end:" + name)
+}
+
+fn blockedRegisterHook(
+    $releases Sender<Sender<void>>,
+    $events Sender<String>
+) transferable fn($String, $i32) Task<void> {
+    fn($name String, $value i32) Task<void> capture($releases, $events) {
+        spawn blockedRegister(
+            releases.clone(),
+            events.clone(),
+            $name,
+            value
+        )
+    }
+}
+
+task stringRegistered(
+    $events Sender<String>,
+    $name String,
+    $adapter String
+) void {
+    discard name
+    discard events.send($adapter)
+}
+
+fn stringRegisterHook(
+    $events Sender<String>
+) transferable fn($String, $String) Task<void> {
+    fn($name String, $adapter String) Task<void> capture($events) {
+        spawn stringRegistered(events.clone(), $name, $adapter)
+    }
+}
+
+task remoteStringRegistry(
+    $handle adapters.Handle<String>,
+    $done Sender<String>
+) void {
+    const registering = handle.Register("remote", "payload")
+    const registeredResult = $registering.wait()
+    requireVoid($registeredResult)
+    const reading = handle.Get("remote")
+    const readResult = $reading.wait()
+    const adapter = requireAdapterString($readResult)
+    discard done.send($adapter)
+}
+
+fn closedHandle() adapters.Handle<i32> {
+    const registry = adapters.New<i32>($cloneI32)
+    const handle = registry.Handle()
+    discard registry
+    handle
+}
+
+task orderingExercise() i32 {
+    const registry = adapters.New<i32>($cloneI32)
+    const Channel { sender receiver } = channel<String>(8)
+    const firstRegister = orderedRegisterHook(sender.clone(), "first")
+    const secondRegister = orderedRegisterHook(sender.clone(), "second")
+    const firstRemove = orderedRemoveHook(sender.clone(), "first")
+    const secondRemove = orderedRemoveHook(sender.clone(), "second")
+    const addingFirstRegister = registry.OnRegister($firstRegister)
+    const firstRegisterResult = $addingFirstRegister.wait()
+    requireVoid($firstRegisterResult)
+    const addingSecondRegister = registry.OnRegister($secondRegister)
+    const secondRegisterResult = $addingSecondRegister.wait()
+    requireVoid($secondRegisterResult)
+    const addingFirstRemove = registry.OnRemove($firstRemove)
+    const firstRemoveResult = $addingFirstRemove.wait()
+    requireVoid($firstRemoveResult)
+    const addingSecondRemove = registry.OnRemove($secondRemove)
+    const secondRemoveResult = $addingSecondRemove.wait()
+    requireVoid($secondRemoveResult)
+
+    const registering = registry.Register("ordered", 4)
+    const registerResult = $registering.wait()
+    requireVoid($registerResult)
+    const firstRegisterEvent = receiver.receive()
+    if requireString($firstRegisterEvent) != "first:register:ordered" return 21
+    const secondRegisterEvent = receiver.receive()
+    if requireString($secondRegisterEvent) != "second:register:ordered" {
+        return 22
+    }
+    const removing = registry.Remove("ordered")
+    const removeResult = $removing.wait()
+    requireVoid($removeResult)
+    const firstRemoveEvent = receiver.receive()
+    if requireString($firstRemoveEvent) != "first:remove:ordered" return 23
+    const secondRemoveEvent = receiver.receive()
+    if requireString($secondRemoveEvent) != "second:remove:ordered" return 24
+    0
+}
+
+task clearSnapshotExercise() i32 {
+    const registry = adapters.New<i32>($cloneI32)
+    const Channel {
+        sender as eventSender
+        receiver as eventReceiver
+    } = channel<String>(8)
+    const Channel {
+        sender as releaseSender
+        receiver as releaseReceiver
+    } = channel<Sender<void>>(1)
+    const first = blockedRegisterHook($releaseSender, eventSender.clone())
+    const second = orderedRegisterHook(eventSender.clone(), "second")
+    const addingFirst = registry.OnRegister($first)
+    const firstResult = $addingFirst.wait()
+    requireVoid($firstResult)
+    const addingSecond = registry.OnRegister($second)
+    const secondResult = $addingSecond.wait()
+    requireVoid($secondResult)
+    const selecting = registry.SetDefault("snapshot")
+    const selectResult = $selecting.wait()
+    requireVoid($selectResult)
+
+    const registering = registry.Register("snapshot", 8)
+    const startedEvent = eventReceiver.receive()
+    if requireString($startedEvent) != "snapshot:start:snapshot" return 31
+    const releaseResult = releaseReceiver.receive()
+    const release = requireSender($releaseResult)
+    const clearing = registry.Clear()
+    const clearResult = $clearing.wait()
+    requireVoid($clearResult)
+    const defaulting = registry.DefaultOr(17)
+    const defaultValue = $defaulting.wait()
+    if defaultValue != 17 return 32
+    const readingNames = registry.Names()
+    const namesResult = $readingNames.wait()
+    const names = requireNames($namesResult)
+    if !names.IsEmpty() return 33
+
+    discard release.send()
+    const endedEvent = eventReceiver.receive()
+    if requireString($endedEvent) != "snapshot:end:snapshot" return 34
+    const secondEvent = eventReceiver.receive()
+    if requireString($secondEvent) != "second:register:snapshot" return 35
+    const registerResult = $registering.wait()
+    requireVoid($registerResult)
+
+    const future = registry.Register("future", 9)
+    const futureResult = $future.wait()
+    requireVoid($futureResult)
+    const silent = spawn noEvent($eventReceiver)
+    const wasSilent = $silent.wait()
+    if !wasSilent return 36
+    0
+}
+
+task transferableExercise() i32 {
+    const registry = adapters.New<String>($cloneString)
+    const Channel {
+        sender as hookSender
+        receiver as hookReceiver
+    } = channel<String>(2)
+    const hook = stringRegisterHook($hookSender)
+    const addingHook = registry.OnRegister($hook)
+    const hookResult = $addingHook.wait()
+    requireVoid($hookResult)
+    const Channel { sender receiver } = channel<String>(1)
+    const pool = worker.NewPool(2)
+    pool.Start(spawn remoteStringRegistry(registry.Handle(), $sender))
+    const hookReceived = hookReceiver.receive()
+    const hookValue = requireString($hookReceived)
+    if hookValue != "payload" return 41
+    const remoteReceived = receiver.receive()
+    const remoteValue = requireString($remoteReceived)
+    if remoteValue != "payload" return 42
+    pool.Shutdown()
+
+    const local = registry.Get("remote")
+    const localResult = $local.wait()
+    if requireAdapterString($localResult) != "payload" return 43
+    0
+}
+
+task closedExercise() i32 {
+    const handle = closedHandle()
+    const pending = handle.Has("missing")
+    const result = $pending.wait()
+    match result {
+        Ok(value): {
+            discard value
+            return 51
+        }
+        Err(error): {
+            if !isClosed(error) return 52
+        }
+    }
+    0
+}
+
+task basicExercise() i32 {
+    const registry = adapters.New<i32>($cloneI32)
+    const Channel { sender receiver } = channel<String>(8)
+    const registering = registerHook(registry.Handle(), sender.clone())
+    const removing = removeHook(registry.Handle(), sender.clone())
+    const registeredHook = registry.OnRegister($registering)
+    const registeredResult = $registeredHook.wait()
+    requireVoid($registeredResult)
+    const removedHook = registry.OnRemove($removing)
+    const removedResult = $removedHook.wait()
+    requireVoid($removedResult)
+
+    const first = registry.Register("zeta", 1)
+    const firstResult = $first.wait()
+    requireVoid($firstResult)
+    const firstEvent = receiver.receive()
+    if requireString($firstEvent) != "register:zeta" return 1
+    const second = registry.Register("alpha", 2)
+    const secondResult = $second.wait()
+    requireVoid($secondResult)
+    const secondEvent = receiver.receive()
+    if requireString($secondEvent) != "register:alpha" return 2
+
+    const selected = registry.Get("zeta")
+    const selectedResult = $selected.wait()
+    if requireI32(requireOptional($selectedResult)) != 1 return 3
+    const present = registry.Has("alpha")
+    const presentResult = $present.wait()
+    if !requireBool($presentResult) return 4
+
+    const defaulted = registry.SetDefault("alpha")
+    const defaultedResult = $defaulted.wait()
+    requireVoid($defaultedResult)
+    const selectedDefault = registry.Default()
+    const defaultValue = $selectedDefault.wait()
+    if defaultValue != 2 return 5
+    const selectedOr = registry.DefaultOr(99)
+    const defaultOrValue = $selectedOr.wait()
+    if defaultOrValue != 2 return 6
+
+    const pendingNames = registry.Names()
+    const namesResult = $pendingNames.wait()
+    var names = requireNames($namesResult)
+    if names.Len() != 2 return 7
+    if requireName(names.PopFront()) != "alpha" return 8
+    if requireName(names.PopFront()) != "zeta" return 9
+
+    const removed = registry.Remove("alpha")
+    const removeResult = $removed.wait()
+    requireVoid($removeResult)
+    const removeEvent = receiver.receive()
+    if requireString($removeEvent) != "remove:alpha" return 10
+    const fallback = registry.DefaultOr(77)
+    const fallbackValue = $fallback.wait()
+    if fallbackValue != 77 return 11
+
+    const missing = registry.Remove("missing")
+    const missingResult = $missing.wait()
+    requireVoid($missingResult)
+    const missingEvent = receiver.receive()
+    if requireString($missingEvent) != "remove:missing" return 12
+
+    const cleared = registry.Clear()
+    const clearResult = $cleared.wait()
+    requireVoid($clearResult)
+    const afterClear = registry.Register("later", 5)
+    const afterClearResult = $afterClear.wait()
+    requireVoid($afterClearResult)
+    const silent = spawn noEvent($receiver)
+    const wasSilent = $silent.wait()
+    if !wasSilent return 13
+
+    0
+}
+
+fn main() i32 {
+    const basic = spawn basicExercise()
+    const basicCode = $basic.wait()
+    if basicCode != 0 return basicCode
+    const ordering = spawn orderingExercise()
+    const orderingCode = $ordering.wait()
+    if orderingCode != 0 return orderingCode
+    const snapshot = spawn clearSnapshotExercise()
+    const snapshotCode = $snapshot.wait()
+    if snapshotCode != 0 return snapshotCode
+    const transferable = spawn transferableExercise()
+    const transferableCode = $transferable.wait()
+    if transferableCode != 0 return transferableCode
+    const closed = spawn closedExercise()
+    const closedCode = $closed.wait()
+    if closedCode != 0 return closedCode
+    print("adapters ok")
+    0
+}
