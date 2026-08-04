@@ -107,10 +107,12 @@ bool exportedSymbol(const ProjectAnalysis &analysis, const LanguageSymbol &symbo
                analysis.program.structs[symbol.id.owner].fields[symbol.id.member].exported;
     case LanguageSymbolKind::Enum:
         return symbol.id.owner < analysis.program.enums.size() &&
+               !analysis.program.enums[symbol.id.owner].generated &&
                analysis.program.enums[symbol.id.owner].exported;
     case LanguageSymbolKind::EnumVariant:
         return symbol.id.owner < analysis.program.enums.size() &&
                symbol.id.member < analysis.program.enums[symbol.id.owner].variants.size() &&
+               !analysis.program.enums[symbol.id.owner].generated &&
                analysis.program.enums[symbol.id.owner].exported &&
                analysis.program.enums[symbol.id.owner].variants[symbol.id.member].exported;
     case LanguageSymbolKind::Contract:

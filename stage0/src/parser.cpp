@@ -1035,7 +1035,7 @@ void Parser::stateMachineDeclaration() {
     EnumVariant invalidState{"InvalidState", std::nullopt, true, start.span, {},
                              std::nullopt, std::nullopt};
     program_.enums.push_back({errorName, {}, {std::move(invalidState)}, machineExported,
-                              BuiltinEnumKind::None, start.span, {}, {}, false});
+                              BuiltinEnumKind::None, start.span, {}, {}, false, true});
 
     const auto findState = [&](const Token &token) -> std::optional<std::size_t> {
         const auto found = std::find_if(states.begin(), states.end(), [&](const auto &state) {

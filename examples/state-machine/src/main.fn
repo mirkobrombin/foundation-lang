@@ -1,11 +1,26 @@
+package example.state_machine
+
+// Tracks an order through submission, payment, or cancellation.
 state_machine Order {
+    // The order has not been submitted.
     state Draft
+
+    // The order is waiting for payment.
     state Submitted
+
+    // The order has a recorded payment receipt.
     state Paid(receipt i32)
+
+    // The order stopped with an owned reason.
     state Cancelled(reason String)
 
+    // Submits a draft order.
     on Submit from Draft to Submitted
+
+    // Records payment for a submitted order.
     on Pay(receipt i32) from Submitted to Paid(receipt)
+
+    // Cancels an order before payment.
     on Cancel($reason String) from Draft, Submitted to Cancelled(reason)
 }
 

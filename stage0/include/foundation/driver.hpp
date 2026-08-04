@@ -4,6 +4,7 @@
 #include "foundation/ast.hpp"
 #include "foundation/code_standard.hpp"
 #include "foundation/diagnostic.hpp"
+#include "foundation/fsm.hpp"
 #include "foundation/project.hpp"
 #include "foundation/sema.hpp"
 
@@ -53,6 +54,9 @@ enum class FormatMode {
                                   const std::filesystem::path &output);
 [[nodiscard]] int emitMetadataFile(const std::filesystem::path &source,
                                    const std::filesystem::path &output);
+[[nodiscard]] int emitStateMachineDiagramFile(
+    const std::filesystem::path &source, const std::filesystem::path &output,
+    const std::optional<std::string> &machine, StateMachineDiagramFormat format);
 [[nodiscard]] int emitDocumentationFile(const std::filesystem::path &source,
                                         const std::filesystem::path &output);
 [[nodiscard]] int emitApplicationPlanFile(const std::filesystem::path &source,

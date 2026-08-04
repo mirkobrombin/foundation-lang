@@ -495,6 +495,7 @@ struct EnumDeclaration {
     std::string packageName;
     std::vector<AttributeApplication> attributes;
     bool stateMachine{};
+    bool generated{};
 };
 
 struct AttributeDeclaration {

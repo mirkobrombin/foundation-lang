@@ -3,6 +3,7 @@
 #include "foundation/diagnostic.hpp"
 #include "foundation/documentation.hpp"
 #include "foundation/driver.hpp"
+#include "foundation/fsm.hpp"
 #include "foundation/lexer.hpp"
 #include "foundation/lower.hpp"
 #include "foundation/metadata.hpp"
@@ -2273,6 +2274,90 @@ void openAPIGenerationUsesValidatedRouteGraph() {
            "OpenAPI emission carries explicit responses");
 }
 
+void stateMachineDiagramsUseTypedTransitionMetadata() {
+    constexpr std::string_view source = R"(
+state_machine Order {
+    state Draft
+    state Submitted
+    state Paid
+    state Cancelled
+
+    on Submit from Draft to Submitted
+    on Pay from Submitted to Paid
+    on Cancel from Draft, Submitted to Cancelled
+}
+
+fn main() i32 {
+    0
+}
+)";
+    const auto checked = check(source);
+    expect(!checked.diagnostics.hasErrors(), "state-machine diagram fixture is valid");
+    if (!checked.fir.has_value()) {
+        expect(false, "state-machine diagram fixture lowers to FIR");
+        return;
+    }
+
+    foundation::Diagnostics firstDiagnostics;
+    foundation::Diagnostics secondDiagnostics;
+    const auto first = foundation::emitStateMachineDiagram(
+        *checked.fir, firstDiagnostics, std::string("Order"),
+        foundation::StateMachineDiagramFormat::Mermaid);
+    const auto second = foundation::emitStateMachineDiagram(
+        *checked.fir, secondDiagnostics, std::nullopt,
+        foundation::StateMachineDiagramFormat::Mermaid);
+    expect(!firstDiagnostics.hasErrors() && !secondDiagnostics.hasErrors(),
+           "one state machine can be selected explicitly or by default");
+    expect(first == second, "state-machine diagram emission is deterministic");
+    expect(first == "stateDiagram-v2\n"
+                    "    Draft --> Cancelled\n"
+                    "    Draft --> Submitted\n"
+                    "    Submitted --> Cancelled\n"
+                    "    Submitted --> Paid\n",
+           "Mermaid transitions are sorted and complete");
+
+    foundation::Diagnostics graphvizDiagnostics;
+    const auto graphviz = foundation::emitStateMachineDiagram(
+        *checked.fir, graphvizDiagnostics, std::string("Order"),
+        foundation::StateMachineDiagramFormat::Graphviz);
+    expect(!graphvizDiagnostics.hasErrors() &&
+               graphviz.find("digraph FSM {\n") == 0 &&
+               graphviz.find("Draft -> Submitted;") != std::string::npos &&
+               graphviz.ends_with("}\n"),
+           "Graphviz emission uses the same typed transition graph");
+
+    foundation::Diagnostics missingDiagnostics;
+    const auto missing = foundation::emitStateMachineDiagram(
+        *checked.fir, missingDiagnostics, std::string("Missing"),
+        foundation::StateMachineDiagramFormat::Mermaid);
+    expect(missing.empty() && hasCode(missingDiagnostics, "FDN2422"),
+           "unknown state-machine selection has a stable diagnostic");
+
+    constexpr std::string_view multipleSource = R"(
+state_machine First {
+    state Idle
+}
+
+state_machine Second {
+    state Idle
+}
+
+fn main() i32 {
+    0
+}
+)";
+    const auto multiple = check(multipleSource);
+    expect(multiple.fir.has_value(), "multiple state machines lower to FIR");
+    if (multiple.fir.has_value()) {
+        foundation::Diagnostics ambiguousDiagnostics;
+        const auto ambiguous = foundation::emitStateMachineDiagram(
+            *multiple.fir, ambiguousDiagnostics, std::nullopt,
+            foundation::StateMachineDiagramFormat::Mermaid);
+        expect(ambiguous.empty() && hasCode(ambiguousDiagnostics, "FDN2421"),
+               "multiple state machines require an explicit selection");
+    }
+}
+
 void applicationHostEmitsTypedFoundationSource() {
     const auto source = std::filesystem::path(FOUNDATION_TEST_SOURCE_DIR) /
                         "examples/services";
@@ -2502,6 +2587,7 @@ int main() {
     servicesAndActionsLowerToStaticApplicationMetadata();
     applicationPlanValidatesStaticDependencyGraph();
     openAPIGenerationUsesValidatedRouteGraph();
+    stateMachineDiagramsUseTypedTransitionMetadata();
     applicationHostEmitsTypedFoundationSource();
     projectDiagnosticsRetainTheirSource();
     standardLibrarySourceIsLoadedOnce();

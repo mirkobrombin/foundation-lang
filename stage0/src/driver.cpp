@@ -751,6 +751,28 @@ int emitMetadataFile(const std::filesystem::path &source, const std::filesystem:
     return writeFile(output, compilation.generatedMetadata) ? 0 : 1;
 }
 
+int emitStateMachineDiagramFile(const std::filesystem::path &source,
+                                const std::filesystem::path &output,
+                                const std::optional<std::string> &machine,
+                                StateMachineDiagramFormat format) {
+    auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false});
+    if (!analysis.semantic.has_value()) {
+        Compilation result;
+        result.sources = std::move(analysis.sources);
+        result.diagnostics = std::move(analysis.diagnostics);
+        return report(source, result);
+    }
+    const auto fir = lower(analysis.program, *analysis.semantic);
+    const auto generated = emitStateMachineDiagram(fir, analysis.diagnostics, machine, format);
+    Compilation result;
+    result.sources = std::move(analysis.sources);
+    result.diagnostics = std::move(analysis.diagnostics);
+    if (const auto status = report(source, result); status != 0) {
+        return status;
+    }
+    return writeFile(output, generated) ? 0 : 1;
+}
+
 int emitDocumentationFile(const std::filesystem::path &source,
                           const std::filesystem::path &output) {
     if (output.extension() != ".md") {

@@ -1,0 +1,8 @@
+digraph FSM {
+    rankdir=LR;
+    node [shape=box style=rounded];
+    Draft -> Cancelled;
+    Draft -> Submitted;
+    Submitted -> Cancelled;
+    Submitted -> Paid;
+}

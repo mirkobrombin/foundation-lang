@@ -20,6 +20,8 @@ void printUsage(std::ostream &output) {
            << "  foundationc emit-c <source-or-project> -o <output.c>\n"
            << "  foundationc emit-c-header <source-or-project> -o <output.h>\n"
            << "  foundationc emit-metadata <source-or-project> -o <output.json>\n"
+           << "  foundationc emit-fsm <source-or-project> -o <output>"
+              " --format <mermaid|graphviz> [--machine <name>]\n"
            << "  foundationc documentation <source-or-project> -o <output.md>\n"
            << "  foundationc emit-app-plan <source-or-project> -o <output.json>\n"
            << "  foundationc emit-openapi <source-or-project> -o <output.json>"
@@ -55,6 +57,37 @@ bool parseOpenAPIArguments(int argc, char **argv, std::optional<std::string> &ti
         }
     }
     return true;
+}
+
+bool parseStateMachineArguments(int argc, char **argv,
+                                std::optional<std::string> &machine,
+                                foundation::StateMachineDiagramFormat &format) {
+    if (argc < 7 || std::string_view(argv[3]) != "-o") {
+        return false;
+    }
+    auto formatSeen = false;
+    for (auto index = 5; index < argc; index += 2) {
+        if (index + 1 >= argc) {
+            return false;
+        }
+        const std::string_view option = argv[index];
+        const std::string_view value = argv[index + 1];
+        if (option == "--machine" && !machine.has_value()) {
+            machine = value;
+        } else if (option == "--format" && !formatSeen) {
+            if (value == "mermaid") {
+                format = foundation::StateMachineDiagramFormat::Mermaid;
+            } else if (value == "graphviz") {
+                format = foundation::StateMachineDiagramFormat::Graphviz;
+            } else {
+                return false;
+            }
+            formatSeen = true;
+        } else {
+            return false;
+        }
+    }
+    return formatSeen;
 }
 
 bool parseNativeArguments(int argc, char **argv, int start,
@@ -151,6 +184,17 @@ int main(int argc, char **argv) {
         if (command == "emit-metadata" && outputArgumentsAreValid(argc, argv)) {
             return foundation::emitMetadataFile(std::filesystem::path(argv[2]),
                                                 std::filesystem::path(argv[4]));
+        }
+        if (command == "emit-fsm") {
+            std::optional<std::string> machine;
+            auto format = foundation::StateMachineDiagramFormat::Mermaid;
+            if (!parseStateMachineArguments(argc, argv, machine, format)) {
+                printUsage(std::cerr);
+                return 2;
+            }
+            return foundation::emitStateMachineDiagramFile(
+                std::filesystem::path(argv[2]), std::filesystem::path(argv[4]), machine,
+                format);
         }
         if (command == "documentation" && outputArgumentsAreValid(argc, argv)) {
             return foundation::emitDocumentationFile(std::filesystem::path(argv[2]),

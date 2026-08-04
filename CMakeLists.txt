@@ -43,6 +43,7 @@ add_library(foundation_compiler STATIC
     stage0/src/documentation.cpp
     stage0/src/driver.cpp
     stage0/src/formatter.cpp
+    stage0/src/fsm.cpp
     stage0/src/language_service.cpp
     stage0/src/lexer.cpp
     stage0/src/lint.cpp
@@ -270,6 +271,11 @@ if(FOUNDATION_BUILD_FUZZERS)
     configure_file(
         tests/fuzz/corpus/select-timeout.fn
         "${FOUNDATION_FUZZ_CORPUS_DIR}/select-timeout.fn"
+        COPYONLY
+    )
+    configure_file(
+        tests/cases/accept/state-machine.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/state-machine.fn"
         COPYONLY
     )
 endif()
@@ -1067,6 +1073,38 @@ if(BUILD_TESTING)
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/state-machine.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/state-machine-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME tooling.fsm.cli
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/state-machine
+            -DEXPECTED_MERMAID=${CMAKE_CURRENT_SOURCE_DIR}/examples/state-machine/expected.mmd
+            -DEXPECTED_GRAPHVIZ=${CMAKE_CURRENT_SOURCE_DIR}/examples/state-machine/expected.dot
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/fsm-test
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-fsm.cmake
+    )
+    add_test(
+        NAME stage0.run.example-state-machine
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/state-machine
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/state-machine/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.example-state-machine-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/state-machine
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/example-state-machine.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/example-state-machine-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/state-machine/expected.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
