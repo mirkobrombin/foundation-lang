@@ -1,0 +1,862 @@
+package std.cpio
+
+import std.bytes
+import std.fs
+import std.text
+
+// Classifies malformed archives, exceeded limits, and writer failures.
+enum Error {
+    // The reader or writer has already released its state.
+    Closed
+
+    // The reader consumed the mandatory trailer.
+    End
+
+    // A configured resource limit is zero or otherwise unusable.
+    InvalidLimit
+
+    // File permissions contain unsupported mode bits.
+    InvalidPermissions
+
+    // An entry does not start with the newc magic value.
+    InvalidMagic
+
+    // A fixed-width header field contains a non-hexadecimal digit.
+    InvalidHex
+
+    // An entry name is empty, absolute, or escapes its archive root.
+    InvalidName
+
+    // An entry name is missing its single terminating zero byte.
+    InvalidNameTerminator
+
+    // An entry name is not valid UTF-8.
+    InvalidUTF8
+
+    // An encoded entry name exceeds the configured bound.
+    NameTooLarge
+
+    // One entry payload exceeds the configured bound.
+    FileTooLarge
+
+    // Combined entry payloads exceed the configured bound.
+    TotalTooLarge
+
+    // The archive contains more entries than permitted.
+    TooManyEntries
+
+    // Encoded output would exceed the complete archive bound.
+    ArchiveTooLarge
+
+    // Input ended without a mandatory trailer entry.
+    MissingTrailer
+
+    // Input ended before the current entry was complete.
+    UnexpectedEnd
+
+    // A filesystem entry kind cannot be represented safely.
+    UnsupportedType
+
+    // A confined filesystem operation failed.
+    Filesystem(error fs.Error)
+}
+
+// Bounds archive parsing before any entry-owned allocation occurs.
+struct ReaderLimits {
+    // Maximum encoded name size, including its terminating zero byte.
+    MaxNameSize u64
+
+    // Maximum data size accepted for one entry.
+    MaxFileSize u64
+
+    // Maximum combined data size accepted across non-trailer entries.
+    MaxTotalSize u64
+
+    // Maximum number of non-trailer entries.
+    MaxEntries u64
+}
+
+// Bounds writer input and complete encoded archive size.
+struct WriterLimits {
+    // Maximum encoded name size, including its terminator and the 11-byte
+    // mandatory trailer name.
+    MaxNameSize u64
+
+    // Maximum data size accepted for one entry.
+    MaxFileSize u64
+
+    // Maximum combined data size accepted across non-trailer entries.
+    MaxTotalSize u64
+
+    // Maximum non-trailer entries, capped at 4,294,967,294 by the inode field.
+    MaxEntries u64
+
+    // Maximum complete archive size, including the 124-byte trailer.
+    MaxArchiveSize u64
+}
+
+// Configures stable ownership metadata and writer limits.
+struct WriterOptions {
+    // User identifier stored on every non-trailer entry.
+    UID u32
+
+    // Group identifier stored on every non-trailer entry.
+    GID u32
+
+    // Unix modification timestamp stored on every entry.
+    MTime u32
+
+    // Resource limits enforced before each archive mutation.
+    Limits WriterLimits
+}
+
+// Owns one decoded CPIO newc entry and an independent copy of its data.
+struct Entry {
+    // Canonical relative archive path.
+    Name String
+
+    // Complete newc mode including file kind and permissions.
+    Mode u32
+
+    // Stored user identifier.
+    UID u32
+
+    // Stored group identifier.
+    GID u32
+
+    // Stored hard-link count.
+    NLink u32
+
+    // Stored Unix modification timestamp.
+    MTime u32
+
+    // Decoded payload length.
+    FileSize u32
+
+    // Independent owned payload bytes.
+    Data own bytes.Bytes
+}
+
+// Reads bounded CPIO newc entries from owned immutable bytes.
+struct Reader {
+    archive own bytes.Bytes
+    cursor u64
+    totalSize u64
+    entries u64
+    limits ReaderLimits
+    done bool
+
+    // Returns the next entry or End after consuming the mandatory trailer.
+    fn Next(&self) Result<own Entry, Error> {
+        if self.done return .Err(.End)
+
+        const archiveLength = self.archive.Len() else error {
+            discard error
+            return .Err(.Closed)
+        }
+        if self.cursor == archiveLength return .Err(.MissingTrailer)
+        if !fits(archiveLength, self.cursor, 110) return .Err(.UnexpectedEnd)
+        if !matchesMagic(self.archive, self.cursor) return .Err(.InvalidMagic)
+
+        const mode = readHex8(self.archive, self.cursor + 14) else error {
+            return .Err(error)
+        }
+        const uid = readHex8(self.archive, self.cursor + 22) else error {
+            return .Err(error)
+        }
+        const gid = readHex8(self.archive, self.cursor + 30) else error {
+            return .Err(error)
+        }
+        const nlink = readHex8(self.archive, self.cursor + 38) else error {
+            return .Err(error)
+        }
+        const mtime = readHex8(self.archive, self.cursor + 46) else error {
+            return .Err(error)
+        }
+        const fileSize = readHex8(self.archive, self.cursor + 54) else error {
+            return .Err(error)
+        }
+        const nameSize = readHex8(self.archive, self.cursor + 94) else error {
+            return .Err(error)
+        }
+
+        const encodedNameSize = u64.From(nameSize)
+        const encodedFileSize = u64.From(fileSize)
+        if encodedNameSize == 0 return .Err(.InvalidNameTerminator)
+        if encodedNameSize > self.limits.MaxNameSize return .Err(.NameTooLarge)
+        if encodedFileSize > self.limits.MaxFileSize return .Err(.FileTooLarge)
+        if self.totalSize > self.limits.MaxTotalSize ||
+            encodedFileSize > self.limits.MaxTotalSize - self.totalSize {
+            return .Err(.TotalTooLarge)
+        }
+
+        const nameStart = self.cursor + 110
+        if !fits(archiveLength, nameStart, encodedNameSize) {
+            return .Err(.UnexpectedEnd)
+        }
+        const nameEnd = nameStart + encodedNameSize
+        const terminator = self.archive.At(nameEnd - 1) else error {
+            discard error
+            return .Err(.UnexpectedEnd)
+        }
+        if terminator != 0 return .Err(.InvalidNameTerminator)
+        var nameOffset = nameStart
+        while nameOffset + 1 < nameEnd {
+            const value = self.archive.At(nameOffset) else error {
+                discard error
+                return .Err(.UnexpectedEnd)
+            }
+            if value == 0 return .Err(.InvalidNameTerminator)
+            nameOffset = nameOffset + 1
+        }
+
+        const nameBytes = self.archive.Slice(
+            nameStart,
+            nameEnd - 1
+        ) else error {
+            discard error
+            return .Err(.UnexpectedEnd)
+        }
+        const name = nameBytes.Text() else error {
+            discard error
+            return .Err(.InvalidUTF8)
+        }
+        if text.IsEmpty(name) return .Err(.InvalidName)
+
+        const dataStart = aligned4(nameEnd)
+        if dataStart > archiveLength return .Err(.UnexpectedEnd)
+        if text.Equal(name, "TRAILER!!!") {
+            self.cursor = dataStart
+            self.done = true
+            return .Err(.End)
+        }
+        if self.entries >= self.limits.MaxEntries return .Err(.TooManyEntries)
+        if !fits(archiveLength, dataStart, encodedFileSize) {
+            return .Err(.UnexpectedEnd)
+        }
+        const dataEnd = dataStart + encodedFileSize
+        const next = aligned4(dataEnd)
+        if next > archiveLength return .Err(.UnexpectedEnd)
+        const data = self.archive.Slice(dataStart, dataEnd) else error {
+            discard error
+            return .Err(.UnexpectedEnd)
+        }
+
+        self.cursor = next
+        self.totalSize = self.totalSize + encodedFileSize
+        self.entries = self.entries + 1
+        .Ok(own Entry {
+            Name = name
+            Mode = mode
+            UID = uid
+            GID = gid
+            NLink = nlink
+            MTime = mtime
+            FileSize = fileSize
+            Data = data
+        })
+    }
+}
+
+// Writes bounded CPIO newc entries into an owned binary builder.
+struct Writer {
+    builder own bytes.Builder
+    inode u32
+    uid u32
+    gid u32
+    mtime u32
+    entries u64
+    totalSize u64
+    limits WriterLimits
+
+    // Adds one directory using the supplied portable permission bits.
+    fn AddDir(&self, name String, permissions u32) Result<void, Error> {
+        if permissions > 511 return .Err(.InvalidPermissions)
+        self.add(name, 16384 + permissions, 2, bytes.FromText(""))
+    }
+
+    // Adds one regular file and copies its complete byte sequence.
+    fn AddFile(
+        &self,
+        name String,
+        permissions u32,
+        data bytes.Bytes
+    ) Result<void, Error> {
+        if permissions > 511 return .Err(.InvalidPermissions)
+        self.add(name, 32768 + permissions, 1, data)
+    }
+
+    fn add(
+        &self,
+        name String,
+        mode u32,
+        links u32,
+        data bytes.Bytes
+    ) Result<void, Error> {
+        if !validName(name) return .Err(.InvalidName)
+        const nameLength = text.ByteLen(name)
+        if nameLength >= self.limits.MaxNameSize return .Err(.NameTooLarge)
+        const nameSize = nameLength + 1
+        const dataSize = data.Len() else error {
+            discard error
+            return .Err(.Closed)
+        }
+        if dataSize > self.limits.MaxFileSize return .Err(.FileTooLarge)
+        if self.totalSize > self.limits.MaxTotalSize ||
+            dataSize > self.limits.MaxTotalSize - self.totalSize {
+            return .Err(.TotalTooLarge)
+        }
+        if self.entries >= self.limits.MaxEntries return .Err(.TooManyEntries)
+
+        const encodedSize = entrySize(nameSize, dataSize)
+        const currentSize = self.builder.Len() else error {
+            discard error
+            return .Err(.Closed)
+        }
+        if currentSize > self.limits.MaxArchiveSize ||
+            encodedSize > self.limits.MaxArchiveSize - currentSize {
+            return .Err(.ArchiveTooLarge)
+        }
+        const fileSize = u32.From(dataSize) else error {
+            discard error
+            return .Err(.FileTooLarge)
+        }
+        const encodedNameSize = u32.From(nameSize) else error {
+            discard error
+            return .Err(.NameTooLarge)
+        }
+        const inode = self.inode
+        const uid = self.uid
+        const gid = self.gid
+        const mtime = self.mtime
+
+        writeHeader(
+            &self.builder,
+            inode,
+            mode,
+            uid,
+            gid,
+            links,
+            mtime,
+            fileSize,
+            encodedNameSize
+        ) else error {
+            return .Err(error)
+        }
+        writeText(&self.builder, name) else error {
+            return .Err(error)
+        }
+        writeByte(&self.builder, 0) else error {
+            return .Err(error)
+        }
+        writePadding(&self.builder, 110 + nameSize) else error {
+            return .Err(error)
+        }
+        writeBytes(&self.builder, data) else error {
+            return .Err(error)
+        }
+        writePadding(&self.builder, dataSize) else error {
+            return .Err(error)
+        }
+
+        self.inode = self.inode + 1
+        self.entries = self.entries + 1
+        self.totalSize = self.totalSize + dataSize
+        .Ok
+    }
+
+    // Consumes the writer, appends its trailer, and returns the archive.
+    fn Finish($self) Result<own bytes.Bytes, Error> {
+        const Writer {
+            builder inode uid gid mtime entries totalSize limits
+        } = self
+        discard uid
+        discard gid
+        discard entries
+        discard totalSize
+        var output = builder
+        const trailer = "TRAILER!!!"
+        const nameSize = text.ByteLen(trailer) + 1
+        const encodedSize = entrySize(nameSize, 0)
+        const currentSize = output.Len() else error {
+            discard error
+            return .Err(.Closed)
+        }
+        if currentSize > limits.MaxArchiveSize ||
+            encodedSize > limits.MaxArchiveSize - currentSize {
+            return .Err(.ArchiveTooLarge)
+        }
+        const encodedNameSize = u32.From(nameSize) else error {
+            discard error
+            return .Err(.NameTooLarge)
+        }
+        writeHeader(
+            &output,
+            inode,
+            0,
+            0,
+            0,
+            1,
+            mtime,
+            0,
+            encodedNameSize
+        ) else error {
+            return .Err(error)
+        }
+        writeText(&output, trailer) else error {
+            return .Err(error)
+        }
+        writeByte(&output, 0) else error {
+            return .Err(error)
+        }
+        writePadding(&output, 110 + nameSize) else error {
+            return .Err(error)
+        }
+        const archive = output.Finish() else error {
+            return .Err(byteWriteError(error))
+        }
+        .Ok(archive)
+    }
+}
+
+// Returns the default reader safety limits.
+fn DefaultReaderLimits() ReaderLimits {
+    ReaderLimits {
+        MaxNameSize = 4096
+        MaxFileSize = 67108864
+        MaxTotalSize = 536870912
+        MaxEntries = 100000
+    }
+}
+
+// Returns writer limits with an additional bound on complete encoded output.
+fn DefaultWriterLimits() WriterLimits {
+    WriterLimits {
+        MaxNameSize = 4096
+        MaxFileSize = 67108864
+        MaxTotalSize = 536870912
+        MaxEntries = 100000
+        MaxArchiveSize = 1073741824
+    }
+}
+
+// Returns deterministic zero ownership metadata and default writer limits.
+fn DefaultWriterOptions() WriterOptions {
+    WriterOptions {
+        UID = 0
+        GID = 0
+        MTime = 0
+        Limits = DefaultWriterLimits()
+    }
+}
+
+// Creates a reader with default safety limits.
+fn NewReader($archive own bytes.Bytes) Result<own Reader, Error> {
+    NewReaderWithLimits($archive, DefaultReaderLimits())
+}
+
+// Creates a reader with explicit non-zero resource limits.
+fn NewReaderWithLimits(
+    $archive own bytes.Bytes,
+    limits ReaderLimits
+) Result<own Reader, Error> {
+    if !validReaderLimits(limits) {
+        discard archive
+        return .Err(.InvalidLimit)
+    }
+    .Ok(own Reader {
+        archive = archive
+        cursor = 0
+        totalSize = 0
+        entries = 0
+        limits = limits
+        done = false
+    })
+}
+
+// Creates an in-memory newc writer with deterministic default metadata.
+fn NewWriter() Result<own Writer, Error> {
+    NewWriterWithOptions(DefaultWriterOptions())
+}
+
+// Creates an in-memory newc writer with explicit metadata and limits.
+fn NewWriterWithOptions(options WriterOptions) Result<own Writer, Error> {
+    if !validWriterLimits(options.Limits) return .Err(.InvalidLimit)
+    const opened = bytes.NewBuilder(options.Limits.MaxArchiveSize) else error {
+        discard error
+        return .Err(.InvalidLimit)
+    }
+    .Ok(own Writer {
+        builder = opened
+        inode = 1
+        uid = options.UID
+        gid = options.GID
+        mtime = options.MTime
+        entries = 0
+        totalSize = 0
+        limits = options.Limits
+    })
+}
+
+// Packs one directory tree in deterministic relative-path order.
+fn PackDir(path String) Result<own bytes.Bytes, Error> {
+    PackDirWithOptions(path, DefaultWriterOptions())
+}
+
+// Packs one directory tree with explicit archive metadata and resource limits.
+fn PackDirWithOptions(
+    path String,
+    options WriterOptions
+) Result<own bytes.Bytes, Error> {
+    const openedWriter = NewWriterWithOptions(options) else error {
+        return .Err(error)
+    }
+    var writer = openedWriter
+    const openedTree = fs.OpenTree(
+        path,
+        options.Limits.MaxEntries,
+        options.Limits.MaxNameSize - 1
+    ) else error {
+        return .Err(.Filesystem(error))
+    }
+    var tree = openedTree
+    var running = true
+    while running {
+        const next = tree.Next() else error {
+            discard tree.Close()
+            return .Err(.Filesystem(error))
+        }
+        match next {
+            None: { running = false }
+            Some(entry): {
+                match entry.Kind {
+                    Directory: {
+                        writer.AddDir(entry.Path, 493) else error {
+                            discard tree.Close()
+                            return .Err(error)
+                        }
+                    }
+                    File: {
+                        const data = tree.ReadFile(
+                            entry.Path,
+                            options.Limits.MaxFileSize
+                        ) else error {
+                            discard tree.Close()
+                            return .Err(.Filesystem(error))
+                        }
+                        const permissions u32 = 493 if entry.Executable else 420
+                        writer.AddFile(
+                            entry.Path,
+                            permissions,
+                            data
+                        ) else error {
+                            discard tree.Close()
+                            return .Err(error)
+                        }
+                    }
+                    SymbolicLink: {
+                        discard tree.Close()
+                        return .Err(.UnsupportedType)
+                    }
+                    Other: {
+                        discard tree.Close()
+                        return .Err(.UnsupportedType)
+                    }
+                }
+            }
+        }
+    }
+    const closed = tree.Close() else error {
+        return .Err(.Filesystem(error))
+    }
+    discard closed
+    $writer.Finish()
+}
+
+// Extracts regular files and directories beneath one secure destination root.
+fn UnpackToDir(
+    $archive own bytes.Bytes,
+    destination String
+) Result<void, Error> {
+    const openedReader = NewReader($archive) else error {
+        return .Err(error)
+    }
+    var reader = openedReader
+    const openedRoot = fs.OpenRoot(destination) else error {
+        return .Err(.Filesystem(error))
+    }
+    var root = openedRoot
+    var running = true
+    while running {
+        const next = reader.Next()
+        match next {
+            Ok(entry): {
+                if !validName(entry.Name) {
+                    return .Err(.InvalidName)
+                }
+                const kind = entry.Mode / 4096 % 16
+                if kind == 4 {
+                    root.CreateDirectory(entry.Name) else error {
+                        return .Err(.Filesystem(error))
+                    }
+                } else {
+                    if kind == 8 {
+                        root.WriteFile(
+                            entry.Name,
+                            entry.Data,
+                            entry.Mode % 512
+                        ) else error {
+                            return .Err(.Filesystem(error))
+                        }
+                    } else {
+                        return .Err(.UnsupportedType)
+                    }
+                }
+                continue
+            }
+            Err(error): {
+                match error {
+                    End: { running = false }
+                    Closed: { return .Err(.Closed) }
+                    InvalidLimit: { return .Err(.InvalidLimit) }
+                    InvalidPermissions: { return .Err(.InvalidPermissions) }
+                    InvalidMagic: { return .Err(.InvalidMagic) }
+                    InvalidHex: { return .Err(.InvalidHex) }
+                    InvalidName: { return .Err(.InvalidName) }
+                    InvalidNameTerminator: {
+                        return .Err(.InvalidNameTerminator)
+                    }
+                    InvalidUTF8: { return .Err(.InvalidUTF8) }
+                    NameTooLarge: { return .Err(.NameTooLarge) }
+                    FileTooLarge: { return .Err(.FileTooLarge) }
+                    TotalTooLarge: { return .Err(.TotalTooLarge) }
+                    TooManyEntries: { return .Err(.TooManyEntries) }
+                    ArchiveTooLarge: { return .Err(.ArchiveTooLarge) }
+                    MissingTrailer: { return .Err(.MissingTrailer) }
+                    UnexpectedEnd: { return .Err(.UnexpectedEnd) }
+                    UnsupportedType: { return .Err(.UnsupportedType) }
+                    Filesystem(value): { return .Err(.Filesystem(value)) }
+                }
+            }
+        }
+    }
+    const closed = root.Close() else error {
+        return .Err(.Filesystem(error))
+    }
+    discard closed
+    .Ok
+}
+
+fn validReaderLimits(limits ReaderLimits) bool {
+    limits.MaxNameSize > 0 && limits.MaxFileSize > 0 &&
+        limits.MaxTotalSize > 0 && limits.MaxEntries > 0
+}
+
+fn validWriterLimits(limits WriterLimits) bool {
+    validReaderLimits(ReaderLimits {
+        MaxNameSize = limits.MaxNameSize
+        MaxFileSize = limits.MaxFileSize
+        MaxTotalSize = limits.MaxTotalSize
+        MaxEntries = limits.MaxEntries
+    }) && limits.MaxNameSize >= 11 && limits.MaxEntries <= 4294967294 &&
+        limits.MaxArchiveSize >= 124
+}
+
+fn validName(value String) bool {
+    const length = text.ByteLen(value)
+    if length == 0 return false
+    if text.StartsWith(value, "/") || text.EndsWith(value, "/") return false
+    if text.StartsWith(value, "./") || text.Equal(value, ".") return false
+    if text.StartsWith(value, "../") || text.Equal(value, "..") return false
+
+    var offset u64 = 0
+    var segmentLength u64 = 0
+    while offset < length {
+        const valueByte = text.ByteAt(value, offset) else error {
+            discard error
+            return false
+        }
+        if valueByte == 0 || valueByte == 92 return false
+        if valueByte == 47 {
+            if segmentLength == 0 return false
+            segmentLength = 0
+        } else {
+            segmentLength = segmentLength + 1
+        }
+        offset = offset + 1
+    }
+    if segmentLength == 0 return false
+
+    var start u64 = 0
+    offset = 0
+    while offset <= length {
+        const atEnd = offset == length
+        var separator = false
+        if !atEnd {
+            const valueByte = text.ByteAt(value, offset) else error {
+                discard error
+                return false
+            }
+            separator = valueByte == 47
+        }
+        if atEnd || separator {
+            const segment = text.Slice(value, start, offset) else error {
+                discard error
+                return false
+            }
+            const forbidden = text.Equal(segment, ".") ||
+                text.Equal(segment, "..")
+            if forbidden return false
+            start = offset + 1
+        }
+        offset = offset + 1
+    }
+    true
+}
+
+fn matchesMagic(value bytes.Bytes, start u64) bool {
+    expectedByte(value, start, 48) &&
+        expectedByte(value, start + 1, 55) &&
+        expectedByte(value, start + 2, 48) &&
+        expectedByte(value, start + 3, 55) &&
+        expectedByte(value, start + 4, 48) &&
+        expectedByte(value, start + 5, 49)
+}
+
+fn expectedByte(value bytes.Bytes, index u64, expected u64) bool {
+    const actual = value.At(index) else error {
+        discard error
+        return false
+    }
+    actual == expected
+}
+
+fn readHex8(value bytes.Bytes, start u64) Result<u32, Error> {
+    var result u64 = 0
+    var offset u64 = 0
+    while offset < 8 {
+        const encoded = value.At(start + offset) else error {
+            discard error
+            return .Err(.UnexpectedEnd)
+        }
+        const digit = hexDigit(encoded) else error {
+            return .Err(error)
+        }
+        result = result * 16 + digit
+        offset = offset + 1
+    }
+    const converted = u32.From(result) else error {
+        discard error
+        panic("cpio hex parser width invariant failed")
+    }
+    .Ok(converted)
+}
+
+fn hexDigit(value u64) Result<u64, Error> {
+    if value >= 48 && value <= 57 return .Ok(value - 48)
+    if value >= 65 && value <= 70 return .Ok(value - 55)
+    if value >= 97 && value <= 102 return .Ok(value - 87)
+    .Err(.InvalidHex)
+}
+
+fn writeHeader(
+    &builder bytes.Builder,
+    inode u32,
+    mode u32,
+    uid u32,
+    gid u32,
+    links u32,
+    mtime u32,
+    fileSize u32,
+    nameSize u32
+) Result<void, Error> {
+    writeText(&builder, "070701") else error {
+        return .Err(error)
+    }
+    writeHex8(&builder, inode) else error { return .Err(error) }
+    writeHex8(&builder, mode) else error { return .Err(error) }
+    writeHex8(&builder, uid) else error { return .Err(error) }
+    writeHex8(&builder, gid) else error { return .Err(error) }
+    writeHex8(&builder, links) else error { return .Err(error) }
+    writeHex8(&builder, mtime) else error { return .Err(error) }
+    writeHex8(&builder, fileSize) else error { return .Err(error) }
+    writeHex8(&builder, 0) else error { return .Err(error) }
+    writeHex8(&builder, 0) else error { return .Err(error) }
+    writeHex8(&builder, 0) else error { return .Err(error) }
+    writeHex8(&builder, 0) else error { return .Err(error) }
+    writeHex8(&builder, nameSize) else error { return .Err(error) }
+    writeHex8(&builder, 0) else error { return .Err(error) }
+    .Ok
+}
+
+fn writeHex8(&builder bytes.Builder, value u32) Result<void, Error> {
+    var divisor u64 = 268435456
+    const converted = u64.From(value)
+    while divisor > 0 {
+        const digit = converted / divisor % 16
+        const encoded = digit + 48 if digit < 10 else digit + 55
+        writeByte(&builder, encoded) else error {
+            return .Err(error)
+        }
+        divisor = divisor / 16
+    }
+    .Ok
+}
+
+fn writeText(&builder bytes.Builder, value String) Result<void, Error> {
+    const encoded = bytes.FromText(value)
+    writeBytes(&builder, encoded)
+}
+
+fn writeBytes(&builder bytes.Builder, value bytes.Bytes) Result<void, Error> {
+    builder.Write(value) else error {
+        return .Err(byteWriteError(error))
+    }
+    .Ok
+}
+
+fn writeByte(&builder bytes.Builder, value u64) Result<void, Error> {
+    builder.WriteByte(value) else error {
+        return .Err(byteWriteError(error))
+    }
+    .Ok
+}
+
+fn writePadding(&builder bytes.Builder, size u64) Result<void, Error> {
+    var remaining = padding4(size)
+    while remaining > 0 {
+        writeByte(&builder, 0) else error {
+            return .Err(error)
+        }
+        remaining = remaining - 1
+    }
+    .Ok
+}
+
+fn byteWriteError(error bytes.Error) Error {
+    match error {
+        Closed: .Closed
+        TooLarge: .ArchiveTooLarge
+        OutOfBounds: .ArchiveTooLarge
+        InvalidUTF8: .ArchiveTooLarge
+        InvalidEncoding: .ArchiveTooLarge
+    }
+}
+
+fn entrySize(nameSize u64, dataSize u64) u64 {
+    110 + nameSize + padding4(110 + nameSize) + dataSize + padding4(dataSize)
+}
+
+fn padding4(value u64) u64 {
+    const remainder = value % 4
+    if remainder == 0 return 0
+    4 - remainder
+}
+
+fn aligned4(value u64) u64 {
+    value + padding4(value)
+}
+
+fn fits(length u64, start u64, size u64) bool {
+    start <= length && size <= length - start
+}

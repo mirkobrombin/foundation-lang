@@ -1,0 +1,587 @@
+import std.bytes
+import std.cpio
+import std.fs
+import std.text
+
+fn failedWith(
+    $result Result<void, cpio.Error>,
+    expected i32
+) bool {
+    match result {
+        Ok: false
+        Err(error): {
+            match error {
+                InvalidName: expected == 1
+                NameTooLarge: expected == 2
+                FileTooLarge: expected == 3
+                TotalTooLarge: expected == 4
+                TooManyEntries: expected == 5
+                ArchiveTooLarge: expected == 6
+                Closed: expected == 7
+                InvalidPermissions: expected == 8
+                End: false
+                InvalidLimit: false
+                InvalidMagic: false
+                InvalidHex: false
+                InvalidNameTerminator: false
+                InvalidUTF8: false
+                MissingTrailer: false
+                UnexpectedEnd: false
+                UnsupportedType: false
+                Filesystem(error): {
+                    discard error
+                    false
+                }
+            }
+        }
+    }
+}
+
+fn writerFailedWith(
+    $result Result<own cpio.Writer, cpio.Error>,
+    expected i32
+) bool {
+    match result {
+        Ok(writer): {
+            discard writer
+            false
+        }
+        Err(error): errorCode(error) == expected
+    }
+}
+
+fn archiveFailedWith(
+    $result Result<own bytes.Bytes, cpio.Error>,
+    expected i32
+) bool {
+    match result {
+        Ok(archive): {
+            discard archive
+            false
+        }
+        Err(error): errorCode(error) == expected
+    }
+}
+
+fn archiveUnsupported(
+    $result Result<own bytes.Bytes, cpio.Error>
+) bool {
+    match result {
+        Ok(archive): {
+            discard archive
+            false
+        }
+        Err(error): {
+            match error {
+                UnsupportedType: true
+                Closed: false
+                End: false
+                InvalidLimit: false
+                InvalidPermissions: false
+                InvalidMagic: false
+                InvalidHex: false
+                InvalidName: false
+                InvalidNameTerminator: false
+                InvalidUTF8: false
+                NameTooLarge: false
+                FileTooLarge: false
+                TotalTooLarge: false
+                TooManyEntries: false
+                ArchiveTooLarge: false
+                MissingTrailer: false
+                UnexpectedEnd: false
+                Filesystem(value): {
+                    discard value
+                    false
+                }
+            }
+        }
+    }
+}
+
+fn unpackFilesystemFailed(
+    $result Result<void, cpio.Error>
+) bool {
+    match result {
+        Ok: false
+        Err(error): {
+            match error {
+                Filesystem(value): {
+                    discard value
+                    true
+                }
+                Closed: false
+                End: false
+                InvalidLimit: false
+                InvalidPermissions: false
+                InvalidMagic: false
+                InvalidHex: false
+                InvalidName: false
+                InvalidNameTerminator: false
+                InvalidUTF8: false
+                NameTooLarge: false
+                FileTooLarge: false
+                TotalTooLarge: false
+                TooManyEntries: false
+                ArchiveTooLarge: false
+                MissingTrailer: false
+                UnexpectedEnd: false
+                UnsupportedType: false
+            }
+        }
+    }
+}
+
+fn writerOptions(
+    maxNameSize u64,
+    maxFileSize u64,
+    maxTotalSize u64,
+    maxEntries u64,
+    maxArchiveSize u64
+) cpio.WriterOptions {
+    cpio.WriterOptions {
+        UID = 0
+        GID = 0
+        MTime = 0
+        Limits = cpio.WriterLimits {
+            MaxNameSize = maxNameSize
+            MaxFileSize = maxFileSize
+            MaxTotalSize = maxTotalSize
+            MaxEntries = maxEntries
+            MaxArchiveSize = maxArchiveSize
+        }
+    }
+}
+
+fn errorCode(error cpio.Error) i32 {
+    match error {
+        Closed: 1
+        End: 2
+        InvalidLimit: 3
+        InvalidPermissions: 4
+        InvalidMagic: 5
+        InvalidHex: 6
+        InvalidName: 7
+        InvalidNameTerminator: 8
+        InvalidUTF8: 9
+        NameTooLarge: 10
+        FileTooLarge: 11
+        TotalTooLarge: 12
+        TooManyEntries: 13
+        ArchiveTooLarge: 14
+        MissingTrailer: 15
+        UnexpectedEnd: 16
+        UnsupportedType: 17
+        Filesystem(error): {
+            discard error
+            18
+        }
+    }
+}
+
+fn readErrorCode(
+    $archive own bytes.Bytes,
+    limits cpio.ReaderLimits,
+    skip u64
+) i32 {
+    const opened = cpio.NewReaderWithLimits($archive, limits) else error {
+        return errorCode(error)
+    }
+    var reader = opened
+    var index u64 = 0
+    while index < skip {
+        const entry = reader.Next() else error {
+            return errorCode(error)
+        }
+        discard entry
+        index = index + 1
+    }
+    const result = reader.Next()
+    match result {
+        Ok(entry): {
+            discard entry
+            0
+        }
+        Err(error): errorCode(error)
+    }
+}
+
+fn corruptByte(source bytes.Bytes, index u64, value u64) own bytes.Bytes {
+    const length = source.Len() else error {
+        discard error
+        panic("cpio corruption source is closed")
+    }
+    const opened = bytes.NewBuilder(length) else error {
+        discard error
+        panic("cpio corruption builder failed")
+    }
+    var builder = opened
+    const prefix = source.Slice(0, index) else error {
+        discard error
+        panic("cpio corruption prefix failed")
+    }
+    builder.Write(prefix) else error {
+        discard error
+        panic("cpio corruption prefix write failed")
+    }
+    builder.WriteByte(value) else error {
+        discard error
+        panic("cpio corruption byte write failed")
+    }
+    const suffix = source.Slice(index + 1, length) else error {
+        discard error
+        panic("cpio corruption suffix failed")
+    }
+    builder.Write(suffix) else error {
+        discard error
+        panic("cpio corruption suffix write failed")
+    }
+    const result = builder.Finish() else error {
+        discard error
+        panic("cpio corruption finish failed")
+    }
+    result
+}
+
+fn ended($result Result<own cpio.Entry, cpio.Error>) bool {
+    match result {
+        Ok(entry): {
+            discard entry
+            false
+        }
+        Err(error): {
+            match error {
+                End: true
+                Closed: false
+                InvalidLimit: false
+                InvalidPermissions: false
+                InvalidMagic: false
+                InvalidHex: false
+                InvalidName: false
+                InvalidNameTerminator: false
+                InvalidUTF8: false
+                NameTooLarge: false
+                FileTooLarge: false
+                TotalTooLarge: false
+                TooManyEntries: false
+                ArchiveTooLarge: false
+                MissingTrailer: false
+                UnexpectedEnd: false
+                UnsupportedType: false
+                Filesystem(value): {
+                    discard value
+                    false
+                }
+            }
+        }
+    }
+}
+
+fn main(args [String]) i32 {
+    const openedWriter = cpio.NewWriter() else error {
+        discard error
+        return 1
+    }
+    var writer = openedWriter
+
+    writer.AddDir("etc", 493) else error {
+        discard error
+        return 2
+    }
+    const payload = bytes.FromText("foundation\n")
+    writer.AddFile("etc/foundation.conf", 420, payload) else error {
+        discard error
+        return 3
+    }
+    if !failedWith($writer.AddDir("../escape", 493), 1) return 4
+    if !failedWith($writer.AddDir("mode", 512), 8) return 5
+
+    const archive = $writer.Finish() else error {
+        discard error
+        return 6
+    }
+    const encodedArchive = bytes.EncodeBase64(archive) else error {
+        discard error
+        return 7
+    }
+    print(encodedArchive)
+
+    const invalidMagic = corruptByte(archive, 0, 88)
+    if readErrorCode($invalidMagic, cpio.DefaultReaderLimits(), 0) != 5 return 8
+    const invalidHex = corruptByte(archive, 14, 71)
+    if readErrorCode($invalidHex, cpio.DefaultReaderLimits(), 0) != 6 return 9
+    const invalidTerminator = corruptByte(archive, 113, 65)
+    if readErrorCode($invalidTerminator, cpio.DefaultReaderLimits(), 0) != 8 return 10
+    const embeddedZero = corruptByte(archive, 111, 0)
+    if readErrorCode($embeddedZero, cpio.DefaultReaderLimits(), 0) != 8 return 11
+    const invalidUTF8 = corruptByte(archive, 110, 255)
+    if readErrorCode($invalidUTF8, cpio.DefaultReaderLimits(), 0) != 9 return 12
+
+    const shortHeader = archive.Slice(0, 50) else error {
+        discard error
+        return 13
+    }
+    if readErrorCode($shortHeader, cpio.DefaultReaderLimits(), 0) != 16 return 14
+    const missingTrailer = archive.Slice(0, 260) else error {
+        discard error
+        return 15
+    }
+    if readErrorCode($missingTrailer, cpio.DefaultReaderLimits(), 2) != 15 return 16
+
+    const nameLimits = cpio.ReaderLimits {
+        MaxNameSize = 3
+        MaxFileSize = 67108864
+        MaxTotalSize = 536870912
+        MaxEntries = 100000
+    }
+    const nameLimited = archive.Copy() else error {
+        discard error
+        return 17
+    }
+    if readErrorCode($nameLimited, nameLimits, 0) != 10 return 18
+    const fileLimits = cpio.ReaderLimits {
+        MaxNameSize = 4096
+        MaxFileSize = 10
+        MaxTotalSize = 536870912
+        MaxEntries = 100000
+    }
+    const fileLimited = archive.Copy() else error {
+        discard error
+        return 19
+    }
+    if readErrorCode($fileLimited, fileLimits, 1) != 11 return 20
+    const totalLimits = cpio.ReaderLimits {
+        MaxNameSize = 4096
+        MaxFileSize = 67108864
+        MaxTotalSize = 10
+        MaxEntries = 100000
+    }
+    const totalLimited = archive.Copy() else error {
+        discard error
+        return 21
+    }
+    if readErrorCode($totalLimited, totalLimits, 1) != 12 return 22
+    const entryLimits = cpio.ReaderLimits {
+        MaxNameSize = 4096
+        MaxFileSize = 67108864
+        MaxTotalSize = 536870912
+        MaxEntries = 1
+    }
+    const entryLimited = archive.Copy() else error {
+        discard error
+        return 23
+    }
+    if readErrorCode($entryLimited, entryLimits, 1) != 13 return 24
+    const invalidLimits = cpio.ReaderLimits {
+        MaxNameSize = 0
+        MaxFileSize = 1
+        MaxTotalSize = 1
+        MaxEntries = 1
+    }
+    const invalidLimited = archive.Copy() else error {
+        discard error
+        return 25
+    }
+    if readErrorCode($invalidLimited, invalidLimits, 0) != 3 return 26
+
+    if !writerFailedWith(
+        $cpio.NewWriterWithOptions(writerOptions(0, 1, 1, 1, 124)),
+        3
+    ) {
+        return 49
+    }
+    if !writerFailedWith(
+        $cpio.NewWriterWithOptions(writerOptions(1, 1, 1, 1, 123)),
+        3
+    ) {
+        return 50
+    }
+    if !writerFailedWith(
+        $cpio.NewWriterWithOptions(writerOptions(10, 1, 1, 1, 124)),
+        3
+    ) {
+        return 70
+    }
+    if !writerFailedWith(
+        $cpio.NewWriterWithOptions(
+            writerOptions(11, 1, 1, 4294967295, 124)
+        ),
+        3
+    ) {
+        return 71
+    }
+
+    const openedNameWriter = cpio.NewWriterWithOptions(
+        writerOptions(11, 10, 10, 10, 1024)
+    ) else error {
+        discard error
+        return 51
+    }
+    var nameWriter = openedNameWriter
+    if !failedWith($nameWriter.AddDir("longer-name", 493), 2) return 52
+
+    const openedFileWriter = cpio.NewWriterWithOptions(
+        writerOptions(32, 3, 10, 10, 1024)
+    ) else error {
+        discard error
+        return 53
+    }
+    var fileWriter = openedFileWriter
+    if !failedWith($fileWriter.AddFile("file", 420, bytes.FromText("1234")), 3) {
+        return 54
+    }
+
+    const openedTotalWriter = cpio.NewWriterWithOptions(
+        writerOptions(32, 10, 3, 10, 1024)
+    ) else error {
+        discard error
+        return 55
+    }
+    var totalWriter = openedTotalWriter
+    if !failedWith($totalWriter.AddFile("file", 420, bytes.FromText("1234")), 4) {
+        return 56
+    }
+
+    const openedEntryWriter = cpio.NewWriterWithOptions(
+        writerOptions(32, 10, 10, 1, 1024)
+    ) else error {
+        discard error
+        return 57
+    }
+    var entryWriter = openedEntryWriter
+    entryWriter.AddDir("one", 493) else error {
+        discard error
+        return 58
+    }
+    if !failedWith($entryWriter.AddDir("two", 493), 5) return 59
+
+    const openedArchiveWriter = cpio.NewWriterWithOptions(
+        writerOptions(32, 32, 32, 10, 124)
+    ) else error {
+        discard error
+        return 60
+    }
+    var archiveWriter = openedArchiveWriter
+    if !failedWith(
+        $archiveWriter.AddFile("a", 420, bytes.FromText("1234567890123")),
+        6
+    ) {
+        return 61
+    }
+
+    const openedTrailerWriter = cpio.NewWriterWithOptions(
+        writerOptions(32, 32, 32, 10, 124)
+    ) else error {
+        discard error
+        return 62
+    }
+    var trailerWriter = openedTrailerWriter
+    trailerWriter.AddDir("a", 493) else error {
+        discard error
+        return 63
+    }
+    if !archiveFailedWith($trailerWriter.Finish(), 14) return 64
+
+    const openedReader = cpio.NewReader($archive) else error {
+        discard error
+        return 27
+    }
+    var reader = openedReader
+
+    const directory = reader.Next() else error {
+        discard error
+        return 28
+    }
+    if !text.Equal(directory.Name, "etc") return 29
+    if directory.Mode != 16877 || directory.NLink != 2 return 30
+    const directorySize = directory.Data.Len() else error {
+        discard error
+        return 31
+    }
+    if directorySize != 0 return 32
+
+    const file = reader.Next() else error {
+        discard error
+        return 33
+    }
+    if !text.Equal(file.Name, "etc/foundation.conf") return 34
+    if file.Mode != 33188 || file.NLink != 1 || file.FileSize != 11 return 35
+    const content = file.Data.Text() else error {
+        discard error
+        return 36
+    }
+    if !text.Equal(content, "foundation\n") return 37
+
+    const end = reader.Next()
+    if !ended($end) return 38
+    const repeatedEnd = reader.Next()
+    if !ended($repeatedEnd) return 39
+
+    const packed = cpio.PackDir(args[0]) else error {
+        discard error
+        return 40
+    }
+    cpio.UnpackToDir($packed, args[1]) else error {
+        discard error
+        return 41
+    }
+    const openedTree = fs.OpenTree(args[1], 10, 4096) else error {
+        discard error
+        return 42
+    }
+    var tree = openedTree
+    const unpacked = tree.Next() else error {
+        discard error
+        return 43
+    }
+    const unpackedEntry = match unpacked {
+        None: { return 44 }
+        Some(entry): entry
+    }
+    if !text.Equal(unpackedEntry.Path, "lines.jsonl") || unpackedEntry.Size == 0 {
+        return 45
+    }
+    const unpackedBytes = tree.ReadFile(
+        unpackedEntry.Path,
+        unpackedEntry.Size
+    ) else error {
+        discard error
+        return 46
+    }
+    const unpackedText = unpackedBytes.Text() else error {
+        discard error
+        return 47
+    }
+    if !text.Contains(unpackedText, "last") return 48
+    discard tree.Close()
+
+    if len(args) > 3 {
+        if !archiveUnsupported($cpio.PackDir(args[2])) return 65
+        const openedSymlinkWriter = cpio.NewWriter() else error {
+            discard error
+            return 66
+        }
+        var symlinkWriter = openedSymlinkWriter
+        symlinkWriter.AddFile(
+            "link/escaped",
+            420,
+            bytes.FromText("outside")
+        ) else error {
+            discard error
+            return 67
+        }
+        const symlinkArchive = $symlinkWriter.Finish() else error {
+            discard error
+            return 68
+        }
+        if !unpackFilesystemFailed(
+            $cpio.UnpackToDir($symlinkArchive, args[3])
+        ) {
+            return 69
+        }
+    }
+
+    print("cpio filesystem ok")
+    print("cpio ok")
+    0
+}

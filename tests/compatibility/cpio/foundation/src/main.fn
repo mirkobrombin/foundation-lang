@@ -1,0 +1,208 @@
+package test.compatibility.cpio
+
+import std.bytes
+import std.cpio
+import std.format
+import std.text
+
+fn requiredEntry(
+    $result Result<own cpio.Entry, cpio.Error>
+) own cpio.Entry {
+    match result {
+        Ok(entry): entry
+        Err(error): {
+            discard error
+            panic("CPIO compatibility entry missing")
+        }
+    }
+}
+
+fn rejected($result Result<void, cpio.Error>) bool {
+    match result {
+        Ok: false
+        Err(error): {
+            discard error
+            true
+        }
+    }
+}
+
+fn ended($result Result<own cpio.Entry, cpio.Error>) bool {
+    match result {
+        Ok(entry): {
+            discard entry
+            false
+        }
+        Err(error): {
+            match error {
+                End: true
+                Closed: false
+                InvalidLimit: false
+                InvalidPermissions: false
+                InvalidMagic: false
+                InvalidHex: false
+                InvalidName: false
+                InvalidNameTerminator: false
+                InvalidUTF8: false
+                NameTooLarge: false
+                FileTooLarge: false
+                TotalTooLarge: false
+                TooManyEntries: false
+                ArchiveTooLarge: false
+                MissingTrailer: false
+                UnexpectedEnd: false
+                UnsupportedType: false
+                Filesystem(value): {
+                    discard value
+                    false
+                }
+            }
+        }
+    }
+}
+
+fn readerRejected(
+    $archive own bytes.Bytes,
+    limits cpio.ReaderLimits,
+    skip u64
+) bool {
+    const opened = cpio.NewReaderWithLimits($archive, limits) else error {
+        discard error
+        return true
+    }
+    var reader = opened
+    var index u64 = 0
+    while index < skip {
+        const entry = reader.Next() else error {
+            discard error
+            return true
+        }
+        discard entry
+        index = index + 1
+    }
+    const result = reader.Next()
+    match result {
+        Ok(entry): {
+            discard entry
+            false
+        }
+        Err(error): {
+            discard error
+            true
+        }
+    }
+}
+
+fn main() i32 {
+    const options = cpio.WriterOptions {
+        UID = 7
+        GID = 9
+        MTime = 11
+        Limits = cpio.DefaultWriterLimits()
+    }
+    const opened = cpio.NewWriterWithOptions(options) else error {
+        discard error
+        return 1
+    }
+    var writer = opened
+    writer.AddDir("etc", 493) else error {
+        discard error
+        return 2
+    }
+    writer.AddFile(
+        "etc/foundation.conf",
+        420,
+        bytes.FromText("foundation\n")
+    ) else error {
+        discard error
+        return 3
+    }
+    const archive = $writer.Finish() else error {
+        discard error
+        return 4
+    }
+    const encoded = bytes.EncodeBase64(archive) else error {
+        discard error
+        return 5
+    }
+    print("archive:" + encoded)
+
+    const readerArchive = archive.Copy() else error {
+        discard error
+        return 6
+    }
+    const openedReader = cpio.NewReader($readerArchive) else error {
+        discard error
+        return 7
+    }
+    var reader = openedReader
+    const directory = requiredEntry($reader.Next())
+    print("entry:" + directory.Name + ":" + format.U32(directory.Mode) + ":" +
+        format.U32(directory.UID) + ":" + format.U32(directory.GID) + ":" +
+        format.U32(directory.NLink) + ":" + format.U32(directory.MTime) + ":" +
+        format.U32(directory.FileSize))
+    const file = requiredEntry($reader.Next())
+    const content = file.Data.Text() else error {
+        discard error
+        return 8
+    }
+    print("entry:" + file.Name + ":" + format.U32(file.Mode) + ":" +
+        format.U32(file.UID) + ":" + format.U32(file.GID) + ":" +
+        format.U32(file.NLink) + ":" + format.U32(file.MTime) + ":" +
+        format.U32(file.FileSize) + ":" +
+        format.Bool(text.Equal(content, "foundation\n")))
+    print("end:" + format.Bool(ended($reader.Next())))
+
+    const limitedOptions = cpio.WriterOptions {
+        UID = 0
+        GID = 0
+        MTime = 0
+        Limits = cpio.WriterLimits {
+            MaxNameSize = 4096
+            MaxFileSize = 3
+            MaxTotalSize = 10
+            MaxEntries = 10
+            MaxArchiveSize = 1073741824
+        }
+    }
+    const openedLimited = cpio.NewWriterWithOptions(limitedOptions) else error {
+        discard error
+        return 9
+    }
+    var limited = openedLimited
+    print("writer-file-limit:" + format.Bool(rejected(
+                $limited.AddFile("large", 420, bytes.FromText("1234"))
+            )))
+
+    const fileLimitedArchive = archive.Copy() else error {
+        discard error
+        return 10
+    }
+    const fileLimits = cpio.ReaderLimits {
+        MaxNameSize = 4096
+        MaxFileSize = 10
+        MaxTotalSize = 536870912
+        MaxEntries = 100000
+    }
+    print("reader-file-limit:" + format.Bool(readerRejected(
+                $fileLimitedArchive,
+                fileLimits,
+                1
+            )))
+    const entryLimitedArchive = archive.Copy() else error {
+        discard error
+        return 11
+    }
+    const entryLimits = cpio.ReaderLimits {
+        MaxNameSize = 4096
+        MaxFileSize = 67108864
+        MaxTotalSize = 536870912
+        MaxEntries = 1
+    }
+    print("reader-entry-limit:" + format.Bool(readerRejected(
+                $entryLimitedArchive,
+                entryLimits,
+                1
+            )))
+    0
+}

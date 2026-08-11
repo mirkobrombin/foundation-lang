@@ -2,39 +2,73 @@ import std.bytes
 import std.text
 
 fn main() i32 {
-    const source = bytes.FromText("foundation")
-    const copied = source.Copy() else error {
+    const opened = bytes.NewBuilder(10) else error {
         discard error
         return 1
     }
-    if !bytes.ConstantTimeEqual(source, copied) return 2
-
-    const encoded = bytes.EncodeBase64URL(source) else error {
+    var builder = opened
+    const prefix = bytes.FromText("found")
+    builder.Write(prefix) else error {
+        discard error
+        return 2
+    }
+    builder.WriteByte(97) else error {
         discard error
         return 3
     }
-    if !text.Equal(encoded, "Zm91bmRhdGlvbg") return 4
-
-    const decoded = bytes.DecodeBase64URL(encoded) else error {
+    const built = builder.Finish() else error {
+        discard error
+        return 4
+    }
+    const builtText = built.Text() else error {
         discard error
         return 5
     }
+    if !text.Equal(builtText, "founda") return 6
+
+    const sliced = built.Slice(1, 5) else error {
+        discard error
+        return 7
+    }
+    const slicedText = sliced.Text() else error {
+        discard error
+        return 8
+    }
+    if !text.Equal(slicedText, "ound") return 9
+
+    const source = bytes.FromText("foundation")
+    const copied = source.Copy() else error {
+        discard error
+        return 10
+    }
+    if !bytes.ConstantTimeEqual(source, copied) return 11
+
+    const encoded = bytes.EncodeBase64URL(source) else error {
+        discard error
+        return 12
+    }
+    if !text.Equal(encoded, "Zm91bmRhdGlvbg") return 13
+
+    const decoded = bytes.DecodeBase64URL(encoded) else error {
+        discard error
+        return 14
+    }
     const decodedText = decoded.Text() else error {
         discard error
-        return 6
+        return 15
     }
-    if !text.Equal(decodedText, "foundation") return 7
+    if !text.Equal(decodedText, "foundation") return 16
 
     const key = bytes.FromText("0123456789abcdef0123456789abcdef")
     const digest = bytes.HmacSha256(key, source) else error {
         discard error
-        return 8
+        return 17
     }
     const digestText = bytes.EncodeBase64URL(digest) else error {
         discard error
-        return 9
+        return 18
     }
-    if !text.Equal(digestText, "Tx82HG20ntCsQ5iRYF8plw1MY6ebaFsPRORaQYxBWTc") return 10
+    if !text.Equal(digestText, "Tx82HG20ntCsQ5iRYF8plw1MY6ebaFsPRORaQYxBWTc") return 19
 
     print("bytes crypto ok")
     0

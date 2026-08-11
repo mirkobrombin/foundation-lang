@@ -2,8 +2,9 @@
 
 `std.bytes.Bytes` owns arbitrary binary data without weakening the UTF-8 invariant of `String`.
 Construction copies text bytes, `Copy` creates independent storage, and `Text` validates UTF-8
-before returning a String. `Len` and `At` inspect data without exposing its address. `Close` is
-idempotent, and automatic destruction clears the backing allocation before release.
+before returning a String. `Len`, `At`, and `Slice` inspect or copy bounded ranges without exposing
+native storage. `Close` is idempotent, and automatic destruction clears the complete backing
+allocation before release.
 
 ```foundation
 import std.bytes
@@ -16,6 +17,10 @@ const decoded = bytes.DecodeBase64URL(encoded) else error {
     return .Err(error)
 }
 ```
+
+`NewBuilder(limit)` creates a bounded binary builder. `WriteByte` accepts one value from 0 through
+255, `Write` copies another `Bytes` value, and `Finish` consumes the builder. Growth never exceeds
+the declared limit. Closing or dropping an unfinished builder clears its allocated capacity.
 
 Base64URL uses the canonical unpadded RFC 4648 alphabet. Decoding rejects padding, invalid
 characters, impossible lengths, and nonzero unused tail bits. `HmacSha256` returns an owned
@@ -31,5 +36,7 @@ nonce and 16-byte authentication tag. Authentication failure never returns parti
 set and get, supports explicit shared ownership through `Clone`, and clears native key/value memory
 on replacement, deletion, and final close. Application code should prefer the framework store.
 
-The package does not expose its runtime handle or mutable byte storage. Native code receives
-opaque handles through the Foundation runtime ABI.
+`RuntimeHandle` and `ClaimRuntimeHandle` are the low-level bridge used by first-party standard
+packages that exchange owned bytes with the runtime ABI. The handle is opaque, mutable storage is
+never exposed, and claiming transfers exactly one runtime allocation into a `Bytes` owner.
+Application code should use the typed byte operations instead of persisting or comparing handles.

@@ -50,6 +50,10 @@ int main(void) {
     uint64_t decoded = 0;
     uint64_t decoded_standard = 0;
     uint64_t copied = 0;
+    uint64_t builder = 0;
+    uint64_t built = 0;
+    uint64_t sliced = 0;
+    uint64_t closed_builder = 0;
     uint64_t invalid_utf8 = 0;
     uint64_t key = bytes_from_data(hmac_key, sizeof(hmac_key));
     uint64_t message = bytes_from_data("Hi There", 8);
@@ -95,6 +99,24 @@ int main(void) {
     assert(foundation_runtime_bytes_at(abc, 3, &byte) == 2);
     assert(foundation_runtime_bytes_copy(abc, &copied) == 0);
     assert(foundation_runtime_bytes_constant_time_equal(abc, copied));
+    assert(foundation_runtime_bytes_builder_open(4, &builder) == 0);
+    assert(foundation_runtime_bytes_builder_length(builder, &length) == 0);
+    assert(length == 0);
+    assert(foundation_runtime_bytes_builder_append_byte(builder, '!') == 0);
+    assert(foundation_runtime_bytes_builder_append(builder, abc) == 0);
+    assert(foundation_runtime_bytes_builder_append_byte(builder, 'x') == 2);
+    assert(foundation_runtime_bytes_builder_append_byte(builder, 256) == 3);
+    assert(foundation_runtime_bytes_builder_length(builder, &length) == 0);
+    assert(length == 4);
+    assert(foundation_runtime_bytes_builder_finish(&builder, &built) == 0);
+    assert(builder == 0);
+    assert(foundation_runtime_bytes_slice(built, 1, 4, &sliced) == 0);
+    assert(foundation_runtime_bytes_constant_time_equal(abc, sliced));
+    assert(foundation_runtime_bytes_slice(built, 4, 3, &stored) == 2);
+    assert(foundation_runtime_bytes_slice(built, 0, 5, &stored) == 2);
+    assert(foundation_runtime_bytes_builder_open(1, &closed_builder) == 0);
+    foundation_runtime_bytes_builder_close(&closed_builder);
+    assert(closed_builder == 0);
 
     assert(foundation_runtime_base64url_encode(abc, &encoded) == 0);
     assert_text(encoded, "YWJj");
@@ -166,6 +188,8 @@ int main(void) {
     fdn_string_drop(&encoded);
     fdn_string_drop(&text);
     foundation_runtime_bytes_close(&copied);
+    foundation_runtime_bytes_close(&built);
+    foundation_runtime_bytes_close(&sliced);
     foundation_runtime_bytes_close(&decoded);
     foundation_runtime_bytes_close(&decoded_standard);
     foundation_runtime_bytes_close(&invalid_utf8);

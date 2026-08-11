@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.131.0");
+    assert.equal(manifest.version, "0.132.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1161,6 +1161,7 @@ test("grammar and completions track compiler keywords", () => {
         .map((match) => match[1]);
     const compilerKeywords = recognizedKeywords.filter((keyword) => keyword !== "let");
     const completionLabels = new Set(staticCompletions.map((entry) => entry.label));
+    const completionByLabel = new Map(staticCompletions.map((entry) => [entry.label, entry]));
 
     assert.deepEqual(compilerKeywords, [
         "package",
@@ -1215,6 +1216,19 @@ test("grammar and completions track compiler keywords", () => {
     assert.ok(recognizedKeywords.includes("let"));
     assert.equal(completionLabels.has("let"), false);
     assert.doesNotMatch(grammar, /\\blet\\b/);
+    for (const label of [
+        "env.Get",
+        "text.ByteLen",
+        "text.Contains",
+        "path.Join",
+        "fs.OpenLines",
+        "fs.OpenDir",
+        "fs.Size",
+        "fs.Modified",
+        "json.Parse"
+    ]) {
+        assert.doesNotMatch(completionByLabel.get(label).insertText, /\\bview\\b/);
+    }
 
     for (const type of [
         "i32", "u64", "bool", "String", "void", "Option", "Result", "ChannelError",
@@ -1269,7 +1283,10 @@ test("grammar and completions track compiler keywords", () => {
         "parse.Isize", "parse.U8", "parse.U16", "parse.U32", "parse.U64",
         "parse.Usize",
         "std.fs", "fs.OpenLines", "fs.ReadText", "fs.ReadTextLimited", "fs.OpenDir", "fs.Size", "fs.Modified",
-        "fs.LineReader.Next", "fs.LineReader.NextLimited",
+        "fs.LineReader.Next", "fs.LineReader.NextLimited", "fs.OpenTree", "fs.OpenRoot",
+        "fs.TreeKind", "fs.TreeEntry", "fs.TreeReader", "fs.RootWriter",
+        "fs.TreeReader.Next", "fs.TreeReader.ReadFile", "fs.TreeReader.Close",
+        "fs.RootWriter.CreateDirectory", "fs.RootWriter.WriteFile", "fs.RootWriter.Close",
         "std.net", "net.Listen", "net.Accept", "net.Connect", "net.TcpConnection.Split",
         "net.TcpConnection.PeerAddress", "net.ReadLine",
         "net.ReadLineLimited", "net.ReadExact", "net.WriteAll",
@@ -1285,10 +1302,20 @@ test("grammar and completions track compiler keywords", () => {
         "concurrent.NewCancellationSource",
         "concurrent.CancellationSource.Token", "concurrent.CancellationSource.Cancel",
         "concurrent.Cancellation.IsRequested",
-        "std.bytes", "bytes.Bytes", "bytes.Error", "bytes.FromText",
+        "std.bytes", "bytes.Bytes", "bytes.Builder", "bytes.Error", "bytes.FromText",
+        "bytes.NewBuilder", "bytes.RuntimeHandle", "bytes.ClaimRuntimeHandle",
         "bytes.EncodeBase64URL", "bytes.DecodeBase64URL", "bytes.HmacSha256",
         "bytes.ConstantTimeEqual", "bytes.Bytes.Copy", "bytes.Bytes.Len",
-        "bytes.Bytes.At", "bytes.Bytes.Text", "bytes.Bytes.Close",
+        "bytes.Bytes.At", "bytes.Bytes.Slice", "bytes.Bytes.Text", "bytes.Bytes.Close",
+        "bytes.Builder.Len", "bytes.Builder.WriteByte", "bytes.Builder.Write",
+        "bytes.Builder.Finish", "bytes.Builder.Close",
+        "std.cpio", "cpio.Error", "cpio.ReaderLimits", "cpio.WriterLimits",
+        "cpio.WriterOptions", "cpio.Entry", "cpio.Reader", "cpio.Writer",
+        "cpio.DefaultReaderLimits", "cpio.DefaultWriterLimits", "cpio.DefaultWriterOptions",
+        "cpio.NewReader", "cpio.NewReaderWithLimits", "cpio.NewWriter",
+        "cpio.NewWriterWithOptions", "cpio.PackDir", "cpio.PackDirWithOptions",
+        "cpio.UnpackToDir", "cpio.Reader.Next", "cpio.Writer.AddDir",
+        "cpio.Writer.AddFile", "cpio.Writer.Finish",
         "std.errors", "errors.Many", "errors.Coded", "errors.NewMany", "errors.Join",
         "errors.WithCode", "errors.CodedMessage", "errors.Many.Len",
         "errors.Many.IsEmpty", "errors.Many.Append", "errors.Many.Message",

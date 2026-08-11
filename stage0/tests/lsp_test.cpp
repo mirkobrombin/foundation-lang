@@ -4898,6 +4898,96 @@ void codeStandardWarningsFollowTheManifestProfile() {
     std::filesystem::remove_all(root, error);
 }
 
+void cpioPackageExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fn";
+    const std::string contents =
+        "package sample\n"
+        "\n"
+        "import std.cpio\n"
+        "import std.bytes\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    const opened = cpio.NewWriter() else error {\n"
+        "        discard error\n"
+        "        return 1\n"
+        "    }\n"
+        "    var writer = opened\n"
+        "    writer.AddDir(\"etc\", 493) else error {\n"
+        "        discard error\n"
+        "        return 2\n"
+        "    }\n"
+        "    const archive = $writer.Finish() else error {\n"
+        "        discard error\n"
+        "        return 3\n"
+        "    }\n"
+        "    discard archive\n"
+        "    0\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{"
+        "\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) +
+        "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(901, "hover", 2, 12)) +
+        frame(request(902, "hover", 6, 31)) +
+        frame(request(903, "definition", 6, 31)) +
+        frame(request(904, "signatureHelp", 11, 25)) +
+        frame(request(905, "completion", 6, 24)) +
+        frame(request(906, "completion", 11, 11)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto packageHover = responseFor(transcript, 901);
+    const auto writerHover = responseFor(transcript, 902);
+    const auto writerDefinition = responseFor(transcript, 903);
+    const auto addDirSignature = responseFor(transcript, 904);
+    const auto packageCompletion = responseFor(transcript, 905);
+    const auto memberCompletion = responseFor(transcript, 906);
+
+    expect(status == 0, "CPIO language server transcript exits cleanly");
+    expect(errors.str().empty(), "CPIO requests write no server errors");
+    expect(packageHover.find("std.cpio") != std::string::npos,
+           "CPIO package import receives hover");
+    expect(writerHover.find("fn NewWriter") != std::string::npos &&
+               writerHover.find("in-memory newc writer") != std::string::npos,
+           "CPIO writer constructor receives typed hover and documentation");
+    expect(writerDefinition.find("std/cpio/cpio.fn") != std::string::npos,
+           "CPIO writer constructor navigates to standard source");
+    expect(addDirSignature.find("fn AddDir") != std::string::npos &&
+               addDirSignature.find("permissions u32") != std::string::npos,
+           "CPIO writer operation receives signature help");
+    expect(packageCompletion.find("\"label\":\"PackDir\"") != std::string::npos &&
+               packageCompletion.find("\"label\":\"NewReader\"") !=
+                   std::string::npos,
+           "CPIO package completion exposes archive operations");
+    expect(memberCompletion.find("\"label\":\"AddFile\"") != std::string::npos &&
+               memberCompletion.find("\"label\":\"Finish\"") != std::string::npos,
+           "CPIO writer completion exposes member operations");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 } // namespace
 
 int main() {
@@ -4957,6 +5047,7 @@ int main() {
     manualWebMiddlewareExposesEditorDetails();
     stateMachinesExposeEditorDetails();
     workflowsExposeEditorDetails();
+    cpioPackageExposesEditorDetails();
     codeStandardWarningsFollowTheManifestProfile();
 
     if (failures != 0) {

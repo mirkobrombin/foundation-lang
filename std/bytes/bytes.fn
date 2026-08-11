@@ -4,26 +4,85 @@ import std.concurrent
 
 // Classifies failures while reading or transforming owned binary data.
 enum Error {
+    // The value has already released its backing storage.
     Closed
+
+    // A requested byte or range falls outside the value.
     OutOfBounds
+
+    // The byte sequence is not valid UTF-8.
     InvalidUTF8
+
+    // Encoded input is not canonical for the selected format.
     InvalidEncoding
+
+    // An operation would exceed its configured bound.
     TooLarge
 }
 
-// Classifies operations on a shared memory region that clears secret bytes on release.
+// Classifies operations on a shared memory region that clears secret bytes on
+// release.
 enum SecretMemoryError {
+    // The shared memory region has already been released.
     Closed
+
+    // The requested key is absent.
     NotFound
+
+    // The key is empty or exceeds the runtime bound.
     InvalidKey
 }
 
-extern c fn fromTextNative(value String) u64 as foundation_runtime_bytes_from_text
-extern c fn copyNative(handle u64, &result u64) i32 as foundation_runtime_bytes_copy
-extern c fn lengthNative(handle u64, &result u64) i32 as foundation_runtime_bytes_length
-extern c fn atNative(handle u64, index u64, &result u64) i32 as foundation_runtime_bytes_at
-extern c fn toTextNative(handle u64, &result String) i32 as foundation_runtime_bytes_to_text
+extern c fn fromTextNative(
+    value String
+) u64 as foundation_runtime_bytes_from_text
+extern c fn copyNative(
+    handle u64,
+    &result u64
+) i32 as foundation_runtime_bytes_copy
+extern c fn lengthNative(
+    handle u64,
+    &result u64
+) i32 as foundation_runtime_bytes_length
+extern c fn atNative(
+    handle u64,
+    index u64,
+    &result u64
+) i32 as foundation_runtime_bytes_at
+extern c fn toTextNative(
+    handle u64,
+    &result String
+) i32 as foundation_runtime_bytes_to_text
+extern c fn sliceNative(
+    handle u64,
+    start u64,
+    end u64,
+    &result u64
+) i32 as foundation_runtime_bytes_slice
 extern c fn closeNative(&handle u64) void as foundation_runtime_bytes_close
+extern c fn openBuilderNative(
+    limit u64,
+    &result u64
+) i32 as foundation_runtime_bytes_builder_open
+extern c fn builderLengthNative(
+    handle u64,
+    &result u64
+) i32 as foundation_runtime_bytes_builder_length
+extern c fn appendByteNative(
+    handle u64,
+    value u64
+) i32 as foundation_runtime_bytes_builder_append_byte
+extern c fn appendNative(
+    handle u64,
+    value u64
+) i32 as foundation_runtime_bytes_builder_append
+extern c fn finishBuilderNative(
+    &handle u64,
+    &result u64
+) i32 as foundation_runtime_bytes_builder_finish
+extern c fn closeBuilderNative(
+    &handle u64
+) void as foundation_runtime_bytes_builder_close
 extern c fn encodeBase64URLNative(
     handle u64,
     &result String
@@ -40,7 +99,11 @@ extern c fn decodeBase64Native(
     value String,
     &result u64
 ) i32 as foundation_runtime_base64_decode
-extern c fn hmacSha256Native(key u64, value u64, &result u64) i32 as foundation_runtime_hmac_sha256
+extern c fn hmacSha256Native(
+    key u64,
+    value u64,
+    &result u64
+) i32 as foundation_runtime_hmac_sha256
 extern c fn aes256GcmEncryptNative(
     key u64,
     value u64,
@@ -57,8 +120,11 @@ extern c fn constantTimeEqualNative(
     left u64,
     right u64
 ) bool as foundation_runtime_bytes_constant_time_equal
-extern c fn openSecretMemoryNative() u64 as foundation_runtime_secret_memory_open
-extern c fn retainSecretMemoryNative(handle u64) u64 as foundation_runtime_secret_memory_retain
+extern c fn openSecretMemoryNative(
+) u64 as foundation_runtime_secret_memory_open
+extern c fn retainSecretMemoryNative(
+    handle u64
+) u64 as foundation_runtime_secret_memory_retain
 extern c fn setSecretMemoryNative(
     handle u64,
     key String,
@@ -126,6 +192,19 @@ struct Bytes {
         .Err(.InvalidUTF8)
     }
 
+    // Copies one byte range into independent owned storage.
+    fn Slice(self, start u64, end u64) Result<own Bytes, Error> {
+        var result u64 = 0
+        const status = sliceNative(self.handle, start, end, &result)
+        if status == 0 {
+            return .Ok(own Bytes { handle = result })
+        }
+        if status == 1 {
+            return .Err(.Closed)
+        }
+        .Err(.OutOfBounds)
+    }
+
     // Releases and clears this byte sequence exactly once.
     fn Close(&self) bool {
         if self.handle == 0 {
@@ -140,7 +219,71 @@ struct Bytes {
     }
 }
 
-// Owns a cloneable, task-safe map whose values are copied and cleared in native memory.
+// Builds bounded binary values without exposing mutable backing storage.
+struct Builder {
+    handle u64
+
+    // Returns the number of bytes written so far.
+    fn Len(self) Result<u64, Error> {
+        var result u64 = 0
+        if builderLengthNative(self.handle, &result) != 0 {
+            return .Err(.Closed)
+        }
+        .Ok(result)
+    }
+
+    // Appends one byte in the inclusive range 0 through 255.
+    fn WriteByte(&self, value u64) Result<void, Error> {
+        const status = appendByteNative(self.handle, value)
+        if status == 0 {
+            return .Ok
+        }
+        if status == 1 {
+            return .Err(.Closed)
+        }
+        if status == 2 {
+            return .Err(.TooLarge)
+        }
+        .Err(.OutOfBounds)
+    }
+
+    // Appends a copy of one complete byte sequence.
+    fn Write(&self, value Bytes) Result<void, Error> {
+        const status = appendNative(self.handle, value.handle)
+        if status == 0 {
+            return .Ok
+        }
+        if status == 1 {
+            return .Err(.Closed)
+        }
+        .Err(.TooLarge)
+    }
+
+    // Closes the builder and returns its complete owned byte sequence.
+    fn Finish(&self) Result<own Bytes, Error> {
+        var result u64 = 0
+        if finishBuilderNative(&self.handle, &result) != 0 {
+            return .Err(.Closed)
+        }
+        .Ok(own Bytes { handle = result })
+    }
+
+    // Releases an unfinished builder exactly once.
+    fn Close(&self) bool {
+        if self.handle == 0 {
+            return false
+        }
+        closeBuilderNative(&self.handle)
+        true
+    }
+
+    fn drop(&self) void {
+        closeBuilderNative(&self.handle)
+    }
+}
+
+// Owns a cloneable, task-safe map whose values are copied and cleared in native
+// memory.
 @concurrent.Transferable()
 struct SecretMemory {
     handle u64
@@ -203,6 +346,26 @@ struct SecretMemory {
 // Copies UTF-8 text into an owned byte sequence.
 fn FromText(value String) own Bytes {
     own Bytes { handle = fromTextNative(value) }
+}
+
+// Creates an empty builder with a hard output-size limit.
+fn NewBuilder(limit u64) Result<own Builder, Error> {
+    var result u64 = 0
+    if openBuilderNative(limit, &result) != 0 {
+        return .Err(.TooLarge)
+    }
+    .Ok(own Builder { handle = result })
+}
+
+// Borrows the opaque SDK handle for one synchronous native adapter call.
+fn RuntimeHandle(value Bytes) u64 {
+    value.handle
+}
+
+// Claims exclusive ownership of an opaque handle returned by the SDK runtime.
+fn ClaimRuntimeHandle(handle u64) Result<own Bytes, Error> {
+    if handle == 0 return .Err(.Closed)
+    .Ok(own Bytes { handle = handle })
 }
 
 // Creates an empty task-safe region for secret bytes.

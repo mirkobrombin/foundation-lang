@@ -1,0 +1,205 @@
+package std.fs
+
+import std.bytes
+
+extern c fn openTreeNative(
+    path String,
+    maxEntries u64,
+    maxPathLength u64,
+    &handle u64
+) i32 as foundation_runtime_fs_tree_open
+extern c fn nextTreeNative(
+    handle u64,
+    &path String,
+    &kind u32,
+    &executable bool,
+    &size u64
+) i32 as foundation_runtime_fs_tree_next
+extern c fn readTreeNative(
+    handle u64,
+    path String,
+    limit u64,
+    &result u64
+) i32 as foundation_runtime_fs_tree_read
+extern c fn closeTreeNative(
+    &handle u64
+) i32 as foundation_runtime_fs_tree_close
+extern c fn openRootNative(
+    path String,
+    &handle u64
+) i32 as foundation_runtime_fs_root_open
+extern c fn createRootDirectoryNative(
+    handle u64,
+    path String
+) i32 as foundation_runtime_fs_root_create_directory
+extern c fn writeRootFileNative(
+    handle u64,
+    path String,
+    bytesHandle u64,
+    permissions u32
+) i32 as foundation_runtime_fs_root_write_file
+extern c fn closeRootNative(
+    &handle u64
+) i32 as foundation_runtime_fs_root_close
+
+// Classifies one directory-tree entry without following symbolic links.
+enum TreeKind {
+    // A regular file with readable byte contents.
+    File
+
+    // A directory that may contain later entries.
+    Directory
+
+    // A symbolic link that the tree reader never follows.
+    SymbolicLink
+
+    // A filesystem object unsupported by portable tree operations.
+    Other
+}
+
+// Describes one deterministic relative entry beneath a secure directory root.
+struct TreeEntry {
+    // Relative path using forward slashes.
+    Path String
+
+    // Portable classification of the filesystem object.
+    Kind TreeKind
+
+    // Whether a regular file has at least one executable permission bit.
+    Executable bool
+
+    // Regular-file length in bytes, or zero for other entry kinds.
+    Size u64
+}
+
+// Enumerates one bounded directory tree and reads regular files beneath its
+// root.
+struct TreeReader {
+    handle u64
+
+    // Returns the next entry in bytewise relative-path order.
+    fn Next(&self) Result<Option<TreeEntry>, Error> {
+        if self.handle == 0 return .Err(.Closed)
+        var path = ""
+        var kind u32 = 0
+        var executable = false
+        var size u64 = 0
+        const status = nextTreeNative(
+            self.handle,
+            &path,
+            &kind,
+            &executable,
+            &size
+        )
+        if status == 0 return .Ok(.None)
+        if status != 1 return .Err(treeErrorFor(status))
+        .Ok(.Some(TreeEntry {
+            Path = path
+            Kind = treeKind(kind)
+            Executable = executable
+            Size = size
+        }))
+    }
+
+    // Reads one regular file without following any relative path component.
+    fn ReadFile(self, path String, limit u64) Result<own bytes.Bytes, Error> {
+        if self.handle == 0 return .Err(.Closed)
+        var result u64 = 0
+        const status = readTreeNative(self.handle, path, limit, &result)
+        if status != 0 return .Err(treeErrorFor(status))
+        const claimed = bytes.ClaimRuntimeHandle(result) else error {
+            discard error
+            return .Err(.Io)
+        }
+        .Ok(claimed)
+    }
+
+    // Closes the tree exactly once.
+    fn Close(&self) Result<bool, Error> {
+        if self.handle == 0 return .Ok(false)
+        const status = closeTreeNative(&self.handle)
+        if status != 0 return .Err(treeErrorFor(status))
+        .Ok(true)
+    }
+
+    fn drop(&self) void {
+        discard closeTreeNative(&self.handle)
+    }
+}
+
+// Creates directories and atomically writes files beneath one secure root.
+struct RootWriter {
+    handle u64
+
+    // Creates a relative directory tree without following symbolic links.
+    fn CreateDirectory(&self, path String) Result<void, Error> {
+        if self.handle == 0 return .Err(.Closed)
+        const status = createRootDirectoryNative(self.handle, path)
+        if status == 0 return .Ok
+        .Err(treeErrorFor(status))
+    }
+
+    // Atomically writes one file with portable permission bits.
+    fn WriteFile(
+        self,
+        path String,
+        value bytes.Bytes,
+        permissions u32
+    ) Result<void, Error> {
+        if self.handle == 0 return .Err(.Closed)
+        const status = writeRootFileNative(
+            self.handle,
+            path,
+            bytes.RuntimeHandle(value),
+            permissions
+        )
+        if status == 0 return .Ok
+        .Err(treeErrorFor(status))
+    }
+
+    // Closes the root exactly once.
+    fn Close(&self) Result<bool, Error> {
+        if self.handle == 0 return .Ok(false)
+        const status = closeRootNative(&self.handle)
+        if status != 0 return .Err(treeErrorFor(status))
+        .Ok(true)
+    }
+
+    fn drop(&self) void {
+        discard closeRootNative(&self.handle)
+    }
+}
+
+// Opens a deterministic bounded tree rooted at an existing directory.
+fn OpenTree(
+    path String,
+    maxEntries u64,
+    maxPathLength u64
+) Result<own TreeReader, Error> {
+    var handle u64 = 0
+    const status = openTreeNative(path, maxEntries, maxPathLength, &handle)
+    if status == 0 return .Ok(own TreeReader { handle = handle })
+    .Err(treeErrorFor(status))
+}
+
+// Creates or opens one destination root for secure relative writes.
+fn OpenRoot(path String) Result<own RootWriter, Error> {
+    var handle u64 = 0
+    const status = openRootNative(path, &handle)
+    if status == 0 return .Ok(own RootWriter { handle = handle })
+    .Err(treeErrorFor(status))
+}
+
+fn treeKind(value u32) TreeKind {
+    if value == 1 return .File
+    if value == 2 return .Directory
+    if value == 3 return .SymbolicLink
+    if value == 4 return .Other
+    panic("filesystem tree returned an invalid entry kind")
+}
+
+fn treeErrorFor(status i32) Error {
+    if status == 5 return .TooLarge
+    if status == 6 return .InvalidUtf8
+    errorFor(status)
+}

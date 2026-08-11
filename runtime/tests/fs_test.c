@@ -3,6 +3,7 @@
 #endif
 
 #include "foundation/runtime.h"
+#include "../src/bytes_internal.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -55,8 +56,15 @@ int main(int argc, char **argv) {
     int nested_length;
     char private_root[4096];
     char private_nested[4096];
+    char tree_root[4096];
+    char tree_nested[4096];
+    char tree_file[4096];
+    char output_root[4096];
+    char output_nested[4096];
+    char output_file[4096];
 #if !defined(_WIN32)
     char private_link[4096];
+    char tree_link[4096];
 #endif
     if (argc != 4) {
         return 1;
@@ -247,6 +255,131 @@ int main(int argc, char **argv) {
     if (remove_directory(private_nested) != 0 || remove_directory(private_root) != 0 ||
         fdn_live_allocations() != 0) {
         return 31;
+    }
+
+    {
+        fdn_string relative_directory = fdn_string_static("nested", 6);
+        fdn_string relative_file = fdn_string_static("nested/payload.bin", 18);
+        fdn_string blocked_directory =
+            fdn_string_static("nested/payload.bin/child", 24);
+        fdn_string invalid_relative = fdn_string_static("../escape", 9);
+        fdn_string tree_path;
+        fdn_string output_path;
+        fdn_string entry_path = fdn_string_static("", 0);
+        fdn_string payload_text = fdn_string_static("binary\0payload", 14);
+        uint64_t root = 0;
+        uint64_t tree = 0;
+        uint64_t payload = foundation_runtime_bytes_from_text(&payload_text);
+        uint64_t read_payload = 0;
+        uint32_t kind = 0;
+        bool executable = false;
+        const uint8_t *read_data = NULL;
+        size_t read_length = 0;
+#if defined(_WIN32)
+        const bool expected_executable = false;
+#else
+        const bool expected_executable = true;
+#endif
+        int tree_root_length = snprintf(tree_root, sizeof(tree_root), "%s-tree", argv[3]);
+        int tree_nested_length = snprintf(tree_nested, sizeof(tree_nested),
+                                          "%s/nested", tree_root);
+        int tree_file_length = snprintf(tree_file, sizeof(tree_file),
+                                        "%s/payload.bin", tree_nested);
+        int output_root_length = snprintf(output_root, sizeof(output_root),
+                                          "%s-output", argv[3]);
+        int output_nested_length = snprintf(output_nested, sizeof(output_nested),
+                                            "%s/nested", output_root);
+        int output_file_length = snprintf(output_file, sizeof(output_file),
+                                          "%s/payload.bin", output_nested);
+        if (tree_root_length < 0 || tree_nested_length < 0 || tree_file_length < 0 ||
+            output_root_length < 0 || output_nested_length < 0 || output_file_length < 0 ||
+            (size_t)tree_root_length >= sizeof(tree_root) ||
+            (size_t)tree_nested_length >= sizeof(tree_nested) ||
+            (size_t)tree_file_length >= sizeof(tree_file) ||
+            (size_t)output_root_length >= sizeof(output_root) ||
+            (size_t)output_nested_length >= sizeof(output_nested) ||
+            (size_t)output_file_length >= sizeof(output_file) || payload == 0) {
+            foundation_runtime_bytes_close(&payload);
+            return 34;
+        }
+        tree_path = fdn_string_static(tree_root, strlen(tree_root));
+        output_path = fdn_string_static(output_root, strlen(output_root));
+        if (foundation_runtime_fs_root_open(&tree_path, &root) != 0 || root == 0 ||
+            foundation_runtime_fs_root_create_directory(root, &relative_directory) != 0 ||
+            foundation_runtime_fs_root_create_directory(root, &invalid_relative) != 3 ||
+            foundation_runtime_fs_root_write_file(root, &relative_file, payload, 0751) != 0 ||
+            foundation_runtime_fs_root_create_directory(root, &blocked_directory) != 3 ||
+            foundation_runtime_fs_root_close(&root) != 0 || root != 0) {
+            foundation_runtime_bytes_close(&payload);
+            return 35;
+        }
+        if (foundation_runtime_fs_tree_open(&tree_path, 1, 4096, &tree) != 5 || tree != 0 ||
+            foundation_runtime_fs_tree_open(&tree_path, 10, 4096, &tree) != 0 || tree == 0 ||
+            foundation_runtime_fs_live_directories() != 1) {
+            foundation_runtime_bytes_close(&payload);
+            return 36;
+        }
+        if (foundation_runtime_fs_tree_next(tree, &entry_path, &kind, &executable, &size) != 1 ||
+            !line_is(entry_path, "nested") || kind != 2 || size != 0) {
+            fdn_string_drop(&entry_path);
+            foundation_runtime_bytes_close(&payload);
+            (void)foundation_runtime_fs_tree_close(&tree);
+            return 37;
+        }
+        if (foundation_runtime_fs_tree_next(tree, &entry_path, &kind, &executable, &size) != 1 ||
+            !line_is(entry_path, "nested/payload.bin") || kind != 1 ||
+            executable != expected_executable || size != 14 ||
+            foundation_runtime_fs_tree_read(tree, &relative_file, 13, &read_payload) != 5 ||
+            read_payload != 0 ||
+            foundation_runtime_fs_tree_read(tree, &relative_file, 14, &read_payload) != 0 ||
+            read_payload == 0 || fdn_bytes_view(read_payload, &read_data, &read_length) != 0 ||
+            read_length != 14 || memcmp(read_data, "binary\0payload", 14) != 0 ||
+            foundation_runtime_fs_tree_next(tree, &entry_path, &kind, &executable, &size) != 0 ||
+            foundation_runtime_fs_tree_close(&tree) != 0 || tree != 0 ||
+            foundation_runtime_fs_live_directories() != 0) {
+            fdn_string_drop(&entry_path);
+            foundation_runtime_bytes_close(&read_payload);
+            foundation_runtime_bytes_close(&payload);
+            (void)foundation_runtime_fs_tree_close(&tree);
+            return 38;
+        }
+        fdn_string_drop(&entry_path);
+        if (foundation_runtime_fs_root_open(&output_path, &root) != 0 || root == 0 ||
+            foundation_runtime_fs_root_create_directory(root, &relative_directory) != 0 ||
+            foundation_runtime_fs_root_write_file(root, &relative_file, read_payload, 0640) != 0 ||
+            foundation_runtime_fs_root_close(&root) != 0 || root != 0) {
+            foundation_runtime_bytes_close(&read_payload);
+            foundation_runtime_bytes_close(&payload);
+            return 39;
+        }
+        foundation_runtime_bytes_close(&read_payload);
+        foundation_runtime_bytes_close(&payload);
+#if !defined(_WIN32)
+        {
+            struct stat info;
+            int tree_link_length = snprintf(tree_link, sizeof(tree_link),
+                                            "%s/link", tree_root);
+            if (tree_link_length < 0 || (size_t)tree_link_length >= sizeof(tree_link) ||
+                stat(tree_file, &info) != 0 || (info.st_mode & 0777) != 0751 ||
+                stat(output_file, &info) != 0 || (info.st_mode & 0777) != 0640 ||
+                symlink("nested", tree_link) != 0 ||
+                foundation_runtime_fs_tree_open(&tree_path, 10, 4096, &tree) != 0 ||
+                foundation_runtime_fs_tree_next(tree, &entry_path, &kind, &executable, &size) != 1 ||
+                !line_is(entry_path, "link") || kind != 3 ||
+                foundation_runtime_fs_tree_close(&tree) != 0 || unlink(tree_link) != 0) {
+                fdn_string_drop(&entry_path);
+                (void)foundation_runtime_fs_tree_close(&tree);
+                return 40;
+            }
+            fdn_string_drop(&entry_path);
+        }
+#endif
+        if (remove(tree_file) != 0 || remove_directory(tree_nested) != 0 ||
+            remove_directory(tree_root) != 0 || remove(output_file) != 0 ||
+            remove_directory(output_nested) != 0 || remove_directory(output_root) != 0 ||
+            foundation_runtime_fs_live_directories() != 0 || fdn_live_allocations() != 0) {
+            return 41;
+        }
     }
     return 0;
 }

@@ -1,4 +1,5 @@
 #include "foundation/runtime.h"
+#include "bytes_internal.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -18,10 +19,12 @@
 #endif
 #endif
 
-typedef struct fdn_bytes {
+typedef struct fdn_bytes_builder {
     uint8_t *data;
     size_t length;
-} fdn_bytes;
+    size_t capacity;
+    size_t limit;
+} fdn_bytes_builder;
 
 typedef struct fdn_sha256 {
     uint32_t state[8];
@@ -384,6 +387,7 @@ static uint64_t fdn_bytes_create(const uint8_t *value, size_t length) {
     fdn_bytes *result = fdn_alloc(sizeof(*result));
     result->data = NULL;
     result->length = length;
+    result->capacity = length;
     if (length != 0) {
         result->data = fdn_alloc(length);
         (void)memcpy(result->data, value, length);
@@ -396,11 +400,65 @@ static void fdn_bytes_release(fdn_bytes *value) {
         return;
     }
     if (value->data != NULL) {
-        fdn_secure_zero(value->data, value->length);
+        fdn_secure_zero(value->data, value->capacity);
         fdn_dealloc(value->data);
     }
     fdn_secure_zero(value, sizeof(*value));
     fdn_dealloc(value);
+}
+
+static fdn_bytes_builder *fdn_bytes_builder_value(uint64_t handle) {
+    return (fdn_bytes_builder *)(uintptr_t)handle;
+}
+
+static bool fdn_bytes_builder_reserve(fdn_bytes_builder *builder, size_t count) {
+    size_t required;
+    size_t capacity;
+    uint8_t *data;
+    if (count > builder->limit - builder->length || count > SIZE_MAX - builder->length) {
+        return false;
+    }
+    required = builder->length + count;
+    if (required <= builder->capacity) {
+        return true;
+    }
+    capacity = builder->capacity == 0 ? 64 : builder->capacity;
+    while (capacity < required) {
+        if (capacity > SIZE_MAX / 2) {
+            capacity = required;
+            break;
+        }
+        capacity *= 2;
+    }
+    if (capacity > builder->limit) {
+        capacity = builder->limit;
+    }
+    if (capacity < required) {
+        return false;
+    }
+    data = fdn_alloc(capacity);
+    if (builder->length != 0) {
+        (void)memcpy(data, builder->data, builder->length);
+    }
+    if (builder->data != NULL) {
+        fdn_secure_zero(builder->data, builder->capacity);
+        fdn_dealloc(builder->data);
+    }
+    builder->data = data;
+    builder->capacity = capacity;
+    return true;
+}
+
+static void fdn_bytes_builder_release(fdn_bytes_builder *builder) {
+    if (builder == NULL) {
+        return;
+    }
+    if (builder->data != NULL) {
+        fdn_secure_zero(builder->data, builder->capacity);
+        fdn_dealloc(builder->data);
+    }
+    fdn_secure_zero(builder, sizeof(*builder));
+    fdn_dealloc(builder);
 }
 
 static void fdn_sha256_transform(fdn_sha256 *context, const uint8_t block[64]) {
@@ -618,6 +676,24 @@ int32_t foundation_runtime_bytes_to_text(uint64_t handle, fdn_string *result) {
     return 0;
 }
 
+int32_t foundation_runtime_bytes_slice(uint64_t handle, uint64_t start, uint64_t end,
+                                       uint64_t *result) {
+    const fdn_bytes *value = fdn_bytes_value(handle);
+    const uint8_t *source = NULL;
+    if (result == NULL || value == NULL) {
+        return 1;
+    }
+    *result = 0;
+    if (start > end || end > value->length) {
+        return 2;
+    }
+    if (start != end) {
+        source = value->data + (size_t)start;
+    }
+    *result = fdn_bytes_create(source, (size_t)(end - start));
+    return 0;
+}
+
 void foundation_runtime_bytes_close(uint64_t *handle) {
     fdn_bytes *value;
     if (handle == NULL) {
@@ -626,6 +702,98 @@ void foundation_runtime_bytes_close(uint64_t *handle) {
     value = fdn_bytes_value(*handle);
     *handle = 0;
     fdn_bytes_release(value);
+}
+
+int32_t foundation_runtime_bytes_builder_open(uint64_t limit, uint64_t *result) {
+    fdn_bytes_builder *builder;
+    if (result == NULL) {
+        return 1;
+    }
+    *result = 0;
+    if (limit > SIZE_MAX) {
+        return 2;
+    }
+    builder = fdn_alloc(sizeof(*builder));
+    builder->data = NULL;
+    builder->length = 0;
+    builder->capacity = 0;
+    builder->limit = (size_t)limit;
+    *result = (uint64_t)(uintptr_t)builder;
+    return 0;
+}
+
+int32_t foundation_runtime_bytes_builder_length(uint64_t handle, uint64_t *result) {
+    const fdn_bytes_builder *builder = fdn_bytes_builder_value(handle);
+    if (result == NULL || builder == NULL) {
+        return 1;
+    }
+    *result = (uint64_t)builder->length;
+    return 0;
+}
+
+int32_t foundation_runtime_bytes_builder_append_byte(uint64_t handle, uint64_t value) {
+    fdn_bytes_builder *builder = fdn_bytes_builder_value(handle);
+    if (builder == NULL) {
+        return 1;
+    }
+    if (value > UINT8_MAX) {
+        return 3;
+    }
+    if (!fdn_bytes_builder_reserve(builder, 1)) {
+        return 2;
+    }
+    builder->data[builder->length++] = (uint8_t)value;
+    return 0;
+}
+
+int32_t foundation_runtime_bytes_builder_append(uint64_t handle, uint64_t value_handle) {
+    fdn_bytes_builder *builder = fdn_bytes_builder_value(handle);
+    const fdn_bytes *value = fdn_bytes_value(value_handle);
+    if (builder == NULL || value == NULL) {
+        return 1;
+    }
+    if (!fdn_bytes_builder_reserve(builder, value->length)) {
+        return 2;
+    }
+    if (value->length != 0) {
+        (void)memcpy(builder->data + builder->length, value->data, value->length);
+        builder->length += value->length;
+    }
+    return 0;
+}
+
+int32_t foundation_runtime_bytes_builder_finish(uint64_t *handle, uint64_t *result) {
+    fdn_bytes_builder *builder;
+    fdn_bytes *value;
+    if (handle == NULL || result == NULL) {
+        return 1;
+    }
+    *result = 0;
+    builder = fdn_bytes_builder_value(*handle);
+    if (builder == NULL) {
+        return 1;
+    }
+    value = fdn_alloc(sizeof(*value));
+    value->data = builder->data;
+    value->length = builder->length;
+    value->capacity = builder->capacity;
+    builder->data = NULL;
+    builder->length = 0;
+    builder->capacity = 0;
+    *handle = 0;
+    fdn_bytes_builder_release(builder);
+    *result = (uint64_t)(uintptr_t)value;
+    return 0;
+}
+
+void foundation_runtime_bytes_builder_close(uint64_t *handle) {
+    fdn_bytes_builder *builder;
+    if (handle == NULL) {
+        return;
+    }
+    builder = fdn_bytes_builder_value(*handle);
+    *handle = 0;
+    fdn_bytes_builder_release(builder);
 }
 
 int32_t foundation_runtime_base64url_encode(uint64_t handle, fdn_string *result) {
@@ -731,6 +899,12 @@ int32_t foundation_runtime_base64url_decode(const fdn_string *value, uint64_t *r
             }
             return 2;
         }
+        if (output == NULL || target > output_length - 3) {
+            if (output != NULL) {
+                fdn_dealloc(output);
+            }
+            return 2;
+        }
         group = ((uint32_t)a << 18U) | ((uint32_t)b << 12U) |
                 ((uint32_t)c << 6U) | (uint32_t)d;
         output[target++] = (uint8_t)(group >> 16U);
@@ -767,6 +941,7 @@ int32_t foundation_runtime_base64url_decode(const fdn_string *value, uint64_t *r
         fdn_bytes *bytes = fdn_alloc(sizeof(*bytes));
         bytes->data = output;
         bytes->length = target;
+        bytes->capacity = output_length;
         *result = (uint64_t)(uintptr_t)bytes;
     }
     return 0;
@@ -889,6 +1064,7 @@ int32_t foundation_runtime_base64_decode(const fdn_string *value, uint64_t *resu
         fdn_bytes *bytes = fdn_alloc(sizeof(*bytes));
         bytes->data = output;
         bytes->length = target;
+        bytes->capacity = output_length;
         *result = (uint64_t)(uintptr_t)bytes;
     }
     return 0;
@@ -975,6 +1151,7 @@ int32_t foundation_runtime_aes256_gcm_encrypt(uint64_t key_handle,
         fdn_bytes *bytes = fdn_alloc(sizeof(*bytes));
         bytes->data = output;
         bytes->length = output_length;
+        bytes->capacity = output_length;
         *result = (uint64_t)(uintptr_t)bytes;
     }
     fdn_secure_zero(round_keys, sizeof(round_keys));
@@ -1043,6 +1220,7 @@ int32_t foundation_runtime_aes256_gcm_decrypt(uint64_t key_handle,
         fdn_bytes *bytes = fdn_alloc(sizeof(*bytes));
         bytes->data = output;
         bytes->length = plaintext_length;
+        bytes->capacity = plaintext_length;
         *result = (uint64_t)(uintptr_t)bytes;
     }
     fdn_secure_zero(round_keys, sizeof(round_keys));

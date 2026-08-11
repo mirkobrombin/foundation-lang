@@ -2676,6 +2676,84 @@ if(BUILD_TESTING)
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
+    set(cpio_security_program_args "")
+    if(NOT WIN32)
+        set(cpio_security_root "${CMAKE_CURRENT_BINARY_DIR}/cpio-security")
+        set(cpio_symlink_source "${cpio_security_root}/source")
+        set(cpio_symlink_destination "${cpio_security_root}/destination")
+        set(cpio_symlink_outside "${cpio_security_root}/outside")
+        file(REMOVE_RECURSE "${cpio_security_root}")
+        file(MAKE_DIRECTORY
+            "${cpio_symlink_source}"
+            "${cpio_symlink_destination}"
+            "${cpio_symlink_outside}"
+        )
+        file(CREATE_LINK "${cpio_symlink_outside}"
+            "${cpio_symlink_source}/link" SYMBOLIC
+            RESULT cpio_source_link_result
+        )
+        file(CREATE_LINK "${cpio_symlink_outside}"
+            "${cpio_symlink_destination}/link" SYMBOLIC
+            RESULT cpio_destination_link_result
+        )
+        if(NOT cpio_source_link_result EQUAL 0 OR
+           NOT cpio_destination_link_result EQUAL 0)
+            message(FATAL_ERROR "cannot create CPIO security fixtures")
+        endif()
+        set(cpio_security_program_args
+            ";${cpio_symlink_source};${cpio_symlink_destination}"
+        )
+    endif()
+    add_test(
+        NAME stage0.run.cpio
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/cpio.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/cpio.out
+            "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs;${CMAKE_CURRENT_BINARY_DIR}/cpio-output${cpio_security_program_args}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.cpio-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/cpio.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/cpio.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/cpio
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/cpio.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs;${CMAKE_CURRENT_BINARY_DIR}/cpio-output-allocations${cpio_security_program_args}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.fs-tree
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fs-tree.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fs-tree.out
+            "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs;${CMAKE_CURRENT_BINARY_DIR}/fs-tree-output"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.fs-tree-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fs-tree.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/fs-tree.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/fs-tree
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fs-tree.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            "-DPROGRAM_ARGS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs;${CMAKE_CURRENT_BINARY_DIR}/fs-tree-output-allocations"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/secrets-store")
     add_test(
         NAME stage0.run.secrets
@@ -4002,6 +4080,14 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-exits.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-exits.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.partial-return-panic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/partial-return-panic.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/partial-return-panic.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(

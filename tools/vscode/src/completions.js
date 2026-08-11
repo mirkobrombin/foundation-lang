@@ -157,7 +157,7 @@ const staticCompletions = [
     { label: "std.text", kind: "Module", detail: "UTF-8 String inspection" },
     { label: "std.path", kind: "Module", detail: "Portable path operations" },
     { label: "std.parse", kind: "Module", detail: "Primitive value parsing" },
-    { label: "std.fs", kind: "Module", detail: "Read-only filesystem operations" },
+    { label: "std.fs", kind: "Module", detail: "Bounded filesystem operations" },
     { label: "std.net", kind: "Module", detail: "Portable TCP client and server operations" },
     { label: "std.format", kind: "Module", detail: "Primitive value formatting" },
     { label: "std.json", kind: "Module", detail: "Owned JSON values and parsing" },
@@ -165,6 +165,7 @@ const staticCompletions = [
     { label: "std.concurrent", kind: "Module", detail: "Cancellation and executor transfer" },
     { label: "@concurrent.Transferable()", kind: "Keyword", detail: "Opt a custom-drop owner into structural executor transfer", insertText: "@concurrent.Transferable()" },
     { label: "std.bytes", kind: "Module", detail: "Owned binary data and cryptographic encoding" },
+    { label: "std.cpio", kind: "Module", detail: "Bounded deterministic CPIO newc archives" },
     { label: "std.errors", kind: "Module", detail: "Typed recoverable error aggregation" },
     { label: "std.pattern", kind: "Module", detail: "Portable bounded pattern matching" },
     { label: "std.ring", kind: "Module", detail: "Preallocated bounded FIFO buffers" },
@@ -433,8 +434,12 @@ const staticCompletions = [
     { label: "web.MiddlewareRegistrationError", kind: "Enum", detail: "invalid manual middleware scope or duplicate order" },
     { label: "web.ServeOutcome", kind: "Struct", detail: "served request and reusable server" },
     { label: "bytes.Bytes", kind: "Struct", detail: "owned binary data cleared before release" },
+    { label: "bytes.Builder", kind: "Struct", detail: "bounded owned binary builder" },
     { label: "bytes.Error", kind: "Enum", detail: "binary data or encoding failure" },
     { label: "bytes.FromText", kind: "Function", detail: "fn FromText(value String) own Bytes", insertText: "bytes.FromText(${1:value})" },
+    { label: "bytes.NewBuilder", kind: "Function", detail: "fn NewBuilder(limit u64) Result<own Builder, Error>", insertText: "bytes.NewBuilder(${1:limit})" },
+    { label: "bytes.RuntimeHandle", kind: "Function", detail: "fn RuntimeHandle(value Bytes) u64", insertText: "bytes.RuntimeHandle(${1:value})" },
+    { label: "bytes.ClaimRuntimeHandle", kind: "Function", detail: "fn ClaimRuntimeHandle(handle u64) Result<own Bytes, Error>", insertText: "bytes.ClaimRuntimeHandle(${1:handle})" },
     { label: "bytes.EncodeBase64URL", kind: "Function", detail: "fn EncodeBase64URL(value Bytes) Result<String, Error>", insertText: "bytes.EncodeBase64URL(${1:value})" },
     { label: "bytes.DecodeBase64URL", kind: "Function", detail: "fn DecodeBase64URL(value String) Result<own Bytes, Error>", insertText: "bytes.DecodeBase64URL(${1:value})" },
     { label: "bytes.HmacSha256", kind: "Function", detail: "fn HmacSha256(key Bytes, value Bytes) Result<own Bytes, Error>", insertText: "bytes.HmacSha256(${1:key}, ${2:value})" },
@@ -442,8 +447,35 @@ const staticCompletions = [
     { label: "bytes.Bytes.Copy", kind: "Method", detail: "fn Copy(self) Result<own Bytes, Error>", insertText: "Copy()" },
     { label: "bytes.Bytes.Len", kind: "Method", detail: "fn Len(self) Result<u64, Error>", insertText: "Len()" },
     { label: "bytes.Bytes.At", kind: "Method", detail: "fn At(self, index u64) Result<u64, Error>", insertText: "At(${1:index})" },
+    { label: "bytes.Bytes.Slice", kind: "Method", detail: "fn Slice(self, start u64, end u64) Result<own Bytes, Error>", insertText: "Slice(${1:start}, ${2:end})" },
     { label: "bytes.Bytes.Text", kind: "Method", detail: "fn Text(self) Result<String, Error>", insertText: "Text()" },
     { label: "bytes.Bytes.Close", kind: "Method", detail: "fn Close(&self) bool", insertText: "Close()" },
+    { label: "bytes.Builder.Len", kind: "Method", detail: "fn Len(self) Result<u64, Error>", insertText: "Len()" },
+    { label: "bytes.Builder.WriteByte", kind: "Method", detail: "fn WriteByte(&self, value u64) Result<void, Error>", insertText: "WriteByte(${1:value})" },
+    { label: "bytes.Builder.Write", kind: "Method", detail: "fn Write(&self, value Bytes) Result<void, Error>", insertText: "Write(${1:value})" },
+    { label: "bytes.Builder.Finish", kind: "Method", detail: "fn Finish($self) Result<own Bytes, Error>", insertText: "Finish()" },
+    { label: "bytes.Builder.Close", kind: "Method", detail: "fn Close(&self) bool", insertText: "Close()" },
+    { label: "cpio.Error", kind: "Enum", detail: "archive, resource limit, or filesystem failure" },
+    { label: "cpio.ReaderLimits", kind: "Struct", detail: "bounded archive reader limits" },
+    { label: "cpio.WriterLimits", kind: "Struct", detail: "bounded entry and encoded archive limits" },
+    { label: "cpio.WriterOptions", kind: "Struct", detail: "deterministic metadata and writer limits" },
+    { label: "cpio.Entry", kind: "Struct", detail: "owned decoded CPIO newc entry" },
+    { label: "cpio.Reader", kind: "Struct", detail: "owned bounded CPIO newc reader" },
+    { label: "cpio.Writer", kind: "Struct", detail: "owned bounded CPIO newc writer" },
+    { label: "cpio.DefaultReaderLimits", kind: "Function", detail: "fn DefaultReaderLimits() ReaderLimits", insertText: "cpio.DefaultReaderLimits()" },
+    { label: "cpio.DefaultWriterLimits", kind: "Function", detail: "fn DefaultWriterLimits() WriterLimits", insertText: "cpio.DefaultWriterLimits()" },
+    { label: "cpio.DefaultWriterOptions", kind: "Function", detail: "fn DefaultWriterOptions() WriterOptions", insertText: "cpio.DefaultWriterOptions()" },
+    { label: "cpio.NewReader", kind: "Function", detail: "fn NewReader($archive own bytes.Bytes) Result<own Reader, Error>", insertText: "cpio.NewReader(\\$${1:archive})" },
+    { label: "cpio.NewReaderWithLimits", kind: "Function", detail: "fn NewReaderWithLimits($archive own bytes.Bytes, limits ReaderLimits) Result<own Reader, Error>", insertText: "cpio.NewReaderWithLimits(\\$${1:archive}, ${2:limits})" },
+    { label: "cpio.NewWriter", kind: "Function", detail: "fn NewWriter() Result<own Writer, Error>", insertText: "cpio.NewWriter()" },
+    { label: "cpio.NewWriterWithOptions", kind: "Function", detail: "fn NewWriterWithOptions(options WriterOptions) Result<own Writer, Error>", insertText: "cpio.NewWriterWithOptions(${1:options})" },
+    { label: "cpio.PackDir", kind: "Function", detail: "fn PackDir(path String) Result<own bytes.Bytes, Error>", insertText: "cpio.PackDir(${1:path})" },
+    { label: "cpio.PackDirWithOptions", kind: "Function", detail: "fn PackDirWithOptions(path String, options WriterOptions) Result<own bytes.Bytes, Error>", insertText: "cpio.PackDirWithOptions(${1:path}, ${2:options})" },
+    { label: "cpio.UnpackToDir", kind: "Function", detail: "fn UnpackToDir($archive own bytes.Bytes, destination String) Result<void, Error>", insertText: "cpio.UnpackToDir(\\$${1:archive}, ${2:destination})" },
+    { label: "cpio.Reader.Next", kind: "Method", detail: "fn Next(&self) Result<own Entry, Error>", insertText: "Next()" },
+    { label: "cpio.Writer.AddDir", kind: "Method", detail: "fn AddDir(&self, name String, permissions u32) Result<void, Error>", insertText: "AddDir(${1:name}, ${2:permissions})" },
+    { label: "cpio.Writer.AddFile", kind: "Method", detail: "fn AddFile(&self, name String, permissions u32, data bytes.Bytes) Result<void, Error>", insertText: "AddFile(${1:name}, ${2:permissions}, ${3:data})" },
+    { label: "cpio.Writer.Finish", kind: "Method", detail: "fn Finish($self) Result<own bytes.Bytes, Error>", insertText: "Finish()" },
     { label: "ring.Buffer", kind: "Struct", detail: "preallocated bounded FIFO for owned values" },
     { label: "ring.ByteBuffer", kind: "Struct", detail: "preallocated bounded FIFO for bytes" },
     { label: "ring.ConfigurationError", kind: "Enum", detail: "invalid ring capacity" },
@@ -549,7 +581,7 @@ const staticCompletions = [
         label: "env.Get",
         kind: "Function",
         detail: "fn Get(name String) Result<Option<String>, env.Error>",
-        insertText: "env.Get(view ${1:name})"
+        insertText: "env.Get(${1:name})"
     },
     {
         label: "env.Home",
@@ -561,13 +593,13 @@ const staticCompletions = [
         label: "text.ByteLen",
         kind: "Function",
         detail: "fn ByteLen(value String) u64",
-        insertText: "text.ByteLen(view ${1:value})"
+        insertText: "text.ByteLen(${1:value})"
     },
     {
         label: "text.Contains",
         kind: "Function",
         detail: "fn Contains(value String, part String) bool",
-        insertText: "text.Contains(view ${1:value}, view ${2:part})"
+        insertText: "text.Contains(${1:value}, ${2:part})"
     },
     {
         label: "text.NewBuilder",
@@ -579,7 +611,7 @@ const staticCompletions = [
         label: "path.Join",
         kind: "Function",
         detail: "fn Join(left String, right String) String",
-        insertText: "path.Join(view ${1:left}, view ${2:right})"
+        insertText: "path.Join(${1:left}, ${2:right})"
     },
     parseBooleanCompletion,
     ...parseIntegerCompletions,
@@ -587,7 +619,7 @@ const staticCompletions = [
         label: "fs.OpenLines",
         kind: "Function",
         detail: "fn OpenLines(path String) Result<own fs.LineReader, fs.Error>",
-        insertText: "fs.OpenLines(view ${1:path})"
+        insertText: "fs.OpenLines(${1:path})"
     },
     {
         label: "fs.ReadText",
@@ -605,20 +637,42 @@ const staticCompletions = [
         label: "fs.OpenDir",
         kind: "Function",
         detail: "fn OpenDir(path String) Result<own fs.DirReader, fs.Error>",
-        insertText: "fs.OpenDir(view ${1:path})"
+        insertText: "fs.OpenDir(${1:path})"
     },
     {
         label: "fs.Size",
         kind: "Function",
         detail: "fn Size(path String) Result<u64, fs.Error>",
-        insertText: "fs.Size(view ${1:path})"
+        insertText: "fs.Size(${1:path})"
     },
     {
         label: "fs.Modified",
         kind: "Function",
         detail: "fn Modified(path String) Result<u64, fs.Error>",
-        insertText: "fs.Modified(view ${1:path})"
+        insertText: "fs.Modified(${1:path})"
     },
+    {
+        label: "fs.OpenTree",
+        kind: "Function",
+        detail: "fn OpenTree(path String, maxEntries u64, maxPathLength u64) Result<own fs.TreeReader, fs.Error>",
+        insertText: "fs.OpenTree(${1:path}, ${2:maxEntries}, ${3:maxPathLength})"
+    },
+    {
+        label: "fs.OpenRoot",
+        kind: "Function",
+        detail: "fn OpenRoot(path String) Result<own fs.RootWriter, fs.Error>",
+        insertText: "fs.OpenRoot(${1:path})"
+    },
+    { label: "fs.TreeKind", kind: "Enum", detail: "regular, directory, symbolic link, or other entry" },
+    { label: "fs.TreeEntry", kind: "Struct", detail: "deterministic relative filesystem entry" },
+    { label: "fs.TreeReader", kind: "Struct", detail: "owned bounded no-follow directory tree" },
+    { label: "fs.RootWriter", kind: "Struct", detail: "owned confined atomic filesystem writer" },
+    { label: "fs.TreeReader.Next", kind: "Method", detail: "fn Next(&self) Result<Option<fs.TreeEntry>, fs.Error>", insertText: "Next()" },
+    { label: "fs.TreeReader.ReadFile", kind: "Method", detail: "fn ReadFile(self, path String, limit u64) Result<own bytes.Bytes, fs.Error>", insertText: "ReadFile(${1:path}, ${2:limit})" },
+    { label: "fs.TreeReader.Close", kind: "Method", detail: "fn Close(&self) Result<bool, fs.Error>", insertText: "Close()" },
+    { label: "fs.RootWriter.CreateDirectory", kind: "Method", detail: "fn CreateDirectory(&self, path String) Result<void, fs.Error>", insertText: "CreateDirectory(${1:path})" },
+    { label: "fs.RootWriter.WriteFile", kind: "Method", detail: "fn WriteFile(self, path String, value bytes.Bytes, permissions u32) Result<void, fs.Error>", insertText: "WriteFile(${1:path}, ${2:value}, ${3:permissions})" },
+    { label: "fs.RootWriter.Close", kind: "Method", detail: "fn Close(&self) Result<bool, fs.Error>", insertText: "Close()" },
     {
         label: "fs.LineReader.Next",
         kind: "Method",
@@ -1009,7 +1063,7 @@ const staticCompletions = [
         label: "json.Parse",
         kind: "Function",
         detail: "fn Parse(source String) Result<json.Value, json.Error>",
-        insertText: "json.Parse(view ${1:source})"
+        insertText: "json.Parse(${1:source})"
     },
     {
         label: "time.Now",

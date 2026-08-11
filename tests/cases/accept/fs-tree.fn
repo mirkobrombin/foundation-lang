@@ -1,0 +1,121 @@
+package test.fs_tree
+
+import std.bytes
+import std.fs
+import std.text
+
+fn requiredEntry($value Option<fs.TreeEntry>) fs.TreeEntry {
+    match value {
+        None: panic("filesystem tree entry is missing")
+        Some(entry): entry
+    }
+}
+
+fn binaryPayload() own bytes.Bytes {
+    const opened = bytes.NewBuilder(14) else error {
+        discard error
+        panic("filesystem tree payload builder failed")
+    }
+    var builder = opened
+    const prefix = bytes.FromText("binary")
+    builder.Write(prefix) else error {
+        discard error
+        panic("filesystem tree payload prefix failed")
+    }
+    builder.WriteByte(0) else error {
+        discard error
+        panic("filesystem tree payload zero failed")
+    }
+    const suffix = bytes.FromText("payload")
+    builder.Write(suffix) else error {
+        discard error
+        panic("filesystem tree payload suffix failed")
+    }
+    const result = builder.Finish() else error {
+        discard error
+        panic("filesystem tree payload finish failed")
+    }
+    result
+}
+
+fn kindIs(kind fs.TreeKind, expected i32) bool {
+    match kind {
+        File: expected == 1
+        Directory: expected == 2
+        SymbolicLink: expected == 3
+        Other: expected == 4
+    }
+}
+
+fn main(args [String]) i32 {
+    const openedSource = fs.OpenTree(args[0], 10, 4096) else error {
+        discard error
+        return 1
+    }
+    var source = openedSource
+    const sourceNext = source.Next() else error {
+        discard error
+        return 2
+    }
+    const sourceEntry = requiredEntry($sourceNext)
+    if !text.Equal(sourceEntry.Path, "lines.jsonl") ||
+        !kindIs(sourceEntry.Kind, 1) || sourceEntry.Size == 0 {
+        return 3
+    }
+    const sourceBytes = source.ReadFile(sourceEntry.Path, sourceEntry.Size) else error {
+        discard error
+        return 4
+    }
+    const sourceText = sourceBytes.Text() else error {
+        discard error
+        return 5
+    }
+    if !text.Contains(sourceText, "last") return 6
+    discard source.Close()
+
+    const openedRoot = fs.OpenRoot(args[1]) else error {
+        discard error
+        return 7
+    }
+    var root = openedRoot
+    root.CreateDirectory("nested") else error {
+        discard error
+        return 8
+    }
+    const payload = binaryPayload()
+    root.WriteFile("nested/payload.bin", payload, 416) else error {
+        discard error
+        return 9
+    }
+    discard root.Close()
+
+    const openedOutput = fs.OpenTree(args[1], 10, 4096) else error {
+        discard error
+        return 10
+    }
+    var output = openedOutput
+    const directoryNext = output.Next() else error {
+        discard error
+        return 11
+    }
+    const directory = requiredEntry($directoryNext)
+    const fileNext = output.Next() else error {
+        discard error
+        return 12
+    }
+    const file = requiredEntry($fileNext)
+    if !text.Equal(directory.Path, "nested") || !kindIs(directory.Kind, 2) ||
+        !text.Equal(file.Path, "nested/payload.bin") || !kindIs(file.Kind, 1) ||
+        file.Size != 14 {
+        return 13
+    }
+    const copied = output.ReadFile(file.Path, 14) else error {
+        discard error
+        return 14
+    }
+    if !bytes.ConstantTimeEqual(payload, copied) return 15
+    discard output.Close()
+
+    print("fs tree ok")
+    0
+}

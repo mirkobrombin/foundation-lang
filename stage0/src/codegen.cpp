@@ -1200,9 +1200,19 @@ void markDivergingFunctions(FirProgram &program) {
     do {
         changed = false;
         for (auto &function : program.functions) {
+            const auto hasReturningPath = std::any_of(
+                function.statements.begin(), function.statements.end(),
+                [&](const FirStatement &statement) {
+                    const auto *returned =
+                        std::get_if<FirReturnStatement>(&statement.value);
+                    return returned != nullptr &&
+                           (!returned->value.has_value() ||
+                            !expressionDiverges(program, function,
+                                                *returned->value));
+                });
             if (function.hasBody && !function.stateTransition.has_value() &&
                 !function.stateTimeout.has_value() && !function.workflow.has_value() &&
-                !function.diverges &&
+                !function.diverges && !hasReturningPath &&
                 blockFlow(program, function, function.body) == ControlFlow::Diverges) {
                 function.diverges = true;
                 changed = true;

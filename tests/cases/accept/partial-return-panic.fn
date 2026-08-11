@@ -1,0 +1,12 @@
+fn classify(value i32) i32 {
+    if value == 1 return 10
+    if value == 2 return 20
+    panic("invalid classification")
+}
+
+fn main() i32 {
+    if classify(1) != 10 return 1
+    if classify(2) != 20 return 2
+    print("partial return panic")
+    0
+}

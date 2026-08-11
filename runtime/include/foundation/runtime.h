@@ -227,7 +227,15 @@ int32_t foundation_runtime_bytes_copy(uint64_t handle, uint64_t *result);
 int32_t foundation_runtime_bytes_length(uint64_t handle, uint64_t *result);
 int32_t foundation_runtime_bytes_at(uint64_t handle, uint64_t index, uint64_t *result);
 int32_t foundation_runtime_bytes_to_text(uint64_t handle, fdn_string *result);
+int32_t foundation_runtime_bytes_slice(uint64_t handle, uint64_t start, uint64_t end,
+                                       uint64_t *result);
 void foundation_runtime_bytes_close(uint64_t *handle);
+int32_t foundation_runtime_bytes_builder_open(uint64_t limit, uint64_t *result);
+int32_t foundation_runtime_bytes_builder_length(uint64_t handle, uint64_t *result);
+int32_t foundation_runtime_bytes_builder_append_byte(uint64_t handle, uint64_t value);
+int32_t foundation_runtime_bytes_builder_append(uint64_t handle, uint64_t value);
+int32_t foundation_runtime_bytes_builder_finish(uint64_t *handle, uint64_t *result);
+void foundation_runtime_bytes_builder_close(uint64_t *handle);
 int32_t foundation_runtime_base64url_encode(uint64_t handle, fdn_string *result);
 int32_t foundation_runtime_base64url_decode(const fdn_string *value, uint64_t *result);
 int32_t foundation_runtime_base64_encode(uint64_t handle, fdn_string *result);
@@ -304,6 +312,26 @@ int32_t foundation_runtime_fs_write_private_text_atomic(const fdn_string *path,
                                                         uint64_t max_length);
 int32_t foundation_runtime_fs_delete_private_file(const fdn_string *path);
 uint64_t foundation_runtime_fs_live_directories(void);
+int32_t foundation_runtime_fs_tree_open(const fdn_string *path,
+                                        uint64_t max_entries,
+                                        uint64_t max_path_length,
+                                        uint64_t *handle);
+int32_t foundation_runtime_fs_tree_next(uint64_t handle, fdn_string *path,
+                                        uint32_t *kind, bool *executable,
+                                        uint64_t *size);
+int32_t foundation_runtime_fs_tree_read(uint64_t handle,
+                                        const fdn_string *relative_path,
+                                        uint64_t max_length,
+                                        uint64_t *bytes_handle);
+int32_t foundation_runtime_fs_tree_close(uint64_t *handle);
+int32_t foundation_runtime_fs_root_open(const fdn_string *path,
+                                        uint64_t *handle);
+int32_t foundation_runtime_fs_root_create_directory(
+    uint64_t handle, const fdn_string *relative_path);
+int32_t foundation_runtime_fs_root_write_file(
+    uint64_t handle, const fdn_string *relative_path, uint64_t bytes_handle,
+    uint32_t permissions);
+int32_t foundation_runtime_fs_root_close(uint64_t *handle);
 int32_t foundation_runtime_net_resolve(const fdn_string *host, uint64_t port,
                                        uint64_t *addresses);
 void foundation_runtime_net_addresses_close(uint64_t addresses);
