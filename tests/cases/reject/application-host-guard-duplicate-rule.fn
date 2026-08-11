@@ -1,0 +1,12 @@
+package test.host.guard.duplicate
+
+import foundation.guard
+
+@guard.Policy()
+@guard.Allow("admin", "read")
+@guard.Allow("admin", "read")
+struct Resource {}
+
+fn main() i32 {
+    0
+}

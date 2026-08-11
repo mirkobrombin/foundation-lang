@@ -1,0 +1,16 @@
+package test.host.guard.getrolescollision
+
+import foundation.guard
+
+@guard.Policy()
+struct Resource {
+    fn GetRoles(self, identity guard.Identity) Result<own guard.Roles, guard.Error> {
+        discard self
+        discard identity
+        .Ok(guard.NewRoles())
+    }
+}
+
+fn main() i32 {
+    0
+}

@@ -1,0 +1,12 @@
+package test.host.guard.orphan
+
+import foundation.guard
+
+struct Resource {
+    @guard.Dynamic("read")
+    Role String
+}
+
+fn main() i32 {
+    0
+}

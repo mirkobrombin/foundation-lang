@@ -3815,6 +3815,110 @@ void derivedValidationExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void derivedGuardExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fn";
+    const std::string contents =
+        "package sample\n"
+        "\n"
+        "import foundation.guard\n"
+        "import std.text\n"
+        "\n"
+        "struct User implements guard.Identity {\n"
+        "    id String\n"
+        "    role String\n"
+        "\n"
+        "    fn ID(self) String {\n"
+        "        text.Copy(self.id)\n"
+        "    }\n"
+        "\n"
+        "    fn HasRole(self, role String) bool {\n"
+        "        self.role == role\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "@guard.Policy()\n"
+        "@guard.Allow(\"admin\", \"read\")\n"
+        "struct Document {\n"
+        "    @guard.Dynamic(\"view\")\n"
+        "    Public String\n"
+        "}\n"
+        "\n"
+        "fn inspect(document Document, user User) bool {\n"
+        "    const checked = document.Can(user, \"view\")\n"
+        "    match checked {\n"
+        "        Ok: true\n"
+        "        Err(error): {\n"
+        "            discard error\n"
+        "            false\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "fn main() i32 {\n"
+        "    const user = User { id = \"1\" role = \"guest\" }\n"
+        "    const document = Document { Public = \"guest\" }\n"
+        "    0 if inspect(document, user) else 1\n"
+        "}\n";
+    writeFile(source, contents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"" +
+        fileUri(root) + "\"}}";
+    const auto open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(contents) + "\"}}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line,
+                                      int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+               ",\"method\":\"textDocument/" + std::string(method) +
+               "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(216, "hover", 26, 31)) +
+        frame(request(217, "signatureHelp", 26, 39)) +
+        frame(request(218, "definition", 26, 31)) +
+        frame(request(219, "completion", 26, 29)) +
+        frame(request(220, "hover", 19, 8)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto hover = responseFor(transcript, 216);
+    const auto signature = responseFor(transcript, 217);
+    const auto definition = responseFor(transcript, 218);
+    const auto completion = responseFor(transcript, 219);
+    const auto allowHover = responseFor(transcript, 220);
+
+    expect(status == 0, "derived guard language server transcript exits cleanly");
+    expect(errors.str().empty(), "derived guard requests write no server errors");
+    expect(hover.find("fn Can") != std::string::npos &&
+               hover.find("Result") != std::string::npos,
+           "derived guard exposes compiler-backed hover");
+    expect(signature.find("fn Can") != std::string::npos &&
+               signature.find("operation String") != std::string::npos,
+           "derived guard exposes compiler-backed signature help");
+    expect(definition.find(sourceUri) != std::string::npos &&
+               definition.find(".foundation.generated.fn") == std::string::npos,
+           "derived guard definition returns to its source struct");
+    expect(completion.find("\"label\":\"Can\"") != std::string::npos &&
+               completion.find("\"label\":\"GetRoles\"") != std::string::npos,
+           "derived guard methods appear in member completion");
+    expect(allowHover.find("attribute Allow(role String, operation String)") !=
+                   std::string::npos &&
+               allowHover.find("Grants one role one action") != std::string::npos,
+           "guard policy attributes expose typed hover and documentation");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 void derivedSerializerExposesEditorDetails() {
     const auto root = temporaryRoot();
     const auto source = root / "main.fn";
@@ -5036,6 +5140,7 @@ int main() {
     rawPointersExposeEditorDetails();
     servicesAndActionsExposeEditorDetails();
     derivedValidationExposesEditorDetails();
+    derivedGuardExposesEditorDetails();
     derivedSerializerExposesEditorDetails();
     openAPIAttributesExposeEditorDetails();
     authenticationPackagesExposeEditorDetails();

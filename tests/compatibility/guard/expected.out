@@ -1,0 +1,8 @@
+admin-read	allowed
+admin-edit	denied
+editor-edit	allowed
+guest-view	allowed
+owner-manage	allowed
+stranger-manage	denied
+unknown	no-policy
+owner-roles	true,false,true

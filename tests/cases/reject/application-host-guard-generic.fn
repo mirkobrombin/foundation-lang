@@ -1,0 +1,12 @@
+package test.host.guard.generic
+
+import foundation.guard
+
+@guard.Policy()
+struct Resource<T> {
+    Value T
+}
+
+fn main() i32 {
+    0
+}

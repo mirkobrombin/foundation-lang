@@ -1,0 +1,51 @@
+package test.derived.guard
+
+import foundation.guard
+import std.text
+
+struct User implements guard.Identity {
+    id String
+    primaryRole String
+    secondaryRole String
+
+    fn ID(self) String {
+        text.Copy(self.id)
+    }
+
+    fn HasRole(self, role String) bool {
+        self.primaryRole == role || self.secondaryRole == role
+    }
+}
+
+@guard.Policy()
+@guard.Allow("admin", "read")
+@guard.Allow("admin", "write")
+@guard.Allow("editor", "edit")
+@guard.Allow("*", "inspect")
+struct Document {
+    @guard.Dynamic("view")
+    PublicRole String
+
+    @guard.Dynamic("manage")
+    Members own guard.Relationships
+}
+
+@guard.Policy()
+struct EmptyPolicy {}
+
+fn NewDocument(
+    $members own guard.Relationships
+) own Document {
+    own Document {
+        PublicRole = "guest"
+        Members = members
+    }
+}
+
+fn NewUser(id String, primaryRole String, secondaryRole String) User {
+    User {
+        id = text.Copy(id)
+        primaryRole = text.Copy(primaryRole)
+        secondaryRole = text.Copy(secondaryRole)
+    }
+}

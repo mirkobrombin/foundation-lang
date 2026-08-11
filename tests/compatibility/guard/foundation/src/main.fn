@@ -1,0 +1,98 @@
+package test.compatibility.guard
+
+import foundation.guard
+import std.text
+
+struct User implements guard.Identity {
+    id String
+    role String
+
+    fn ID(self) String {
+        text.Copy(self.id)
+    }
+
+    fn HasRole(self, role String) bool {
+        self.role == role
+    }
+}
+
+@guard.Policy()
+@guard.Allow("admin", "read")
+@guard.Allow("admin", "write")
+@guard.Allow("editor", "edit")
+struct Document {
+    @guard.Dynamic("view")
+    Public String
+
+    @guard.Dynamic("manage")
+    Members own guard.Relationships
+}
+
+fn main() i32 {
+    const opened = guard.NewRelationships(4) else error {
+        discard error
+        return 1
+    }
+    var relationships = opened
+    relationships.Add("3", "owner") else error {
+        discard error
+        return 2
+    }
+    const document = own Document {
+        Public = "guest"
+        Members = relationships
+    }
+    const admin = user("1", "admin")
+    const editor = user("2", "editor")
+    const owner = user("3", "owner")
+    const stranger = user("4", "guest")
+
+    report("admin-read", document.Can(admin, "read"))
+    report("admin-edit", document.Can(admin, "edit"))
+    report("editor-edit", document.Can(editor, "edit"))
+    report("guest-view", document.Can(stranger, "view"))
+    report("owner-manage", document.Can(owner, "manage"))
+    report("stranger-manage", document.Can(stranger, "manage"))
+    report("unknown", document.Can(admin, "unknown"))
+
+    const resolved = document.GetRoles(owner) else error {
+        discard error
+        return 3
+    }
+    print("owner-roles\t" + flag(resolved.Has("owner")) + "," +
+        flag(resolved.Has("admin")) + "," + flag(resolved.Has("guest")))
+    discard resolved
+    discard document
+    0
+}
+
+fn user(id String, role String) User {
+    User { id = text.Copy(id) role = text.Copy(role) }
+}
+
+fn report(name String, $result Result<void, guard.Error>) void {
+    const status = match result {
+        Ok: "allowed"
+        Err(error): match error {
+            NoPolicy(operation): consumeOperation($operation, "no-policy")
+            PermissionDenied(operation): consumeOperation($operation, "denied")
+            TooManyRoles: "roles-overflow"
+            RoleSource(value): consumeSource($value)
+        }
+    }
+    print(name + "\t" + status)
+}
+
+fn consumeOperation($operation String, result String) String {
+    discard operation
+    text.Copy(result)
+}
+
+fn consumeSource($value guard.RoleSourceError) String {
+    discard value
+    "source-error"
+}
+
+fn flag(value bool) String {
+    "true" if value else "false"
+}

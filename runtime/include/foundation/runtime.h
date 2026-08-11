@@ -207,6 +207,21 @@ bool foundation_runtime_string_builder_append_code_point(uint64_t handle, uint64
 fdn_string foundation_runtime_string_builder_finish(uint64_t handle);
 void foundation_runtime_string_builder_close(uint64_t handle);
 uint64_t foundation_runtime_string_builder_live_handles(void);
+int32_t foundation_runtime_guard_roles_open(uint64_t limit, uint64_t *result);
+int32_t foundation_runtime_guard_roles_add(uint64_t handle, const fdn_string *role);
+bool foundation_runtime_guard_roles_has(uint64_t handle, const fdn_string *role);
+int32_t foundation_runtime_guard_roles_count(uint64_t handle, uint64_t *result);
+int32_t foundation_runtime_guard_roles_at(uint64_t handle, uint64_t index,
+                                          fdn_string *result);
+void foundation_runtime_guard_roles_close(uint64_t *handle);
+int32_t foundation_runtime_guard_relationships_open(uint64_t limit, uint64_t *result);
+int32_t foundation_runtime_guard_relationships_add(uint64_t handle,
+                                                   const fdn_string *identity,
+                                                   const fdn_string *role);
+int32_t foundation_runtime_guard_relationships_roles(uint64_t handle,
+                                                     const fdn_string *identity,
+                                                     uint64_t *result);
+void foundation_runtime_guard_relationships_close(uint64_t *handle);
 fdn_string foundation_runtime_format_bool(bool value);
 fdn_string foundation_runtime_format_i8(int8_t value);
 fdn_string foundation_runtime_format_i16(int16_t value);

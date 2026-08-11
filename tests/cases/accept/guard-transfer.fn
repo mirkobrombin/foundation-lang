@@ -1,0 +1,46 @@
+import foundation.guard
+import foundation.worker
+
+task verify(
+    $roles own guard.Roles,
+    $relationships own guard.Relationships
+) void {
+    if !roles.Has("worker") {
+        panic("transferred role is missing")
+    }
+    const resolved = relationships.Roles("1") else error {
+        discard error
+        panic("transferred relationship lookup failed")
+    }
+    if !resolved.Has("worker") {
+        panic("transferred relationship role is missing")
+    }
+    discard resolved
+    discard roles
+    discard relationships
+    print("guard transfer ok")
+}
+
+fn main() i32 {
+    var roles = guard.NewRoles()
+    const inserted = roles.Add("worker") else error {
+        discard error
+        return 1
+    }
+    if !inserted return 2
+
+    const opened = guard.NewRelationships(1) else error {
+        discard error
+        return 3
+    }
+    var relationships = opened
+    relationships.Add("1", "worker") else error {
+        discard error
+        return 4
+    }
+
+    const pool = worker.NewPool(1)
+    pool.Start(spawn verify($roles, $relationships))
+    pool.Shutdown()
+    0
+}

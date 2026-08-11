@@ -919,6 +919,273 @@ uint64_t foundation_runtime_string_builder_live_handles(void) {
     return fdn_handle_count_read(&fdn_live_string_builder_count);
 }
 
+typedef struct fdn_guard_roles {
+    fdn_string *values;
+    size_t length;
+    size_t capacity;
+    size_t limit;
+} fdn_guard_roles;
+
+typedef struct fdn_guard_relationship {
+    fdn_string identity;
+    fdn_string role;
+} fdn_guard_relationship;
+
+typedef struct fdn_guard_relationships {
+    fdn_guard_relationship *values;
+    size_t length;
+    size_t capacity;
+    size_t limit;
+} fdn_guard_relationships;
+
+static bool fdn_guard_text_equal(const fdn_string *left, const fdn_string *right) {
+    return left != NULL && right != NULL && left->length == right->length &&
+           (left->length == 0 || memcmp(left->data, right->data, left->length) == 0);
+}
+
+static bool fdn_guard_text_valid(const fdn_string *value) {
+    return value != NULL && value->length != 0 && value->data != NULL &&
+           fdn_utf8_valid(value->data, value->length);
+}
+
+static bool fdn_guard_reserve(void **values, size_t element_size, size_t used,
+                              size_t *capacity, size_t required, size_t limit) {
+    size_t next;
+    void *replacement;
+
+    if (required <= *capacity) {
+        return true;
+    }
+    if (required > limit || element_size == 0) {
+        return false;
+    }
+    next = *capacity == 0 ? 4 : *capacity;
+    while (next < required) {
+        if (next > limit / 2) {
+            next = limit;
+            break;
+        }
+        next *= 2;
+    }
+    if (next > limit) {
+        next = limit;
+    }
+    if (next < required || next > SIZE_MAX / element_size) {
+        return false;
+    }
+    replacement = fdn_alloc(next * element_size);
+    if (*values != NULL) {
+        (void)memcpy(replacement, *values, used * element_size);
+        fdn_dealloc(*values);
+    }
+    *values = replacement;
+    *capacity = next;
+    return true;
+}
+
+static fdn_guard_roles *fdn_guard_roles_create(size_t limit) {
+    fdn_guard_roles *roles = fdn_alloc(sizeof(*roles));
+    roles->values = NULL;
+    roles->length = 0;
+    roles->capacity = 0;
+    roles->limit = limit;
+    return roles;
+}
+
+static int32_t fdn_guard_roles_add(fdn_guard_roles *roles, const fdn_string *role) {
+    size_t index;
+
+    if (roles == NULL) {
+        return 4;
+    }
+    if (!fdn_guard_text_valid(role)) {
+        return 2;
+    }
+    for (index = 0; index < roles->length; ++index) {
+        if (fdn_guard_text_equal(&roles->values[index], role)) {
+            return 1;
+        }
+    }
+    if (roles->length == roles->limit ||
+        !fdn_guard_reserve((void **)&roles->values, sizeof(*roles->values), roles->length,
+                           &roles->capacity, roles->length + 1, roles->limit)) {
+        return 3;
+    }
+    roles->values[roles->length++] = foundation_runtime_string_copy(role);
+    return 0;
+}
+
+int32_t foundation_runtime_guard_roles_open(uint64_t limit, uint64_t *result) {
+    if (result == NULL) {
+        return 1;
+    }
+    *result = 0;
+    if (limit == 0 || limit > UINT64_C(65536) || limit > (uint64_t)SIZE_MAX) {
+        return 1;
+    }
+    *result = (uint64_t)(uintptr_t)fdn_guard_roles_create((size_t)limit);
+    return 0;
+}
+
+int32_t foundation_runtime_guard_roles_add(uint64_t handle, const fdn_string *role) {
+    return fdn_guard_roles_add((fdn_guard_roles *)(uintptr_t)handle, role);
+}
+
+bool foundation_runtime_guard_roles_has(uint64_t handle, const fdn_string *role) {
+    const fdn_guard_roles *roles = (const fdn_guard_roles *)(uintptr_t)handle;
+    size_t index;
+
+    if (roles == NULL || !fdn_guard_text_valid(role)) {
+        return false;
+    }
+    for (index = 0; index < roles->length; ++index) {
+        if (fdn_guard_text_equal(&roles->values[index], role)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int32_t foundation_runtime_guard_roles_count(uint64_t handle, uint64_t *result) {
+    const fdn_guard_roles *roles = (const fdn_guard_roles *)(uintptr_t)handle;
+    if (roles == NULL || result == NULL) {
+        return 1;
+    }
+    *result = (uint64_t)roles->length;
+    return 0;
+}
+
+int32_t foundation_runtime_guard_roles_at(uint64_t handle, uint64_t index,
+                                          fdn_string *result) {
+    const fdn_guard_roles *roles = (const fdn_guard_roles *)(uintptr_t)handle;
+    if (roles == NULL || result == NULL) {
+        return 1;
+    }
+    if (index >= roles->length) {
+        return 2;
+    }
+    fdn_string_drop(result);
+    *result = foundation_runtime_string_copy(&roles->values[(size_t)index]);
+    return 0;
+}
+
+void foundation_runtime_guard_roles_close(uint64_t *handle) {
+    fdn_guard_roles *roles;
+    size_t index;
+
+    if (handle == NULL || *handle == 0) {
+        return;
+    }
+    roles = (fdn_guard_roles *)(uintptr_t)*handle;
+    *handle = 0;
+    for (index = 0; index < roles->length; ++index) {
+        fdn_string_drop(&roles->values[index]);
+    }
+    fdn_dealloc(roles->values);
+    fdn_dealloc(roles);
+}
+
+int32_t foundation_runtime_guard_relationships_open(uint64_t limit, uint64_t *result) {
+    fdn_guard_relationships *relationships;
+
+    if (result == NULL) {
+        return 1;
+    }
+    *result = 0;
+    if (limit == 0 || limit > UINT64_C(65536) || limit > (uint64_t)SIZE_MAX) {
+        return 1;
+    }
+    relationships = fdn_alloc(sizeof(*relationships));
+    relationships->values = NULL;
+    relationships->length = 0;
+    relationships->capacity = 0;
+    relationships->limit = (size_t)limit;
+    *result = (uint64_t)(uintptr_t)relationships;
+    return 0;
+}
+
+int32_t foundation_runtime_guard_relationships_add(uint64_t handle,
+                                                   const fdn_string *identity,
+                                                   const fdn_string *role) {
+    fdn_guard_relationships *relationships =
+        (fdn_guard_relationships *)(uintptr_t)handle;
+    size_t index;
+
+    if (relationships == NULL) {
+        return 4;
+    }
+    if (!fdn_guard_text_valid(identity) || !fdn_guard_text_valid(role)) {
+        return 2;
+    }
+    for (index = 0; index < relationships->length; ++index) {
+        if (fdn_guard_text_equal(&relationships->values[index].identity, identity) &&
+            fdn_guard_text_equal(&relationships->values[index].role, role)) {
+            return 1;
+        }
+    }
+    if (relationships->length == relationships->limit ||
+        !fdn_guard_reserve((void **)&relationships->values,
+                           sizeof(*relationships->values), relationships->length,
+                           &relationships->capacity, relationships->length + 1,
+                           relationships->limit)) {
+        return 3;
+    }
+    relationships->values[relationships->length].identity =
+        foundation_runtime_string_copy(identity);
+    relationships->values[relationships->length].role =
+        foundation_runtime_string_copy(role);
+    relationships->length += 1;
+    return 0;
+}
+
+int32_t foundation_runtime_guard_relationships_roles(uint64_t handle,
+                                                     const fdn_string *identity,
+                                                     uint64_t *result) {
+    const fdn_guard_relationships *relationships =
+        (const fdn_guard_relationships *)(uintptr_t)handle;
+    fdn_guard_roles *roles;
+    size_t index;
+
+    if (result == NULL) {
+        return 1;
+    }
+    *result = 0;
+    if (relationships == NULL || !fdn_guard_text_valid(identity)) {
+        return 1;
+    }
+    roles = fdn_guard_roles_create((size_t)UINT64_C(65536));
+    for (index = 0; index < relationships->length; ++index) {
+        if (fdn_guard_text_equal(&relationships->values[index].identity, identity)) {
+            const int32_t status =
+                fdn_guard_roles_add(roles, &relationships->values[index].role);
+            if (status != 0 && status != 1) {
+                uint64_t role_handle = (uint64_t)(uintptr_t)roles;
+                foundation_runtime_guard_roles_close(&role_handle);
+                return 1;
+            }
+        }
+    }
+    *result = (uint64_t)(uintptr_t)roles;
+    return 0;
+}
+
+void foundation_runtime_guard_relationships_close(uint64_t *handle) {
+    fdn_guard_relationships *relationships;
+    size_t index;
+
+    if (handle == NULL || *handle == 0) {
+        return;
+    }
+    relationships = (fdn_guard_relationships *)(uintptr_t)*handle;
+    *handle = 0;
+    for (index = 0; index < relationships->length; ++index) {
+        fdn_string_drop(&relationships->values[index].identity);
+        fdn_string_drop(&relationships->values[index].role);
+    }
+    fdn_dealloc(relationships->values);
+    fdn_dealloc(relationships);
+}
+
 static fdn_string fdn_format_result(const char *type_name, char *buffer, size_t capacity,
                                     int length) {
     if (length < 0 || (size_t)length >= capacity) {

@@ -1,0 +1,430 @@
+package test.derived.guard
+
+import foundation.guard
+import foundation.worker
+
+test "generated guard evaluates static and dynamic policy" {
+    const createdRelationships = guard.NewRelationships(4) else error {
+        discard error
+        panic("relationship construction failed")
+    }
+    var relationships = createdRelationships
+    relationships.Add("3", "owner") else error {
+        discard error
+        panic("relationship insertion failed")
+    }
+    relationships.Add("3", "reviewer") else error {
+        discard error
+        panic("relationship insertion failed")
+    }
+    var document = NewDocument($relationships)
+    const admin = NewUser("1", "admin", "")
+    const editor = NewUser("2", "editor", "")
+    const owner = NewUser("3", "owner", "reviewer")
+    const guest = NewUser("4", "guest", "")
+
+    expect(allowed(document.Can(admin, "read")))
+    expect(allowed(document.Can(admin, "write")))
+    expect(denied(document.Can(admin, "edit"), "edit"))
+    expect(allowed(document.Can(editor, "edit")))
+    expect(allowed(document.Can(guest, "view")))
+    expect(allowed(document.Can(owner, "manage")))
+    expect(allowed(document.Can(guest, "inspect")))
+    expect(missing(document.Can(admin, "unknown"), "unknown"))
+    expect(missing(EmptyPolicy {}.Can(admin, "read"), "read"))
+
+    const resolvedRoles = document.GetRoles(owner) else error {
+        discard error
+        panic("role resolution failed")
+    }
+    var roles = resolvedRoles
+    expect(roles.Has("owner"))
+    expect(roles.Has("reviewer"))
+    expect(roles.Has("guest"))
+    expect(roles.Has("admin") == false)
+    const roleCount = roles.Len() else error {
+        discard error
+        panic("role count failed")
+    }
+    expect(roleCount == 3)
+    discard roles
+    expect(document.Members.Close())
+    expect(roleSourceClosed(document.Can(owner, "manage"), "Members"))
+    expect(roleResolutionClosed(document.GetRoles(owner), "Members"))
+    discard document
+}
+
+test "guard collections are bounded and deterministic" {
+    var roles = guard.NewRoles()
+    const first = roles.Add("admin") else error {
+        discard error
+        panic("role insertion failed")
+    }
+    const duplicate = roles.Add("admin") else error {
+        discard error
+        panic("role duplicate check failed")
+    }
+    expect(first)
+    expect(!duplicate)
+    expect(roleEmpty(roles.Add("")))
+    expect(roleAt(roles, 0, "admin"))
+    expect(roleMissing(roles, 1))
+    const list = roles.IntoList() else error {
+        discard error
+        panic("role list conversion failed")
+    }
+    expect(list.Len() == 1)
+    discard list
+
+    var merged = guard.NewRoles()
+    var incoming = guard.NewRoles()
+    expect(roleInserted(merged.Add("admin")))
+    expect(roleInserted(incoming.Add("editor")))
+    merged.Merge($incoming) else error {
+        discard error
+        panic("role merge failed")
+    }
+    expect(roleAt(merged, 0, "admin"))
+    expect(roleAt(merged, 1, "editor"))
+    expect(merged.Close())
+    var rejected = guard.NewRoles()
+    expect(roleInserted(rejected.Add("guest")))
+    expect(roleMergeClosed(merged.Merge($rejected)))
+    discard merged
+
+    const createdRelationships = guard.NewRelationships(1) else error {
+        discard error
+        panic("relationship construction failed")
+    }
+    var relationships = createdRelationships
+    expect(relationshipAdded(relationships.Add("1", "owner")))
+    expect(relationshipDuplicate(relationships.Add("1", "owner")))
+    expect(relationshipLimit(relationships.Add("2", "owner")))
+    expect(relationshipEmptyIdentity(relationships.Add("", "owner")))
+    expect(relationshipEmptyRole(relationships.Add("1", "")))
+    const unmatchedRoles = relationships.Roles("2") else error {
+        discard error
+        panic("unmatched role lookup failed")
+    }
+    var extensibleRoles = unmatchedRoles
+    expect(roleInserted(extensibleRoles.Add("admin")))
+    expect(roleInserted(extensibleRoles.Add("editor")))
+    expect(roleInserted(extensibleRoles.Add("reviewer")))
+    const extensibleLength = extensibleRoles.Len() else error {
+        discard error
+        panic("extended role count failed")
+    }
+    expect(extensibleLength == 3)
+    discard extensibleRoles
+    expect(relationships.Close())
+    expect(!relationships.Close())
+    expect(relationshipClosed(relationships.Add("1", "owner")))
+    discard relationships
+
+    expect(relationshipOpenLimit(guard.NewRelationships(0)))
+    expect(relationshipOpenLimit(guard.NewRelationships(65537)))
+}
+
+test "guard owners transfer between native executors" {
+    var roles = guard.NewRoles()
+    expect(roleInserted(roles.Add("worker")))
+    const opened = guard.NewRelationships(1) else error {
+        discard error
+        panic("relationship construction failed")
+    }
+    var relationships = opened
+    relationships.Add("1", "worker") else error {
+        discard error
+        panic("relationship insertion failed")
+    }
+
+    const pool = worker.NewPool(2)
+    pool.Start(spawn releaseRoles($roles))
+    pool.Start(spawn releaseRelationships($relationships))
+    pool.Shutdown()
+}
+
+task releaseRoles($roles own guard.Roles) void {
+    expect(roles.Has("worker"))
+    discard roles
+}
+
+task releaseRelationships($relationships own guard.Relationships) void {
+    const roles = relationships.Roles("1") else error {
+        discard error
+        panic("worker relationship lookup failed")
+    }
+    expect(roles.Has("worker"))
+    discard roles
+    discard relationships
+}
+
+fn roleAt(roles guard.Roles, index u64, expected String) bool {
+    const selected = roles.At(index)
+    match selected {
+        Ok(role): role == expected
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn roleMissing(roles guard.Roles, index u64) bool {
+    const selected = roles.At(index)
+    match selected {
+        Ok(role): {
+            discard role
+            false
+        }
+        Err(error): match error {
+            OutOfBounds: true
+            EmptyRole: false
+            TooManyRoles: false
+            Closed: false
+        }
+    }
+}
+
+fn relationshipAdded($result Result<void, guard.RelationshipError>) bool {
+    match result {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn relationshipDuplicate(
+    $result Result<void, guard.RelationshipError>
+) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            Duplicate: true
+            EmptyIdentity: false
+            EmptyRole: false
+            LimitExceeded: false
+            Closed: false
+        }
+    }
+}
+
+fn relationshipLimit(
+    $result Result<void, guard.RelationshipError>
+) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            LimitExceeded: true
+            EmptyIdentity: false
+            EmptyRole: false
+            Duplicate: false
+            Closed: false
+        }
+    }
+}
+
+fn relationshipEmptyIdentity(
+    $result Result<void, guard.RelationshipError>
+) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            EmptyIdentity: true
+            EmptyRole: false
+            Duplicate: false
+            LimitExceeded: false
+            Closed: false
+        }
+    }
+}
+
+fn relationshipEmptyRole(
+    $result Result<void, guard.RelationshipError>
+) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            EmptyRole: true
+            EmptyIdentity: false
+            Duplicate: false
+            LimitExceeded: false
+            Closed: false
+        }
+    }
+}
+
+fn relationshipClosed(
+    $result Result<void, guard.RelationshipError>
+) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            Closed: true
+            EmptyIdentity: false
+            EmptyRole: false
+            Duplicate: false
+            LimitExceeded: false
+        }
+    }
+}
+
+fn relationshipOpenLimit(
+    $result Result<own guard.Relationships, guard.RelationshipError>
+) bool {
+    match result {
+        Ok(value): {
+            discard value
+            false
+        }
+        Err(error): match error {
+            LimitExceeded: true
+            EmptyIdentity: false
+            EmptyRole: false
+            Duplicate: false
+            Closed: false
+        }
+    }
+}
+
+fn roleEmpty($result Result<bool, guard.RoleError>) bool {
+    match result {
+        Ok(value): {
+            discard value
+            false
+        }
+        Err(error): match error {
+            EmptyRole: true
+            TooManyRoles: false
+            Closed: false
+            OutOfBounds: false
+        }
+    }
+}
+
+fn roleInserted($result Result<bool, guard.RoleError>) bool {
+    match result {
+        Ok(value): value
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn roleMergeClosed($result Result<void, guard.RoleError>) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            Closed: true
+            EmptyRole: false
+            TooManyRoles: false
+            OutOfBounds: false
+        }
+    }
+}
+
+fn allowed($result Result<void, guard.Error>) bool {
+    match result {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn denied($result Result<void, guard.Error>, operation String) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            PermissionDenied(found): found == operation
+            NoPolicy(found): {
+                discard found
+                false
+            }
+            TooManyRoles: false
+            RoleSource(value): {
+                discard value
+                false
+            }
+        }
+    }
+}
+
+fn missing($result Result<void, guard.Error>, operation String) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            NoPolicy(found): found == operation
+            PermissionDenied(found): {
+                discard found
+                false
+            }
+            TooManyRoles: false
+            RoleSource(value): {
+                discard value
+                false
+            }
+        }
+    }
+}
+
+fn roleSourceClosed(
+    $result Result<void, guard.Error>,
+    field String
+) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            RoleSource(value): match value.Error {
+                Closed: value.Field == field
+                EmptyIdentity: false
+                EmptyRole: false
+                Duplicate: false
+                LimitExceeded: false
+            }
+            NoPolicy(operation): {
+                discard operation
+                false
+            }
+            PermissionDenied(operation): {
+                discard operation
+                false
+            }
+            TooManyRoles: false
+        }
+    }
+}
+
+fn roleResolutionClosed(
+    $result Result<own guard.Roles, guard.Error>,
+    field String
+) bool {
+    match result {
+        Ok(roles): {
+            discard roles
+            false
+        }
+        Err(error): match error {
+            RoleSource(value): match value.Error {
+                Closed: value.Field == field
+                EmptyIdentity: false
+                EmptyRole: false
+                Duplicate: false
+                LimitExceeded: false
+            }
+            NoPolicy(operation): {
+                discard operation
+                false
+            }
+            PermissionDenied(operation): {
+                discard operation
+                false
+            }
+            TooManyRoles: false
+        }
+    }
+}

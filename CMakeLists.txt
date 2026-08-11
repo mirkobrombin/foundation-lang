@@ -274,6 +274,11 @@ if(FOUNDATION_BUILD_FUZZERS)
         COPYONLY
     )
     configure_file(
+        tests/fuzz/corpus/guard-policy.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/guard-policy.fn"
+        COPYONLY
+    )
+    configure_file(
         tests/fuzz/corpus/select-timeout.fn
         "${FOUNDATION_FUZZ_CORPUS_DIR}/select-timeout.fn"
         COPYONLY
@@ -322,6 +327,8 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_counter_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_string_test runtime/tests/string_test.c)
     target_link_libraries(foundation_runtime_string_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_guard_test runtime/tests/guard_test.c)
+    target_link_libraries(foundation_runtime_guard_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_u64_test runtime/tests/u64_test.c)
     target_link_libraries(foundation_runtime_u64_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_parse_test runtime/tests/parse_test.c)
@@ -507,6 +514,7 @@ if(BUILD_TESTING)
                 foundation_runtime_allocation_test
                 foundation_runtime_counter_test
                 foundation_runtime_string_test
+                foundation_runtime_guard_test
                 foundation_runtime_u64_test
                 foundation_runtime_parse_test
                 foundation_runtime_crypto_test
@@ -531,6 +539,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_allocation_test PRIVATE /W4)
         target_compile_options(foundation_runtime_counter_test PRIVATE /W4)
         target_compile_options(foundation_runtime_string_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_guard_test PRIVATE /W4)
         target_compile_options(foundation_runtime_u64_test PRIVATE /W4)
         target_compile_options(foundation_runtime_parse_test PRIVATE /W4)
         target_compile_options(foundation_runtime_env_test PRIVATE /W4)
@@ -550,6 +559,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_allocation_test PRIVATE /WX)
             target_compile_options(foundation_runtime_counter_test PRIVATE /WX)
             target_compile_options(foundation_runtime_string_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_guard_test PRIVATE /WX)
             target_compile_options(foundation_runtime_u64_test PRIVATE /WX)
             target_compile_options(foundation_runtime_parse_test PRIVATE /WX)
             target_compile_options(foundation_runtime_env_test PRIVATE /WX)
@@ -572,6 +582,7 @@ if(BUILD_TESTING)
         )
         target_compile_options(foundation_runtime_counter_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_string_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_guard_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_u64_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_parse_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_env_test PRIVATE -Wall -Wextra -Wpedantic)
@@ -592,6 +603,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_allocation_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_counter_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_string_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_guard_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_u64_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_parse_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_env_test PRIVATE -Werror)
@@ -738,6 +750,7 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-package-workflow.cmake
     )
     add_test(NAME runtime.string COMMAND foundation_runtime_string_test)
+    add_test(NAME runtime.guard COMMAND foundation_runtime_guard_test)
     add_test(NAME runtime.u64 COMMAND foundation_runtime_u64_test)
     add_test(NAME runtime.parse COMMAND foundation_runtime_parse_test)
     add_test(NAME runtime.crypto COMMAND foundation_runtime_crypto_test)
@@ -1506,6 +1519,31 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.guard-transfer
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/guard-transfer.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/guard-transfer.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.guard-transfer-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/guard-transfer.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/guard-transfer.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/guard-transfer
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/guard-transfer.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
         NAME stage0.run.worker-pool-function
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -2063,6 +2101,23 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-derived-validation.cmake
     )
     add_test(
+        NAME stage0.derive.package-guard
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/derived-guard
+            -DPROJECT=${CMAKE_CURRENT_BINARY_DIR}/derived-guard
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-derived-guard.cmake
+    )
+    add_test(
+        NAME stage0.emit.guard-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/guard/foundation
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/guard-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/guard-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
         NAME stage0.emit.application-host-web-stale
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -2165,6 +2220,15 @@ if(BUILD_TESTING)
             "application-host-validation-rule-signature;FDN2392"
             "application-host-validation-nested-cycle;FDN2390"
             "application-host-validation-pattern;FDN2391"
+            "application-host-guard-orphan-field;FDN2430"
+            "application-host-guard-generic;FDN2431"
+            "application-host-guard-method-collision;FDN2432"
+            "application-host-guard-get-roles-collision;FDN2432"
+            "application-host-guard-empty-rule;FDN2433"
+            "application-host-guard-dynamic-empty-rule;FDN2433"
+            "application-host-guard-duplicate-rule;FDN2434"
+            "application-host-guard-dynamic-duplicate-rule;FDN2434"
+            "application-host-guard-field-type;FDN2435"
             "application-host-web-activation-input;FDN2393"
             "application-host-web-activation-errors;FDN2394"
             "application-host-web-task-singleton-transfer;FDN2395"

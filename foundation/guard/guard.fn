@@ -1,0 +1,307 @@
+package foundation.guard
+
+import std.collections
+import std.concurrent
+import std.text
+
+// Requests compiler-derived authorization methods for one concrete resource.
+attribute Policy() targets(struct)
+
+// Grants one role one action on a guarded resource.
+attribute Allow(role String, operation String) targets(struct) repeatable
+
+// Uses a field value as a role source for one action.
+attribute Dynamic(operation String) targets(field) repeatable
+
+// Supplies identity and role membership without exposing storage policy.
+contract Identity {
+    // Copies the stable identifier used by resource relationships.
+    fn ID(self) String
+
+    // Reports whether this identity currently holds one exact role.
+    fn HasRole(self, role String) bool
+}
+
+// Classifies bounded role-set operations.
+enum RoleError {
+    // The supplied role name is empty.
+    EmptyRole
+
+    // The set cannot accept another unique role.
+    TooManyRoles
+
+    // The set has already released its storage.
+    Closed
+
+    // The requested insertion-order index is absent.
+    OutOfBounds
+}
+
+// Classifies bounded identity-to-role relationship operations.
+enum RelationshipError {
+    // The supplied identity is empty.
+    EmptyIdentity
+
+    // The supplied role name is empty.
+    EmptyRole
+
+    // The same identity and role pair already exists.
+    Duplicate
+
+    // The declared relationship limit is invalid or exhausted.
+    LimitExceeded
+
+    // The relationship set has already released its storage.
+    Closed
+}
+
+// Identifies the dynamic field that could not supply roles.
+struct RoleSourceError {
+    // Names the policy field that failed.
+    Field String
+
+    // Preserves the relationship failure.
+    Error RelationshipError
+}
+
+// Classifies failures while evaluating a generated resource policy.
+enum Error {
+    // No rule covers the requested operation.
+    NoPolicy(operation String)
+
+    // A rule covers the operation but the identity does not satisfy it.
+    PermissionDenied(operation String)
+
+    // The resolved set exceeded the Foundation-wide role limit.
+    TooManyRoles
+
+    // A dynamic relationship field could not resolve its roles.
+    RoleSource(value RoleSourceError)
+}
+
+extern c fn openRolesNative(
+    limit u64,
+    &result u64
+) i32 as foundation_runtime_guard_roles_open
+extern c fn addRoleNative(
+    handle u64,
+    role String
+) i32 as foundation_runtime_guard_roles_add
+extern c fn hasRoleNative(
+    handle u64,
+    role String
+) bool as foundation_runtime_guard_roles_has
+extern c fn roleCountNative(
+    handle u64,
+    &result u64
+) i32 as foundation_runtime_guard_roles_count
+extern c fn roleAtNative(
+    handle u64,
+    index u64,
+    &result String
+) i32 as foundation_runtime_guard_roles_at
+extern c fn closeRolesNative(
+    &handle u64
+) void as foundation_runtime_guard_roles_close
+extern c fn openRelationshipsNative(
+    limit u64,
+    &result u64
+) i32 as foundation_runtime_guard_relationships_open
+extern c fn addRelationshipNative(
+    handle u64,
+    identity String,
+    role String
+) i32 as foundation_runtime_guard_relationships_add
+extern c fn relationshipRolesNative(
+    handle u64,
+    identity String,
+    &result u64
+) i32 as foundation_runtime_guard_relationships_roles
+extern c fn closeRelationshipsNative(
+    &handle u64
+) void as foundation_runtime_guard_relationships_close
+
+// Owns a deterministic bounded set of role names.
+@concurrent.Transferable()
+struct Roles {
+    handle u64
+
+    // Adds one role and reports whether it was absent.
+    fn Add(&self, role String) Result<bool, RoleError> {
+        const status = addRoleNative(self.handle, role)
+        if status == 0 return .Ok(true)
+        if status == 1 return .Ok(false)
+        if status == 2 return .Err(.EmptyRole)
+        if status == 3 return .Err(.TooManyRoles)
+        .Err(.Closed)
+    }
+
+    // Reports whether the set contains one exact role.
+    fn Has(self, role String) bool {
+        hasRoleNative(self.handle, role)
+    }
+
+    // Returns the number of unique roles in insertion order.
+    fn Len(self) Result<u64, RoleError> {
+        var result u64 = 0
+        if roleCountNative(self.handle, &result) != 0 {
+            return .Err(.Closed)
+        }
+        .Ok(result)
+    }
+
+    // Copies one role by insertion-order index.
+    fn At(self, index u64) Result<String, RoleError> {
+        var result = ""
+        const status = roleAtNative(self.handle, index, &result)
+        if status == 0 return .Ok(result)
+        if status == 1 return .Err(.Closed)
+        .Err(.OutOfBounds)
+    }
+
+    // Merges another owned set and preserves first-seen order.
+    fn Merge(&self, $other own Roles) Result<void, RoleError> {
+        const length = other.Len() else error {
+            return .Err(error)
+        }
+        var index u64 = 0
+        while index < length {
+            const role = other.At(index) else error {
+                return .Err(error)
+            }
+            const added = self.Add(role) else error {
+                return .Err(error)
+            }
+            discard added
+            index = index + 1
+        }
+        discard other
+        .Ok
+    }
+
+    // Consumes the set into an owned list in insertion order.
+    fn IntoList($self) Result<own collections.List<String>, RoleError> {
+        const length = self.Len() else error {
+            return .Err(error)
+        }
+        var reversed = collections.NewList<String>()
+        var index = length
+        while index > 0 {
+            index = index - 1
+            const role = self.At(index) else error {
+                return .Err(error)
+            }
+            reversed.PushFront($role)
+        }
+        discard self
+        .Ok(reversed)
+    }
+
+    // Releases this role set exactly once.
+    fn Close(&self) bool {
+        if self.handle == 0 return false
+        closeRolesNative(&self.handle)
+        true
+    }
+
+    fn drop(&self) void {
+        closeRolesNative(&self.handle)
+    }
+}
+
+// Owns bounded identity-to-role relationships used by dynamic policies.
+@concurrent.Transferable()
+struct Relationships {
+    handle u64
+
+    // Adds one unique identity and role pair.
+    fn Add(
+        &self,
+        identity String,
+        role String
+    ) Result<void, RelationshipError> {
+        const status = addRelationshipNative(self.handle, identity, role)
+        if status == 0 return .Ok
+        if status == 1 return .Err(.Duplicate)
+        if status == 2 {
+            if text.IsEmpty(identity) return .Err(.EmptyIdentity)
+            return .Err(.EmptyRole)
+        }
+        if status == 3 return .Err(.LimitExceeded)
+        .Err(.Closed)
+    }
+
+    // Copies the unique roles assigned to one identity into a
+    // full-capacity set.
+    fn Roles(self, identity String) Result<own Roles, RelationshipError> {
+        if text.IsEmpty(identity) return .Err(.EmptyIdentity)
+        var result u64 = 0
+        if relationshipRolesNative(self.handle, identity, &result) != 0 {
+            return .Err(.Closed)
+        }
+        .Ok(own Roles { handle = result })
+    }
+
+    // Reports whether any derived role is also held by the identity.
+    fn Allows(self, identity Identity) Result<bool, RelationshipError> {
+        const roles = self.Roles(identity.ID()) else error {
+            return .Err(error)
+        }
+        const length = roles.Len() else error {
+            discard roles
+            discard error
+            return .Err(.Closed)
+        }
+        var index u64 = 0
+        while index < length {
+            const role = roles.At(index) else error {
+                discard roles
+                discard error
+                return .Err(.Closed)
+            }
+            if identity.HasRole(role) {
+                discard roles
+                return .Ok(true)
+            }
+            index = index + 1
+        }
+        discard roles
+        .Ok(false)
+    }
+
+    // Releases these relationships exactly once.
+    fn Close(&self) bool {
+        if self.handle == 0 return false
+        closeRelationshipsNative(&self.handle)
+        true
+    }
+
+    fn drop(&self) void {
+        closeRelationshipsNative(&self.handle)
+    }
+}
+
+// Creates an empty role set with the Foundation-wide bounded capacity.
+fn NewRoles() own Roles {
+    var handle u64 = 0
+    if openRolesNative(65536, &handle) != 0 {
+        panic("guard role set limit invariant failed")
+    }
+    own Roles { handle = handle }
+}
+
+// Creates an empty relationship set with an explicit entry limit.
+fn NewRelationships(
+    maxEntries u64
+) Result<own Relationships, RelationshipError> {
+    var handle u64 = 0
+    if openRelationshipsNative(maxEntries, &handle) != 0 {
+        return .Err(.LimitExceeded)
+    }
+    .Ok(own Relationships { handle = handle })
+}
+
+// Reports whether a runtime field contains a usable role name.
+fn IsRole(value String) bool {
+    !text.IsEmpty(value)
+}

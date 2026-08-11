@@ -63,6 +63,9 @@ constexpr std::string_view validationEmailAttribute = "foundation.validation.Ema
 constexpr std::string_view validationPatternAttribute = "foundation.validation.Pattern";
 constexpr std::string_view validationNestedAttribute = "foundation.validation.Nested";
 constexpr std::string_view validationRuleAttribute = "foundation.validation.Rule";
+constexpr std::string_view guardPolicyAttribute = "foundation.guard.Policy";
+constexpr std::string_view guardAllowAttribute = "foundation.guard.Allow";
+constexpr std::string_view guardDynamicAttribute = "foundation.guard.Dynamic";
 constexpr std::string_view serializableAttribute = "foundation.serializer.Serializable";
 constexpr std::string_view serializerNameAttribute = "foundation.serializer.Name";
 constexpr std::string_view serializerIgnoreAttribute = "foundation.serializer.Ignore";
@@ -196,6 +199,28 @@ struct StructValidationPlan {
     FirStructId type{};
     std::vector<ValidationRulePlan> rules;
     std::vector<FirFunctionId> customRules;
+};
+
+struct GuardStaticRulePlan {
+    std::string role;
+    std::string operation;
+};
+
+enum class GuardDynamicRuleKind {
+    Role,
+    Relationships,
+};
+
+struct GuardDynamicRulePlan {
+    std::size_t field{};
+    std::string operation;
+    GuardDynamicRuleKind kind{GuardDynamicRuleKind::Role};
+};
+
+struct StructGuardPlan {
+    FirStructId type{};
+    std::vector<GuardStaticRulePlan> staticRules;
+    std::vector<GuardDynamicRulePlan> dynamicRules;
 };
 
 struct SerializerFieldPlan {
@@ -1778,6 +1803,117 @@ std::string emitApplicationHostSource(const FirProgram &program,
             visitValidation(index);
         }
     }
+    std::vector<StructGuardPlan> structGuards;
+    for (FirStructId index = 0; index < program.structs.size(); ++index) {
+        const auto &type = program.structs[index];
+        if (packageName(type.name) != rootPackage || type.sourcePath == generatedSourcePath) {
+            continue;
+        }
+        const auto guarded = hasAttribute(program, type.attributes, guardPolicyAttribute);
+        const auto hasGuardMetadata =
+            hasAttribute(program, type.attributes, guardAllowAttribute) ||
+            std::any_of(type.fields.begin(), type.fields.end(), [&](const auto &field) {
+                return hasAttribute(program, field.attributes, guardDynamicAttribute);
+            });
+        if (!guarded) {
+            if (hasGuardMetadata) {
+                diagnostics.error(
+                    "FDN2430",
+                    "guard metadata requires @guard.Policy on " + type.name,
+                    type.sourceSpan);
+            }
+            continue;
+        }
+        if (type.typeParameterCount != 0) {
+            diagnostics.error("FDN2431", "generated guard requires a concrete struct",
+                              type.sourceSpan);
+            continue;
+        }
+        for (const auto method : {std::string_view{"Can"},
+                                  std::string_view{"GetRoles"}}) {
+            const auto collides = std::find_if(
+                program.functions.begin(), program.functions.end(),
+                [&](const auto &function) {
+                    return function.sourcePath != generatedSourcePath &&
+                           ownerName(function) == type.name &&
+                           shortName(function.name) == method;
+                });
+            if (collides != program.functions.end()) {
+                diagnostics.error("FDN2432",
+                                  "generated guard method already exists for " + type.name +
+                                      ": " + std::string(method),
+                                  collides->sourceSpan);
+            }
+        }
+
+        StructGuardPlan guard{index, {}, {}};
+        std::set<std::pair<std::string, std::string>> staticRules;
+        for (const auto &attribute : type.attributes) {
+            const auto declaration = attributeDeclaration(program, attribute);
+            if (declaration == nullptr || declaration->name != guardAllowAttribute) {
+                continue;
+            }
+            const auto role = stringArgument(&attribute, 0).value_or("");
+            const auto operation = stringArgument(&attribute, 1).value_or("");
+            if (role.empty() || operation.empty()) {
+                diagnostics.error("FDN2433", "guard role and operation cannot be empty",
+                                  type.sourceSpan);
+                continue;
+            }
+            if (!staticRules.emplace(role, operation).second) {
+                diagnostics.error("FDN2434",
+                                  "duplicate guard rule " + role + ":" + operation,
+                                  type.sourceSpan);
+                continue;
+            }
+            guard.staticRules.push_back({role, operation});
+        }
+
+        std::set<std::pair<std::size_t, std::string>> dynamicRules;
+        for (std::size_t fieldIndex = 0; fieldIndex < type.fields.size(); ++fieldIndex) {
+            const auto &field = type.fields[fieldIndex];
+            for (const auto &attribute : field.attributes) {
+                const auto declaration = attributeDeclaration(program, attribute);
+                if (declaration == nullptr || declaration->name != guardDynamicAttribute) {
+                    continue;
+                }
+                const auto operation = stringArgument(&attribute).value_or("");
+                if (operation.empty()) {
+                    diagnostics.error("FDN2433", "guard operation cannot be empty: " +
+                                                       field.name,
+                                      type.sourceSpan);
+                    continue;
+                }
+                GuardDynamicRuleKind kind;
+                if (baseType(field.type) == stringType) {
+                    kind = GuardDynamicRuleKind::Role;
+                } else if (isNamedStruct(program, field.type,
+                                         "foundation.guard.Relationships")) {
+                    kind = GuardDynamicRuleKind::Relationships;
+                } else {
+                    diagnostics.error(
+                        "FDN2435",
+                        "@guard.Dynamic requires String or guard.Relationships field: " +
+                            field.name,
+                        type.sourceSpan);
+                    continue;
+                }
+                if (!dynamicRules.emplace(fieldIndex, operation).second) {
+                    diagnostics.error("FDN2434",
+                                      "duplicate dynamic guard rule " + field.name + ":" +
+                                          operation,
+                                      type.sourceSpan);
+                    continue;
+                }
+                guard.dynamicRules.push_back({fieldIndex, operation, kind});
+            }
+        }
+        if (guard.staticRules.size() + guard.dynamicRules.size() > 65536) {
+            diagnostics.error("FDN2436", "guard policy exceeds 65536 rules",
+                              type.sourceSpan);
+        }
+        structGuards.push_back(std::move(guard));
+    }
     std::vector<StructSerializerPlan> structSerializers;
     for (FirStructId index = 0; index < program.structs.size(); ++index) {
         const auto &type = program.structs[index];
@@ -2387,6 +2523,10 @@ std::string emitApplicationHostSource(const FirProgram &program,
     if (!structValidations.empty()) {
         packages.insert("foundation.validation");
     }
+    if (!structGuards.empty()) {
+        packages.insert("foundation.guard");
+        packages.insert("std.text");
+    }
     if (!structSerializers.empty()) {
         packages.insert("foundation.serializer");
         packages.insert("std.json");
@@ -2588,6 +2728,18 @@ std::string emitApplicationHostSource(const FirProgram &program,
         qualifiedName("foundation.validation.IsEmail", rootPackage, aliases);
     const auto validationPatternFunction =
         qualifiedName("foundation.validation.IsPattern", rootPackage, aliases);
+    const auto guardIdentityType =
+        qualifiedName("foundation.guard.Identity", rootPackage, aliases);
+    const auto guardErrorType =
+        qualifiedName("foundation.guard.Error", rootPackage, aliases);
+    const auto guardRolesType =
+        qualifiedName("foundation.guard.Roles", rootPackage, aliases);
+    const auto guardRoleSourceErrorType =
+        qualifiedName("foundation.guard.RoleSourceError", rootPackage, aliases);
+    const auto guardNewRolesFunction =
+        qualifiedName("foundation.guard.NewRoles", rootPackage, aliases);
+    const auto guardIsRoleFunction =
+        qualifiedName("foundation.guard.IsRole", rootPackage, aliases);
     const auto serializerPolicyType =
         qualifiedName("foundation.serializer.Policy", rootPackage, aliases);
     const auto serializerErrorType =
@@ -2990,6 +3142,132 @@ std::string emitApplicationHostSource(const FirProgram &program,
                                  serializerHelperName(serializer.type, field.field, "", true),
                                  true);
         }
+    }
+
+    for (const auto &guard : structGuards) {
+        const auto &type = program.structs[guard.type];
+        const auto guardedTypeName = qualifiedName(type.name, rootPackage, aliases);
+        out << "methods " << guardedTypeName << " {\n"
+            << "    fn Can(\n"
+            << "        self,\n"
+            << "        identity " << guardIdentityType << ",\n"
+            << "        operation String\n"
+            << "    ) Result<void, " << guardErrorType << "> {\n"
+            << "        var guardRuleFound = false\n";
+        for (const auto &rule : guard.staticRules) {
+            out << "        if ";
+            if (rule.operation == "*") {
+                out << "true";
+            } else {
+                out << "operation == ";
+                emitString(out, rule.operation);
+            }
+            out << " {\n"
+                << "            guardRuleFound = true\n";
+            if (rule.role == "*") {
+                out << "            return .Ok\n";
+            } else {
+                out << "            if identity.HasRole(";
+                emitString(out, rule.role);
+                out << ") return .Ok\n";
+            }
+            out << "        }\n";
+        }
+        for (const auto &rule : guard.dynamicRules) {
+            const auto &field = type.fields[rule.field];
+            out << "        if ";
+            if (rule.operation == "*") {
+                out << "true";
+            } else {
+                out << "operation == ";
+                emitString(out, rule.operation);
+            }
+            out << " {\n"
+                << "            guardRuleFound = true\n";
+            if (rule.kind == GuardDynamicRuleKind::Role) {
+                out << "            if " << guardIsRoleFunction << "(self." << field.name
+                    << ") && identity.HasRole(self." << field.name << ") return .Ok\n";
+            } else {
+                out << "            const guardAllowed" << rule.field << " = self."
+                    << field.name << ".Allows(identity) else sourceError {\n"
+                    << "                return .Err(.RoleSource(" << guardRoleSourceErrorType
+                    << " {\n"
+                    << "                    Field = ";
+                emitString(out, field.name);
+                out << "\n"
+                    << "                    Error = sourceError\n"
+                    << "                }))\n"
+                    << "            }\n"
+                    << "            if guardAllowed" << rule.field << " return .Ok\n";
+            }
+            out << "        }\n";
+        }
+        out << "        if !guardRuleFound return .Err(.NoPolicy(" << textCopyFunction
+            << "(operation)))\n"
+            << "        .Err(.PermissionDenied(" << textCopyFunction << "(operation)))\n"
+            << "    }\n\n"
+            << "    fn GetRoles(\n"
+            << "        self,\n"
+            << "        identity " << guardIdentityType << "\n"
+            << "    ) Result<own " << guardRolesType << ", " << guardErrorType << "> {\n"
+            << "        var guardRoles = " << guardNewRolesFunction << "()\n";
+        std::size_t roleIndex{};
+        for (const auto &rule : guard.staticRules) {
+            if (rule.role == "*") {
+                continue;
+            }
+            out << "        if identity.HasRole(";
+            emitString(out, rule.role);
+            out << ") {\n"
+                << "            const guardAdded" << roleIndex << " = guardRoles.Add(";
+            emitString(out, rule.role);
+            out << ") else roleError {\n"
+                << "                discard guardRoles\n"
+                << "                discard roleError\n"
+                << "                return .Err(.TooManyRoles)\n"
+                << "            }\n"
+                << "            discard guardAdded" << roleIndex << "\n"
+                << "        }\n";
+            ++roleIndex;
+        }
+        for (const auto &rule : guard.dynamicRules) {
+            const auto &field = type.fields[rule.field];
+            if (rule.kind == GuardDynamicRuleKind::Role) {
+                out << "        if " << guardIsRoleFunction << "(self." << field.name
+                    << ") {\n"
+                    << "            const guardAdded" << roleIndex << " = guardRoles.Add(self."
+                    << field.name << ") else roleError {\n"
+                    << "                discard guardRoles\n"
+                    << "                discard roleError\n"
+                    << "                return .Err(.TooManyRoles)\n"
+                    << "            }\n"
+                    << "            discard guardAdded" << roleIndex << "\n"
+                    << "        }\n";
+                ++roleIndex;
+                continue;
+            }
+            out << "        const guardDerived" << roleIndex << " = self." << field.name
+                << ".Roles(identity.ID()) else sourceError {\n"
+                << "            discard guardRoles\n"
+                << "            return .Err(.RoleSource(" << guardRoleSourceErrorType
+                << " {\n"
+                << "                Field = ";
+            emitString(out, field.name);
+            out << "\n"
+                << "                Error = sourceError\n"
+                << "            }))\n"
+                << "        }\n"
+                << "        guardRoles.Merge($guardDerived" << roleIndex
+                << ") else roleError {\n"
+                << "            discard guardRoles\n"
+                << "            discard roleError\n"
+                << "            return .Err(.TooManyRoles)\n"
+                << "        }\n";
+            ++roleIndex;
+        }
+        out << "        .Ok(guardRoles)\n"
+            << "    }\n"
+            << "}\n\n";
     }
 
     for (const auto &validation : structValidations) {

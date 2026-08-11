@@ -1,0 +1,16 @@
+package test.host.guard.collision
+
+import foundation.guard
+
+@guard.Policy()
+struct Resource {
+    fn Can(self, identity guard.Identity, operation String) Result<void, guard.Error> {
+        discard identity
+        discard operation
+        .Ok
+    }
+}
+
+fn main() i32 {
+    0
+}

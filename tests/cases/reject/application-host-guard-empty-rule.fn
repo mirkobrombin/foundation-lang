@@ -1,0 +1,11 @@
+package test.host.guard.empty
+
+import foundation.guard
+
+@guard.Policy()
+@guard.Allow("", "read")
+struct Resource {}
+
+fn main() i32 {
+    0
+}

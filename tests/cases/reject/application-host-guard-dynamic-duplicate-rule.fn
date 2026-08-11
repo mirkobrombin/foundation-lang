@@ -1,0 +1,14 @@
+package test.host.guard.dynamicduplicate
+
+import foundation.guard
+
+@guard.Policy()
+struct Resource {
+    @guard.Dynamic("read")
+    @guard.Dynamic("read")
+    Role String
+}
+
+fn main() i32 {
+    0
+}

@@ -1,0 +1,14 @@
+package fuzz.guard
+
+import foundation.guard
+
+@guard.Policy()
+@guard.Allow("admin", "read")
+struct Resource {
+    @guard.Dynamic("manage")
+    Members own guard.Relationships
+}
+
+fn main() i32 {
+    0
+}

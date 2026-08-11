@@ -1,0 +1,13 @@
+package test.host.guard.dynamicempty
+
+import foundation.guard
+
+@guard.Policy()
+struct Resource {
+    @guard.Dynamic("")
+    Role String
+}
+
+fn main() i32 {
+    0
+}
