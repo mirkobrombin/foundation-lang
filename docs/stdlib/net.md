@@ -16,8 +16,12 @@ task ReadLineLimited(reader own TcpReader, limit u64) ReadLineOutcome
 task ReadLineLimitedUntil(reader own TcpReader, limit u64, deadline Deadline) ReadLineOutcome
 task ReadExact(reader own TcpReader, length u64) ReadOutcome
 task ReadExactUntil(reader own TcpReader, length u64, deadline Deadline) ReadOutcome
+task ReadExactBytes(reader own TcpReader, length u64) ReadBytesOutcome
+task ReadExactBytesUntil(reader own TcpReader, length u64, deadline Deadline) ReadBytesOutcome
 task WriteAll(writer own TcpWriter, $text String) WriteOutcome
 task WriteAllUntil(writer own TcpWriter, $text String, deadline Deadline) WriteOutcome
+task WriteAllBytes(writer own TcpWriter, value own bytes.Bytes) WriteOutcome
+task WriteAllBytesUntil(writer own TcpWriter, value own bytes.Bytes, deadline Deadline) WriteOutcome
 ```
 
 `Connect` resolves the host on the bounded blocking executor, then attempts the returned addresses
@@ -46,14 +50,24 @@ Invalid UTF-8 and oversized lines close the read half before returning an error.
 and preserves any following bytes for the next read. EOF before the requested length is an error.
 The zero-length operation succeeds without waiting for the peer.
 
+`ReadExactBytes` returns an owned `std.bytes.Bytes` value and never applies UTF-8 validation. It
+preserves NUL, invalid UTF-8, and every other octet exactly. `ReadBytesOutcome` restores the reader
+beside the owned payload or typed error. The deadline variant has the same exact-length and EOF
+rules as the text operation.
+
 `WriteAll` completes only after the whole String was transmitted. Cancellation or an I/O failure
 may happen after a prefix reached the peer. Any non-success result closes the returned write half,
 so callers cannot accidentally reuse a stream with an unknown protocol position.
 
-`ReadLineOutcome`, `ReadOutcome`, and `WriteOutcome` return the owned half beside the operation
-result. Dropping a task still closes every owned handle through normal deterministic cleanup. The
-runtime service is created on first use and stops after its final address, connection, and request
-are released.
+`WriteAllBytes` transfers one owned byte value into the task, keeps its native storage alive until
+the callback reactor finishes, and releases it before returning the writer. No text conversion or
+copy is inserted by `std.net`. The caller can retain an independent replay value with
+`bytes.Bytes.Copy` before starting the task.
+
+`ReadLineOutcome`, `ReadOutcome`, `ReadBytesOutcome`, and `WriteOutcome` return the owned half beside
+the operation result. Dropping a task still closes every owned handle through normal deterministic
+cleanup. The runtime service is created on first use and stops after its final address, connection,
+and request are released.
 
 The error enum distinguishes `InvalidAddress`, `ResolveFailed`, `Refused`, `Closed`, `Cancelled`,
 `InvalidUtf8`, `LineTooLong`, `AddressInUse`, `Timeout`, and `Io`. Connect ports must be in the

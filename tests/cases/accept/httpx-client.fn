@@ -1,5 +1,6 @@
 package main
 
+import std.bytes
 import std.collections
 import std.format
 import std.text
@@ -43,7 +44,7 @@ struct ScriptTransport implements httpx.Transport<TransportFailure> {
             "send " + format.I32(self.calls) + " " + active.Method + " " +
             active.URL + " auth=" + headerOr(&active, "Authorization") +
             " id=" + idState +
-            " body=" + active.Body
+            " body=" + requestBody(active)
         )
         discard selectedID
         discard active
@@ -105,6 +106,81 @@ fn request(
     created
 }
 
+fn binaryPayload() own bytes.Bytes {
+    const opened = bytes.NewBuilder(4) else error {
+        discard error
+        panic("HTTP binary payload builder failed")
+    }
+    var builder = opened
+    builder.WriteByte(0) else error {
+        discard error
+        discard builder
+        panic("HTTP binary payload byte failed")
+    }
+    builder.WriteByte(255) else error {
+        discard error
+        discard builder
+        panic("HTTP binary payload byte failed")
+    }
+    builder.WriteByte(195) else error {
+        discard error
+        discard builder
+        panic("HTTP binary payload byte failed")
+    }
+    builder.WriteByte(40) else error {
+        discard error
+        discard builder
+        panic("HTTP binary payload byte failed")
+    }
+    const value = builder.Finish() else error {
+        discard error
+        discard builder
+        panic("HTTP binary payload finish failed")
+    }
+    discard builder
+    value
+}
+
+fn binaryRequest(
+    $method String,
+    $url String
+) httpx.Request {
+    const created = httpx.NewBinaryRequest(
+        $method,
+        $url,
+        $binaryPayload()
+    ) else error {
+        discard error
+        panic("binary request fixture rejected")
+    }
+    created
+}
+
+fn binaryMatches(value bytes.Bytes) bool {
+    const length = value.Len() else error {
+        discard error
+        return false
+    }
+    if length != 4 return false
+    const first = value.At(0) else error {
+        discard error
+        return false
+    }
+    const second = value.At(1) else error {
+        discard error
+        return false
+    }
+    const third = value.At(2) else error {
+        discard error
+        return false
+    }
+    const fourth = value.At(3) else error {
+        discard error
+        return false
+    }
+    first == 0 && second == 255 && third == 195 && fourth == 40
+}
+
 fn response(
     status i32,
     $location String,
@@ -113,7 +189,7 @@ fn response(
     var result = httpx.Response {
         Status = status
         Headers = collections.NewList<httpx.Header>()
-        Body = body
+        Body = bytes.FromText(body)
     }
     if !text.IsEmpty(location) {
         result.SetHeader("Location", location) else error {
@@ -122,6 +198,16 @@ fn response(
         }
     }
     result
+}
+
+fn unavailableResponse() httpx.Response {
+    var body = bytes.FromText("closed")
+    discard body.Close()
+    httpx.Response {
+        Status = 200
+        Headers = collections.NewList<httpx.Header>()
+        Body = body
+    }
 }
 
 fn script($steps own collections.List<Step>) own ScriptTransport {
@@ -177,7 +263,13 @@ fn run(
     const httpx.DoOutcome { Client Value } = completed
     match Value {
         Ok(response): {
-            print(label + " ok " + format.I32(response.Status) + " " + response.Body)
+            const body = response.TextBody() else error {
+                discard error
+                discard response
+                panic("response body fixture is not text")
+            }
+            print(label + " ok " + format.I32(response.Status) + " " + body)
+            discard body
             discard response
         }
         Err(error): printClientError(label, error)
@@ -197,6 +289,7 @@ fn printClientError(
             InvalidResponseLimit: "request-response-limit"
             InvalidRedirectLimit: "request-redirect-limit"
             InvalidTimeout: "request-timeout"
+            InvalidBody: "request-body"
         }
         Transport(value): match value {
             Temporary: "transport-temporary"
@@ -211,6 +304,7 @@ fn printClientError(
         InvalidRedirect: "invalid-redirect"
         TooManyRedirects: "too-many-redirects"
         ResponseTooLarge: "response-too-large"
+        ResponseBodyUnavailable: "response-body"
     }
     print(label + " error " + kind)
 }
@@ -223,6 +317,14 @@ fn headerOr(
         None: "-"
         Some(value): value
     }
+}
+
+fn requestBody(request httpx.Request) String {
+    const body = request.TextBody() else error {
+        discard error
+        return "<binary-ok>" if binaryMatches(request.Body) else "<binary-bad>"
+    }
+    body
 }
 
 fn requiredStep($value Option<Step>) Step {
@@ -263,6 +365,27 @@ fn main() i32 {
         "redirect"
     )
     discard client
+
+    var binarySteps = collections.NewList<Step>()
+    binarySteps.PushFront(.Reply(response(200, "", "binary-done")))
+    binarySteps.PushFront(.Reply(response(307, "final", "redirect")))
+    binarySteps.PushFront(.Fail(.Temporary))
+    var binaryBuilder = httpx.New<TransportFailure>(script($binarySteps))
+    binaryBuilder.WithRetry($resiliency.RetryOptions<httpx.ClientError<TransportFailure>> {
+        Attempts = 2
+        InitialDelay = time.Zero()
+        MaxDelay = time.Zero()
+        Factor = 1.0
+        Jitter = 0.0
+        RetryIf = .None
+    })
+    var binaryClient = binaryBuilder.Build()
+    binaryClient = run(
+        $binaryClient,
+        $binaryRequest("POST", "https://binary.test/retry"),
+        "binary-retry"
+    )
+    discard binaryClient
 
     var sameOriginSteps = collections.NewList<Step>()
     sameOriginSteps.PushFront(.Reply(response(200, "", "converted")))
@@ -413,6 +536,19 @@ fn main() i32 {
     largeClient = run($largeClient, $boundedRequest, "bounded")
     discard largeClient
 
+    var unavailableSteps = collections.NewList<Step>()
+    unavailableSteps.PushFront(.Reply(unavailableResponse()))
+    var unavailableBuilder = httpx.New<TransportFailure>(
+        script($unavailableSteps)
+    )
+    var unavailableClient = unavailableBuilder.Build()
+    unavailableClient = run(
+        $unavailableClient,
+        $request("GET", "https://example.com/unavailable", ""),
+        "unavailable"
+    )
+    discard unavailableClient
+
     var breakerSteps = collections.NewList<Step>()
     breakerSteps.PushFront(.Reply(response(200, "", "unexpected")))
     breakerSteps.PushFront(.Fail(.Permanent))
@@ -475,6 +611,26 @@ fn main() i32 {
             InvalidURL: {}
             _: {
                 return 4
+            }
+        }
+    }
+
+    var closedBody = bytes.FromText("closed")
+    discard closedBody.Close()
+    const invalidBody = httpx.NewBinaryRequest(
+        "POST",
+        "https://example.com/body",
+        $closedBody
+    )
+    match invalidBody {
+        Ok(value): {
+            discard value
+            return 5
+        }
+        Err(error): match error {
+            InvalidBody: {}
+            _: {
+                return 6
             }
         }
     }

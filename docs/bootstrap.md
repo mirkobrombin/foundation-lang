@@ -75,9 +75,9 @@ platform paths in Foundation source using those operations.
 structs own opaque runtime handles and close them through custom drop. Line reads accept explicit
 limits, consume oversized lines without retaining them, and distinguish invalid UTF-8 from an
 oversized input.
-`std.net` adds TCP connect, split read and write ownership, bounded UTF-8 line reads, and complete
-writes. DNS runs on the blocking executor; socket progress and cancellation use the callback
-reactor without exposing native handles to applications.
+`std.net` adds TCP connect, split read and write ownership, bounded UTF-8 reads, exact arbitrary
+byte reads, and complete text or byte writes. DNS runs on the blocking executor; socket progress
+and cancellation use the callback reactor without exposing native handles to applications.
 `std.format`, `std.parse`, `std.json`, and `std.time` supply scalar formatting, integer parsing, owned JSON values,
 UTC instants, and fixed calendar formatting in Foundation source. Native code remains limited to
 clock access, calendar conversion, byte-level String operations, and platform filesystem handles.

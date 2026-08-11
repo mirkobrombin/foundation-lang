@@ -773,6 +773,23 @@ const staticCompletions = [
         insertText: "net.ReadExactUntil(${1:reader}, ${2:length}, ${3:deadline})"
     },
     {
+        label: "net.ReadExactBytes",
+        kind: "Function",
+        detail: "task ReadExactBytes(reader own net.TcpReader, length u64) net.ReadBytesOutcome",
+        insertText: "net.ReadExactBytes(${1:reader}, ${2:length})"
+    },
+    {
+        label: "net.ReadExactBytesUntil",
+        kind: "Function",
+        detail: "task ReadExactBytesUntil(reader own net.TcpReader, length u64, deadline net.Deadline) net.ReadBytesOutcome",
+        insertText: "net.ReadExactBytesUntil(${1:reader}, ${2:length}, ${3:deadline})"
+    },
+    {
+        label: "net.ReadBytesOutcome",
+        kind: "Struct",
+        detail: "owned reader and arbitrary byte read result"
+    },
+    {
         label: "net.WriteAll",
         kind: "Function",
         detail: "task WriteAll(writer own net.TcpWriter, text String) net.WriteOutcome",
@@ -783,6 +800,18 @@ const staticCompletions = [
         kind: "Function",
         detail: "task WriteAllUntil(writer own net.TcpWriter, text String, deadline net.Deadline) net.WriteOutcome",
         insertText: "net.WriteAllUntil(${1:writer}, ${2:text}, ${3:deadline})"
+    },
+    {
+        label: "net.WriteAllBytes",
+        kind: "Function",
+        detail: "task WriteAllBytes(writer own net.TcpWriter, value own bytes.Bytes) net.WriteOutcome",
+        insertText: "net.WriteAllBytes(${1:writer}, ${2:value})"
+    },
+    {
+        label: "net.WriteAllBytesUntil",
+        kind: "Function",
+        detail: "task WriteAllBytesUntil(writer own net.TcpWriter, value own bytes.Bytes, deadline net.Deadline) net.WriteOutcome",
+        insertText: "net.WriteAllBytesUntil(${1:writer}, ${2:value}, ${3:deadline})"
     },
     {
         label: "bind.NewValues",
@@ -1066,6 +1095,12 @@ const staticCompletions = [
         detail: "fn NewRequest(method String, url String, body String) Result<httpx.Request, httpx.RequestError>",
         insertText: "httpx.NewRequest(${1:method}, ${2:url}, ${3:body})"
     },
+    {
+        label: "httpx.NewBinaryRequest",
+        kind: "Function",
+        detail: "fn NewBinaryRequest(method String, url String, body own bytes.Bytes) Result<httpx.Request, httpx.RequestError>",
+        insertText: "httpx.NewBinaryRequest(${1:method}, ${2:url}, \$${3:body})"
+    },
     { label: "httpx.Network", kind: "Function", detail: "fn Network() own httpx.Transport<httpx.NetworkError>", insertText: "httpx.Network()" },
     { label: "httpx.HeaderMiddleware", kind: "Function", detail: "fn HeaderMiddleware<E>(name String, value String) Result<own httpx.Middleware<E>, httpx.RequestError>", insertText: "httpx.HeaderMiddleware<${1:Error}>(${2:name}, ${3:value})" },
     { label: "httpx.RequestID", kind: "Function", detail: "fn RequestID<E>(header String) Result<own httpx.Middleware<E>, httpx.RequestError>", insertText: "httpx.RequestID<${1:Error}>(${2:header})" },
@@ -1075,9 +1110,11 @@ const staticCompletions = [
     { label: "httpx.Request.Header", kind: "Method", detail: "fn Header(&self, name String) Option<String>", insertText: "Header(${1:name})" },
     { label: "httpx.Request.SetHeader", kind: "Method", detail: "fn SetHeader(&self, name String, value String) Result<void, httpx.RequestError>", insertText: "SetHeader(${1:name}, ${2:value})" },
     { label: "httpx.Request.AddHeader", kind: "Method", detail: "fn AddHeader(&self, name String, value String) Result<void, httpx.RequestError>", insertText: "AddHeader(${1:name}, ${2:value})" },
+    { label: "httpx.Request.TextBody", kind: "Method", detail: "fn TextBody(self) Result<String, bytes.Error>", insertText: "TextBody()" },
     { label: "httpx.Response.Header", kind: "Method", detail: "fn Header(&self, name String) Option<String>", insertText: "Header(${1:name})" },
     { label: "httpx.Response.SetHeader", kind: "Method", detail: "fn SetHeader(&self, name String, value String) Result<void, httpx.RequestError>", insertText: "SetHeader(${1:name}, ${2:value})" },
     { label: "httpx.Response.AddHeader", kind: "Method", detail: "fn AddHeader(&self, name String, value String) Result<void, httpx.RequestError>", insertText: "AddHeader(${1:name}, ${2:value})" },
+    { label: "httpx.Response.TextBody", kind: "Method", detail: "fn TextBody(self) Result<String, bytes.Error>", insertText: "TextBody()" },
     { label: "httpx.Builder.Use", kind: "Method", detail: "fn Use(&self, middleware fn($httpx.Request, fn($httpx.Request) Result<httpx.Response, E>) Result<httpx.Response, E>) void", insertText: "Use(\$${1:middleware})" },
     { label: "httpx.Builder.UseStateful", kind: "Method", detail: "fn UseStateful(&self, $middleware own httpx.Middleware<E>) void", insertText: "UseStateful(\$${1:middleware})" },
     { label: "httpx.Builder.WithRetry", kind: "Method", detail: "fn WithRetry(&self, $options resiliency.RetryOptions<httpx.ClientError<E>>) void", insertText: "WithRetry(\$${1:options})" },

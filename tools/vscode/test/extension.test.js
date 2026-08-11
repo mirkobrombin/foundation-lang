@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.135.0");
+    assert.equal(manifest.version, "0.136.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1291,7 +1291,9 @@ test("grammar and completions track compiler keywords", () => {
         "net.Connect", "net.ConnectUntil", "net.TcpConnection.Split",
         "net.TcpConnection.PeerAddress", "net.ReadLine",
         "net.ReadLineLimited", "net.ReadLineLimitedUntil", "net.ReadExact",
-        "net.ReadExactUntil", "net.WriteAll", "net.WriteAllUntil",
+        "net.ReadExactUntil", "net.ReadExactBytes", "net.ReadExactBytesUntil",
+        "net.ReadBytesOutcome", "net.WriteAll", "net.WriteAllUntil",
+        "net.WriteAllBytes", "net.WriteAllBytesUntil",
         "std.format", "format.Bool", "format.I8", "format.I16", "format.I32",
         "format.I64", "format.Isize", "format.U8", "format.U16", "format.U32",
         "format.U64", "format.Usize", "format.F32", "format.F64",
@@ -1384,10 +1386,13 @@ test("grammar and completions track compiler keywords", () => {
         "httpx.Header", "httpx.Request", "httpx.Response", "httpx.Transport",
         "httpx.Middleware", "httpx.Hooks", "httpx.LogSink", "httpx.LogEntry", "httpx.Builder",
         "httpx.Client", "httpx.DoOutcome", "httpx.VirtualHost", "httpx.VHostMux",
-        "httpx.New", "httpx.NewRequest", "httpx.Network", "httpx.HeaderMiddleware",
+        "httpx.New", "httpx.NewRequest", "httpx.NewBinaryRequest", "httpx.Network",
+        "httpx.HeaderMiddleware",
         "httpx.RequestID", "httpx.Logging", "httpx.NewVirtualHost", "httpx.NewVHostMux",
         "httpx.Request.Header", "httpx.Request.SetHeader", "httpx.Request.AddHeader",
+        "httpx.Request.TextBody",
         "httpx.Response.Header", "httpx.Response.SetHeader", "httpx.Response.AddHeader",
+        "httpx.Response.TextBody",
         "httpx.Builder.Use", "httpx.Builder.UseStateful", "httpx.Builder.WithRetry",
         "httpx.Builder.WithBreaker", "httpx.Builder.Build", "httpx.Client.Do",
         "httpx.VirtualHost.Use", "httpx.VHostMux.AddVirtualHost",

@@ -1,5 +1,6 @@
 package test.network_tcp
 
+import std.bytes
 import std.net
 import std.time
 
@@ -72,6 +73,83 @@ fn writeSucceeded($value Result<void, net.Error>) bool {
     match value {
         Ok: true
         Err(error): false
+    }
+}
+
+fn binaryPayload() own bytes.Bytes {
+    const opened = bytes.NewBuilder(4) else error {
+        discard error
+        panic("binary payload builder failed")
+    }
+    var builder = opened
+    builder.WriteByte(0) else error {
+        discard error
+        discard builder
+        panic("binary payload byte failed")
+    }
+    builder.WriteByte(255) else error {
+        discard error
+        discard builder
+        panic("binary payload byte failed")
+    }
+    builder.WriteByte(195) else error {
+        discard error
+        discard builder
+        panic("binary payload byte failed")
+    }
+    builder.WriteByte(40) else error {
+        discard error
+        discard builder
+        panic("binary payload byte failed")
+    }
+    const value = builder.Finish() else error {
+        discard error
+        discard builder
+        panic("binary payload finish failed")
+    }
+    discard builder
+    value
+}
+
+fn binaryMatches(
+    $value Result<own bytes.Bytes, net.Error>
+) bool {
+    match value {
+        Ok(content): {
+            const length = content.Len() else error {
+                discard error
+                discard content
+                return false
+            }
+            const first = content.At(0) else error {
+                discard error
+                discard content
+                return false
+            }
+            const second = content.At(1) else error {
+                discard error
+                discard content
+                return false
+            }
+            const third = content.At(2) else error {
+                discard error
+                discard content
+                return false
+            }
+            const fourth = content.At(3) else error {
+                discard error
+                discard content
+                return false
+            }
+            const matches = length == 4 && first == 0 && second == 255 &&
+                third == 195 && fourth == 40
+            discard content
+            matches
+        }
+        Err(error): {
+            discard error
+            false
+        }
     }
 }
 
@@ -190,23 +268,58 @@ fn listenerRoundTrip() bool {
     const net.StreamPair { Reader as clientReader Writer as clientWriter } = clientPair
     const net.StreamPair { Reader as serverReader Writer as serverWriter } = serverPair
 
-    const clientWriting = spawn net.WriteAll($clientWriter, "hello\nbody")
+    const clientWriting = spawn net.WriteAll($clientWriter, "hello\n")
     const serverReading = spawn net.ReadLine($serverReader)
     const net.WriteOutcome { Writer as clientWriterAfter Value as clientWrite } = $clientWriting.wait()
     const net.ReadLineOutcome { Reader as serverReaderAfter Value as request } = $serverReading.wait()
-    const bodyReading = spawn net.ReadExact($serverReaderAfter, 4)
-    const net.ReadOutcome { Reader as serverReaderBody Value as bodyResult } = $bodyReading.wait()
-    const serverWriting = spawn net.WriteAll($serverWriter, "world\n")
-    const clientReading = spawn net.ReadLine($clientReader)
+    const bodyWriting = spawn net.WriteAllBytes(
+        $clientWriterAfter,
+        binaryPayload()
+    )
+    const bodyReading = spawn net.ReadExactBytes($serverReaderAfter, 4)
+    const net.WriteOutcome {
+        Writer as clientWriterBody
+        Value as bodyWriteResult
+    } = $bodyWriting.wait()
+    const net.ReadBytesOutcome {
+        Reader as serverReaderBody
+        Value as bodyResult
+    } = $bodyReading.wait()
+    const deadline = net.DeadlineAfter(time.Seconds(5)) else error {
+        discard error
+        panic("binary network deadline failed")
+    }
+    const responseWriting = spawn net.WriteAllBytesUntil(
+        $serverWriter,
+        binaryPayload(),
+        deadline
+    )
+    const responseReading = spawn net.ReadExactBytesUntil(
+        $clientReader,
+        4,
+        deadline
+    )
+    const net.WriteOutcome {
+        Writer as serverWriterBinary
+        Value as responseWriteResult
+    } = $responseWriting.wait()
+    const net.ReadBytesOutcome {
+        Reader as clientReaderBinary
+        Value as binaryResponse
+    } = $responseReading.wait()
+    const serverWriting = spawn net.WriteAll($serverWriterBinary, "world\n")
+    const clientReading = spawn net.ReadLine($clientReaderBinary)
     const net.WriteOutcome { Writer as serverWriterAfter Value as serverWrite } = $serverWriting.wait()
     const net.ReadLineOutcome { Reader as clientReaderAfter Value as response } = $clientReading.wait()
 
-    const success = lineOr($request) == "hello" && textOr($bodyResult) == "body" &&
+    const success = lineOr($request) == "hello" && binaryMatches($bodyResult) &&
+        binaryMatches($binaryResponse) &&
         lineOr($response) == "world" &&
         clientPeer == "127.0.0.1" && serverPeer == "127.0.0.1" &&
-        writeSucceeded($clientWrite) && writeSucceeded($serverWrite)
+        writeSucceeded($clientWrite) && writeSucceeded($bodyWriteResult) &&
+        writeSucceeded($responseWriteResult) && writeSucceeded($serverWrite)
     discard listenerAfter
-    discard clientWriterAfter
+    discard clientWriterBody
     discard serverReaderBody
     discard serverWriterAfter
     discard clientReaderAfter

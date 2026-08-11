@@ -3241,6 +3241,7 @@ if(BUILD_TESTING)
             -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/net_server.c
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
             -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
             -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
@@ -5910,6 +5911,7 @@ if(BUILD_TESTING)
                 -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/net_server.c
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
                 -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
                 -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c

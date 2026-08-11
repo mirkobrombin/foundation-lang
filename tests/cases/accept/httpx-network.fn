@@ -1,7 +1,9 @@
 package test.httpx_network
 
+import std.bytes
 import std.format
 import std.net
+import std.text
 import std.time
 import foundation.httpx
 
@@ -39,6 +41,12 @@ struct CompactOutcome {
     Status i32
     Body String
     Failure String
+}
+
+struct BinaryServerOutcome {
+    Listener own net.TcpListener
+    RequestMatched bool
+    Written bool
 }
 
 fn listenerOr(
@@ -84,7 +92,7 @@ fn lineOr($value Result<Option<String>, net.Error>) String {
 
 fn textOr($value Result<String, net.Error>) String {
     match value {
-        Ok(text): text
+        Ok(content): content
         Err(error): {
             discard error
             ""
@@ -92,9 +100,115 @@ fn textOr($value Result<String, net.Error>) String {
     }
 }
 
+fn bytesTextOr(
+    $value Result<own bytes.Bytes, net.Error>
+) String {
+    match value {
+        Ok(content): {
+            const result = content.Text() else error {
+                discard error
+                discard content
+                return ""
+            }
+            discard content
+            result
+        }
+        Err(error): {
+            discard error
+            ""
+        }
+    }
+}
+
+fn bodyText($value own bytes.Bytes) String {
+    const result = value.Text() else error {
+        discard error
+        discard value
+        return ""
+    }
+    discard value
+    result
+}
+
 fn written($value Result<void, net.Error>) bool {
     match value {
         Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn binaryPayload() own bytes.Bytes {
+    const opened = bytes.NewBuilder(4) else error {
+        discard error
+        panic("HTTP binary payload builder failed")
+    }
+    var builder = opened
+    builder.WriteByte(0) else error {
+        discard error
+        discard builder
+        panic("HTTP binary payload byte failed")
+    }
+    builder.WriteByte(255) else error {
+        discard error
+        discard builder
+        panic("HTTP binary payload byte failed")
+    }
+    builder.WriteByte(195) else error {
+        discard error
+        discard builder
+        panic("HTTP binary payload byte failed")
+    }
+    builder.WriteByte(40) else error {
+        discard error
+        discard builder
+        panic("HTTP binary payload byte failed")
+    }
+    const value = builder.Finish() else error {
+        discard error
+        discard builder
+        panic("HTTP binary payload finish failed")
+    }
+    discard builder
+    value
+}
+
+fn binaryMatches(value bytes.Bytes) bool {
+    const length = value.Len() else error {
+        discard error
+        return false
+    }
+    if length != 4 return false
+    const first = value.At(0) else error {
+        discard error
+        return false
+    }
+    const second = value.At(1) else error {
+        discard error
+        return false
+    }
+    const third = value.At(2) else error {
+        discard error
+        return false
+    }
+    const fourth = value.At(3) else error {
+        discard error
+        return false
+    }
+    first == 0 && second == 255 && third == 195 && fourth == 40
+}
+
+fn binaryReadMatches(
+    $value Result<own bytes.Bytes, net.Error>
+) bool {
+    match value {
+        Ok(content): {
+            const matches = binaryMatches(content)
+            discard content
+            matches
+        }
         Err(error): {
             discard error
             false
@@ -133,6 +247,7 @@ fn failureName(
             InvalidResponseLimit: "request-response-limit"
             InvalidRedirectLimit: "request-redirect-limit"
             InvalidTimeout: "request-timeout"
+            InvalidBody: "request-body"
         }
         Transport(value): match value {
             InvalidRequest(error): {
@@ -157,6 +272,7 @@ fn failureName(
         InvalidRedirect: "invalid-redirect"
         TooManyRedirects: "too-many-redirects"
         ResponseTooLarge: "client-response-too-large"
+        ResponseBodyUnavailable: "client-response-body"
     }
 }
 
@@ -262,13 +378,13 @@ task serve(
     } = line5Outcome
     const separator = lineOr($line5Value)
 
-    const bodyReading = spawn net.ReadExact($reader5, requestBodyLength)
+    const bodyReading = spawn net.ReadExactBytes($reader5, requestBodyLength)
     const bodyOutcome = $bodyReading.wait()
-    const net.ReadOutcome {
+    const net.ReadBytesOutcome {
         Reader as readerAfter
         Value as bodyValue
     } = bodyOutcome
-    const body = textOr($bodyValue)
+    const body = bytesTextOr($bodyValue)
     discard readerAfter
 
     const writing = spawn net.WriteAll($Writer, $wireResponse)
@@ -289,6 +405,98 @@ task serve(
         Separator = separator
         Body = body
         Written = writeSucceeded
+    }
+}
+
+task serveBinary(
+    $listener own net.TcpListener
+) own BinaryServerOutcome {
+    const accepting = spawn net.Accept($listener)
+    const accepted = $accepting.wait()
+    const net.AcceptOutcome { Listener Value } = accepted
+    const connection = connectionOr($Value)
+    const pair = pairOr(connection.Split())
+    const net.StreamPair { Reader Writer } = pair
+
+    const firstReading = spawn net.ReadLine($Reader)
+    const firstOutcome = $firstReading.wait()
+    const net.ReadLineOutcome {
+        Reader as reader1
+        Value as firstValue
+    } = firstOutcome
+    const first = lineOr($firstValue)
+    const secondReading = spawn net.ReadLine($reader1)
+    const secondOutcome = $secondReading.wait()
+    const net.ReadLineOutcome {
+        Reader as reader2
+        Value as secondValue
+    } = secondOutcome
+    const second = lineOr($secondValue)
+    const thirdReading = spawn net.ReadLine($reader2)
+    const thirdOutcome = $thirdReading.wait()
+    const net.ReadLineOutcome {
+        Reader as reader3
+        Value as thirdValue
+    } = thirdOutcome
+    const third = lineOr($thirdValue)
+    const fourthReading = spawn net.ReadLine($reader3)
+    const fourthOutcome = $fourthReading.wait()
+    const net.ReadLineOutcome {
+        Reader as reader4
+        Value as fourthValue
+    } = fourthOutcome
+    const fourth = lineOr($fourthValue)
+    const separatorReading = spawn net.ReadLine($reader4)
+    const separatorOutcome = $separatorReading.wait()
+    const net.ReadLineOutcome {
+        Reader as bodyReader
+        Value as separatorValue
+    } = separatorOutcome
+    const separator = lineOr($separatorValue)
+    const bodyReading = spawn net.ReadExactBytes($bodyReader, 4)
+    const bodyOutcome = $bodyReading.wait()
+    const net.ReadBytesOutcome {
+        Reader as readerAfter
+        Value as bodyValue
+    } = bodyOutcome
+    const requestMatched =
+        first == "POST /binary HTTP/1.1" &&
+        text.StartsWith(second, "Host: 127.0.0.1:") &&
+        third == "Connection: close" &&
+        fourth == "Content-Length: 4" && separator == "" &&
+        binaryReadMatches($bodyValue)
+    discard first
+    discard second
+    discard third
+    discard fourth
+    discard separator
+    discard readerAfter
+
+    const headWriting = spawn net.WriteAll(
+        $Writer,
+        "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n"
+    )
+    const headWriteOutcome = $headWriting.wait()
+    const net.WriteOutcome {
+        Writer as bodyWriter
+        Value as headWriteValue
+    } = headWriteOutcome
+    const headWritten = written($headWriteValue)
+    const bodyWriting = spawn net.WriteAllBytes(
+        $bodyWriter,
+        binaryPayload()
+    )
+    const bodyWriteOutcome = $bodyWriting.wait()
+    const net.WriteOutcome {
+        Writer as writerAfter
+        Value as bodyWriteValue
+    } = bodyWriteOutcome
+    const bodyWritten = written($bodyWriteValue)
+    discard writerAfter
+    own BinaryServerOutcome {
+        Listener = Listener
+        RequestMatched = requestMatched
+        Written = headWritten && bodyWritten
     }
 }
 
@@ -327,7 +535,7 @@ task exchange(
                 Body
             } = active
             status = Status
-            responseBody = Body
+            responseBody = bodyText($Body)
             discard Headers
         }
         Err(error): {
@@ -796,8 +1004,43 @@ fn main() i32 {
         }
         Err(error): failureName($error)
     }
-    discard finalValidatedClient
     if transferFailure != "request-header" return 14
+
+    const binaryListener = listenerOr(net.Listen("127.0.0.1", 0))
+    const binaryPort = binaryListener.Port
+    const binaryRequest = requestOr(httpx.NewBinaryRequest(
+            "POST",
+            "http://127.0.0.1:" + format.U64(binaryPort) + "/binary",
+            binaryPayload()
+        ))
+    const binaryServing = spawn serveBinary($binaryListener)
+    const binaryPending = finalValidatedClient.Do($binaryRequest)
+    const binaryCompleted = $binaryPending.wait()
+    const httpx.DoOutcome {
+        Client as binaryClient
+        Value as binaryValue
+    } = binaryCompleted
+    const responseMatched = match binaryValue {
+        Ok(response): {
+            const matches = response.Status == 200 &&
+                binaryMatches(response.Body)
+            discard response
+            matches
+        }
+        Err(error): {
+            discard error
+            false
+        }
+    }
+    const binaryServed = $binaryServing.wait()
+    const BinaryServerOutcome {
+        Listener as binaryListenerAfter
+        RequestMatched
+        Written as binaryWritten
+    } = binaryServed
+    discard binaryClient
+    discard binaryListenerAfter
+    if !RequestMatched || !binaryWritten || !responseMatched return 15
 
     print("httpx network ok")
     0

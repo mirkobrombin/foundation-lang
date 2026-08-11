@@ -1,5 +1,6 @@
 package std.net
 
+import std.bytes
 import std.time
 
 // Classifies portable DNS, TCP, deadline, and stream failures.
@@ -117,6 +118,21 @@ extern c fn readExactUntilNative(
     &text String
 ) i32 as foundation_runtime_net_read_exact_until_start
 
+@callback(cancel = foundation_runtime_net_read_exact_cancel)
+extern c fn readExactBytesNative(
+    reader u64,
+    length u64,
+    &value u64
+) i32 as foundation_runtime_net_read_exact_bytes_start
+
+@callback(cancel = foundation_runtime_net_read_exact_cancel)
+extern c fn readExactBytesUntilNative(
+    reader u64,
+    length u64,
+    deadline u64,
+    &value u64
+) i32 as foundation_runtime_net_read_exact_bytes_until_start
+
 @callback(cancel = foundation_runtime_net_write_all_cancel)
 extern c fn writeAllNative(
     writer u64,
@@ -129,6 +145,19 @@ extern c fn writeAllUntilNative(
     text String,
     deadline u64
 ) i32 as foundation_runtime_net_write_all_until_start
+
+@callback(cancel = foundation_runtime_net_write_all_cancel)
+extern c fn writeAllBytesNative(
+    writer u64,
+    value u64
+) i32 as foundation_runtime_net_write_all_bytes_start
+
+@callback(cancel = foundation_runtime_net_write_all_cancel)
+extern c fn writeAllBytesUntilNative(
+    writer u64,
+    value u64,
+    deadline u64
+) i32 as foundation_runtime_net_write_all_bytes_until_start
 
 fn errorFor(status i32) Error {
     if status == 1 {
@@ -271,6 +300,14 @@ struct ReadOutcome {
     Reader own TcpReader
     // Contains the exact UTF-8 bytes or a typed stream failure.
     Value Result<String, Error>
+}
+
+// Restores a reader owner beside one exact binary result.
+struct ReadBytesOutcome {
+    // Restores the reader after completion, timeout, or failure.
+    Reader own TcpReader
+    // Contains arbitrary bytes without applying UTF-8 validation.
+    Value Result<own bytes.Bytes, Error>
 }
 
 // Restores a writer owner beside one complete-write result.
@@ -450,6 +487,52 @@ task ReadExactUntil(
     ReadOutcome { Reader = reader Value = .Err(errorFor(status)) }
 }
 
+// Reads exactly length arbitrary bytes and returns ownership of the reader.
+task ReadExactBytes(
+    $reader own TcpReader,
+    length u64
+) ReadBytesOutcome {
+    var handle u64 = 0
+    const status = readExactBytesNative(reader.handle, length, &handle)
+    if status == 0 {
+        const value = bytes.ClaimRuntimeHandle(handle) else error {
+            discard error
+            return ReadBytesOutcome {
+                Reader = reader
+                Value = .Err(.Io)
+            }
+        }
+        return ReadBytesOutcome { Reader = reader Value = .Ok(value) }
+    }
+    ReadBytesOutcome { Reader = reader Value = .Err(errorFor(status)) }
+}
+
+// Reads exactly length arbitrary bytes before a monotonic deadline.
+task ReadExactBytesUntil(
+    $reader own TcpReader,
+    length u64,
+    deadline Deadline
+) ReadBytesOutcome {
+    var handle u64 = 0
+    const status = readExactBytesUntilNative(
+        reader.handle,
+        length,
+        deadline.nanoseconds,
+        &handle
+    )
+    if status == 0 {
+        const value = bytes.ClaimRuntimeHandle(handle) else error {
+            discard error
+            return ReadBytesOutcome {
+                Reader = reader
+                Value = .Err(.Io)
+            }
+        }
+        return ReadBytesOutcome { Reader = reader Value = .Ok(value) }
+    }
+    ReadBytesOutcome { Reader = reader Value = .Err(errorFor(status)) }
+}
+
 // Writes the complete UTF-8 string and returns ownership of the writer.
 task WriteAll($writer own TcpWriter, $text String) WriteOutcome {
     const status = writeAllNative(writer.handle, text)
@@ -470,6 +553,40 @@ task WriteAllUntil(
         text,
         deadline.nanoseconds
     )
+    if status == 0 {
+        return WriteOutcome { Writer = writer Value = .Ok }
+    }
+    WriteOutcome { Writer = writer Value = .Err(errorFor(status)) }
+}
+
+// Writes complete arbitrary bytes and returns ownership of the writer.
+task WriteAllBytes(
+    $writer own TcpWriter,
+    $value own bytes.Bytes
+) WriteOutcome {
+    const status = writeAllBytesNative(
+        writer.handle,
+        bytes.RuntimeHandle(value)
+    )
+    discard value
+    if status == 0 {
+        return WriteOutcome { Writer = writer Value = .Ok }
+    }
+    WriteOutcome { Writer = writer Value = .Err(errorFor(status)) }
+}
+
+// Writes complete arbitrary bytes before a monotonic deadline.
+task WriteAllBytesUntil(
+    $writer own TcpWriter,
+    $value own bytes.Bytes,
+    deadline Deadline
+) WriteOutcome {
+    const status = writeAllBytesUntilNative(
+        writer.handle,
+        bytes.RuntimeHandle(value),
+        deadline.nanoseconds
+    )
+    discard value
     if status == 0 {
         return WriteOutcome { Writer = writer Value = .Ok }
     }

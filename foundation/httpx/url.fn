@@ -1,5 +1,6 @@
 package foundation.httpx
 
+import std.bytes
 import std.collections
 import std.parse
 import std.text
@@ -10,19 +11,23 @@ struct urlParts {
     pathStart u64
 }
 
-fn copyRequest(&request Request) Request {
-    Request {
+fn copyRequest(&request Request) Result<Request, RequestError> {
+    const body = request.Body.Copy() else error {
+        discard error
+        return .Err(.InvalidBody)
+    }
+    .Ok(Request {
         Method = text.Copy(request.Method)
         URL = text.Copy(request.URL)
         Headers = copyHeaders(&request.Headers)
-        Body = text.Copy(request.Body)
+        Body = body
         MaximumResponseSize = request.MaximumResponseSize
         FollowRedirects = request.FollowRedirects
         MaximumRedirects = request.MaximumRedirects
         Timeout = request.Timeout
         originalURL = text.Copy(request.originalURL)
         requestID = text.Copy(request.requestID)
-    }
+    })
 }
 
 fn validateRequest(&request Request) Result<void, RequestError> {
@@ -48,6 +53,11 @@ fn validateRequest(&request Request) Result<void, RequestError> {
         &request.Headers,
         "Content-Length"
     )
+    const bodyLength = request.Body.Len() else error {
+        discard error
+        discard contentLength
+        return .Err(.InvalidBody)
+    }
     match contentLength {
         None: .Ok
         Some(value): {
@@ -55,7 +65,7 @@ fn validateRequest(&request Request) Result<void, RequestError> {
                 discard error
                 return .Err(.InvalidHeader)
             }
-            if parsed != text.ByteLen(request.Body) {
+            if parsed != bodyLength {
                 return .Err(.InvalidHeader)
             }
             .Ok
@@ -92,7 +102,8 @@ fn redirectedRequest<E>(
     }
     if redirectsAsGet(response.Status, next.Method) {
         next.Method = "GET"
-        next.Body = ""
+        const previousBody = replace next.Body with bytes.FromText("")
+        discard previousBody
         removeHeader(&next.Headers, "Content-Length")
         removeHeader(&next.Headers, "Content-Type")
     }

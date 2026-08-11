@@ -53,9 +53,16 @@ The transport always emits `Connection: close` unless the request already provid
 It validates a supplied content length against the replayable body and rejects request transfer
 encoding. Response order and header spelling are retained.
 
+Request and response bodies are owned `std.bytes.Bytes` values. `NewRequest` copies one String
+into bytes, while `NewBinaryRequest` accepts arbitrary owned bytes without UTF-8 validation.
+`Request.TextBody` and `Response.TextBody` return a validated text copy when a caller wants text.
+The native transport writes and reads raw bytes, including NUL and invalid UTF-8. Retry and 307 or
+308 redirect replay create independent byte copies before transferring an attempt to the
+transport.
+
 `Logging<E>` emits a structured record to `LogSink`. The logged URL excludes credentials, query,
 and fragment. The sink receives status or a typed transport description and monotonic duration.
 
 HTTPS currently returns `NetworkError.TLSUnavailable` before opening a plaintext connection. TLS,
-certificate resolution, binary request and response bodies, connection pooling, and proxy support
-remain open and are not claimed by this checkpoint.
+certificate resolution, streaming bodies, connection pooling, and proxy support remain open and
+are not claimed by this checkpoint.

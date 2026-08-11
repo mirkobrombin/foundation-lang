@@ -5,6 +5,10 @@ log POST https://example.com/start status=307 error=-
 send 3 POST https://other.test/final auth=- id=same body=payload
 log POST https://other.test/final status=200 error=-
 redirect ok 200 done
+send 1 POST https://binary.test/retry auth=- id=no body=<binary-ok>
+send 2 POST https://binary.test/retry auth=- id=no body=<binary-ok>
+send 3 POST https://binary.test/final auth=- id=no body=<binary-ok>
+binary-retry ok 200 binary-done
 send 1 POST https://same.test/start auth=Bearer same id=no body=convert-me
 send 2 GET https://same.test/next auth=Bearer same id=no body=
 same-origin ok 200 converted
@@ -30,6 +34,8 @@ send 1 GET https://scheme.test/start auth=- id=no body=
 scheme error invalid-redirect
 send 1 GET https://example.com/bounded auth=- id=no body=
 bounded error response-too-large
+send 1 GET https://example.com/unavailable auth=- id=no body=
+unavailable error response-body
 send 1 GET https://example.com/first auth=- id=no body=
 breaker-first error transport-permanent
 breaker-second error circuit-open

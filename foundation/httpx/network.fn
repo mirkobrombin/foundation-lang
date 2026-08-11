@@ -1,5 +1,6 @@
 package foundation.httpx
 
+import std.bytes
 import std.collections
 import std.format
 import std.net
@@ -83,7 +84,7 @@ task sendNetwork($request Request) Result<Response, NetworkError> {
     const net.StreamPair { Reader Writer } = pair
     var reader = Reader
     var writer = Writer
-    const wire = encodeRequest(&activeRequest, &activeTarget) else error {
+    const wire = encodeRequestHead(&activeRequest, &activeTarget) else error {
         discard error
         discard activeTarget
         discard reader
@@ -100,6 +101,25 @@ task sendNetwork($request Request) Result<Response, NetworkError> {
     } = writeOutcome
     writer = restoredWriter
     writeResult else error {
+        discard error
+        discard reader
+        discard writer
+        return .Err(.Network(error = error))
+    }
+
+    const body = replace activeRequest.Body with bytes.FromText("")
+    const bodyWriting = spawn net.WriteAllBytesUntil(
+        $writer,
+        $body,
+        deadline
+    )
+    const bodyWriteOutcome = $bodyWriting.wait()
+    const net.WriteOutcome {
+        Writer as bodyWriter
+        Value as bodyWriteResult
+    } = bodyWriteOutcome
+    writer = bodyWriter
+    bodyWriteResult else error {
         discard error
         discard reader
         discard writer
@@ -257,7 +277,11 @@ task readResponse(
         }
         discard active
         discard contentLength
-        return .Ok(Response { Status = status Headers = headers Body = "" })
+        return .Ok(Response {
+            Status = status
+            Headers = headers
+            Body = bytes.FromText("")
+        })
     }
 
     if chunked {
@@ -293,16 +317,20 @@ task readResponse(
     }
     if length == 0 {
         discard active
-        return .Ok(Response { Status = status Headers = headers Body = "" })
+        return .Ok(Response {
+            Status = status
+            Headers = headers
+            Body = bytes.FromText("")
+        })
     }
 
-    const bodyReading = spawn net.ReadExactUntil(
+    const bodyReading = spawn net.ReadExactBytesUntil(
         $active,
         length,
         deadline
     )
     const bodyOutcome = $bodyReading.wait()
-    const net.ReadOutcome {
+    const net.ReadBytesOutcome {
         Reader as bodyReader
         Value as bodyValue
     } = bodyOutcome
@@ -318,10 +346,15 @@ task readChunked(
     $reader own net.TcpReader,
     maximumBody u64,
     deadline net.Deadline
-) Result<String, NetworkError> {
+) Result<own bytes.Bytes, NetworkError> {
     var active = reader
     var total u64 = 0
-    var builder = text.NewBuilder()
+    const opened = bytes.NewBuilder(maximumBody) else error {
+        discard error
+        discard active
+        return .Err(.ResponseTooLarge)
+    }
+    var builder = opened
     var complete = false
     while !complete {
         const sizeReading = spawn net.ReadLineLimitedUntil(
@@ -355,13 +388,13 @@ task readChunked(
                 discard builder
                 return .Err(.ResponseTooLarge)
             }
-            const chunkReading = spawn net.ReadExactUntil(
+            const chunkReading = spawn net.ReadExactBytesUntil(
                 $active,
                 size,
                 deadline
             )
             const chunkOutcome = $chunkReading.wait()
-            const net.ReadOutcome {
+            const net.ReadBytesOutcome {
                 Reader as chunkReader
                 Value as chunkValue
             } = chunkOutcome
@@ -371,14 +404,13 @@ task readChunked(
                 discard builder
                 return .Err(.Network(error = error))
             }
-            const wrote = builder.Write(chunk) else error {
+            builder.Write(chunk) else error {
                 discard error
                 discard chunk
                 discard active
                 discard builder
                 return .Err(.InvalidResponse)
             }
-            discard wrote
             discard chunk
             total = total + size
 
@@ -608,7 +640,7 @@ fn requestPath(value String, start u64) Result<String, RequestError> {
     .Ok(path)
 }
 
-fn encodeRequest(
+fn encodeRequestHead(
     &request Request,
     &target networkTarget
 ) Result<String, RequestError> {
@@ -639,8 +671,13 @@ fn encodeRequest(
     const hasLength = request.Header("Content-Length")
     match hasLength {
         None: {
+            const bodyLength = request.Body.Len() else error {
+                discard error
+                discard builder
+                return .Err(.InvalidBody)
+            }
             writeBuilder(&builder, "Content-Length: ")
-            writeBuilder(&builder, format.U64(text.ByteLen(request.Body)))
+            writeBuilder(&builder, format.U64(bodyLength))
             writeBuilder(&builder, "\r\n")
         }
         Some(value): {
@@ -663,7 +700,6 @@ fn encodeRequest(
     }
     restoreHeaders(&request.Headers, $restored)
     writeBuilder(&builder, "\r\n")
-    writeBuilder(&builder, request.Body)
     const result = builder.Finish() else error {
         discard error
         return .Err(.InvalidURL)

@@ -147,8 +147,10 @@ dereference, order, perform pointer arithmetic on, free, or complete the token t
 may run on a foreign thread. The Foundation executor drains the completion queue and resumes the
 owning task on its own thread.
 
-`std.net` uses this contract for TCP connect, line reads, and complete writes. DNS resolution runs
-on the blocking executor, while socket progress and cancellation remain reactor operations.
+`std.net` uses this contract for TCP connect, text and exact byte reads, and complete text or byte
+writes. DNS resolution runs on the blocking executor, while socket progress and cancellation
+remain reactor operations. Owned `std.bytes.Bytes` storage stays live in the suspended task frame
+until the byte operation completes.
 
 `@callback` applies only to a bodyless C ABI import with an `i32` Foundation result. A call is a
 suspension point and must be a standalone binding or `discard` inside a task. It cannot be combined

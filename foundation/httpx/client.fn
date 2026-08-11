@@ -1,5 +1,6 @@
 package foundation.httpx
 
+import std.bytes
 import std.collections
 import std.text
 import std.time
@@ -19,6 +20,8 @@ enum RequestError {
     InvalidRedirectLimit
     // Rejects a non-positive transport deadline.
     InvalidTimeout
+    // Rejects a closed or otherwise unavailable owned request body.
+    InvalidBody
 }
 
 // Preserves the source of a client failure without flattening transport errors.
@@ -39,6 +42,8 @@ enum ClientError<E> {
     TooManyRedirects
     // Reports a response body larger than the configured byte limit.
     ResponseTooLarge
+    // Reports an unavailable body returned by a custom transport.
+    ResponseBodyUnavailable
 }
 
 // Stores one HTTP header without changing the caller's spelling.
@@ -57,8 +62,8 @@ struct Request {
     URL String
     // Stores request headers in insertion order.
     Headers own collections.List<Header>
-    // Stores the replayable request body.
-    Body String
+    // Owns the replayable request body without assuming text encoding.
+    Body own bytes.Bytes
     // Bounds the accepted response body in bytes.
     MaximumResponseSize u64
     // Enables client-owned redirect processing.
@@ -92,6 +97,11 @@ struct Request {
         addHeader(&self.Headers, name, value)
         .Ok
     }
+
+    // Copies the request body after validating it as UTF-8.
+    fn TextBody(self) Result<String, bytes.Error> {
+        self.Body.Text()
+    }
 }
 
 // Contains one complete bounded HTTP response.
@@ -100,8 +110,8 @@ struct Response {
     Status i32
     // Stores response headers in wire order.
     Headers own collections.List<Header>
-    // Stores the complete bounded response body.
-    Body String
+    // Owns the complete bounded response body without assuming text encoding.
+    Body own bytes.Bytes
 
     // Returns the first value whose name matches without ASCII case.
     fn Header(&self, name String) Option<String> {
@@ -124,6 +134,11 @@ struct Response {
         }
         addHeader(&self.Headers, name, value)
         .Ok
+    }
+
+    // Copies the response body after validating it as UTF-8.
+    fn TextBody(self) Result<String, bytes.Error> {
+        self.Body.Text()
     }
 }
 
@@ -244,11 +259,22 @@ fn New<E>($transport own Transport<E>) own Builder<E> {
     }
 }
 
-// Creates a replayable request with a 16 MiB body cap and ten redirects.
+// Creates a replayable request with a 16 MiB response cap and ten redirects.
 fn NewRequest(
     $method String,
     $url String,
     $body String
+) Result<Request, RequestError> {
+    const value = bytes.FromText(body)
+    discard body
+    NewBinaryRequest($method, $url, $value)
+}
+
+// Creates a replayable request whose owned body preserves arbitrary bytes.
+fn NewBinaryRequest(
+    $method String,
+    $url String,
+    $body own bytes.Bytes
 ) Result<Request, RequestError> {
     if text.IsEmpty(method) {
         discard url
@@ -264,6 +290,12 @@ fn NewRequest(
         discard body
         return .Err(.InvalidURL)
     }
+    const bodyLength = body.Len() else error {
+        discard error
+        discard body
+        return .Err(.InvalidBody)
+    }
+    discard bodyLength
     .Ok(Request {
         Method = method
         URL = text.Copy(url)
@@ -403,7 +435,9 @@ fn executeRetry<E>(
 fn runAttempt<E>(
     &state attemptState<E>
 ) Result<Response, ClientError<E>> {
-    const request = copyRequest(&state.request)
+    const request = copyRequest(&state.request) else error {
+        return .Err(.InvalidRequest(error = error))
+    }
     runRedirect<E>(&state, $request, 0)
 }
 
@@ -413,13 +447,22 @@ fn runRedirect<E>(
     redirects u64
 ) Result<Response, ClientError<E>> {
     var previous = request
-    const sent = copyRequest(&previous)
+    const sent = copyRequest(&previous) else error {
+        discard previous
+        return .Err(.InvalidRequest(error = error))
+    }
     const completed = processNext<E>(&state, $sent) else error {
         discard previous
         return .Err(.Transport(error = error))
     }
     var response = completed
-    if text.ByteLen(response.Body) > previous.MaximumResponseSize {
+    const responseLength = response.Body.Len() else error {
+        discard error
+        discard previous
+        discard response
+        return .Err(.ResponseBodyUnavailable)
+    }
+    if responseLength > previous.MaximumResponseSize {
         discard previous
         discard response
         return .Err(.ResponseTooLarge)
@@ -481,7 +524,7 @@ fn missingAttempt<E>() own attemptState<E> {
             Method = ""
             URL = ""
             Headers = newHeaderList()
-            Body = ""
+            Body = bytes.FromText("")
             MaximumResponseSize = 0
             FollowRedirects = false
             MaximumRedirects = 0
