@@ -287,6 +287,7 @@ fn networkFailureName(error net.Error) String {
         LineTooLong: "network-line-limit"
         AddressInUse: "network-address-in-use"
         Timeout: "network-timeout"
+        InvalidLimit: "network-invalid-limit"
         Io: "network-io"
     }
 }
@@ -474,7 +475,7 @@ task serveBinary(
 
     const headWriting = spawn net.WriteAll(
         $Writer,
-        "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n"
+        "HTTP/1.1 200 OK\r\n\r\n"
     )
     const headWriteOutcome = $headWriting.wait()
     const net.WriteOutcome {
@@ -1038,9 +1039,38 @@ fn main() i32 {
         RequestMatched
         Written as binaryWritten
     } = binaryServed
-    discard binaryClient
-    discard binaryListenerAfter
-    if !RequestMatched || !binaryWritten || !responseMatched return 15
+    if !RequestMatched || !binaryWritten || !responseMatched {
+        discard binaryClient
+        discard binaryListenerAfter
+        return 15
+    }
+
+    const closePort = binaryListenerAfter.Port
+    var closeRequest = requestOr(httpx.NewRequest(
+            "GET",
+            "http://127.0.0.1:" + format.U64(closePort) + "/close-limit",
+            ""
+        ))
+    closeRequest.MaximumResponseSize = 3
+    const closePending = spawn exchangeCompact(
+        $binaryClient,
+        $binaryListenerAfter,
+        $closeRequest,
+        "HTTP/1.1 200 OK\r\n\r\nfour"
+    )
+    const CompactOutcome {
+        Client as closeClient
+        Listener as closeListener
+        Written as closeWritten
+        Status as closeStatus
+        Body as closeBody
+        Failure as closeFailure
+    } = $closePending.wait()
+    discard closeClient
+    discard closeListener
+    discard closeStatus
+    discard closeBody
+    if !closeWritten || closeFailure != "response-too-large" return 16
 
     print("httpx network ok")
     0

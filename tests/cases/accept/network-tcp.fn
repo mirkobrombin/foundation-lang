@@ -23,6 +23,7 @@ fn errorName(error net.Error) String {
         LineTooLong: "TCP connection returned a long line"
         AddressInUse: "TCP address is already in use"
         Timeout: "TCP operation timed out"
+        InvalidLimit: "TCP byte limit is invalid"
         Io: "TCP connection I/O failed"
     }
 }
@@ -153,6 +154,66 @@ fn binaryMatches(
     }
 }
 
+fn someBinaryMatches(
+    $value Result<Option<own bytes.Bytes>, net.Error>
+) bool {
+    match value {
+        Ok(optional): match optional {
+            None: false
+            Some(content): {
+                const matches = binaryMatches(.Ok(content))
+                matches
+            }
+        }
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn isByteEof(
+    $value Result<Option<own bytes.Bytes>, net.Error>
+) bool {
+    match value {
+        Ok(optional): match optional {
+            None: true
+            Some(content): {
+                discard content
+                false
+            }
+        }
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn isInvalidLimit(
+    $value Result<Option<own bytes.Bytes>, net.Error>
+) bool {
+    match value {
+        Ok(optional): {
+            discard optional
+            false
+        }
+        Err(error): match error {
+            InvalidAddress: false
+            ResolveFailed: false
+            Refused: false
+            Closed: false
+            Cancelled: false
+            InvalidUtf8: false
+            LineTooLong: false
+            AddressInUse: false
+            Timeout: false
+            InvalidLimit: true
+            Io: false
+        }
+    }
+}
+
 fn isInvalidUtf8($value Result<Option<String>, net.Error>) bool {
     match value {
         Ok(optional): false
@@ -166,6 +227,7 @@ fn isInvalidUtf8($value Result<Option<String>, net.Error>) bool {
             LineTooLong: false
             AddressInUse: false
             Timeout: false
+            InvalidLimit: false
             Io: false
         }
     }
@@ -184,6 +246,7 @@ fn isLineTooLong($value Result<Option<String>, net.Error>) bool {
             LineTooLong: true
             AddressInUse: false
             Timeout: false
+            InvalidLimit: false
             Io: false
         }
     }
@@ -202,6 +265,7 @@ fn isRefused($value Result<own net.TcpConnection, net.Error>) bool {
             LineTooLong: false
             AddressInUse: false
             Timeout: false
+            InvalidLimit: false
             Io: false
         }
     }
@@ -220,6 +284,7 @@ fn isInvalidAddress($value Result<own net.TcpConnection, net.Error>) bool {
             LineTooLong: false
             AddressInUse: false
             Timeout: false
+            InvalidLimit: false
             Io: false
         }
     }
@@ -241,6 +306,7 @@ fn isTimeout($value Result<Option<String>, net.Error>) bool {
             LineTooLong: false
             AddressInUse: false
             Timeout: true
+            InvalidLimit: false
             Io: false
         }
     }
@@ -312,15 +378,45 @@ fn listenerRoundTrip() bool {
     const net.WriteOutcome { Writer as serverWriterAfter Value as serverWrite } = $serverWriting.wait()
     const net.ReadLineOutcome { Reader as clientReaderAfter Value as response } = $clientReading.wait()
 
+    const chunkWriting = spawn net.WriteAllBytes(
+        $clientWriterBody,
+        binaryPayload()
+    )
+    const net.WriteOutcome {
+        Writer as chunkWriter
+        Value as chunkWriteResult
+    } = $chunkWriting.wait()
+    discard chunkWriter
+    const chunkReading = spawn net.ReadSomeBytesUntil(
+        $serverReaderBody,
+        8,
+        deadline
+    )
+    const net.ReadSomeBytesOutcome {
+        Reader as chunkReader
+        Value as chunkResult
+    } = $chunkReading.wait()
+    const eofReading = spawn net.ReadSomeBytes($chunkReader, 8)
+    const net.ReadSomeBytesOutcome {
+        Reader as eofReader
+        Value as byteEof
+    } = $eofReading.wait()
+    const invalidReading = spawn net.ReadSomeBytes($eofReader, 0)
+    const net.ReadSomeBytesOutcome {
+        Reader as invalidReader
+        Value as invalidLimit
+    } = $invalidReading.wait()
+
     const success = lineOr($request) == "hello" && binaryMatches($bodyResult) &&
         binaryMatches($binaryResponse) &&
         lineOr($response) == "world" &&
         clientPeer == "127.0.0.1" && serverPeer == "127.0.0.1" &&
         writeSucceeded($clientWrite) && writeSucceeded($bodyWriteResult) &&
-        writeSucceeded($responseWriteResult) && writeSucceeded($serverWrite)
+        writeSucceeded($responseWriteResult) && writeSucceeded($serverWrite) &&
+        writeSucceeded($chunkWriteResult) && someBinaryMatches($chunkResult) &&
+        isByteEof($byteEof) && isInvalidLimit($invalidLimit)
     discard listenerAfter
-    discard clientWriterBody
-    discard serverReaderBody
+    discard invalidReader
     discard serverWriterAfter
     discard clientReaderAfter
     success

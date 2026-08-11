@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.136.0");
+    assert.equal(manifest.version, "0.137.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1292,7 +1292,8 @@ test("grammar and completions track compiler keywords", () => {
         "net.TcpConnection.PeerAddress", "net.ReadLine",
         "net.ReadLineLimited", "net.ReadLineLimitedUntil", "net.ReadExact",
         "net.ReadExactUntil", "net.ReadExactBytes", "net.ReadExactBytesUntil",
-        "net.ReadBytesOutcome", "net.WriteAll", "net.WriteAllUntil",
+        "net.ReadBytesOutcome", "net.ReadSomeBytes", "net.ReadSomeBytesUntil",
+        "net.ReadSomeBytesOutcome", "net.WriteAll", "net.WriteAllUntil",
         "net.WriteAllBytes", "net.WriteAllBytesUntil",
         "std.format", "format.Bool", "format.I8", "format.I16", "format.I32",
         "format.I64", "format.Isize", "format.U8", "format.U16", "format.U32",

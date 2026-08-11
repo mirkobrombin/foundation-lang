@@ -45,6 +45,7 @@ enum {
     FDN_NET_EOF = 9,
     FDN_NET_ADDRESS_IN_USE = 10,
     FDN_NET_TIMEOUT = 11,
+    FDN_NET_INVALID_LIMIT = 12,
     FDN_NET_PENDING = -1,
 };
 
@@ -100,6 +101,13 @@ typedef enum fdn_net_request_kind {
     FDN_NET_REQUEST_WRITE_ALL,
 } fdn_net_request_kind;
 
+typedef enum fdn_net_read_mode {
+    FDN_NET_READ_LINE,
+    FDN_NET_READ_EXACT_TEXT,
+    FDN_NET_READ_EXACT_BYTES,
+    FDN_NET_READ_SOME_BYTES,
+} fdn_net_read_mode;
+
 typedef struct fdn_net_request {
     struct fdn_net_request *next;
     fdn_reactor_operation *operation;
@@ -123,8 +131,7 @@ typedef struct fdn_net_request {
             size_t limit;
             fdn_string *text_result;
             uint64_t *bytes_result;
-            bool exact;
-            bool binary;
+            fdn_net_read_mode mode;
         } read;
         struct {
             fdn_net_connection *connection;
@@ -1264,12 +1271,14 @@ static int32_t fdn_net_read_publish(fdn_net_request *request, size_t length,
     fdn_net_connection *connection = request->value.read.connection;
     size_t text_length = length;
     char *data = NULL;
-    if (!request->value.read.exact && text_length != 0 &&
+    const bool line = request->value.read.mode == FDN_NET_READ_LINE;
+    const bool binary = request->value.read.mode == FDN_NET_READ_EXACT_BYTES ||
+                        request->value.read.mode == FDN_NET_READ_SOME_BYTES;
+    if (line && text_length != 0 &&
         connection->read_data[text_length - 1] == '\r') {
         --text_length;
     }
-    if (!request->value.read.binary &&
-        !fdn_utf8_valid(connection->read_data, text_length)) {
+    if (!binary && !fdn_utf8_valid(connection->read_data, text_length)) {
         connection->read_length = 0;
         fdn_net_read_close(connection);
         return FDN_NET_INVALID_UTF8;
@@ -1283,7 +1292,7 @@ static int32_t fdn_net_read_publish(fdn_net_request *request, size_t length,
                      connection->read_length - consumed);
     }
     connection->read_length -= consumed;
-    if (request->value.read.binary) {
+    if (binary) {
         uint64_t handle = 0;
         if (fdn_bytes_adopt((uint8_t *)data, text_length, text_length,
                             &handle) != 0) {
@@ -1306,7 +1315,8 @@ static int32_t fdn_net_read_publish(fdn_net_request *request, size_t length,
 
 static int32_t fdn_net_read_buffered(fdn_net_request *request) {
     fdn_net_connection *connection = request->value.read.connection;
-    if (request->value.read.exact) {
+    if (request->value.read.mode == FDN_NET_READ_EXACT_TEXT ||
+        request->value.read.mode == FDN_NET_READ_EXACT_BYTES) {
         if (connection->read_length >= request->value.read.limit) {
             return fdn_net_read_publish(request, request->value.read.limit,
                                         request->value.read.limit);
@@ -1315,6 +1325,16 @@ static int32_t fdn_net_read_buffered(fdn_net_request *request) {
             return FDN_NET_EOF;
         }
         return FDN_NET_PENDING;
+    }
+    if (request->value.read.mode == FDN_NET_READ_SOME_BYTES) {
+        if (connection->read_length != 0) {
+            const size_t length =
+                connection->read_length < request->value.read.limit
+                    ? connection->read_length
+                    : request->value.read.limit;
+            return fdn_net_read_publish(request, length, length);
+        }
+        return connection->read_eof ? FDN_NET_EOF : FDN_NET_PENDING;
     }
     size_t offset;
     for (offset = 0; offset < connection->read_length; ++offset) {
@@ -1808,12 +1828,14 @@ void foundation_runtime_net_connect_cancel(fdn_reactor_operation *operation) {
 static void fdn_net_read_start(uint64_t reader, uint64_t limit,
                                fdn_string *text, uint64_t *bytes,
                                uint64_t deadline,
-                               fdn_reactor_operation *operation, bool exact,
-                               bool binary) {
+                               fdn_reactor_operation *operation,
+                               fdn_net_read_mode mode) {
     fdn_net_connection *connection = (fdn_net_connection *)(uintptr_t)reader;
     fdn_net_request *request;
     fdn_net_socket socket;
     int32_t status;
+    const bool binary = mode == FDN_NET_READ_EXACT_BYTES ||
+                        mode == FDN_NET_READ_SOME_BYTES;
     if (operation == NULL || (binary ? bytes == NULL : text == NULL)) {
         fdn_panic_cstr("invalid network read operation");
     }
@@ -1823,8 +1845,15 @@ static void fdn_net_read_start(uint64_t reader, uint64_t limit,
         fdn_string_drop(text);
         *text = fdn_string_static("", 0);
     }
-    if (exact && limit > (uint64_t)SIZE_MAX) {
+    if ((mode == FDN_NET_READ_EXACT_TEXT ||
+         mode == FDN_NET_READ_EXACT_BYTES) &&
+        limit > (uint64_t)SIZE_MAX) {
         fdn_reactor_complete(operation, FDN_NET_LINE_TOO_LONG);
+        return;
+    }
+    if (mode == FDN_NET_READ_SOME_BYTES &&
+        (limit == 0 || limit > (uint64_t)SIZE_MAX)) {
+        fdn_reactor_complete(operation, FDN_NET_INVALID_LIMIT);
         return;
     }
     if (deadline != UINT64_MAX &&
@@ -1854,8 +1883,7 @@ static void fdn_net_read_start(uint64_t reader, uint64_t limit,
     request->value.read.limit = limit > (uint64_t)SIZE_MAX ? SIZE_MAX : (size_t)limit;
     request->value.read.text_result = text;
     request->value.read.bytes_result = bytes;
-    request->value.read.exact = exact;
-    request->value.read.binary = binary;
+    request->value.read.mode = mode;
     status = fdn_net_read_buffered(request);
     if (status != FDN_NET_PENDING) {
         fdn_dealloc(request);
@@ -1871,15 +1899,15 @@ static void fdn_net_read_start(uint64_t reader, uint64_t limit,
 void foundation_runtime_net_read_line_start(uint64_t reader, uint64_t limit,
                                             fdn_string *line,
                                             fdn_reactor_operation *operation) {
-    fdn_net_read_start(reader, limit, line, NULL, UINT64_MAX, operation, false,
-                       false);
+    fdn_net_read_start(reader, limit, line, NULL, UINT64_MAX, operation,
+                       FDN_NET_READ_LINE);
 }
 
 void foundation_runtime_net_read_line_until_start(
     uint64_t reader, uint64_t limit, uint64_t deadline, fdn_string *line,
     fdn_reactor_operation *operation) {
-    fdn_net_read_start(reader, limit, line, NULL, deadline, operation, false,
-                       false);
+    fdn_net_read_start(reader, limit, line, NULL, deadline, operation,
+                       FDN_NET_READ_LINE);
 }
 
 void foundation_runtime_net_read_line_cancel(fdn_reactor_operation *operation) {
@@ -1889,15 +1917,15 @@ void foundation_runtime_net_read_line_cancel(fdn_reactor_operation *operation) {
 void foundation_runtime_net_read_exact_start(uint64_t reader, uint64_t length,
                                              fdn_string *text,
                                              fdn_reactor_operation *operation) {
-    fdn_net_read_start(reader, length, text, NULL, UINT64_MAX, operation, true,
-                       false);
+    fdn_net_read_start(reader, length, text, NULL, UINT64_MAX, operation,
+                       FDN_NET_READ_EXACT_TEXT);
 }
 
 void foundation_runtime_net_read_exact_until_start(
     uint64_t reader, uint64_t length, uint64_t deadline, fdn_string *text,
     fdn_reactor_operation *operation) {
-    fdn_net_read_start(reader, length, text, NULL, deadline, operation, true,
-                       false);
+    fdn_net_read_start(reader, length, text, NULL, deadline, operation,
+                       FDN_NET_READ_EXACT_TEXT);
 }
 
 void foundation_runtime_net_read_exact_cancel(fdn_reactor_operation *operation) {
@@ -1907,15 +1935,34 @@ void foundation_runtime_net_read_exact_cancel(fdn_reactor_operation *operation) 
 void foundation_runtime_net_read_exact_bytes_start(
     uint64_t reader, uint64_t length, uint64_t *bytes,
     fdn_reactor_operation *operation) {
-    fdn_net_read_start(reader, length, NULL, bytes, UINT64_MAX, operation, true,
-                       true);
+    fdn_net_read_start(reader, length, NULL, bytes, UINT64_MAX, operation,
+                       FDN_NET_READ_EXACT_BYTES);
 }
 
 void foundation_runtime_net_read_exact_bytes_until_start(
     uint64_t reader, uint64_t length, uint64_t deadline, uint64_t *bytes,
     fdn_reactor_operation *operation) {
-    fdn_net_read_start(reader, length, NULL, bytes, deadline, operation, true,
-                       true);
+    fdn_net_read_start(reader, length, NULL, bytes, deadline, operation,
+                       FDN_NET_READ_EXACT_BYTES);
+}
+
+void foundation_runtime_net_read_some_bytes_start(
+    uint64_t reader, uint64_t limit, uint64_t *bytes,
+    fdn_reactor_operation *operation) {
+    fdn_net_read_start(reader, limit, NULL, bytes, UINT64_MAX, operation,
+                       FDN_NET_READ_SOME_BYTES);
+}
+
+void foundation_runtime_net_read_some_bytes_until_start(
+    uint64_t reader, uint64_t limit, uint64_t deadline, uint64_t *bytes,
+    fdn_reactor_operation *operation) {
+    fdn_net_read_start(reader, limit, NULL, bytes, deadline, operation,
+                       FDN_NET_READ_SOME_BYTES);
+}
+
+void foundation_runtime_net_read_some_bytes_cancel(
+    fdn_reactor_operation *operation) {
+    fdn_net_cancel(operation);
 }
 
 static void fdn_net_write_start(uint64_t writer, const char *data,

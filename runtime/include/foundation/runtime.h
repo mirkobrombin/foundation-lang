@@ -390,6 +390,14 @@ void foundation_runtime_net_read_exact_bytes_start(
 void foundation_runtime_net_read_exact_bytes_until_start(
     uint64_t reader, uint64_t length, uint64_t deadline, uint64_t *bytes,
     fdn_reactor_operation *operation);
+void foundation_runtime_net_read_some_bytes_start(
+    uint64_t reader, uint64_t limit, uint64_t *bytes,
+    fdn_reactor_operation *operation);
+void foundation_runtime_net_read_some_bytes_until_start(
+    uint64_t reader, uint64_t limit, uint64_t deadline, uint64_t *bytes,
+    fdn_reactor_operation *operation);
+void foundation_runtime_net_read_some_bytes_cancel(
+    fdn_reactor_operation *operation);
 void foundation_runtime_net_write_all_start(uint64_t writer, const fdn_string *text,
                                             fdn_reactor_operation *operation);
 void foundation_runtime_net_write_all_until_start(

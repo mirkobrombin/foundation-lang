@@ -40,7 +40,9 @@ and fragment, and rejects malformed percent escapes, invalid ports, unbracketed 
 and non-HTTP schemes.
 
 `Network()` is the portable HTTP/1.1 transport over `std.net`. It resolves DNS, opens TCP, writes
-one request, and accepts bounded `Content-Length`, chunked, and no-body responses. It rejects
+one request, and accepts bounded `Content-Length`, chunked, close-delimited, and no-body responses.
+Close-delimited bodies are read as arbitrary byte chunks until clean EOF; a one-byte probe at the
+configured boundary distinguishes an exact-size body from overflow. The transport rejects
 duplicate framing fields, simultaneous content length and transfer encoding, unsupported transfer
 codings, oversized lines, more than 128 headers, invalid status lines, and bodies beyond
 `MaximumResponseSize`. A request has a 15 second deadline by default. The same monotonic deadline

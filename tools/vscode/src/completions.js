@@ -790,6 +790,23 @@ const staticCompletions = [
         detail: "owned reader and arbitrary byte read result"
     },
     {
+        label: "net.ReadSomeBytes",
+        kind: "Function",
+        detail: "task ReadSomeBytes(reader own net.TcpReader, limit u64) net.ReadSomeBytesOutcome",
+        insertText: "net.ReadSomeBytes(${1:reader}, ${2:limit})"
+    },
+    {
+        label: "net.ReadSomeBytesUntil",
+        kind: "Function",
+        detail: "task ReadSomeBytesUntil(reader own net.TcpReader, limit u64, deadline net.Deadline) net.ReadSomeBytesOutcome",
+        insertText: "net.ReadSomeBytesUntil(${1:reader}, ${2:limit}, ${3:deadline})"
+    },
+    {
+        label: "net.ReadSomeBytesOutcome",
+        kind: "Struct",
+        detail: "owned reader and optional non-empty arbitrary byte chunk"
+    },
+    {
         label: "net.WriteAll",
         kind: "Function",
         detail: "task WriteAll(writer own net.TcpWriter, text String) net.WriteOutcome",

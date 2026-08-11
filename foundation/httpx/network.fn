@@ -305,6 +305,24 @@ task readResponse(
         return .Ok(Response { Status = status Headers = headers Body = body })
     }
 
+    if !sawContentLength {
+        discard contentLength
+        const bodyReading = spawn readCloseDelimited(
+            $active,
+            maximumBody,
+            deadline
+        )
+        const bodyValue = $bodyReading.wait()
+        const body = bodyValue else error {
+            discard headers
+            return .Err(error)
+        }
+        return .Ok(Response {
+            Status = status
+            Headers = headers
+            Body = body
+        })
+    }
     const length = requiredContentLength(contentLength) else error {
         discard active
         discard headers
@@ -340,6 +358,83 @@ task readResponse(
         return .Err(.Network(error = error))
     }
     .Ok(Response { Status = status Headers = headers Body = body })
+}
+
+task readCloseDelimited(
+    $reader own net.TcpReader,
+    maximumBody u64,
+    deadline net.Deadline
+) Result<own bytes.Bytes, NetworkError> {
+    var active = reader
+    var total u64 = 0
+    const opened = bytes.NewBuilder(maximumBody) else error {
+        discard error
+        discard active
+        return .Err(.ResponseTooLarge)
+    }
+    var builder = opened
+    var complete = false
+    while !complete {
+        const remaining = maximumBody - total
+        var limit u64 = 65536
+        if remaining < limit {
+            limit = remaining
+        }
+        if limit == 0 {
+            limit = 1
+        }
+        const reading = spawn net.ReadSomeBytesUntil(
+            $active,
+            limit,
+            deadline
+        )
+        const outcome = $reading.wait()
+        const net.ReadSomeBytesOutcome {
+            Reader as restoredReader
+            Value
+        } = outcome
+        active = restoredReader
+        const optional = Value else error {
+            discard active
+            discard builder
+            return .Err(.Network(error = error))
+        }
+        match optional {
+            None: {
+                complete = true
+            }
+            Some(chunk): {
+                const length = chunk.Len() else error {
+                    discard error
+                    discard chunk
+                    discard active
+                    discard builder
+                    return .Err(.InvalidResponse)
+                }
+                if length > remaining {
+                    discard chunk
+                    discard active
+                    discard builder
+                    return .Err(.ResponseTooLarge)
+                }
+                builder.Write(chunk) else error {
+                    discard error
+                    discard chunk
+                    discard active
+                    discard builder
+                    return .Err(.InvalidResponse)
+                }
+                discard chunk
+                total = total + length
+            }
+        }
+    }
+    discard active
+    const body = builder.Finish() else error {
+        discard error
+        return .Err(.InvalidResponse)
+    }
+    .Ok(body)
 }
 
 task readChunked(
@@ -742,7 +837,7 @@ fn requiredContentLength(
     value Option<u64>
 ) Result<u64, NetworkError> {
     match value {
-        None: .Err(.UnsupportedFraming)
+        None: .Err(.InvalidResponse)
         Some(length): .Ok(length)
     }
 }

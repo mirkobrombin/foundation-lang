@@ -23,6 +23,8 @@ enum Error {
     AddressInUse
     // Reports expiry of an absolute monotonic deadline.
     Timeout
+    // Rejects a zero or platform-unrepresentable byte limit.
+    InvalidLimit
     // Reports another platform networking failure.
     Io
 }
@@ -133,6 +135,21 @@ extern c fn readExactBytesUntilNative(
     &value u64
 ) i32 as foundation_runtime_net_read_exact_bytes_until_start
 
+@callback(cancel = foundation_runtime_net_read_some_bytes_cancel)
+extern c fn readSomeBytesNative(
+    reader u64,
+    limit u64,
+    &value u64
+) i32 as foundation_runtime_net_read_some_bytes_start
+
+@callback(cancel = foundation_runtime_net_read_some_bytes_cancel)
+extern c fn readSomeBytesUntilNative(
+    reader u64,
+    limit u64,
+    deadline u64,
+    &value u64
+) i32 as foundation_runtime_net_read_some_bytes_until_start
+
 @callback(cancel = foundation_runtime_net_write_all_cancel)
 extern c fn writeAllNative(
     writer u64,
@@ -189,6 +206,9 @@ fn errorFor(status i32) Error {
     }
     if status == 11 {
         return .Timeout
+    }
+    if status == 12 {
+        return .InvalidLimit
     }
     .Io
 }
@@ -308,6 +328,14 @@ struct ReadBytesOutcome {
     Reader own TcpReader
     // Contains arbitrary bytes without applying UTF-8 validation.
     Value Result<own bytes.Bytes, Error>
+}
+
+// Restores a reader owner beside one bounded binary chunk or clean EOF.
+struct ReadSomeBytesOutcome {
+    // Restores the reader after completion, EOF, timeout, or failure.
+    Reader own TcpReader
+    // Distinguishes a non-empty arbitrary byte chunk, EOF, and failure.
+    Value Result<Option<own bytes.Bytes>, Error>
 }
 
 // Restores a writer owner beside one complete-write result.
@@ -531,6 +559,64 @@ task ReadExactBytesUntil(
         return ReadBytesOutcome { Reader = reader Value = .Ok(value) }
     }
     ReadBytesOutcome { Reader = reader Value = .Err(errorFor(status)) }
+}
+
+// Reads one non-empty arbitrary byte chunk up to the caller-provided limit.
+task ReadSomeBytes(
+    $reader own TcpReader,
+    limit u64
+) ReadSomeBytesOutcome {
+    var handle u64 = 0
+    const status = readSomeBytesNative(reader.handle, limit, &handle)
+    if status == 0 {
+        const value = bytes.ClaimRuntimeHandle(handle) else error {
+            discard error
+            return ReadSomeBytesOutcome {
+                Reader = reader
+                Value = .Err(.Io)
+            }
+        }
+        return ReadSomeBytesOutcome {
+            Reader = reader
+            Value = .Ok(.Some(value))
+        }
+    }
+    if status == 9 {
+        return ReadSomeBytesOutcome { Reader = reader Value = .Ok(.None) }
+    }
+    ReadSomeBytesOutcome { Reader = reader Value = .Err(errorFor(status)) }
+}
+
+// Reads one non-empty arbitrary byte chunk before a monotonic deadline.
+task ReadSomeBytesUntil(
+    $reader own TcpReader,
+    limit u64,
+    deadline Deadline
+) ReadSomeBytesOutcome {
+    var handle u64 = 0
+    const status = readSomeBytesUntilNative(
+        reader.handle,
+        limit,
+        deadline.nanoseconds,
+        &handle
+    )
+    if status == 0 {
+        const value = bytes.ClaimRuntimeHandle(handle) else error {
+            discard error
+            return ReadSomeBytesOutcome {
+                Reader = reader
+                Value = .Err(.Io)
+            }
+        }
+        return ReadSomeBytesOutcome {
+            Reader = reader
+            Value = .Ok(.Some(value))
+        }
+    }
+    if status == 9 {
+        return ReadSomeBytesOutcome { Reader = reader Value = .Ok(.None) }
+    }
+    ReadSomeBytesOutcome { Reader = reader Value = .Err(errorFor(status)) }
 }
 
 // Writes the complete UTF-8 string and returns ownership of the writer.

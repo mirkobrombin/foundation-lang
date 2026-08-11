@@ -18,6 +18,8 @@ task ReadExact(reader own TcpReader, length u64) ReadOutcome
 task ReadExactUntil(reader own TcpReader, length u64, deadline Deadline) ReadOutcome
 task ReadExactBytes(reader own TcpReader, length u64) ReadBytesOutcome
 task ReadExactBytesUntil(reader own TcpReader, length u64, deadline Deadline) ReadBytesOutcome
+task ReadSomeBytes(reader own TcpReader, limit u64) ReadSomeBytesOutcome
+task ReadSomeBytesUntil(reader own TcpReader, limit u64, deadline Deadline) ReadSomeBytesOutcome
 task WriteAll(writer own TcpWriter, $text String) WriteOutcome
 task WriteAllUntil(writer own TcpWriter, $text String, deadline Deadline) WriteOutcome
 task WriteAllBytes(writer own TcpWriter, value own bytes.Bytes) WriteOutcome
@@ -55,6 +57,12 @@ preserves NUL, invalid UTF-8, and every other octet exactly. `ReadBytesOutcome` 
 beside the owned payload or typed error. The deadline variant has the same exact-length and EOF
 rules as the text operation.
 
+`ReadSomeBytes` waits for at least one byte and returns no more than the caller's limit. It never
+validates text and preserves unread bytes for the next operation. `Option.None` means clean EOF
+before another byte; a successful `Some` value is always non-empty. A zero or
+platform-unrepresentable limit returns `InvalidLimit` without reading the stream. The deadline
+variant applies the same contract before one absolute monotonic deadline.
+
 `WriteAll` completes only after the whole String was transmitted. Cancellation or an I/O failure
 may happen after a prefix reached the peer. Any non-success result closes the returned write half,
 so callers cannot accidentally reuse a stream with an unknown protocol position.
@@ -64,14 +72,15 @@ the callback reactor finishes, and releases it before returning the writer. No t
 copy is inserted by `std.net`. The caller can retain an independent replay value with
 `bytes.Bytes.Copy` before starting the task.
 
-`ReadLineOutcome`, `ReadOutcome`, `ReadBytesOutcome`, and `WriteOutcome` return the owned half beside
-the operation result. Dropping a task still closes every owned handle through normal deterministic
-cleanup. The runtime service is created on first use and stops after its final address, connection,
-and request are released.
+`ReadLineOutcome`, `ReadOutcome`, `ReadBytesOutcome`, `ReadSomeBytesOutcome`, and `WriteOutcome`
+return the owned half beside the operation result. Dropping a task still closes every owned handle
+through normal deterministic cleanup. The runtime service is created on first use and stops after
+its final address, connection, and request are released.
 
 The error enum distinguishes `InvalidAddress`, `ResolveFailed`, `Refused`, `Closed`, `Cancelled`,
-`InvalidUtf8`, `LineTooLong`, `AddressInUse`, `Timeout`, and `Io`. Connect ports must be in the
-range 1 through 65535. Listen ports may also be zero. Allocation failure remains a fatal panic.
+`InvalidUtf8`, `LineTooLong`, `AddressInUse`, `Timeout`, `InvalidLimit`, and `Io`. Connect ports must
+be in the range 1 through 65535. Listen ports may also be zero. Allocation failure remains a fatal
+panic.
 
 TLS is not part of this package yet. A future TLS package will wrap the same owned stream model
 without exposing platform TLS handles to Foundation code.
