@@ -1,0 +1,133 @@
+package test.compatibility.hooks
+
+import foundation.hooks
+import std.concurrent
+
+// Marks the hook that blocks the wrapped action.
+enum Failure {
+    // Stops the current before phase.
+    Blocked
+}
+
+task printHook(
+    $key String,
+    $cancel concurrent.Cancellation,
+    $label String
+) Result<void, Failure> {
+    discard key
+    discard cancel
+    print(label)
+    .Ok
+}
+
+task blockHook(
+    $key String,
+    $cancel concurrent.Cancellation
+) Result<void, Failure> {
+    discard key
+    discard cancel
+    print("blocked")
+    .Err(.Blocked)
+}
+
+task printAction(
+    $cancel concurrent.Cancellation,
+    $label String
+) Result<void, Failure> {
+    discard cancel
+    print(label)
+    .Ok
+}
+
+fn beforeAll(
+    $key String,
+    $cancel concurrent.Cancellation
+) Task<Result<void, Failure>> {
+    spawn printHook($key, $cancel, "before all")
+}
+
+fn beforeSave(
+    $key String,
+    $cancel concurrent.Cancellation
+) Task<Result<void, Failure>> {
+    spawn printHook($key, $cancel, "before save")
+}
+
+fn afterAll(
+    $key String,
+    $cancel concurrent.Cancellation
+) Task<Result<void, Failure>> {
+    spawn printHook($key, $cancel, "after all")
+}
+
+fn afterSave(
+    $key String,
+    $cancel concurrent.Cancellation
+) Task<Result<void, Failure>> {
+    spawn printHook($key, $cancel, "after save")
+}
+
+fn saveAction(
+    $cancel concurrent.Cancellation
+) Task<Result<void, Failure>> {
+    spawn printAction($cancel, "action")
+}
+
+fn skipped(
+    $cancel concurrent.Cancellation
+) Task<Result<void, Failure>> {
+    spawn printAction($cancel, "skipped")
+}
+
+fn blocked(
+    $key String,
+    $cancel concurrent.Cancellation
+) Task<Result<void, Failure>> {
+    spawn blockHook($key, $cancel)
+}
+
+fn cleared(
+    $cancel concurrent.Cancellation
+) Task<Result<void, Failure>> {
+    spawn printAction($cancel, "cleared")
+}
+
+fn acceptRegistration(
+    $value Result<void, hooks.RegistrationError>
+) bool {
+    match value {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn accepted($value Result<void, hooks.RunError<Failure>>) bool {
+    match value {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn rejected($value Result<void, hooks.RunError<Failure>>) bool {
+    !accepted($value)
+}
+
+fn main() i32 {
+    var runner = hooks.New<Failure>(.StopOnFirstError)
+    if !acceptRegistration($runner.BeforeAll($beforeAll)) return 1
+    if !acceptRegistration($runner.Before("save", $beforeSave)) return 2
+    if !acceptRegistration($runner.AfterAll($afterAll)) return 3
+    if !acceptRegistration($runner.After("save", $afterSave)) return 4
+    if !accepted($runner.Run("save", $saveAction)) return 5
+    if !acceptRegistration($runner.Before("fail", $blocked)) return 6
+    if !rejected($runner.Run("fail", $skipped)) return 7
+    if !acceptRegistration($runner.Clear()) return 8
+    if !accepted($runner.Run("save", $cleared)) return 9
+    0
+}

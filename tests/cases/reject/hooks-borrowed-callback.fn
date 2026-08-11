@@ -1,0 +1,36 @@
+import foundation.hooks
+import std.concurrent
+
+enum Failure {
+    Rejected
+}
+
+struct Counter {
+    value i32
+}
+
+task complete(
+    $key String,
+    $cancel concurrent.Cancellation
+) Result<void, Failure> {
+    discard key
+    discard cancel
+    .Ok
+}
+
+fn main() i32 {
+    var counter = Counter { value = 0 }
+    var runner = hooks.New<Failure>(.StopOnFirstError)
+    const callback transferable fn(
+        $String,
+        $concurrent.Cancellation
+    ) Task<Result<void, Failure>> = fn(
+        $key String,
+        $cancel concurrent.Cancellation
+    ) Task<Result<void, Failure>> capture(&counter) {
+        counter.value = counter.value + 1
+        spawn complete($key, $cancel)
+    }
+    discard runner.Before("save", $callback)
+    0
+}

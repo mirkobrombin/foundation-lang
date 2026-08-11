@@ -1,0 +1,309 @@
+import foundation.hooks
+import std.collections
+import std.concurrent
+import std.time
+
+// Distinguishes the fixture failures used to verify ordering.
+enum HookError {
+    // Marks the first registered failure.
+    First
+
+    // Marks the second registered failure.
+    Second
+
+    // Marks an action that must not execute.
+    Action
+}
+
+task executeBeforeAll(
+    $key String,
+    $cancel concurrent.Cancellation
+) Result<void, HookError> {
+    discard key
+    discard cancel
+    print("before all")
+    .Ok
+}
+
+task executeBeforeSave(
+    $key String,
+    $cancel concurrent.Cancellation
+) Result<void, HookError> {
+    discard key
+    discard cancel
+    print("before save")
+    .Ok
+}
+
+task executeSave(
+    $cancel concurrent.Cancellation
+) Result<void, HookError> {
+    discard cancel
+    print("save")
+    .Ok
+}
+
+task executeAfterAll(
+    $key String,
+    $cancel concurrent.Cancellation
+) Result<void, HookError> {
+    discard key
+    discard cancel
+    print("after all")
+    .Ok
+}
+
+task executeAfterSave(
+    $key String,
+    $cancel concurrent.Cancellation
+) Result<void, HookError> {
+    discard key
+    discard cancel
+    print("after save")
+    .Ok
+}
+
+task executeFirstFailure(
+    $key String,
+    $cancel concurrent.Cancellation
+) Result<void, HookError> {
+    discard key
+    discard cancel
+    .Err(.First)
+}
+
+task executeSecondFailure(
+    $key String,
+    $cancel concurrent.Cancellation
+) Result<void, HookError> {
+    discard key
+    discard cancel
+    .Err(.Second)
+}
+
+task executeShouldNotRun(
+    $cancel concurrent.Cancellation
+) Result<void, HookError> {
+    discard cancel
+    .Err(.Action)
+}
+
+task executeSlow(
+    $cancel concurrent.Cancellation
+) Result<void, HookError> {
+    const Channel { sender receiver } = channel<void>(0)
+    select {
+        receiver.receive(): {
+            discard sender
+            return .Err(.Action)
+        }
+        timeout 5.milliseconds: {
+            discard sender
+            discard receiver
+            if cancel.IsRequested() return .Ok
+            return .Err(.Action)
+        }
+        else error: {
+            discard error
+            discard sender
+            discard receiver
+            return .Err(.Action)
+        }
+    }
+}
+
+fn beforeAll(
+    $key String,
+    $cancel concurrent.Cancellation
+) Task<Result<void, HookError>> {
+    spawn executeBeforeAll($key, $cancel)
+}
+
+fn beforeSave(
+    $key String,
+    $cancel concurrent.Cancellation
+) Task<Result<void, HookError>> {
+    spawn executeBeforeSave($key, $cancel)
+}
+
+fn save(
+    $cancel concurrent.Cancellation
+) Task<Result<void, HookError>> {
+    spawn executeSave($cancel)
+}
+
+fn afterAll(
+    $key String,
+    $cancel concurrent.Cancellation
+) Task<Result<void, HookError>> {
+    spawn executeAfterAll($key, $cancel)
+}
+
+fn afterSave(
+    $key String,
+    $cancel concurrent.Cancellation
+) Task<Result<void, HookError>> {
+    spawn executeAfterSave($key, $cancel)
+}
+
+fn firstFailure(
+    $key String,
+    $cancel concurrent.Cancellation
+) Task<Result<void, HookError>> {
+    spawn executeFirstFailure($key, $cancel)
+}
+
+fn secondFailure(
+    $key String,
+    $cancel concurrent.Cancellation
+) Task<Result<void, HookError>> {
+    spawn executeSecondFailure($key, $cancel)
+}
+
+fn shouldNotRun(
+    $cancel concurrent.Cancellation
+) Task<Result<void, HookError>> {
+    spawn executeShouldNotRun($cancel)
+}
+
+fn slow(
+    $cancel concurrent.Cancellation
+) Task<Result<void, HookError>> {
+    spawn executeSlow($cancel)
+}
+
+fn requireRegistration(
+    $value Result<void, hooks.RegistrationError>
+) void {
+    match value {
+        Ok: {
+            return
+        }
+        Err(error): {
+            discard error
+            panic("hook registration failed")
+        }
+    }
+}
+
+fn requireRun($value Result<void, hooks.RunError<HookError>>) void {
+    match value {
+        Ok: {
+            return
+        }
+        Err(error): {
+            discard error
+            panic("hook run failed")
+        }
+    }
+}
+
+fn failureValue(
+    $value Option<hooks.Failure<HookError>>
+) hooks.Failure<HookError> {
+    match value {
+        None: panic("missing hook failure")
+        Some(failure): failure
+    }
+}
+
+fn expectBestEffort(
+    $value Result<void, hooks.RunError<HookError>>
+) bool {
+    match value {
+        Ok: false
+        Err(error): match error {
+            Reentrant: false
+            Action(error): rejectError(error)
+            Hook(failure): rejectFailure($failure)
+            Hooks(failures): expectFailures($failures)
+        }
+    }
+}
+
+fn expectFailures(
+    $failures own collections.List<hooks.Failure<HookError>>
+) bool {
+    var pending = failures
+    if pending.Len() != 2 return false
+    const first = failureValue(pending.PopFront())
+    const second = failureValue(pending.PopFront())
+    const hooks.Failure { Phase as firstPhase Error as firstError } = first
+    const hooks.Failure { Phase as secondPhase Error as secondError } = second
+    if !isBefore(firstPhase) || !isBefore(secondPhase) return false
+    isFirst(firstError) && isSecond(secondError)
+}
+
+fn expectTimeout(
+    $value Result<void, hooks.TimeoutError<HookError>>
+) bool {
+    match value {
+        Ok: false
+        Err(error): match error {
+            InvalidDuration: false
+            TimedOut: true
+            Action(error): rejectError(error)
+        }
+    }
+}
+
+fn rejectFailure($failure own hooks.Failure<HookError>) bool {
+    discard failure
+    false
+}
+
+fn rejectError(error HookError) bool {
+    discard error
+    false
+}
+
+fn isBefore(phase hooks.Phase) bool {
+    match phase {
+        Before: true
+        After: false
+    }
+}
+
+fn isFirst(error HookError) bool {
+    match error {
+        First: true
+        Second: false
+        Action: false
+    }
+}
+
+fn isSecond(error HookError) bool {
+    match error {
+        First: false
+        Second: true
+        Action: false
+    }
+}
+
+fn main() i32 {
+    var runner = hooks.New<HookError>(.StopOnFirstError)
+    requireRegistration(runner.BeforeAll($beforeAll))
+    requireRegistration(runner.Before("save", $beforeSave))
+    requireRegistration(runner.AfterAll($afterAll))
+    requireRegistration(runner.After("save", $afterSave))
+    requireRun(runner.Run("save", $save))
+
+    var bestEffort = hooks.New<HookError>(.BestEffort)
+    requireRegistration(bestEffort.Before("fail", $firstFailure))
+    requireRegistration(bestEffort.Before("fail", $secondFailure))
+    if !expectBestEffort($bestEffort.Run("fail", $shouldNotRun)) return 1
+
+    const parallel = bestEffort.RunParallel("fail")
+    const completed = $parallel.wait()
+    const hooks.ParallelRun { Runner Value } = completed
+    bestEffort = Runner
+    if !expectBestEffort($Value) return 2
+    requireRegistration(bestEffort.Clear())
+
+    const timing = spawn hooks.RunWithTimeout<HookError>(
+        time.Milliseconds(1),
+        $slow
+    )
+    if !expectTimeout($timing.wait()) return 3
+    0
+}

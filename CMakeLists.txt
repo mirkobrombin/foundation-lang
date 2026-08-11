@@ -279,6 +279,11 @@ if(FOUNDATION_BUILD_FUZZERS)
         COPYONLY
     )
     configure_file(
+        tests/fuzz/corpus/hooks.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/hooks.fn"
+        COPYONLY
+    )
+    configure_file(
         tests/fuzz/corpus/select-timeout.fn
         "${FOUNDATION_FUZZ_CORPUS_DIR}/select-timeout.fn"
         COPYONLY
@@ -4564,6 +4569,57 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.hooks
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hooks.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hooks.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.hooks-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hooks.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/hooks.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/hooks
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hooks.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.hooks-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hooks.fn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/hooks-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/hooks-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.check.hooks-borrowed-callback
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/hooks-borrowed-callback.fn
+            -DCODE=FDN2185
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.hooks-use-after-parallel
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/hooks-use-after-parallel.fn
+            -DCODE=FDN2065
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
         NAME stage0.run.events-concurrent
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -5427,6 +5483,43 @@ if(BUILD_TESTING)
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )
+        add_test(
+            NAME stage0.run.hooks-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hooks.fn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/hooks-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/hooks-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hooks.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            add_test(
+                NAME stage0.run.hooks-thread-sanitized
+                COMMAND ${CMAKE_COMMAND}
+                    -DCOMPILER=$<TARGET_FILE:foundationc>
+                    -DC_COMPILER=${CMAKE_C_COMPILER}
+                    -DTHREAD_SANITIZER=ON
+                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hooks.fn
+                    -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/hooks-thread-sanitized.c
+                    -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/hooks-thread-sanitized
+                    -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hooks.out
+                    -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                    -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                    -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                    -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                    -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+                    -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+            )
+        endif()
         add_test(
             NAME stage0.run.events-concurrent-sanitized
             COMMAND ${CMAKE_COMMAND}

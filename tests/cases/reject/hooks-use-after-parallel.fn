@@ -1,0 +1,13 @@
+import foundation.hooks
+
+enum Failure {
+    Rejected
+}
+
+fn main() i32 {
+    var runner = hooks.New<Failure>(.StopOnFirstError)
+    const pending = runner.RunParallel("save")
+    discard runner.Clear()
+    discard $pending.wait()
+    0
+}

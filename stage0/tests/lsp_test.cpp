@@ -5092,6 +5092,88 @@ void cpioPackageExposesEditorDetails() {
     std::filesystem::remove_all(root, error);
 }
 
+void hooksPackageExposesEditorDetails() {
+    const auto root = temporaryRoot();
+    const auto source = root / "main.fn";
+    const std::string completeContents = "package sample\n"
+                                         "\n"
+                                         "import foundation.hooks\n"
+                                         "\n"
+                                         "enum Failure {\n"
+                                         "    Rejected\n"
+                                         "}\n"
+                                         "\n"
+                                         "fn main() i32 {\n"
+                                         "    var runner = hooks.New<Failure>(.StopOnFirstError)\n"
+                                         "    const pending = runner.RunParallel(\"save\")\n"
+                                         "    discard pending\n"
+                                         "    0\n"
+                                         "}\n";
+    auto completionContents = completeContents;
+    const auto call = completionContents.find("runner.RunParallel(\"save\")");
+    expect(call != std::string::npos, "hooks completion fixture is valid");
+    completionContents.replace(call, std::string("runner.RunParallel(\"save\")").size(), "runner.");
+    writeFile(source, completeContents);
+    const auto sourceUri = fileUri(source);
+    const auto initialize = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{"
+                            "\"rootUri\":\"" +
+                            fileUri(root) + "\"}}";
+    const auto open = "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+                      "\"textDocument\":{\"uri\":\"" +
+                      sourceUri + "\",\"version\":1,\"text\":\"" + jsonEscape(completeContents) +
+                      "\"}}}";
+    const auto change = "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
+                        "\"textDocument\":{\"uri\":\"" +
+                        sourceUri + "\",\"version\":2},\"contentChanges\":[{\"text\":\"" +
+                        jsonEscape(completionContents) + "\"}]}}";
+    const auto request = [&sourceUri](int id, std::string_view method, int line, int character) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) + ",\"method\":\"textDocument/" +
+               std::string(method) + "\",\"params\":{\"textDocument\":{\"uri\":\"" + sourceUri +
+               "\"},\"position\":{\"line\":" + std::to_string(line) +
+               ",\"character\":" + std::to_string(character) + "}}}";
+    };
+    const auto shutdown = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
+    const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    std::istringstream input(
+        frame(initialize) + frame(open) + frame(request(907, "hover", 2, 18)) +
+        frame(request(908, "hover", 9, 24)) + frame(request(909, "signatureHelp", 9, 42)) +
+        frame(request(910, "definition", 9, 24)) + frame(request(911, "hover", 10, 32)) +
+        frame(change) + frame(request(912, "completion", 10, 27)) + frame(shutdown) + frame(exit));
+    std::ostringstream output;
+    std::ostringstream errors;
+    const auto status = foundation::runLanguageServer(input, output, errors);
+    const auto transcript = output.str();
+    const auto packageHover = responseFor(transcript, 907);
+    const auto newHover = responseFor(transcript, 908);
+    const auto newSignature = responseFor(transcript, 909);
+    const auto newDefinition = responseFor(transcript, 910);
+    const auto parallelHover = responseFor(transcript, 911);
+    const auto members = responseFor(transcript, 912);
+
+    expect(status == 0, "hooks language server transcript exits cleanly");
+    expect(errors.str().empty(), "hooks requests write no server errors");
+    expect(packageHover.find("foundation.hooks") != std::string::npos,
+           "hooks package import receives hover");
+    expect(newHover.find("fn New<E>(strategy Strategy)") != std::string::npos &&
+               newHover.find("explicit failure strategy") != std::string::npos,
+           "hooks constructor receives typed hover and documentation");
+    expect(newSignature.find("fn New<E>(strategy Strategy)") != std::string::npos,
+           "hooks construction receives signature help");
+    expect(newDefinition.find("foundation/hooks/hooks.fn") != std::string::npos,
+           "hooks constructor resolves to framework source");
+    expect(parallelHover.find("fn RunParallel") != std::string::npos &&
+               parallelHover.find("Task<own ParallelRun<E>>") != std::string::npos,
+           "parallel hooks hover exposes ownership return");
+    expect(members.find("\"label\":\"Before\"") != std::string::npos &&
+               members.find("\"label\":\"Run\"") != std::string::npos &&
+               members.find("\"label\":\"RunParallel\"") != std::string::npos &&
+               members.find("\"label\":\"Clear\"") != std::string::npos,
+           "hooks completion exposes the runner lifecycle");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+}
+
 } // namespace
 
 int main() {
@@ -5153,6 +5235,7 @@ int main() {
     stateMachinesExposeEditorDetails();
     workflowsExposeEditorDetails();
     cpioPackageExposesEditorDetails();
+    hooksPackageExposesEditorDetails();
     codeStandardWarningsFollowTheManifestProfile();
 
     if (failures != 0) {

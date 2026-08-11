@@ -1,0 +1,30 @@
+import foundation.hooks
+import std.concurrent
+
+enum Failure {
+    Rejected
+}
+
+fn callback(
+    $key String,
+    $cancel concurrent.Cancellation
+) Task<Result<void, Failure>> {
+    spawn complete($key, $cancel)
+}
+
+task complete(
+    $key String,
+    $cancel concurrent.Cancellation
+) Result<void, Failure> {
+    discard key
+    discard cancel
+    .Ok
+}
+
+fn main() i32 {
+    var runner = hooks.New<Failure>(.BestEffort)
+    discard runner.Before("save", $callback)
+    const pending = runner.RunParallel("save")
+    discard $pending.wait()
+    0
+}

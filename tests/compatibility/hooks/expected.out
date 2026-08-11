@@ -1,0 +1,8 @@
+before all
+before save
+action
+after all
+after save
+before all
+blocked
+cleared

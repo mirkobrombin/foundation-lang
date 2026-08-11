@@ -1,0 +1,835 @@
+package foundation.hooks
+
+import std.collections
+import std.concurrent
+import std.text
+import std.time
+import foundation.worker
+
+// Chooses whether one phase stops after its first hook failure.
+enum Strategy {
+    // Stops the current phase after its first failure.
+    StopOnFirstError
+
+    // Invokes every hook in the current phase and returns every failure.
+    BestEffort
+}
+
+// Identifies the side of an action where a hook executes.
+enum Phase {
+    // Runs before the wrapped action.
+    Before
+
+    // Runs after a successful wrapped action.
+    After
+}
+
+// Reports a mutation attempted while the runner is executing hooks.
+enum RegistrationError {
+    // The runner is executing and cannot change its registry.
+    Running
+}
+
+// Preserves one typed hook failure and its lifecycle phase.
+struct Failure<E> {
+    // Identifies where the hook ran.
+    Phase Phase
+
+    // Preserves the hook's recoverable error.
+    Error E
+}
+
+// Distinguishes lifecycle failures from the wrapped action failure.
+enum RunError<E> {
+    // The same runner is already executing hooks.
+    Reentrant
+
+    // One stop-first hook failed.
+    Hook(failure own Failure<E>)
+
+    // Best-effort execution collected failures in registration order.
+    Hooks(failures own collections.List<Failure<E>>)
+
+    // The wrapped action failed before the after phase.
+    Action(error E)
+}
+
+// Reports validation, timeout, and action failures without detaching work.
+enum TimeoutError<E> {
+    // The requested duration is zero or negative.
+    InvalidDuration
+
+    // The deadline requested cancellation before the action completed.
+    TimedOut
+
+    // The action completed with a recoverable error before the deadline.
+    Action(error E)
+}
+
+struct hook<E> {
+    key String
+    all bool
+    callback transferable fn(
+        $String,
+        $concurrent.Cancellation
+    ) Task<Result<void, E>>
+    order u64
+}
+
+struct phaseState<E> {
+    failures own collections.List<Failure<E>>
+    stopped bool
+}
+
+struct selectionResult<E> {
+    Hooks own collections.List<hook<E>>
+    State own phaseState<E>
+}
+
+struct phaseResult<E> {
+    Hooks own collections.List<hook<E>>
+    Value Result<void, RunError<E>>
+}
+
+// Returns a reusable runner after every parallel hook task has joined.
+struct ParallelRun<E> {
+    // Returns ownership after every hook task has joined.
+    Runner own Runner<E>
+
+    // Preserves the deterministic parallel outcome.
+    Value Result<void, RunError<E>>
+}
+
+struct timeoutResult<E> {
+    Value Result<void, E>
+}
+
+struct parallelMessage<E> {
+    sequence u64
+    phase Phase
+    value Result<void, E>
+}
+
+struct parallelFailure<E> {
+    sequence u64
+    failure own Failure<E>
+}
+
+struct parallelPublisher<E> {
+    sender Sender<parallelMessage<E>>
+
+    fn Clone(self) parallelPublisher<E> {
+        parallelPublisher<E> { sender = self.sender.clone() }
+    }
+}
+
+struct parallelStart<E> {
+    Hooks own collections.List<hook<E>>
+    Sequence u64
+    Count u64
+}
+
+// Owns typed before and after hooks for keyed lifecycle actions.
+struct Runner<E> {
+    before own collections.List<hook<E>>
+    after own collections.List<hook<E>>
+    strategy Strategy
+    nextOrder u64
+    running bool
+
+    // Registers a keyed hook that runs before the action.
+    fn Before(
+        &self,
+        $key String,
+        $callback transferable fn(
+            $String,
+            $concurrent.Cancellation
+        ) Task<Result<void, E>>
+    ) Result<void, RegistrationError> {
+        addHook(&self, .Before, $key, false, $callback)
+    }
+
+    // Registers a keyed hook that runs after a successful action.
+    fn After(
+        &self,
+        $key String,
+        $callback transferable fn(
+            $String,
+            $concurrent.Cancellation
+        ) Task<Result<void, E>>
+    ) Result<void, RegistrationError> {
+        addHook(&self, .After, $key, false, $callback)
+    }
+
+    // Registers a hook that runs before every action.
+    fn BeforeAll(
+        &self,
+        $callback transferable fn(
+            $String,
+            $concurrent.Cancellation
+        ) Task<Result<void, E>>
+    ) Result<void, RegistrationError> {
+        addHook(&self, .Before, "", true, $callback)
+    }
+
+    // Registers a hook that runs after every successful action.
+    fn AfterAll(
+        &self,
+        $callback transferable fn(
+            $String,
+            $concurrent.Cancellation
+        ) Task<Result<void, E>>
+    ) Result<void, RegistrationError> {
+        addHook(&self, .After, "", true, $callback)
+    }
+
+    // Runs global and keyed hooks in deterministic registration order.
+    fn Run(
+        &self,
+        key String,
+        $operation transferable fn(
+            $concurrent.Cancellation
+        ) Task<Result<void, E>>
+    ) Result<void, RunError<E>> {
+        if self.running return .Err(.Reentrant)
+        self.running = true
+        const source = concurrent.NewCancellationSource()
+
+        const beforeHooks = replace self.before with newHookList<E>()
+        const beforeRun = runPhase(
+            $beforeHooks,
+            source,
+            key,
+            .Before,
+            self.strategy
+        )
+        const phaseResult { Hooks Value } = beforeRun
+        self.before = Hooks
+
+        const result Result<void, RunError<E>> = match Value {
+            Err(error): .Err(error)
+            Ok: runActionAndAfter(&self, source, key, $operation)
+        }
+
+        self.running = false
+        discard source
+        result
+    }
+
+    // Transfers the runner to a task that starts and joins every matching hook.
+    fn RunParallel($self, $key String) Task<own ParallelRun<E>> {
+        spawn runParallel($self, $key)
+    }
+
+    // Removes every registered hook when no run is active.
+    fn Clear(&self) Result<void, RegistrationError> {
+        if self.running return .Err(.Running)
+        self.before.Clear()
+        self.after.Clear()
+        .Ok
+    }
+}
+
+// Creates an empty runner with one explicit failure strategy.
+fn New<E>(strategy Strategy) own Runner<E> {
+    own Runner<E> {
+        before = newHookList<E>()
+        after = newHookList<E>()
+        strategy = strategy
+        nextOrder = 0
+        running = false
+    }
+}
+
+// Runs one cancellable task with a positive cooperative deadline.
+task RunWithTimeout<E>(
+    duration time.Duration,
+    $operation transferable fn(
+        $concurrent.Cancellation
+    ) Task<Result<void, E>>
+) Result<void, TimeoutError<E>> {
+    const signed = duration.Nanoseconds()
+    if signed <= 0 return .Err(.InvalidDuration)
+    const nanoseconds = u64.From(signed) else error {
+        discard error
+        return .Err(.InvalidDuration)
+    }
+
+    const source = concurrent.NewCancellationSource()
+    const Channel { sender receiver } = channel<timeoutResult<E>>(1)
+    const pending = operation(source.Token())
+    const publishing = spawn publishResult($pending, $sender)
+
+    select {
+        const received = receiver.receive(): {
+            $publishing.wait()
+            discard source
+            const timeoutResult { Value } = received
+            return timeoutAction($Value)
+        }
+        timeout nanoseconds: {
+            source.Cancel()
+            $publishing.wait()
+            discard receiver
+            discard source
+            return .Err(.TimedOut)
+        }
+        else error: {
+            source.Cancel()
+            $publishing.wait()
+            discard receiver
+            discard source
+            return timeoutChannelFailure<E>(error)
+        }
+    }
+}
+
+fn addHook<E>(
+    &runner Runner<E>,
+    phase Phase,
+    $key String,
+    all bool,
+    $callback transferable fn(
+        $String,
+        $concurrent.Cancellation
+    ) Task<Result<void, E>>
+) Result<void, RegistrationError> {
+    if runner.running return .Err(.Running)
+    const value = hook<E> {
+        key = key
+        all = all
+        callback = callback
+        order = runner.nextOrder
+    }
+    runner.nextOrder = runner.nextOrder + 1
+    if isBefore(phase) {
+        runner.before.PushFront($value)
+    } else {
+        runner.after.PushFront($value)
+    }
+    .Ok
+}
+
+fn runActionAndAfter<E>(
+    &runner Runner<E>,
+    source concurrent.CancellationSource,
+    key String,
+    $operation transferable fn(
+        $concurrent.Cancellation
+    ) Task<Result<void, E>>
+) Result<void, RunError<E>> {
+    const pending = operation(source.Token())
+    const actionResult = $pending.wait()
+    match actionResult {
+        Err(error): .Err(.Action(error = error))
+        Ok: runAfter(&runner, source, key)
+    }
+}
+
+task runParallel<E>(
+    $runner own Runner<E>,
+    $key String
+) own ParallelRun<E> {
+    var active = runner
+    if active.running {
+        return own ParallelRun<E> {
+            Runner = active
+            Value = .Err(.Reentrant)
+        }
+    }
+    active.running = true
+    const total = active.before.Len() + active.after.Len()
+    if total == 0 {
+        active.running = false
+        return own ParallelRun<E> { Runner = active Value = .Ok }
+    }
+    const capacity = u64.From(total) else error {
+        discard error
+        panic("hook count invariant failed")
+    }
+    const strategy = active.strategy
+    const source = concurrent.NewCancellationSource()
+    const Channel { sender receiver } = channel<parallelMessage<E>>(capacity)
+    const publisher = parallelPublisher<E> { sender = sender }
+    const supervisor = worker.NewSupervisor()
+
+    const beforeHooks = replace active.before with newHookList<E>()
+    const beforeGlobal = startParallel(
+        $beforeHooks,
+        supervisor,
+        publisher,
+        source,
+        key,
+        true,
+        .Before,
+        0,
+        0
+    )
+    const parallelStart {
+        Hooks as beforeAfterGlobal
+        Sequence as beforeSequence
+        Count as beforeCount
+    } = beforeGlobal
+    const beforeKeyed = startParallel(
+        $beforeAfterGlobal,
+        supervisor,
+        publisher,
+        source,
+        key,
+        false,
+        .Before,
+        beforeSequence,
+        beforeCount
+    )
+    const parallelStart {
+        Hooks as restoredBefore
+        Sequence as afterSequence
+        Count as afterCount
+    } = beforeKeyed
+    active.before = restoredBefore
+
+    const afterHooks = replace active.after with newHookList<E>()
+    const afterGlobal = startParallel(
+        $afterHooks,
+        supervisor,
+        publisher,
+        source,
+        key,
+        true,
+        .After,
+        afterSequence,
+        afterCount
+    )
+    const parallelStart {
+        Hooks as afterAfterGlobal
+        Sequence as finalSequence
+        Count as finalCount
+    } = afterGlobal
+    const afterKeyed = startParallel(
+        $afterAfterGlobal,
+        supervisor,
+        publisher,
+        source,
+        key,
+        false,
+        .After,
+        finalSequence,
+        finalCount
+    )
+    const parallelStart { Hooks Count Sequence } = afterKeyed
+    discard Sequence
+    active.after = Hooks
+    discard publisher
+
+    var remaining = Count
+    var failures = collections.NewList<parallelFailure<E>>()
+    while remaining > 0 {
+        const received = receiver.receive()
+        match received {
+            Ok(message): recordParallel($message, source, &failures)
+            Err(error): parallelReceiveFailed(error)
+        }
+        remaining = remaining - 1
+    }
+    supervisor.Shutdown()
+    discard receiver
+    discard source
+    active.running = false
+    own ParallelRun<E> {
+        Runner = active
+        Value = finishParallel($failures, strategy)
+    }
+}
+
+fn startParallel<E>(
+    $hooks own collections.List<hook<E>>,
+    supervisor worker.Supervisor,
+    publisher parallelPublisher<E>,
+    source concurrent.CancellationSource,
+    key String,
+    all bool,
+    phase Phase,
+    sequence u64,
+    count u64
+) own parallelStart<E> {
+    var pending = hooks
+    var restored = newHookList<E>()
+    var nextSequence = sequence
+    var started = count
+    while !pending.IsEmpty() {
+        const current = hookValue(pending.PopFront())
+        const hook {
+            key as hookKey
+            all as hookAll
+            callback
+            order
+        } = current
+        if hookMatches(hookKey, hookAll, key, all) {
+            const invocation = callback(
+                $text.Copy(key),
+                $source.Token()
+            )
+            const endpoint = publisher.Clone()
+            const parallelPublisher { sender } = endpoint
+            const publishing = spawn publishParallel(
+                nextSequence,
+                phase,
+                $invocation,
+                $sender
+            )
+            supervisor.Start($publishing)
+            nextSequence = nextSequence + 1
+            started = started + 1
+        }
+        restored.PushFront(hook<E> {
+            key = hookKey
+            all = hookAll
+            callback = callback
+            order = order
+        })
+    }
+    const compare fn(hook<E>, hook<E>) i32 = compareHooks
+    own parallelStart<E> {
+        Hooks = collections.Sort($restored, compare)
+        Sequence = nextSequence
+        Count = started
+    }
+}
+
+task publishParallel<E>(
+    sequence u64,
+    phase Phase,
+    $pending Task<Result<void, E>>,
+    $sender Sender<parallelMessage<E>>
+) void {
+    const value = $pending.wait()
+    const delivered = sender.send(parallelMessage<E> {
+        sequence = sequence
+        phase = phase
+        value = value
+    })
+    match delivered {
+        Ok: hookSucceeded()
+        Err(error): publishFailed(error)
+    }
+}
+
+fn recordParallel<E>(
+    $message parallelMessage<E>,
+    source concurrent.CancellationSource,
+    &failures collections.List<parallelFailure<E>>
+) void {
+    const parallelMessage { sequence phase value } = message
+    match value {
+        Ok: hookSucceeded()
+        Err(error): {
+            source.Cancel()
+            failures.PushFront(parallelFailure<E> {
+                sequence = sequence
+                failure = own Failure<E> { Phase = phase Error = error }
+            })
+        }
+    }
+}
+
+fn finishParallel<E>(
+    $failures own collections.List<parallelFailure<E>>,
+    strategy Strategy
+) Result<void, RunError<E>> {
+    if failures.IsEmpty() {
+        discard failures
+        return .Ok
+    }
+    const compare fn(
+        parallelFailure<E>,
+        parallelFailure<E>
+    ) i32 = compareParallel
+    var ordered = collections.Sort($failures, compare)
+    if stopsOnFirst(strategy) {
+        const current = parallelFailureValue(ordered.PopFront())
+        const parallelFailure { sequence failure } = current
+        discard sequence
+        discard ordered
+        return .Err(.Hook(failure = failure))
+    }
+    var result = collections.NewList<Failure<E>>()
+    while !ordered.IsEmpty() {
+        const current = parallelFailureValue(ordered.PopFront())
+        const parallelFailure { sequence failure } = current
+        discard sequence
+        const Failure { Phase Error } = failure
+        result.PushFront(Failure<E> { Phase = Phase Error = Error })
+    }
+    .Err(.Hooks(failures = reverseFailures($result)))
+}
+
+fn runAfter<E>(
+    &runner Runner<E>,
+    source concurrent.CancellationSource,
+    key String
+) Result<void, RunError<E>> {
+    const afterHooks = replace runner.after with newHookList<E>()
+    const afterRun = runPhase(
+        $afterHooks,
+        source,
+        key,
+        .After,
+        runner.strategy
+    )
+    const phaseResult { Hooks Value } = afterRun
+    runner.after = Hooks
+    Value
+}
+
+fn runPhase<E>(
+    $hooks own collections.List<hook<E>>,
+    source concurrent.CancellationSource,
+    key String,
+    phase Phase,
+    strategy Strategy
+) own phaseResult<E> {
+    const state = own phaseState<E> {
+        failures = collections.NewList<Failure<E>>()
+        stopped = false
+    }
+    const global = runSelection(
+        $hooks,
+        $state,
+        source,
+        key,
+        true,
+        phase,
+        strategy
+    )
+    const selectionResult { Hooks State } = global
+    const keyed = runSelection(
+        $Hooks,
+        $State,
+        source,
+        key,
+        false,
+        phase,
+        strategy
+    )
+    const selectionResult { Hooks as restored State as completed } = keyed
+    own phaseResult<E> {
+        Hooks = restored
+        Value = finishPhase($completed, strategy)
+    }
+}
+
+fn runSelection<E>(
+    $hooks own collections.List<hook<E>>,
+    $state own phaseState<E>,
+    source concurrent.CancellationSource,
+    key String,
+    all bool,
+    phase Phase,
+    strategy Strategy
+) own selectionResult<E> {
+    var pending = hooks
+    var restored = newHookList<E>()
+    var currentState = state
+    while !pending.IsEmpty() {
+        const current = hookValue(pending.PopFront())
+        const hook {
+            key as hookKey
+            all as hookAll
+            callback
+            order
+        } = current
+        if !currentState.stopped && hookMatches(hookKey, hookAll, key, all) {
+            const invocation = callback(
+                $text.Copy(key),
+                $source.Token()
+            )
+            const outcome = $invocation.wait()
+            match outcome {
+                Ok: hookSucceeded()
+                Err(error): recordFailure(
+                    &currentState,
+                    strategy,
+                    phase,
+                    $error
+                )
+            }
+        }
+        restored.PushFront(hook<E> {
+            key = hookKey
+            all = hookAll
+            callback = callback
+            order = order
+        })
+    }
+    const compare fn(hook<E>, hook<E>) i32 = compareHooks
+    own selectionResult<E> {
+        Hooks = collections.Sort($restored, compare)
+        State = currentState
+    }
+}
+
+fn finishPhase<E>(
+    $state own phaseState<E>,
+    strategy Strategy
+) Result<void, RunError<E>> {
+    const phaseState { failures stopped } = state
+    discard stopped
+    if failures.IsEmpty() {
+        discard failures
+        return .Ok
+    }
+    const ordered = reverseFailures($failures)
+    if stopsOnFirst(strategy) {
+        var one = ordered
+        const failure = failureValue(one.PopFront())
+        const Failure { Phase Error } = failure
+        discard one
+        return .Err(.Hook(failure = own Failure<E> {
+            Phase = Phase
+            Error = Error
+        }))
+    }
+    .Err(.Hooks(failures = ordered))
+}
+
+fn recordFailure<E>(
+    &state phaseState<E>,
+    strategy Strategy,
+    phase Phase,
+    $error E
+) void {
+    state.failures.PushFront(Failure<E> { Phase = phase Error = error })
+    if stopsOnFirst(strategy) {
+        state.stopped = true
+    }
+}
+
+fn reverseFailures<E>(
+    $failures own collections.List<Failure<E>>
+) own collections.List<Failure<E>> {
+    var pending = failures
+    var ordered = collections.NewList<Failure<E>>()
+    while !pending.IsEmpty() {
+        ordered.PushFront(failureValue(pending.PopFront()))
+    }
+    ordered
+}
+
+task publishResult<E>(
+    $pending Task<Result<void, E>>,
+    $sender Sender<timeoutResult<E>>
+) void {
+    const value = $pending.wait()
+    const delivered = sender.send(timeoutResult<E> { Value = value })
+    match delivered {
+        Ok: hookSucceeded()
+        Err(error): publishFailed(error)
+    }
+}
+
+fn timeoutAction<E>(
+    $value Result<void, E>
+) Result<void, TimeoutError<E>> {
+    match value {
+        Ok: .Ok
+        Err(error): .Err(.Action(error = error))
+    }
+}
+
+fn timeoutChannelFailure<E>(error ChannelError) Result<void, TimeoutError<E>> {
+    discard error
+    panic("hook timeout channel invariant failed")
+}
+
+fn newHookList<E>() own collections.List<hook<E>> {
+    collections.NewList<hook<E>>()
+}
+
+fn compareHooks<E>(left hook<E>, right hook<E>) i32 {
+    if left.order < right.order return -1
+    if left.order > right.order return 1
+    0
+}
+
+fn compareParallel<E>(
+    left parallelFailure<E>,
+    right parallelFailure<E>
+) i32 {
+    if left.sequence < right.sequence return -1
+    if left.sequence > right.sequence return 1
+    0
+}
+
+fn hookMatches(
+    hookKey String,
+    hookAll bool,
+    key String,
+    all bool
+) bool {
+    if hookAll != all return false
+    if all return true
+    hookKey == key
+}
+
+fn isBefore(phase Phase) bool {
+    match phase {
+        Before: true
+        After: false
+    }
+}
+
+fn stopsOnFirst(strategy Strategy) bool {
+    match strategy {
+        StopOnFirstError: true
+        BestEffort: false
+    }
+}
+
+fn hookValue<E>($value Option<hook<E>>) hook<E> {
+    match value {
+        None: missingHook<E>()
+        Some(item): item
+    }
+}
+
+fn missingHook<E>() hook<E> {
+    panic("hook list invariant failed")
+}
+
+fn failureValue<E>($value Option<Failure<E>>) Failure<E> {
+    match value {
+        None: missingFailure<E>()
+        Some(failure): failure
+    }
+}
+
+fn missingFailure<E>() Failure<E> {
+    panic("hook failure list invariant failed")
+}
+
+fn parallelFailureValue<E>(
+    $value Option<parallelFailure<E>>
+) parallelFailure<E> {
+    match value {
+        None: missingParallelFailure<E>()
+        Some(failure): failure
+    }
+}
+
+fn missingParallelFailure<E>() parallelFailure<E> {
+    panic("parallel hook failure invariant failed")
+}
+
+fn hookSucceeded() void {
+    return
+}
+
+fn publishFailed(error ChannelError) void {
+    discard error
+    panic("hook result channel invariant failed")
+}
+
+fn parallelReceiveFailed(error ChannelError) void {
+    discard error
+    panic("parallel hook channel invariant failed")
+}
