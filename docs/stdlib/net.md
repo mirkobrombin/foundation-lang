@@ -6,19 +6,31 @@ to the runtime.
 
 ```foundation
 task Connect($host String, port u64) Result<own TcpConnection, Error>
+fn DeadlineAfter(duration time.Duration) Result<Deadline, Error>
+task ConnectUntil($host String, port u64, deadline Deadline) Result<own TcpConnection, Error>
 fn Listen($address String, port u64) Result<own TcpListener, Error>
 task Accept(listener own TcpListener) AcceptOutcome
 fn TcpConnection.Split($self) Result<StreamPair, Error>
 task ReadLine(reader own TcpReader) ReadLineOutcome
 task ReadLineLimited(reader own TcpReader, limit u64) ReadLineOutcome
+task ReadLineLimitedUntil(reader own TcpReader, limit u64, deadline Deadline) ReadLineOutcome
 task ReadExact(reader own TcpReader, length u64) ReadOutcome
+task ReadExactUntil(reader own TcpReader, length u64, deadline Deadline) ReadOutcome
 task WriteAll(writer own TcpWriter, $text String) WriteOutcome
+task WriteAllUntil(writer own TcpWriter, $text String, deadline Deadline) WriteOutcome
 ```
 
 `Connect` resolves the host on the bounded blocking executor, then attempts the returned addresses
 through the callback reactor. A successful call owns one connection. `Split` consumes that
 connection and returns independently owned read and write halves, so one read task and one write
 task can run at the same time without sharing mutable Foundation state.
+
+`DeadlineAfter` converts one positive duration into an absolute monotonic `Deadline`. The four
+`Until` operations share that value, so a protocol can enforce one deadline across connection,
+write, and multiple reads instead of resetting a relative timeout at each suspension. Reactor poll
+time is derived from the nearest active deadline. `Timeout` is distinct from task `Cancelled`.
+Name resolution runs on the bounded blocking executor and cannot be interrupted inside a platform
+resolver call, but an expired deadline prevents the following connection attempt.
 
 `Listen` binds one IPv4 or IPv6 address. An empty address binds the IPv4 wildcard and port zero
 asks the operating system to choose an available port. `TcpListener.Port` reports the actual bound
@@ -44,8 +56,8 @@ runtime service is created on first use and stops after its final address, conne
 are released.
 
 The error enum distinguishes `InvalidAddress`, `ResolveFailed`, `Refused`, `Closed`, `Cancelled`,
-`InvalidUtf8`, `LineTooLong`, `AddressInUse`, and `Io`. Connect ports must be in the range 1 through
-65535. Listen ports may also be zero. Allocation failure remains a fatal panic.
+`InvalidUtf8`, `LineTooLong`, `AddressInUse`, `Timeout`, and `Io`. Connect ports must be in the
+range 1 through 65535. Listen ports may also be zero. Allocation failure remains a fatal panic.
 
 TLS is not part of this package yet. A future TLS package will wrap the same owned stream model
 without exposing platform TLS handles to Foundation code.

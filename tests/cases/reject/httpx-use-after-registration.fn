@@ -1,0 +1,30 @@
+import foundation.httpx
+import foundation.web
+
+enum Failure {
+    Rejected
+}
+
+struct application implements web.Application<Failure> {
+    fn Dispatch(
+        &self,
+        $request web.Request
+    ) Result<web.Response, web.DispatchError<Failure>> {
+        discard request
+        .Ok(web.Empty(204))
+    }
+}
+
+fn main() i32 {
+    var mux = httpx.NewVHostMux<Failure>()
+    const host = httpx.NewVirtualHost<Failure>(
+        "example.com",
+        own application {}
+    ) else error {
+        discard error
+        panic("virtual host construction failed")
+    }
+    discard mux.AddVirtualHost($host)
+    discard host.Host
+    0
+}

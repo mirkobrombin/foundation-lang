@@ -1,0 +1,857 @@
+package foundation.httpx
+
+import std.collections
+import std.parse
+import std.text
+
+struct urlParts {
+    scheme String
+    authority String
+    pathStart u64
+}
+
+fn copyRequest(&request Request) Request {
+    Request {
+        Method = text.Copy(request.Method)
+        URL = text.Copy(request.URL)
+        Headers = copyHeaders(&request.Headers)
+        Body = text.Copy(request.Body)
+        MaximumResponseSize = request.MaximumResponseSize
+        FollowRedirects = request.FollowRedirects
+        MaximumRedirects = request.MaximumRedirects
+        Timeout = request.Timeout
+        originalURL = text.Copy(request.originalURL)
+        requestID = text.Copy(request.requestID)
+    }
+}
+
+fn validateRequest(&request Request) Result<void, RequestError> {
+    if !validMethod(request.Method) return .Err(.EmptyMethod)
+    if !validAbsoluteURL(request.URL) return .Err(.InvalidURL)
+    if request.MaximumResponseSize == 0 {
+        return .Err(.InvalidResponseLimit)
+    }
+    if request.MaximumRedirects > 100 {
+        return .Err(.InvalidRedirectLimit)
+    }
+    if request.Timeout.Nanoseconds() <= 0 {
+        return .Err(.InvalidTimeout)
+    }
+    if !validHeaders(&request.Headers) return .Err(.InvalidHeader)
+    if headerCount(&request.Headers, "Host") > 1 ||
+        headerCount(&request.Headers, "Connection") > 1 ||
+        headerCount(&request.Headers, "Content-Length") > 1 ||
+        headerCount(&request.Headers, "Transfer-Encoding") != 0 {
+        return .Err(.InvalidHeader)
+    }
+    const contentLength = headerValueFor(
+        &request.Headers,
+        "Content-Length"
+    )
+    match contentLength {
+        None: .Ok
+        Some(value): {
+            const parsed = parse.U64(value) else error {
+                discard error
+                return .Err(.InvalidHeader)
+            }
+            if parsed != text.ByteLen(request.Body) {
+                return .Err(.InvalidHeader)
+            }
+            .Ok
+        }
+    }
+}
+
+fn redirectedRequest<E>(
+    $request Request,
+    &response Response
+) Result<Option<Request>, ClientError<E>> {
+    if !request.FollowRedirects || !redirectStatus(response.Status) {
+        return .Ok(.None)
+    }
+    const location = response.Header("Location")
+    const target = match location {
+        None: {
+            return .Ok(.None)
+        }
+        Some(value): {
+            const resolved = resolveRedirectURL(request.URL, value) else error {
+                discard error
+                return .Err(.InvalidRedirect)
+            }
+            resolved
+        }
+    }
+
+    var next = request
+    const retainedOrigin = sameOrigin(next.URL, target)
+    next.URL = target
+    if !retainedOrigin {
+        stripSensitiveHeaders(&next.Headers)
+    }
+    if redirectsAsGet(response.Status, next.Method) {
+        next.Method = "GET"
+        next.Body = ""
+        removeHeader(&next.Headers, "Content-Length")
+        removeHeader(&next.Headers, "Content-Type")
+    }
+    .Ok(.Some(next))
+}
+
+fn sameOrigin(left String, right String) bool {
+    const leftParts = parseAbsoluteURL(left) else error {
+        discard error
+        return false
+    }
+    const rightParts = parseAbsoluteURL(right) else error {
+        discard error
+        discard leftParts
+        return false
+    }
+    const leftTarget = networkTargetFor(left) else error {
+        discard error
+        discard leftParts
+        discard rightParts
+        return false
+    }
+    const rightTarget = networkTargetFor(right) else error {
+        discard error
+        discard leftParts
+        discard rightParts
+        discard leftTarget
+        return false
+    }
+    const equal = equalFoldASCII(leftParts.scheme, rightParts.scheme) &&
+        equalFoldASCII(leftTarget.host, rightTarget.host) &&
+        leftTarget.port == rightTarget.port
+    discard leftParts
+    discard rightParts
+    discard leftTarget
+    discard rightTarget
+    equal
+}
+
+fn safeLogURL(value String) String {
+    const parts = parseAbsoluteURL(value) else error {
+        discard error
+        return ""
+    }
+    const suffixEnd = firstByteOf(value, parts.pathStart, 63, 35)
+    const suffix = text.Slice(value, parts.pathStart, suffixEnd) else error {
+        discard error
+        discard parts
+        return ""
+    }
+    const safe = parts.scheme + "://" +
+        authorityWithoutUser(parts.authority) + suffix
+    discard parts
+    safe
+}
+
+fn validAbsoluteURL(value String) bool {
+    const target = networkTargetFor(value) else error {
+        discard error
+        return false
+    }
+    discard target
+    true
+}
+
+fn parseAbsoluteURL(value String) Result<urlParts, RequestError> {
+    const separator = text.Find(value, "://")
+    const schemeEnd = match separator {
+        None: {
+            return .Err(.InvalidURL)
+        }
+        Some(offset): offset
+    }
+    if schemeEnd == 0 return .Err(.InvalidURL)
+    const scheme = text.Slice(value, 0, schemeEnd) else error {
+        discard error
+        return .Err(.InvalidURL)
+    }
+    if !equalFoldASCII(scheme, "http") && !equalFoldASCII(scheme, "https") {
+        discard scheme
+        return .Err(.InvalidURL)
+    }
+    const authorityStart = schemeEnd + 3
+    const length = text.ByteLen(value)
+    const authorityEnd = firstByteOf(value, authorityStart, 47, 63)
+    const completeAuthorityEnd = firstByteOf(value, authorityStart, 35, 0)
+    const selectedEnd = authorityEnd if authorityEnd < completeAuthorityEnd
+    else completeAuthorityEnd
+    if selectedEnd <= authorityStart {
+        discard scheme
+        return .Err(.InvalidURL)
+    }
+    const authority = text.Slice(
+        value,
+        authorityStart,
+        selectedEnd
+    ) else error {
+        discard error
+        discard scheme
+        return .Err(.InvalidURL)
+    }
+    if !validAuthority(authority) || !validURLBytes(value) {
+        discard scheme
+        discard authority
+        return .Err(.InvalidURL)
+    }
+    .Ok(urlParts {
+        scheme = scheme
+        authority = authority
+        pathStart = selectedEnd
+    })
+}
+
+fn resolveRedirectURL(
+    base String,
+    location String
+) Result<String, RequestError> {
+    if validAbsoluteURL(location) return normalizeAbsoluteRedirect(location)
+    const parts = parseAbsoluteURL(base) else error {
+        discard error
+        return .Err(.InvalidURL)
+    }
+    if hasSchemePrefix(location) {
+        discard parts
+        return .Err(.InvalidURL)
+    }
+    const prefix = parts.scheme + "://" + parts.authority
+    if text.StartsWith(location, "//") {
+        const result = parts.scheme + ":" + location
+        discard parts
+        discard prefix
+        return normalizeAbsoluteRedirect(result)
+    }
+    if text.IsEmpty(location) {
+        const result = withoutFragment(base)
+        discard parts
+        discard prefix
+        return validatedRedirectURL($result)
+    }
+    if text.StartsWith(location, "#") {
+        const result = withoutFragment(base) + location
+        discard parts
+        discard prefix
+        return validatedRedirectURL($result)
+    }
+    if text.StartsWith(location, "?") {
+        const result = withoutQueryOrFragment(base) + location
+        discard parts
+        discard prefix
+        return validatedRedirectURL($result)
+    }
+    if text.StartsWith(location, "/") {
+        const result = prefix + location
+        discard parts
+        return normalizeAbsoluteRedirect(result)
+    }
+    const pathEnd = firstByteOf(base, parts.pathStart, 63, 35)
+    const directory = baseDirectory(base, parts.pathStart, pathEnd)
+    else error {
+        discard error
+        discard parts
+        discard prefix
+        return .Err(.InvalidURL)
+    }
+    const locationPathEnd = firstByteOf(location, 0, 63, 35)
+    const locationPath = text.Slice(
+        location,
+        0,
+        locationPathEnd
+    ) else error {
+        discard error
+        discard parts
+        discard prefix
+        discard directory
+        return .Err(.InvalidURL)
+    }
+    const locationSuffix = text.Slice(
+        location,
+        locationPathEnd,
+        text.ByteLen(location)
+    ) else error {
+        discard error
+        discard parts
+        discard prefix
+        discard directory
+        discard locationPath
+        return .Err(.InvalidURL)
+    }
+    const path = removeDotSegments(directory + locationPath) else error {
+        discard error
+        discard parts
+        discard prefix
+        discard directory
+        discard locationPath
+        discard locationSuffix
+        return .Err(.InvalidURL)
+    }
+    const result = prefix + path + locationSuffix
+    discard parts
+    discard directory
+    discard locationPath
+    discard locationSuffix
+    discard path
+    validatedRedirectURL($result)
+}
+
+fn normalizeAbsoluteRedirect(
+    value String
+) Result<String, RequestError> {
+    const parts = parseAbsoluteURL(value) else error {
+        discard error
+        return .Err(.InvalidURL)
+    }
+    const pathEnd = firstByteOf(value, parts.pathStart, 63, 35)
+    const path = text.Slice(value, parts.pathStart, pathEnd) else error {
+        discard error
+        discard parts
+        return .Err(.InvalidURL)
+    }
+    const suffix = text.Slice(
+        value,
+        pathEnd,
+        text.ByteLen(value)
+    ) else error {
+        discard error
+        discard parts
+        discard path
+        return .Err(.InvalidURL)
+    }
+    const normalized = removeDotSegments(path) else error {
+        discard error
+        discard parts
+        discard path
+        discard suffix
+        return .Err(.InvalidURL)
+    }
+    const result = parts.scheme + "://" + parts.authority +
+        normalized + suffix
+    discard parts
+    discard path
+    discard suffix
+    discard normalized
+    validatedRedirectURL($result)
+}
+
+fn removeDotSegments(value String) Result<String, RequestError> {
+    var input = text.Copy(value)
+    var output = ""
+    while !text.IsEmpty(input) {
+        if text.StartsWith(input, "../") {
+            const nextInput = urlSlice(
+                input,
+                3,
+                text.ByteLen(input)
+            ) else error {
+                discard error
+                discard output
+                return .Err(.InvalidURL)
+            }
+            input = nextInput
+            continue
+        }
+        if text.StartsWith(input, "./") {
+            const nextInput = urlSlice(
+                input,
+                2,
+                text.ByteLen(input)
+            ) else error {
+                discard error
+                discard output
+                return .Err(.InvalidURL)
+            }
+            input = nextInput
+            continue
+        }
+        if text.StartsWith(input, "/./") {
+            const tail = urlSlice(input, 3, text.ByteLen(input)) else error {
+                discard error
+                discard output
+                return .Err(.InvalidURL)
+            }
+            input = "/" + tail
+            discard tail
+            continue
+        }
+        if input == "/." {
+            input = "/"
+            continue
+        }
+        if text.StartsWith(input, "/../") {
+            const tail = urlSlice(input, 4, text.ByteLen(input)) else error {
+                discard error
+                discard output
+                return .Err(.InvalidURL)
+            }
+            input = "/" + tail
+            discard tail
+            output = removeLastPathSegment(output)
+            continue
+        }
+        if input == "/.." {
+            input = "/"
+            output = removeLastPathSegment(output)
+            continue
+        }
+        if input == "." || input == ".." {
+            input = ""
+            continue
+        }
+
+        const length = text.ByteLen(input)
+        const searchStart u64 = 1 if urlByteAt(input, 0) == 47 else 0
+        const slash = firstByteOf(input, searchStart, 47, 0)
+        const segmentEnd = slash if slash < length else length
+        const segment = urlSlice(input, 0, segmentEnd) else error {
+            discard error
+            discard output
+            return .Err(.InvalidURL)
+        }
+        const tail = urlSlice(input, segmentEnd, length) else error {
+            discard error
+            discard output
+            discard segment
+            return .Err(.InvalidURL)
+        }
+        output = output + segment
+        input = tail
+        discard segment
+    }
+    .Ok(output)
+}
+
+fn removeLastPathSegment(value String) String {
+    const length = text.ByteLen(value)
+    if length == 0 return ""
+    const slash = lastByte(value, 0, length, 47)
+    if slash == length return ""
+    const result = text.Slice(value, 0, slash) else error {
+        discard error
+        panic("httpx path segment invariant failed")
+    }
+    result
+}
+
+fn urlSlice(
+    value String,
+    start u64,
+    end u64
+) Result<String, RequestError> {
+    const result = text.Slice(value, start, end) else error {
+        discard error
+        return .Err(.InvalidURL)
+    }
+    .Ok(result)
+}
+
+fn validatedRedirectURL(
+    $value String
+) Result<String, RequestError> {
+    if !validAbsoluteURL(value) {
+        discard value
+        return .Err(.InvalidURL)
+    }
+    .Ok(value)
+}
+
+fn validMethod(value String) bool {
+    const length = text.ByteLen(value)
+    if length == 0 return false
+    var offset u64 = 0
+    while offset < length {
+        const byte = urlByteAt(value, offset)
+        if !tokenByte(byte) return false
+        offset = offset + 1
+    }
+    true
+}
+
+fn validHeaderName(value String) bool {
+    validMethod(value)
+}
+
+fn validHeaderValue(value String) bool {
+    const length = text.ByteLen(value)
+    var offset u64 = 0
+    while offset < length {
+        const byte = urlByteAt(value, offset)
+        if byte == 0 || byte == 10 || byte == 13 return false
+        if byte < 32 && byte != 9 return false
+        if byte == 127 return false
+        offset = offset + 1
+    }
+    true
+}
+
+fn validHeaders(&headers collections.List<Header>) bool {
+    var restored = newHeaderList()
+    var valid = true
+    while !headers.IsEmpty() {
+        const header = requiredHeader(headers.PopFront())
+        if !validHeaderName(header.Name) || !validHeaderValue(header.Value) {
+            valid = false
+        }
+        restored.PushFront($header)
+    }
+    restoreHeaders(&headers, $restored)
+    valid
+}
+
+fn validAuthority(value String) bool {
+    if text.IsEmpty(value) return false
+    const length = text.ByteLen(value)
+    var offset u64 = 0
+    while offset < length {
+        const byte = urlByteAt(value, offset)
+        if byte <= 32 || byte == 47 || byte == 92 || byte == 127 return false
+        offset = offset + 1
+    }
+    true
+}
+
+fn validURLBytes(value String) bool {
+    const length = text.ByteLen(value)
+    var offset u64 = 0
+    while offset < length {
+        const byte = urlByteAt(value, offset)
+        if byte <= 32 || byte >= 127 return false
+        if byte == 37 {
+            if offset + 2 >= length ||
+                !hexByte(urlByteAt(value, offset + 1)) ||
+                !hexByte(urlByteAt(value, offset + 2)) {
+                return false
+            }
+            offset = offset + 2
+        }
+        offset = offset + 1
+    }
+    true
+}
+
+fn hexByte(value u64) bool {
+    (value >= 48 && value <= 57) ||
+        (value >= 65 && value <= 70) ||
+        (value >= 97 && value <= 102)
+}
+
+fn hasSchemePrefix(value String) bool {
+    const length = text.ByteLen(value)
+    if length == 0 return false
+    const first = urlByteAt(value, 0)
+    if !((first >= 65 && first <= 90) ||
+        (first >= 97 && first <= 122)) {
+        return false
+    }
+    var offset u64 = 1
+    while offset < length {
+        const byte = urlByteAt(value, offset)
+        if byte == 58 return true
+        if byte == 47 || byte == 63 || byte == 35 return false
+        if !((byte >= 65 && byte <= 90) ||
+            (byte >= 97 && byte <= 122) ||
+            (byte >= 48 && byte <= 57) || byte == 43 || byte == 45 ||
+            byte == 46) {
+            return false
+        }
+        offset = offset + 1
+    }
+    false
+}
+
+fn withoutFragment(value String) String {
+    const end = firstByteOf(value, 0, 35, 0)
+    const result = text.Slice(value, 0, end) else error {
+        discard error
+        panic("httpx fragment offset invariant failed")
+    }
+    result
+}
+
+fn withoutQueryOrFragment(value String) String {
+    const end = firstByteOf(value, 0, 63, 35)
+    const result = text.Slice(value, 0, end) else error {
+        discard error
+        panic("httpx query offset invariant failed")
+    }
+    result
+}
+
+fn tokenByte(value u64) bool {
+    if value < 33 || value > 126 return false
+    value != 34 && value != 40 && value != 41 && value != 44 &&
+        value != 47 && value != 58 && value != 59 && value != 60 &&
+        value != 61 && value != 62 && value != 63 && value != 64 &&
+        value != 91 && value != 92 && value != 93 && value != 123 &&
+        value != 125
+}
+
+fn redirectStatus(status i32) bool {
+    status == 301 || status == 302 || status == 303 ||
+        status == 307 || status == 308
+}
+
+fn redirectsAsGet(status i32, method String) bool {
+    if status == 303 return true
+    (status == 301 || status == 302) && equalFoldASCII(method, "POST")
+}
+
+fn headerValueFor(
+    &headers collections.List<Header>,
+    name String
+) Option<String> {
+    var restored = newHeaderList()
+    var result Option<String> = .None
+    var found = false
+    while !headers.IsEmpty() {
+        const header = requiredHeader(headers.PopFront())
+        if !found && equalFoldASCII(header.Name, name) {
+            result = .Some(text.Copy(header.Value))
+            found = true
+        }
+        restored.PushFront($header)
+    }
+    restoreHeaders(&headers, $restored)
+    result
+}
+
+fn headerCount(
+    &headers collections.List<Header>,
+    name String
+) u64 {
+    var restored = newHeaderList()
+    var count u64 = 0
+    while !headers.IsEmpty() {
+        const header = requiredHeader(headers.PopFront())
+        if equalFoldASCII(header.Name, name) {
+            count = count + 1
+        }
+        restored.PushFront($header)
+    }
+    restoreHeaders(&headers, $restored)
+    count
+}
+
+fn setHeader(
+    &headers collections.List<Header>,
+    name String,
+    value String
+) void {
+    var restored = newHeaderList()
+    var replaced = false
+    while !headers.IsEmpty() {
+        const header = requiredHeader(headers.PopFront())
+        if equalFoldASCII(header.Name, name) {
+            if !replaced {
+                restored.PushFront(Header {
+                    Name = text.Copy(name)
+                    Value = text.Copy(value)
+                })
+                replaced = true
+            }
+            discard header
+        } else {
+            restored.PushFront($header)
+        }
+    }
+    if !replaced {
+        restored.PushFront(Header {
+            Name = text.Copy(name)
+            Value = text.Copy(value)
+        })
+    }
+    restoreHeaders(&headers, $restored)
+}
+
+fn addHeader(
+    &headers collections.List<Header>,
+    name String,
+    value String
+) void {
+    var restored = newHeaderList()
+    while !headers.IsEmpty() {
+        restored.PushFront(requiredHeader(headers.PopFront()))
+    }
+    restored.PushFront(Header {
+        Name = text.Copy(name)
+        Value = text.Copy(value)
+    })
+    restoreHeaders(&headers, $restored)
+}
+
+fn removeHeader(&headers collections.List<Header>, name String) void {
+    var restored = newHeaderList()
+    while !headers.IsEmpty() {
+        const header = requiredHeader(headers.PopFront())
+        if equalFoldASCII(header.Name, name) {
+            discard header
+        } else {
+            restored.PushFront($header)
+        }
+    }
+    restoreHeaders(&headers, $restored)
+}
+
+fn stripSensitiveHeaders(&headers collections.List<Header>) void {
+    var restored = newHeaderList()
+    while !headers.IsEmpty() {
+        const header = requiredHeader(headers.PopFront())
+        if sensitiveHeader(header.Name) {
+            discard header
+        } else {
+            restored.PushFront($header)
+        }
+    }
+    restoreHeaders(&headers, $restored)
+}
+
+fn sensitiveHeader(name String) bool {
+    equalFoldASCII(name, "Authorization") ||
+        equalFoldASCII(name, "Proxy-Authorization") ||
+        equalFoldASCII(name, "Cookie")
+}
+
+fn copyHeaders(
+    &headers collections.List<Header>
+) own collections.List<Header> {
+    var restored = newHeaderList()
+    var copies = newHeaderList()
+    while !headers.IsEmpty() {
+        const header = requiredHeader(headers.PopFront())
+        copies.PushFront(Header {
+            Name = text.Copy(header.Name)
+            Value = text.Copy(header.Value)
+        })
+        restored.PushFront($header)
+    }
+    restoreHeaders(&headers, $restored)
+    reverseHeaders($copies)
+}
+
+fn restoreHeaders(
+    &headers collections.List<Header>,
+    $restored own collections.List<Header>
+) void {
+    var source = restored
+    while !source.IsEmpty() {
+        headers.PushFront(requiredHeader(source.PopFront()))
+    }
+}
+
+fn newHeaderList() own collections.List<Header> {
+    collections.NewList<Header>()
+}
+
+fn reverseHeaders(
+    $headers own collections.List<Header>
+) own collections.List<Header> {
+    var source = headers
+    var result = newHeaderList()
+    while !source.IsEmpty() {
+        result.PushFront(requiredHeader(source.PopFront()))
+    }
+    result
+}
+
+fn requiredHeader($value Option<Header>) Header {
+    match value {
+        None: missingHeader()
+        Some(header): header
+    }
+}
+
+fn missingHeader() Header {
+    panic("httpx header invariant failed")
+}
+
+fn authorityWithoutUser(authority String) String {
+    const offset = lastByte(authority, 0, text.ByteLen(authority), 64)
+    if offset == text.ByteLen(authority) return text.Copy(authority)
+    const host = text.Slice(
+        authority,
+        offset + 1,
+        text.ByteLen(authority)
+    ) else error {
+        discard error
+        return ""
+    }
+    host
+}
+
+fn equalFoldASCII(left String, right String) bool {
+    const length = text.ByteLen(left)
+    if length != text.ByteLen(right) return false
+    var offset u64 = 0
+    while offset < length {
+        if lowerASCII(urlByteAt(left, offset)) !=
+            lowerASCII(urlByteAt(right, offset)) {
+            return false
+        }
+        offset = offset + 1
+    }
+    true
+}
+
+fn lowerASCII(value u64) u64 {
+    value + 32 if value >= 65 && value <= 90 else value
+}
+
+fn firstByteOf(
+    value String,
+    start u64,
+    first u64,
+    second u64
+) u64 {
+    const length = text.ByteLen(value)
+    var offset = start
+    while offset < length {
+        const byte = urlByteAt(value, offset)
+        if byte == first || (second != 0 && byte == second) return offset
+        offset = offset + 1
+    }
+    length
+}
+
+fn lastByte(
+    value String,
+    start u64,
+    end u64,
+    expected u64
+) u64 {
+    var result = end
+    var offset = start
+    while offset < end {
+        if urlByteAt(value, offset) == expected {
+            result = offset
+        }
+        offset = offset + 1
+    }
+    result
+}
+
+fn baseDirectory(
+    value String,
+    start u64,
+    end u64
+) Result<String, RequestError> {
+    if start >= end return .Ok("/")
+    const slash = lastByte(value, start, end, 47)
+    if slash == end return .Ok("/")
+    const directory = text.Slice(value, start, slash + 1) else error {
+        discard error
+        return .Err(.InvalidURL)
+    }
+    .Ok(directory)
+}
+
+fn urlByteAt(value String, offset u64) u64 {
+    const byte = text.ByteAt(value, offset) else error {
+        discard error
+        panic("httpx byte offset invariant failed")
+    }
+    byte
+}

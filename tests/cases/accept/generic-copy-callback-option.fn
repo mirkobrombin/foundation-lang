@@ -1,0 +1,17 @@
+enum Failure<E> {
+    Value(E)
+}
+
+struct Options<E> {
+    RetryIf Option<fn(E) bool> = .None
+}
+
+enum Leaf {
+    Failed
+}
+
+fn main() i32 {
+    const options Options<Failure<Leaf>> = Options<Failure<Leaf>> { RetryIf = .None }
+    discard options
+    0
+}

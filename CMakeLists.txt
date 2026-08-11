@@ -284,6 +284,21 @@ if(FOUNDATION_BUILD_FUZZERS)
         COPYONLY
     )
     configure_file(
+        tests/fuzz/corpus/httpx-vhost.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/httpx-vhost.fn"
+        COPYONLY
+    )
+    configure_file(
+        tests/cases/accept/httpx-client.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/httpx-client.fn"
+        COPYONLY
+    )
+    configure_file(
+        tests/cases/accept/httpx-network.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/httpx-network.fn"
+        COPYONLY
+    )
+    configure_file(
         tests/fuzz/corpus/select-timeout.fn
         "${FOUNDATION_FUZZ_CORPUS_DIR}/select-timeout.fn"
         COPYONLY
@@ -3996,6 +4011,14 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.generic-copy-callback-option
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-copy-callback-option.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-copy-callback-option.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
         NAME stage0.run.generic-lookahead
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -4616,6 +4639,135 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/hooks-use-after-parallel.fn
+            -DCODE=FDN2065
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.run.httpx-vhost
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-vhost.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-vhost.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.httpx-vhost-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-vhost.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/httpx-vhost.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/httpx-vhost
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-vhost.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.httpx-vhost-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-vhost.fn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/httpx-vhost-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/httpx-vhost-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.run.httpx-client
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-client.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-client.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.httpx-client-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-client.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/httpx-client.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/httpx-client
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-client.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+            -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+            -DRUNTIME_RESILIENCY_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/resiliency.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.httpx-client-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-client.fn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/httpx-client-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/httpx-client-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.run.httpx-network
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-network.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-network.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.httpx-network-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-network.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/httpx-network.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/httpx-network
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-network.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+            -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+            -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+            -DRUNTIME_RESILIENCY_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/resiliency.c
+            -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.httpx-network-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-network.fn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/httpx-network-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/httpx-network-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.check.httpx-use-after-do
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/httpx-use-after-do.fn
+            -DCODE=FDN2065
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.httpx-use-after-registration
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/httpx-use-after-registration.fn
             -DCODE=FDN2065
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
@@ -5497,6 +5649,65 @@ if(BUILD_TESTING)
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
                 -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
                 -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.httpx-vhost-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-vhost.fn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/httpx-vhost-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/httpx-vhost-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-vhost.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.httpx-client-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-client.fn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/httpx-client-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/httpx-client-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-client.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+                -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                -DRUNTIME_RESILIENCY_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/resiliency.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.httpx-network-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-network.fn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/httpx-network-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/httpx-network-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-network.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+                -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                -DRUNTIME_RESILIENCY_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/resiliency.c
+                -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )

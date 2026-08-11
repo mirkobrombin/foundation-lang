@@ -1,0 +1,36 @@
+send 1 POST https://user:password@example.com/start?token=secret#fragment auth=Bearer secret id=new body=payload
+log POST https://example.com/start status=- error=temporary
+send 2 POST https://user:password@example.com/start?token=secret#fragment auth=Bearer secret id=same body=payload
+log POST https://example.com/start status=307 error=-
+send 3 POST https://other.test/final auth=- id=same body=payload
+log POST https://other.test/final status=200 error=-
+redirect ok 200 done
+send 1 POST https://same.test/start auth=Bearer same id=no body=convert-me
+send 2 GET https://same.test/next auth=Bearer same id=no body=
+same-origin ok 200 converted
+send 1 GET https://query.test/path/page?old=1#before auth=- id=no body=
+send 2 GET https://query.test/path/page?new=2 auth=- id=no body=
+query ok 200 query-done
+send 1 GET https://fragment.test/path?value=1#before auth=- id=no body=
+send 2 GET https://fragment.test/path?value=1#after auth=- id=no body=
+fragment ok 200 fragment-done
+send 1 GET https://dot.test/one/two/three/page?old=1#before auth=- id=no body=
+send 2 GET https://dot.test/one/next/final?new=2#after auth=- id=no body=
+dot ok 200 dot-done
+send 1 GET https://dot.test/start auth=- id=no body=
+send 2 GET https://absolute.test/a/final auth=- id=no body=
+absolute-dot ok 200 absolute-dot-done
+send 1 GET https://authority.test/start auth=Bearer authority id=no body=
+send 2 GET https://other.test/final auth=- id=no body=
+authority ok 200 authority-done
+send 1 GET https://port.test/start auth=Bearer port id=no body=
+send 2 GET https://port.test:443/final auth=Bearer port id=no body=
+port ok 200 port-done
+send 1 GET https://scheme.test/start auth=- id=no body=
+scheme error invalid-redirect
+send 1 GET https://example.com/bounded auth=- id=no body=
+bounded error response-too-large
+send 1 GET https://example.com/first auth=- id=no body=
+breaker-first error transport-permanent
+breaker-second error circuit-open
+invalid error request-response-limit

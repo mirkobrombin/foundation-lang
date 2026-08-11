@@ -1,0 +1,222 @@
+package foundation.httpx
+
+import std.collections
+import std.text
+import std.time
+
+// Wraps one transport call with reusable request and response behavior.
+contract Middleware<E> {
+    // Handles one request or forwards it to the remaining chain.
+    fn Handle(
+        &self,
+        $request Request,
+        next fn($Request) Result<Response, E>
+    ) Result<Response, E>
+}
+
+// Receives one redacted structured record from logging middleware.
+contract LogSink {
+    // Receives one owned structured completion record.
+    fn Write(&self, $entry LogEntry) void
+}
+
+// Describes one completed transport call without URL credentials or query data.
+struct LogEntry {
+    // Stores the completed request method.
+    Method String
+    // Stores the URL without credentials, query, or fragment.
+    URL String
+    // Stores the response status when transport succeeded.
+    Status Option<i32>
+    // Stores monotonic request duration.
+    Duration time.Duration
+    // Stores the described transport error when execution failed.
+    Error Option<String>
+}
+
+struct functionMiddleware<E> implements Middleware<E> {
+    handler fn(
+        $Request,
+        fn($Request) Result<Response, E>
+    ) Result<Response, E>
+
+    fn Handle(
+        &self,
+        $request Request,
+        next fn($Request) Result<Response, E>
+    ) Result<Response, E> {
+        invokeFunctionMiddleware<E>(self.handler, $request, next)
+    }
+}
+
+struct headerMiddleware<E> implements Middleware<E> {
+    name String
+    value String
+
+    fn Handle(
+        &self,
+        $request Request,
+        next fn($Request) Result<Response, E>
+    ) Result<Response, E> {
+        var active = request
+        if sameOrigin(active.URL, active.originalURL) {
+            active.SetHeader(self.name, self.value) else error {
+                discard error
+                return next($active)
+            }
+        }
+        next($active)
+    }
+}
+
+struct requestIDMiddleware<E> implements Middleware<E> {
+    header String
+
+    fn Handle(
+        &self,
+        $request Request,
+        next fn($Request) Result<Response, E>
+    ) Result<Response, E> {
+        var active = request
+        const current = active.Header(self.header)
+        match current {
+            Some(value): {
+                discard value
+            }
+            None: {
+                active.SetHeader(self.header, active.requestID) else error {
+                    discard error
+                    return next($active)
+                }
+            }
+        }
+        next($active)
+    }
+}
+
+struct loggingMiddleware<E> implements Middleware<E> {
+    sink own LogSink
+    describeError fn(E) String
+
+    fn Handle(
+        &self,
+        $request Request,
+        next fn($Request) Result<Response, E>
+    ) Result<Response, E> {
+        const method = text.Copy(request.Method)
+        const url = safeLogURL(request.URL)
+        const started = time.MonotonicNow()
+        const result = next($request)
+        const duration = elapsedSince(started)
+        match result {
+            Ok(response): {
+                self.sink.Write($LogEntry {
+                    Method = method
+                    URL = url
+                    Status = .Some(response.Status)
+                    Duration = duration
+                    Error = .None
+                })
+                .Ok(response)
+            }
+            Err(error): {
+                const message = describeTransportError<E>(
+                    self.describeError,
+                    error
+                )
+                self.sink.Write($LogEntry {
+                    Method = method
+                    URL = url
+                    Status = .None
+                    Duration = duration
+                    Error = .Some(message)
+                })
+                .Err(error)
+            }
+        }
+    }
+}
+
+// Adds one header only while the current URL retains its original origin.
+fn HeaderMiddleware<E>(
+    $name String,
+    $value String
+) Result<own Middleware<E>, RequestError> {
+    if !validHeaderName(name) || !validHeaderValue(value) {
+        discard name
+        discard value
+        return .Err(.InvalidHeader)
+    }
+    .Ok(own headerMiddleware<E> { name = name value = value })
+}
+
+// Adds one UUIDv7 request ID when the selected header is absent.
+fn RequestID<E>($header String) Result<own Middleware<E>, RequestError> {
+    if !validHeaderName(header) {
+        discard header
+        return .Err(.InvalidHeader)
+    }
+    .Ok(own requestIDMiddleware<E> { header = header })
+}
+
+// Records redacted URL, duration, status, and typed transport failure text.
+fn Logging<E>(
+    $sink own LogSink,
+    $describeError fn(E) String
+) own Middleware<E> {
+    own loggingMiddleware<E> {
+        sink = sink
+        describeError = describeError
+    }
+}
+
+fn elapsedSince(started time.MonotonicInstant) time.Duration {
+    const duration = time.MonotonicNow().Since(started) else error {
+        discard error
+        return time.Zero()
+    }
+    duration
+}
+
+fn invokeFunctionMiddleware<E>(
+    handler fn(
+        $Request,
+        fn($Request) Result<Response, E>
+    ) Result<Response, E>,
+    $request Request,
+    next fn($Request) Result<Response, E>
+) Result<Response, E> {
+    handler($request, next)
+}
+
+fn describeTransportError<E>(describe fn(E) String, error E) String {
+    describe(error)
+}
+
+fn newMiddlewareList<E>() own collections.List<own Middleware<E>> {
+    collections.NewList<own Middleware<E>>()
+}
+
+fn reverseMiddleware<E>(
+    $values own collections.List<own Middleware<E>>
+) own collections.List<own Middleware<E>> {
+    var source = values
+    var result = newMiddlewareList<E>()
+    while !source.IsEmpty() {
+        result.PushFront(middlewareValue<E>(source.PopFront()))
+    }
+    result
+}
+
+fn middlewareValue<E>(
+    $value Option<own Middleware<E>>
+) own Middleware<E> {
+    match value {
+        None: missingMiddleware<E>()
+        Some(middleware): middleware
+    }
+}
+
+fn missingMiddleware<E>() own Middleware<E> {
+    panic("httpx middleware invariant failed")
+}

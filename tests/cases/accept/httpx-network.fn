@@ -1,0 +1,804 @@
+package test.httpx_network
+
+import std.format
+import std.net
+import std.time
+import foundation.httpx
+
+struct ServerOutcome {
+    Listener own net.TcpListener
+    RequestLine String
+    Host String
+    Connection String
+    ContentLength String
+    Separator String
+    Body String
+    Written bool
+}
+
+struct ExchangeOutcome {
+    Client own httpx.Client<httpx.NetworkError>
+    Listener own net.TcpListener
+    RequestLine String
+    Host String
+    Connection String
+    ContentLength String
+    Separator String
+    RequestBody String
+    Written bool
+    Status i32
+    ResponseHeader String
+    ResponseBody String
+    Failure String
+}
+
+struct CompactOutcome {
+    Client own httpx.Client<httpx.NetworkError>
+    Listener own net.TcpListener
+    Written bool
+    Status i32
+    Body String
+    Failure String
+}
+
+fn listenerOr(
+    $value Result<own net.TcpListener, net.Error>
+) own net.TcpListener {
+    const listener = value else error {
+        discard error
+        panic("HTTP test listener failed")
+    }
+    listener
+}
+
+fn connectionOr(
+    $value Result<own net.TcpConnection, net.Error>
+) own net.TcpConnection {
+    const connection = value else error {
+        discard error
+        panic("HTTP test accept failed")
+    }
+    connection
+}
+
+fn pairOr($value Result<net.StreamPair, net.Error>) net.StreamPair {
+    const pair = value else error {
+        discard error
+        panic("HTTP test split failed")
+    }
+    pair
+}
+
+fn lineOr($value Result<Option<String>, net.Error>) String {
+    match value {
+        Ok(optional): match optional {
+            None: ""
+            Some(line): line
+        }
+        Err(error): {
+            discard error
+            ""
+        }
+    }
+}
+
+fn textOr($value Result<String, net.Error>) String {
+    match value {
+        Ok(text): text
+        Err(error): {
+            discard error
+            ""
+        }
+    }
+}
+
+fn written($value Result<void, net.Error>) bool {
+    match value {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn requestOr(
+    $value Result<httpx.Request, httpx.RequestError>
+) httpx.Request {
+    const request = value else error {
+        discard error
+        panic("HTTP test request failed")
+    }
+    request
+}
+
+fn headerAccepted($value Result<void, httpx.RequestError>) bool {
+    match value {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn failureName(
+    $error httpx.ClientError<httpx.NetworkError>
+) String {
+    match error {
+        InvalidRequest(value): match value {
+            EmptyMethod: "request-method"
+            InvalidURL: "request-url"
+            InvalidHeader: "request-header"
+            InvalidResponseLimit: "request-response-limit"
+            InvalidRedirectLimit: "request-redirect-limit"
+            InvalidTimeout: "request-timeout"
+        }
+        Transport(value): match value {
+            InvalidRequest(error): {
+                discard error
+                "transport-request"
+            }
+            Network(error): {
+                networkFailureName(error)
+            }
+            InvalidURL: "invalid-url"
+            TLSUnavailable: "tls-unavailable"
+            InvalidResponse: "invalid-response"
+            UnsupportedFraming: "unsupported-framing"
+            ResponseTooLarge: "response-too-large"
+        }
+        RetryConfiguration(value): {
+            discard value
+            "retry"
+        }
+        Cancelled: "cancelled"
+        CircuitOpen: "circuit-open"
+        InvalidRedirect: "invalid-redirect"
+        TooManyRedirects: "too-many-redirects"
+        ResponseTooLarge: "client-response-too-large"
+    }
+}
+
+fn networkFailureName(error net.Error) String {
+    match error {
+        InvalidAddress: "network-invalid-address"
+        ResolveFailed: "network-resolve"
+        Refused: "network-refused"
+        Closed: "network-closed"
+        Cancelled: "network-cancelled"
+        InvalidUtf8: "network-utf8"
+        LineTooLong: "network-line-limit"
+        AddressInUse: "network-address-in-use"
+        Timeout: "network-timeout"
+        Io: "network-io"
+    }
+}
+
+task stall($listener own net.TcpListener) own net.TcpListener {
+    const accepting = spawn net.Accept($listener)
+    const acceptedOutcome = $accepting.wait()
+    const net.AcceptOutcome {
+        Listener
+        Value
+    } = acceptedOutcome
+    const connection = connectionOr($Value)
+    const pair = pairOr(connection.Split())
+    const net.StreamPair { Reader Writer } = pair
+    const Channel { sender receiver } = channel<void>(0)
+    var endpoint = receiver
+    select {
+        endpoint.receive(): {
+            discard sender
+            discard endpoint
+        }
+        timeout 100.milliseconds: {
+            discard sender
+            discard endpoint
+        }
+        else error: {
+            discard error
+            discard sender
+            discard endpoint
+        }
+    }
+    discard Reader
+    discard Writer
+    Listener
+}
+
+task serve(
+    $listener own net.TcpListener,
+    $wireResponse String,
+    requestBodyLength u64
+) own ServerOutcome {
+    const accepting = spawn net.Accept($listener)
+    const acceptedOutcome = $accepting.wait()
+    const net.AcceptOutcome {
+        Listener
+        Value
+    } = acceptedOutcome
+    const connection = connectionOr($Value)
+    const pair = pairOr(connection.Split())
+    const net.StreamPair { Reader Writer } = pair
+
+    const line1Reading = spawn net.ReadLine($Reader)
+    const line1Outcome = $line1Reading.wait()
+    const net.ReadLineOutcome {
+        Reader as reader1
+        Value as line1Value
+    } = line1Outcome
+    const requestLine = lineOr($line1Value)
+
+    const line2Reading = spawn net.ReadLine($reader1)
+    const line2Outcome = $line2Reading.wait()
+    const net.ReadLineOutcome {
+        Reader as reader2
+        Value as line2Value
+    } = line2Outcome
+    const host = lineOr($line2Value)
+
+    const line3Reading = spawn net.ReadLine($reader2)
+    const line3Outcome = $line3Reading.wait()
+    const net.ReadLineOutcome {
+        Reader as reader3
+        Value as line3Value
+    } = line3Outcome
+    const connectionHeader = lineOr($line3Value)
+
+    const line4Reading = spawn net.ReadLine($reader3)
+    const line4Outcome = $line4Reading.wait()
+    const net.ReadLineOutcome {
+        Reader as reader4
+        Value as line4Value
+    } = line4Outcome
+    const contentLength = lineOr($line4Value)
+
+    const line5Reading = spawn net.ReadLine($reader4)
+    const line5Outcome = $line5Reading.wait()
+    const net.ReadLineOutcome {
+        Reader as reader5
+        Value as line5Value
+    } = line5Outcome
+    const separator = lineOr($line5Value)
+
+    const bodyReading = spawn net.ReadExact($reader5, requestBodyLength)
+    const bodyOutcome = $bodyReading.wait()
+    const net.ReadOutcome {
+        Reader as readerAfter
+        Value as bodyValue
+    } = bodyOutcome
+    const body = textOr($bodyValue)
+    discard readerAfter
+
+    const writing = spawn net.WriteAll($Writer, $wireResponse)
+    const writeOutcome = $writing.wait()
+    const net.WriteOutcome {
+        Writer as writerAfter
+        Value as writeValue
+    } = writeOutcome
+    const writeSucceeded = written($writeValue)
+    discard writerAfter
+
+    own ServerOutcome {
+        Listener = Listener
+        RequestLine = requestLine
+        Host = host
+        Connection = connectionHeader
+        ContentLength = contentLength
+        Separator = separator
+        Body = body
+        Written = writeSucceeded
+    }
+}
+
+task exchange(
+    $client own httpx.Client<httpx.NetworkError>,
+    $listener own net.TcpListener,
+    $request httpx.Request,
+    $wireResponse String,
+    requestBodyLength u64
+) own ExchangeOutcome {
+    const serving = spawn serve(
+        $listener,
+        $wireResponse,
+        requestBodyLength
+    )
+    const pending = client.Do($request)
+    const completed = $pending.wait()
+    const httpx.DoOutcome {
+        Client
+        Value
+    } = completed
+    var status i32 = 0
+    var responseHeader = ""
+    var responseBody = ""
+    var failure = ""
+    match Value {
+        Ok(response): {
+            var active = response
+            responseHeader = match active.Header("X-Test") {
+                None: ""
+                Some(value): value
+            }
+            const httpx.Response {
+                Status
+                Headers
+                Body
+            } = active
+            status = Status
+            responseBody = Body
+            discard Headers
+        }
+        Err(error): {
+            failure = failureName($error)
+        }
+    }
+
+    const served = $serving.wait()
+    const ServerOutcome {
+        Listener
+        RequestLine
+        Host
+        Connection
+        ContentLength
+        Separator
+        Body
+        Written
+    } = served
+    own ExchangeOutcome {
+        Client = Client
+        Listener = Listener
+        RequestLine = RequestLine
+        Host = Host
+        Connection = Connection
+        ContentLength = ContentLength
+        Separator = Separator
+        RequestBody = Body
+        Written = Written
+        Status = status
+        ResponseHeader = responseHeader
+        ResponseBody = responseBody
+        Failure = failure
+    }
+}
+
+task exchangeCompact(
+    $client own httpx.Client<httpx.NetworkError>,
+    $listener own net.TcpListener,
+    $request httpx.Request,
+    $wireResponse String
+) own CompactOutcome {
+    const pending = spawn exchange(
+        $client,
+        $listener,
+        $request,
+        $wireResponse,
+        0
+    )
+    const completed = $pending.wait()
+    const ExchangeOutcome {
+        Client
+        Listener
+        RequestLine
+        Host
+        Connection
+        ContentLength
+        Separator
+        RequestBody
+        Written
+        Status
+        ResponseHeader
+        ResponseBody
+        Failure
+    } = completed
+    discard RequestLine
+    discard Host
+    discard Connection
+    discard ContentLength
+    discard Separator
+    discard RequestBody
+    discard ResponseHeader
+    own CompactOutcome {
+        Client = Client
+        Listener = Listener
+        Written = Written
+        Status = Status
+        Body = ResponseBody
+        Failure = Failure
+    }
+}
+
+fn headerResponse(extraHeaders u64) String {
+    var result = "HTTP/1.1 200 OK\r\n"
+    var index u64 = 0
+    while index < extraHeaders {
+        result = result + "X-H" + format.U64(index) + ": value\r\n"
+        index = index + 1
+    }
+    result + "Content-Length: 0\r\n\r\n"
+}
+
+fn main() i32 {
+    const firstListener = listenerOr(net.Listen("127.0.0.1", 0))
+    const firstPort = firstListener.Port
+    var builder = httpx.New<httpx.NetworkError>(httpx.Network())
+    const firstClient = builder.Build()
+    const firstURL = "http://127.0.0.1:" + format.U64(firstPort) +
+        "/echo?q=1#ignored"
+    const firstRequest = requestOr(httpx.NewRequest(
+            "POST",
+            $firstURL,
+            "ping"
+        ))
+    const firstRunning = spawn exchange(
+        $firstClient,
+        $firstListener,
+        $firstRequest,
+        $"HTTP/1.1 201 Created\r\nX-Test: first\r\n" +
+        "Content-Length: 5\r\n\r\nhello",
+        4
+    )
+    const first = $firstRunning.wait()
+    const ExchangeOutcome {
+        Client as secondClient
+        Listener as secondListener
+        RequestLine as firstLine
+        Host as firstHost
+        Connection as firstConnection
+        ContentLength as firstLength
+        Separator as firstSeparator
+        RequestBody as firstRequestBody
+        Written as firstWritten
+        Status as firstStatus
+        ResponseHeader as firstHeader
+        ResponseBody as firstBody
+        Failure as firstFailure
+    } = first
+    if firstLine != "POST /echo?q=1 HTTP/1.1" ||
+        firstHost != "Host: 127.0.0.1:" + format.U64(firstPort) ||
+        firstConnection != "Connection: close" ||
+        firstLength != "Content-Length: 4" || firstSeparator != "" ||
+        firstRequestBody != "ping" || !firstWritten || firstStatus != 201 ||
+        firstHeader != "first" || firstBody != "hello" || firstFailure != "" {
+        discard secondClient
+        discard secondListener
+        return 1
+    }
+
+    const secondPort = secondListener.Port
+    const secondRequest = requestOr(httpx.NewRequest(
+            "POST",
+            "http://127.0.0.1:" + format.U64(secondPort) + "/chunked",
+            "pong"
+        ))
+    const secondRunning = spawn exchange(
+        $secondClient,
+        $secondListener,
+        $secondRequest,
+        $"HTTP/1.1 200 OK\r\nX-Test: second\r\n" +
+        "Transfer-Encoding: chunked\r\n\r\n" +
+        "5\r\nhello\r\n6\r\n world\r\n0\r\nX-Trailer: yes\r\n\r\n",
+        4
+    )
+    const second = $secondRunning.wait()
+    const ExchangeOutcome {
+        Client as thirdClient
+        Listener as thirdListener
+        RequestLine as secondLine
+        Host as secondHost
+        Connection as secondConnection
+        ContentLength as secondLength
+        Separator as secondSeparator
+        RequestBody as secondRequestBody
+        Written as secondWritten
+        Status as secondStatus
+        ResponseHeader as secondHeader
+        ResponseBody as secondBody
+        Failure as secondFailure
+    } = second
+    if secondLine != "POST /chunked HTTP/1.1" ||
+        secondHost != "Host: 127.0.0.1:" + format.U64(secondPort) ||
+        secondConnection != "Connection: close" ||
+        secondLength != "Content-Length: 4" || secondSeparator != "" ||
+        secondRequestBody != "pong" || !secondWritten || secondStatus != 200 ||
+        secondHeader != "second" || secondBody != "hello world" ||
+        secondFailure != "" {
+        discard thirdClient
+        discard thirdListener
+        return 2
+    }
+
+    const thirdPort = thirdListener.Port
+    const thirdRequest = requestOr(httpx.NewRequest(
+            "GET",
+            "http://127.0.0.1:" + format.U64(thirdPort) + "/smuggling",
+            ""
+        ))
+    const thirdRunning = spawn exchange(
+        $thirdClient,
+        $thirdListener,
+        $thirdRequest,
+        $"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n" +
+        "Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+        0
+    )
+    const third = $thirdRunning.wait()
+    const ExchangeOutcome {
+        Client as finalClient
+        Listener as finalListener
+        RequestLine as thirdLine
+        Host as thirdHost
+        Connection as thirdConnection
+        ContentLength as thirdLength
+        Separator as thirdSeparator
+        RequestBody as thirdRequestBody
+        Written as thirdWritten
+        Status as thirdStatus
+        ResponseHeader as thirdHeader
+        ResponseBody as thirdBody
+        Failure as thirdFailure
+    } = third
+    discard thirdLine
+    discard thirdHost
+    discard thirdConnection
+    discard thirdLength
+    discard thirdSeparator
+    discard thirdRequestBody
+    discard thirdStatus
+    discard thirdHeader
+    discard thirdBody
+    if !thirdWritten || thirdFailure != "invalid-response" {
+        discard finalClient
+        discard finalListener
+        return 3
+    }
+
+    const interimPort = finalListener.Port
+    var interimRequest = requestOr(httpx.NewRequest(
+            "GET",
+            "http://127.0.0.1:" + format.U64(interimPort) + "/continue",
+            ""
+        ))
+    interimRequest.Timeout = time.Milliseconds(500)
+    const interimPending = spawn exchangeCompact(
+        $finalClient,
+        $finalListener,
+        $interimRequest,
+        $"HTTP/1.1 100 Continue\r\n\r\n" +
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+    )
+    const CompactOutcome {
+        Client as headClient
+        Listener as headListener
+        Written as interimWritten
+        Status as interimStatus
+        Body as interimBody
+        Failure as interimFailure
+    } = $interimPending.wait()
+    if !interimWritten || interimStatus != 200 || interimBody != "ok" ||
+        interimFailure != "" {
+        discard headClient
+        discard headListener
+        return 4
+    }
+
+    const headPort = headListener.Port
+    var headRequest = requestOr(httpx.NewRequest(
+            "HEAD",
+            "http://127.0.0.1:" + format.U64(headPort) + "/metadata",
+            ""
+        ))
+    headRequest.Timeout = time.Milliseconds(500)
+    const headPending = spawn exchangeCompact(
+        $headClient,
+        $headListener,
+        $headRequest,
+        $"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+    )
+    const CompactOutcome {
+        Client as statusClient
+        Listener as statusListener
+        Written as headWritten
+        Status as headStatus
+        Body as headBody
+        Failure as headFailure
+    } = $headPending.wait()
+    if !headWritten || headStatus != 200 || headBody != "" ||
+        headFailure != "" {
+        discard statusClient
+        discard statusListener
+        return 5
+    }
+
+    const statusPort = statusListener.Port
+    const statusRequest = requestOr(httpx.NewRequest(
+            "GET",
+            "http://127.0.0.1:" + format.U64(statusPort) + "/status",
+            ""
+        ))
+    const statusPending = spawn exchangeCompact(
+        $statusClient,
+        $statusListener,
+        $statusRequest,
+        $"HTTP/1.1 200X\r\nContent-Length: 0\r\n\r\n"
+    )
+    const CompactOutcome {
+        Client as boundedClient
+        Listener as boundedListener
+        Written as statusWritten
+        Status as invalidStatus
+        Body as invalidStatusBody
+        Failure as statusFailure
+    } = $statusPending.wait()
+    discard statusWritten
+    discard invalidStatus
+    discard invalidStatusBody
+    if statusFailure != "invalid-response" {
+        discard boundedClient
+        discard boundedListener
+        return 6
+    }
+
+    const boundedPort = boundedListener.Port
+    const boundedRequest = requestOr(httpx.NewRequest(
+            "GET",
+            "http://127.0.0.1:" + format.U64(boundedPort) + "/headers",
+            ""
+        ))
+    const boundedPending = spawn exchangeCompact(
+        $boundedClient,
+        $boundedListener,
+        $boundedRequest,
+        $headerResponse(127)
+    )
+    const CompactOutcome {
+        Client as excessiveClient
+        Listener as excessiveListener
+        Written as boundedWritten
+        Status as boundedStatus
+        Body as boundedBody
+        Failure as boundedFailure
+    } = $boundedPending.wait()
+    if !boundedWritten || boundedStatus != 200 || boundedBody != "" ||
+        boundedFailure != "" {
+        discard excessiveClient
+        discard excessiveListener
+        return 7
+    }
+
+    const excessivePort = excessiveListener.Port
+    const excessiveRequest = requestOr(httpx.NewRequest(
+            "GET",
+            "http://127.0.0.1:" + format.U64(excessivePort) + "/headers",
+            ""
+        ))
+    const excessivePending = spawn exchangeCompact(
+        $excessiveClient,
+        $excessiveListener,
+        $excessiveRequest,
+        $headerResponse(128)
+    )
+    const CompactOutcome {
+        Client as finalHardenedClient
+        Listener as finalHardenedListener
+        Written as excessiveWritten
+        Status as excessiveStatus
+        Body as excessiveBody
+        Failure as excessiveFailure
+    } = $excessivePending.wait()
+    discard excessiveWritten
+    discard excessiveStatus
+    discard excessiveBody
+    if excessiveFailure != "invalid-response" {
+        discard finalHardenedClient
+        discard finalHardenedListener
+        return 8
+    }
+
+    const timeoutPort = finalHardenedListener.Port
+    var timeoutRequest = requestOr(httpx.NewRequest(
+            "GET",
+            "http://127.0.0.1:" + format.U64(timeoutPort) + "/timeout",
+            ""
+        ))
+    timeoutRequest.Timeout = time.Milliseconds(10)
+    const stalling = spawn stall($finalHardenedListener)
+    const timeoutPending = finalHardenedClient.Do($timeoutRequest)
+    const timeoutCompleted = $timeoutPending.wait()
+    const httpx.DoOutcome {
+        Client as timeoutClient
+        Value as timeoutValue
+    } = timeoutCompleted
+    const timeoutFailure = match timeoutValue {
+        Ok(response): {
+            discard response
+            "unexpected-success"
+        }
+        Err(error): failureName($error)
+    }
+    const timeoutListener = $stalling.wait()
+    discard timeoutListener
+    if timeoutFailure != "network-timeout" {
+        discard timeoutClient
+        return 9
+    }
+
+    const tlsRequest = requestOr(httpx.NewRequest(
+            "GET",
+            "https://127.0.0.1:8443/secure",
+            ""
+        ))
+    const tlsPending = timeoutClient.Do($tlsRequest)
+    const tlsCompleted = $tlsPending.wait()
+    const httpx.DoOutcome {
+        Client as tlsClient
+        Value as tlsValue
+    } = tlsCompleted
+    const tlsFailure = match tlsValue {
+        Ok(response): {
+            discard response
+            "unexpected-success"
+        }
+        Err(error): failureName($error)
+    }
+    if tlsFailure != "tls-unavailable" return 10
+
+    var invalidLength = requestOr(httpx.NewRequest(
+            "POST",
+            "http://127.0.0.1:1/not-opened",
+            "body"
+        ))
+    if !headerAccepted(invalidLength.AddHeader("Content-Length", "99")) {
+        discard tlsClient
+        return 11
+    }
+    const invalidPending = tlsClient.Do($invalidLength)
+    const invalidCompleted = $invalidPending.wait()
+    const httpx.DoOutcome {
+        Client as validatedClient
+        Value as invalidValue
+    } = invalidCompleted
+    const invalidFailure = match invalidValue {
+        Ok(response): {
+            discard response
+            "unexpected-success"
+        }
+        Err(error): failureName($error)
+    }
+    if invalidFailure != "request-header" {
+        discard validatedClient
+        return 12
+    }
+
+    var transferRequest = requestOr(httpx.NewRequest(
+            "POST",
+            "http://127.0.0.1:1/not-opened",
+            "body"
+        ))
+    if !headerAccepted(transferRequest.AddHeader(
+            "Transfer-Encoding",
+            "chunked"
+        )) {
+        discard validatedClient
+        return 13
+    }
+    const transferPending = validatedClient.Do($transferRequest)
+    const transferCompleted = $transferPending.wait()
+    const httpx.DoOutcome {
+        Client as finalValidatedClient
+        Value as transferValue
+    } = transferCompleted
+    const transferFailure = match transferValue {
+        Ok(response): {
+            discard response
+            "unexpected-success"
+        }
+        Err(error): failureName($error)
+    }
+    discard finalValidatedClient
+    if transferFailure != "request-header" return 14
+
+    print("httpx network ok")
+    0
+}

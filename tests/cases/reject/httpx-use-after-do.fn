@@ -1,0 +1,35 @@
+package main
+
+import foundation.httpx
+
+enum Failure {
+    Broken
+}
+
+struct Transport implements httpx.Transport<Failure> {
+    fn Send(
+        &self,
+        $request httpx.Request
+    ) Task<Result<httpx.Response, Failure>> {
+        discard request
+        spawn fail()
+    }
+}
+
+task fail() Result<httpx.Response, Failure> {
+    .Err(.Broken)
+}
+
+fn main() i32 {
+    var builder = httpx.New<Failure>(own Transport {})
+    const client = builder.Build()
+    const request = httpx.NewRequest("GET", "https://example.com", "")
+    else error {
+        discard error
+        panic("request rejected")
+    }
+    const pending = client.Do($request)
+    discard client
+    discard pending
+    0
+}

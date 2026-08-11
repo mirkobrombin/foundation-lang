@@ -1,0 +1,817 @@
+package foundation.httpx
+
+import std.collections
+import std.format
+import std.net
+import std.parse
+import std.text
+
+// Reports DNS, TCP, protocol, framing, and unavailable TLS failures.
+enum NetworkError {
+    // Preserves direct transport request validation failures.
+    InvalidRequest(error RequestError)
+    // Preserves a typed DNS or TCP failure.
+    Network(error net.Error)
+    // Rejects an invalid request URL before opening a connection.
+    InvalidURL
+    // Rejects HTTPS until a verified TLS backend is configured.
+    TLSUnavailable
+    // Rejects a malformed HTTP status line or header block.
+    InvalidResponse
+    // Rejects response framing that cannot be bounded safely.
+    UnsupportedFraming
+    // Rejects a response body larger than the request limit.
+    ResponseTooLarge
+}
+
+struct networkTransport implements Transport<NetworkError> {
+    fn Send(
+        &self,
+        $request Request
+    ) Task<Result<Response, NetworkError>> {
+        spawn sendNetwork($request)
+    }
+}
+
+struct networkTarget {
+    host String
+    authority String
+    path String
+    port u64
+    secure bool
+}
+
+// Creates a one-request HTTP/1.1 transport backed by std.net.
+fn Network() own Transport<NetworkError> {
+    own networkTransport {}
+}
+
+task sendNetwork($request Request) Result<Response, NetworkError> {
+    var activeRequest = request
+    validateRequest(&activeRequest) else error {
+        return .Err(.InvalidRequest(error = error))
+    }
+    const target = networkTargetFor(activeRequest.URL) else error {
+        discard error
+        return .Err(.InvalidURL)
+    }
+    var activeTarget = target
+    const deadline = net.DeadlineAfter(activeRequest.Timeout) else error {
+        discard error
+        discard activeTarget
+        return .Err(.InvalidRequest(error = .InvalidTimeout))
+    }
+    if activeTarget.secure {
+        discard activeTarget
+        return .Err(.TLSUnavailable)
+    }
+
+    const connecting = spawn net.ConnectUntil(
+        text.Copy(activeTarget.host),
+        activeTarget.port,
+        deadline
+    )
+    const connectionValue = $connecting.wait()
+    const connection = connectionValue else error {
+        discard activeTarget
+        return .Err(.Network(error = error))
+    }
+    const pair = connection.Split() else error {
+        discard activeTarget
+        return .Err(.Network(error = error))
+    }
+    const net.StreamPair { Reader Writer } = pair
+    var reader = Reader
+    var writer = Writer
+    const wire = encodeRequest(&activeRequest, &activeTarget) else error {
+        discard error
+        discard activeTarget
+        discard reader
+        discard writer
+        return .Err(.InvalidURL)
+    }
+    discard activeTarget
+
+    const writing = spawn net.WriteAllUntil($writer, $wire, deadline)
+    const writeOutcome = $writing.wait()
+    const net.WriteOutcome {
+        Writer as restoredWriter
+        Value as writeResult
+    } = writeOutcome
+    writer = restoredWriter
+    writeResult else error {
+        discard error
+        discard reader
+        discard writer
+        return .Err(.Network(error = error))
+    }
+    discard writer
+
+    const reading = spawn readResponse(
+        $reader,
+        text.Copy(activeRequest.Method),
+        activeRequest.MaximumResponseSize,
+        deadline,
+        0
+    )
+    const result = $reading.wait()
+    result
+}
+
+task readResponse(
+    $reader own net.TcpReader,
+    $method String,
+    maximumBody u64,
+    deadline net.Deadline,
+    informationalResponses u64
+) Result<Response, NetworkError> {
+    var active = reader
+    const statusReading = spawn net.ReadLineLimitedUntil(
+        $active,
+        8192,
+        deadline
+    )
+    const statusOutcome = $statusReading.wait()
+    const net.ReadLineOutcome {
+        Reader as statusReader
+        Value as statusValue
+    } = statusOutcome
+    active = statusReader
+    const statusLine = requiredLine($statusValue) else error {
+        discard active
+        return .Err(error)
+    }
+    const status = parseStatus(statusLine) else error {
+        discard error
+        discard active
+        return .Err(.InvalidResponse)
+    }
+    discard statusLine
+
+    var headers = collections.NewList<Header>()
+    var contentLength Option<u64> = .None
+    var sawContentLength = false
+    var chunked = false
+    var count u64 = 0
+    var complete = false
+    while !complete {
+        const lineReading = spawn net.ReadLineLimitedUntil(
+            $active,
+            8192,
+            deadline
+        )
+        const lineOutcome = $lineReading.wait()
+        const net.ReadLineOutcome {
+            Reader as lineReader
+            Value as lineValue
+        } = lineOutcome
+        active = lineReader
+        const line = requiredLine($lineValue) else error {
+            discard active
+            discard headers
+            discard contentLength
+            return .Err(error)
+        }
+        if text.IsEmpty(line) {
+            discard line
+            complete = true
+        } else {
+            if count >= 128 {
+                discard line
+                discard active
+                discard headers
+                discard contentLength
+                return .Err(.InvalidResponse)
+            }
+            const header = parseHeader($line) else error {
+                discard error
+                discard active
+                discard headers
+                discard contentLength
+                return .Err(.InvalidResponse)
+            }
+            if equalFoldASCII(header.Name, "Content-Length") {
+                if sawContentLength {
+                    discard header
+                    discard active
+                    discard headers
+                    discard contentLength
+                    return .Err(.InvalidResponse)
+                }
+                const length = parse.U64(header.Value) else error {
+                    discard error
+                    discard header
+                    discard active
+                    discard headers
+                    discard contentLength
+                    return .Err(.InvalidResponse)
+                }
+                contentLength = .Some(length)
+                sawContentLength = true
+            }
+            if equalFoldASCII(header.Name, "Transfer-Encoding") {
+                if chunked || !equalFoldASCII(header.Value, "chunked") {
+                    discard header
+                    discard active
+                    discard headers
+                    discard contentLength
+                    return .Err(.UnsupportedFraming)
+                }
+                chunked = true
+            }
+            headers.PushFront($header)
+            count = count + 1
+        }
+    }
+    headers = reverseHeaders($headers)
+
+    if status >= 100 && status < 200 {
+        if status == 101 || informationalResponses >= 8 ||
+            sawContentLength || chunked {
+            discard active
+            discard headers
+            discard contentLength
+            return .Err(.InvalidResponse)
+        }
+        discard headers
+        discard contentLength
+        const nextReading = spawn readResponse(
+            $active,
+            $method,
+            maximumBody,
+            deadline,
+            informationalResponses + 1
+        )
+        const next = $nextReading.wait()
+        return next
+    }
+
+    const noBody = equalFoldASCII(method, "HEAD") ||
+        status == 204 || status == 304
+    if noBody {
+        if status == 204 && (sawContentLength || chunked) {
+            discard active
+            discard headers
+            discard contentLength
+            return .Err(.InvalidResponse)
+        }
+        discard active
+        discard contentLength
+        return .Ok(Response { Status = status Headers = headers Body = "" })
+    }
+
+    if chunked {
+        if sawContentLength {
+            discard active
+            discard headers
+            discard contentLength
+            return .Err(.InvalidResponse)
+        }
+        discard contentLength
+        const bodyReading = spawn readChunked(
+            $active,
+            maximumBody,
+            deadline
+        )
+        const bodyValue = $bodyReading.wait()
+        const body = bodyValue else error {
+            discard headers
+            return .Err(error)
+        }
+        return .Ok(Response { Status = status Headers = headers Body = body })
+    }
+
+    const length = requiredContentLength(contentLength) else error {
+        discard active
+        discard headers
+        return .Err(error)
+    }
+    if length > maximumBody {
+        discard active
+        discard headers
+        return .Err(.ResponseTooLarge)
+    }
+    if length == 0 {
+        discard active
+        return .Ok(Response { Status = status Headers = headers Body = "" })
+    }
+
+    const bodyReading = spawn net.ReadExactUntil(
+        $active,
+        length,
+        deadline
+    )
+    const bodyOutcome = $bodyReading.wait()
+    const net.ReadOutcome {
+        Reader as bodyReader
+        Value as bodyValue
+    } = bodyOutcome
+    discard bodyReader
+    const body = bodyValue else error {
+        discard headers
+        return .Err(.Network(error = error))
+    }
+    .Ok(Response { Status = status Headers = headers Body = body })
+}
+
+task readChunked(
+    $reader own net.TcpReader,
+    maximumBody u64,
+    deadline net.Deadline
+) Result<String, NetworkError> {
+    var active = reader
+    var total u64 = 0
+    var builder = text.NewBuilder()
+    var complete = false
+    while !complete {
+        const sizeReading = spawn net.ReadLineLimitedUntil(
+            $active,
+            8192,
+            deadline
+        )
+        const sizeOutcome = $sizeReading.wait()
+        const net.ReadLineOutcome {
+            Reader as sizeReader
+            Value as sizeValue
+        } = sizeOutcome
+        active = sizeReader
+        const sizeLine = requiredLine($sizeValue) else error {
+            discard active
+            discard builder
+            return .Err(error)
+        }
+        const size = parseChunkSize(sizeLine) else error {
+            discard error
+            discard active
+            discard builder
+            return .Err(.InvalidResponse)
+        }
+        discard sizeLine
+        if size == 0 {
+            complete = true
+        } else {
+            if size > maximumBody - total {
+                discard active
+                discard builder
+                return .Err(.ResponseTooLarge)
+            }
+            const chunkReading = spawn net.ReadExactUntil(
+                $active,
+                size,
+                deadline
+            )
+            const chunkOutcome = $chunkReading.wait()
+            const net.ReadOutcome {
+                Reader as chunkReader
+                Value as chunkValue
+            } = chunkOutcome
+            active = chunkReader
+            const chunk = chunkValue else error {
+                discard active
+                discard builder
+                return .Err(.Network(error = error))
+            }
+            const wrote = builder.Write(chunk) else error {
+                discard error
+                discard chunk
+                discard active
+                discard builder
+                return .Err(.InvalidResponse)
+            }
+            discard wrote
+            discard chunk
+            total = total + size
+
+            const endingReading = spawn net.ReadExactUntil(
+                $active,
+                2,
+                deadline
+            )
+            const endingOutcome = $endingReading.wait()
+            const net.ReadOutcome {
+                Reader as endingReader
+                Value as endingValue
+            } = endingOutcome
+            active = endingReader
+            const ending = endingValue else error {
+                discard active
+                discard builder
+                return .Err(.Network(error = error))
+            }
+            if ending != "\r\n" {
+                discard ending
+                discard active
+                discard builder
+                return .Err(.InvalidResponse)
+            }
+            discard ending
+        }
+    }
+
+    var trailersComplete = false
+    var trailerCount u64 = 0
+    while !trailersComplete {
+        const trailerReading = spawn net.ReadLineLimitedUntil(
+            $active,
+            8192,
+            deadline
+        )
+        const trailerOutcome = $trailerReading.wait()
+        const net.ReadLineOutcome {
+            Reader as trailerReader
+            Value as trailerValue
+        } = trailerOutcome
+        active = trailerReader
+        const trailer = requiredLine($trailerValue) else error {
+            discard active
+            discard builder
+            return .Err(error)
+        }
+        if text.IsEmpty(trailer) {
+            discard trailer
+            trailersComplete = true
+        } else {
+            if trailerCount >= 128 {
+                discard trailer
+                discard active
+                discard builder
+                return .Err(.InvalidResponse)
+            }
+            const parsed = parseHeader($trailer) else error {
+                discard error
+                discard active
+                discard builder
+                return .Err(.InvalidResponse)
+            }
+            discard parsed
+            trailerCount = trailerCount + 1
+        }
+    }
+    discard active
+    const body = builder.Finish() else error {
+        discard error
+        return .Err(.InvalidResponse)
+    }
+    .Ok(body)
+}
+
+fn networkTargetFor(value String) Result<networkTarget, RequestError> {
+    const parts = parseAbsoluteURL(value) else error {
+        return .Err(error)
+    }
+    const authority = authorityWithoutUser(parts.authority)
+    if text.IsEmpty(authority) {
+        discard parts
+        return .Err(.InvalidURL)
+    }
+    const hostPort = splitHostPort(authority, parts.scheme) else error {
+        discard error
+        discard parts
+        discard authority
+        return .Err(.InvalidURL)
+    }
+    const targetPath = requestPath(value, parts.pathStart) else error {
+        discard error
+        discard parts
+        discard authority
+        discard hostPort
+        return .Err(.InvalidURL)
+    }
+    const secure = equalFoldASCII(parts.scheme, "https")
+    const networkTarget {
+        host
+        authority as unusedAuthority
+        path as unusedPath
+        port
+        secure as unusedSecure
+    } = hostPort
+    discard unusedAuthority
+    discard unusedPath
+    discard unusedSecure
+    discard parts
+    .Ok(networkTarget {
+        host = host
+        authority = authority
+        path = targetPath
+        port = port
+        secure = secure
+    })
+}
+
+fn splitHostPort(
+    authority String,
+    scheme String
+) Result<networkTarget, RequestError> {
+    const defaultPort u64 = 443 if equalFoldASCII(scheme, "https") else 80
+    const length = text.ByteLen(authority)
+    if length == 0 return .Err(.InvalidURL)
+    if urlByteAt(authority, 0) == 91 {
+        const closing = firstByteOf(authority, 1, 93, 0)
+        if closing >= length return .Err(.InvalidURL)
+        const host = text.Slice(authority, 1, closing) else error {
+            discard error
+            return .Err(.InvalidURL)
+        }
+        if text.IsEmpty(host) return .Err(.InvalidURL)
+        if closing + 1 == length {
+            return .Ok(networkTarget {
+                host = host
+                authority = ""
+                path = ""
+                port = defaultPort
+                secure = false
+            })
+        }
+        if urlByteAt(authority, closing + 1) != 58 {
+            discard host
+            return .Err(.InvalidURL)
+        }
+        const portText = text.Slice(authority, closing + 2, length) else error {
+            discard error
+            discard host
+            return .Err(.InvalidURL)
+        }
+        const port = parsePort(portText) else error {
+            discard error
+            discard host
+            return .Err(.InvalidURL)
+        }
+        discard portText
+        return .Ok(networkTarget {
+            host = host
+            authority = ""
+            path = ""
+            port = port
+            secure = false
+        })
+    }
+
+    const colon = lastByte(authority, 0, length, 58)
+    if colon == length {
+        return .Ok(networkTarget {
+            host = text.Copy(authority)
+            authority = ""
+            path = ""
+            port = defaultPort
+            secure = false
+        })
+    }
+    if firstByteOf(authority, 0, 58, 0) != colon {
+        return .Err(.InvalidURL)
+    }
+    const host = text.Slice(authority, 0, colon) else error {
+        discard error
+        return .Err(.InvalidURL)
+    }
+    const portText = text.Slice(authority, colon + 1, length) else error {
+        discard error
+        discard host
+        return .Err(.InvalidURL)
+    }
+    if text.IsEmpty(host) {
+        discard portText
+        return .Err(.InvalidURL)
+    }
+    const port = parsePort(portText) else error {
+        discard error
+        discard host
+        return .Err(.InvalidURL)
+    }
+    discard portText
+    .Ok(networkTarget {
+        host = host
+        authority = ""
+        path = ""
+        port = port
+        secure = false
+    })
+}
+
+fn parsePort(value String) Result<u64, RequestError> {
+    if text.IsEmpty(value) return .Err(.InvalidURL)
+    const port = parse.U64(value) else error {
+        discard error
+        return .Err(.InvalidURL)
+    }
+    if port == 0 || port > 65535 return .Err(.InvalidURL)
+    .Ok(port)
+}
+
+fn requestPath(value String, start u64) Result<String, RequestError> {
+    const end = firstByteOf(value, start, 35, 0)
+    if start >= end return .Ok("/")
+    const path = text.Slice(value, start, end) else error {
+        discard error
+        return .Err(.InvalidURL)
+    }
+    if text.StartsWith(path, "?") return .Ok("/" + path)
+    .Ok(path)
+}
+
+fn encodeRequest(
+    &request Request,
+    &target networkTarget
+) Result<String, RequestError> {
+    var builder = text.NewBuilder()
+    writeBuilder(&builder, request.Method)
+    writeBuilder(&builder, " ")
+    writeBuilder(&builder, target.path)
+    writeBuilder(&builder, " HTTP/1.1\r\n")
+
+    const hasHost = request.Header("Host")
+    match hasHost {
+        None: {
+            writeBuilder(&builder, "Host: ")
+            writeBuilder(&builder, target.authority)
+            writeBuilder(&builder, "\r\n")
+        }
+        Some(value): {
+            discard value
+        }
+    }
+    const hasConnection = request.Header("Connection")
+    match hasConnection {
+        None: writeBuilder(&builder, "Connection: close\r\n")
+        Some(value): {
+            discard value
+        }
+    }
+    const hasLength = request.Header("Content-Length")
+    match hasLength {
+        None: {
+            writeBuilder(&builder, "Content-Length: ")
+            writeBuilder(&builder, format.U64(text.ByteLen(request.Body)))
+            writeBuilder(&builder, "\r\n")
+        }
+        Some(value): {
+            discard value
+        }
+    }
+    if hasHeader(&request, "Transfer-Encoding") {
+        discard builder
+        return .Err(.InvalidHeader)
+    }
+
+    var restored = newHeaderList()
+    while !request.Headers.IsEmpty() {
+        const header = requiredHeader(request.Headers.PopFront())
+        writeBuilder(&builder, header.Name)
+        writeBuilder(&builder, ": ")
+        writeBuilder(&builder, header.Value)
+        writeBuilder(&builder, "\r\n")
+        restored.PushFront($header)
+    }
+    restoreHeaders(&request.Headers, $restored)
+    writeBuilder(&builder, "\r\n")
+    writeBuilder(&builder, request.Body)
+    const result = builder.Finish() else error {
+        discard error
+        return .Err(.InvalidURL)
+    }
+    .Ok(result)
+}
+
+fn writeBuilder(&builder text.Builder, value String) void {
+    const wrote = builder.Write(value) else error {
+        discard error
+        panic("httpx request builder invariant failed")
+    }
+    discard wrote
+}
+
+fn hasHeader(&request Request, name String) bool {
+    const value = request.Header(name)
+    match value {
+        None: false
+        Some(found): {
+            discard found
+            true
+        }
+    }
+}
+
+fn requiredLine(
+    $value Result<Option<String>, net.Error>
+) Result<String, NetworkError> {
+    match value {
+        Err(error): .Err(.Network(error = error))
+        Ok(optional): match optional {
+            None: .Err(.InvalidResponse)
+            Some(line): .Ok(line)
+        }
+    }
+}
+
+fn requiredContentLength(
+    value Option<u64>
+) Result<u64, NetworkError> {
+    match value {
+        None: .Err(.UnsupportedFraming)
+        Some(length): .Ok(length)
+    }
+}
+
+fn parseStatus(value String) Result<i32, NetworkError> {
+    if !text.StartsWith(value, "HTTP/1.0 ") &&
+        !text.StartsWith(value, "HTTP/1.1 ") {
+        return .Err(.InvalidResponse)
+    }
+    if text.ByteLen(value) < 12 return .Err(.InvalidResponse)
+    if text.ByteLen(value) > 12 && urlByteAt(value, 12) != 32 {
+        return .Err(.InvalidResponse)
+    }
+    const code = text.Slice(value, 9, 12) else error {
+        discard error
+        return .Err(.InvalidResponse)
+    }
+    const status = parse.I32(code) else error {
+        discard error
+        return .Err(.InvalidResponse)
+    }
+    if status < 100 || status > 599 return .Err(.InvalidResponse)
+    .Ok(status)
+}
+
+fn parseHeader($value String) Result<Header, NetworkError> {
+    const separator = text.Find(value, ":")
+    const offset = match separator {
+        None: {
+            return .Err(.InvalidResponse)
+        }
+        Some(found): found
+    }
+    const name = text.Slice(value, 0, offset) else error {
+        discard error
+        return .Err(.InvalidResponse)
+    }
+    const raw = text.Slice(value, offset + 1, text.ByteLen(value))
+    else error {
+        discard error
+        discard name
+        return .Err(.InvalidResponse)
+    }
+    const headerValue = trimOptionalWhitespace(raw) else error {
+        discard error
+        discard name
+        discard raw
+        return .Err(.InvalidResponse)
+    }
+    discard raw
+    if !validHeaderName(name) || !validHeaderValue(headerValue) {
+        discard name
+        discard headerValue
+        return .Err(.InvalidResponse)
+    }
+    .Ok(Header { Name = name Value = headerValue })
+}
+
+fn trimOptionalWhitespace(value String) Result<String, RequestError> {
+    const length = text.ByteLen(value)
+    var start u64 = 0
+    while start < length && optionalWhitespace(urlByteAt(value, start)) {
+        start = start + 1
+    }
+    var end = length
+    while end > start && optionalWhitespace(urlByteAt(value, end - 1)) {
+        end = end - 1
+    }
+    const result = text.Slice(value, start, end) else error {
+        discard error
+        return .Err(.InvalidURL)
+    }
+    .Ok(result)
+}
+
+fn optionalWhitespace(value u64) bool {
+    value == 32 || value == 9
+}
+
+fn parseChunkSize(value String) Result<u64, NetworkError> {
+    const extension = text.Find(value, ";")
+    const end = match extension {
+        None: text.ByteLen(value)
+        Some(offset): offset
+    }
+    if end == 0 return .Err(.InvalidResponse)
+    var result u64 = 0
+    var offset u64 = 0
+    while offset < end {
+        const digit = hexValue(urlByteAt(value, offset)) else error {
+            discard error
+            return .Err(.InvalidResponse)
+        }
+        if result > (18446744073709551615 - digit) / 16 {
+            return .Err(.InvalidResponse)
+        }
+        result = result * 16 + digit
+        offset = offset + 1
+    }
+    .Ok(result)
+}
+
+fn hexValue(value u64) Result<u64, NetworkError> {
+    if value >= 48 && value <= 57 return .Ok(value - 48)
+    if value >= 65 && value <= 70 return .Ok(value - 65 + 10)
+    if value >= 97 && value <= 102 return .Ok(value - 97 + 10)
+    .Err(.InvalidResponse)
+}

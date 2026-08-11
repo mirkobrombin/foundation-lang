@@ -1,0 +1,623 @@
+package foundation.httpx
+
+import std.collections
+import std.text
+import foundation.web
+
+// Reports a virtual-host registration rejected before it enters the mux.
+enum RegistrationError {
+    // A host must contain a non-empty DNS name or numeric address.
+    EmptyHost
+
+    // A host contains whitespace, a path, or an invalid transport port.
+    InvalidHost
+}
+
+// Extends one virtual-host request lifecycle with typed mutable state.
+contract Hooks<E> {
+    // Runs before handle selection in registration order.
+    fn BeforeRequest(
+        &self,
+        &request web.Request
+    ) Result<void, E>
+
+    // May return a complete response and stop later handlers.
+    fn HandleRequest(
+        &self,
+        &request web.Request
+    ) Result<Option<web.Response>, E>
+
+    // Runs after a successful response in reverse registration order.
+    fn AfterRequest(
+        &self,
+        &response web.Response
+    ) Result<void, E>
+}
+
+// Owns one host application and its ordered lifecycle hooks.
+struct VirtualHost<E> {
+    // Contains the normalized host without a transport port.
+    Host String
+
+    // Dispatches requests that no hook handled directly.
+    Application own web.Application<E>
+
+    hooks own collections.List<own Hooks<E>>
+
+    // Appends one stateful hook in lifecycle registration order.
+    fn Use(&self, $hook own Hooks<E>) void {
+        const current = replace self.hooks with newHookList<E>()
+        self.hooks = appendHook<E>($current, $hook)
+    }
+}
+
+// Routes HTTP requests by normalized Host header without runtime reflection.
+struct VHostMux<E> implements web.Application<E> {
+    hosts own collections.List<own VirtualHost<E>>
+    fallback Option<own web.Application<E>>
+
+    // Adds or replaces one virtual host and returns the previous owner.
+    fn AddVirtualHost(
+        &self,
+        $host own VirtualHost<E>
+    ) Result<Option<own VirtualHost<E>>, RegistrationError> {
+        const VirtualHost { Host Application hooks } = host
+        const normalized = normalizeHost(Host) else error {
+            discard Application
+            discard hooks
+            return .Err(error)
+        }
+        const replacement = own VirtualHost<E> {
+            Host = normalized
+            Application = Application
+            hooks = hooks
+        }
+        .Ok(addHost<E>(&self, $replacement))
+    }
+
+    // Removes one virtual host and returns its complete owned application.
+    fn RemoveVirtualHost(
+        &self,
+        host String
+    ) Result<Option<own VirtualHost<E>>, RegistrationError> {
+        const normalized = normalizeHost(host) else error {
+            return .Err(error)
+        }
+        .Ok(removeHost<E>(&self, normalized))
+    }
+
+    // Returns normalized host names in deterministic lexical order.
+    fn Hosts(&self) own collections.List<String> {
+        var source = replace self.hosts with newHostList<E>()
+        var restored = newHostList<E>()
+        var names = collections.NewList<String>()
+        while !source.IsEmpty() {
+            const host = hostValue<E>(source.PopFront())
+            names.PushFront(text.Copy(host.Host))
+            restored.PushFront($host)
+        }
+        self.hosts = reverseHosts<E>($restored)
+        const compare fn(String, String) i32 = compareNames
+        collections.Sort($names, compare)
+    }
+
+    // Replaces the unmatched-host application and returns the old owner.
+    fn SetFallback(
+        &self,
+        $application own web.Application<E>
+    ) Option<own web.Application<E>> {
+        const previous = replace self.fallback with .None
+        self.fallback = .Some(application)
+        previous
+    }
+
+    // Removes and returns the unmatched-host application when present.
+    fn ClearFallback(&self) Option<own web.Application<E>> {
+        replace self.fallback with .None
+    }
+
+    // Dispatches through the selected host, hooks, and fallback application.
+    fn Dispatch(
+        &self,
+        $request web.Request
+    ) Result<web.Response, web.DispatchError<E>> {
+        var activeRequest = request
+        const supplied = activeRequest.Header("Host")
+        const selected Option<String> = match supplied {
+            None: .None
+            Some(value): match normalizeRequestHost(value) {
+                Ok(host): .Some(host)
+                Err(error): {
+                    discard error
+                    .None
+                }
+            }
+        }
+        match selected {
+            None: dispatchFallback<E>(&self, $activeRequest)
+            Some(host): dispatchHost<E>(&self, host, $activeRequest)
+        }
+    }
+}
+
+// Creates one virtual host with no lifecycle hooks.
+fn NewVirtualHost<E>(
+    $host String,
+    $application own web.Application<E>
+) Result<own VirtualHost<E>, RegistrationError> {
+    const normalized = normalizeHost(host) else error {
+        discard application
+        return .Err(error)
+    }
+    .Ok(own VirtualHost<E> {
+        Host = normalized
+        Application = application
+        hooks = newHookList<E>()
+    })
+}
+
+// Creates an empty virtual-host mux without a fallback application.
+fn NewVHostMux<E>() own VHostMux<E> {
+    own VHostMux<E> {
+        hosts = newHostList<E>()
+        fallback = .None
+    }
+}
+
+fn addHost<E>(
+    &mux VHostMux<E>,
+    $replacement own VirtualHost<E>
+) Option<own VirtualHost<E>> {
+    var source = replace mux.hosts with newHostList<E>()
+    var restored = newHostList<E>()
+    var pending = replacement
+    while !source.IsEmpty() {
+        const current = hostValue<E>(source.PopFront())
+        if current.Host == pending.Host {
+            restored.PushFront($pending)
+            moveHosts<E>(&restored, $source)
+            mux.hosts = reverseHosts<E>($restored)
+            return .Some(current)
+        }
+        restored.PushFront($current)
+    }
+    restored.PushFront($pending)
+    mux.hosts = reverseHosts<E>($restored)
+    .None
+}
+
+fn removeHost<E>(
+    &mux VHostMux<E>,
+    host String
+) Option<own VirtualHost<E>> {
+    var source = replace mux.hosts with newHostList<E>()
+    var restored = newHostList<E>()
+    while !source.IsEmpty() {
+        const current = hostValue<E>(source.PopFront())
+        if current.Host == host {
+            moveHosts<E>(&restored, $source)
+            mux.hosts = reverseHosts<E>($restored)
+            return .Some(current)
+        }
+        restored.PushFront($current)
+    }
+    mux.hosts = reverseHosts<E>($restored)
+    .None
+}
+
+fn dispatchHost<E>(
+    &mux VHostMux<E>,
+    host String,
+    $request web.Request
+) Result<web.Response, web.DispatchError<E>> {
+    var source = replace mux.hosts with newHostList<E>()
+    var restored = newHostList<E>()
+    while !source.IsEmpty() {
+        const current = hostValue<E>(source.PopFront())
+        if current.Host == host {
+            var selected = current
+            const result = dispatchVirtualHost<E>(&selected, $request)
+            restored.PushFront($selected)
+            moveHosts<E>(&restored, $source)
+            mux.hosts = reverseHosts<E>($restored)
+            return result
+        }
+        restored.PushFront($current)
+    }
+    mux.hosts = reverseHosts<E>($restored)
+    dispatchFallback<E>(&mux, $request)
+}
+
+fn dispatchFallback<E>(
+    &mux VHostMux<E>,
+    $request web.Request
+) Result<web.Response, web.DispatchError<E>> {
+    const selected = replace mux.fallback with .None
+    match selected {
+        None: .Err(.NotFound)
+        Some(application): {
+            var active = application
+            const result = active.Dispatch($request)
+            mux.fallback = .Some(active)
+            result
+        }
+    }
+}
+
+fn dispatchVirtualHost<E>(
+    &host VirtualHost<E>,
+    $request web.Request
+) Result<web.Response, web.DispatchError<E>> {
+    var activeRequest = request
+    runBefore<E>(&host, &activeRequest) else error {
+        return .Err(.Handler(error = error))
+    }
+    const handled = runHandlers<E>(&host, &activeRequest) else error {
+        return .Err(.Handler(error = error))
+    }
+    var response = match handled {
+        Some(value): value
+        None: {
+            const dispatched = dispatchApplication<E>(
+                &host,
+                $activeRequest
+            ) else error {
+                return .Err(error)
+            }
+            dispatched
+        }
+    }
+    runAfter<E>(&host, &response) else error {
+        discard response
+        return .Err(.Handler(error = error))
+    }
+    .Ok(response)
+}
+
+fn dispatchApplication<E>(
+    &host VirtualHost<E>,
+    $request web.Request
+) Result<web.Response, web.DispatchError<E>> {
+    const dispatched = host.Application.Dispatch($request)
+    match dispatched {
+        Ok(response): .Ok(response)
+        Err(error): match error {
+            NotFound: .Err(.NotFound)
+            MethodNotAllowed: .Err(.MethodNotAllowed)
+            Handler(value): match host.Application.ErrorResponse($value) {
+                Ok(response): .Ok(response)
+                Err(preserved): .Err(.Handler(error = preserved))
+            }
+        }
+    }
+}
+
+fn runBefore<E>(
+    &host VirtualHost<E>,
+    &request web.Request
+) Result<void, E> {
+    var source = replace host.hooks with newHookList<E>()
+    var restored = newHookList<E>()
+    var failure Option<E> = .None
+    var failed = false
+    while !source.IsEmpty() {
+        var hook = hookValue<E>(source.PopFront())
+        if !failed {
+            const result = hook.BeforeRequest(&request)
+            match result {
+                Ok: hookCompleted()
+                Err(error): {
+                    failure = .Some(error)
+                    failed = true
+                }
+            }
+        }
+        restored.PushFront($hook)
+    }
+    host.hooks = reverseHooks<E>($restored)
+    resultForFailure<E>($failure)
+}
+
+fn runHandlers<E>(
+    &host VirtualHost<E>,
+    &request web.Request
+) Result<Option<web.Response>, E> {
+    var source = replace host.hooks with newHookList<E>()
+    var restored = newHookList<E>()
+    var response Option<web.Response> = .None
+    var failure Option<E> = .None
+    var failed = false
+    var responded = false
+    while !source.IsEmpty() {
+        var hook = hookValue<E>(source.PopFront())
+        if !failed && !responded {
+            const result = hook.HandleRequest(&request)
+            match result {
+                Ok(selected): {
+                    match selected {
+                        None: hookCompleted()
+                        Some(value): {
+                            response = .Some(value)
+                            responded = true
+                        }
+                    }
+                }
+                Err(error): {
+                    failure = .Some(error)
+                    failed = true
+                }
+            }
+        }
+        restored.PushFront($hook)
+    }
+    host.hooks = reverseHooks<E>($restored)
+    match failure {
+        None: .Ok(response)
+        Some(error): {
+            discard response
+            .Err(error)
+        }
+    }
+}
+
+fn runAfter<E>(
+    &host VirtualHost<E>,
+    &response web.Response
+) Result<void, E> {
+    const current = replace host.hooks with newHookList<E>()
+    var source = reverseHooks<E>($current)
+    var restored = newHookList<E>()
+    var failure Option<E> = .None
+    var failed = false
+    while !source.IsEmpty() {
+        var hook = hookValue<E>(source.PopFront())
+        const result = hook.AfterRequest(&response)
+        match result {
+            Ok: hookCompleted()
+            Err(error): {
+                if !failed {
+                    failure = .Some(error)
+                    failed = true
+                } else {
+                    discard error
+                }
+            }
+        }
+        restored.PushFront($hook)
+    }
+    host.hooks = restored
+    resultForFailure<E>($failure)
+}
+
+fn resultForFailure<E>($failure Option<E>) Result<void, E> {
+    match failure {
+        None: .Ok
+        Some(error): .Err(error)
+    }
+}
+
+fn hookCompleted() void {
+    return
+}
+
+fn normalizeRequestHost(value String) Result<String, RegistrationError> {
+    normalizeHost(value)
+}
+
+fn normalizeHost(value String) Result<String, RegistrationError> {
+    const bounds = hostBounds(value) else error {
+        return .Err(error)
+    }
+    const hostBounds { start end } = bounds
+    if start >= end return .Err(.EmptyHost)
+
+    var colonCount u64 = 0
+    var colonOffset u64 = 0
+    var cursor = start
+    while cursor < end {
+        const current = byteAt(value, cursor)
+        if invalidHostByte(current) return .Err(.InvalidHost)
+        if current == 58 {
+            colonCount = colonCount + 1
+            colonOffset = cursor
+        }
+        cursor = cursor + 1
+    }
+
+    var hostEnd = end
+    if byteAt(value, start) == 91 {
+        if end <= start + 2 return .Err(.InvalidHost)
+        const closing = findClosingBracket(value, start + 1, end)
+        const bracket = closing else error {
+            return .Err(error)
+        }
+        if bracket + 1 < end {
+            if byteAt(value, bracket + 1) != 58 return .Err(.InvalidHost)
+            validatePort(value, bracket + 2, end) else error {
+                return .Err(error)
+            }
+        }
+        return lowerHost(value, start + 1, bracket)
+    }
+
+    if colonCount == 1 {
+        validatePort(value, colonOffset + 1, end) else error {
+            return .Err(error)
+        }
+        hostEnd = colonOffset
+    }
+    if hostEnd <= start return .Err(.EmptyHost)
+    lowerHost(value, start, hostEnd)
+}
+
+struct hostBounds {
+    start u64
+    end u64
+}
+
+fn hostBounds(value String) Result<hostBounds, RegistrationError> {
+    var start u64 = 0
+    var end = text.ByteLen(value)
+    while start < end && asciiWhitespace(byteAt(value, start)) {
+        start = start + 1
+    }
+    while end > start && asciiWhitespace(byteAt(value, end - 1)) {
+        end = end - 1
+    }
+    .Ok(hostBounds { start = start end = end })
+}
+
+fn findClosingBracket(
+    value String,
+    start u64,
+    end u64
+) Result<u64, RegistrationError> {
+    var cursor = start
+    while cursor < end {
+        if byteAt(value, cursor) == 93 return .Ok(cursor)
+        cursor = cursor + 1
+    }
+    .Err(.InvalidHost)
+}
+
+fn validatePort(
+    value String,
+    start u64,
+    end u64
+) Result<void, RegistrationError> {
+    if start >= end return .Err(.InvalidHost)
+    var cursor = start
+    var port u64 = 0
+    while cursor < end {
+        const current = byteAt(value, cursor)
+        if current < 48 || current > 57 return .Err(.InvalidHost)
+        port = port * 10 + current - 48
+        if port > 65535 return .Err(.InvalidHost)
+        cursor = cursor + 1
+    }
+    if port == 0 return .Err(.InvalidHost)
+    .Ok
+}
+
+fn lowerHost(
+    value String,
+    start u64,
+    end u64
+) Result<String, RegistrationError> {
+    var builder = text.NewBuilder()
+    var cursor = start
+    while cursor < end {
+        const current = lowerAscii(byteAt(value, cursor))
+        const written = builder.WriteCodePoint(current) else error {
+            discard error
+            discard builder
+            return .Err(.InvalidHost)
+        }
+        discard written
+        cursor = cursor + 1
+    }
+    const result = builder.Finish() else error {
+        discard error
+        return .Err(.InvalidHost)
+    }
+    .Ok(result)
+}
+
+fn invalidHostByte(value u64) bool {
+    asciiWhitespace(value) || value == 47 || value == 92 || value == 35 ||
+        value == 63 || value < 33 || value == 127
+}
+
+fn asciiWhitespace(value u64) bool {
+    value == 32 || value == 9 || value == 10 || value == 13
+}
+
+fn lowerAscii(value u64) u64 {
+    if value >= 65 && value <= 90 return value + 32
+    value
+}
+
+fn byteAt(value String, index u64) u64 {
+    const result = text.ByteAt(value, index) else error {
+        discard error
+        panic("virtual host byte invariant failed")
+    }
+    result
+}
+
+fn appendHook<E>(
+    $hooks own collections.List<own Hooks<E>>,
+    $hook own Hooks<E>
+) own collections.List<own Hooks<E>> {
+    var reversed = reverseHooks<E>($hooks)
+    reversed.PushFront($hook)
+    reverseHooks<E>($reversed)
+}
+
+fn reverseHooks<E>(
+    $hooks own collections.List<own Hooks<E>>
+) own collections.List<own Hooks<E>> {
+    var source = hooks
+    var result = newHookList<E>()
+    while !source.IsEmpty() {
+        result.PushFront(hookValue<E>(source.PopFront()))
+    }
+    result
+}
+
+fn reverseHosts<E>(
+    $hosts own collections.List<own VirtualHost<E>>
+) own collections.List<own VirtualHost<E>> {
+    var source = hosts
+    var result = newHostList<E>()
+    while !source.IsEmpty() {
+        result.PushFront(hostValue<E>(source.PopFront()))
+    }
+    result
+}
+
+fn moveHosts<E>(
+    &target collections.List<own VirtualHost<E>>,
+    $source own collections.List<own VirtualHost<E>>
+) void {
+    var pending = source
+    while !pending.IsEmpty() {
+        target.PushFront(hostValue<E>(pending.PopFront()))
+    }
+}
+
+fn newHookList<E>() own collections.List<own Hooks<E>> {
+    collections.NewList<own Hooks<E>>()
+}
+
+fn newHostList<E>() own collections.List<own VirtualHost<E>> {
+    collections.NewList<own VirtualHost<E>>()
+}
+
+fn hookValue<E>($value Option<own Hooks<E>>) own Hooks<E> {
+    match value {
+        None: missingHook<E>()
+        Some(hook): hook
+    }
+}
+
+fn missingHook<E>() own Hooks<E> {
+    panic("virtual host hook invariant failed")
+}
+
+fn hostValue<E>(
+    $value Option<own VirtualHost<E>>
+) own VirtualHost<E> {
+    match value {
+        None: missingHost<E>()
+        Some(host): host
+    }
+}
+
+fn missingHost<E>() own VirtualHost<E> {
+    panic("virtual host list invariant failed")
+}
+
+fn compareNames(left String, right String) i32 {
+    text.Compare(left, right)
+}

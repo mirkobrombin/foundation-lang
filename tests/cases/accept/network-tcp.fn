@@ -1,6 +1,7 @@
 package test.network_tcp
 
 import std.net
+import std.time
 
 extern c fn startServer(&port u64) u64 as foundation_test_net_server_start
 extern c fn joinServer(server u64) i32 as foundation_test_net_server_join
@@ -20,6 +21,7 @@ fn errorName(error net.Error) String {
         InvalidUtf8: "TCP connection returned invalid UTF-8"
         LineTooLong: "TCP connection returned a long line"
         AddressInUse: "TCP address is already in use"
+        Timeout: "TCP operation timed out"
         Io: "TCP connection I/O failed"
     }
 }
@@ -85,6 +87,7 @@ fn isInvalidUtf8($value Result<Option<String>, net.Error>) bool {
             InvalidUtf8: true
             LineTooLong: false
             AddressInUse: false
+            Timeout: false
             Io: false
         }
     }
@@ -102,6 +105,7 @@ fn isLineTooLong($value Result<Option<String>, net.Error>) bool {
             InvalidUtf8: false
             LineTooLong: true
             AddressInUse: false
+            Timeout: false
             Io: false
         }
     }
@@ -119,6 +123,7 @@ fn isRefused($value Result<own net.TcpConnection, net.Error>) bool {
             InvalidUtf8: false
             LineTooLong: false
             AddressInUse: false
+            Timeout: false
             Io: false
         }
     }
@@ -136,6 +141,28 @@ fn isInvalidAddress($value Result<own net.TcpConnection, net.Error>) bool {
             InvalidUtf8: false
             LineTooLong: false
             AddressInUse: false
+            Timeout: false
+            Io: false
+        }
+    }
+}
+
+fn isTimeout($value Result<Option<String>, net.Error>) bool {
+    match value {
+        Ok(optional): {
+            discard optional
+            false
+        }
+        Err(error): match error {
+            InvalidAddress: false
+            ResolveFailed: false
+            Refused: false
+            Closed: false
+            Cancelled: false
+            InvalidUtf8: false
+            LineTooLong: false
+            AddressInUse: false
+            Timeout: true
             Io: false
         }
     }
@@ -186,9 +213,62 @@ fn listenerRoundTrip() bool {
     success
 }
 
+fn deadlineRoundTrip() bool {
+    const listener = listenerOr(net.Listen("127.0.0.1", 0))
+    const port = listener.Port
+    const accepting = spawn net.Accept($listener)
+    const connecting = spawn net.Connect("127.0.0.1", port)
+    const client = connectionOr($connecting.wait())
+    const acceptedOutcome = $accepting.wait()
+    const net.AcceptOutcome {
+        Listener as listenerAfter
+        Value as accepted
+    } = acceptedOutcome
+    const server = connectionOr($accepted)
+    const clientPair = pairOr(client.Split())
+    const serverPair = pairOr(server.Split())
+    const net.StreamPair {
+        Reader as clientReader
+        Writer as clientWriter
+    } = clientPair
+    const net.StreamPair {
+        Reader as serverReader
+        Writer as serverWriter
+    } = serverPair
+    const deadline = net.DeadlineAfter(time.Milliseconds(10)) else error {
+        discard error
+        discard listenerAfter
+        discard clientReader
+        discard clientWriter
+        discard serverReader
+        discard serverWriter
+        return false
+    }
+    const reading = spawn net.ReadLineLimitedUntil(
+        $clientReader,
+        64,
+        deadline
+    )
+    const outcome = $reading.wait()
+    const net.ReadLineOutcome {
+        Reader as readerAfter
+        Value
+    } = outcome
+    const timedOut = isTimeout($Value)
+    discard listenerAfter
+    discard readerAfter
+    discard clientWriter
+    discard serverReader
+    discard serverWriter
+    timedOut
+}
+
 fn main() i32 {
     if !listenerRoundTrip() {
         return 9
+    }
+    if !deadlineRoundTrip() {
+        return 10
     }
     var port u64 = 0
     const server = startServer(&port)

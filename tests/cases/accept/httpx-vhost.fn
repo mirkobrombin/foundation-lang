@@ -1,0 +1,252 @@
+import std.collections
+import std.text
+import foundation.httpx
+import foundation.web
+
+// Marks lifecycle failures that must stay typed through the mux.
+enum Failure {
+    // Represents a rejected virtual-host lifecycle operation.
+    Rejected
+}
+
+struct site implements web.Application<Failure> {
+    label String
+
+    fn Dispatch(
+        &self,
+        $request web.Request
+    ) Result<web.Response, web.DispatchError<Failure>> {
+        discard request
+        print(self.label + ":app")
+        .Ok(web.Text(200, text.Copy(self.label)))
+    }
+}
+
+struct mappedFailure implements web.Application<Failure> {
+    fn Dispatch(
+        &self,
+        $request web.Request
+    ) Result<web.Response, web.DispatchError<Failure>> {
+        discard request
+        .Err(.Handler(error = .Rejected))
+    }
+
+    fn ErrorResponse(
+        self,
+        $error Failure
+    ) Result<web.Response, Failure> {
+        discard error
+        .Ok(web.Text(503, "mapped"))
+    }
+}
+
+struct recordingHook implements httpx.Hooks<Failure> {
+    name String
+    handle bool
+
+    fn BeforeRequest(
+        &self,
+        &request web.Request
+    ) Result<void, Failure> {
+        request.Path = text.Copy(request.Path)
+        print(self.name + ":before")
+        .Ok
+    }
+
+    fn HandleRequest(
+        &self,
+        &request web.Request
+    ) Result<Option<web.Response>, Failure> {
+        request.Target = text.Copy(request.Target)
+        print(self.name + ":handle")
+        if self.handle {
+            return .Ok(.Some(web.Text(202, "handled")))
+        }
+        .Ok(.None)
+    }
+
+    fn AfterRequest(
+        &self,
+        &response web.Response
+    ) Result<void, Failure> {
+        response.SetHeader("X-Hook-" + self.name, "complete")
+        print(self.name + ":after")
+        .Ok
+    }
+}
+
+fn request($host String) web.Request {
+    var headers = collections.NewList<web.HeaderValue>()
+    headers.PushFront(web.HeaderValue { Name = "Host" Value = host })
+    web.Request {
+        Method = .GET
+        Target = "/"
+        Path = "/"
+        Version = "HTTP/1.1"
+        Headers = headers
+        Params = collections.NewList<web.Parameter>()
+    }
+}
+
+fn virtualHost(
+    $name String,
+    $application own web.Application<Failure>
+) own httpx.VirtualHost<Failure> {
+    const result = httpx.NewVirtualHost<Failure>(
+        $name,
+        $application
+    ) else error {
+        discard error
+        panic("virtual host construction failed")
+    }
+    result
+}
+
+fn add(
+    &mux httpx.VHostMux<Failure>,
+    $host own httpx.VirtualHost<Failure>
+) bool {
+    const result = mux.AddVirtualHost($host)
+    match result {
+        Ok(previous): match previous {
+            None: true
+            Some(value): {
+                discard value
+                panic("unexpected virtual host replacement")
+            }
+        }
+        Err(error): {
+            discard error
+            panic("virtual host registration failed")
+        }
+    }
+}
+
+fn response(
+    $value Result<web.Response, web.DispatchError<Failure>>
+) web.Response {
+    match value {
+        Ok(result): result
+        Err(error): {
+            discard error
+            panic("virtual host dispatch failed")
+        }
+    }
+}
+
+fn hostValue(
+    $value Option<own httpx.VirtualHost<Failure>>
+) own httpx.VirtualHost<Failure> {
+    match value {
+        None: panic("missing virtual host")
+        Some(host): host
+    }
+}
+
+fn replacedHost(
+    $value Result<
+    Option<own httpx.VirtualHost<Failure>>,
+    httpx.RegistrationError
+    >
+) own httpx.VirtualHost<Failure> {
+    match value {
+        Ok(previous): hostValue($previous)
+        Err(error): {
+            discard error
+            panic("virtual host replacement failed")
+        }
+    }
+}
+
+fn main() i32 {
+    var mux = httpx.NewVHostMux<Failure>()
+
+    var handled = virtualHost(
+        "Example.COM:443",
+        own site { label = "unexpected" }
+    )
+    handled.Use(own recordingHook { name = "first" handle = true })
+    handled.Use(own recordingHook { name = "second" handle = false })
+    if !add(&mux, $handled) return 10
+
+    var passed = virtualHost(
+        "api.example",
+        own site { label = "primary" }
+    )
+    passed.Use(own recordingHook { name = "pass" handle = false })
+    if !add(&mux, $passed) return 11
+
+    var mapped = virtualHost(
+        "mapped.example",
+        own mappedFailure {}
+    )
+    mapped.Use(own recordingHook { name = "mapped" handle = false })
+    if !add(&mux, $mapped) return 12
+
+    const ipv6 = virtualHost(
+        "[::1]:8443",
+        own site { label = "ipv6" }
+    )
+    if !add(&mux, $ipv6) return 13
+
+    discard mux.SetFallback(own site { label = "fallback" })
+
+    const direct = response(mux.Dispatch(request("EXAMPLE.com:8443")))
+    print(direct.Body)
+
+    const ordinary = response(mux.Dispatch(request("api.example")))
+    print(ordinary.Body)
+
+    const previous = replacedHost(mux.AddVirtualHost(virtualHost(
+                "API.EXAMPLE:443",
+                own site { label = "replacement" }
+            )))
+    if previous.Host != "api.example" return 14
+    discard previous
+
+    const replacement = response(mux.Dispatch(request("api.example")))
+    print(replacement.Body)
+
+    const converted = response(mux.Dispatch(request("mapped.example")))
+    print(converted.Body)
+
+    const missing = response(mux.Dispatch(request("missing.example")))
+    print(missing.Body)
+
+    const numeric = response(mux.Dispatch(request("[::1]:9443")))
+    print(numeric.Body)
+
+    var names = mux.Hosts()
+    if names.Len() != 4 return 1
+    const firstName = match names.PopFront() {
+        None: {
+            return 2
+        }
+        Some(name): name
+    }
+    if firstName != "::1" return 3
+    discard names
+
+    const removed = mux.RemoveVirtualHost("API.EXAMPLE:80") else error {
+        discard error
+        return 4
+    }
+    const old = hostValue($removed)
+    discard old
+
+    const invalid = httpx.NewVirtualHost<Failure>(
+        "bad/path",
+        own site { label = "invalid" }
+    )
+    match invalid {
+        Ok(host): {
+            discard host
+            return 5
+        }
+        Err(error): {
+            discard error
+        }
+    }
+
+    0
+}

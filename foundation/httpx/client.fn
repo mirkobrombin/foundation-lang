@@ -1,0 +1,501 @@
+package foundation.httpx
+
+import std.collections
+import std.text
+import std.time
+import foundation.resiliency
+
+// Reports request construction failures before transport ownership changes.
+enum RequestError {
+    // Rejects an empty or syntactically invalid HTTP method.
+    EmptyMethod
+    // Rejects a non-HTTP absolute URL or malformed authority.
+    InvalidURL
+    // Rejects a header name or value that cannot be written safely.
+    InvalidHeader
+    // Rejects a zero-byte response limit.
+    InvalidResponseLimit
+    // Rejects redirect recursion beyond the client safety ceiling.
+    InvalidRedirectLimit
+    // Rejects a non-positive transport deadline.
+    InvalidTimeout
+}
+
+// Preserves the source of a client failure without flattening transport errors.
+enum ClientError<E> {
+    // Preserves request validation details before transport execution.
+    InvalidRequest(error RequestError)
+    // Preserves the transport error without converting it to text.
+    Transport(error E)
+    // Preserves invalid retry policy configuration.
+    RetryConfiguration(error resiliency.ConfigurationError)
+    // Reports cancellation while waiting between attempts.
+    Cancelled
+    // Reports rejection by the configured circuit breaker.
+    CircuitOpen
+    // Reports a malformed redirect target.
+    InvalidRedirect
+    // Reports exhaustion of the request redirect budget.
+    TooManyRedirects
+    // Reports a response body larger than the configured byte limit.
+    ResponseTooLarge
+}
+
+// Stores one HTTP header without changing the caller's spelling.
+struct Header {
+    // Stores the original header name spelling.
+    Name String
+    // Stores the header value after wire-safety validation.
+    Value String
+}
+
+// Describes one replayable HTTP request with bounded response policy.
+struct Request {
+    // Selects the case-sensitive HTTP method sent by the transport.
+    Method String
+    // Selects one absolute HTTP or HTTPS URL.
+    URL String
+    // Stores request headers in insertion order.
+    Headers own collections.List<Header>
+    // Stores the replayable request body.
+    Body String
+    // Bounds the accepted response body in bytes.
+    MaximumResponseSize u64
+    // Enables client-owned redirect processing.
+    FollowRedirects bool
+    // Bounds redirects for one complete request attempt.
+    MaximumRedirects u64
+    // Bounds one transport attempt with a monotonic deadline.
+    Timeout time.Duration
+    originalURL String
+    requestID String
+
+    // Returns the first value whose name matches without ASCII case.
+    fn Header(&self, name String) Option<String> {
+        headerValueFor(&self.Headers, name)
+    }
+
+    // Replaces every matching request header with one copied value.
+    fn SetHeader(&self, name String, value String) Result<void, RequestError> {
+        if !validHeaderName(name) || !validHeaderValue(value) {
+            return .Err(.InvalidHeader)
+        }
+        setHeader(&self.Headers, name, value)
+        .Ok
+    }
+
+    // Appends one copied request header after validating its wire form.
+    fn AddHeader(&self, name String, value String) Result<void, RequestError> {
+        if !validHeaderName(name) || !validHeaderValue(value) {
+            return .Err(.InvalidHeader)
+        }
+        addHeader(&self.Headers, name, value)
+        .Ok
+    }
+}
+
+// Contains one complete bounded HTTP response.
+struct Response {
+    // Stores the numeric HTTP status code.
+    Status i32
+    // Stores response headers in wire order.
+    Headers own collections.List<Header>
+    // Stores the complete bounded response body.
+    Body String
+
+    // Returns the first value whose name matches without ASCII case.
+    fn Header(&self, name String) Option<String> {
+        headerValueFor(&self.Headers, name)
+    }
+
+    // Replaces every matching response header with one copied value.
+    fn SetHeader(&self, name String, value String) Result<void, RequestError> {
+        if !validHeaderName(name) || !validHeaderValue(value) {
+            return .Err(.InvalidHeader)
+        }
+        setHeader(&self.Headers, name, value)
+        .Ok
+    }
+
+    // Appends one copied response header after validating its wire form.
+    fn AddHeader(&self, name String, value String) Result<void, RequestError> {
+        if !validHeaderName(name) || !validHeaderValue(value) {
+            return .Err(.InvalidHeader)
+        }
+        addHeader(&self.Headers, name, value)
+        .Ok
+    }
+}
+
+// Defines one asynchronous single-request HTTP transport.
+contract Transport<E> {
+    // Sends exactly one request without applying client redirect policy.
+    fn Send(
+        &self,
+        $request Request
+    ) Task<Result<Response, E>>
+}
+
+// Collects transport, middleware, retry, and breaker policy before execution.
+struct Builder<E> {
+    transport own Transport<E>
+    middleware own collections.List<own Middleware<E>>
+    retry Option<resiliency.RetryOptions<ClientError<E>>>
+    breaker Option<resiliency.CircuitBreaker<ClientError<E>>>
+
+    // Appends one reusable typed middleware function in registration order.
+    fn Use(
+        &self,
+        $middleware fn(
+            $Request,
+            fn($Request) Result<Response, E>
+        ) Result<Response, E>
+    ) void {
+        self.UseStateful(own functionMiddleware<E> { handler = middleware })
+    }
+
+    // Appends one stateful middleware in registration order.
+    fn UseStateful(&self, $middleware own Middleware<E>) void {
+        self.middleware.PushFront($middleware)
+    }
+
+    // Replaces the retry policy used for every complete request attempt.
+    fn WithRetry(
+        &self,
+        $options resiliency.RetryOptions<ClientError<E>>
+    ) void {
+        const previous = replace self.retry with .None
+        discard previous
+        self.retry = .Some(options)
+    }
+
+    // Replaces the circuit breaker wrapped around each complete Do call.
+    fn WithBreaker(
+        &self,
+        $breaker resiliency.CircuitBreaker<ClientError<E>>
+    ) void {
+        const previous = replace self.breaker with .None
+        discard previous
+        self.breaker = .Some(breaker)
+    }
+
+    // Consumes configuration so it cannot change after the first request.
+    fn Build($self) own Client<E> {
+        const Builder { transport middleware retry breaker } = self
+        own Client<E> {
+            transport = transport
+            middleware = reverseMiddleware<E>($middleware)
+            retry = retry
+            breaker = breaker
+        }
+    }
+}
+
+// Owns one serially reusable client and its stateful transport chain.
+struct Client<E> {
+    transport own Transport<E>
+    middleware own collections.List<own Middleware<E>>
+    retry Option<resiliency.RetryOptions<ClientError<E>>>
+    breaker Option<resiliency.CircuitBreaker<ClientError<E>>>
+
+    // Sends one request and returns the client owner with the typed result.
+    fn Do($self, $request Request) Task<own DoOutcome<E>> {
+        spawn executeClient<E>($self, $request)
+    }
+}
+
+// Returns one request result without losing the reusable client owner.
+struct DoOutcome<E> {
+    // Restores the reusable serial client owner after execution.
+    Client own Client<E>
+    // Preserves the response or typed client failure.
+    Value Result<Response, ClientError<E>>
+}
+
+struct attemptState<E> {
+    transport own Transport<E>
+    middleware own collections.List<own Middleware<E>>
+    request Request
+}
+
+struct missingTransport<E> implements Transport<E> {
+    fn Send(
+        &self,
+        $request Request
+    ) Task<Result<Response, E>> {
+        discard request
+        spawn missingTransportSend<E>()
+    }
+}
+
+struct executionState<E> {
+    attempt own attemptState<E>
+    retry Option<resiliency.RetryOptions<ClientError<E>>>
+    response Option<Response>
+}
+
+// Creates an empty client builder around one explicit transport owner.
+fn New<E>($transport own Transport<E>) own Builder<E> {
+    own Builder<E> {
+        transport = transport
+        middleware = newMiddlewareList<E>()
+        retry = .None
+        breaker = .None
+    }
+}
+
+// Creates a replayable request with a 16 MiB body cap and ten redirects.
+fn NewRequest(
+    $method String,
+    $url String,
+    $body String
+) Result<Request, RequestError> {
+    if text.IsEmpty(method) {
+        discard url
+        discard body
+        return .Err(.EmptyMethod)
+    }
+    if !validMethod(method) {
+        discard url
+        discard body
+        return .Err(.EmptyMethod)
+    }
+    if !validAbsoluteURL(url) {
+        discard body
+        return .Err(.InvalidURL)
+    }
+    .Ok(Request {
+        Method = method
+        URL = text.Copy(url)
+        Headers = newHeaderList()
+        Body = body
+        MaximumResponseSize = 16777216
+        FollowRedirects = true
+        MaximumRedirects = 10
+        Timeout = time.Seconds(15)
+        originalURL = url
+        requestID = UUID.NewV7().String()
+    })
+}
+
+task executeClient<E>(
+    $client own Client<E>,
+    $request Request
+) own DoOutcome<E> {
+    var activeRequest = request
+    validateRequest(&activeRequest) else error {
+        return own DoOutcome<E> {
+            Client = client
+            Value = .Err(.InvalidRequest(error = error))
+        }
+    }
+    const Client { transport middleware retry breaker } = client
+    var state = own executionState<E> {
+        attempt = own attemptState<E> {
+            transport = transport
+            middleware = middleware
+            request = activeRequest
+        }
+        retry = retry
+        response = .None
+    }
+    var activeBreaker = breaker
+    const result = match replace activeBreaker with .None {
+        None: executePolicy<E>(&state)
+        Some(value): {
+            var selected = value
+            const response = executeWithBreaker<E>(&state, &selected)
+            activeBreaker = .Some(selected)
+            response
+        }
+    }
+    const executionState {
+        attempt
+        retry as restoredRetry
+        response
+    } = state
+    discard response
+    const attemptState {
+        transport as restoredTransport
+        middleware as restoredMiddleware
+        request as originalRequest
+    } = attempt
+    discard originalRequest
+    own DoOutcome<E> {
+        Client = own Client<E> {
+            transport = restoredTransport
+            middleware = restoredMiddleware
+            retry = restoredRetry
+            breaker = activeBreaker
+        }
+        Value = result
+    }
+}
+
+fn executeWithBreaker<E>(
+    &state executionState<E>,
+    &breaker resiliency.CircuitBreaker<ClientError<E>>
+) Result<Response, ClientError<E>> {
+    const admitted = breaker.Execute(
+        fn() Result<void, ClientError<E>> capture(&state) {
+            const response = executePolicy<E>(&state) else error {
+                return .Err(error)
+            }
+            state.response = .Some(response)
+            .Ok
+        }
+    )
+    match admitted {
+        Ok: responseValue<E>(replace state.response with .None)
+        Err(error): match error {
+            Open: .Err(.CircuitOpen)
+            Operation(value): .Err(value)
+        }
+    }
+}
+
+fn executePolicy<E>(
+    &state executionState<E>
+) Result<Response, ClientError<E>> {
+    const policy = replace state.retry with .None
+    match policy {
+        None: executeDirect<E>(&state)
+        Some(options): executeRetry<E>(&state, $options)
+    }
+}
+
+fn executeDirect<E>(
+    &state executionState<E>
+) Result<Response, ClientError<E>> {
+    runAttempt<E>(&state.attempt)
+}
+
+fn executeRetry<E>(
+    &state executionState<E>,
+    $options resiliency.RetryOptions<ClientError<E>>
+) Result<Response, ClientError<E>> {
+    const current = replace state.attempt with missingAttempt<E>()
+    const pending = spawn resiliency.RetryStateful<
+    attemptState<E>,
+    Response,
+    ClientError<E>
+    >($current, $runAttempt<E>, $options)
+    const retried = $pending.wait()
+    const resiliency.StatefulRetryOutcome {
+        State
+        Options
+        Value
+    } = retried
+    state.attempt = State
+    state.retry = .Some(Options)
+    match Value {
+        Ok(response): .Ok(response)
+        Err(error): match error {
+            Operation(value): .Err(value)
+            InvalidConfiguration(value): {
+                .Err(.RetryConfiguration(error = value))
+            }
+            Cancelled: .Err(.Cancelled)
+        }
+    }
+}
+
+fn runAttempt<E>(
+    &state attemptState<E>
+) Result<Response, ClientError<E>> {
+    const request = copyRequest(&state.request)
+    runRedirect<E>(&state, $request, 0)
+}
+
+fn runRedirect<E>(
+    &state attemptState<E>,
+    $request Request,
+    redirects u64
+) Result<Response, ClientError<E>> {
+    var previous = request
+    const sent = copyRequest(&previous)
+    const completed = processNext<E>(&state, $sent) else error {
+        discard previous
+        return .Err(.Transport(error = error))
+    }
+    var response = completed
+    if text.ByteLen(response.Body) > previous.MaximumResponseSize {
+        discard previous
+        discard response
+        return .Err(.ResponseTooLarge)
+    }
+    const next = redirectedRequest<E>($previous, &response) else error {
+        discard response
+        return .Err(error)
+    }
+    match next {
+        None: .Ok(response)
+        Some(value): {
+            discard response
+            const nextRedirect = redirects + 1
+            if nextRedirect > value.MaximumRedirects {
+                discard value
+                return .Err(.TooManyRedirects)
+            }
+            runRedirect<E>(&state, $value, nextRedirect)
+        }
+    }
+}
+
+fn processNext<E>(
+    &state attemptState<E>,
+    $request Request
+) Result<Response, E> {
+    if state.middleware.IsEmpty() {
+        const pending = state.transport.Send($request)
+        const result = $pending.wait()
+        return result
+    }
+
+    const current = middlewareValue<E>(state.middleware.PopFront())
+    var active = current
+    const result = active.Handle(
+        $request,
+        fn($nextRequest Request) Result<Response, E> capture(&state) {
+            processNext<E>(&state, $nextRequest)
+        }
+    )
+    state.middleware.PushFront($active)
+    result
+}
+
+fn responseValue<E>(
+    $value Option<Response>
+) Result<Response, ClientError<E>> {
+    match value {
+        None: missingResponse<E>()
+        Some(response): .Ok(response)
+    }
+}
+
+fn missingAttempt<E>() own attemptState<E> {
+    own attemptState<E> {
+        transport = own missingTransport<E> {}
+        middleware = newMiddlewareList<E>()
+        request = Request {
+            Method = ""
+            URL = ""
+            Headers = newHeaderList()
+            Body = ""
+            MaximumResponseSize = 0
+            FollowRedirects = false
+            MaximumRedirects = 0
+            Timeout = time.Zero()
+            originalURL = ""
+            requestID = ""
+        }
+    }
+}
+
+fn missingResponse<E>() Result<Response, ClientError<E>> {
+    panic("httpx breaker response invariant failed")
+}
+
+task missingTransportSend<E>() Result<Response, E> {
+    panic("httpx placeholder transport reached")
+}

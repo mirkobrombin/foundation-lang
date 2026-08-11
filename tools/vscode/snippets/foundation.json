@@ -67,6 +67,32 @@
         ],
         "description": "Bind and accept one owned TCP connection"
     },
+    "TCP deadline client": {
+        "prefix": "tcpdeadline",
+        "body": [
+            "const ${1:deadline} = net.DeadlineAfter(${2:5}.seconds) else ${3:error} {",
+            "    ${4:return 1}",
+            "}",
+            "const ${5:connecting} = spawn net.ConnectUntil(${6:host}, ${7:port}, ${1:deadline})",
+            "const ${8:connection} = \\$${5:connecting}.wait() else ${9:error} {",
+            "    ${10:return 1}",
+            "}"
+        ],
+        "description": "Connect before one absolute monotonic deadline"
+    },
+    "HTTP client task": {
+        "prefix": "httpxclient",
+        "body": [
+            "var ${1:builder} = httpx.New<httpx.NetworkError>(httpx.Network())",
+            "const ${2:client} = ${1:builder}.Build()",
+            "const ${3:request} = httpx.NewRequest(${4:\"GET\"}, ${5:url}, ${6:\"\"}) else ${7:error} {",
+            "    ${8:return 1}",
+            "}",
+            "const ${9:pending} = ${2:client}.Do(\\$${3:request})",
+            "const ${10:outcome} = \\$${9:pending}.wait()"
+        ],
+        "description": "Send one owned bounded HTTP request"
+    },
     "HTTP handler": {
         "prefix": "webhandler",
         "body": [

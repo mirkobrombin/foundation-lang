@@ -115,6 +115,16 @@ enum RetryError<E> {
     Cancelled
 }
 
+// Returns the updated operation state with its typed retry result.
+struct StatefulRetryOutcome<S, T, E> {
+    // Preserves every state change made by admitted attempts.
+    State own S
+    // Preserves callbacks and policy values for another operation.
+    Options RetryOptions<E>
+    // Reports the typed result of the complete retry operation.
+    Value Result<T, RetryError<E>>
+}
+
 // Reports bounded bulkhead admission and cancellation failures.
 enum BulkheadError {
     // The complete waiting queue is already occupied.
@@ -343,6 +353,123 @@ task Retry<T, E>(
     const active = spawn retry<T, E>($operation, $options, 0)
     const result = $active.wait()
     result
+}
+
+// Retries a stateful operation and returns ownership of its updated state.
+task RetryStateful<S, T, E>(
+    $state own S,
+    $operation fn(&S) Result<T, E>,
+    $options RetryOptions<E>
+) own StatefulRetryOutcome<S, T, E> {
+    validateRetryOptions(options) else error {
+        return own StatefulRetryOutcome<S, T, E> {
+            State = state
+            Options = options
+            Value = .Err(.InvalidConfiguration(error = error))
+        }
+    }
+
+    const active = spawn retryStateful<S, T, E>(
+        $state,
+        $operation,
+        $options,
+        0
+    )
+    const result = $active.wait()
+    result
+}
+
+task retryStateful<S, T, E>(
+    $state own S,
+    $operation fn(&S) Result<T, E>,
+    $options RetryOptions<E>,
+    attempt i32
+) own StatefulRetryOutcome<S, T, E> {
+    var activeState = state
+    var activeOptions = options
+    const value = operation(&activeState) else error {
+        const nextAttempt = attempt + 1
+        const candidate = replace activeOptions.RetryIf with .None
+        const retryDecision { condition allowed } = retryAllowed<E>(
+            $candidate,
+            error
+        )
+        activeOptions.RetryIf = condition
+        if nextAttempt >= activeOptions.Attempts || !allowed {
+            return own StatefulRetryOutcome<S, T, E> {
+                State = activeState
+                Options = activeOptions
+                Value = .Err(.Operation(error = error))
+            }
+        }
+
+        var delayNanoseconds i64 = 0
+        const delayStatus = retryDelayNative(
+            activeOptions.InitialDelay.Nanoseconds(),
+            activeOptions.MaxDelay.Nanoseconds(),
+            activeOptions.Factor,
+            activeOptions.Jitter,
+            retryAttempt(nextAttempt),
+            &delayNanoseconds
+        )
+        if delayStatus != 0 {
+            discard error
+            return own StatefulRetryOutcome<S, T, E> {
+                State = activeState
+                Options = activeOptions
+                Value = .Err(.InvalidConfiguration(error = .InvalidFactor))
+            }
+        }
+        const delay = u64.From(delayNanoseconds) else conversionError {
+            discard conversionError
+            discard error
+            return own StatefulRetryOutcome<S, T, E> {
+                State = activeState
+                Options = activeOptions
+                Value = .Err(.InvalidConfiguration(
+                        error = .InvalidInitialDelay
+                    ))
+            }
+        }
+        discard error
+
+        const Channel { sender receiver } = channel<void>(0)
+        var endpoint = receiver
+        select {
+            endpoint.receive(): {
+                discard sender
+                discard endpoint
+            }
+            timeout delay: {
+                discard sender
+                discard endpoint
+            }
+            else channelError: {
+                discard channelError
+                discard sender
+                discard endpoint
+                return own StatefulRetryOutcome<S, T, E> {
+                    State = activeState
+                    Options = activeOptions
+                    Value = .Err(.Cancelled)
+                }
+            }
+        }
+
+        const next = spawn retryStateful<S, T, E>(
+            $activeState,
+            $operation,
+            $activeOptions,
+            nextAttempt
+        )
+        const result = $next.wait()
+        return result
+    }
+    own StatefulRetryOutcome<S, T, E> {
+        State = activeState
+        Options = activeOptions
+        Value = .Ok(value)
+    }
 }
 
 task retry<T, E>(

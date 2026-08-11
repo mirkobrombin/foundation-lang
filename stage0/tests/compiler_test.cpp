@@ -583,6 +583,61 @@ fn main() i32 {
            "distinct generic enum applications have distinct C types");
 }
 
+void copyGenericCallbackOptionsInternOnce() {
+    constexpr std::string_view source = R"(
+enum Failure<E> {
+    Value(E)
+}
+
+struct Options<E> {
+    RetryIf Option<fn(E) bool> = .None
+}
+
+enum Leaf {
+    Failed
+}
+
+fn main() i32 {
+    const options Options<Failure<Leaf>> = Options<Failure<Leaf>> { RetryIf = .None }
+    discard options
+    0
+}
+)";
+    const auto first = check(source);
+    const auto second = check(source);
+    expect(!first.diagnostics.hasErrors(),
+           "copy generic callback option has no diagnostics");
+    expect(first.fir.has_value() && second.fir.has_value(),
+           "copy generic callback option lowers to FIR");
+    if (!first.fir.has_value() || !second.fir.has_value()) {
+        return;
+    }
+
+    const auto generated = foundation::emitC(*first.fir);
+    expect(generated == foundation::emitC(*second.fir),
+           "copy generic callback option emits deterministic C");
+    const auto payload = generated.find("fdn_function_bool_enum_");
+    expect(payload != std::string::npos,
+           "copy generic callback option emits a callback payload");
+    if (payload == std::string::npos) {
+        return;
+    }
+    const auto payloadEnd = generated.find(' ', payload);
+    expect(payloadEnd != std::string::npos,
+           "copy generic callback payload has a complete C type");
+    if (payloadEnd == std::string::npos) {
+        return;
+    }
+    const auto payloadType = generated.substr(payload, payloadEnd - payload);
+    const auto field = payloadType + " fdn_payload_1;";
+    const auto firstField = generated.find(field);
+    expect(firstField != std::string::npos,
+           "copy generic callback option emits its payload field");
+    expect(firstField != std::string::npos &&
+               generated.find(field, firstField + field.size()) == std::string::npos,
+           "copy generic callback option reuses one enum specialization");
+}
+
 void genericLookaheadStaysTypeAware() {
     constexpr std::string_view source = R"(
 struct Box<T> { value T }
@@ -1549,6 +1604,14 @@ fn main() i32 { return 0 }
 )");
     expect(hasCode(recursiveStruct.diagnostics, "FDN2023"),
            "recursive value struct reports FDN2023");
+
+    const auto finiteRepeatedGeneric = check(R"(
+struct Box<T> { value T }
+struct Holder<T> { value Option<Box<Option<T>>> }
+fn main() i32 { return 0 }
+)");
+    expect(!finiteRepeatedGeneric.diagnostics.hasErrors(),
+           "finite repeated generic declarations are accepted");
 
     const auto unknownField = check(R"(
 struct Item { value i32 }
@@ -2622,6 +2685,7 @@ int main() {
     enumMatchesLowerToDeterministicC();
     guardedMatchesLowerToDeterministicC();
     genericValuesMonomorphizeDeterministically();
+    copyGenericCallbackOptionsInternOnce();
     genericLookaheadStaysTypeAware();
     ownershipLowersToDeterministicC();
     ownedPlacesLowerToDeterministicC();

@@ -181,6 +181,7 @@ const staticCompletions = [
     { label: "foundation.serializer", kind: "Module", detail: "Compiler-generated typed JSON codecs" },
     { label: "foundation.validation", kind: "Module", detail: "Compiler-generated typed validation" },
     { label: "foundation.web", kind: "Module", detail: "Typed HTTP routing and serving" },
+    { label: "foundation.httpx", kind: "Module", detail: "Owned HTTP clients, policies, and virtual hosts" },
     { label: "foundation.auth", kind: "Module", detail: "Typed token signing and key rotation" },
     { label: "foundation.auth.web", kind: "Module", detail: "Typed Bearer handler boundary" },
     { label: "foundation.resiliency", kind: "Module", detail: "Typed nonblocking resilience policies" },
@@ -433,6 +434,23 @@ const staticCompletions = [
     { label: "web.DispatchError", kind: "Enum", detail: "transport or typed handler dispatch failure" },
     { label: "web.MiddlewareRegistrationError", kind: "Enum", detail: "invalid manual middleware scope or duplicate order" },
     { label: "web.ServeOutcome", kind: "Struct", detail: "served request and reusable server" },
+    { label: "httpx.RequestError", kind: "Enum", detail: "request construction and policy failure" },
+    { label: "httpx.ClientError", kind: "Enum", detail: "typed client, transport, retry, redirect, or breaker failure" },
+    { label: "httpx.NetworkError", kind: "Enum", detail: "typed DNS, TCP, framing, size, or TLS transport failure" },
+    { label: "httpx.RegistrationError", kind: "Enum", detail: "virtual-host registration failure" },
+    { label: "httpx.Header", kind: "Struct", detail: "validated HTTP header preserving insertion spelling" },
+    { label: "httpx.Request", kind: "Struct", detail: "owned replayable bounded HTTP request" },
+    { label: "httpx.Response", kind: "Struct", detail: "owned bounded HTTP response" },
+    { label: "httpx.Transport", kind: "Interface", detail: "typed asynchronous single-request transport" },
+    { label: "httpx.Middleware", kind: "Interface", detail: "reusable typed HTTP client middleware" },
+    { label: "httpx.Hooks", kind: "Interface", detail: "typed virtual-host request lifecycle hooks" },
+    { label: "httpx.LogSink", kind: "Interface", detail: "redacted structured HTTP client log sink" },
+    { label: "httpx.LogEntry", kind: "Struct", detail: "redacted HTTP completion record" },
+    { label: "httpx.Builder", kind: "Struct", detail: "owned client policy builder" },
+    { label: "httpx.Client", kind: "Struct", detail: "owned serially reusable HTTP client" },
+    { label: "httpx.DoOutcome", kind: "Struct", detail: "HTTP result with restored client owner" },
+    { label: "httpx.VirtualHost", kind: "Struct", detail: "owned host application and lifecycle hooks" },
+    { label: "httpx.VHostMux", kind: "Struct", detail: "typed Host header application mux" },
     { label: "bytes.Bytes", kind: "Struct", detail: "owned binary data cleared before release" },
     { label: "bytes.Builder", kind: "Struct", detail: "bounded owned binary builder" },
     { label: "bytes.Error", kind: "Enum", detail: "binary data or encoding failure" },
@@ -560,7 +578,9 @@ const staticCompletions = [
     { label: "resiliency.CircuitBreaker", kind: "Struct", detail: "typed closed, open, and half-open circuit policy" },
     { label: "resiliency.NewCircuitBreaker", kind: "Function", detail: "fn NewCircuitBreaker<E>(threshold i32, openDuration time.Duration) Result<CircuitBreaker<E>, ConfigurationError>", insertText: "resiliency.NewCircuitBreaker<${1:Error}>(${2:threshold}, ${3:openDuration})" },
     { label: "resiliency.RetryOptions", kind: "Struct", detail: "typed attempts, exponential delay, jitter, and error filter" },
+    { label: "resiliency.StatefulRetryOutcome", kind: "Struct", detail: "updated operation state, policy, and typed retry result" },
     { label: "resiliency.Retry", kind: "Function", detail: "task Retry<T, E>($operation fn() Result<T, E>, $options RetryOptions<E>) Result<T, RetryError<E>>", insertText: "resiliency.Retry<${1:T}, ${2:E}>(\\$${3:operation}, \\$${4:options})" },
+    { label: "resiliency.RetryStateful", kind: "Function", detail: "task RetryStateful<S, T, E>($state own S, $operation fn(&S) Result<T, E>, $options RetryOptions<E>) own StatefulRetryOutcome<S, T, E>", insertText: "resiliency.RetryStateful<${1:S}, ${2:T}, ${3:E}>(\\$${4:state}, \\$${5:operation}, \\$${6:options})" },
     { label: "resiliency.Bulkhead", kind: "Struct", detail: "owned FIFO bounded concurrency policy" },
     { label: "resiliency.NewBulkhead", kind: "Function", detail: "fn NewBulkhead(maxConcurrent u64, maxQueue u64) Result<own Bulkhead, ConfigurationError>", insertText: "resiliency.NewBulkhead(${1:maxConcurrent}, ${2:maxQueue})" },
     { label: "rateWeb.RateLimit", kind: "Function", detail: "fn RateLimit<E>(rate i32, burst i32) Result<own web.Middleware<E>, resiliency.ConfigurationError>", insertText: "rateWeb.RateLimit<${1:Error}>(${2:rate}, ${3:burst})" },
@@ -686,6 +706,13 @@ const staticCompletions = [
         insertText: "NextLimited(${1:limit})"
     },
     {
+        label: "net.DeadlineAfter",
+        kind: "Function",
+        detail: "fn DeadlineAfter(duration time.Duration) Result<net.Deadline, net.Error>",
+        insertText: "net.DeadlineAfter(${1:duration})"
+    },
+    { label: "net.Deadline", kind: "Struct", detail: "absolute monotonic network deadline" },
+    {
         label: "net.Listen",
         kind: "Function",
         detail: "fn Listen(address String, port u64) Result<own net.TcpListener, net.Error>",
@@ -702,6 +729,12 @@ const staticCompletions = [
         kind: "Function",
         detail: "task Connect(host String, port u64) Result<own net.TcpConnection, net.Error>",
         insertText: "net.Connect(${1:host}, ${2:port})"
+    },
+    {
+        label: "net.ConnectUntil",
+        kind: "Function",
+        detail: "task ConnectUntil(host String, port u64, deadline net.Deadline) Result<own net.TcpConnection, net.Error>",
+        insertText: "net.ConnectUntil(${1:host}, ${2:port}, ${3:deadline})"
     },
     {
         label: "net.TcpConnection.Split",
@@ -722,16 +755,34 @@ const staticCompletions = [
         insertText: "net.ReadLineLimited(${1:reader}, ${2:limit})"
     },
     {
+        label: "net.ReadLineLimitedUntil",
+        kind: "Function",
+        detail: "task ReadLineLimitedUntil(reader own net.TcpReader, limit u64, deadline net.Deadline) net.ReadLineOutcome",
+        insertText: "net.ReadLineLimitedUntil(${1:reader}, ${2:limit}, ${3:deadline})"
+    },
+    {
         label: "net.ReadExact",
         kind: "Function",
         detail: "task ReadExact(reader own net.TcpReader, length u64) net.ReadOutcome",
         insertText: "net.ReadExact(${1:reader}, ${2:length})"
     },
     {
+        label: "net.ReadExactUntil",
+        kind: "Function",
+        detail: "task ReadExactUntil(reader own net.TcpReader, length u64, deadline net.Deadline) net.ReadOutcome",
+        insertText: "net.ReadExactUntil(${1:reader}, ${2:length}, ${3:deadline})"
+    },
+    {
         label: "net.WriteAll",
         kind: "Function",
         detail: "task WriteAll(writer own net.TcpWriter, text String) net.WriteOutcome",
         insertText: "net.WriteAll(${1:writer}, ${2:text})"
+    },
+    {
+        label: "net.WriteAllUntil",
+        kind: "Function",
+        detail: "task WriteAllUntil(writer own net.TcpWriter, text String, deadline net.Deadline) net.WriteOutcome",
+        insertText: "net.WriteAllUntil(${1:writer}, ${2:text}, ${3:deadline})"
     },
     {
         label: "bind.NewValues",
@@ -1004,6 +1055,43 @@ const staticCompletions = [
         insertText: "ServeOne()"
     },
     {
+        label: "httpx.New",
+        kind: "Function",
+        detail: "fn New<E>($transport own httpx.Transport<E>) own httpx.Builder<E>",
+        insertText: "httpx.New<${1:Error}>(\$${2:transport})"
+    },
+    {
+        label: "httpx.NewRequest",
+        kind: "Function",
+        detail: "fn NewRequest(method String, url String, body String) Result<httpx.Request, httpx.RequestError>",
+        insertText: "httpx.NewRequest(${1:method}, ${2:url}, ${3:body})"
+    },
+    { label: "httpx.Network", kind: "Function", detail: "fn Network() own httpx.Transport<httpx.NetworkError>", insertText: "httpx.Network()" },
+    { label: "httpx.HeaderMiddleware", kind: "Function", detail: "fn HeaderMiddleware<E>(name String, value String) Result<own httpx.Middleware<E>, httpx.RequestError>", insertText: "httpx.HeaderMiddleware<${1:Error}>(${2:name}, ${3:value})" },
+    { label: "httpx.RequestID", kind: "Function", detail: "fn RequestID<E>(header String) Result<own httpx.Middleware<E>, httpx.RequestError>", insertText: "httpx.RequestID<${1:Error}>(${2:header})" },
+    { label: "httpx.Logging", kind: "Function", detail: "fn Logging<E>($sink own httpx.LogSink, $describeError fn(E) String) own httpx.Middleware<E>", insertText: "httpx.Logging<${1:Error}>(\$${2:sink}, \$${3:describeError})" },
+    { label: "httpx.NewVirtualHost", kind: "Function", detail: "fn NewVirtualHost<E>(host String, $application own web.Application<E>) Result<own httpx.VirtualHost<E>, httpx.RegistrationError>", insertText: "httpx.NewVirtualHost<${1:Error}>(${2:host}, \$${3:application})" },
+    { label: "httpx.NewVHostMux", kind: "Function", detail: "fn NewVHostMux<E>() own httpx.VHostMux<E>", insertText: "httpx.NewVHostMux<${1:Error}>()" },
+    { label: "httpx.Request.Header", kind: "Method", detail: "fn Header(&self, name String) Option<String>", insertText: "Header(${1:name})" },
+    { label: "httpx.Request.SetHeader", kind: "Method", detail: "fn SetHeader(&self, name String, value String) Result<void, httpx.RequestError>", insertText: "SetHeader(${1:name}, ${2:value})" },
+    { label: "httpx.Request.AddHeader", kind: "Method", detail: "fn AddHeader(&self, name String, value String) Result<void, httpx.RequestError>", insertText: "AddHeader(${1:name}, ${2:value})" },
+    { label: "httpx.Response.Header", kind: "Method", detail: "fn Header(&self, name String) Option<String>", insertText: "Header(${1:name})" },
+    { label: "httpx.Response.SetHeader", kind: "Method", detail: "fn SetHeader(&self, name String, value String) Result<void, httpx.RequestError>", insertText: "SetHeader(${1:name}, ${2:value})" },
+    { label: "httpx.Response.AddHeader", kind: "Method", detail: "fn AddHeader(&self, name String, value String) Result<void, httpx.RequestError>", insertText: "AddHeader(${1:name}, ${2:value})" },
+    { label: "httpx.Builder.Use", kind: "Method", detail: "fn Use(&self, middleware fn($httpx.Request, fn($httpx.Request) Result<httpx.Response, E>) Result<httpx.Response, E>) void", insertText: "Use(\$${1:middleware})" },
+    { label: "httpx.Builder.UseStateful", kind: "Method", detail: "fn UseStateful(&self, $middleware own httpx.Middleware<E>) void", insertText: "UseStateful(\$${1:middleware})" },
+    { label: "httpx.Builder.WithRetry", kind: "Method", detail: "fn WithRetry(&self, $options resiliency.RetryOptions<httpx.ClientError<E>>) void", insertText: "WithRetry(\$${1:options})" },
+    { label: "httpx.Builder.WithBreaker", kind: "Method", detail: "fn WithBreaker(&self, $breaker resiliency.CircuitBreaker<httpx.ClientError<E>>) void", insertText: "WithBreaker(\$${1:breaker})" },
+    { label: "httpx.Builder.Build", kind: "Method", detail: "fn Build($self) own httpx.Client<E>", insertText: "Build()" },
+    { label: "httpx.Client.Do", kind: "Method", detail: "fn Do($self, $request httpx.Request) Task<own httpx.DoOutcome<E>>", insertText: "Do(\$${1:request})" },
+    { label: "httpx.VirtualHost.Use", kind: "Method", detail: "fn Use(&self, $hook own httpx.Hooks<E>) void", insertText: "Use(\$${1:hook})" },
+    { label: "httpx.VHostMux.AddVirtualHost", kind: "Method", detail: "fn AddVirtualHost(&self, $host own httpx.VirtualHost<E>) Result<Option<own httpx.VirtualHost<E>>, httpx.RegistrationError>", insertText: "AddVirtualHost(\$${1:host})" },
+    { label: "httpx.VHostMux.RemoveVirtualHost", kind: "Method", detail: "fn RemoveVirtualHost(&self, host String) Result<Option<own httpx.VirtualHost<E>>, httpx.RegistrationError>", insertText: "RemoveVirtualHost(${1:host})" },
+    { label: "httpx.VHostMux.Hosts", kind: "Method", detail: "fn Hosts(&self) own collections.List<String>", insertText: "Hosts()" },
+    { label: "httpx.VHostMux.SetFallback", kind: "Method", detail: "fn SetFallback(&self, $application own web.Application<E>) Option<own web.Application<E>>", insertText: "SetFallback(\$${1:application})" },
+    { label: "httpx.VHostMux.ClearFallback", kind: "Method", detail: "fn ClearFallback(&self) Option<own web.Application<E>>", insertText: "ClearFallback()" },
+    { label: "httpx.VHostMux.Dispatch", kind: "Method", detail: "fn Dispatch(&self, $request web.Request) Result<web.Response, web.DispatchError<E>>", insertText: "Dispatch(\$${1:request})" },
+    {
         label: "validation.NewErrors",
         kind: "Function",
         detail: "fn NewErrors() own validation.Errors",
@@ -1082,6 +1170,12 @@ const staticCompletions = [
         kind: "Function",
         detail: "fn MonotonicNow() time.MonotonicInstant",
         insertText: "time.MonotonicNow()"
+    },
+    {
+        label: "time.MonotonicInstant.Nanoseconds",
+        kind: "Method",
+        detail: "fn Nanoseconds(self) u64",
+        insertText: "Nanoseconds()"
     },
     {
         label: "time.Nanoseconds",

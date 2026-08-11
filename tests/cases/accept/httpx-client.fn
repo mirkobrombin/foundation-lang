@@ -1,0 +1,482 @@
+package main
+
+import std.collections
+import std.format
+import std.text
+import std.time
+import foundation.httpx
+import foundation.resiliency
+
+enum TransportFailure {
+    Temporary
+    Permanent
+}
+
+enum Step {
+    Fail(error TransportFailure)
+    Reply(response httpx.Response)
+}
+
+struct ScriptTransport implements httpx.Transport<TransportFailure> {
+    steps own collections.List<Step>
+    calls i32
+    requestID String
+
+    fn Send(
+        &self,
+        $request httpx.Request
+    ) Task<Result<httpx.Response, TransportFailure>> {
+        var active = request
+        self.calls = self.calls + 1
+        const selectedID = headerOr(&active, "X-Request-ID")
+        const idState = if selectedID == "-" {
+            "no"
+        } else {
+            if text.IsEmpty(self.requestID) {
+                self.requestID = text.Copy(selectedID)
+                "new"
+            } else {
+                "same" if selectedID == self.requestID else "changed"
+            }
+        }
+        print(
+            "send " + format.I32(self.calls) + " " + active.Method + " " +
+            active.URL + " auth=" + headerOr(&active, "Authorization") +
+            " id=" + idState +
+            " body=" + active.Body
+        )
+        discard selectedID
+        discard active
+        const step = requiredStep(self.steps.PopFront())
+        spawn deliver($step)
+    }
+}
+
+struct Sink implements httpx.LogSink {
+    fn Write(&self, $entry httpx.LogEntry) void {
+        const httpx.LogEntry {
+            Method
+            URL
+            Status
+            Duration
+            Error
+        } = entry
+        discard Duration
+        const status = match Status {
+            None: "-"
+            Some(value): format.I32(value)
+        }
+        const failure = match Error {
+            None: "-"
+            Some(value): value
+        }
+        print(
+            "log " + Method + " " + URL + " status=" + status +
+            " error=" + failure
+        )
+    }
+}
+
+task deliver(
+    $step Step
+) Result<httpx.Response, TransportFailure> {
+    match step {
+        Fail(error): .Err(error)
+        Reply(response): .Ok(response)
+    }
+}
+
+fn describeFailure(error TransportFailure) String {
+    match error {
+        Temporary: "temporary"
+        Permanent: "permanent"
+    }
+}
+
+fn request(
+    $method String,
+    $url String,
+    $body String
+) httpx.Request {
+    const created = httpx.NewRequest($method, $url, $body) else error {
+        discard error
+        panic("request fixture rejected")
+    }
+    created
+}
+
+fn response(
+    status i32,
+    $location String,
+    $body String
+) httpx.Response {
+    var result = httpx.Response {
+        Status = status
+        Headers = collections.NewList<httpx.Header>()
+        Body = body
+    }
+    if !text.IsEmpty(location) {
+        result.SetHeader("Location", location) else error {
+            discard error
+            panic("response fixture header rejected")
+        }
+    }
+    result
+}
+
+fn script($steps own collections.List<Step>) own ScriptTransport {
+    own ScriptTransport { steps = steps calls = 0 requestID = "" }
+}
+
+fn headerMiddleware(
+    $name String,
+    $value String
+) own httpx.Middleware<TransportFailure> {
+    const middleware = httpx.HeaderMiddleware<TransportFailure>(
+        $name,
+        $value
+    ) else error {
+        discard error
+        panic("header middleware fixture rejected")
+    }
+    middleware
+}
+
+fn requestID() own httpx.Middleware<TransportFailure> {
+    const middleware = httpx.RequestID<TransportFailure>(
+        $"X-Request-ID"
+    ) else error {
+        discard error
+        panic("request ID fixture rejected")
+    }
+    middleware
+}
+
+fn breaker(
+    threshold i32
+) resiliency.CircuitBreaker<httpx.ClientError<TransportFailure>> {
+    const value = resiliency.NewCircuitBreaker<
+    httpx.ClientError<TransportFailure>
+    >(
+        threshold,
+        time.Seconds(60)
+    ) else error {
+        discard error
+        panic("breaker fixture rejected")
+    }
+    value
+}
+
+fn run(
+    $client own httpx.Client<TransportFailure>,
+    $value httpx.Request,
+    label String
+) own httpx.Client<TransportFailure> {
+    const pending = client.Do($value)
+    const completed = $pending.wait()
+    const httpx.DoOutcome { Client Value } = completed
+    match Value {
+        Ok(response): {
+            print(label + " ok " + format.I32(response.Status) + " " + response.Body)
+            discard response
+        }
+        Err(error): printClientError(label, error)
+    }
+    Client
+}
+
+fn printClientError(
+    label String,
+    error httpx.ClientError<TransportFailure>
+) void {
+    const kind = match error {
+        InvalidRequest(value): match value {
+            EmptyMethod: "request-method"
+            InvalidURL: "request-url"
+            InvalidHeader: "request-header"
+            InvalidResponseLimit: "request-response-limit"
+            InvalidRedirectLimit: "request-redirect-limit"
+            InvalidTimeout: "request-timeout"
+        }
+        Transport(value): match value {
+            Temporary: "transport-temporary"
+            Permanent: "transport-permanent"
+        }
+        RetryConfiguration(value): {
+            discard value
+            "retry-configuration"
+        }
+        Cancelled: "cancelled"
+        CircuitOpen: "circuit-open"
+        InvalidRedirect: "invalid-redirect"
+        TooManyRedirects: "too-many-redirects"
+        ResponseTooLarge: "response-too-large"
+    }
+    print(label + " error " + kind)
+}
+
+fn headerOr(
+    &request httpx.Request,
+    name String
+) String {
+    match request.Header(name) {
+        None: "-"
+        Some(value): value
+    }
+}
+
+fn requiredStep($value Option<Step>) Step {
+    match value {
+        None: panic("transport fixture exhausted")
+        Some(step): step
+    }
+}
+
+fn main() i32 {
+    var steps = collections.NewList<Step>()
+    steps.PushFront(.Reply(response(200, "", "done")))
+    steps.PushFront(.Reply(response(307, "https://other.test/final", "redirect")))
+    steps.PushFront(.Fail(.Temporary))
+    var builder = httpx.New<TransportFailure>(script($steps))
+    builder.UseStateful(headerMiddleware("Authorization", "Bearer secret"))
+    builder.UseStateful(requestID())
+    builder.UseStateful(httpx.Logging<TransportFailure>(
+            own Sink {},
+            $describeFailure
+        ))
+    builder.WithRetry($resiliency.RetryOptions<httpx.ClientError<TransportFailure>> {
+        Attempts = 2
+        InitialDelay = time.Zero()
+        MaxDelay = time.Zero()
+        Factor = 1.0
+        Jitter = 0.0
+        RetryIf = .None
+    })
+    var client = builder.Build()
+    client = run(
+        $client,
+        $request(
+            "POST",
+            "https://user:password@example.com/start?token=secret#fragment",
+            "payload"
+        ),
+        "redirect"
+    )
+    discard client
+
+    var sameOriginSteps = collections.NewList<Step>()
+    sameOriginSteps.PushFront(.Reply(response(200, "", "converted")))
+    sameOriginSteps.PushFront(.Reply(response(303, "next", "redirect")))
+    var sameOriginBuilder = httpx.New<TransportFailure>(
+        script($sameOriginSteps)
+    )
+    sameOriginBuilder.UseStateful(
+        headerMiddleware("Authorization", "Bearer same")
+    )
+    var sameOriginClient = sameOriginBuilder.Build()
+    sameOriginClient = run(
+        $sameOriginClient,
+        $request("POST", "https://same.test/start", "convert-me"),
+        "same-origin"
+    )
+    discard sameOriginClient
+
+    var querySteps = collections.NewList<Step>()
+    querySteps.PushFront(.Reply(response(200, "", "query-done")))
+    querySteps.PushFront(.Reply(response(302, "?new=2", "redirect")))
+    var queryBuilder = httpx.New<TransportFailure>(script($querySteps))
+    var queryClient = queryBuilder.Build()
+    queryClient = run(
+        $queryClient,
+        $request(
+            "GET",
+            "https://query.test/path/page?old=1#before",
+            ""
+        ),
+        "query"
+    )
+    discard queryClient
+
+    var fragmentSteps = collections.NewList<Step>()
+    fragmentSteps.PushFront(.Reply(response(200, "", "fragment-done")))
+    fragmentSteps.PushFront(.Reply(response(307, "#after", "redirect")))
+    var fragmentBuilder = httpx.New<TransportFailure>(
+        script($fragmentSteps)
+    )
+    var fragmentClient = fragmentBuilder.Build()
+    fragmentClient = run(
+        $fragmentClient,
+        $request(
+            "GET",
+            "https://fragment.test/path?value=1#before",
+            ""
+        ),
+        "fragment"
+    )
+    discard fragmentClient
+
+    var dotSteps = collections.NewList<Step>()
+    dotSteps.PushFront(.Reply(response(200, "", "dot-done")))
+    dotSteps.PushFront(.Reply(response(
+                307,
+                "../../next/./page/../final?new=2#after",
+                "redirect"
+            )))
+    var dotBuilder = httpx.New<TransportFailure>(script($dotSteps))
+    var dotClient = dotBuilder.Build()
+    dotClient = run(
+        $dotClient,
+        $request(
+            "GET",
+            "https://dot.test/one/two/three/page?old=1#before",
+            ""
+        ),
+        "dot"
+    )
+    discard dotClient
+
+    var absoluteDotSteps = collections.NewList<Step>()
+    absoluteDotSteps.PushFront(.Reply(response(200, "", "absolute-dot-done")))
+    absoluteDotSteps.PushFront(.Reply(response(
+                307,
+                "https://absolute.test/a/./b/../final",
+                "redirect"
+            )))
+    var absoluteDotBuilder = httpx.New<TransportFailure>(
+        script($absoluteDotSteps)
+    )
+    var absoluteDotClient = absoluteDotBuilder.Build()
+    absoluteDotClient = run(
+        $absoluteDotClient,
+        $request("GET", "https://dot.test/start", ""),
+        "absolute-dot"
+    )
+    discard absoluteDotClient
+
+    var authoritySteps = collections.NewList<Step>()
+    authoritySteps.PushFront(.Reply(response(200, "", "authority-done")))
+    authoritySteps.PushFront(.Reply(response(
+                307,
+                "//other.test/final",
+                "redirect"
+            )))
+    var authorityBuilder = httpx.New<TransportFailure>(
+        script($authoritySteps)
+    )
+    authorityBuilder.UseStateful(
+        headerMiddleware("Authorization", "Bearer authority")
+    )
+    var authorityClient = authorityBuilder.Build()
+    authorityClient = run(
+        $authorityClient,
+        $request("GET", "https://authority.test/start", ""),
+        "authority"
+    )
+    discard authorityClient
+
+    var portSteps = collections.NewList<Step>()
+    portSteps.PushFront(.Reply(response(200, "", "port-done")))
+    portSteps.PushFront(.Reply(response(
+                307,
+                "https://port.test:443/final",
+                "redirect"
+            )))
+    var portBuilder = httpx.New<TransportFailure>(script($portSteps))
+    portBuilder.UseStateful(
+        headerMiddleware("Authorization", "Bearer port")
+    )
+    var portClient = portBuilder.Build()
+    portClient = run(
+        $portClient,
+        $request("GET", "https://port.test/start", ""),
+        "port"
+    )
+    discard portClient
+
+    var schemeSteps = collections.NewList<Step>()
+    schemeSteps.PushFront(.Reply(response(302, "mailto:user@example.com", "")))
+    var schemeBuilder = httpx.New<TransportFailure>(script($schemeSteps))
+    var schemeClient = schemeBuilder.Build()
+    schemeClient = run(
+        $schemeClient,
+        $request("GET", "https://scheme.test/start", ""),
+        "scheme"
+    )
+    discard schemeClient
+
+    var largeSteps = collections.NewList<Step>()
+    largeSteps.PushFront(.Reply(response(200, "", "large")))
+    var largeBuilder = httpx.New<TransportFailure>(script($largeSteps))
+    var largeClient = largeBuilder.Build()
+    var boundedRequest = request("GET", "https://example.com/bounded", "")
+    boundedRequest.MaximumResponseSize = 3
+    largeClient = run($largeClient, $boundedRequest, "bounded")
+    discard largeClient
+
+    var breakerSteps = collections.NewList<Step>()
+    breakerSteps.PushFront(.Reply(response(200, "", "unexpected")))
+    breakerSteps.PushFront(.Fail(.Permanent))
+    var breakerBuilder = httpx.New<TransportFailure>(script($breakerSteps))
+    breakerBuilder.WithBreaker($breaker(1))
+    var breakerClient = breakerBuilder.Build()
+    breakerClient = run(
+        $breakerClient,
+        $request("GET", "https://example.com/first", ""),
+        "breaker-first"
+    )
+    breakerClient = run(
+        $breakerClient,
+        $request("GET", "https://example.com/second", ""),
+        "breaker-second"
+    )
+    discard breakerClient
+
+    var invalidSteps = collections.NewList<Step>()
+    var invalidBuilder = httpx.New<TransportFailure>(script($invalidSteps))
+    var invalidClient = invalidBuilder.Build()
+    var invalidRequest = request("GET", "https://example.com/invalid", "")
+    invalidRequest.MaximumResponseSize = 0
+    invalidClient = run(
+        $invalidClient,
+        $invalidRequest,
+        "invalid"
+    )
+    discard invalidClient
+
+    const invalidPercent = httpx.NewRequest(
+        "GET",
+        "https://example.com/%no",
+        ""
+    )
+    match invalidPercent {
+        Ok(value): {
+            discard value
+            return 1
+        }
+        Err(error): match error {
+            InvalidURL: {}
+            _: {
+                return 2
+            }
+        }
+    }
+
+    const invalidIPv6 = httpx.NewRequest(
+        "GET",
+        "http://2001:db8::1/path",
+        ""
+    )
+    match invalidIPv6 {
+        Ok(value): {
+            discard value
+            return 3
+        }
+        Err(error): match error {
+            InvalidURL: {}
+            _: {
+                return 4
+            }
+        }
+    }
+    0
+}

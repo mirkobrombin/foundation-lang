@@ -359,6 +359,9 @@ void foundation_runtime_net_accept_start(uint64_t listener, uint64_t *connection
 void foundation_runtime_net_accept_cancel(fdn_reactor_operation *operation);
 void foundation_runtime_net_connect_start(uint64_t addresses, uint64_t *connection,
                                           fdn_reactor_operation *operation);
+void foundation_runtime_net_connect_until_start(
+    uint64_t addresses, uint64_t deadline, uint64_t *connection,
+    fdn_reactor_operation *operation);
 void foundation_runtime_net_connect_cancel(fdn_reactor_operation *operation);
 int32_t foundation_runtime_net_peer_address(uint64_t connection,
                                             fdn_string *address);
@@ -370,13 +373,22 @@ void foundation_runtime_net_writer_close(uint64_t writer);
 void foundation_runtime_net_read_line_start(uint64_t reader, uint64_t limit,
                                             fdn_string *line,
                                             fdn_reactor_operation *operation);
+void foundation_runtime_net_read_line_until_start(
+    uint64_t reader, uint64_t limit, uint64_t deadline, fdn_string *line,
+    fdn_reactor_operation *operation);
 void foundation_runtime_net_read_line_cancel(fdn_reactor_operation *operation);
 void foundation_runtime_net_read_exact_start(uint64_t reader, uint64_t length,
                                              fdn_string *text,
                                              fdn_reactor_operation *operation);
+void foundation_runtime_net_read_exact_until_start(
+    uint64_t reader, uint64_t length, uint64_t deadline, fdn_string *text,
+    fdn_reactor_operation *operation);
 void foundation_runtime_net_read_exact_cancel(fdn_reactor_operation *operation);
 void foundation_runtime_net_write_all_start(uint64_t writer, const fdn_string *text,
                                             fdn_reactor_operation *operation);
+void foundation_runtime_net_write_all_until_start(
+    uint64_t writer, const fdn_string *text, uint64_t deadline,
+    fdn_reactor_operation *operation);
 void foundation_runtime_net_write_all_cancel(fdn_reactor_operation *operation);
 uint64_t foundation_runtime_net_live_addresses(void);
 uint64_t foundation_runtime_net_live_listeners(void);

@@ -18,6 +18,10 @@ enum OperationError {
     Failed
 }
 
+struct RetryState {
+    Calls i32
+}
+
 task sleep(delay u64) void {
     discard nativeSleepDouble(0, delay)
 }
@@ -43,6 +47,12 @@ fn neverRetry(error OperationError) bool {
 
 fn alwaysFail() Result<i32, OperationError> {
     .Err(.Failed)
+}
+
+fn retryStateful(&state RetryState) Result<i32, OperationError> {
+    state.Calls = state.Calls + 1
+    if state.Calls < 3 return .Err(.Failed)
+    .Ok(state.Calls)
 }
 
 fn recordState(previous resiliency.CircuitState, state resiliency.CircuitState) void {
@@ -191,6 +201,37 @@ fn main() i32 {
     }
     const retried = spawn resiliency.Retry<i32, OperationError>($retryOperation, $retryOptions)
     if retryValue($retried.wait()) != 3 || retryCallsNative() != 3 return 3
+
+    const statefulOptions = resiliency.RetryOptions<OperationError> {
+        Attempts = 3
+        InitialDelay = time.Zero()
+        MaxDelay = time.Zero()
+        Factor = 1.0
+        Jitter = 0.0
+        RetryIf = .None
+    }
+    const statefulPending = spawn resiliency.RetryStateful<
+    RetryState,
+    i32,
+    OperationError
+    >(
+        own RetryState { Calls = 0 },
+        $retryStateful,
+        $statefulOptions
+    )
+    const resiliency.StatefulRetryOutcome {
+        State as restoredState
+        Options as restoredOptions
+        Value as restoredValue
+    } = $statefulPending.wait()
+    if restoredState.Calls != 3 || restoredOptions.Attempts != 3 ||
+        retryValue($restoredValue) != 3 {
+        discard restoredState
+        discard restoredOptions
+        return 16
+    }
+    discard restoredState
+    discard restoredOptions
 
     resetRetryNative()
     const filteredOptions = resiliency.RetryOptions<OperationError> {

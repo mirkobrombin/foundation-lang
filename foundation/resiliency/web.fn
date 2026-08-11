@@ -21,7 +21,8 @@ struct rateLimitStore {
 
     fn Allow(&self, key String) bool {
         const now = time.MonotonicNow()
-        var active = replace self.clients with collections.NewList<clientLimiter>()
+        var active = replace self.clients with
+        collections.NewList<clientLimiter>()
         var reversed = collections.NewList<clientLimiter>()
         var selected Option<clientLimiter> = .None
         var found = false
@@ -44,7 +45,9 @@ struct rateLimitStore {
         var chosen = match selected {
             None: clientLimiter {
                 key = text.Copy(key)
-                limiter = limiterOrPanic(resiliency.NewRateLimiter(self.rate, self.burst))
+                limiter = limiterOrPanic(
+                    resiliency.NewRateLimiter(self.rate, self.burst)
+                )
                 lastSeen = now
             }
             Some(current): current

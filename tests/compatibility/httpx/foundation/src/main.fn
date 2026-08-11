@@ -1,0 +1,233 @@
+package test.compatibility.httpx
+
+import std.collections
+import std.format
+import std.time
+import foundation.httpx
+import foundation.resiliency
+
+// Defines the transport failures exercised by both compatibility programs.
+enum Failure {
+    // Requests another attempt from the retry policy.
+    Temporary
+    // Opens the configured circuit breaker.
+    Permanent
+}
+
+// Records headers, retry count, and replayed body at the transport boundary.
+struct Probe implements httpx.Transport<Failure> {
+    mode i32
+    calls i32
+
+    // Executes the selected deterministic compatibility scenario.
+    fn Send(
+        &self,
+        $request httpx.Request
+    ) Task<Result<httpx.Response, Failure>> {
+        self.calls = self.calls + 1
+        var activeRequest = request
+        if self.mode == 0 {
+            const header = requestHeader(&activeRequest, "X-Test")
+            const original = requestHeader(&activeRequest, "X-Original")
+            print("header " + header + " original " + original)
+            discard activeRequest
+            return spawn success()
+        }
+        if self.mode == 1 {
+            if self.calls < 3 {
+                discard activeRequest
+                return spawn temporaryFailure()
+            }
+            print(
+                "retry " + format.I32(self.calls) +
+                " body " + activeRequest.Body
+            )
+            discard activeRequest
+            return spawn success()
+        }
+        discard activeRequest
+        spawn permanentFailure()
+    }
+}
+
+task success() Result<httpx.Response, Failure> {
+    .Ok(httpx.Response {
+        Status = 200
+        Headers = collections.NewList<httpx.Header>()
+        Body = "ok"
+    })
+}
+
+task temporaryFailure() Result<httpx.Response, Failure> {
+    .Err(.Temporary)
+}
+
+task permanentFailure() Result<httpx.Response, Failure> {
+    .Err(.Permanent)
+}
+
+fn requestHeader(&request httpx.Request, name String) String {
+    match request.Header(name) {
+        None: ""
+        Some(value): value
+    }
+}
+
+fn request($method String, $body String) httpx.Request {
+    const created = httpx.NewRequest(
+        $method,
+        $"https://example.com/path",
+        $body
+    ) else error {
+        discard error
+        panic("HTTP compatibility request failed")
+    }
+    created
+}
+
+fn accepted($value Result<void, httpx.RequestError>) bool {
+    match value {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn headerMiddleware() own httpx.Middleware<Failure> {
+    const middleware = httpx.HeaderMiddleware<Failure>(
+        $"X-Test",
+        $"1"
+    ) else error {
+        discard error
+        panic("HTTP compatibility middleware failed")
+    }
+    middleware
+}
+
+fn runSuccess(
+    $client own httpx.Client<Failure>,
+    $value httpx.Request
+) own httpx.Client<Failure> {
+    const pending = client.Do($value)
+    const completed = $pending.wait()
+    const httpx.DoOutcome { Client Value } = completed
+    match Value {
+        Ok(response): {
+            discard response
+        }
+        Err(error): {
+            discard error
+            panic("HTTP compatibility call failed")
+        }
+    }
+    Client
+}
+
+fn breaker() resiliency.CircuitBreaker<httpx.ClientError<Failure>> {
+    const created = resiliency.NewCircuitBreaker<
+    httpx.ClientError<Failure>
+    >(1, time.Seconds(3600)) else error {
+        discard error
+        panic("HTTP compatibility breaker failed")
+    }
+    created
+}
+
+fn main() i32 {
+    var headerBuilder = httpx.New<Failure>(
+        own Probe { mode = 0 calls = 0 }
+    )
+    headerBuilder.UseStateful(headerMiddleware())
+    var headerClient = headerBuilder.Build()
+    var headerRequest = request("GET", "")
+    if !accepted(headerRequest.SetHeader("X-Original", "1")) {
+        discard headerClient
+        discard headerRequest
+        return 1
+    }
+    headerClient = runSuccess($headerClient, $headerRequest)
+    discard headerClient
+
+    var retryBuilder = httpx.New<Failure>(
+        own Probe { mode = 1 calls = 0 }
+    )
+    retryBuilder.WithRetry(
+        $resiliency.RetryOptions<httpx.ClientError<Failure>> {
+        Attempts = 3
+        InitialDelay = time.Zero()
+        MaxDelay = time.Zero()
+        Factor = 1.0
+        Jitter = 0.0
+        RetryIf = .None
+    }
+    )
+    var retryClient = retryBuilder.Build()
+    retryClient = runSuccess(
+        $retryClient,
+        $request("POST", "payload")
+    )
+    discard retryClient
+
+    var breakerBuilder = httpx.New<Failure>(
+        own Probe { mode = 2 calls = 0 }
+    )
+    breakerBuilder.WithBreaker($breaker())
+    var breakerClient = breakerBuilder.Build()
+    const firstPending = breakerClient.Do($request("GET", ""))
+    const firstCompleted = $firstPending.wait()
+    const httpx.DoOutcome {
+        Client as afterFirst
+        Value as firstValue
+    } = firstCompleted
+    const firstSucceeded = match firstValue {
+        Ok(response): {
+            discard response
+            true
+        }
+        Err(error): {
+            discard error
+            false
+        }
+    }
+    if firstSucceeded {
+        discard afterFirst
+        return 2
+    }
+    const secondPending = afterFirst.Do($request("GET", ""))
+    const secondCompleted = $secondPending.wait()
+    const httpx.DoOutcome {
+        Client as finalClient
+        Value as secondValue
+    } = secondCompleted
+    const opened = match secondValue {
+        Ok(response): {
+            discard response
+            false
+        }
+        Err(error): match error {
+            CircuitOpen: true
+            InvalidRequest(value): {
+                discard value
+                false
+            }
+            Transport(value): {
+                discard value
+                false
+            }
+            RetryConfiguration(value): {
+                discard value
+                false
+            }
+            Cancelled: false
+            InvalidRedirect: false
+            TooManyRedirects: false
+            ResponseTooLarge: false
+        }
+    }
+    discard finalClient
+    if !opened return 3
+    print("breaker open")
+    0
+}

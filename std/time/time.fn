@@ -47,6 +47,11 @@ methods Duration {
 struct MonotonicInstant {
     nanoseconds u64
 
+    // Returns the opaque monotonic tick value for absolute deadline adapters.
+    fn Nanoseconds(self) u64 {
+        self.nanoseconds
+    }
+
     fn Since(self, earlier MonotonicInstant) Result<Duration, Error> {
         if self.nanoseconds < earlier.nanoseconds {
             return .Err(.BeforeReference)

@@ -43,6 +43,7 @@ enum {
     FDN_NET_IO = 8,
     FDN_NET_EOF = 9,
     FDN_NET_ADDRESS_IN_USE = 10,
+    FDN_NET_TIMEOUT = 11,
     FDN_NET_PENDING = -1,
 };
 
@@ -103,6 +104,7 @@ typedef struct fdn_net_request {
     fdn_reactor_operation *operation;
     fdn_net_request_kind kind;
     fdn_net_socket socket;
+    uint64_t deadline;
     bool cancelled;
     union {
         struct {
@@ -1428,21 +1430,57 @@ static int32_t fdn_net_write_ready(fdn_net_request *request) {
     return FDN_NET_OK;
 }
 
-static int fdn_net_poll(fdn_net_pollfd *descriptors, size_t count) {
+static bool fdn_net_deadline_expired(const fdn_net_request *request,
+                                     uint64_t now) {
+    return request->deadline != UINT64_MAX && now >= request->deadline;
+}
+
+static int fdn_net_poll_timeout(fdn_net_request **requests, size_t count,
+                                uint64_t now) {
+    uint64_t minimum = UINT64_MAX;
+    size_t index;
+    for (index = 0; index < count; ++index) {
+        const uint64_t deadline = requests[index]->deadline;
+        if (deadline < minimum) {
+            minimum = deadline;
+        }
+    }
+    if (minimum == UINT64_MAX) {
+        return -1;
+    }
+    if (minimum <= now) {
+        return 0;
+    }
+    const uint64_t remaining = minimum - now;
+    uint64_t milliseconds = remaining / UINT64_C(1000000);
+    if (remaining % UINT64_C(1000000) != 0) {
+        ++milliseconds;
+    }
+    if (milliseconds > (uint64_t)INT_MAX) {
+        return INT_MAX;
+    }
+    return (int)milliseconds;
+}
+
+static int fdn_net_poll(fdn_net_pollfd *descriptors, size_t count,
+                        int timeout) {
 #if defined(_WIN32)
     if (count > (size_t)ULONG_MAX) {
         fdn_panic_cstr("network poll descriptor count overflow");
     }
-    return WSAPoll(descriptors, (ULONG)count, -1);
+    return WSAPoll(descriptors, (ULONG)count, timeout);
 #else
-    return poll(descriptors, (nfds_t)count, -1);
+    return poll(descriptors, (nfds_t)count, timeout);
 #endif
 }
 
 static int32_t fdn_net_process_request(fdn_net_request *request, short events,
-                                       bool cancelled) {
+                                       bool cancelled, bool timed_out) {
     if (cancelled) {
         return FDN_NET_CANCELLED;
+    }
+    if (timed_out) {
+        return FDN_NET_TIMEOUT;
     }
     if ((events & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
         if (request->kind == FDN_NET_REQUEST_ACCEPT) {
@@ -1520,7 +1558,9 @@ static void *fdn_net_service_thread(void *raw)
             continue;
         }
 
-        const int poll_result = fdn_net_poll(descriptors, count + 1);
+        const int timeout = fdn_net_poll_timeout(
+            requests, count, foundation_runtime_time_monotonic_nanoseconds());
+        const int poll_result = fdn_net_poll(descriptors, count + 1, timeout);
         if (poll_result < 0) {
             const int error = fdn_net_last_error();
             fdn_dealloc(requests);
@@ -1538,11 +1578,14 @@ static void *fdn_net_service_thread(void *raw)
             fdn_net_service_enter(service);
             const bool cancelled = request->cancelled;
             fdn_net_service_leave(service);
-            if (!cancelled && descriptors[index + 1].revents == 0) {
+            const bool timed_out = fdn_net_deadline_expired(
+                request, foundation_runtime_time_monotonic_nanoseconds());
+            if (!cancelled && !timed_out &&
+                descriptors[index + 1].revents == 0) {
                 continue;
             }
             completion_status = fdn_net_process_request(
-                request, descriptors[index + 1].revents, cancelled);
+                request, descriptors[index + 1].revents, cancelled, timed_out);
             if (completion_status != FDN_NET_PENDING) {
                 completed = request;
                 break;
@@ -1666,6 +1709,7 @@ void foundation_runtime_net_accept_start(uint64_t listener_handle,
     request->operation = operation;
     request->kind = FDN_NET_REQUEST_ACCEPT;
     request->socket = listener->socket;
+    request->deadline = UINT64_MAX;
     request->value.accept.listener = listener;
     request->value.accept.result = connection;
     status = fdn_net_accept_ready(request);
@@ -1684,9 +1728,9 @@ void foundation_runtime_net_accept_cancel(fdn_reactor_operation *operation) {
     fdn_net_cancel(operation);
 }
 
-void foundation_runtime_net_connect_start(uint64_t address_handle,
-                                          uint64_t *connection,
-                                          fdn_reactor_operation *operation) {
+static void fdn_net_connect_start(uint64_t address_handle, uint64_t deadline,
+                                  uint64_t *connection,
+                                  fdn_reactor_operation *operation) {
     fdn_net_addresses *addresses = (fdn_net_addresses *)(uintptr_t)address_handle;
     fdn_net_request *request;
     int32_t status;
@@ -1698,11 +1742,17 @@ void foundation_runtime_net_connect_start(uint64_t address_handle,
         fdn_reactor_complete(operation, FDN_NET_INVALID_ADDRESS);
         return;
     }
+    if (deadline != UINT64_MAX &&
+        foundation_runtime_time_monotonic_nanoseconds() >= deadline) {
+        fdn_reactor_complete(operation, FDN_NET_TIMEOUT);
+        return;
+    }
     request = fdn_alloc(sizeof(*request));
     (void)memset(request, 0, sizeof(*request));
     request->operation = operation;
     request->kind = FDN_NET_REQUEST_CONNECT;
     request->socket = FDN_NET_INVALID_SOCKET;
+    request->deadline = deadline;
     request->value.connect.addresses = addresses;
     request->value.connect.result = connection;
     status = fdn_net_connect_next(request);
@@ -1718,11 +1768,24 @@ void foundation_runtime_net_connect_start(uint64_t address_handle,
     }
 }
 
+void foundation_runtime_net_connect_start(uint64_t address_handle,
+                                          uint64_t *connection,
+                                          fdn_reactor_operation *operation) {
+    fdn_net_connect_start(address_handle, UINT64_MAX, connection, operation);
+}
+
+void foundation_runtime_net_connect_until_start(
+    uint64_t address_handle, uint64_t deadline, uint64_t *connection,
+    fdn_reactor_operation *operation) {
+    fdn_net_connect_start(address_handle, deadline, connection, operation);
+}
+
 void foundation_runtime_net_connect_cancel(fdn_reactor_operation *operation) {
     fdn_net_cancel(operation);
 }
 
 static void fdn_net_read_start(uint64_t reader, uint64_t limit, fdn_string *text,
+                               uint64_t deadline,
                                fdn_reactor_operation *operation, bool exact) {
     fdn_net_connection *connection = (fdn_net_connection *)(uintptr_t)reader;
     fdn_net_request *request;
@@ -1735,6 +1798,11 @@ static void fdn_net_read_start(uint64_t reader, uint64_t limit, fdn_string *text
     *text = fdn_string_static("", 0);
     if (exact && limit > (uint64_t)SIZE_MAX) {
         fdn_reactor_complete(operation, FDN_NET_LINE_TOO_LONG);
+        return;
+    }
+    if (deadline != UINT64_MAX &&
+        foundation_runtime_time_monotonic_nanoseconds() >= deadline) {
+        fdn_reactor_complete(operation, FDN_NET_TIMEOUT);
         return;
     }
     if (connection == NULL) {
@@ -1754,6 +1822,7 @@ static void fdn_net_read_start(uint64_t reader, uint64_t limit, fdn_string *text
     request->operation = operation;
     request->kind = FDN_NET_REQUEST_READ_LINE;
     request->socket = socket;
+    request->deadline = deadline;
     request->value.read.connection = connection;
     request->value.read.limit = limit > (uint64_t)SIZE_MAX ? SIZE_MAX : (size_t)limit;
     request->value.read.result = text;
@@ -1773,7 +1842,13 @@ static void fdn_net_read_start(uint64_t reader, uint64_t limit, fdn_string *text
 void foundation_runtime_net_read_line_start(uint64_t reader, uint64_t limit,
                                             fdn_string *line,
                                             fdn_reactor_operation *operation) {
-    fdn_net_read_start(reader, limit, line, operation, false);
+    fdn_net_read_start(reader, limit, line, UINT64_MAX, operation, false);
+}
+
+void foundation_runtime_net_read_line_until_start(
+    uint64_t reader, uint64_t limit, uint64_t deadline, fdn_string *line,
+    fdn_reactor_operation *operation) {
+    fdn_net_read_start(reader, limit, line, deadline, operation, false);
 }
 
 void foundation_runtime_net_read_line_cancel(fdn_reactor_operation *operation) {
@@ -1783,15 +1858,22 @@ void foundation_runtime_net_read_line_cancel(fdn_reactor_operation *operation) {
 void foundation_runtime_net_read_exact_start(uint64_t reader, uint64_t length,
                                              fdn_string *text,
                                              fdn_reactor_operation *operation) {
-    fdn_net_read_start(reader, length, text, operation, true);
+    fdn_net_read_start(reader, length, text, UINT64_MAX, operation, true);
+}
+
+void foundation_runtime_net_read_exact_until_start(
+    uint64_t reader, uint64_t length, uint64_t deadline, fdn_string *text,
+    fdn_reactor_operation *operation) {
+    fdn_net_read_start(reader, length, text, deadline, operation, true);
 }
 
 void foundation_runtime_net_read_exact_cancel(fdn_reactor_operation *operation) {
     fdn_net_cancel(operation);
 }
 
-void foundation_runtime_net_write_all_start(uint64_t writer, const fdn_string *text,
-                                            fdn_reactor_operation *operation) {
+static void fdn_net_write_all_start(uint64_t writer, const fdn_string *text,
+                                    uint64_t deadline,
+                                    fdn_reactor_operation *operation) {
     fdn_net_connection *connection = (fdn_net_connection *)(uintptr_t)writer;
     fdn_net_request *request;
     fdn_net_socket socket;
@@ -1801,6 +1883,11 @@ void foundation_runtime_net_write_all_start(uint64_t writer, const fdn_string *t
     }
     if (connection == NULL || (text->length != 0 && text->data == NULL)) {
         fdn_reactor_complete(operation, FDN_NET_CLOSED);
+        return;
+    }
+    if (deadline != UINT64_MAX &&
+        foundation_runtime_time_monotonic_nanoseconds() >= deadline) {
+        fdn_reactor_complete(operation, FDN_NET_TIMEOUT);
         return;
     }
     fdn_net_connection_enter(connection);
@@ -1820,6 +1907,7 @@ void foundation_runtime_net_write_all_start(uint64_t writer, const fdn_string *t
     request->operation = operation;
     request->kind = FDN_NET_REQUEST_WRITE_ALL;
     request->socket = socket;
+    request->deadline = deadline;
     request->value.write.connection = connection;
     request->value.write.value = *text;
     status = fdn_net_write_ready(request);
@@ -1836,6 +1924,18 @@ void foundation_runtime_net_write_all_start(uint64_t writer, const fdn_string *t
         fdn_dealloc(request);
         fdn_reactor_complete(operation, FDN_NET_IO);
     }
+}
+
+void foundation_runtime_net_write_all_start(uint64_t writer,
+                                            const fdn_string *text,
+                                            fdn_reactor_operation *operation) {
+    fdn_net_write_all_start(writer, text, UINT64_MAX, operation);
+}
+
+void foundation_runtime_net_write_all_until_start(
+    uint64_t writer, const fdn_string *text, uint64_t deadline,
+    fdn_reactor_operation *operation) {
+    fdn_net_write_all_start(writer, text, deadline, operation);
 }
 
 void foundation_runtime_net_write_all_cancel(fdn_reactor_operation *operation) {

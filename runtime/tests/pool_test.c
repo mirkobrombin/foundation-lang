@@ -4,8 +4,8 @@
 
 #include "foundation/runtime.h"
 
-#include <assert.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <time.h>
 
 #if defined(_WIN32)
@@ -49,6 +49,12 @@ typedef struct channel_select_frame {
     int context;
 } channel_select_frame;
 
+static void require(bool condition) {
+    if (!condition) {
+        abort();
+    }
+}
+
 static int counter_add(test_counter *counter, int value) {
 #if defined(_WIN32)
     return (int)InterlockedAdd(counter, (LONG)value);
@@ -84,7 +90,7 @@ static fdn_task_poll poll_parallel(void *context, bool cancellation_requested) {
            fdn_monotonic_nanoseconds() < deadline) {
         sleep_millisecond();
     }
-    assert(counter_read(frame->entered) >= 2);
+    require(counter_read(frame->entered) >= 2);
     (void)counter_add(frame->completed, 1);
     return FDN_TASK_READY;
 }
@@ -241,10 +247,10 @@ static void test_cross_executor_channels(void) {
         pool, spawn_channel_send(sender, 41, &completed, NULL));
     sender = NULL;
     fdn_task_wait(&receiving, &value);
-    assert(value == 41);
+    require(value == 41);
     foundation_runtime_pool_wait(pool);
     foundation_runtime_pool_release(pool);
-    assert(counter_read(&completed) == 1);
+    require(counter_read(&completed) == 1);
 
     fdn_channel_open(sizeof(int32_t), 0, NULL, &sender, &receiver);
     receiving = spawn_channel_select(receiver);
@@ -254,10 +260,10 @@ static void test_cross_executor_channels(void) {
         pool, spawn_channel_send(sender, 42, &completed, NULL));
     sender = NULL;
     fdn_task_wait(&receiving, &value);
-    assert(value == 42);
+    require(value == 42);
     foundation_runtime_pool_wait(pool);
     foundation_runtime_pool_release(pool);
-    assert(counter_read(&completed) == 2);
+    require(counter_read(&completed) == 2);
 }
 
 static void test_cross_executor_channel_contention(void) {
@@ -290,8 +296,8 @@ static void test_cross_executor_channel_contention(void) {
     fdn_channel_drop_receiver(&receiver);
     foundation_runtime_pool_wait(pool);
     foundation_runtime_pool_release(pool);
-    assert(sum == (int64_t)jobs * (jobs + 1) / 2);
-    assert(counter_read(&completed) == jobs);
+    require(sum == (int64_t)jobs * (jobs + 1) / 2);
+    require(counter_read(&completed) == jobs);
 }
 
 static void test_cross_executor_channel_cancellation(void) {
@@ -331,24 +337,24 @@ int main(void) {
     uint64_t pool = foundation_runtime_pool_open(2);
     foundation_runtime_pool_submit(pool, spawn_parallel(&entered, &completed));
     foundation_runtime_pool_submit(pool, spawn_parallel(&entered, &completed));
-    assert(fdn_task_live_count() == 0);
+    require(fdn_task_live_count() == 0);
     foundation_runtime_pool_wait(pool);
     foundation_runtime_pool_release(pool);
-    assert(counter_read(&completed) == 2);
-    assert(foundation_runtime_pool_live_count() == 0);
+    require(counter_read(&completed) == 2);
+    require(foundation_runtime_pool_live_count() == 0);
 
     pool = foundation_runtime_pool_open(1);
     foundation_runtime_pool_submit(pool, spawn_cancellation(&cancellation_seen));
     foundation_runtime_pool_submit(pool, spawn_cancellation(&cancellation_seen));
     foundation_runtime_pool_cancel(pool);
     foundation_runtime_pool_release(pool);
-    assert(counter_read(&cancellation_seen) == 2);
-    assert(foundation_runtime_pool_live_count() == 0);
+    require(counter_read(&cancellation_seen) == 2);
+    require(foundation_runtime_pool_live_count() == 0);
     test_cross_executor_channels();
     test_cross_executor_channel_contention();
     test_cross_executor_channel_cancellation();
-    assert(fdn_task_live_count() == 0);
-    assert(fdn_channel_live_count() == 0);
-    assert(fdn_live_allocations() == 0);
+    require(fdn_task_live_count() == 0);
+    require(fdn_channel_live_count() == 0);
+    require(fdn_live_allocations() == 0);
     return 0;
 }

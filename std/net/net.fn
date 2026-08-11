@@ -1,21 +1,41 @@
 package std.net
 
+import std.time
+
+// Classifies portable DNS, TCP, deadline, and stream failures.
 enum Error {
+    // Rejects an empty host, invalid port, or malformed local address.
     InvalidAddress
+    // Reports that the platform resolver could not produce an address.
     ResolveFailed
+    // Reports that every resolved address refused the connection.
     Refused
+    // Reports use of a closed stream or closure by its peer.
     Closed
+    // Reports structured cancellation of a pending operation.
     Cancelled
+    // Reports bytes that cannot form a Foundation String.
     InvalidUtf8
+    // Reports a line beyond its explicit byte bound.
     LineTooLong
+    // Reports a local listener address already bound by another socket.
     AddressInUse
+    // Reports expiry of an absolute monotonic deadline.
+    Timeout
+    // Reports another platform networking failure.
     Io
 }
 
 @blocking
-extern c fn resolveNative(host String, port u64, &addresses u64) i32 as foundation_runtime_net_resolve
+extern c fn resolveNative(
+    host String,
+    port u64,
+    &addresses u64
+) i32 as foundation_runtime_net_resolve
 
-extern c fn closeAddressesNative(addresses u64) void as foundation_runtime_net_addresses_close
+extern c fn closeAddressesNative(
+    addresses u64
+) void as foundation_runtime_net_addresses_close
 
 extern c fn listenNative(
     address String,
@@ -25,31 +45,90 @@ extern c fn listenNative(
     &boundPort u64
 ) i32 as foundation_runtime_net_listen
 
-extern c fn closeListenerNative(listener u64) void as foundation_runtime_net_listener_close
+extern c fn closeListenerNative(
+    listener u64
+) void as foundation_runtime_net_listener_close
 
 @callback(cancel = foundation_runtime_net_accept_cancel)
-extern c fn acceptNative(listener u64, &connection u64) i32 as foundation_runtime_net_accept_start
+extern c fn acceptNative(
+    listener u64,
+    &connection u64
+) i32 as foundation_runtime_net_accept_start
 
 @callback(cancel = foundation_runtime_net_connect_cancel)
-extern c fn connectNative(addresses u64, &connection u64) i32 as foundation_runtime_net_connect_start
+extern c fn connectNative(
+    addresses u64,
+    &connection u64
+) i32 as foundation_runtime_net_connect_start
 
-extern c fn splitNative(connection u64, &reader u64, &writer u64) i32 as foundation_runtime_net_split
+@callback(cancel = foundation_runtime_net_connect_cancel)
+extern c fn connectUntilNative(
+    addresses u64,
+    deadline u64,
+    &connection u64
+) i32 as foundation_runtime_net_connect_until_start
+
+extern c fn splitNative(
+    connection u64,
+    &reader u64,
+    &writer u64
+) i32 as foundation_runtime_net_split
 extern c fn peerAddressNative(
     connection u64,
     &address String
 ) i32 as foundation_runtime_net_peer_address
-extern c fn closeConnectionNative(connection u64) void as foundation_runtime_net_connection_close
-extern c fn closeReaderNative(reader u64) void as foundation_runtime_net_reader_close
-extern c fn closeWriterNative(writer u64) void as foundation_runtime_net_writer_close
+extern c fn closeConnectionNative(
+    connection u64
+) void as foundation_runtime_net_connection_close
+extern c fn closeReaderNative(
+    reader u64
+) void as foundation_runtime_net_reader_close
+extern c fn closeWriterNative(
+    writer u64
+) void as foundation_runtime_net_writer_close
 
 @callback(cancel = foundation_runtime_net_read_line_cancel)
-extern c fn readLineNative(reader u64, limit u64, &line String) i32 as foundation_runtime_net_read_line_start
+extern c fn readLineNative(
+    reader u64,
+    limit u64,
+    &line String
+) i32 as foundation_runtime_net_read_line_start
+
+@callback(cancel = foundation_runtime_net_read_line_cancel)
+extern c fn readLineUntilNative(
+    reader u64,
+    limit u64,
+    deadline u64,
+    &line String
+) i32 as foundation_runtime_net_read_line_until_start
 
 @callback(cancel = foundation_runtime_net_read_exact_cancel)
-extern c fn readExactNative(reader u64, length u64, &text String) i32 as foundation_runtime_net_read_exact_start
+extern c fn readExactNative(
+    reader u64,
+    length u64,
+    &text String
+) i32 as foundation_runtime_net_read_exact_start
+
+@callback(cancel = foundation_runtime_net_read_exact_cancel)
+extern c fn readExactUntilNative(
+    reader u64,
+    length u64,
+    deadline u64,
+    &text String
+) i32 as foundation_runtime_net_read_exact_until_start
 
 @callback(cancel = foundation_runtime_net_write_all_cancel)
-extern c fn writeAllNative(writer u64, text String) i32 as foundation_runtime_net_write_all_start
+extern c fn writeAllNative(
+    writer u64,
+    text String
+) i32 as foundation_runtime_net_write_all_start
+
+@callback(cancel = foundation_runtime_net_write_all_cancel)
+extern c fn writeAllUntilNative(
+    writer u64,
+    text String,
+    deadline u64
+) i32 as foundation_runtime_net_write_all_until_start
 
 fn errorFor(status i32) Error {
     if status == 1 {
@@ -79,11 +158,21 @@ fn errorFor(status i32) Error {
     if status == 10 {
         return .AddressInUse
     }
+    if status == 11 {
+        return .Timeout
+    }
     .Io
 }
 
+// Stores one absolute monotonic deadline for a complete network operation set.
+struct Deadline {
+    nanoseconds u64
+}
+
+// Owns one bound TCP listening socket.
 struct TcpListener {
     handle u64
+    // Reports the actual local port, including an OS-selected port.
     Port u64
 
     fn drop(&self) void {
@@ -94,6 +183,7 @@ struct TcpListener {
     }
 }
 
+// Owns one connected TCP socket before it is split into stream halves.
 struct TcpConnection {
     handle u64
 
@@ -105,7 +195,7 @@ struct TcpConnection {
         .Err(errorFor(status))
     }
 
-    // Consumes the connection and produces independently owned read and write halves.
+    // Consumes the connection and produces independent stream halves.
     fn Split($self) Result<StreamPair, Error> {
         var reader u64 = 0
         var writer u64 = 0
@@ -127,6 +217,7 @@ struct TcpConnection {
     }
 }
 
+// Owns the readable half of one TCP connection.
 struct TcpReader {
     handle u64
 
@@ -138,6 +229,7 @@ struct TcpReader {
     }
 }
 
+// Owns the writable half of one TCP connection.
 struct TcpWriter {
     handle u64
 
@@ -149,32 +241,47 @@ struct TcpWriter {
     }
 }
 
+// Returns independent read and write owners for one connection.
 struct StreamPair {
+    // Owns all future reads from the connection.
     Reader own TcpReader
+    // Owns all future writes to the connection.
     Writer own TcpWriter
 }
 
+// Restores a listener owner beside one accepted connection result.
 struct AcceptOutcome {
+    // Restores the listener for another acceptance operation.
     Listener own TcpListener
+    // Contains the accepted connection or its typed failure.
     Value Result<own TcpConnection, Error>
 }
 
+// Restores a reader owner beside one optional line result.
 struct ReadLineOutcome {
+    // Restores the reader after completion, EOF, timeout, or failure.
     Reader own TcpReader
+    // Distinguishes a line, EOF, and a typed stream failure.
     Value Result<Option<String>, Error>
 }
 
+// Restores a reader owner beside one exact text result.
 struct ReadOutcome {
+    // Restores the reader after completion, timeout, or failure.
     Reader own TcpReader
+    // Contains the exact UTF-8 bytes or a typed stream failure.
     Value Result<String, Error>
 }
 
+// Restores a writer owner beside one complete-write result.
 struct WriteOutcome {
+    // Restores the writer after completion, timeout, or failure.
     Writer own TcpWriter
+    // Confirms a complete write or preserves its typed failure.
     Value Result<void, Error>
 }
 
-// Binds a TCP listener to one local IP address. Port zero asks the OS to choose.
+// Binds one local address. Port zero asks the OS to choose.
 fn Listen($address String, port u64) Result<own TcpListener, Error> {
     const defaultBacklog u64 = 128
     var listener u64 = 0
@@ -192,7 +299,25 @@ fn Listen($address String, port u64) Result<own TcpListener, Error> {
     .Err(errorFor(status))
 }
 
-// Accepts one connection and returns ownership of the listener for the next call.
+// Creates one absolute monotonic deadline from a positive duration.
+fn DeadlineAfter(duration time.Duration) Result<Deadline, Error> {
+    const signed = duration.Nanoseconds()
+    if signed <= 0 return .Err(.Timeout)
+    const durationNanoseconds = u64.From(signed) else error {
+        discard error
+        return .Err(.Timeout)
+    }
+    const now = time.MonotonicNow().Nanoseconds()
+    const maximum u64 = 18446744073709551614
+    const deadline = if durationNanoseconds > maximum - now {
+        maximum
+    } else {
+        now + durationNanoseconds
+    }
+    .Ok(Deadline { nanoseconds = deadline })
+}
+
+// Accepts one connection and restores the listener for the next call.
 task Accept($listener own TcpListener) AcceptOutcome {
     var connection u64 = 0
     const status = acceptNative(listener.handle, &connection)
@@ -205,7 +330,7 @@ task Accept($listener own TcpListener) AcceptOutcome {
     AcceptOutcome { Listener = listener Value = .Err(errorFor(status)) }
 }
 
-// Resolves and opens one TCP connection without blocking the Foundation executor.
+// Resolves and opens one TCP connection outside the Foundation executor.
 task Connect($host String, port u64) Result<own TcpConnection, Error> {
     var addresses u64 = 0
     const resolveStatus = resolveNative(host, port, &addresses)
@@ -215,6 +340,31 @@ task Connect($host String, port u64) Result<own TcpConnection, Error> {
 
     var connection u64 = 0
     const connectStatus = connectNative(addresses, &connection)
+    closeAddressesNative(addresses)
+    if connectStatus == 0 {
+        return .Ok(own TcpConnection { handle = connection })
+    }
+    .Err(errorFor(connectStatus))
+}
+
+// Resolves and connects before one absolute monotonic deadline.
+task ConnectUntil(
+    $host String,
+    port u64,
+    deadline Deadline
+) Result<own TcpConnection, Error> {
+    var addresses u64 = 0
+    const resolveStatus = resolveNative(host, port, &addresses)
+    if resolveStatus != 0 {
+        return .Err(errorFor(resolveStatus))
+    }
+
+    var connection u64 = 0
+    const connectStatus = connectUntilNative(
+        addresses,
+        deadline.nanoseconds,
+        &connection
+    )
     closeAddressesNative(addresses)
     if connectStatus == 0 {
         return .Ok(own TcpConnection { handle = connection })
@@ -249,6 +399,28 @@ task ReadLineLimited($reader own TcpReader, limit u64) ReadLineOutcome {
     ReadLineOutcome { Reader = reader Value = .Err(errorFor(status)) }
 }
 
+// Reads one bounded UTF-8 line before an absolute monotonic deadline.
+task ReadLineLimitedUntil(
+    $reader own TcpReader,
+    limit u64,
+    deadline Deadline
+) ReadLineOutcome {
+    var line = ""
+    const status = readLineUntilNative(
+        reader.handle,
+        limit,
+        deadline.nanoseconds,
+        &line
+    )
+    if status == 0 {
+        return ReadLineOutcome { Reader = reader Value = .Ok(.Some(line)) }
+    }
+    if status == 9 {
+        return ReadLineOutcome { Reader = reader Value = .Ok(.None) }
+    }
+    ReadLineOutcome { Reader = reader Value = .Err(errorFor(status)) }
+}
+
 // Reads exactly length UTF-8 bytes and returns ownership of the reader.
 task ReadExact($reader own TcpReader, length u64) ReadOutcome {
     var text = ""
@@ -259,9 +431,45 @@ task ReadExact($reader own TcpReader, length u64) ReadOutcome {
     ReadOutcome { Reader = reader Value = .Err(errorFor(status)) }
 }
 
+// Reads exactly length UTF-8 bytes before an absolute monotonic deadline.
+task ReadExactUntil(
+    $reader own TcpReader,
+    length u64,
+    deadline Deadline
+) ReadOutcome {
+    var text = ""
+    const status = readExactUntilNative(
+        reader.handle,
+        length,
+        deadline.nanoseconds,
+        &text
+    )
+    if status == 0 {
+        return ReadOutcome { Reader = reader Value = .Ok(text) }
+    }
+    ReadOutcome { Reader = reader Value = .Err(errorFor(status)) }
+}
+
 // Writes the complete UTF-8 string and returns ownership of the writer.
 task WriteAll($writer own TcpWriter, $text String) WriteOutcome {
     const status = writeAllNative(writer.handle, text)
+    if status == 0 {
+        return WriteOutcome { Writer = writer Value = .Ok }
+    }
+    WriteOutcome { Writer = writer Value = .Err(errorFor(status)) }
+}
+
+// Writes the complete UTF-8 string before an absolute monotonic deadline.
+task WriteAllUntil(
+    $writer own TcpWriter,
+    $text String,
+    deadline Deadline
+) WriteOutcome {
+    const status = writeAllUntilNative(
+        writer.handle,
+        text,
+        deadline.nanoseconds
+    )
     if status == 0 {
         return WriteOutcome { Writer = writer Value = .Ok }
     }

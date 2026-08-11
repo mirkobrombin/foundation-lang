@@ -565,10 +565,72 @@ class Monomorphizer {
     }
 
   private:
+    bool isCopySourceParameterType(const Type &type,
+                                   std::unordered_set<std::string> &active) const {
+        if (isMachineScalar(type) && type != voidType && type != neverType) {
+            return true;
+        }
+        if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) {
+            return type.arguments.size() == 1;
+        }
+        if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
+            return isCopySourceParameterType(type.arguments.front(), active);
+        }
+        if (type.kind != TypeKind::Struct && type.kind != TypeKind::Enum) {
+            return false;
+        }
+
+        const auto key = typeKey(type);
+        if (!active.insert(key).second) {
+            return false;
+        }
+        const auto removeActive = [&]() { active.erase(key); };
+
+        if (type.kind == TypeKind::Struct) {
+            if (type.declaration >= source_.structs.size()) {
+                removeActive();
+                return false;
+            }
+            const auto &declaration = source_.structs[type.declaration];
+            if (declaration.dropFunction.has_value()) {
+                removeActive();
+                return false;
+            }
+            const auto copy = std::all_of(
+                declaration.fields.begin(), declaration.fields.end(),
+                [&](const FirStructField &field) {
+                    return isCopySourceParameterType(
+                        substitute(field.type, type.arguments), active);
+                });
+            removeActive();
+            return copy;
+        }
+
+        if (type.declaration >= source_.enums.size()) {
+            removeActive();
+            return false;
+        }
+        const auto &declaration = source_.enums[type.declaration];
+        const auto copy = std::all_of(
+            declaration.variants.begin(), declaration.variants.end(),
+            [&](const FirEnumVariant &variant) {
+                return !variant.payload.has_value() ||
+                       isCopySourceParameterType(
+                           substitute(*variant.payload, type.arguments), active);
+            });
+        removeActive();
+        return copy;
+    }
+
+    bool isCopySourceParameterType(const Type &type) const {
+        std::unordered_set<std::string> active;
+        return isCopySourceParameterType(type, active);
+    }
+
     std::string sourceTypeKey(const Type &type) const {
         if (type.kind == TypeKind::View && type.declaration == 1 &&
             type.arguments.size() == 1 &&
-            isCopyParameterType(source_, type.arguments.front())) {
+            isCopySourceParameterType(type.arguments.front())) {
             return sourceTypeKey(type.arguments.front());
         }
         std::string result;

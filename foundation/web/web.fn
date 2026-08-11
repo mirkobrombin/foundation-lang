@@ -1256,6 +1256,7 @@ fn netErrorIsClosed(error net.Error) bool {
         InvalidUtf8: false
         LineTooLong: false
         AddressInUse: false
+        Timeout: false
         Io: false
     }
 }

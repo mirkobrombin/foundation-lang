@@ -68,6 +68,21 @@ bool containsProperType(const Type &outer, const Type &candidate) {
     return false;
 }
 
+bool isInfiniteTypeRecurrence(const Type &active, const Type &child) {
+    if (active == child) {
+        return true;
+    }
+    if (containsProperType(active, child)) {
+        return false;
+    }
+    for (const auto &argument : active.arguments) {
+        if (argument == child || containsProperType(child, argument)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool isCIdentifier(std::string_view value) {
     if (value.empty()) {
         return false;
@@ -1076,7 +1091,7 @@ class Analyzer {
                     continue;
                 }
                 if (!active[node].empty() &&
-                    !containsProperType(active[node].back(), child)) {
+                    isInfiniteTypeRecurrence(active[node].back(), child)) {
                     diagnostics_.error("FDN2023", "recursive value type is not allowed", span);
                     return;
                 }
