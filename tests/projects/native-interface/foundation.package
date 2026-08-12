@@ -1,0 +1,9 @@
+format foundation.package/v1
+name sample.native
+version 1.0.0
+sdk ^0.1.0
+source src
+native_library c
+native_name sample_native
+native_soversion 2
+foreign c libfuse 2.9.9 path native/libfuse abi c/v1

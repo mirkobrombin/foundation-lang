@@ -128,6 +128,34 @@ void lockedProjectsRejectLockSymlinks() {
            "locked project loader does not follow a lock symlink");
 }
 
+void lockedProjectsRejectChangedForeignContent() {
+    Fixture fixture;
+    std::filesystem::create_directories(fixture.app / "native" / "libfuse");
+    std::ofstream(fixture.app / "native" / "libfuse" / "fuse.h", std::ios::binary)
+        << "int fuse_main(void);\n";
+    std::ofstream(fixture.app / "foundation.package", std::ios::binary)
+        << "format foundation.package/v1\n"
+        << "name sample.app\n"
+        << "version 1.0.0\n"
+        << "sdk ^0.1.0\n"
+        << "source src\n"
+        << "native_library c\n"
+        << "native_name sample_app\n"
+        << "foreign c libfuse 2.9.9 path native/libfuse abi c/v1\n"
+        << "dependency sample.lib 1.0.0 path ../dependency\n";
+    const auto resolution = fixture.resolve();
+    const auto written = foundation::writePackageLockAtomically(
+        fixture.app / "foundation.lock", resolution.lock);
+    expect(written.errors.empty(), "foreign content fixture lock writes");
+    std::ofstream(fixture.app / "native" / "libfuse" / "fuse.h", std::ios::binary)
+        << "int fuse_changed(void);\n";
+    const auto loaded = foundation::loadLockedPackageProject(
+        fixture.app / "foundation.package", *foundation::parsePackageVersion("0.1.0"),
+        foundation::TargetPlatform::Linux, fixture.cache);
+    expect(hasCode(loaded.errors, "FDN4111"),
+           "changed foreign path content makes the lock stale");
+}
+
 void testSourcesStayOutOfProductionProjects() {
     Fixture fixture;
     std::filesystem::create_directories(fixture.app / "tests");
@@ -184,6 +212,7 @@ int runPackageProjectTests() {
     lockedProjectsLoadVerifiedSources();
     lockedProjectsRejectChangedPathsAndTargets();
     lockedProjectsRejectLockSymlinks();
+    lockedProjectsRejectChangedForeignContent();
     testSourcesStayOutOfProductionProjects();
     return failures;
 }

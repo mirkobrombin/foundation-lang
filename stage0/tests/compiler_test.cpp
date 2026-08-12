@@ -8,6 +8,7 @@
 #include "foundation/lower.hpp"
 #include "foundation/metadata.hpp"
 #include "foundation/parser.hpp"
+#include "foundation/package_interface.hpp"
 #include "foundation/project.hpp"
 #include "foundation/sema.hpp"
 #include "foundation/target.hpp"
@@ -2016,6 +2017,153 @@ fn main() i32 {
            "C import does not leak into the public header");
 }
 
+void packageInterfacesUseReachableMonomorphizedCBoundaries() {
+    constexpr std::string_view source = R"(
+extern c fn nativeLabel(label String) bool as sample_native_label
+extern c fn nativeEdit(&label String) i32 as sample_native_edit
+extern c fn nativeUnused(value i32) i32 as sample_native_unused
+
+extern c fn FoundationLabel(label String) String as sample_label {
+    if nativeLabel(label) return "yes"
+    "no"
+}
+
+extern c fn FoundationEdit(&label String) i32 as sample_edit {
+    nativeEdit(&label)
+}
+
+fn main() i32 { 0 }
+)";
+    auto checked = check(source);
+    expect(!checked.diagnostics.hasErrors() && checked.fir.has_value(),
+           "package interface fixture lowers to FIR");
+    if (!checked.fir.has_value())
+        return;
+    for (auto &function : checked.fir->functions) {
+        function.packageName = "sample.native";
+        function.sourcePath = "src/interface.fn";
+    }
+    foundation::PackageManifest manifest;
+    manifest.name = "sample.native";
+    manifest.version = *foundation::parsePackageVersion("1.0.0");
+    manifest.sdk = *foundation::parsePackageRequirement("^0.1.0");
+    manifest.source = "src";
+    manifest.nativeLibrary = true;
+    manifest.nativeName = "sample_native";
+    foundation::PackageLock lock;
+    lock.rootName = manifest.name;
+    lock.rootVersion = manifest.version;
+    lock.target = foundation::TargetPlatform::Linux;
+
+    foundation::Diagnostics diagnostics;
+    const auto packageInterface = foundation::buildPackageInterface(
+        *checked.fir, manifest, lock, diagnostics);
+    expect(packageInterface.has_value() && !diagnostics.hasErrors(),
+           "valid C ABI v1 boundaries build a package interface");
+    if (!packageInterface.has_value())
+        return;
+    expect(packageInterface->exports.size() == 2 && packageInterface->imports.size() == 2,
+           "PII includes root exports and only their reachable C imports");
+    const auto imported = [&](std::string_view symbol) {
+        return std::find_if(packageInterface->imports.begin(), packageInterface->imports.end(),
+                            [&](const auto &function) { return function.cSymbol == symbol; });
+    };
+    const auto exported = [&](std::string_view symbol) {
+        return std::find_if(packageInterface->exports.begin(), packageInterface->exports.end(),
+                            [&](const auto &function) { return function.cSymbol == symbol; });
+    };
+    const auto labelImport = imported("sample_native_label");
+    const auto editImport = imported("sample_native_edit");
+    const auto labelExport = exported("sample_label");
+    const auto editExport = exported("sample_edit");
+    expect(labelImport != packageInterface->imports.end() &&
+               labelImport->parameters.front().ownership ==
+                   foundation::PiiOwnership::Borrowed &&
+               labelExport != packageInterface->exports.end() &&
+               labelExport->parameters.front().ownership ==
+                   foundation::PiiOwnership::Borrowed,
+           "plain String C parameters are borrowed on imports and exports");
+    expect(editImport != packageInterface->imports.end() &&
+               editImport->parameters.front().ownership ==
+                   foundation::PiiOwnership::ExclusiveBorrow &&
+               editExport != packageInterface->exports.end() &&
+               editExport->parameters.front().ownership ==
+                   foundation::PiiOwnership::ExclusiveBorrow,
+           "edited String C parameters are exclusive borrows on imports and exports");
+    expect(labelExport != packageInterface->exports.end() &&
+               labelExport->resultOwnership ==
+                   foundation::PiiOwnership::CallerOwnedResult &&
+               labelExport->source->path == "src/interface.fn",
+           "String results transfer to the caller and source paths stay package-relative");
+    expect(foundation::renderPackageInterfaceJson(*packageInterface)
+               .find("sample_native_unused") ==
+               std::string::npos,
+           "unused root C imports are intentionally omitted from PII link dependencies");
+
+    auto invalid = *checked.fir;
+    for (auto &function : invalid.functions) {
+        if (function.cSymbol == "sample_label") {
+            function.returnType = foundation::Type{
+                foundation::TypeKind::Function, 0,
+                {foundation::i32Type, foundation::i32Type}};
+        }
+    }
+    foundation::Diagnostics invalidDiagnostics;
+    expect(!foundation::buildPackageInterface(invalid, manifest, lock,
+                                               invalidDiagnostics)
+                .has_value() &&
+               hasCode(invalidDiagnostics, "FDN2120"),
+           "PII emission enforces C ABI v1 on every emitted result");
+
+    auto invalidParameter = *checked.fir;
+    for (auto &function : invalidParameter.functions) {
+        if (function.cSymbol == "sample_native_label") {
+            const auto parameter = function.parameters.front();
+            function.locals[parameter].type = foundation::Type{
+                foundation::TypeKind::Function, 0,
+                {foundation::i32Type, foundation::i32Type}};
+        }
+    }
+    foundation::Diagnostics parameterDiagnostics;
+    expect(!foundation::buildPackageInterface(invalidParameter, manifest, lock,
+                                               parameterDiagnostics)
+                .has_value() &&
+               hasCode(parameterDiagnostics, "FDN2120"),
+           "PII emission enforces C ABI v1 on every emitted parameter");
+
+    auto absoluteSource = *checked.fir;
+    for (auto &function : absoluteSource.functions)
+        function.sourcePath = "/tmp/interface.fn";
+    foundation::Diagnostics sourceDiagnostics;
+    expect(!foundation::buildPackageInterface(absoluteSource, manifest, lock,
+                                               sourceDiagnostics)
+                .has_value() &&
+               hasCode(sourceDiagnostics, "FDN2121"),
+           "PII rejects absolute source paths before canonical hashing");
+
+    auto escapingSource = *checked.fir;
+    for (auto &function : escapingSource.functions)
+        function.sourcePath = "../interface.fn";
+    foundation::Diagnostics escapingDiagnostics;
+    expect(!foundation::buildPackageInterface(escapingSource, manifest, lock,
+                                               escapingDiagnostics)
+                .has_value() &&
+               hasCode(escapingDiagnostics, "FDN2121"),
+           "PII rejects source path traversal before canonical hashing");
+
+    auto callback = *checked.fir;
+    for (auto &function : callback.functions) {
+        if (function.cSymbol == "sample_native_label")
+            function.callback = true;
+    }
+    foundation::Diagnostics callbackDiagnostics;
+    expect(!foundation::buildPackageInterface(callback, manifest, lock,
+                                               callbackDiagnostics)
+                .has_value() &&
+               hasCode(callbackDiagnostics, "FDN2120"),
+           "PII rejects callback imports until their full C ABI is modeled");
+}
+
 void rawPointersLowerToExplicitCBoundaries() {
     constexpr std::string_view source = R"(
 extern c fn nativeValues() *i32 as foundation_raw_values
@@ -2755,6 +2903,7 @@ int main() {
     diagnosticsBoundLongSourceExcerpts();
     packageHeadersAndSourceDiagnosticsStayStable();
     cAbiFunctionsLowerToDeterministicBoundaries();
+    packageInterfacesUseReachableMonomorphizedCBoundaries();
     rawPointersLowerToExplicitCBoundaries();
     blockingImportsLowerToTaskSuspension();
     callbackImportsLowerToReactorSuspension();

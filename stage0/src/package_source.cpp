@@ -207,4 +207,103 @@ inspectPackageSource(const std::filesystem::path &packageDirectory,
     return result;
 }
 
+PackageParseResult<PackageSourceSnapshot>
+inspectForeignSource(const std::filesystem::path &sourceDirectory) {
+    PackageParseResult<PackageSourceSnapshot> result;
+    PackageSourceSnapshot snapshot;
+    std::error_code error;
+    const auto sourceStatus = std::filesystem::symlink_status(sourceDirectory, error);
+    if (error || !std::filesystem::is_directory(sourceStatus) ||
+        std::filesystem::is_symlink(sourceStatus)) {
+        addError(result.errors, sourceDirectory, "FDN4057",
+                 "foreign path source must be a real directory");
+        return result;
+    }
+
+    std::set<std::string> foldedPaths;
+    std::filesystem::recursive_directory_iterator iterator(sourceDirectory, error);
+    const std::filesystem::recursive_directory_iterator end;
+    while (!error && iterator != end) {
+        const auto path = iterator->path();
+        const auto status = iterator->symlink_status(error);
+        if (error) {
+            break;
+        }
+        if (iterator.depth() >= maxSourceDepth) {
+            addError(result.errors, path, "FDN4057", "foreign path source exceeds depth limit");
+            return result;
+        }
+        if (std::filesystem::is_symlink(status)) {
+            addError(result.errors, path, "FDN4057", "foreign path source cannot contain symlinks");
+            return result;
+        }
+        if (std::filesystem::is_directory(status)) {
+            iterator.increment(error);
+            continue;
+        }
+        if (!std::filesystem::is_regular_file(status)) {
+            addError(result.errors, path, "FDN4057",
+                     "foreign path source can contain only regular files");
+            return result;
+        }
+        const auto relative = path.lexically_relative(sourceDirectory).lexically_normal();
+        if (!portablePath(relative)) {
+            addError(result.errors, path, "FDN4057", "foreign path source is not portable");
+            return result;
+        }
+        if (!foldedPaths.insert(folded(relative.generic_string())).second) {
+            addError(result.errors, path, "FDN4057",
+                     "foreign path source paths collide without case sensitivity");
+            return result;
+        }
+        const auto size = std::filesystem::file_size(path, error);
+        if (error || size > maxSourceFileBytes || snapshot.totalBytes > maxSourceBytes - size) {
+            addError(result.errors, path, "FDN4057", "foreign path source exceeds size limit");
+            return result;
+        }
+        if (snapshot.files.size() == maxSourceFiles) {
+            addError(result.errors, path, "FDN4057", "foreign path source exceeds file limit");
+            return result;
+        }
+        snapshot.files.push_back({relative, size});
+        snapshot.totalBytes += size;
+        iterator.increment(error);
+    }
+    if (error) {
+        addError(result.errors, sourceDirectory, "FDN4057", "cannot inspect foreign path source");
+        return result;
+    }
+    if (snapshot.files.empty()) {
+        addError(result.errors, sourceDirectory, "FDN4057", "foreign path source is empty");
+        return result;
+    }
+    std::sort(snapshot.files.begin(), snapshot.files.end(), [](const auto &left,
+                                                               const auto &right) {
+        return left.path.generic_string() < right.path.generic_string();
+    });
+
+    Sha256 hash;
+    hash.update("foundation.foreign.path.digest/v1");
+    for (const auto &file : snapshot.files) {
+        const auto relative = file.path.generic_string();
+        updateEntryHeader(hash, relative, file.size);
+        if (!hashFile(hash, sourceDirectory / file.path, file.size)) {
+            addError(result.errors, sourceDirectory / file.path, "FDN4057",
+                     "foreign path source changed while it was read");
+            return result;
+        }
+    }
+    const auto digestBytes = hash.finish();
+    static constexpr char digits[] = "0123456789abcdef";
+    snapshot.digest = "sha256:";
+    snapshot.digest.reserve(7 + digestBytes.size() * 2);
+    for (const auto byte : digestBytes) {
+        const auto value = std::to_integer<unsigned int>(byte);
+        snapshot.digest.push_back(digits[value >> 4U]);
+        snapshot.digest.push_back(digits[value & 0x0fU]);
+    }
+    result.value = std::move(snapshot);
+    return result;
+}
+
 } // namespace foundation

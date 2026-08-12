@@ -6,6 +6,7 @@
 
 #include <compare>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <span>
@@ -78,6 +79,17 @@ struct PackageManifest {
     std::filesystem::path source;
     std::optional<std::filesystem::path> testSource;
     std::vector<PackageDependency> dependencies;
+    bool nativeLibrary{};
+    std::optional<std::string> nativeName;
+    std::optional<std::uint32_t> nativeSOVersion;
+    struct Foreign {
+        std::string ecosystem;
+        std::string identifier;
+        std::string version;
+        std::string kind;
+        std::string resolver;
+    };
+    std::vector<Foreign> foreign;
 };
 
 struct LockedPackage {
@@ -94,10 +106,31 @@ struct PackageEdge {
     PackageDependencyScope scope{PackageDependencyScope::Runtime};
 };
 
+struct LockedNativeLibrary {
+    std::string name;
+    std::optional<std::uint32_t> soVersion;
+    std::string digest;
+
+    bool operator==(const LockedNativeLibrary &) const = default;
+};
+
+struct LockedForeign {
+    std::string ecosystem;
+    std::string identifier;
+    std::string version;
+    std::string kind;
+    std::string resolver;
+    std::string digest;
+
+    bool operator==(const LockedForeign &) const = default;
+};
+
 struct PackageLock {
     std::string rootName;
     PackageVersion rootVersion;
     TargetPlatform target{TargetPlatform::Linux};
+    std::optional<LockedNativeLibrary> nativeLibrary;
+    std::vector<LockedForeign> foreign;
     std::vector<LockedPackage> packages;
     std::vector<PackageEdge> edges;
 };
@@ -181,10 +214,16 @@ writePackageLockAtomically(const std::filesystem::path &path, const PackageLock 
 [[nodiscard]] PackageParseResult<PackageSourceSnapshot>
 inspectPackageSource(const std::filesystem::path &packageDirectory,
                      const PackageManifest &manifest);
+[[nodiscard]] PackageParseResult<PackageSourceSnapshot>
+inspectForeignSource(const std::filesystem::path &sourceDirectory);
 [[nodiscard]] PackageParseResult<PackageResolution>
 resolvePackageGraph(const std::filesystem::path &rootManifestPath,
                     const PackageManifest &root, const PackageVersion &sdk,
                     TargetPlatform target, std::span<const PackageCandidate> catalog);
+[[nodiscard]] std::vector<PackageError>
+lockRootPackageMetadata(PackageLock &lock, const PackageManifest &manifest,
+                        TargetPlatform target,
+                        const std::filesystem::path &rootManifestPath);
 [[nodiscard]] PackageParseResult<PackageCatalog>
 collectPackageCatalog(const std::filesystem::path &rootManifestPath,
                       const PackageManifest &root, const PackageVersion &sdk,

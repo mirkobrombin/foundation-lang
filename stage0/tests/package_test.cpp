@@ -1,4 +1,5 @@
 #include "foundation/package.hpp"
+#include "foundation/package_interface.hpp"
 
 #include <iostream>
 #include <string_view>
@@ -129,6 +130,44 @@ test_source src/tests
            "production and test source roots cannot overlap");
 }
 
+void nativeManifestsRoundTripAndValidatePaths() {
+    constexpr std::string_view source = R"(format foundation.package/v1
+name sample.native
+version 1.0.0
+sdk ^0.1.0
+source src
+native_library c
+native_name sample_native
+native_soversion 2
+foreign c libfuse 2.9.9 path native/libfuse abi c/v1
+)";
+    const auto parsed = foundation::parsePackageManifest("foundation.package", source);
+    expect(parsed.value.has_value() &&
+               foundation::renderPackageManifest(*parsed.value) == source,
+           "native manifest metadata round trips canonically");
+    const auto absolute = std::string(source) +
+                          "foreign c absolute 1.0.0 path /tmp/native abi c/v1\n";
+    const auto parent = std::string(source) +
+                        "foreign c parent 1.0.0 path ../native abi c/v1\n";
+    expect(hasCode(foundation::parsePackageManifest("foundation.package", absolute).errors,
+                   "FDN4015") &&
+               hasCode(foundation::parsePackageManifest("foundation.package", parent).errors,
+                       "FDN4015"),
+           "foreign path resolvers cannot be absolute or escape the package");
+    constexpr std::string_view reserved = R"(format foundation.package/v1
+name sample.native
+version 1.0.0
+sdk ^0.1.0
+source src
+native_library c
+native_name sample_native
+foreign c registry-lib 1.0.0 registry default abi c/v1
+foreign c system-lib 1.0.0 system local abi c/v1
+)";
+    expect(foundation::parsePackageManifest("foundation.package", reserved).value.has_value(),
+           "reserved registry and system provenance remains parseable");
+}
+
 void manifestsRejectAmbiguousInput() {
     constexpr std::string_view source = R"(format foundation.package/v1
 name sample.app
@@ -165,6 +204,10 @@ void locksRoundTripCanonically() {
     lock.rootName = "sample.app";
     lock.rootVersion = *foundation::parsePackageVersion("1.0.0");
     lock.target = foundation::TargetPlatform::Linux;
+    lock.nativeLibrary = foundation::LockedNativeLibrary{
+        "sample_native", 2, std::string(digest)};
+    lock.foreign.push_back({"c", "libfuse", "2.9.9", "path", "native/libfuse",
+                            std::string(digest)});
     lock.packages.push_back({"sample.lib", *foundation::parsePackageVersion("2.0.0"),
                              std::string(digest), foundation::PackageLocationKind::Registry,
                              "default"});
@@ -177,6 +220,35 @@ void locksRoundTripCanonically() {
            "package lock serialization is canonical");
     expect(rendered.find("edge sample.app sample.lib scope test") != std::string::npos,
            "test dependency scope is retained in the lock");
+    expect(rendered.find("native c sample_native 2 sha256:") != std::string::npos &&
+               rendered.find("foreign c libfuse 2.9.9 path native/libfuse abi c/v1 sha256:") !=
+                   std::string::npos,
+           "native and foreign lock metadata is retained");
+
+    foundation::PackageLock legacy;
+    legacy.rootName = "sample.legacy";
+    legacy.rootVersion = *foundation::parsePackageVersion("1.0.0");
+    legacy.target = foundation::TargetPlatform::Linux;
+    expect(foundation::renderPackageLock(legacy) ==
+               "format foundation.lock/v1\nroot sample.legacy 1.0.0\ntarget linux\n",
+           "legacy lock bytes remain unchanged without native metadata");
+}
+
+void packageInterfacesRenderCanonically() {
+    foundation::PackageInterface packageInterface;
+    packageInterface.package = "sample.native";
+    packageInterface.version = *foundation::parsePackageVersion("1.0.0");
+    packageInterface.sdk = *foundation::parsePackageRequirement("^0.1.0");
+    packageInterface.library = "sample_native";
+    packageInterface.target = foundation::TargetPlatform::Linux;
+    packageInterface.foreign.push_back(
+        {foundation::PiiEcosystem::C, "libfuse", "2.9.9", "path", "native/libfuse",
+         "sha256:test", foundation::TargetPlatform::Linux, foundation::PiiAbi::C11});
+    const auto first = foundation::renderPackageInterfaceJson(packageInterface);
+    const auto second = foundation::renderPackageInterfaceJson(packageInterface);
+    expect(first == second && first.find("\"kind\":\"path\"") != std::string::npos &&
+               first.find("\"canonical_sha256\":\"sha256:") != std::string::npos,
+           "package interface JSON is canonical and preserves resolver provenance");
 }
 
 void locksRejectIncoherentGraphs() {
@@ -225,7 +297,9 @@ int main() {
     manifestsRoundTripCanonically();
     manifestsRejectAmbiguousInput();
     manifestsRequireSeparatedTestSources();
+    nativeManifestsRoundTripAndValidatePaths();
     locksRoundTripCanonically();
+    packageInterfacesRenderCanonically();
     locksRejectIncoherentGraphs();
     failures += runPackageCacheTests();
     failures += runPackageCatalogTests();

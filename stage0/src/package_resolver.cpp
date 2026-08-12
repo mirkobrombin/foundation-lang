@@ -1,5 +1,7 @@
 #include "foundation/package.hpp"
 
+#include "foundation/sha256.hpp"
+
 #include <algorithm>
 #include <functional>
 #include <map>
@@ -43,6 +45,17 @@ struct Failure {
 
 bool active(const PackageDependency &dependency, TargetPlatform target) {
     return !dependency.target.has_value() || *dependency.target == target;
+}
+
+std::string nativeDigest(const PackageManifest &manifest, TargetPlatform target) {
+    std::ostringstream descriptor;
+    descriptor << "foundation.native-library/v1\n"
+               << manifest.nativeName.value_or(manifest.name) << '\n'
+               << (manifest.nativeSOVersion.has_value()
+                       ? std::to_string(*manifest.nativeSOVersion)
+                       : "-")
+               << '\n' << targetPlatformName(target) << '\n';
+    return "sha256:" + sha256Hex(descriptor.str());
 }
 
 std::string locationName(PackageLocationKind kind) {
@@ -227,6 +240,73 @@ bool solve(const std::vector<PackageCandidate> &catalog, const PackageVersion &s
 
 } // namespace
 
+std::vector<PackageError>
+lockRootPackageMetadata(PackageLock &lock, const PackageManifest &manifest,
+                        TargetPlatform target,
+                        const std::filesystem::path &rootManifestPath) {
+    std::vector<PackageError> errors;
+    lock.nativeLibrary.reset();
+    lock.foreign.clear();
+    if (!manifest.nativeLibrary) {
+        return errors;
+    }
+    lock.nativeLibrary = LockedNativeLibrary{
+        manifest.nativeName.value_or(manifest.name), manifest.nativeSOVersion,
+        nativeDigest(manifest, target)};
+    for (const auto &foreign : manifest.foreign) {
+        if (foreign.kind != "path") {
+            errors.push_back({rootManifestPath, 1, 1, "FDN4057",
+                              "foreign resolver kind " + foreign.kind +
+                                  " is declared for future use but is not supported"});
+            continue;
+        }
+        std::error_code error;
+        const auto unresolvedPath = rootManifestPath.parent_path() / foreign.resolver;
+        auto current = rootManifestPath.parent_path();
+        auto containsSymlink = false;
+        for (const auto &part : std::filesystem::path(foreign.resolver)) {
+            current /= part;
+            const auto status = std::filesystem::symlink_status(current, error);
+            if (error || std::filesystem::is_symlink(status)) {
+                containsSymlink = true;
+                break;
+            }
+        }
+        if (containsSymlink) {
+            errors.push_back({unresolvedPath, 1, 1, "FDN4057",
+                              "foreign path source cannot use symlinked path components"});
+            continue;
+        }
+        const auto projectRoot = std::filesystem::canonical(
+            rootManifestPath.parent_path(), error);
+        const auto sourcePath = std::filesystem::canonical(
+            unresolvedPath, error);
+        const auto relative = error ? std::filesystem::path{} :
+                                      sourcePath.lexically_relative(projectRoot);
+        if (error || relative.empty() || relative.is_absolute() ||
+            *relative.begin() == "..") {
+            errors.push_back({rootManifestPath, 1, 1, "FDN4057",
+                              "foreign path source must stay inside the package root"});
+            continue;
+        }
+        const auto source = inspectForeignSource(sourcePath);
+        if (!source.value.has_value()) {
+            errors.insert(errors.end(), source.errors.begin(), source.errors.end());
+            continue;
+        }
+        lock.foreign.push_back({foreign.ecosystem, foreign.identifier, foreign.version,
+                                foreign.kind, foreign.resolver, source.value->digest});
+    }
+    std::sort(lock.foreign.begin(), lock.foreign.end(), [](const auto &left,
+                                                           const auto &right) {
+        return std::tie(left.ecosystem, left.identifier, left.version, left.kind,
+                        left.resolver, left.digest) <
+               std::tie(right.ecosystem, right.identifier, right.version, right.kind,
+                        right.resolver, right.digest);
+    });
+    return errors;
+}
+
 PackageParseResult<PackageResolution>
 resolvePackageGraph(const std::filesystem::path &rootManifestPath,
                     const PackageManifest &root, const PackageVersion &sdk,
@@ -296,6 +376,11 @@ resolvePackageGraph(const std::filesystem::path &rootManifestPath,
     resolution.lock.rootName = root.name;
     resolution.lock.rootVersion = root.version;
     resolution.lock.target = target;
+    result.errors = lockRootPackageMetadata(resolution.lock, root, target,
+                                            rootManifestPath);
+    if (!result.errors.empty()) {
+        return result;
+    }
     for (const auto &[name, index] : state.selected) {
         const auto &candidate = catalog[index];
         resolution.lock.packages.push_back({name, candidate.manifest.version, candidate.digest,

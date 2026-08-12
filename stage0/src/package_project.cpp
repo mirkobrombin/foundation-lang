@@ -188,6 +188,19 @@ loadLockedPackageProject(const std::filesystem::path &manifestPath,
                      std::string(targetPlatformName(target)));
         return result;
     }
+    PackageLock expectedMetadata;
+    const auto metadataErrors = lockRootPackageMetadata(
+        expectedMetadata, *manifest.value, target, manifestPath);
+    if (!metadataErrors.empty()) {
+        result.errors = metadataErrors;
+        return result;
+    }
+    if (lock.value->nativeLibrary != expectedMetadata.nativeLibrary ||
+        lock.value->foreign != expectedMetadata.foreign) {
+        addError(result.errors, lockPath, "FDN4111",
+                 "package lock native metadata does not match the manifest or foreign input");
+        return result;
+    }
 
     LockedPackageProject project;
     project.manifestPath = manifestPath;

@@ -2,6 +2,8 @@
 #include "foundation/sha256.hpp"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string_view>
 #include <vector>
@@ -194,6 +196,80 @@ void testDependenciesAreRootScoped() {
            "dependency package test scopes do not leak into the root graph");
 }
 
+void nativeMetadataPinsForeignPathContent() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      "foundation-native-metadata-test";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "native" / "libfuse");
+    std::ofstream(root / "native" / "libfuse" / "fuse.h", std::ios::binary)
+        << "int fuse_main(void);\n";
+    auto package = manifest("sample.native", "1.0.0");
+    package.nativeLibrary = true;
+    package.nativeName = "sample_native";
+    package.nativeSOVersion = 2;
+    package.foreign.push_back(
+        {"c", "libfuse", "2.9.9", "path", "native/libfuse"});
+    const auto manifestPath = root / "foundation.package";
+    const auto first = foundation::resolvePackageGraph(
+        manifestPath, package, *foundation::parsePackageVersion("0.1.0"),
+        foundation::TargetPlatform::Linux, {});
+    expect(first.value.has_value() && first.value->lock.nativeLibrary.has_value() &&
+               first.value->lock.foreign.size() == 1,
+           "native metadata and foreign content are locked");
+    std::ofstream(root / "native" / "libfuse" / "fuse.h", std::ios::binary)
+        << "int fuse_changed(void);\n";
+    const auto changed = foundation::resolvePackageGraph(
+        manifestPath, package, *foundation::parsePackageVersion("0.1.0"),
+        foundation::TargetPlatform::Linux, {});
+    expect(first.value.has_value() && changed.value.has_value() &&
+               first.value->lock.foreign.front().digest !=
+                   changed.value->lock.foreign.front().digest,
+           "foreign lock digest changes with path content");
+
+    package.foreign.front().kind = "registry";
+    const auto registry = foundation::resolvePackageGraph(
+        manifestPath, package, *foundation::parsePackageVersion("0.1.0"),
+        foundation::TargetPlatform::Linux, {});
+    expect(hasCode(registry.errors, "FDN4057"),
+           "future foreign resolver kinds are rejected during resolution");
+    package.foreign.front().kind = "system";
+    const auto system = foundation::resolvePackageGraph(
+        manifestPath, package, *foundation::parsePackageVersion("0.1.0"),
+        foundation::TargetPlatform::Linux, {});
+    expect(hasCode(system.errors, "FDN4057"),
+           "future system provenance is rejected during resolution");
+
+    package.foreign.front().kind = "path";
+    package.foreign.front().resolver = "escape/libfuse";
+    const auto outside = root.parent_path() / "foundation-native-metadata-outside";
+    std::filesystem::remove_all(outside);
+    std::filesystem::create_directories(outside / "libfuse");
+    std::ofstream(outside / "libfuse" / "fuse.h") << "outside\n";
+    std::error_code error;
+    std::filesystem::create_directory_symlink(outside, root / "escape", error);
+    if (!error) {
+        const auto escaped = foundation::resolvePackageGraph(
+            manifestPath, package, *foundation::parsePackageVersion("0.1.0"),
+            foundation::TargetPlatform::Linux, {});
+        expect(hasCode(escaped.errors, "FDN4057"),
+               "foreign paths cannot escape through a symlinked parent");
+    }
+    std::filesystem::remove(root / "escape", error);
+    error.clear();
+    std::filesystem::create_directory_symlink(root / "native" / "libfuse",
+                                              root / "linked-libfuse", error);
+    if (!error) {
+        package.foreign.front().resolver = "linked-libfuse";
+        const auto linkedRoot = foundation::resolvePackageGraph(
+            manifestPath, package, *foundation::parsePackageVersion("0.1.0"),
+            foundation::TargetPlatform::Linux, {});
+        expect(hasCode(linkedRoot.errors, "FDN4057"),
+               "foreign path roots cannot be symlinks even when they stay inside the package");
+    }
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(outside);
+}
+
 } // namespace
 
 int runPackageResolverTests() {
@@ -203,5 +279,6 @@ int runPackageResolverTests() {
     cyclesAcrossPreviouslySelectedPackagesAreRejected();
     malformedCatalogCandidateIsRejected();
     testDependenciesAreRootScoped();
+    nativeMetadataPinsForeignPathContent();
     return failures;
 }

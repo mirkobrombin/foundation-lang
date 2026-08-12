@@ -13,6 +13,8 @@ namespace foundation {
 [[nodiscard]] std::string emitTestC(const FirProgram &program, FirFunctionId test,
                                     std::string_view sourcePath = "<memory>");
 [[nodiscard]] std::string emitCHeader(const FirProgram &program);
+[[nodiscard]] FirProgram specializePackageInterface(const FirProgram &program,
+                                                    std::string_view packageName);
 
 } // namespace foundation
 

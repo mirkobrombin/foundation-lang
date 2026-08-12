@@ -445,7 +445,7 @@ void lines(const std::filesystem::path &path, std::string_view source,
 
 bool relativeSource(std::string_view value) {
     const std::filesystem::path path{value};
-    if (path.empty() || path.is_absolute() || path.lexically_normal() == ".") {
+    if (path.empty() || path.has_root_path() || path.lexically_normal() == ".") {
         return false;
     }
     for (const auto &part : path) {
@@ -466,7 +466,7 @@ bool validLocation(PackageLocationKind kind, std::string_view value) {
     if (kind == PackageLocationKind::Registry) {
         return identifier(value);
     }
-    return !std::filesystem::path(value).is_absolute();
+    return !std::filesystem::path(value).has_root_path();
 }
 
 bool digest(std::string_view value) {
@@ -606,6 +606,9 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
     auto codeStandardSeen = false;
     auto sourceSeen = false;
     auto testSourceSeen = false;
+    auto nativeLibrarySeen = false;
+    auto nativeNameSeen = false;
+    auto nativeSOVersionSeen = false;
     lines(path, source, result.errors, [&](const auto &tokens, std::size_t line) {
         const auto &directive = tokens.front();
         if (directive == "format") {
@@ -670,6 +673,58 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
                 manifest.testSource = tokens[1];
             }
             testSourceSeen = true;
+        } else if (directive == "native_library") {
+            if (tokens.size() != 2 || tokens[1] != "c" || nativeLibrarySeen) {
+                addError(result.errors, path, line, 1, "FDN4015",
+                         "expected one native_library c directive");
+            } else {
+                manifest.nativeLibrary = true;
+            }
+            nativeLibrarySeen = true;
+        } else if (directive == "native_name") {
+            if (tokens.size() != 2 || !identifier(tokens[1]) || nativeNameSeen) {
+                addError(result.errors, path, line, 1, "FDN4015",
+                         "expected one valid native library name");
+            } else {
+                manifest.nativeName = tokens[1];
+            }
+            nativeNameSeen = true;
+        } else if (directive == "native_soversion") {
+            const auto parsed = tokens.size() == 2 ? number(tokens[1]) : std::nullopt;
+            if (!parsed.has_value() ||
+                *parsed > std::numeric_limits<std::uint32_t>::max() ||
+                nativeSOVersionSeen) {
+                addError(result.errors, path, line, 1, "FDN4015",
+                         "expected one native library SOVERSION");
+            } else {
+                manifest.nativeSOVersion = static_cast<std::uint32_t>(*parsed);
+            }
+            nativeSOVersionSeen = true;
+        } else if (directive == "foreign") {
+            const auto ecosystem =
+                tokens.size() == 8 &&
+                (tokens[1] == "c" || tokens[1] == "zig" || tokens[1] == "rust" ||
+                 tokens[1] == "go");
+            const auto duplicate =
+                tokens.size() == 8 &&
+                std::find_if(manifest.foreign.begin(), manifest.foreign.end(),
+                             [&](const auto &entry) {
+                                 return entry.ecosystem == tokens[1] &&
+                                        entry.identifier == tokens[2];
+                             }) != manifest.foreign.end();
+            if (tokens.size() != 8 || !ecosystem || tokens[2].empty() || tokens[3].empty() ||
+                tokens[5].empty() ||
+                (tokens[4] != "path" && tokens[4] != "registry" &&
+                 tokens[4] != "system") ||
+                (tokens[4] == "path" && !relativeSource(tokens[5])) ||
+                tokens[6] != "abi" || tokens[7] != "c/v1" || duplicate) {
+                addError(result.errors, path, line, 1, "FDN4015",
+                         "foreign requires ecosystem, identifier, version, resolver kind, "
+                         "resolver, and abi c/v1");
+            } else {
+                manifest.foreign.push_back(
+                    {tokens[1], tokens[2], tokens[3], tokens[4], tokens[5]});
+            }
         } else if (directive == "dependency") {
             if (tokens.size() != 5 && tokens.size() != 7 && tokens.size() != 9) {
                 addError(result.errors, path, line, 1, "FDN4009",
@@ -753,6 +808,16 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
         addError(result.errors, path, 1, 1, "FDN4013",
                  "test dependencies require a test_source directory");
     }
+    if ((manifest.nativeName.has_value() || manifest.nativeSOVersion.has_value() ||
+         !manifest.foreign.empty()) &&
+        !manifest.nativeLibrary) {
+        addError(result.errors, path, 1, 1, "FDN4015",
+                 "native directives require native_library c");
+    }
+    if (manifest.nativeLibrary && !manifest.nativeName.has_value()) {
+        addError(result.errors, path, 1, 1, "FDN4015",
+                 "native_library c requires native_name");
+    }
     if (result.errors.empty()) {
         std::sort(manifest.dependencies.begin(), manifest.dependencies.end(),
                   [](const auto &left, const auto &right) {
@@ -787,6 +852,27 @@ std::string renderPackageManifest(const PackageManifest &manifest) {
     if (manifest.testSource.has_value()) {
         output << "test_source " << quote(manifest.testSource->generic_string()) << '\n';
     }
+    if (manifest.nativeLibrary) {
+        output << "native_library c\n";
+    }
+    if (manifest.nativeName.has_value()) {
+        output << "native_name " << quote(*manifest.nativeName) << '\n';
+    }
+    if (manifest.nativeSOVersion.has_value()) {
+        output << "native_soversion " << *manifest.nativeSOVersion << '\n';
+    }
+    auto foreign = manifest.foreign;
+    std::sort(foreign.begin(), foreign.end(), [](const auto &left, const auto &right) {
+        return std::tie(left.ecosystem, left.identifier, left.version, left.kind,
+                        left.resolver) <
+               std::tie(right.ecosystem, right.identifier, right.version, right.kind,
+                        right.resolver);
+    });
+    for (const auto &entry : foreign) {
+        output << "foreign " << quote(entry.ecosystem) << ' ' << quote(entry.identifier) << ' '
+               << quote(entry.version) << ' ' << entry.kind << ' ' << quote(entry.resolver)
+               << " abi c/v1\n";
+    }
     auto dependencies = manifest.dependencies;
     std::sort(dependencies.begin(), dependencies.end(), [](const auto &left, const auto &right) {
         return std::tie(left.name, left.target) < std::tie(right.name, right.target);
@@ -812,6 +898,7 @@ parsePackageLock(const std::filesystem::path &path, std::string_view source) {
     auto formatSeen = false;
     auto rootSeen = false;
     auto targetSeen = false;
+    auto nativeSeen = false;
     lines(path, source, result.errors, [&](const auto &tokens, std::size_t line) {
         const auto &directive = tokens.front();
         if (directive == "format") {
@@ -841,6 +928,48 @@ parsePackageLock(const std::filesystem::path &path, std::string_view source) {
                 lock.target = *parsed;
             }
             targetSeen = true;
+        } else if (directive == "native") {
+            const auto soVersion = tokens.size() == 5 && tokens[3] != "-"
+                                       ? number(tokens[3])
+                                       : std::optional<std::uint64_t>{};
+            const auto validSO = tokens.size() == 5 &&
+                                 (tokens[3] == "-" ||
+                                  (soVersion.has_value() &&
+                                   *soVersion <= std::numeric_limits<std::uint32_t>::max()));
+            if (tokens.size() != 5 || tokens[1] != "c" || !identifier(tokens[2]) ||
+                !validSO || !digest(tokens[4]) || nativeSeen) {
+                addError(result.errors, path, line, 1, "FDN4028",
+                         "invalid native library lock entry");
+            } else {
+                std::optional<std::uint32_t> storedSO;
+                if (soVersion.has_value()) {
+                    storedSO = static_cast<std::uint32_t>(*soVersion);
+                }
+                lock.nativeLibrary = LockedNativeLibrary{tokens[2], storedSO, tokens[4]};
+            }
+            nativeSeen = true;
+        } else if (directive == "foreign") {
+            const auto validEcosystem =
+                tokens.size() == 9 &&
+                (tokens[1] == "c" || tokens[1] == "zig" || tokens[1] == "rust" ||
+                 tokens[1] == "go");
+            const auto validKind = tokens.size() == 9 &&
+                                   (tokens[4] == "path" || tokens[4] == "registry" ||
+                                    tokens[4] == "system");
+            const auto duplicate =
+                tokens.size() == 9 &&
+                std::any_of(lock.foreign.begin(), lock.foreign.end(), [&](const auto &entry) {
+                    return entry.ecosystem == tokens[1] && entry.identifier == tokens[2];
+                });
+            if (tokens.size() != 9 || !validEcosystem || tokens[2].empty() ||
+                tokens[3].empty() || !validKind || tokens[5].empty() || tokens[6] != "abi" ||
+                tokens[7] != "c/v1" || !digest(tokens[8]) || duplicate) {
+                addError(result.errors, path, line, 1, "FDN4029",
+                         "invalid foreign provenance lock entry");
+            } else {
+                lock.foreign.push_back(
+                    {tokens[1], tokens[2], tokens[3], tokens[4], tokens[5], tokens[8]});
+            }
         } else if (directive == "package") {
             const auto version = tokens.size() == 6 ? parsePackageVersion(tokens[2])
                                                     : std::nullopt;
@@ -888,6 +1017,10 @@ parsePackageLock(const std::filesystem::path &path, std::string_view source) {
     if (!targetSeen) {
         addError(result.errors, path, 1, 1, "FDN4022", "missing lock target");
     }
+    if (!lock.foreign.empty() && !lock.nativeLibrary.has_value()) {
+        addError(result.errors, path, 1, 1, "FDN4029",
+                 "foreign provenance requires a native library lock entry");
+    }
     if (result.errors.empty() && validateLockGraph(path, lock, result.errors)) {
         std::sort(lock.packages.begin(), lock.packages.end(), [](const auto &left,
                                                                 const auto &right) {
@@ -896,6 +1029,13 @@ parsePackageLock(const std::filesystem::path &path, std::string_view source) {
         std::sort(lock.edges.begin(), lock.edges.end(), [](const auto &left, const auto &right) {
             return std::tie(left.parent, left.dependency, left.scope) <
                    std::tie(right.parent, right.dependency, right.scope);
+        });
+        std::sort(lock.foreign.begin(), lock.foreign.end(), [](const auto &left,
+                                                               const auto &right) {
+            return std::tie(left.ecosystem, left.identifier, left.version, left.kind,
+                            left.resolver, left.digest) <
+                   std::tie(right.ecosystem, right.identifier, right.version, right.kind,
+                            right.resolver, right.digest);
         });
         result.value = std::move(lock);
     }
@@ -916,6 +1056,27 @@ std::string renderPackageLock(const PackageLock &lock) {
     output << "format foundation.lock/v1\n"
            << "root " << lock.rootName << ' ' << lock.rootVersion.string() << '\n'
            << "target " << targetPlatformName(lock.target) << '\n';
+    if (lock.nativeLibrary.has_value()) {
+        output << "native c " << lock.nativeLibrary->name << ' ';
+        if (lock.nativeLibrary->soVersion.has_value()) {
+            output << *lock.nativeLibrary->soVersion;
+        } else {
+            output << '-';
+        }
+        output << ' ' << lock.nativeLibrary->digest << '\n';
+    }
+    auto foreign = lock.foreign;
+    std::sort(foreign.begin(), foreign.end(), [](const auto &left, const auto &right) {
+        return std::tie(left.ecosystem, left.identifier, left.version, left.kind,
+                        left.resolver, left.digest) <
+               std::tie(right.ecosystem, right.identifier, right.version, right.kind,
+                        right.resolver, right.digest);
+    });
+    for (const auto &entry : foreign) {
+        output << "foreign " << quote(entry.ecosystem) << ' ' << quote(entry.identifier) << ' '
+               << quote(entry.version) << ' ' << entry.kind << ' ' << quote(entry.resolver)
+               << " abi c/v1 " << entry.digest << '\n';
+    }
     auto packages = lock.packages;
     std::sort(packages.begin(), packages.end(), [](const auto &left, const auto &right) {
         return left.name < right.name;

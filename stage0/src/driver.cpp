@@ -8,6 +8,7 @@
 #include "foundation/lower.hpp"
 #include "foundation/metadata.hpp"
 #include "foundation/package.hpp"
+#include "foundation/package_interface.hpp"
 #include "foundation/process.hpp"
 #include "foundation/project.hpp"
 #include "foundation/sdk.hpp"
@@ -749,6 +750,54 @@ int emitMetadataFile(const std::filesystem::path &source, const std::filesystem:
         return status;
     }
     return writeFile(output, compilation.generatedMetadata) ? 0 : 1;
+}
+
+int emitPackageInterfaceFile(const std::filesystem::path &source,
+                             const std::filesystem::path &output) {
+    const auto manifestPath = discoverPackageManifest(source);
+    if (!manifestPath.has_value()) {
+        std::cerr << "foundationc: emit-pii requires a package project\n";
+        return 2;
+    }
+    const auto manifest = readPackageManifest(*manifestPath);
+    if (!manifest.value.has_value()) {
+        for (const auto &error : manifest.errors)
+            std::cerr << renderPackageError(error);
+        return 1;
+    }
+    if (!manifest.value->nativeLibrary) {
+        std::cerr << "foundationc: emit-pii requires native_library c\n";
+        return 2;
+    }
+    const auto lock = readPackageLock(manifestPath->parent_path() / "foundation.lock");
+    if (!lock.value.has_value()) {
+        for (const auto &error : lock.errors)
+            std::cerr << renderPackageError(error);
+        return 1;
+    }
+
+    auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false});
+    std::optional<PackageInterface> packageInterface;
+    if (analysis.semantic.has_value()) {
+        const auto fir = lower(analysis.program, *analysis.semantic);
+        packageInterface = buildPackageInterface(fir, *manifest.value, *lock.value,
+                                                 analysis.diagnostics);
+        if (packageInterface.has_value() && packageInterface->exports.empty()) {
+            analysis.diagnostics.error("FDN2122",
+                                       "native library exports no C ABI functions",
+                                       {0, 0, 1, 1});
+            packageInterface.reset();
+        }
+    }
+    Compilation result;
+    result.sources = std::move(analysis.sources);
+    result.diagnostics = std::move(analysis.diagnostics);
+    if (const auto status = report(source, result); status != 0)
+        return status;
+    return packageInterface.has_value() &&
+                   writeFile(output, renderPackageInterfaceJson(std::move(*packageInterface)))
+               ? 0
+               : 1;
 }
 
 int emitStateMachineDiagramFile(const std::filesystem::path &source,

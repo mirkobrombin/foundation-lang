@@ -564,6 +564,17 @@ class Monomorphizer {
         return std::move(result_);
     }
 
+    FirProgram runPackageInterface(std::string_view packageName) {
+        for (std::size_t index = 0; index < source_.functions.size(); ++index) {
+            const auto &function = source_.functions[index];
+            if (function.cSymbol.has_value() && function.hasBody &&
+                function.packageName == packageName) {
+                static_cast<void>(instantiateFunction(index, {}));
+            }
+        }
+        return std::move(result_);
+    }
+
   private:
     bool isCopySourceParameterType(const Type &type,
                                    std::unordered_set<std::string> &active) const {
@@ -5540,6 +5551,12 @@ std::string emitCHeader(const FirProgram &source) {
     out << "#endif\n\n";
     out << "#endif\n";
     return out.str();
+}
+
+FirProgram specializePackageInterface(const FirProgram &source,
+                                      std::string_view packageName) {
+    Monomorphizer monomorphizer(source);
+    return monomorphizer.runPackageInterface(packageName);
 }
 
 } // namespace foundation

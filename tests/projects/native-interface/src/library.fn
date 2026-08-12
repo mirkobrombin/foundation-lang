@@ -1,0 +1,7 @@
+package sample.native
+
+extern c fn nativeIncrement(value i32) i32 as sample_native_increment
+
+extern c fn FoundationIncrement(value i32) i32 as sample_increment {
+    nativeIncrement(value)
+}

@@ -55,6 +55,7 @@ add_library(foundation_compiler STATIC
     stage0/src/package_catalog.cpp
     stage0/src/package_cli.cpp
     stage0/src/package_environment.cpp
+    stage0/src/package_interface.cpp
     stage0/src/package_lock.cpp
     stage0/src/package_project.cpp
     stage0/src/package_registry.cpp
@@ -1085,6 +1086,14 @@ if(BUILD_TESTING)
         COMMAND foundationc emit-c
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fn
             -o ${CMAKE_CURRENT_BINARY_DIR}/hello.c
+    )
+    add_test(
+        NAME stage0.emit.pii
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/native-interface
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/native-interface-test
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-pii.cmake
     )
     add_test(
         NAME stage0.run.accept

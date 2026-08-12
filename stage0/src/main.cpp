@@ -20,6 +20,7 @@ void printUsage(std::ostream &output) {
            << "  foundationc emit-c <source-or-project> -o <output.c>\n"
            << "  foundationc emit-c-header <source-or-project> -o <output.h>\n"
            << "  foundationc emit-metadata <source-or-project> -o <output.json>\n"
+           << "  foundationc emit-pii <project> -o <output.json>\n"
            << "  foundationc emit-fsm <source-or-project> -o <output>"
               " --format <mermaid|graphviz> [--machine <name>]\n"
            << "  foundationc documentation <source-or-project> -o <output.md>\n"
@@ -184,6 +185,10 @@ int main(int argc, char **argv) {
         if (command == "emit-metadata" && outputArgumentsAreValid(argc, argv)) {
             return foundation::emitMetadataFile(std::filesystem::path(argv[2]),
                                                 std::filesystem::path(argv[4]));
+        }
+        if (command == "emit-pii" && outputArgumentsAreValid(argc, argv)) {
+            return foundation::emitPackageInterfaceFile(std::filesystem::path(argv[2]),
+                                                        std::filesystem::path(argv[4]));
         }
         if (command == "emit-fsm") {
             std::optional<std::string> machine;

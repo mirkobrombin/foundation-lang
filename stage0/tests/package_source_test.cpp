@@ -5,6 +5,10 @@
 #include <iostream>
 #include <string_view>
 
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
+
 namespace {
 
 int failures{};
@@ -106,11 +110,70 @@ void snapshotsIncludeTestSources() {
            "package digest changes with test source content");
 }
 
+void foreignSnapshotsPinContentAndRejectUnsafeTrees() {
+    Fixture fixture;
+    const auto foreign = fixture.root / "foreign";
+    std::filesystem::create_directories(foreign / "nested");
+    fixture.write("foreign/nested/api.h", "int sample(void);\n");
+    const auto first = foundation::inspectForeignSource(foreign);
+    const auto repeated = foundation::inspectForeignSource(foreign);
+    expect(first.value.has_value() && repeated.value.has_value() &&
+               first.value->digest == repeated.value->digest,
+           "foreign path digest is deterministic");
+    fixture.write("foreign/nested/api.h", "int changed(void);\n");
+    const auto changed = foundation::inspectForeignSource(foreign);
+    expect(first.value.has_value() && changed.value.has_value() &&
+               first.value->digest != changed.value->digest,
+           "foreign path digest pins file content");
+
+    std::filesystem::create_directories(fixture.root / "empty");
+    expect(hasCode(foundation::inspectForeignSource(fixture.root / "empty").errors,
+                   "FDN4057"),
+           "empty foreign path sources are rejected");
+
+    std::error_code error;
+    std::filesystem::create_directory_symlink(foreign, fixture.root / "foreign-link", error);
+    if (!error) {
+        expect(hasCode(foundation::inspectForeignSource(fixture.root / "foreign-link").errors,
+                       "FDN4057"),
+               "foreign source roots cannot be symlinks");
+    }
+    error.clear();
+    std::filesystem::create_symlink(foreign / "nested" / "api.h",
+                                    foreign / "nested" / "alias.h", error);
+    if (!error) {
+        expect(hasCode(foundation::inspectForeignSource(foreign).errors, "FDN4057"),
+               "foreign source trees cannot contain symlinks");
+        std::filesystem::remove(foreign / "nested" / "alias.h");
+    }
+
+    fixture.write("foreign/Name.h", "one\n");
+    fixture.write("foreign/name.h", "two\n");
+    error.clear();
+    const auto sameFile = std::filesystem::equivalent(
+        foreign / "Name.h", foreign / "name.h", error);
+    if (!error && !sameFile) {
+        expect(hasCode(foundation::inspectForeignSource(foreign).errors, "FDN4057"),
+               "foreign source paths cannot collide without case sensitivity");
+    }
+    std::filesystem::remove(foreign / "Name.h");
+    std::filesystem::remove(foreign / "name.h");
+
+#ifndef _WIN32
+    const auto fifo = foreign / "input.pipe";
+    if (::mkfifo(fifo.c_str(), 0600) == 0) {
+        expect(hasCode(foundation::inspectForeignSource(foreign).errors, "FDN4057"),
+               "foreign source trees can contain only regular files");
+    }
+#endif
+}
+
 } // namespace
 
 int runPackageSourceTests() {
     snapshotsAreDeterministicAndSensitive();
     snapshotsRejectSymlinksAndCaseCollisions();
     snapshotsIncludeTestSources();
+    foreignSnapshotsPinContentAndRejectUnsafeTrees();
     return failures;
 }
