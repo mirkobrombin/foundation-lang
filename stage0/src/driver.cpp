@@ -6,6 +6,7 @@
 #include "foundation/formatter.hpp"
 #include "foundation/lint.hpp"
 #include "foundation/lower.hpp"
+#include "foundation/llvm_codegen.hpp"
 #include "foundation/metadata.hpp"
 #include "foundation/package.hpp"
 #include "foundation/package_interface.hpp"
@@ -519,13 +520,30 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
 int buildCompilation(const std::filesystem::path &source, const std::filesystem::path &output,
                      const std::filesystem::path &temporarySource,
                      const std::filesystem::path &temporaryHeader,
-                     const std::vector<std::filesystem::path> &nativeInputs) {
-    const auto compilation = compile(source);
+                     const std::vector<std::filesystem::path> &nativeInputs,
+                     BackendKind backend) {
+    auto compilation = compile(source);
     if (const auto status = report(source, compilation); status != 0) {
         return status;
     }
-    if (!prepareParent(output) || !writeFile(temporarySource, compilation.generatedC) ||
+    if (!prepareParent(output) ||
         !writeFile(temporaryHeader, compilation.generatedCHeader)) {
+        return 1;
+    }
+    if (backend == BackendKind::Llvm) {
+        if (!compilation.fir.has_value() ||
+            !emitLlvmObject(*compilation.fir, temporarySource,
+                            source.generic_string(),
+                            LlvmCodegenOptions{
+                                .targetTriple = defaultLlvmTargetTriple(),
+                                .optimize = true,
+                                .verifyAllocations = false,
+                                .entry = std::nullopt,
+                            },
+                            compilation.diagnostics)) {
+            return report(source, compilation);
+        }
+    } else if (!writeFile(temporarySource, compilation.generatedC)) {
         return 1;
     }
     return runProcess(compilerArguments(temporarySource, output, temporaryHeader.parent_path(),
@@ -669,10 +687,11 @@ Compilation compile(const std::filesystem::path &path,
         return compilation;
     }
 
-    const auto fir = lower(analysis.program, *analysis.semantic);
+    auto fir = lower(analysis.program, *analysis.semantic);
     compilation.generatedC = emitC(fir, path.generic_string());
     compilation.generatedCHeader = emitCHeader(fir);
     compilation.generatedMetadata = emitMetadata(fir);
+    compilation.fir = std::move(fir);
     return compilation;
 }
 
@@ -759,6 +778,30 @@ int emitCHeaderFile(const std::filesystem::path &source, const std::filesystem::
         return status;
     }
     return writeFile(output, compilation.generatedCHeader) ? 0 : 1;
+}
+
+int emitLlvmIrFile(const std::filesystem::path &source,
+                   const std::filesystem::path &output) {
+    auto compilation = compile(source);
+    if (const auto status = report(source, compilation); status != 0) {
+        return status;
+    }
+    if (!compilation.fir.has_value()) {
+        return 1;
+    }
+    const auto generated = emitLlvmIr(
+        *compilation.fir, source.generic_string(),
+        LlvmCodegenOptions{
+            .targetTriple = defaultLlvmTargetTriple(),
+            .optimize = true,
+            .verifyAllocations = false,
+            .entry = std::nullopt,
+        },
+        compilation.diagnostics);
+    if (!generated.has_value()) {
+        return report(source, compilation);
+    }
+    return writeFile(output, *generated) ? 0 : 1;
 }
 
 int emitMetadataFile(const std::filesystem::path &source, const std::filesystem::path &output,
@@ -1040,18 +1083,23 @@ int emitApplicationHostFile(const std::filesystem::path &source,
 }
 
 int buildFile(const std::filesystem::path &source, const std::filesystem::path &output,
-              const std::vector<std::filesystem::path> &nativeInputs) {
+              const std::vector<std::filesystem::path> &nativeInputs,
+              BackendKind backend) {
     auto temporary = createTempDirectory();
     if (!temporary.has_value()) {
         return 1;
     }
-    return buildCompilation(source, output, temporary->path() / "program.c",
-                            temporary->path() / "foundation_abi.h", nativeInputs);
+    const auto generated = temporary->path() /
+                           (backend == BackendKind::Llvm ? "program.o" : "program.c");
+    return buildCompilation(source, output, generated,
+                            temporary->path() / "foundation_abi.h", nativeInputs,
+                            backend);
 }
 
 int runFile(const std::filesystem::path &source,
             const std::vector<std::filesystem::path> &nativeInputs,
-            const std::vector<std::string> &arguments) {
+            const std::vector<std::string> &arguments,
+            BackendKind backend) {
     auto temporary = createTempDirectory();
     if (!temporary.has_value()) {
         return 1;
@@ -1061,8 +1109,11 @@ int runFile(const std::filesystem::path &source,
 #else
     const auto executable = temporary->path() / "program";
 #endif
-    const auto status = buildCompilation(source, executable, temporary->path() / "program.c",
-                                         temporary->path() / "foundation_abi.h", nativeInputs);
+    const auto generated = temporary->path() /
+                           (backend == BackendKind::Llvm ? "program.o" : "program.c");
+    const auto status = buildCompilation(source, executable, generated,
+                                         temporary->path() / "foundation_abi.h", nativeInputs,
+                                         backend);
     if (status != 0) {
         return status;
     }
@@ -1072,7 +1123,8 @@ int runFile(const std::filesystem::path &source,
 }
 
 int runTests(const std::filesystem::path &source,
-             const std::vector<std::filesystem::path> &nativeInputs) {
+             const std::vector<std::filesystem::path> &nativeInputs,
+             BackendKind backend) {
     auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false},
                                    ProjectMode::Test);
     if (analysis.diagnostics.hasErrors()) {
@@ -1106,14 +1158,29 @@ int runTests(const std::filesystem::path &source,
     std::size_t passed{};
     for (std::size_t index = 0; index < tests.size(); ++index) {
         const auto function = tests[index];
-        const auto generated = temporary->path() / ("test-" + std::to_string(index) + ".c");
+        const auto generated = temporary->path() /
+                               ("test-" + std::to_string(index) +
+                                (backend == BackendKind::Llvm ? ".o" : ".c"));
 #ifdef _WIN32
         const auto executable =
             temporary->path() / ("test-" + std::to_string(index) + ".exe");
 #else
         const auto executable = temporary->path() / ("test-" + std::to_string(index));
 #endif
-        if (!writeFile(generated, emitTestC(fir, function, source.generic_string()))) {
+        if (backend == BackendKind::Llvm) {
+            Diagnostics diagnostics;
+            if (!emitLlvmObject(
+                    fir, generated, source.generic_string(),
+                    LlvmCodegenOptions{.targetTriple = defaultLlvmTargetTriple(),
+                                       .optimize = true,
+                                       .verifyAllocations = true,
+                                       .entry = function},
+                    diagnostics)) {
+                std::cerr << renderDiagnostics(source.string(), {}, diagnostics);
+                return 1;
+            }
+        } else if (!writeFile(generated,
+                              emitTestC(fir, function, source.generic_string()))) {
             return 1;
         }
         const auto compiled = runProcess(

@@ -3,6 +3,17 @@ cmake_minimum_required(VERSION 3.25)
 project(foundation_lang VERSION 0.1.0 LANGUAGES C CXX)
 
 find_package(Threads REQUIRED)
+find_package(LLVM 21.1 CONFIG QUIET)
+if(NOT LLVM_FOUND)
+    find_program(FOUNDATION_LLVM_CONFIG NAMES llvm-config llvm-config-21 REQUIRED)
+    execute_process(
+        COMMAND ${FOUNDATION_LLVM_CONFIG} --cmakedir
+        OUTPUT_VARIABLE FOUNDATION_LLVM_CMAKE_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        COMMAND_ERROR_IS_FATAL ANY
+    )
+    find_package(LLVM 21.1 REQUIRED CONFIG PATHS ${FOUNDATION_LLVM_CMAKE_DIR} NO_DEFAULT_PATH)
+endif()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -37,6 +48,7 @@ endif()
 
 add_library(foundation_compiler STATIC
     stage0/src/application.cpp
+    stage0/src/backend.cpp
     stage0/src/code_standard.cpp
     stage0/src/codegen.cpp
     stage0/src/diagnostic.cpp
@@ -49,6 +61,7 @@ add_library(foundation_compiler STATIC
     stage0/src/lint.cpp
     stage0/src/lsp.cpp
     stage0/src/lower.cpp
+    stage0/src/llvm_codegen.cpp
     stage0/src/metadata.cpp
     stage0/src/package.cpp
     stage0/src/package_cache.cpp
@@ -71,6 +84,15 @@ add_library(foundation_compiler STATIC
     stage0/src/type.cpp
 )
 target_include_directories(foundation_compiler PUBLIC stage0/include)
+target_include_directories(foundation_compiler SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
+separate_arguments(FOUNDATION_LLVM_DEFINITIONS NATIVE_COMMAND "${LLVM_DEFINITIONS}")
+target_compile_options(foundation_compiler PRIVATE ${FOUNDATION_LLVM_DEFINITIONS})
+if(TARGET LLVM)
+    target_link_libraries(foundation_compiler PRIVATE LLVM)
+else()
+    llvm_map_components_to_libnames(FOUNDATION_LLVM_LIBRARIES all)
+    target_link_libraries(foundation_compiler PRIVATE ${FOUNDATION_LLVM_LIBRARIES})
+endif()
 get_filename_component(FOUNDATION_C_COMPILER_NAME "${CMAKE_C_COMPILER}" NAME)
 target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_C_COMPILER="${FOUNDATION_C_COMPILER_NAME}"
@@ -1130,6 +1152,30 @@ if(BUILD_TESTING)
     )
     set_tests_properties(stage0.run.accept PROPERTIES
         PASS_REGULAR_EXPRESSION "hello from foundation"
+    )
+    add_test(
+        NAME stage0.emit.llvm.accept
+        COMMAND foundationc emit-llvm
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fn
+            -o ${CMAKE_CURRENT_BINARY_DIR}/hello.ll
+    )
+    add_test(
+        NAME stage0.run.llvm.accept
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.out
+            -DBACKEND=llvm
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.llvm.unsupported
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/struct-values.fn
+            -DPATTERN=error\\[FDN8001\\]
+            -DBACKEND=llvm
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
     )
     add_test(
         NAME stage0.check.state-machine

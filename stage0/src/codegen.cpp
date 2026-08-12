@@ -5194,13 +5194,7 @@ void emitWorkflowBody(std::ostringstream &out, const FirProgram &program,
 
 std::string emitCImpl(const FirProgram &source, std::string_view sourcePath,
                       std::optional<FirFunctionId> testEntry) {
-    auto input = source;
-    if (testEntry.has_value()) {
-        input.main = *testEntry;
-    }
-    Monomorphizer monomorphizer(input);
-    auto program = monomorphizer.run();
-    markDivergingFunctions(program);
+    auto program = prepareFirForBackend(source, testEntry);
     const auto contractUses = collectContractUses(program);
     std::vector<Type> arrays;
     std::vector<Type> slices;
@@ -5509,6 +5503,18 @@ std::string emitCImpl(const FirProgram &source, std::string_view sourcePath,
     return out.str();
 }
 
+FirProgram prepareFirForBackend(const FirProgram &source,
+                                std::optional<FirFunctionId> entry) {
+    auto input = source;
+    if (entry.has_value()) {
+        input.main = *entry;
+    }
+    Monomorphizer monomorphizer(input);
+    auto program = monomorphizer.run();
+    markDivergingFunctions(program);
+    return program;
+}
+
 std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     return emitCImpl(source, sourcePath, std::nullopt);
 }
@@ -5522,8 +5528,7 @@ std::string emitTestC(const FirProgram &source, FirFunctionId test,
 }
 
 std::string emitCHeader(const FirProgram &source) {
-    Monomorphizer monomorphizer(source);
-    const auto program = monomorphizer.run();
+    const auto program = prepareFirForBackend(source);
     std::vector<const FirFunction *> exports;
     for (const auto &function : program.functions) {
         if (function.cSymbol.has_value() && function.hasBody) {

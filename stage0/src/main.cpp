@@ -21,6 +21,7 @@ void printUsage(std::ostream &output) {
               " [--target <platform>]\n"
            << "  foundationc emit-c-header <source-or-project> -o <output.h>"
               " [--target <platform>]\n"
+           << "  foundationc emit-llvm <source-or-project> -o <output.ll>\n"
            << "  foundationc emit-metadata <source-or-project> -o <output.json>"
               " [--target <platform>]\n"
            << "  foundationc emit-pii <project> -o <output.json>\n"
@@ -31,9 +32,12 @@ void printUsage(std::ostream &output) {
            << "  foundationc emit-openapi <source-or-project> -o <output.json>"
               " [--title <title>] [--version <version>]\n"
            << "  foundationc emit-app-host <source-or-project> -o <output.fn>\n"
-           << "  foundationc build <source-or-project> -o <executable> [--native <input>]...\n"
-           << "  foundationc run <source-or-project> [--native <input>]... [-- <argument>...]\n"
-           << "  foundationc test <source-or-project> [--native <input>]...\n"
+           << "  foundationc build <source-or-project> -o <executable>"
+              " [--backend <llvm|c>] [--native <input>]...\n"
+           << "  foundationc run <source-or-project> [--backend <llvm|c>]"
+              " [--native <input>]... [-- <argument>...]\n"
+           << "  foundationc test <source-or-project> [--backend <llvm|c>]"
+              " [--native <input>]...\n"
            << "  foundationc package <init|resolve|fetch|verify|inspect|prune> ...\n"
            << "  foundationc version\n";
 }
@@ -113,20 +117,36 @@ bool parseStateMachineArguments(int argc, char **argv,
 }
 
 bool parseNativeArguments(int argc, char **argv, int start,
-                          std::vector<std::filesystem::path> &inputs) {
+                          std::vector<std::filesystem::path> &inputs,
+                          foundation::BackendKind &backend) {
+    auto backendSeen = false;
     for (auto index = start; index < argc; index += 2) {
-        if (index + 1 >= argc || std::string_view(argv[index]) != "--native") {
+        if (index + 1 >= argc) {
             return false;
         }
-        inputs.emplace_back(argv[index + 1]);
+        const std::string_view option = argv[index];
+        if (option == "--native") {
+            inputs.emplace_back(argv[index + 1]);
+        } else if (option == "--backend" && !backendSeen) {
+            const auto parsed = foundation::parseBackendKind(argv[index + 1]);
+            if (!parsed.has_value()) {
+                return false;
+            }
+            backend = *parsed;
+            backendSeen = true;
+        } else {
+            return false;
+        }
     }
     return true;
 }
 
 bool parseRunArguments(int argc, char **argv, int start,
                        std::vector<std::filesystem::path> &nativeInputs,
-                       std::vector<std::string> &arguments) {
+                       std::vector<std::string> &arguments,
+                       foundation::BackendKind &backend) {
     auto index = start;
+    auto backendSeen = false;
     while (index < argc) {
         const std::string_view value = argv[index];
         if (value == "--") {
@@ -137,10 +157,21 @@ bool parseRunArguments(int argc, char **argv, int start,
             }
             return true;
         }
-        if (value != "--native" || index + 1 >= argc) {
+        if (index + 1 >= argc) {
             return false;
         }
-        nativeInputs.emplace_back(argv[index + 1]);
+        if (value == "--native") {
+            nativeInputs.emplace_back(argv[index + 1]);
+        } else if (value == "--backend" && !backendSeen) {
+            const auto parsed = foundation::parseBackendKind(argv[index + 1]);
+            if (!parsed.has_value()) {
+                return false;
+            }
+            backend = *parsed;
+            backendSeen = true;
+        } else {
+            return false;
+        }
         index += 2;
     }
     return true;
@@ -218,6 +249,10 @@ int main(int argc, char **argv) {
             return foundation::emitCHeaderFile(std::filesystem::path(argv[2]),
                                                std::filesystem::path(argv[4]), *target);
         }
+        if (command == "emit-llvm" && outputArgumentsAreValid(argc, argv)) {
+            return foundation::emitLlvmIrFile(std::filesystem::path(argv[2]),
+                                              std::filesystem::path(argv[4]));
+        }
         if (command == "emit-metadata") {
             const auto target = parseOutputTargetArguments(argc, argv);
             if (!target.has_value()) {
@@ -267,29 +302,35 @@ int main(int argc, char **argv) {
         }
         if (command == "build" && argc >= 5 && std::string_view(argv[3]) == "-o") {
             std::vector<std::filesystem::path> nativeInputs;
-            if (!parseNativeArguments(argc, argv, 5, nativeInputs)) {
+            auto backend = foundation::defaultBackendKind();
+            if (!parseNativeArguments(argc, argv, 5, nativeInputs, backend)) {
                 printUsage(std::cerr);
                 return 2;
             }
             return foundation::buildFile(std::filesystem::path(argv[2]),
-                                         std::filesystem::path(argv[4]), nativeInputs);
+                                         std::filesystem::path(argv[4]), nativeInputs,
+                                         backend);
         }
         if (command == "run" && argc >= 3) {
             std::vector<std::filesystem::path> nativeInputs;
             std::vector<std::string> arguments;
-            if (!parseRunArguments(argc, argv, 3, nativeInputs, arguments)) {
+            auto backend = foundation::defaultBackendKind();
+            if (!parseRunArguments(argc, argv, 3, nativeInputs, arguments, backend)) {
                 printUsage(std::cerr);
                 return 2;
             }
-            return foundation::runFile(std::filesystem::path(argv[2]), nativeInputs, arguments);
+            return foundation::runFile(std::filesystem::path(argv[2]), nativeInputs,
+                                       arguments, backend);
         }
         if (command == "test" && argc >= 3) {
             std::vector<std::filesystem::path> nativeInputs;
-            if (!parseNativeArguments(argc, argv, 3, nativeInputs)) {
+            auto backend = foundation::defaultBackendKind();
+            if (!parseNativeArguments(argc, argv, 3, nativeInputs, backend)) {
                 printUsage(std::cerr);
                 return 2;
             }
-            return foundation::runTests(std::filesystem::path(argv[2]), nativeInputs);
+            return foundation::runTests(std::filesystem::path(argv[2]), nativeInputs,
+                                        backend);
         }
     }
 

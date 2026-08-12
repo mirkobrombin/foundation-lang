@@ -2,8 +2,10 @@
 #define FOUNDATION_DRIVER_HPP
 
 #include "foundation/ast.hpp"
+#include "foundation/backend.hpp"
 #include "foundation/code_standard.hpp"
 #include "foundation/diagnostic.hpp"
+#include "foundation/fir.hpp"
 #include "foundation/fsm.hpp"
 #include "foundation/project.hpp"
 #include "foundation/sema.hpp"
@@ -17,6 +19,7 @@ namespace foundation {
 
 struct Compilation {
     std::vector<DiagnosticSource> sources;
+    std::optional<FirProgram> fir;
     std::string generatedC;
     std::string generatedCHeader;
     std::string generatedMetadata;
@@ -57,6 +60,8 @@ enum class FormatMode {
 [[nodiscard]] int emitCHeaderFile(const std::filesystem::path &source,
                                   const std::filesystem::path &output,
                                   TargetPlatform target = hostTargetPlatform());
+[[nodiscard]] int emitLlvmIrFile(const std::filesystem::path &source,
+                                 const std::filesystem::path &output);
 [[nodiscard]] int emitMetadataFile(const std::filesystem::path &source,
                                    const std::filesystem::path &output,
                                    TargetPlatform target = hostTargetPlatform());
@@ -77,13 +82,16 @@ enum class FormatMode {
                                           const std::filesystem::path &output);
 [[nodiscard]] int buildFile(const std::filesystem::path &source,
                             const std::filesystem::path &output,
-                            const std::vector<std::filesystem::path> &nativeInputs = {});
+                            const std::vector<std::filesystem::path> &nativeInputs = {},
+                            BackendKind backend = defaultBackendKind());
 [[nodiscard]] int runFile(const std::filesystem::path &source,
                           const std::vector<std::filesystem::path> &nativeInputs = {},
-                          const std::vector<std::string> &arguments = {});
+                          const std::vector<std::string> &arguments = {},
+                          BackendKind backend = defaultBackendKind());
 [[nodiscard]] int runTests(
     const std::filesystem::path &source,
-    const std::vector<std::filesystem::path> &nativeInputs = {});
+    const std::vector<std::filesystem::path> &nativeInputs = {},
+    BackendKind backend = defaultBackendKind());
 
 } // namespace foundation
 

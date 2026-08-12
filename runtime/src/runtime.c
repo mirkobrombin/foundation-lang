@@ -341,6 +341,19 @@ void fdn_println(fdn_string value) {
 #endif
 }
 
+void fdn_abi_string_concat(fdn_string *result, const fdn_string *left,
+                           const fdn_string *right) {
+    *result = fdn_string_concat(*left, *right);
+}
+
+int fdn_abi_string_equal(const fdn_string *left, const fdn_string *right) {
+    return fdn_string_equal(*left, *right);
+}
+
+void fdn_abi_println(const fdn_string *value) { fdn_println(*value); }
+
+void fdn_abi_panic(const fdn_string *message) { fdn_panic(*message); }
+
 size_t fdn_bounds_check(size_t index, size_t length) {
     if (index >= length) {
         fdn_panic_cstr("index out of bounds");

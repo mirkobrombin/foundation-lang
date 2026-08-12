@@ -10,6 +10,7 @@ int main(void) {
     fdn_string left = fdn_string_static(left_data, sizeof(left_data));
     fdn_string right = fdn_string_static("B", 1);
     fdn_string joined = fdn_string_concat(left, right);
+    fdn_string abi_joined;
     fdn_string source = fdn_string_static("h\xc3\xa9llo session", 14);
     fdn_string prefix = fdn_string_static("h", 1);
     fdn_string part = fdn_string_static("session", 7);
@@ -29,6 +30,14 @@ int main(void) {
     if (!fdn_string_equal(joined, fdn_string_static(expected_data, sizeof(expected_data)))) {
         return 2;
     }
+    fdn_abi_string_concat(&abi_joined, &left, &right);
+    if (!fdn_abi_string_equal(
+            &abi_joined,
+            &(fdn_string){expected_data, sizeof(expected_data), 0})) {
+        fdn_string_drop(&abi_joined);
+        return 16;
+    }
+    fdn_string_drop(&abi_joined);
     copied = foundation_runtime_string_copy(&source);
     if (!fdn_string_equal(copied, source) || copied.owned == 0 ||
         foundation_runtime_string_byte_length(&copied) != 14 ||

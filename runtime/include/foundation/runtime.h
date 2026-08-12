@@ -96,6 +96,11 @@ void fdn_string_drop(fdn_string *value);
 fdn_string fdn_string_concat(fdn_string left, fdn_string right);
 int fdn_string_equal(fdn_string left, fdn_string right);
 void fdn_println(fdn_string value);
+void fdn_abi_string_concat(fdn_string *result, const fdn_string *left,
+                           const fdn_string *right);
+int fdn_abi_string_equal(const fdn_string *left, const fdn_string *right);
+void fdn_abi_println(const fdn_string *value);
+void fdn_abi_panic(const fdn_string *message);
 size_t fdn_bounds_check(size_t index, size_t length);
 void *fdn_alloc(size_t size);
 void fdn_dealloc(void *value);

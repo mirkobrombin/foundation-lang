@@ -2,8 +2,13 @@ if(NOT DEFINED COMPILER OR NOT DEFINED SOURCE OR NOT DEFINED PATTERN)
     message(FATAL_ERROR "failure assertion requires COMPILER, SOURCE, and PATTERN")
 endif()
 
+set(command "${COMPILER}" run "${SOURCE}")
+if(DEFINED BACKEND)
+    list(APPEND command --backend "${BACKEND}")
+endif()
+
 execute_process(
-    COMMAND "${COMPILER}" run "${SOURCE}"
+    COMMAND ${command}
     RESULT_VARIABLE result
     OUTPUT_VARIABLE output
     ERROR_VARIABLE error
