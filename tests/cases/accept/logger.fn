@@ -1,0 +1,17 @@
+import foundation.logger
+
+fn main() i32 {
+    var log = logger.NewWith(.Info)
+    log.Bind(logger.Field { Key = "service" Value = "catalog" })
+    log.Debug("hidden", logger.Fields())
+    const fields = logger.WithField(
+        logger.Fields(),
+        "request",
+        "r-42"
+    )
+    log.Info("served", $fields)
+    log.SetLevel(.Error)
+    log.Warn("hidden warning", logger.Fields())
+    log.Error("failed", logger.Fields())
+    0
+}

@@ -34,6 +34,101 @@ struct networkTransport implements Transport<NetworkError> {
     }
 }
 
+struct networkStreamingTransport implements StreamingTransport<NetworkError> {
+    fn Send(
+        &self,
+        $request Request
+    ) Task<Result<StreamingResponse<NetworkError>, NetworkError>> {
+        spawn sendStreamingNetwork($request)
+    }
+}
+
+struct emptyNetworkBody implements ResponseBody<NetworkError> {
+    fn Read(
+        $self,
+        maximum u64
+    ) Task<own BodyReadOutcome<NetworkError>> {
+        spawn readEmptyNetworkBody($self, maximum)
+    }
+}
+
+struct fixedNetworkBody implements ResponseBody<NetworkError> {
+    reader own net.TcpReader
+    remaining u64
+    deadline net.Deadline
+
+    fn Read(
+        $self,
+        maximum u64
+    ) Task<own BodyReadOutcome<NetworkError>> {
+        spawn readFixedNetworkBody($self, maximum)
+    }
+}
+
+struct closeNetworkBody implements ResponseBody<NetworkError> {
+    reader own net.TcpReader
+    remaining u64
+    deadline net.Deadline
+
+    fn Read(
+        $self,
+        maximum u64
+    ) Task<own BodyReadOutcome<NetworkError>> {
+        spawn readCloseNetworkBody($self, maximum)
+    }
+}
+
+enum chunkedPhase {
+    Size
+    Data
+    Ending
+    Trailers
+}
+
+fn chunkedPhaseIsSize(value chunkedPhase) bool {
+    match value {
+        Size: true
+        Data: false
+        Ending: false
+        Trailers: false
+    }
+}
+
+fn chunkedPhaseIsData(value chunkedPhase) bool {
+    match value {
+        Size: false
+        Data: true
+        Ending: false
+        Trailers: false
+    }
+}
+
+fn chunkedPhaseIsEnding(value chunkedPhase) bool {
+    match value {
+        Size: false
+        Data: false
+        Ending: true
+        Trailers: false
+    }
+}
+
+struct chunkedNetworkBody implements ResponseBody<NetworkError> {
+    reader own net.TcpReader
+    remainingBody u64
+    remainingChunk u64
+    phase chunkedPhase
+    trailers own collections.List<Header>
+    trailerCount u64
+    deadline net.Deadline
+
+    fn Read(
+        $self,
+        maximum u64
+    ) Task<own BodyReadOutcome<NetworkError>> {
+        spawn readChunkedNetworkBody($self, maximum)
+    }
+}
+
 struct networkTarget {
     host String
     authority String
@@ -47,7 +142,35 @@ fn Network() own Transport<NetworkError> {
     own networkTransport {}
 }
 
+// Creates a one-request HTTP/1.1 transport with a pull-based response body.
+fn StreamingNetwork() own StreamingTransport<NetworkError> {
+    own networkStreamingTransport {}
+}
+
 task sendNetwork($request Request) Result<Response, NetworkError> {
+    const maximumBody = request.MaximumResponseSize
+    const sending = spawn sendStreamingNetwork($request)
+    const streamed = $sending.wait()
+    const response = streamed else error {
+        return .Err(error)
+    }
+    const StreamingResponse {
+        Status
+        Headers
+        Body
+    } = response
+    const collecting = spawn collectNetworkBody($Body, maximumBody)
+    const bodyValue = $collecting.wait()
+    const body = bodyValue else error {
+        discard Headers
+        return .Err(error)
+    }
+    .Ok(Response { Status = Status Headers = Headers Body = body })
+}
+
+task sendStreamingNetwork(
+    $request Request
+) Result<StreamingResponse<NetworkError>, NetworkError> {
     var activeRequest = request
     validateRequest(&activeRequest) else error {
         return .Err(.InvalidRequest(error = error))
@@ -127,7 +250,7 @@ task sendNetwork($request Request) Result<Response, NetworkError> {
     }
     discard writer
 
-    const reading = spawn readResponse(
+    const reading = spawn readStreamingResponse(
         $reader,
         text.Copy(activeRequest.Method),
         activeRequest.MaximumResponseSize,
@@ -138,13 +261,13 @@ task sendNetwork($request Request) Result<Response, NetworkError> {
     result
 }
 
-task readResponse(
+task readStreamingResponse(
     $reader own net.TcpReader,
     $method String,
     maximumBody u64,
     deadline net.Deadline,
     informationalResponses u64
-) Result<Response, NetworkError> {
+) Result<StreamingResponse<NetworkError>, NetworkError> {
     var active = reader
     const statusReading = spawn net.ReadLineLimitedUntil(
         $active,
@@ -255,7 +378,7 @@ task readResponse(
         }
         discard headers
         discard contentLength
-        const nextReading = spawn readResponse(
+        const nextReading = spawn readStreamingResponse(
             $active,
             $method,
             maximumBody,
@@ -277,10 +400,10 @@ task readResponse(
         }
         discard active
         discard contentLength
-        return .Ok(Response {
+        return .Ok(StreamingResponse<NetworkError> {
             Status = status
             Headers = headers
-            Body = bytes.FromText("")
+            Body = own emptyNetworkBody {}
         })
     }
 
@@ -292,35 +415,31 @@ task readResponse(
             return .Err(.InvalidResponse)
         }
         discard contentLength
-        const bodyReading = spawn readChunked(
-            $active,
-            maximumBody,
-            deadline
-        )
-        const bodyValue = $bodyReading.wait()
-        const body = bodyValue else error {
-            discard headers
-            return .Err(error)
-        }
-        return .Ok(Response { Status = status Headers = headers Body = body })
+        return .Ok(StreamingResponse<NetworkError> {
+            Status = status
+            Headers = headers
+            Body = own chunkedNetworkBody {
+                reader = active
+                remainingBody = maximumBody
+                remainingChunk = 0
+                phase = .Size
+                trailers = newHeaderList()
+                trailerCount = 0
+                deadline = deadline
+            }
+        })
     }
 
     if !sawContentLength {
         discard contentLength
-        const bodyReading = spawn readCloseDelimited(
-            $active,
-            maximumBody,
-            deadline
-        )
-        const bodyValue = $bodyReading.wait()
-        const body = bodyValue else error {
-            discard headers
-            return .Err(error)
-        }
-        return .Ok(Response {
+        return .Ok(StreamingResponse<NetworkError> {
             Status = status
             Headers = headers
-            Body = body
+            Body = own closeNetworkBody {
+                reader = active
+                remaining = maximumBody
+                deadline = deadline
+            }
         })
     }
     const length = requiredContentLength(contentLength) else error {
@@ -335,38 +454,28 @@ task readResponse(
     }
     if length == 0 {
         discard active
-        return .Ok(Response {
+        return .Ok(StreamingResponse<NetworkError> {
             Status = status
             Headers = headers
-            Body = bytes.FromText("")
+            Body = own emptyNetworkBody {}
         })
     }
-
-    const bodyReading = spawn net.ReadExactBytesUntil(
-        $active,
-        length,
-        deadline
-    )
-    const bodyOutcome = $bodyReading.wait()
-    const net.ReadBytesOutcome {
-        Reader as bodyReader
-        Value as bodyValue
-    } = bodyOutcome
-    discard bodyReader
-    const body = bodyValue else error {
-        discard headers
-        return .Err(.Network(error = error))
-    }
-    .Ok(Response { Status = status Headers = headers Body = body })
+    .Ok(StreamingResponse<NetworkError> {
+        Status = status
+        Headers = headers
+        Body = own fixedNetworkBody {
+            reader = active
+            remaining = length
+            deadline = deadline
+        }
+    })
 }
 
-task readCloseDelimited(
-    $reader own net.TcpReader,
-    maximumBody u64,
-    deadline net.Deadline
+task collectNetworkBody(
+    $body own ResponseBody<NetworkError>,
+    maximumBody u64
 ) Result<own bytes.Bytes, NetworkError> {
-    var active = reader
-    var total u64 = 0
+    var active = body
     const opened = bytes.NewBuilder(maximumBody) else error {
         discard error
         discard active
@@ -375,48 +484,23 @@ task readCloseDelimited(
     var builder = opened
     var complete = false
     while !complete {
-        const remaining = maximumBody - total
-        var limit u64 = 65536
-        if remaining < limit {
-            limit = remaining
-        }
-        if limit == 0 {
-            limit = 1
-        }
-        const reading = spawn net.ReadSomeBytesUntil(
-            $active,
-            limit,
-            deadline
-        )
+        const reading = active.Read(65536)
         const outcome = $reading.wait()
-        const net.ReadSomeBytesOutcome {
-            Reader as restoredReader
+        const BodyReadOutcome {
+            Body as restoredBody
             Value
         } = outcome
-        active = restoredReader
-        const optional = Value else error {
+        active = restoredBody
+        const part = Value else error {
             discard active
             discard builder
-            return .Err(.Network(error = error))
-        }
-        match optional {
-            None: {
-                complete = true
+            return match error {
+                InvalidLimit: .Err(.InvalidResponse)
+                Source(source): .Err(source)
             }
-            Some(chunk): {
-                const length = chunk.Len() else error {
-                    discard error
-                    discard chunk
-                    discard active
-                    discard builder
-                    return .Err(.InvalidResponse)
-                }
-                if length > remaining {
-                    discard chunk
-                    discard active
-                    discard builder
-                    return .Err(.ResponseTooLarge)
-                }
+        }
+        match part {
+            Chunk(chunk): {
                 builder.Write(chunk) else error {
                     discard error
                     discard chunk
@@ -425,90 +509,342 @@ task readCloseDelimited(
                     return .Err(.InvalidResponse)
                 }
                 discard chunk
-                total = total + length
+            }
+            Complete(trailers): {
+                discard trailers
+                complete = true
             }
         }
     }
     discard active
-    const body = builder.Finish() else error {
+    const result = builder.Finish() else error {
         discard error
         return .Err(.InvalidResponse)
     }
-    .Ok(body)
+    .Ok(result)
 }
 
-task readChunked(
-    $reader own net.TcpReader,
-    maximumBody u64,
-    deadline net.Deadline
-) Result<own bytes.Bytes, NetworkError> {
-    var active = reader
-    var total u64 = 0
-    const opened = bytes.NewBuilder(maximumBody) else error {
-        discard error
-        discard active
-        return .Err(.ResponseTooLarge)
+task readEmptyNetworkBody(
+    $body own emptyNetworkBody,
+    maximum u64
+) own BodyReadOutcome<NetworkError> {
+    discard body
+    if maximum == 0 {
+        return own BodyReadOutcome<NetworkError> {
+            Body = own emptyNetworkBody {}
+            Value = .Err(.InvalidLimit)
+        }
     }
-    var builder = opened
-    var complete = false
-    while !complete {
-        const sizeReading = spawn net.ReadLineLimitedUntil(
-            $active,
-            8192,
-            deadline
-        )
-        const sizeOutcome = $sizeReading.wait()
-        const net.ReadLineOutcome {
-            Reader as sizeReader
-            Value as sizeValue
-        } = sizeOutcome
-        active = sizeReader
-        const sizeLine = requiredLine($sizeValue) else error {
-            discard active
-            discard builder
-            return .Err(error)
-        }
-        const size = parseChunkSize(sizeLine) else error {
-            discard error
-            discard active
-            discard builder
-            return .Err(.InvalidResponse)
-        }
-        discard sizeLine
-        if size == 0 {
-            complete = true
-        } else {
-            if size > maximumBody - total {
-                discard active
-                discard builder
-                return .Err(.ResponseTooLarge)
+    own BodyReadOutcome<NetworkError> {
+        Body = own emptyNetworkBody {}
+        Value = .Ok(.Complete(trailers = newHeaderList()))
+    }
+}
+
+task readFixedNetworkBody(
+    $body own fixedNetworkBody,
+    maximum u64
+) own BodyReadOutcome<NetworkError> {
+    const fixedNetworkBody { reader remaining deadline } = body
+    if maximum == 0 {
+        return own BodyReadOutcome<NetworkError> {
+            Body = own fixedNetworkBody {
+                reader = reader
+                remaining = remaining
+                deadline = deadline
             }
-            const chunkReading = spawn net.ReadExactBytesUntil(
+            Value = .Err(.InvalidLimit)
+        }
+    }
+    if remaining == 0 {
+        discard reader
+        return own BodyReadOutcome<NetworkError> {
+            Body = own emptyNetworkBody {}
+            Value = .Ok(.Complete(trailers = newHeaderList()))
+        }
+    }
+    var limit = maximum
+    if remaining < limit {
+        limit = remaining
+    }
+    const reading = spawn net.ReadSomeBytesUntil(
+        $reader,
+        limit,
+        deadline
+    )
+    const outcome = $reading.wait()
+    const net.ReadSomeBytesOutcome {
+        Reader as restoredReader
+        Value
+    } = outcome
+    const optional = Value else error {
+        return own BodyReadOutcome<NetworkError> {
+            Body = own fixedNetworkBody {
+                reader = restoredReader
+                remaining = remaining
+                deadline = deadline
+            }
+            Value = .Err(.Source(error = .Network(error = error)))
+        }
+    }
+    match optional {
+        None: {
+            discard restoredReader
+            return own BodyReadOutcome<NetworkError> {
+                Body = own emptyNetworkBody {}
+                Value = .Err(.Source(error = .InvalidResponse))
+            }
+        }
+        Some(chunk): {
+            const length = chunk.Len() else error {
+                discard error
+                discard chunk
+                discard restoredReader
+                return own BodyReadOutcome<NetworkError> {
+                    Body = own emptyNetworkBody {}
+                    Value = .Err(.Source(error = .InvalidResponse))
+                }
+            }
+            return own BodyReadOutcome<NetworkError> {
+                Body = own fixedNetworkBody {
+                    reader = restoredReader
+                    remaining = remaining - length
+                    deadline = deadline
+                }
+                Value = .Ok(.Chunk(value = chunk))
+            }
+        }
+    }
+}
+
+task readCloseNetworkBody(
+    $body own closeNetworkBody,
+    maximum u64
+) own BodyReadOutcome<NetworkError> {
+    const closeNetworkBody { reader remaining deadline } = body
+    if maximum == 0 {
+        return own BodyReadOutcome<NetworkError> {
+            Body = own closeNetworkBody {
+                reader = reader
+                remaining = remaining
+                deadline = deadline
+            }
+            Value = .Err(.InvalidLimit)
+        }
+    }
+    var limit = maximum
+    if remaining < limit {
+        limit = remaining
+    }
+    if limit == 0 {
+        limit = 1
+    }
+    const reading = spawn net.ReadSomeBytesUntil(
+        $reader,
+        limit,
+        deadline
+    )
+    const outcome = $reading.wait()
+    const net.ReadSomeBytesOutcome {
+        Reader as restoredReader
+        Value
+    } = outcome
+    const optional = Value else error {
+        return own BodyReadOutcome<NetworkError> {
+            Body = own closeNetworkBody {
+                reader = restoredReader
+                remaining = remaining
+                deadline = deadline
+            }
+            Value = .Err(.Source(error = .Network(error = error)))
+        }
+    }
+    match optional {
+        None: {
+            discard restoredReader
+            return own BodyReadOutcome<NetworkError> {
+                Body = own emptyNetworkBody {}
+                Value = .Ok(.Complete(trailers = newHeaderList()))
+            }
+        }
+        Some(chunk): {
+            const length = chunk.Len() else error {
+                discard error
+                discard chunk
+                discard restoredReader
+                return own BodyReadOutcome<NetworkError> {
+                    Body = own emptyNetworkBody {}
+                    Value = .Err(.Source(error = .InvalidResponse))
+                }
+            }
+            if length > remaining {
+                discard chunk
+                discard restoredReader
+                return own BodyReadOutcome<NetworkError> {
+                    Body = own emptyNetworkBody {}
+                    Value = .Err(.Source(error = .ResponseTooLarge))
+                }
+            }
+            return own BodyReadOutcome<NetworkError> {
+                Body = own closeNetworkBody {
+                    reader = restoredReader
+                    remaining = remaining - length
+                    deadline = deadline
+                }
+                Value = .Ok(.Chunk(value = chunk))
+            }
+        }
+    }
+}
+
+fn requiredByteChunk(
+    $value Result<Option<own bytes.Bytes>, net.Error>
+) Result<own bytes.Bytes, NetworkError> {
+    match value {
+        Err(error): .Err(.Network(error = error))
+        Ok(optional): match optional {
+            None: .Err(.InvalidResponse)
+            Some(chunk): .Ok(chunk)
+        }
+    }
+}
+
+task readChunkedNetworkBody(
+    $body own chunkedNetworkBody,
+    maximum u64
+) own BodyReadOutcome<NetworkError> {
+    const chunkedNetworkBody {
+        reader
+        remainingBody
+        remainingChunk
+        phase
+        trailers
+        trailerCount
+        deadline
+    } = body
+    if maximum == 0 {
+        return own BodyReadOutcome<NetworkError> {
+            Body = own chunkedNetworkBody {
+                reader = reader
+                remainingBody = remainingBody
+                remainingChunk = remainingChunk
+                phase = phase
+                trailers = trailers
+                trailerCount = trailerCount
+                deadline = deadline
+            }
+            Value = .Err(.InvalidLimit)
+        }
+    }
+
+    var active = reader
+    var bodyLeft = remainingBody
+    var chunkLeft = remainingChunk
+    var activePhase = phase
+    var activeTrailers = trailers
+    var activeTrailerCount = trailerCount
+    while true {
+        if chunkedPhaseIsSize(activePhase) {
+            const sizeReading = spawn net.ReadLineLimitedUntil(
                 $active,
-                size,
+                8192,
+                deadline
+            )
+            const sizeOutcome = $sizeReading.wait()
+            const net.ReadLineOutcome {
+                Reader as sizeReader
+                Value as sizeValue
+            } = sizeOutcome
+            active = sizeReader
+            const line = requiredLine($sizeValue) else error {
+                discard active
+                discard activeTrailers
+                return own BodyReadOutcome<NetworkError> {
+                    Body = own emptyNetworkBody {}
+                    Value = .Err(.Source(error = error))
+                }
+            }
+            const size = parseChunkSize(line) else error {
+                discard error
+                discard active
+                discard activeTrailers
+                return own BodyReadOutcome<NetworkError> {
+                    Body = own emptyNetworkBody {}
+                    Value = .Err(.Source(error = .InvalidResponse))
+                }
+            }
+            discard line
+            if size == 0 {
+                activePhase = .Trailers
+            } else {
+                if size > bodyLeft {
+                    discard active
+                    discard activeTrailers
+                    return own BodyReadOutcome<NetworkError> {
+                        Body = own emptyNetworkBody {}
+                        Value = .Err(.Source(error = .ResponseTooLarge))
+                    }
+                }
+                chunkLeft = size
+                activePhase = .Data
+            }
+            continue
+        }
+
+        if chunkedPhaseIsData(activePhase) {
+            var limit = maximum
+            if chunkLeft < limit {
+                limit = chunkLeft
+            }
+            const chunkReading = spawn net.ReadSomeBytesUntil(
+                $active,
+                limit,
                 deadline
             )
             const chunkOutcome = $chunkReading.wait()
-            const net.ReadBytesOutcome {
+            const net.ReadSomeBytesOutcome {
                 Reader as chunkReader
                 Value as chunkValue
             } = chunkOutcome
             active = chunkReader
-            const chunk = chunkValue else error {
+            const chunk = requiredByteChunk($chunkValue) else error {
                 discard active
-                discard builder
-                return .Err(.Network(error = error))
+                discard activeTrailers
+                return own BodyReadOutcome<NetworkError> {
+                    Body = own emptyNetworkBody {}
+                    Value = .Err(.Source(error = error))
+                }
             }
-            builder.Write(chunk) else error {
+            const length = chunk.Len() else error {
                 discard error
                 discard chunk
                 discard active
-                discard builder
-                return .Err(.InvalidResponse)
+                discard activeTrailers
+                return own BodyReadOutcome<NetworkError> {
+                    Body = own emptyNetworkBody {}
+                    Value = .Err(.Source(error = .InvalidResponse))
+                }
             }
-            discard chunk
-            total = total + size
+            bodyLeft = bodyLeft - length
+            chunkLeft = chunkLeft - length
+            if chunkLeft == 0 {
+                activePhase = .Ending
+            }
+            return own BodyReadOutcome<NetworkError> {
+                Body = own chunkedNetworkBody {
+                    reader = active
+                    remainingBody = bodyLeft
+                    remainingChunk = chunkLeft
+                    phase = activePhase
+                    trailers = activeTrailers
+                    trailerCount = activeTrailerCount
+                    deadline = deadline
+                }
+                Value = .Ok(.Chunk(value = chunk))
+            }
+        }
 
+        if chunkedPhaseIsEnding(activePhase) {
             const endingReading = spawn net.ReadExactUntil(
                 $active,
                 2,
@@ -522,22 +858,26 @@ task readChunked(
             active = endingReader
             const ending = endingValue else error {
                 discard active
-                discard builder
-                return .Err(.Network(error = error))
+                discard activeTrailers
+                return own BodyReadOutcome<NetworkError> {
+                    Body = own emptyNetworkBody {}
+                    Value = .Err(.Source(error = .Network(error = error)))
+                }
             }
             if ending != "\r\n" {
                 discard ending
                 discard active
-                discard builder
-                return .Err(.InvalidResponse)
+                discard activeTrailers
+                return own BodyReadOutcome<NetworkError> {
+                    Body = own emptyNetworkBody {}
+                    Value = .Err(.Source(error = .InvalidResponse))
+                }
             }
             discard ending
+            activePhase = .Size
+            continue
         }
-    }
 
-    var trailersComplete = false
-    var trailerCount u64 = 0
-    while !trailersComplete {
         const trailerReading = spawn net.ReadLineLimitedUntil(
             $active,
             8192,
@@ -551,35 +891,43 @@ task readChunked(
         active = trailerReader
         const trailer = requiredLine($trailerValue) else error {
             discard active
-            discard builder
-            return .Err(error)
+            discard activeTrailers
+            return own BodyReadOutcome<NetworkError> {
+                Body = own emptyNetworkBody {}
+                Value = .Err(.Source(error = error))
+            }
         }
         if text.IsEmpty(trailer) {
             discard trailer
-            trailersComplete = true
-        } else {
-            if trailerCount >= 128 {
-                discard trailer
-                discard active
-                discard builder
-                return .Err(.InvalidResponse)
+            discard active
+            const completedTrailers = reverseHeaders($activeTrailers)
+            return own BodyReadOutcome<NetworkError> {
+                Body = own emptyNetworkBody {}
+                Value = .Ok(.Complete(trailers = completedTrailers))
             }
-            const parsed = parseHeader($trailer) else error {
-                discard error
-                discard active
-                discard builder
-                return .Err(.InvalidResponse)
-            }
-            discard parsed
-            trailerCount = trailerCount + 1
         }
+        if activeTrailerCount >= 128 {
+            discard trailer
+            discard active
+            discard activeTrailers
+            return own BodyReadOutcome<NetworkError> {
+                Body = own emptyNetworkBody {}
+                Value = .Err(.Source(error = .InvalidResponse))
+            }
+        }
+        const parsed = parseHeader($trailer) else error {
+            discard error
+            discard active
+            discard activeTrailers
+            return own BodyReadOutcome<NetworkError> {
+                Body = own emptyNetworkBody {}
+                Value = .Err(.Source(error = .InvalidResponse))
+            }
+        }
+        activeTrailers.PushFront($parsed)
+        activeTrailerCount = activeTrailerCount + 1
     }
-    discard active
-    const body = builder.Finish() else error {
-        discard error
-        return .Err(.InvalidResponse)
-    }
-    .Ok(body)
+    panic("unreachable chunked response body state")
 }
 
 fn networkTargetFor(value String) Result<networkTarget, RequestError> {

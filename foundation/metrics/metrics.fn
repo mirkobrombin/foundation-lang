@@ -1,0 +1,235 @@
+package foundation.metrics
+
+import std.collections
+import std.time
+
+// Counts integer measurements. Callers own synchronization when sharing it.
+struct Counter {
+    value i64
+
+    // Increments the counter by one.
+    fn Inc(&self) void {
+        self.Add(1)
+    }
+
+    // Adds a signed measurement to the counter.
+    fn Add(&self, value i64) void {
+        self.value = self.value + value
+    }
+
+    // Reads the current counter value.
+    fn Value(self) i64 {
+        self.value
+    }
+}
+
+// Tracks a floating-point measurement that may rise or fall.
+struct Gauge {
+    value f64
+
+    // Replaces the gauge value.
+    fn Set(&self, value f64) void {
+        self.value = value
+    }
+
+    // Increments the gauge by one.
+    fn Inc(&self) void {
+        self.Add(1.0)
+    }
+
+    // Decrements the gauge by one.
+    fn Dec(&self) void {
+        self.Sub(1.0)
+    }
+
+    // Adds a floating-point measurement to the gauge.
+    fn Add(&self, value f64) void {
+        self.value = self.value + value
+    }
+
+    // Subtracts a floating-point measurement from the gauge.
+    fn Sub(&self, value f64) void {
+        self.value = self.value - value
+    }
+
+    // Reads the current gauge value.
+    fn Value(self) f64 {
+        self.value
+    }
+}
+
+// Describes one inclusive histogram bucket.
+struct Bucket {
+    // Includes observations less than or equal to this value.
+    UpperBound f64
+    // Counts observations assigned to this bucket.
+    Count i64
+}
+
+// Preserves one histogram observation state.
+struct HistogramSnapshot {
+    // Owns sorted inclusive bucket snapshots.
+    Buckets own collections.List<Bucket>
+    // Counts observations above every configured upper bound.
+    OverflowCount i64
+    // Counts every recorded observation.
+    Count i64
+    // Sums every recorded observation.
+    Sum f64
+}
+
+// Records floating-point observations in sorted inclusive buckets.
+struct Histogram {
+    buckets own collections.List<Bucket>
+    overflowCount i64
+    count i64
+    sum f64
+
+    // Adds one observation to the first bucket whose upper bound includes it.
+    fn Observe(&self, value f64) void {
+        var pending = replace self.buckets with collections.NewList<Bucket>()
+        var restored = collections.NewList<Bucket>()
+        var matched = false
+        while !pending.IsEmpty() {
+            var bucket = bucketValue(pending.PopFront())
+            if !matched && value <= bucket.UpperBound {
+                bucket.Count = bucket.Count + 1
+                matched = true
+            }
+            restored.PushFront($bucket)
+        }
+        self.buckets = reverseBuckets($restored)
+        if !matched {
+            self.overflowCount = self.overflowCount + 1
+        }
+        self.count = self.count + 1
+        self.sum = self.sum + value
+    }
+
+    // Returns an owned snapshot without consuming the histogram.
+    fn Snapshot(&self) own HistogramSnapshot {
+        var pending = replace self.buckets with collections.NewList<Bucket>()
+        var restored = collections.NewList<Bucket>()
+        var copied = collections.NewList<Bucket>()
+        while !pending.IsEmpty() {
+            const bucket = bucketValue(pending.PopFront())
+            restored.PushFront(bucket)
+            copied.PushFront(bucket)
+        }
+        self.buckets = reverseBuckets($restored)
+        own HistogramSnapshot {
+            Buckets = reverseBuckets($copied)
+            OverflowCount = self.overflowCount
+            Count = self.count
+            Sum = self.sum
+        }
+    }
+}
+
+// Captures a monotonic start instant for one elapsed duration.
+struct Timing {
+    started time.MonotonicInstant
+
+    // Consumes the timing and measures its elapsed duration.
+    fn Stop(self) Result<time.Duration, TimerError> {
+        const finished = time.MonotonicNow()
+        const elapsed = finished.Since(self.started) else error {
+            discard error
+            return .Err(.ClockMovedBackwards)
+        }
+        .Ok(elapsed)
+    }
+}
+
+// Reports a monotonic clock failure while stopping a timer.
+enum TimerError {
+    // Reports a monotonic instant earlier than the captured start.
+    ClockMovedBackwards
+}
+
+// Starts independent monotonic duration measurements.
+struct Timer {
+    // Captures a new monotonic start instant.
+    fn Start(self) Timing {
+        Timing { started = time.MonotonicNow() }
+    }
+}
+
+// Creates a zero-valued counter.
+fn NewCounter() Counter {
+    Counter { value = 0 }
+}
+
+// Creates a zero-valued gauge.
+fn NewGauge() Gauge {
+    Gauge { value = 0.0 }
+}
+
+// Transfers bucket boundaries into a histogram after sorting them ascending.
+fn NewHistogram(
+    $boundaries own collections.List<f64>
+) own Histogram {
+    const sorted = collections.Sort<f64>($boundaries, compareF64)
+    own Histogram {
+        buckets = bucketsFrom($sorted)
+        overflowCount = 0
+        count = 0
+        sum = 0.0
+    }
+}
+
+// Creates a timer with no shared measurement state.
+fn NewTimer() Timer {
+    Timer {}
+}
+
+fn compareF64(left f64, right f64) i32 {
+    if left < right return -1
+    if left > right return 1
+    0
+}
+
+fn bucketsFrom(
+    $boundaries own collections.List<f64>
+) own collections.List<Bucket> {
+    var pending = boundaries
+    var buckets = collections.NewList<Bucket>()
+    while !pending.IsEmpty() {
+        const boundary = f64Value(pending.PopFront())
+        buckets.PushFront(Bucket { UpperBound = boundary Count = 0 })
+    }
+    reverseBuckets($buckets)
+}
+
+fn reverseBuckets(
+    $values own collections.List<Bucket>
+) own collections.List<Bucket> {
+    var pending = values
+    var reversed = collections.NewList<Bucket>()
+    while !pending.IsEmpty() {
+        reversed.PushFront(bucketValue(pending.PopFront()))
+    }
+    reversed
+}
+
+fn bucketValue($value Option<Bucket>) Bucket {
+    match value {
+        None: missingBucket()
+        Some(bucket): bucket
+    }
+}
+
+fn missingBucket() Bucket {
+    panic("metrics bucket invariant failed")
+}
+
+fn f64Value($value Option<f64>) f64 {
+    match value {
+        None: missingF64()
+        Some(number): number
+    }
+}
+
+fn missingF64() f64 {
+    panic("metrics boundary invariant failed")
+}

@@ -51,6 +51,19 @@ responses are bounded and skipped before the final response. Protocol upgrades a
 HEAD and 304 responses ignore framing bodies, while 204 responses reject body framing fields.
 Exactly 128 headers or trailers are accepted; the next field is rejected.
 
+`StreamingNetwork()` returns the same validated response head without buffering the body. Its
+`StreamingTransport<NetworkError>` result owns a `ResponseBody<NetworkError>`. Each `Read` consumes
+that owner and restores it beside either a non-empty `BodyPart.Chunk`, final
+`BodyPart.Complete(trailers)`, or `BodyReadError`. The caller chooses a positive per-read maximum;
+zero returns `InvalidLimit` without consuming wire data. Content-Length, chunked, close-delimited,
+HEAD, 204, and 304 framing share the same parser and absolute deadline as `Network()`. Chunked
+trailers are validated, bounded to 128 fields, preserved in wire order, and returned only at clean
+completion. Dropping the body closes the unread connection deterministically.
+
+The buffered `Network()` transport is implemented by collecting that stream into one bounded
+`std.bytes.Builder`. This keeps a single framing implementation while preserving the replayable
+`Response` API used by middleware, retry, and redirects.
+
 The transport always emits `Connection: close` unless the request already provides a valid field.
 It validates a supplied content length against the replayable body and rejects request transfer
 encoding. Response order and header spelling are retained.
@@ -66,5 +79,5 @@ transport.
 and fragment. The sink receives status or a typed transport description and monotonic duration.
 
 HTTPS currently returns `NetworkError.TLSUnavailable` before opening a plaintext connection. TLS,
-certificate resolution, streaming bodies, connection pooling, and proxy support remain open and
-are not claimed by this checkpoint.
+certificate resolution, streaming request bodies, streaming client policy, connection pooling,
+and proxy support remain open and are not claimed by this checkpoint.

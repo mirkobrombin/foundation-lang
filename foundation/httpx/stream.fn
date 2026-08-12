@@ -1,0 +1,61 @@
+package foundation.httpx
+
+import std.bytes
+import std.collections
+
+// Distinguishes invalid input from a transport-specific body failure.
+enum BodyReadError<E> {
+    // Rejects a zero-byte read limit without consuming the stream.
+    InvalidLimit
+    // Preserves the transport-specific body failure.
+    Source(error E)
+}
+
+// Represents one bounded body chunk or the final trailer block.
+enum BodyPart {
+    // Owns one non-empty arbitrary byte chunk.
+    Chunk(value own bytes.Bytes)
+    // Marks clean body completion and owns the validated response trailers.
+    Complete(trailers own collections.List<Header>)
+}
+
+// Returns a response body owner beside one read result.
+struct BodyReadOutcome<E> {
+    // Restores the body stream after success, completion, or failure.
+    Body own ResponseBody<E>
+    // Contains one chunk, clean completion, or a typed failure.
+    Value Result<BodyPart, BodyReadError<E>>
+}
+
+// Defines one pull-based, bounded response body stream.
+contract ResponseBody<E> {
+    // Reads no more than maximum bytes without hiding stream ownership.
+    fn Read(
+        $self,
+        maximum u64
+    ) Task<own BodyReadOutcome<E>>
+}
+
+// Contains response metadata and an independently owned body stream.
+struct StreamingResponse<E> {
+    // Stores the numeric HTTP status code.
+    Status i32
+    // Stores response headers in wire order.
+    Headers own collections.List<Header>
+    // Owns the pull-based response body.
+    Body own ResponseBody<E>
+
+    // Returns the first value whose name matches without ASCII case.
+    fn Header(&self, name String) Option<String> {
+        headerValueFor(&self.Headers, name)
+    }
+}
+
+// Defines one asynchronous transport that returns before buffering the body.
+contract StreamingTransport<E> {
+    // Sends one buffered request and returns a pull-based response body.
+    fn Send(
+        &self,
+        $request Request
+    ) Task<Result<StreamingResponse<E>, E>>
+}

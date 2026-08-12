@@ -1,0 +1,164 @@
+package foundation.logger
+
+import std.collections
+
+// Orders log severities from diagnostic messages to fatal failures.
+enum Level {
+    // Enables detailed diagnostic output.
+    Debug
+    // Represents normal operational output.
+    Info
+    // Reports a potential problem.
+    Warn
+    // Reports a failed operation.
+    Error
+    // Marks a process-ending failure for policies outside this logger.
+    Fatal
+}
+
+// Stores one owned structured key and value.
+struct Field {
+    // Identifies the structured value.
+    Key String
+    // Stores its deterministic text representation.
+    Value String
+}
+
+// Writes threshold-filtered structured text with persistent bound fields.
+struct Logger {
+    fields own collections.List<Field>
+    minimum Level
+
+    // Changes the minimum severity emitted by later calls.
+    fn SetLevel(&self, level Level) void {
+        self.minimum = level
+    }
+
+    // Retains one owned field on the logger for later entries.
+    fn Bind(&self, $field Field) void {
+        self.fields.PushFront($field)
+    }
+
+    // Emits one entry when its severity reaches the configured threshold.
+    fn Log(
+        &self,
+        level Level,
+        message String,
+        $fields own collections.List<Field>
+    ) void {
+        if levelRank(level) < levelRank(self.minimum) return
+        print(render(&self, level, message, $fields))
+    }
+
+    // Emits one debug entry when debug logging is enabled.
+    fn Debug(&self, message String, $fields own collections.List<Field>) void {
+        self.Log(.Debug, message, $fields)
+    }
+
+    // Emits one informational entry.
+    fn Info(&self, message String, $fields own collections.List<Field>) void {
+        self.Log(.Info, message, $fields)
+    }
+
+    // Emits one warning entry.
+    fn Warn(&self, message String, $fields own collections.List<Field>) void {
+        self.Log(.Warn, message, $fields)
+    }
+
+    // Emits one error entry.
+    fn Error(&self, message String, $fields own collections.List<Field>) void {
+        self.Log(.Error, message, $fields)
+    }
+}
+
+// Creates a standard-output logger with an informational threshold.
+fn New() own Logger {
+    NewWith(.Info)
+}
+
+// Creates a standard-output logger with an explicit minimum severity.
+fn NewWith(minimum Level) own Logger {
+    own Logger { fields = collections.NewList<Field>() minimum = minimum }
+}
+
+// Creates an empty owned per-call field list.
+fn Fields() own collections.List<Field> {
+    collections.NewList<Field>()
+}
+
+// Appends one field to an owned field list and returns its owner.
+fn WithField(
+    $fields own collections.List<Field>,
+    $key String,
+    $value String
+) own collections.List<Field> {
+    var result = fields
+    result.PushFront(Field { Key = key Value = value })
+    result
+}
+
+// Returns the canonical lowercase text for one severity.
+fn LevelText(level Level) String {
+    match level {
+        Debug: "debug"
+        Info: "info"
+        Warn: "warn"
+        Error: "error"
+        Fatal: "fatal"
+    }
+}
+
+fn levelRank(level Level) i32 {
+    match level {
+        Debug: 0
+        Info: 1
+        Warn: 2
+        Error: 3
+        Fatal: 4
+    }
+}
+
+fn render(
+    &logger Logger,
+    level Level,
+    message String,
+    $fields own collections.List<Field>
+) String {
+    var result = LevelText(level) + " " + message
+    var bound = replace logger.fields with collections.NewList<Field>()
+    var restored = collections.NewList<Field>()
+    while !bound.IsEmpty() {
+        const field = fieldValue(bound.PopFront())
+        result = appendField(result, field)
+        restored.PushFront($field)
+    }
+    logger.fields = reverseFields($restored)
+
+    var active = fields
+    while !active.IsEmpty() {
+        result = appendField(result, fieldValue(active.PopFront()))
+    }
+    result
+}
+
+fn appendField(prefix String, field Field) String {
+    prefix + " " + field.Key + "=" + field.Value
+}
+
+fn fieldValue($value Option<Field>) Field {
+    match value {
+        None: panic("logger field invariant failed")
+        Some(field): field
+    }
+}
+
+fn reverseFields(
+    $source own collections.List<Field>
+) own collections.List<Field> {
+    var active = source
+    var result = collections.NewList<Field>()
+    while !active.IsEmpty() {
+        result.PushFront(fieldValue(active.PopFront()))
+    }
+    result
+}

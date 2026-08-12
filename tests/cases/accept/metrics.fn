@@ -1,0 +1,79 @@
+package test.metrics
+
+import foundation.metrics
+import std.collections
+import std.format
+import std.time
+
+fn bucketValue($value Option<metrics.Bucket>) metrics.Bucket {
+    match value {
+        None: missingBucket()
+        Some(bucket): bucket
+    }
+}
+
+fn missingBucket() metrics.Bucket {
+    panic("metrics bucket missing")
+}
+
+fn elapsedValue(
+    $value Result<time.Duration, metrics.TimerError>
+) time.Duration {
+    match value {
+        Ok(elapsed): elapsed
+        Err(error): timerFailure(error)
+    }
+}
+
+fn timerFailure(error metrics.TimerError) never {
+    discard error
+    panic("timer failed")
+}
+
+fn boundaries() own collections.List<f64> {
+    var values = collections.NewList<f64>()
+    values.PushFront(10.0)
+    values.PushFront(1.0)
+    values.PushFront(5.0)
+    values
+}
+
+fn main() i32 {
+    var counter = metrics.NewCounter()
+    counter.Inc()
+    counter.Add(4)
+    if counter.Value() != 5 return 1
+
+    var gauge = metrics.NewGauge()
+    gauge.Set(42.0)
+    gauge.Inc()
+    gauge.Dec()
+    gauge.Add(10.0)
+    gauge.Sub(20.0)
+    if gauge.Value() != 32.0 return 2
+
+    var histogram = metrics.NewHistogram($boundaries())
+    histogram.Observe(0.5)
+    histogram.Observe(3.0)
+    histogram.Observe(7.0)
+    histogram.Observe(15.0)
+    var snapshot = histogram.Snapshot()
+    if snapshot.Count != 4 || snapshot.Sum != 25.5 return 3
+    if snapshot.OverflowCount != 1 return 4
+    const first = bucketValue(snapshot.Buckets.PopFront())
+    const second = bucketValue(snapshot.Buckets.PopFront())
+    const third = bucketValue(snapshot.Buckets.PopFront())
+    if first.UpperBound != 1.0 || first.Count != 1 return 5
+    if second.UpperBound != 5.0 || second.Count != 1 return 6
+    if third.UpperBound != 10.0 || third.Count != 1 return 7
+
+    const timer = metrics.NewTimer()
+    const timing = timer.Start()
+    const elapsed = elapsedValue(timing.Stop())
+    if elapsed.Nanoseconds() < 0 return 8
+
+    print(format.I64(counter.Value()))
+    print(format.F64(gauge.Value()))
+    print("metrics ok")
+    0
+}

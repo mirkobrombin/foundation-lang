@@ -1065,6 +1065,55 @@ fn main() i32 {
            "contract conversion does not allocate");
 }
 
+void taskContractConversionsReceiveEarlyVtableDeclarations() {
+    constexpr std::string_view source = R"(
+contract Reader {
+    fn take($self) i32
+}
+
+struct Value implements Reader {
+    stored i32
+
+    fn take($self) i32 {
+        self.stored
+    }
+}
+
+task child() i32 { 1 }
+
+task convert() own Reader {
+    const pending = spawn child()
+    const result = $pending.wait()
+    discard result
+    own Value { stored = 42 }
+}
+
+fn main() i32 {
+    const pending = spawn convert()
+    const value = $pending.wait()
+    value.take() - 42
+}
+)";
+    const auto result = check(source);
+    expect(!result.diagnostics.hasErrors(),
+           "contract conversion inside a suspending task is accepted");
+    expect(result.fir.has_value(),
+           "contract conversion inside a suspending task lowers to FIR");
+    if (!result.fir.has_value()) {
+        return;
+    }
+
+    const auto generated = foundation::emitC(*result.fir, "task-contract.fn");
+    const auto declaration = generated.find(
+        "static const struct fdn_contract_0_vtable fdn_vtable_c0_s0;");
+    const auto poll = generated.find("_task_poll");
+    const auto definition = generated.find(
+        "static const struct fdn_contract_0_vtable fdn_vtable_c0_s0 = {");
+    expect(declaration != std::string::npos && poll != std::string::npos &&
+               definition != std::string::npos && declaration < poll && poll < definition,
+           "contract vtable is declared before suspending task poll emission");
+}
+
 void contractInheritanceFlattensDeterministically() {
     constexpr std::string_view source = R"(
 contract Named<T> {
@@ -2695,6 +2744,7 @@ int main() {
     u64ValuesLowerToCheckedC();
     machineScalarsAndNeverLowerToPortableC();
     methodsAndContractsLowerToDeterministicC();
+    taskContractConversionsReceiveEarlyVtableDeclarations();
     contractInheritanceFlattensDeterministically();
     lightweightSyntaxCarriesVisibilityAndContext();
     panicLowersWithSourceFrames();

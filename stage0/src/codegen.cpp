@@ -5302,6 +5302,14 @@ std::string emitCImpl(const FirProgram &source, std::string_view sourcePath,
         emitContractDefinition(out, program, index);
     }
 
+    for (const auto &use : contractUses) {
+        out << "static const struct fdn_contract_" << use.contract.declaration
+            << "_vtable " << vtableName(use.contract, use.concrete) << ";\n";
+    }
+    if (!contractUses.empty()) {
+        out << '\n';
+    }
+
     for (std::size_t index = 0; index < program.functions.size(); ++index) {
         emitClosureEnvironmentDefinition(out, program, index);
     }

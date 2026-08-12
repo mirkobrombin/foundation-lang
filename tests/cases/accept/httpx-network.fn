@@ -1,6 +1,7 @@
 package test.httpx_network
 
 import std.bytes
+import std.collections
 import std.format
 import std.net
 import std.text
@@ -47,6 +48,13 @@ struct BinaryServerOutcome {
     Listener own net.TcpListener
     RequestMatched bool
     Written bool
+}
+
+struct StreamingBodyOutcome {
+    Text String
+    Trailer String
+    InvalidLimit bool
+    Complete bool
 }
 
 fn listenerOr(
@@ -234,6 +242,39 @@ fn headerAccepted($value Result<void, httpx.RequestError>) bool {
             false
         }
     }
+}
+
+fn bodyLimitRejected(
+    $value Result<httpx.BodyPart, httpx.BodyReadError<httpx.NetworkError>>
+) bool {
+    match value {
+        Ok(part): {
+            discard part
+            false
+        }
+        Err(error): match error {
+            InvalidLimit: true
+            Source(source): {
+                discard source
+                false
+            }
+        }
+    }
+}
+
+fn trailerText($trailers own collections.List<httpx.Header>) String {
+    var active = trailers
+    const first = active.PopFront()
+    const result = match first {
+        None: ""
+        Some(header): {
+            const httpx.Header { Name Value } = header
+            const rendered = Name + ":" + Value
+            rendered
+        }
+    }
+    discard active
+    result
 }
 
 fn failureName(
@@ -616,6 +657,133 @@ task exchangeCompact(
         Body = ResponseBody
         Failure = Failure
     }
+}
+
+task consumeStreamingBody(
+    $body own httpx.ResponseBody<httpx.NetworkError>
+) StreamingBodyOutcome {
+    var active = body
+    const invalidReading = active.Read(0)
+    const invalidOutcome = $invalidReading.wait()
+    const httpx.BodyReadOutcome {
+        Body as invalidBody
+        Value as invalidValue
+    } = invalidOutcome
+    active = invalidBody
+    const invalidLimit = bodyLimitRejected($invalidValue)
+
+    var result = ""
+    var trailer = ""
+    var complete = false
+    while !complete {
+        const reading = active.Read(2)
+        const outcome = $reading.wait()
+        const httpx.BodyReadOutcome {
+            Body as restoredBody
+            Value
+        } = outcome
+        active = restoredBody
+        const part = Value else error {
+            discard error
+            discard active
+            return StreamingBodyOutcome {
+                Text = result
+                Trailer = trailer
+                InvalidLimit = invalidLimit
+                Complete = false
+            }
+        }
+        match part {
+            Chunk(chunk): {
+                result = result + bodyText($chunk)
+            }
+            Complete(trailers): {
+                trailer = trailerText($trailers)
+                complete = true
+            }
+        }
+    }
+    discard active
+    StreamingBodyOutcome {
+        Text = result
+        Trailer = trailer
+        InvalidLimit = invalidLimit
+        Complete = true
+    }
+}
+
+task streamingRoundTrip() bool {
+    const listener = listenerOr(net.Listen("127.0.0.1", 0))
+    const port = listener.Port
+    const response = "HTTP/1.1 200 OK\r\n" +
+        "Transfer-Encoding: chunked\r\n" +
+        "X-Test: stream\r\n\r\n" +
+        "4\r\nWiki\r\n" +
+        "5\r\npedia\r\n" +
+        "0\r\nX-Trailer: done\r\n\r\n"
+    const serving = spawn serve($listener, $response, 0)
+    var transport = httpx.StreamingNetwork()
+    const request = requestOr(httpx.NewRequest(
+            "GET",
+            "http://127.0.0.1:" + format.U64(port) + "/stream",
+            ""
+        ))
+    const sending = transport.Send($request)
+    const sent = $sending.wait()
+    discard transport
+    const streamed = sent else error {
+        discard error
+        const failedServer = $serving.wait()
+        discard failedServer
+        return false
+    }
+    var activeResponse = streamed
+    const responseHeader = match activeResponse.Header("X-Test") {
+        None: ""
+        Some(value): value
+    }
+    const httpx.StreamingResponse {
+        Status
+        Headers
+        Body
+    } = activeResponse
+    discard Headers
+    const consuming = spawn consumeStreamingBody($Body)
+    const consumed = $consuming.wait()
+    const StreamingBodyOutcome {
+        Text
+        Trailer
+        InvalidLimit
+        Complete
+    } = consumed
+
+    const served = $serving.wait()
+    const ServerOutcome {
+        Listener
+        RequestLine
+        Host
+        Connection
+        ContentLength
+        Separator
+        Body as RequestBody
+        Written
+    } = served
+    const matched = Status == 200 && responseHeader == "stream" &&
+        Text == "Wikipedia" && Trailer == "X-Trailer:done" &&
+        InvalidLimit && Complete && Written &&
+        RequestLine == "GET /stream HTTP/1.1" &&
+        text.StartsWith(Host, "Host: 127.0.0.1:") &&
+        Connection == "Connection: close" &&
+        ContentLength == "Content-Length: 0" && Separator == "" &&
+        RequestBody == ""
+    discard Listener
+    discard RequestLine
+    discard Host
+    discard Connection
+    discard ContentLength
+    discard Separator
+    discard RequestBody
+    matched
 }
 
 fn headerResponse(extraHeaders u64) String {
@@ -1071,6 +1239,10 @@ fn main() i32 {
     discard closeStatus
     discard closeBody
     if !closeWritten || closeFailure != "response-too-large" return 16
+
+    const streamPending = spawn streamingRoundTrip()
+    const streamMatched = $streamPending.wait()
+    if !streamMatched return 17
 
     print("httpx network ok")
     0
