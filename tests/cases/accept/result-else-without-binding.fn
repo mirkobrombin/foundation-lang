@@ -18,6 +18,14 @@ fn nestedFailure() Result<i32, Result<String, String>> {
     .Err(.Err("nested" + " error"))
 }
 
+enum MarkerError {
+    Failed
+}
+
+fn markerFailure() Result<i32, MarkerError> {
+    .Err(.Failed)
+}
+
 fn valueCode(fail bool) i32 {
     const value = maybeValue(32, "ignored", fail) else {
         return 10
@@ -39,9 +47,16 @@ fn nestedCode() i32 {
     value
 }
 
+fn markerCode() i32 {
+    const value = markerFailure() else {
+        return 7
+    }
+    value
+}
+
 fn main() i32 {
     if valueCode(false) == 32 && valueCode(true) == 10 && effectCode(false) == 5 &&
-        effectCode(true) == 10 && nestedCode() == 42 {
+        effectCode(true) == 10 && nestedCode() == 42 && markerCode() == 7 {
         print("else ok")
         return 0
     }

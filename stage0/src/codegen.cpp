@@ -3157,6 +3157,8 @@ class FunctionEmitter {
             out_ << localValue(binding->errorLocal) << " = " << initializer.value
                  << ".fdn_data." << payloadName(1) << ";\n";
             activateLocal(binding->errorLocal, depth + 1);
+            out_ << indentation(depth + 1) << "(void)"
+                 << localValue(binding->errorLocal) << ";\n";
             static_cast<void>(emitBlock(binding->elseBlock, depth + 1));
             out_ << indentation(depth) << "}\n";
             out_ << indentation(depth);
@@ -3183,6 +3185,8 @@ class FunctionEmitter {
             out_ << localValue(binding->errorLocal) << " = " << initializer.value
                  << ".fdn_data." << payloadName(1) << ";\n";
             activateLocal(binding->errorLocal, depth + 1);
+            out_ << indentation(depth + 1) << "(void)"
+                 << localValue(binding->errorLocal) << ";\n";
             static_cast<void>(emitBlock(binding->elseBlock, depth + 1));
             out_ << indentation(depth) << "}\n";
             return false;
