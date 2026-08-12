@@ -71,8 +71,7 @@ std::string traceFunctionName(const FirFunction &function) {
     if (function.testName.has_value()) {
         return "test \"" + *function.testName + '"';
     }
-    if (!function.packageName.empty() &&
-        function.name.starts_with(function.packageName + '.')) {
+    if (!function.packageName.empty() && function.name.starts_with(function.packageName + '.')) {
         return function.name.substr(function.packageName.size() + 1);
     }
     return std::string(unqualifiedName(function.name));
@@ -83,8 +82,7 @@ std::string functionName(const FirProgram &program, FirFunctionId id) {
         return "fdn_program_main";
     }
     const auto &function = program.functions[id];
-    auto name = "fdn_fn_" + safeName(function.name) + "_" +
-                std::to_string(function.source);
+    auto name = "fdn_fn_" + safeName(function.name) + "_" + std::to_string(function.source);
     if (function.generic) {
         name += "_g" + std::to_string(id);
     }
@@ -139,9 +137,9 @@ std::unique_ptr<llvm::TargetMachine> createTargetMachine(std::string triple,
         return nullptr;
     }
     llvm::TargetOptions options;
-    return std::unique_ptr<llvm::TargetMachine>(target->createTargetMachine(
-        llvm::Triple(triple), "generic", "", options, llvm::Reloc::PIC_,
-        std::nullopt, llvm::CodeGenOptLevel::Default));
+    return std::unique_ptr<llvm::TargetMachine>(
+        target->createTargetMachine(llvm::Triple(triple), "generic", "", options, llvm::Reloc::PIC_,
+                                    std::nullopt, llvm::CodeGenOptLevel::Default));
 }
 
 class LlvmEmitter {
@@ -149,23 +147,28 @@ class LlvmEmitter {
     LlvmEmitter(const FirProgram &source, std::string_view sourcePath,
                 const LlvmCodegenOptions &options, Diagnostics &diagnostics,
                 llvm::LLVMContext &context, llvm::Module &module)
-        : program_(prepareFirForBackend(source, options.entry)),
-          sourcePath_(sourcePath), options_(options), diagnostics_(diagnostics),
-          context_(context), module_(module), builder_(context) {
+        : program_(prepareFirForBackend(source, options.entry)), sourcePath_(sourcePath),
+          options_(options), diagnostics_(diagnostics), context_(context), module_(module),
+          builder_(context) {
         stringType_ = llvm::StructType::create(
-            context_, {pointerType(), sizeType(), llvm::Type::getInt8Ty(context_)},
-            "fdn.string");
-        frameType_ = llvm::StructType::create(
-            context_, {pointerType(), pointerType(), pointerType(), pointerType(),
-                       llvm::Type::getInt32Ty(context_),
-                       llvm::Type::getInt32Ty(context_),
-                       llvm::Type::getInt8Ty(context_)},
-            "fdn.frame");
+            context_, {pointerType(), sizeType(), llvm::Type::getInt8Ty(context_)}, "fdn.string");
+        frameType_ = llvm::StructType::create(context_,
+                                              {pointerType(), pointerType(), pointerType(),
+                                               pointerType(), llvm::Type::getInt32Ty(context_),
+                                               llvm::Type::getInt32Ty(context_),
+                                               llvm::Type::getInt8Ty(context_)},
+                                              "fdn.frame");
+        channelType_ =
+            llvm::StructType::create(context_, {pointerType(), pointerType()}, "fdn.channel");
     }
 
     bool run() {
         if (program_.main >= program_.functions.size()) {
             fail({}, "program has no LLVM entry point");
+            return false;
+        }
+        declareAggregateTypes();
+        if (diagnostics_.hasErrors()) {
             return false;
         }
         declareFunctions();
@@ -194,6 +197,70 @@ class LlvmEmitter {
     llvm::IntegerType *sizeType() const {
         const auto bits = module_.getDataLayout().getPointerSizeInBits();
         return llvm::IntegerType::get(context_, bits == 0 ? 64 : bits);
+    }
+
+    void declareAggregateTypes() {
+        structTypes_.reserve(program_.structs.size());
+        for (std::size_t id = 0; id < program_.structs.size(); ++id) {
+            structTypes_.push_back(
+                llvm::StructType::create(context_, "fdn.struct." + std::to_string(id)));
+        }
+        enumTypes_.reserve(program_.enums.size());
+        for (std::size_t id = 0; id < program_.enums.size(); ++id) {
+            enumTypes_.push_back(
+                llvm::StructType::create(context_, "fdn.enum." + std::to_string(id)));
+        }
+
+        for (std::size_t id = 0; id < program_.structs.size(); ++id) {
+            const auto &declaration = program_.structs[id];
+            std::vector<llvm::Type *> fields;
+            fields.reserve(declaration.fields.size() +
+                           (declaration.dropFunction.has_value() ? 1 : 0));
+            if (declaration.dropFunction.has_value()) {
+                fields.push_back(llvm::Type::getInt1Ty(context_));
+            }
+            for (const auto &field : declaration.fields) {
+                auto *type = typeOf(field.type);
+                if (type == nullptr || type->isVoidTy()) {
+                    fail(declaration.sourceSpan, "LLVM backend cannot lay out field " + field.name +
+                                                     " of " + declaration.name);
+                    type = llvm::Type::getInt8Ty(context_);
+                }
+                fields.push_back(type);
+            }
+            structTypes_[id]->setBody(fields);
+        }
+
+        for (std::size_t id = 0; id < program_.enums.size(); ++id) {
+            const auto &declaration = program_.enums[id];
+            std::vector<llvm::Type *> fields;
+            fields.reserve(declaration.variants.size() + 1);
+            fields.push_back(llvm::Type::getInt32Ty(context_));
+            for (const auto &variant : declaration.variants) {
+                llvm::Type *type = llvm::Type::getInt8Ty(context_);
+                if (variant.payload.has_value()) {
+                    type = typeOf(*variant.payload);
+                    if (type == nullptr || type->isVoidTy()) {
+                        fail({}, "LLVM backend cannot lay out variant " + variant.name + " of " +
+                                     declaration.name);
+                        type = llvm::Type::getInt8Ty(context_);
+                    }
+                }
+                fields.push_back(type);
+            }
+            enumTypes_[id]->setBody(fields);
+        }
+        for (std::size_t id = 0; id < structTypes_.size(); ++id) {
+            if (!structTypes_[id]->isSized()) {
+                fail(program_.structs[id].sourceSpan,
+                     "LLVM backend cannot resolve the layout of " + program_.structs[id].name);
+            }
+        }
+        for (std::size_t id = 0; id < enumTypes_.size(); ++id) {
+            if (!enumTypes_[id]->isSized()) {
+                fail({}, "LLVM backend cannot resolve the layout of " + program_.enums[id].name);
+            }
+        }
     }
 
     llvm::Type *typeOf(const Type &type) {
@@ -233,6 +300,8 @@ class LlvmEmitter {
         case TypeKind::Sender:
         case TypeKind::Receiver:
             return pointerType();
+        case TypeKind::Channel:
+            return channelType_;
         case TypeKind::Array:
             if (type.arguments.size() == 1) {
                 if (auto *element = typeOf(type.arguments.front());
@@ -241,29 +310,35 @@ class LlvmEmitter {
                 }
             }
             return nullptr;
+        case TypeKind::Struct:
+            return type.declaration < structTypes_.size() ? structTypes_[type.declaration]
+                                                          : nullptr;
+        case TypeKind::Enum:
+            return type.declaration < enumTypes_.size() ? enumTypes_[type.declaration] : nullptr;
         case TypeKind::Invalid:
         case TypeKind::Slice:
         case TypeKind::Parameter:
-        case TypeKind::Struct:
-        case TypeKind::Enum:
         case TypeKind::Contract:
         case TypeKind::Function:
-        case TypeKind::Channel:
             return nullptr;
         }
         return nullptr;
     }
 
     llvm::FunctionType *functionType(const FirFunction &function) {
-        auto *result = function.diverges ? llvm::Type::getVoidTy(context_)
-                                         : typeOf(function.returnType);
+        const auto indirectResult = usesExternalResultPointer(function);
+        auto *result = function.diverges || indirectResult ? llvm::Type::getVoidTy(context_)
+                                                           : typeOf(function.returnType);
         if (result == nullptr) {
             fail(function.sourceSpan,
                  "LLVM backend does not support the return type of " + function.name);
             return nullptr;
         }
         std::vector<llvm::Type *> parameters;
-        parameters.reserve(function.parameters.size());
+        parameters.reserve(function.parameters.size() + (indirectResult ? 1 : 0));
+        if (indirectResult) {
+            parameters.push_back(pointerType());
+        }
         for (const auto local : function.parameters) {
             if (local >= function.locals.size()) {
                 fail(function.sourceSpan, "LLVM backend received an invalid parameter");
@@ -277,6 +352,19 @@ class LlvmEmitter {
             }
             parameters.push_back(parameter);
         }
+        if (!function.hasBody && function.cSymbol.has_value()) {
+            if (containsAggregate(function.returnType) ||
+                std::any_of(function.parameters.begin(), function.parameters.end(),
+                            [&](const FirLocalId local) {
+                                return local < function.locals.size() &&
+                                       containsAggregate(function.locals[local].type);
+                            })) {
+                fail(function.sourceSpan,
+                     "LLVM backend does not expose Foundation aggregates through the C ABI: " +
+                         function.name);
+                return nullptr;
+            }
+        }
         if (function.closure || function.task || function.callback ||
             function.stateTransition.has_value() || function.stateTimeout.has_value() ||
             function.workflow.has_value()) {
@@ -285,6 +373,19 @@ class LlvmEmitter {
             return nullptr;
         }
         return llvm::FunctionType::get(result, parameters, false);
+    }
+
+    bool usesExternalResultPointer(const FirFunction &function) const {
+        return !function.hasBody && function.cSymbol.has_value() &&
+               function.returnType == stringType;
+    }
+
+    bool containsAggregate(const Type &type) const {
+        if (type.kind == TypeKind::Struct || type.kind == TypeKind::Enum) {
+            return true;
+        }
+        return std::any_of(type.arguments.begin(), type.arguments.end(),
+                           [&](const Type &argument) { return containsAggregate(argument); });
     }
 
     void declareFunctions() {
@@ -302,6 +403,10 @@ class LlvmEmitter {
                 signature, llvm::GlobalValue::ExternalLinkage, symbol, module_);
             if (function.diverges) {
                 declaration->addFnAttr(llvm::Attribute::NoReturn);
+            }
+            if (usesExternalResultPointer(function)) {
+                declaration->addParamAttr(0, llvm::Attribute::getWithStructRetType(
+                                                 context_, typeOf(function.returnType)));
             }
             functions_[id] = declaration;
         }
@@ -324,8 +429,7 @@ class LlvmEmitter {
                      "LLVM backend does not support local " + function_->locals[local].name);
                 continue;
             }
-            locals_[local] = builder_.CreateAlloca(type, nullptr,
-                                                   "local." + std::to_string(local));
+            locals_[local] = builder_.CreateAlloca(type, nullptr, "local." + std::to_string(local));
             builder_.CreateStore(llvm::Constant::getNullValue(type), locals_[local]);
         }
         if (diagnostics_.hasErrors()) {
@@ -381,25 +485,29 @@ class LlvmEmitter {
             if (!value.diverges && variable->local < locals_.size()) {
                 builder_.CreateStore(value.value, locals_[variable->local]);
             }
-        } else if (const auto *assignment =
-                       std::get_if<FirAssignmentStatement>(&statement.value)) {
+        } else if (const auto *binding = std::get_if<FirLetElseStatement>(&statement.value)) {
+            return emitLetElse(*binding, statement.span);
+        } else if (const auto *binding = std::get_if<FirResultElseStatement>(&statement.value)) {
+            return emitResultElse(*binding, statement.span);
+        } else if (const auto *destructure =
+                       std::get_if<FirStructDestructureStatement>(&statement.value)) {
+            emitStructDestructure(*destructure, statement.span);
+        } else if (const auto *assignment = std::get_if<FirAssignmentStatement>(&statement.value)) {
             const auto value = emitExpression(assignment->value);
             if (!value.diverges) {
                 if (auto *address = emitAddress(assignment->target); address != nullptr) {
+                    dropAddress(address, function_->expressions[assignment->target].type);
                     builder_.CreateStore(value.value, address);
                 }
             }
-        } else if (const auto *expression =
-                       std::get_if<FirExpressionStatement>(&statement.value)) {
+        } else if (const auto *expression = std::get_if<FirExpressionStatement>(&statement.value)) {
             emitExpression(expression->expression);
-        } else if (const auto *discard =
-                       std::get_if<FirDiscardStatement>(&statement.value)) {
+        } else if (const auto *discard = std::get_if<FirDiscardStatement>(&statement.value)) {
             const auto value = emitExpression(discard->expression);
             if (!value.diverges) {
                 dropValue(value.value, function_->expressions[discard->expression].type);
             }
-        } else if (const auto *returned =
-                       std::get_if<FirReturnStatement>(&statement.value)) {
+        } else if (const auto *returned = std::get_if<FirReturnStatement>(&statement.value)) {
             EmittedValue value;
             if (returned->value.has_value()) {
                 value = emitExpression(*returned->value);
@@ -417,29 +525,145 @@ class LlvmEmitter {
             return emitIf(*branch);
         } else if (const auto *loop = std::get_if<FirWhileStatement>(&statement.value)) {
             emitWhile(*loop);
-        } else if (const auto *broken =
-                       std::get_if<FirBreakStatement>(&statement.value)) {
+        } else if (const auto *broken = std::get_if<FirBreakStatement>(&statement.value)) {
             dropLocals(broken->drops);
             if (loops_.empty()) {
                 fail(statement.span, "LLVM backend received break outside a loop");
             } else {
                 builder_.CreateBr(loops_.back().breakBlock);
             }
-        } else if (const auto *continued =
-                       std::get_if<FirContinueStatement>(&statement.value)) {
+        } else if (const auto *continued = std::get_if<FirContinueStatement>(&statement.value)) {
             dropLocals(continued->drops);
             if (loops_.empty()) {
                 fail(statement.span, "LLVM backend received continue outside a loop");
             } else {
                 builder_.CreateBr(loops_.back().continueBlock);
             }
-        } else if (const auto *unsafe =
-                       std::get_if<FirUnsafeStatement>(&statement.value)) {
+        } else if (const auto *unsafe = std::get_if<FirUnsafeStatement>(&statement.value)) {
             return emitBlock(unsafe->body);
         } else {
             fail(statement.span, "LLVM backend has not lowered this statement yet");
         }
         return builder_.GetInsertBlock()->getTerminator() != nullptr;
+    }
+
+    bool emitLetElse(const FirLetElseStatement &binding, SourceSpan span) {
+        const auto initializer = emitExpression(binding.initializer);
+        if (initializer.diverges) {
+            return true;
+        }
+        const auto resultType = function_->expressions[binding.initializer].type;
+        auto *result = valueAddress(initializer.value, resultType, "let.result");
+        auto *tag = enumTag(result, resultType, span);
+        if (tag == nullptr) {
+            return true;
+        }
+        auto *failed = llvm::BasicBlock::Create(context_, "let.failed", llvmFunction_);
+        auto *success = llvm::BasicBlock::Create(context_, "let.success", llvmFunction_);
+        builder_.CreateCondBr(
+            builder_.CreateICmpEQ(tag, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 1)),
+            failed, success);
+
+        builder_.SetInsertPoint(failed);
+        if (!bindEnumPayload(result, resultType, 1, binding.errorLocal, true, span)) {
+            return true;
+        }
+        if (!emitBlock(binding.elseBlock)) {
+            fail(span, "LLVM backend requires the else branch of a Result binding to exit");
+            if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
+                builder_.CreateUnreachable();
+            }
+        }
+
+        builder_.SetInsertPoint(success);
+        if (!bindEnumPayload(result, resultType, 0, binding.local, true, span)) {
+            return true;
+        }
+        return false;
+    }
+
+    bool emitResultElse(const FirResultElseStatement &binding, SourceSpan span) {
+        const auto initializer = emitExpression(binding.expression);
+        if (initializer.diverges) {
+            return true;
+        }
+        const auto resultType = function_->expressions[binding.expression].type;
+        auto *result = valueAddress(initializer.value, resultType, "result.else");
+        auto *tag = enumTag(result, resultType, span);
+        if (tag == nullptr) {
+            return true;
+        }
+        auto *failed = llvm::BasicBlock::Create(context_, "result.failed", llvmFunction_);
+        auto *success = llvm::BasicBlock::Create(context_, "result.success", llvmFunction_);
+        builder_.CreateCondBr(
+            builder_.CreateICmpEQ(tag, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 1)),
+            failed, success);
+
+        builder_.SetInsertPoint(failed);
+        if (!bindEnumPayload(result, resultType, 1, binding.errorLocal, true, span)) {
+            return true;
+        }
+        if (!emitBlock(binding.elseBlock)) {
+            fail(span, "LLVM backend requires the else branch of Result handling to exit");
+            if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
+                builder_.CreateUnreachable();
+            }
+        }
+        builder_.SetInsertPoint(success);
+        return false;
+    }
+
+    void emitStructDestructure(const FirStructDestructureStatement &destructure, SourceSpan span) {
+        const auto initializer = emitExpression(destructure.initializer);
+        if (initializer.diverges) {
+            return;
+        }
+        auto sourceType = function_->expressions[destructure.initializer].type;
+        llvm::Value *source{};
+        if (destructure.owned) {
+            source = initializer.value;
+            if (sourceType.kind == TypeKind::Own && sourceType.arguments.size() == 1) {
+                sourceType = sourceType.arguments.front();
+            }
+        } else {
+            source = valueAddress(initializer.value, sourceType, "destructure.value");
+        }
+        if (sourceType.kind == TypeKind::Channel) {
+            for (const auto &binding : destructure.bindings) {
+                if (binding.field >= 2 || binding.local >= locals_.size()) {
+                    fail(span, "LLVM backend received an invalid channel destructure binding");
+                    return;
+                }
+                auto *field = builder_.CreateStructGEP(channelType_, source, binding.field,
+                                                       "channel.field.address");
+                builder_.CreateStore(moveFromAddress(field, function_->locals[binding.local].type),
+                                     locals_[binding.local]);
+            }
+            dropAddress(source, sourceType);
+            return;
+        }
+        if (sourceType.kind != TypeKind::Struct ||
+            sourceType.declaration >= program_.structs.size()) {
+            fail(span, "LLVM backend received a non-struct destructure");
+            return;
+        }
+        for (const auto &binding : destructure.bindings) {
+            if (binding.local >= locals_.size()) {
+                fail(span, "LLVM backend received an invalid destructure binding");
+                return;
+            }
+            auto *field = structFieldAddress(source, sourceType, binding.field, span);
+            if (field == nullptr) {
+                return;
+            }
+            const auto &type = function_->locals[binding.local].type;
+            builder_.CreateStore(moveFromAddress(field, type), locals_[binding.local]);
+        }
+        if (destructure.owned) {
+            dropValue(initializer.value, function_->expressions[destructure.initializer].type);
+        } else {
+            dropAddress(source, sourceType);
+        }
     }
 
     bool emitIf(const FirIfStatement &branch) {
@@ -506,8 +730,7 @@ class LlvmEmitter {
         }
         const auto &expression = function_->expressions[id];
         setLocation(expression.span);
-        if (const auto *integer =
-                std::get_if<FirIntegerExpression>(&expression.value)) {
+        if (const auto *integer = std::get_if<FirIntegerExpression>(&expression.value)) {
             auto *type = llvm::dyn_cast_or_null<llvm::IntegerType>(typeOf(expression.type));
             if (type == nullptr) {
                 fail(expression.span, "LLVM integer literal has a non-integer type");
@@ -519,13 +742,11 @@ class LlvmEmitter {
             }
             return {llvm::ConstantInt::get(type, value), false};
         }
-        if (const auto *floating =
-                std::get_if<FirFloatingExpression>(&expression.value)) {
+        if (const auto *floating = std::get_if<FirFloatingExpression>(&expression.value)) {
             auto *type = typeOf(expression.type);
             return {llvm::ConstantFP::get(type, floating->text), false};
         }
-        if (const auto *boolean =
-                std::get_if<FirBooleanExpression>(&expression.value)) {
+        if (const auto *boolean = std::get_if<FirBooleanExpression>(&expression.value)) {
             return {llvm::ConstantInt::getBool(context_, boolean->value), false};
         }
         if (const auto *string = std::get_if<FirStringExpression>(&expression.value)) {
@@ -550,12 +771,14 @@ class LlvmEmitter {
             return {builder_.CreateLoad(target, address, "read"), false};
         }
         if (const auto *moved = std::get_if<FirMoveExpression>(&expression.value)) {
-            auto *value = loadLocal(moved->local);
-            if (value != nullptr && moved->local < locals_.size()) {
-                builder_.CreateStore(llvm::Constant::getNullValue(value->getType()),
-                                     locals_[moved->local]);
+            if (moved->local >= locals_.size() || locals_[moved->local] == nullptr) {
+                fail(expression.span, "LLVM backend received an invalid move source");
+                return {};
             }
-            return {value, false};
+            return {moveFromAddress(locals_[moved->local], expression.type), false};
+        }
+        if (const auto *ownership = std::get_if<FirOwnershipExpression>(&expression.value)) {
+            return emitOwnership(*ownership, expression.type, expression.span);
         }
         if (const auto *unary = std::get_if<FirUnaryExpression>(&expression.value)) {
             return emitUnary(*unary, expression.type, expression.span);
@@ -566,16 +789,344 @@ class LlvmEmitter {
         if (const auto *call = std::get_if<FirCallExpression>(&expression.value)) {
             return emitCall(*call, expression.type, expression.span);
         }
-        if (const auto *conditional =
-                std::get_if<FirConditionalExpression>(&expression.value)) {
+        if (const auto *literal = std::get_if<FirStructExpression>(&expression.value)) {
+            return emitStruct(*literal, expression.span);
+        }
+        if (const auto *field = std::get_if<FirFieldExpression>(&expression.value)) {
+            return emitField(*field, expression.type, expression.span);
+        }
+        if (const auto *replace = std::get_if<FirReplaceExpression>(&expression.value)) {
+            return emitReplace(*replace, expression.type, expression.span);
+        }
+        if (const auto *constructor = std::get_if<FirEnumExpression>(&expression.value)) {
+            return emitEnum(*constructor, expression.span);
+        }
+        if (const auto *conditional = std::get_if<FirConditionalExpression>(&expression.value)) {
             return emitConditional(*conditional, expression.type);
+        }
+        if (const auto *match = std::get_if<FirMatchExpression>(&expression.value)) {
+            return emitMatch(*match, expression.type, expression.span);
         }
         fail(expression.span, "LLVM backend has not lowered this expression yet");
         return {};
     }
 
-    EmittedValue emitUnary(const FirUnaryExpression &unary, const Type &type,
-                           SourceSpan span) {
+    EmittedValue emitOwnership(const FirOwnershipExpression &ownership, const Type &type,
+                               SourceSpan span) {
+        if (ownership.operation == FirOwnershipOperator::View && type.kind != TypeKind::View) {
+            return emitExpression(ownership.operand);
+        }
+        const auto &operandType = function_->expressions[ownership.operand].type;
+        if (ownership.operation == FirOwnershipOperator::Own) {
+            const auto operand = emitExpression(ownership.operand);
+            if (operand.diverges) {
+                return operand;
+            }
+            if (type.kind != TypeKind::Own || type.arguments.size() != 1) {
+                fail(span, "LLVM backend received an invalid own expression");
+                return {};
+            }
+            auto *target = typeOf(type.arguments.front());
+            if (target == nullptr || !target->isSized()) {
+                fail(span, "LLVM backend cannot allocate this owned value");
+                return {};
+            }
+            const auto bytes = module_.getDataLayout().getTypeAllocSize(target);
+            if (bytes.isScalable()) {
+                fail(span, "LLVM backend cannot allocate a scalable owned value");
+                return {};
+            }
+            setLocation(span);
+            auto *storage =
+                builder_.CreateCall(runtimeFunction("fdn_alloc", pointerType(), {sizeType()}),
+                                    {llvm::ConstantInt::get(sizeType(), bytes.getFixedValue())});
+            builder_.CreateStore(operand.value, storage);
+            return {storage, false};
+        }
+
+        if (operandType.kind == TypeKind::Own || operandType.kind == TypeKind::View ||
+            operandType.kind == TypeKind::Edit) {
+            return emitExpression(ownership.operand);
+        }
+        if (isPlaceExpression(ownership.operand)) {
+            if (auto *address = emitAddress(ownership.operand); address != nullptr) {
+                return {address, false};
+            }
+            return {};
+        }
+        const auto operand = emitExpression(ownership.operand);
+        if (operand.diverges) {
+            return operand;
+        }
+        if (typeRequiresDrop(operandType)) {
+            fail(span, "LLVM backend cannot borrow a temporary value that requires drop yet");
+            return {};
+        }
+        return {valueAddress(operand.value, operandType, "borrow.temporary"), false};
+    }
+
+    EmittedValue emitStruct(const FirStructExpression &literal, SourceSpan span) {
+        if (literal.type.kind != TypeKind::Struct ||
+            literal.type.declaration >= program_.structs.size()) {
+            fail(span, "LLVM backend received an invalid struct literal");
+            return {};
+        }
+        auto *layout = llvm::dyn_cast_or_null<llvm::StructType>(typeOf(literal.type));
+        if (layout == nullptr) {
+            fail(span, "LLVM backend cannot lay out this struct literal");
+            return {};
+        }
+        llvm::Value *value = llvm::Constant::getNullValue(layout);
+        const auto &declaration = program_.structs[literal.type.declaration];
+        if (declaration.dropFunction.has_value()) {
+            value = builder_.CreateInsertValue(value, llvm::ConstantInt::getTrue(context_), 0);
+        }
+        for (const auto &field : literal.fields) {
+            if (field.field >= declaration.fields.size()) {
+                fail(span, "LLVM backend received an invalid struct field");
+                return {};
+            }
+            const auto emitted = emitExpression(field.value);
+            if (emitted.diverges) {
+                return emitted;
+            }
+            value = builder_.CreateInsertValue(
+                value, emitted.value, structFieldIndex(literal.type.declaration, field.field));
+        }
+        return {value, false};
+    }
+
+    EmittedValue emitField(const FirFieldExpression &field, const Type &type, SourceSpan span) {
+        const auto baseType = function_->expressions[field.base].type;
+        if (baseType.kind == TypeKind::Own || baseType.kind == TypeKind::View ||
+            baseType.kind == TypeKind::Edit) {
+            if (baseType.arguments.size() != 1) {
+                fail(span, "LLVM backend received an invalid field receiver");
+                return {};
+            }
+            const auto base = emitExpression(field.base);
+            if (base.diverges) {
+                return base;
+            }
+            auto *address =
+                structFieldAddress(base.value, baseType.arguments.front(), field.field, span);
+            return address == nullptr
+                       ? EmittedValue{}
+                       : EmittedValue{builder_.CreateLoad(typeOf(type), address, "field.value"),
+                                      false};
+        }
+        if (isPlaceExpression(field.base)) {
+            auto *address = emitAddress(field.base);
+            if (address == nullptr) {
+                return {};
+            }
+            address = structFieldAddress(address, baseType, field.field, span);
+            return address == nullptr
+                       ? EmittedValue{}
+                       : EmittedValue{builder_.CreateLoad(typeOf(type), address, "field.value"),
+                                      false};
+        }
+        const auto base = emitExpression(field.base);
+        if (base.diverges) {
+            return base;
+        }
+        if (baseType.kind != TypeKind::Struct || baseType.declaration >= program_.structs.size() ||
+            field.field >= program_.structs[baseType.declaration].fields.size()) {
+            fail(span, "LLVM backend received an invalid field access");
+            return {};
+        }
+        return {builder_.CreateExtractValue(base.value,
+                                            structFieldIndex(baseType.declaration, field.field)),
+                false};
+    }
+
+    EmittedValue emitReplace(const FirReplaceExpression &replace, const Type &type,
+                             SourceSpan span) {
+        const auto replacement = emitExpression(replace.value);
+        if (replacement.diverges) {
+            return replacement;
+        }
+        auto *address = emitAddress(replace.target);
+        if (address == nullptr) {
+            fail(span, "LLVM backend received an invalid replace target");
+            return {};
+        }
+        auto *previous = moveFromAddress(address, type);
+        builder_.CreateStore(replacement.value, address);
+        return {previous, false};
+    }
+
+    EmittedValue emitEnum(const FirEnumExpression &constructor, SourceSpan span) {
+        if (constructor.type.kind != TypeKind::Enum ||
+            constructor.type.declaration >= program_.enums.size() ||
+            constructor.variant >= program_.enums[constructor.type.declaration].variants.size()) {
+            fail(span, "LLVM backend received an invalid enum constructor");
+            return {};
+        }
+        auto *layout = llvm::dyn_cast_or_null<llvm::StructType>(typeOf(constructor.type));
+        llvm::Value *value = llvm::Constant::getNullValue(layout);
+        value = builder_.CreateInsertValue(
+            value, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), constructor.variant),
+            0);
+        if (constructor.payload.has_value()) {
+            const auto payload = emitExpression(*constructor.payload);
+            if (payload.diverges) {
+                return payload;
+            }
+            value = builder_.CreateInsertValue(value, payload.value, constructor.variant + 1);
+        }
+        return {value, false};
+    }
+
+    EmittedValue emitMatch(const FirMatchExpression &match, const Type &type, SourceSpan span) {
+        const auto inspected = emitExpression(match.value);
+        if (inspected.diverges) {
+            return inspected;
+        }
+        if (match.type.kind != TypeKind::Enum || match.type.declaration >= program_.enums.size()) {
+            fail(span, "LLVM backend received an invalid match type");
+            return {};
+        }
+        const auto inspectedType = function_->expressions[match.value].type;
+        llvm::Value *storage{};
+        if (inspectedType.kind == TypeKind::Own || inspectedType.kind == TypeKind::View ||
+            inspectedType.kind == TypeKind::Edit) {
+            storage = inspected.value;
+        } else {
+            storage = valueAddress(inspected.value, inspectedType, "match.value");
+        }
+
+        std::vector<EmittedValue> patterns;
+        patterns.reserve(match.arms.size());
+        for (const auto &arm : match.arms) {
+            if (!arm.pattern.has_value()) {
+                patterns.push_back({});
+                continue;
+            }
+            patterns.push_back(emitExpression(*arm.pattern));
+            if (patterns.back().diverges) {
+                return patterns.back();
+            }
+        }
+
+        llvm::AllocaInst *result{};
+        if (type != voidType && type != neverType) {
+            auto *resultType = typeOf(type);
+            if (resultType == nullptr || resultType->isVoidTy()) {
+                fail(span, "LLVM backend cannot lay out the result of this match");
+                return {};
+            }
+            result = builder_.CreateAlloca(resultType, nullptr, "match.result");
+            builder_.CreateStore(llvm::Constant::getNullValue(resultType), result);
+        }
+
+        auto *merge = llvm::BasicBlock::Create(context_, "match.end", llvmFunction_);
+        auto hasMergeIncoming = false;
+        for (std::size_t index = 0; index < match.arms.size(); ++index) {
+            const auto &arm = match.arms[index];
+            auto *body = llvm::BasicBlock::Create(context_, "match.arm", llvmFunction_);
+            auto *next = llvm::BasicBlock::Create(context_, "match.next", llvmFunction_);
+
+            if (arm.wildcard) {
+                builder_.CreateBr(body);
+            } else {
+                if (arm.variant >= program_.enums[match.type.declaration].variants.size()) {
+                    fail(span, "LLVM backend received an invalid match variant");
+                    return {};
+                }
+                auto *tag = enumTag(storage, match.type, span);
+                llvm::Value *condition = builder_.CreateICmpEQ(
+                    tag, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), arm.variant));
+                if (arm.pattern.has_value()) {
+                    const auto &payloadType =
+                        program_.enums[match.type.declaration].variants[arm.variant].payload;
+                    if (!payloadType.has_value()) {
+                        fail(span, "LLVM backend received a payload pattern for an empty variant");
+                        return {};
+                    }
+                    auto *payload = enumPayloadAddress(storage, match.type, arm.variant, span);
+                    auto *value =
+                        builder_.CreateLoad(typeOf(*payloadType), payload, "match.pattern.value");
+                    auto *equal = emitEqual(value, patterns[index].value, *payloadType, span);
+                    if (equal == nullptr) {
+                        return {};
+                    }
+                    condition = builder_.CreateAnd(condition, equal);
+                }
+                builder_.CreateCondBr(condition, body, next);
+            }
+
+            builder_.SetInsertPoint(body);
+            if (arm.guardBinding.has_value()) {
+                if (!bindEnumPayload(storage, match.type, arm.variant, *arm.guardBinding, false,
+                                     span)) {
+                    return {};
+                }
+            }
+            if (arm.guard.has_value()) {
+                const auto guard = emitExpression(*arm.guard);
+                if (!guard.diverges) {
+                    auto *accepted =
+                        llvm::BasicBlock::Create(context_, "match.guard", llvmFunction_);
+                    builder_.CreateCondBr(guard.value, accepted, next);
+                    builder_.SetInsertPoint(accepted);
+                }
+            }
+
+            if (builder_.GetInsertBlock()->getTerminator() == nullptr && arm.binding.has_value()) {
+                if (!bindEnumPayload(storage, match.type, arm.variant, *arm.binding, true, span)) {
+                    return {};
+                }
+            }
+
+            auto exits = builder_.GetInsertBlock()->getTerminator() != nullptr;
+            if (!exits) {
+                for (const auto statement : function_->blocks[arm.block].statements) {
+                    if (emitStatement(statement)) {
+                        exits = true;
+                        break;
+                    }
+                }
+            }
+            if (!exits) {
+                EmittedValue armValue;
+                if (arm.expression.has_value()) {
+                    armValue = emitExpression(*arm.expression);
+                    exits = armValue.diverges;
+                } else if (result != nullptr) {
+                    fail(span, "LLVM backend received a value match arm without a value");
+                    return {};
+                }
+                if (!exits) {
+                    if (result != nullptr) {
+                        builder_.CreateStore(armValue.value, result);
+                    }
+                    dropLocals(arm.drops);
+                    dropMatchValue(storage, inspected.value, inspectedType);
+                    builder_.CreateBr(merge);
+                    hasMergeIncoming = true;
+                }
+            }
+            builder_.SetInsertPoint(next);
+        }
+
+        setLocation(span);
+        builder_.CreateCall(
+            runtimeFunction("fdn_invalid_enum_tag", llvm::Type::getVoidTy(context_), {}));
+        builder_.CreateUnreachable();
+        if (!hasMergeIncoming) {
+            merge->eraseFromParent();
+            return {llvm::PoisonValue::get(llvm::Type::getInt8Ty(context_)), true};
+        }
+        builder_.SetInsertPoint(merge);
+        if (result == nullptr) {
+            return {nullptr, false};
+        }
+        return {builder_.CreateLoad(result->getAllocatedType(), result, "match.result.value"),
+                false};
+    }
+
+    EmittedValue emitUnary(const FirUnaryExpression &unary, const Type &type, SourceSpan span) {
         const auto operand = emitExpression(unary.operand);
         if (operand.diverges) {
             return operand;
@@ -587,8 +1138,8 @@ class LlvmEmitter {
             }
             if (isSignedInteger(type)) {
                 const auto tag = integerTypeTag(type);
-                auto callee = runtimeFunction("fdn_" + tag + "_negate", typeOf(type),
-                                              {typeOf(type)});
+                auto callee =
+                    runtimeFunction("fdn_" + tag + "_negate", typeOf(type), {typeOf(type)});
                 setLocation(span);
                 return {builder_.CreateCall(callee, {operand.value}), false};
             }
@@ -596,11 +1147,9 @@ class LlvmEmitter {
         case FirUnaryOperator::Not:
             return {builder_.CreateNot(operand.value), false};
         case FirUnaryOperator::Empty:
-            if (type == boolType &&
-                function_->expressions[unary.operand].type == stringType) {
+            if (type == boolType && function_->expressions[unary.operand].type == stringType) {
                 auto *length = builder_.CreateExtractValue(operand.value, 1);
-                return {builder_.CreateICmpEQ(
-                            length, llvm::ConstantInt::get(sizeType(), 0)),
+                return {builder_.CreateICmpEQ(length, llvm::ConstantInt::get(sizeType(), 0)),
                         false};
             }
             break;
@@ -614,8 +1163,7 @@ class LlvmEmitter {
         return {};
     }
 
-    EmittedValue emitBinary(const FirBinaryExpression &binary, const Type &type,
-                            SourceSpan span) {
+    EmittedValue emitBinary(const FirBinaryExpression &binary, const Type &type, SourceSpan span) {
         if (binary.operation == FirBinaryOperator::And ||
             binary.operation == FirBinaryOperator::Or) {
             return emitLogical(binary);
@@ -635,11 +1183,9 @@ class LlvmEmitter {
         case FirBinaryOperator::Divide:
         case FirBinaryOperator::Remainder:
             if (type == stringType && binary.operation == FirBinaryOperator::Add) {
-                auto *result = builder_.CreateAlloca(stringType_, nullptr,
-                                                     "string.concat.result");
+                auto *result = builder_.CreateAlloca(stringType_, nullptr, "string.concat.result");
                 builder_.CreateCall(
-                    runtimeFunction("fdn_abi_string_concat",
-                                    llvm::Type::getVoidTy(context_),
+                    runtimeFunction("fdn_abi_string_concat", llvm::Type::getVoidTy(context_),
                                     {pointerType(), pointerType(), pointerType()}),
                     {result, stringAddress(left.value), stringAddress(right.value)});
                 return {builder_.CreateLoad(stringType_, result), false};
@@ -682,26 +1228,23 @@ class LlvmEmitter {
                     break;
                 }
                 setLocation(span);
-                auto callee = runtimeFunction(
-                    "fdn_" + integerTypeTag(type) + "_" + operation, typeOf(type),
-                    {typeOf(type), typeOf(type)});
+                auto callee = runtimeFunction("fdn_" + integerTypeTag(type) + "_" + operation,
+                                              typeOf(type), {typeOf(type), typeOf(type)});
                 return {builder_.CreateCall(callee, {left.value, right.value}), false};
             }
             break;
         case FirBinaryOperator::Equal:
         case FirBinaryOperator::NotEqual:
             if (function_->expressions[binary.left].type == stringType) {
-                auto callee = runtimeFunction(
-                    "fdn_abi_string_equal", llvm::Type::getInt32Ty(context_),
-                    {pointerType(), pointerType()});
+                auto callee =
+                    runtimeFunction("fdn_abi_string_equal", llvm::Type::getInt32Ty(context_),
+                                    {pointerType(), pointerType()});
                 auto *equal = builder_.CreateICmpNE(
-                    builder_.CreateCall(
-                        callee,
-                        {stringAddress(left.value), stringAddress(right.value)}),
+                    builder_.CreateCall(callee,
+                                        {stringAddress(left.value), stringAddress(right.value)}),
                     llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0));
-                return {binary.operation == FirBinaryOperator::Equal
-                            ? equal
-                            : builder_.CreateNot(equal),
+                return {binary.operation == FirBinaryOperator::Equal ? equal
+                                                                     : builder_.CreateNot(equal),
                         false};
             }
             if (left.value->getType()->isFloatingPointTy()) {
@@ -758,8 +1301,8 @@ class LlvmEmitter {
         return {result, false};
     }
 
-    EmittedValue emitComparison(FirBinaryOperator operation, llvm::Value *left,
-                                llvm::Value *right, Type type) {
+    EmittedValue emitComparison(FirBinaryOperator operation, llvm::Value *left, llvm::Value *right,
+                                Type type) {
         if (left->getType()->isFloatingPointTy()) {
             switch (operation) {
             case FirBinaryOperator::Less:
@@ -798,8 +1341,7 @@ class LlvmEmitter {
         return {};
     }
 
-    EmittedValue emitCall(const FirCallExpression &call, const Type &type,
-                          SourceSpan span) {
+    EmittedValue emitCall(const FirCallExpression &call, const Type &type, SourceSpan span) {
         std::vector<EmittedValue> arguments;
         arguments.reserve(call.arguments.size());
         for (const auto argument : call.arguments) {
@@ -820,17 +1362,27 @@ class LlvmEmitter {
                 fail(span, "LLVM backend received an invalid function call");
                 return {};
             }
-            result = builder_.CreateCall(functions_[call.function], values);
+            if (usesExternalResultPointer(program_.functions[call.function])) {
+                auto *storage = builder_.CreateAlloca(typeOf(type), nullptr, "external.result");
+                auto invocationValues = values;
+                invocationValues.insert(invocationValues.begin(), storage);
+                auto *invocation = builder_.CreateCall(functions_[call.function], invocationValues);
+                invocation->addParamAttr(
+                    0, llvm::Attribute::getWithStructRetType(context_, typeOf(type)));
+                result = builder_.CreateLoad(typeOf(type), storage, "external.result.value");
+            } else {
+                result = builder_.CreateCall(functions_[call.function], values);
+            }
             break;
         case FirCallKind::Print:
             if (values.size() != 1) {
                 fail(span, "LLVM print call has invalid arguments");
                 return {};
             }
-            result = builder_.CreateCall(
-                runtimeFunction("fdn_abi_println", llvm::Type::getVoidTy(context_),
-                                {pointerType()}),
-                {stringAddress(values.front())});
+            result = builder_.CreateCall(runtimeFunction("fdn_abi_println",
+                                                         llvm::Type::getVoidTy(context_),
+                                                         {pointerType()}),
+                                         {stringAddress(values.front())});
             break;
         case FirCallKind::Panic:
             if (values.size() != 1) {
@@ -838,8 +1390,7 @@ class LlvmEmitter {
                 return {};
             }
             builder_.CreateCall(
-                runtimeFunction("fdn_abi_panic", llvm::Type::getVoidTy(context_),
-                                {pointerType()}),
+                runtimeFunction("fdn_abi_panic", llvm::Type::getVoidTy(context_), {pointerType()}),
                 {stringAddress(values.front())});
             builder_.CreateUnreachable();
             return {llvm::PoisonValue::get(llvm::Type::getInt8Ty(context_)), true};
@@ -859,17 +1410,16 @@ class LlvmEmitter {
                 fail(span, "LLVM isNull call has invalid arguments");
                 return {};
             }
-            result = builder_.CreateICmpEQ(
-                values.front(), llvm::ConstantPointerNull::get(pointerType()));
+            result = builder_.CreateICmpEQ(values.front(),
+                                           llvm::ConstantPointerNull::get(pointerType()));
             break;
         case FirCallKind::NumericConversion:
             if (values.size() != 1) {
                 fail(span, "LLVM numeric conversion has invalid arguments");
                 return {};
             }
-            result = emitNumericConversion(values.front(),
-                                           function_->expressions[call.arguments.front()].type,
-                                           type, span);
+            result = emitNumericConversion(
+                values.front(), function_->expressions[call.arguments.front()].type, type, span);
             if (result == nullptr) {
                 return {};
             }
@@ -879,11 +1429,10 @@ class LlvmEmitter {
             fail(span, "LLVM backend has not lowered this call kind yet");
             return {};
         }
-        for (std::size_t index = 0;
-             index < values.size() && index < call.argumentDrops.size(); ++index) {
+        for (std::size_t index = 0; index < values.size() && index < call.argumentDrops.size();
+             ++index) {
             if (call.argumentDrops[index]) {
-                dropValue(values[index],
-                          function_->expressions[call.arguments[index]].type);
+                dropValue(values[index], function_->expressions[call.arguments[index]].type);
             }
         }
         return {result, false};
@@ -914,8 +1463,7 @@ class LlvmEmitter {
         return nullptr;
     }
 
-    EmittedValue emitConditional(const FirConditionalExpression &conditional,
-                                 const Type &type) {
+    EmittedValue emitConditional(const FirConditionalExpression &conditional, const Type &type) {
         const auto condition = emitExpression(conditional.condition);
         if (condition.diverges) {
             return condition;
@@ -970,6 +1518,24 @@ class LlvmEmitter {
                                    "local.value");
     }
 
+    bool isPlaceExpression(FirExpressionId id) const {
+        if (id >= function_->expressions.size()) {
+            return false;
+        }
+        const auto &expression = function_->expressions[id].value;
+        if (std::holds_alternative<FirLocalExpression>(expression) ||
+            std::holds_alternative<FirReadExpression>(expression)) {
+            return true;
+        }
+        if (const auto *field = std::get_if<FirFieldExpression>(&expression)) {
+            return isPlaceExpression(field->base);
+        }
+        if (const auto *unary = std::get_if<FirUnaryExpression>(&expression)) {
+            return unary->operation == FirUnaryOperator::Dereference;
+        }
+        return false;
+    }
+
     llvm::Value *emitAddress(FirExpressionId id) {
         if (id >= function_->expressions.size()) {
             return nullptr;
@@ -978,16 +1544,196 @@ class LlvmEmitter {
                 std::get_if<FirLocalExpression>(&function_->expressions[id].value)) {
             return local->local < locals_.size() ? locals_[local->local] : nullptr;
         }
+        if (const auto *read = std::get_if<FirReadExpression>(&function_->expressions[id].value)) {
+            return loadLocal(read->local);
+        }
+        if (const auto *field =
+                std::get_if<FirFieldExpression>(&function_->expressions[id].value)) {
+            auto baseType = function_->expressions[field->base].type;
+            llvm::Value *base{};
+            if (baseType.kind == TypeKind::Own || baseType.kind == TypeKind::View ||
+                baseType.kind == TypeKind::Edit) {
+                const auto emitted = emitExpression(field->base);
+                if (emitted.diverges || baseType.arguments.size() != 1) {
+                    return nullptr;
+                }
+                base = emitted.value;
+                baseType = baseType.arguments.front();
+            } else {
+                base = emitAddress(field->base);
+            }
+            return base == nullptr ? nullptr
+                                   : structFieldAddress(base, baseType, field->field,
+                                                        function_->expressions[id].span);
+        }
+        if (const auto *unary = std::get_if<FirUnaryExpression>(&function_->expressions[id].value);
+            unary != nullptr && unary->operation == FirUnaryOperator::Dereference) {
+            const auto operand = emitExpression(unary->operand);
+            return operand.diverges ? nullptr : operand.value;
+        }
         fail(function_->expressions[id].span,
              "LLVM backend has not lowered this assignment target yet");
         return nullptr;
     }
 
+    llvm::Value *valueAddress(llvm::Value *value, const Type &type, std::string_view name) {
+        auto *layout = typeOf(type);
+        if (value == nullptr || layout == nullptr || layout->isVoidTy()) {
+            return nullptr;
+        }
+        auto *storage =
+            builder_.CreateAlloca(layout, nullptr, llvm::StringRef(name.data(), name.size()));
+        builder_.CreateStore(value, storage);
+        return storage;
+    }
+
+    std::size_t structFieldIndex(FirStructId type, FirFieldId field) const {
+        return field +
+               (type < program_.structs.size() && program_.structs[type].dropFunction.has_value()
+                    ? 1
+                    : 0);
+    }
+
+    llvm::Value *structFieldAddress(llvm::Value *address, const Type &type, FirFieldId field,
+                                    SourceSpan span) {
+        if (type.kind != TypeKind::Struct || type.declaration >= program_.structs.size() ||
+            field >= program_.structs[type.declaration].fields.size()) {
+            fail(span, "LLVM backend received an invalid struct field address");
+            return nullptr;
+        }
+        return builder_.CreateStructGEP(structTypes_[type.declaration], address,
+                                        structFieldIndex(type.declaration, field), "field.address");
+    }
+
+    llvm::Value *enumTag(llvm::Value *address, const Type &type, SourceSpan span) {
+        if (type.kind != TypeKind::Enum || type.declaration >= enumTypes_.size()) {
+            fail(span, "LLVM backend received an invalid enum value");
+            return nullptr;
+        }
+        auto *tag =
+            builder_.CreateStructGEP(enumTypes_[type.declaration], address, 0, "enum.tag.address");
+        return builder_.CreateLoad(llvm::Type::getInt32Ty(context_), tag, "enum.tag");
+    }
+
+    llvm::Value *enumPayloadAddress(llvm::Value *address, const Type &type, FirVariantId variant,
+                                    SourceSpan span) {
+        if (type.kind != TypeKind::Enum || type.declaration >= program_.enums.size() ||
+            variant >= program_.enums[type.declaration].variants.size() ||
+            !program_.enums[type.declaration].variants[variant].payload.has_value()) {
+            fail(span, "LLVM backend received an invalid enum payload");
+            return nullptr;
+        }
+        return builder_.CreateStructGEP(enumTypes_[type.declaration], address, variant + 1,
+                                        "enum.payload.address");
+    }
+
+    bool bindEnumPayload(llvm::Value *address, const Type &type, FirVariantId variant,
+                         FirLocalId local, bool consume, SourceSpan span) {
+        if (local >= locals_.size() || local >= function_->locals.size()) {
+            fail(span, "LLVM backend received an invalid enum binding");
+            return false;
+        }
+        auto *payload = enumPayloadAddress(address, type, variant, span);
+        if (payload == nullptr) {
+            return false;
+        }
+        const auto &payloadType = *program_.enums[type.declaration].variants[variant].payload;
+        const auto &localType = function_->locals[local].type;
+        llvm::Value *value{};
+        if ((localType.kind == TypeKind::View || localType.kind == TypeKind::Edit) &&
+            payloadType.kind != TypeKind::Own && payloadType.kind != TypeKind::View &&
+            payloadType.kind != TypeKind::Edit) {
+            value = payload;
+        } else if (consume && typeRequiresDrop(localType)) {
+            value = moveFromAddress(payload, localType);
+        } else {
+            auto *layout = typeOf(localType);
+            if (layout == nullptr || layout->isVoidTy()) {
+                fail(span, "LLVM backend cannot lay out an enum binding");
+                return false;
+            }
+            value = builder_.CreateLoad(layout, payload, "enum.binding");
+        }
+        builder_.CreateStore(value, locals_[local]);
+        return true;
+    }
+
+    llvm::Value *emitEqual(llvm::Value *left, llvm::Value *right, const Type &type,
+                           SourceSpan span) {
+        if (left == nullptr || right == nullptr) {
+            return nullptr;
+        }
+        if (type == stringType) {
+            return builder_.CreateICmpNE(
+                builder_.CreateCall(runtimeFunction("fdn_abi_string_equal",
+                                                    llvm::Type::getInt32Ty(context_),
+                                                    {pointerType(), pointerType()}),
+                                    {stringAddress(left), stringAddress(right)}),
+                llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0));
+        }
+        if (left->getType()->isFloatingPointTy()) {
+            return builder_.CreateFCmpOEQ(left, right);
+        }
+        if (left->getType()->isIntegerTy() || left->getType()->isPointerTy()) {
+            return builder_.CreateICmpEQ(left, right);
+        }
+        fail(span, "LLVM backend has not lowered equality for this pattern type yet");
+        return nullptr;
+    }
+
+    llvm::Value *moveFromAddress(llvm::Value *address, const Type &type) {
+        auto *layout = typeOf(type);
+        if (address == nullptr || layout == nullptr || layout->isVoidTy()) {
+            return nullptr;
+        }
+        auto *value = builder_.CreateLoad(layout, address, "move.value");
+        builder_.CreateStore(llvm::Constant::getNullValue(layout), address);
+        return value;
+    }
+
+    bool typeRequiresDrop(const Type &type) const {
+        if (type.kind == TypeKind::String || type.kind == TypeKind::Own ||
+            type.kind == TypeKind::Task || type.kind == TypeKind::Channel ||
+            type.kind == TypeKind::Sender || type.kind == TypeKind::Receiver ||
+            type.kind == TypeKind::Function || type.kind == TypeKind::Parameter) {
+            return true;
+        }
+        if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
+            return typeRequiresDrop(type.arguments.front());
+        }
+        if (type.kind == TypeKind::Struct && type.declaration < program_.structs.size()) {
+            const auto &declaration = program_.structs[type.declaration];
+            return declaration.dropFunction.has_value() ||
+                   std::any_of(
+                       declaration.fields.begin(), declaration.fields.end(),
+                       [&](const FirStructField &field) { return typeRequiresDrop(field.type); });
+        }
+        if (type.kind == TypeKind::Enum && type.declaration < program_.enums.size()) {
+            return std::any_of(program_.enums[type.declaration].variants.begin(),
+                               program_.enums[type.declaration].variants.end(),
+                               [&](const FirEnumVariant &variant) {
+                                   return variant.payload.has_value() &&
+                                          typeRequiresDrop(*variant.payload);
+                               });
+        }
+        return false;
+    }
+
+    void dropMatchValue(llvm::Value *storage, llvm::Value *value, const Type &type) {
+        if (type.kind == TypeKind::View || type.kind == TypeKind::Edit) {
+            return;
+        }
+        if (type.kind == TypeKind::Own) {
+            dropValue(value, type);
+            return;
+        }
+        dropAddress(storage, type);
+    }
+
     llvm::FunctionCallee runtimeFunction(std::string_view name, llvm::Type *result,
                                          std::vector<llvm::Type *> parameters) {
-        return module_.getOrInsertFunction(
-            llvm::StringRef(name.data(), name.size()),
-            llvm::FunctionType::get(result, parameters, false));
+        return module_.getOrInsertFunction(llvm::StringRef(name.data(), name.size()),
+                                           llvm::FunctionType::get(result, parameters, false));
     }
 
     llvm::Value *stringAddress(llvm::Value *value) {
@@ -997,9 +1743,8 @@ class LlvmEmitter {
     }
 
     void enterFrame() {
-        const auto source = function_->sourcePath.empty()
-                                ? sourcePath_
-                                : std::string_view(function_->sourcePath);
+        const auto source =
+            function_->sourcePath.empty() ? sourcePath_ : std::string_view(function_->sourcePath);
         const auto package = function_->packageName.empty()
                                  ? std::string_view("main")
                                  : std::string_view(function_->packageName);
@@ -1010,19 +1755,16 @@ class LlvmEmitter {
         builder_.CreateCall(
             runtimeFunction("fdn_frame_enter", llvm::Type::getVoidTy(context_),
                             {pointerType(), pointerType(), pointerType(), pointerType(),
-                             llvm::Type::getInt32Ty(context_),
-                             llvm::Type::getInt32Ty(context_)}),
+                             llvm::Type::getInt32Ty(context_), llvm::Type::getInt32Ty(context_)}),
             {frame_, packageName, functionNameValue, sourceName,
-             llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_),
-                                    function_->sourceSpan.line),
+             llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), function_->sourceSpan.line),
              llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_),
                                     function_->sourceSpan.column)});
     }
 
     void leaveFrame() {
         builder_.CreateCall(
-            runtimeFunction("fdn_frame_leave", llvm::Type::getVoidTy(context_),
-                            {pointerType()}),
+            runtimeFunction("fdn_frame_leave", llvm::Type::getVoidTy(context_), {pointerType()}),
             {frame_});
     }
 
@@ -1033,24 +1775,150 @@ class LlvmEmitter {
         }
         auto *line = builder_.CreateStructGEP(frameType_, frame_, 4);
         auto *column = builder_.CreateStructGEP(frameType_, frame_, 5);
-        builder_.CreateStore(
-            llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), span.line), line);
-        builder_.CreateStore(
-            llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), span.column), column);
+        builder_.CreateStore(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), span.line),
+                             line);
+        builder_.CreateStore(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), span.column),
+                             column);
     }
 
-    void dropValue(llvm::Value *value, const Type &type) {
-        if (value == nullptr || builder_.GetInsertBlock()->getTerminator() != nullptr) {
+    void dropAddress(llvm::Value *address, const Type &type) {
+        if (address == nullptr || !typeRequiresDrop(type) ||
+            builder_.GetInsertBlock()->getTerminator() != nullptr) {
             return;
         }
         if (type == stringType) {
-            auto *storage = builder_.CreateAlloca(stringType_, nullptr, "drop.string");
-            builder_.CreateStore(value, storage);
-            builder_.CreateCall(
-                runtimeFunction("fdn_string_drop", llvm::Type::getVoidTy(context_),
-                                {pointerType()}),
-                {storage});
+            builder_.CreateCall(runtimeFunction("fdn_string_drop", llvm::Type::getVoidTy(context_),
+                                                {pointerType()}),
+                                {address});
+            return;
         }
+        if (type.kind == TypeKind::Own && type.arguments.size() == 1) {
+            auto *value = builder_.CreateLoad(pointerType(), address, "drop.own.value");
+            auto *drop = llvm::BasicBlock::Create(context_, "drop.own", llvmFunction_);
+            auto *done = llvm::BasicBlock::Create(context_, "drop.own.end", llvmFunction_);
+            builder_.CreateCondBr(
+                builder_.CreateICmpNE(value, llvm::ConstantPointerNull::get(pointerType())), drop,
+                done);
+            builder_.SetInsertPoint(drop);
+            dropAddress(value, type.arguments.front());
+            builder_.CreateCall(
+                runtimeFunction("fdn_dealloc", llvm::Type::getVoidTy(context_), {pointerType()}),
+                {value});
+            builder_.CreateStore(llvm::ConstantPointerNull::get(pointerType()), address);
+            builder_.CreateBr(done);
+            builder_.SetInsertPoint(done);
+            return;
+        }
+        if (type.kind == TypeKind::Sender || type.kind == TypeKind::Receiver) {
+            builder_.CreateCall(runtimeFunction(type.kind == TypeKind::Sender
+                                                    ? "fdn_channel_drop_sender"
+                                                    : "fdn_channel_drop_receiver",
+                                                llvm::Type::getVoidTy(context_), {pointerType()}),
+                                {address});
+            return;
+        }
+        if (type.kind == TypeKind::Channel) {
+            auto *receiver =
+                builder_.CreateStructGEP(channelType_, address, 1, "channel.receiver.address");
+            auto *sender =
+                builder_.CreateStructGEP(channelType_, address, 0, "channel.sender.address");
+            dropAddress(receiver, Type{TypeKind::Receiver});
+            dropAddress(sender, Type{TypeKind::Sender});
+            builder_.CreateStore(llvm::Constant::getNullValue(channelType_), address);
+            return;
+        }
+        if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
+            auto *array = llvm::dyn_cast_or_null<llvm::ArrayType>(typeOf(type));
+            if (array == nullptr) {
+                fail(function_->sourceSpan, "LLVM backend cannot drop this array value");
+                return;
+            }
+            for (std::size_t index = type.declaration; index-- > 0;) {
+                auto *element = builder_.CreateInBoundsGEP(
+                    array, address,
+                    {llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0),
+                     llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), index)});
+                dropAddress(element, type.arguments.front());
+            }
+            builder_.CreateStore(llvm::Constant::getNullValue(array), address);
+            return;
+        }
+        if (type.kind == TypeKind::Struct && type.declaration < program_.structs.size()) {
+            const auto &declaration = program_.structs[type.declaration];
+            if (declaration.dropFunction.has_value()) {
+                auto *active = builder_.CreateStructGEP(structTypes_[type.declaration], address, 0,
+                                                        "drop.active.address");
+                auto *drop = llvm::BasicBlock::Create(context_, "drop.struct", llvmFunction_);
+                auto *done = llvm::BasicBlock::Create(context_, "drop.struct.end", llvmFunction_);
+                builder_.CreateCondBr(
+                    builder_.CreateLoad(llvm::Type::getInt1Ty(context_), active, "drop.active"),
+                    drop, done);
+                builder_.SetInsertPoint(drop);
+                builder_.CreateStore(llvm::ConstantInt::getFalse(context_), active);
+                const auto function = *declaration.dropFunction;
+                if (function >= functions_.size() || functions_[function] == nullptr) {
+                    fail(declaration.sourceSpan,
+                         "LLVM backend received an invalid struct drop function");
+                } else {
+                    builder_.CreateCall(functions_[function], {address});
+                }
+                for (std::size_t field = declaration.fields.size(); field-- > 0;) {
+                    dropAddress(structFieldAddress(address, type, field, declaration.sourceSpan),
+                                declaration.fields[field].type);
+                }
+                builder_.CreateStore(llvm::Constant::getNullValue(structTypes_[type.declaration]),
+                                     address);
+                builder_.CreateBr(done);
+                builder_.SetInsertPoint(done);
+                return;
+            }
+            for (std::size_t field = declaration.fields.size(); field-- > 0;) {
+                dropAddress(structFieldAddress(address, type, field, declaration.sourceSpan),
+                            declaration.fields[field].type);
+            }
+            builder_.CreateStore(llvm::Constant::getNullValue(structTypes_[type.declaration]),
+                                 address);
+            return;
+        }
+        if (type.kind == TypeKind::Enum && type.declaration < program_.enums.size()) {
+            const auto &declaration = program_.enums[type.declaration];
+            auto *tag = enumTag(address, type, function_->sourceSpan);
+            if (tag == nullptr) {
+                return;
+            }
+            auto *done = llvm::BasicBlock::Create(context_, "drop.enum.end", llvmFunction_);
+            auto *invalid = llvm::BasicBlock::Create(context_, "drop.enum.invalid", llvmFunction_);
+            auto *selection = builder_.CreateSwitch(tag, invalid, declaration.variants.size());
+            for (std::size_t variant = 0; variant < declaration.variants.size(); ++variant) {
+                auto *branch = llvm::BasicBlock::Create(context_, "drop.enum", llvmFunction_);
+                selection->addCase(
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), variant), branch);
+                builder_.SetInsertPoint(branch);
+                const auto &payload = declaration.variants[variant].payload;
+                if (payload.has_value() && typeRequiresDrop(*payload)) {
+                    dropAddress(enumPayloadAddress(address, type, variant, function_->sourceSpan),
+                                *payload);
+                }
+                builder_.CreateBr(done);
+            }
+            builder_.SetInsertPoint(invalid);
+            builder_.CreateCall(
+                runtimeFunction("fdn_invalid_enum_tag", llvm::Type::getVoidTy(context_), {}));
+            builder_.CreateUnreachable();
+            builder_.SetInsertPoint(done);
+            builder_.CreateStore(llvm::Constant::getNullValue(enumTypes_[type.declaration]),
+                                 address);
+            return;
+        }
+        fail(function_->sourceSpan, "LLVM backend has not lowered drop for this value type yet");
+    }
+
+    void dropValue(llvm::Value *value, const Type &type) {
+        if (value == nullptr || !typeRequiresDrop(type) ||
+            builder_.GetInsertBlock()->getTerminator() != nullptr) {
+            return;
+        }
+        dropAddress(valueAddress(value, type, "drop.value"), type);
     }
 
     void dropLocals(const std::vector<FirLocalId> &locals) {
@@ -1058,22 +1926,19 @@ class LlvmEmitter {
             if (local >= function_->locals.size() || local >= locals_.size()) {
                 continue;
             }
-            dropValue(loadLocal(local), function_->locals[local].type);
+            dropAddress(locals_[local], function_->locals[local].type);
         }
     }
 
     void emitMainWrapper() {
         const auto &entry = program_.functions[program_.main];
         if (!entry.parameters.empty()) {
-            fail(entry.sourceSpan,
-                 "LLVM backend has not lowered command-line arguments yet");
+            fail(entry.sourceSpan, "LLVM backend has not lowered command-line arguments yet");
             return;
         }
-        auto *signature = llvm::FunctionType::get(
-            llvm::Type::getInt32Ty(context_), {}, false);
-        auto *main = llvm::Function::Create(signature,
-                                            llvm::GlobalValue::ExternalLinkage,
-                                            "main", module_);
+        auto *signature = llvm::FunctionType::get(llvm::Type::getInt32Ty(context_), {}, false);
+        auto *main =
+            llvm::Function::Create(signature, llvm::GlobalValue::ExternalLinkage, "main", module_);
         auto *block = llvm::BasicBlock::Create(context_, "entry", main);
         builder_.SetInsertPoint(block);
         auto *entryFunction = functions_[program_.main];
@@ -1082,8 +1947,7 @@ class LlvmEmitter {
             if (options_.verifyAllocations) {
                 emitAllocationCheck();
             }
-            builder_.CreateRet(
-                llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0));
+            builder_.CreateRet(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0));
             return;
         }
         auto *result = builder_.CreateCall(entryFunction);
@@ -1094,19 +1958,16 @@ class LlvmEmitter {
     }
 
     void emitAllocationCheck() {
-        auto *count = builder_.CreateCall(runtimeFunction(
-            "fdn_live_allocations", sizeType(), {}));
+        auto *count = builder_.CreateCall(runtimeFunction("fdn_live_allocations", sizeType(), {}));
         auto *clean = llvm::BasicBlock::Create(context_, "allocations.clean", mainFunction());
         auto *failed = llvm::BasicBlock::Create(context_, "allocations.failed", mainFunction());
-        builder_.CreateCondBr(
-            builder_.CreateICmpEQ(count, llvm::ConstantInt::get(sizeType(), 0)),
-            clean, failed);
+        builder_.CreateCondBr(builder_.CreateICmpEQ(count, llvm::ConstantInt::get(sizeType(), 0)),
+                              clean, failed);
         builder_.SetInsertPoint(failed);
-        auto *message = builder_.CreateGlobalString(
-            "live allocations after entry point", "allocations.message");
+        auto *message = builder_.CreateGlobalString("live allocations after entry point",
+                                                    "allocations.message");
         builder_.CreateCall(
-            runtimeFunction("fdn_panic_cstr", llvm::Type::getVoidTy(context_),
-                            {pointerType()}),
+            runtimeFunction("fdn_panic_cstr", llvm::Type::getVoidTy(context_), {pointerType()}),
             {message});
         builder_.CreateUnreachable();
         builder_.SetInsertPoint(clean);
@@ -1127,6 +1988,9 @@ class LlvmEmitter {
     llvm::IRBuilder<> builder_;
     llvm::StructType *stringType_{};
     llvm::StructType *frameType_{};
+    llvm::StructType *channelType_{};
+    std::vector<llvm::StructType *> structTypes_;
+    std::vector<llvm::StructType *> enumTypes_;
     std::vector<llvm::Function *> functions_;
     const FirFunction *function_{};
     FirFunctionId functionId_{};
@@ -1136,10 +2000,8 @@ class LlvmEmitter {
     std::vector<LoopTarget> loops_;
 };
 
-std::optional<LlvmModule> buildModule(const FirProgram &program,
-                                      std::string_view sourcePath,
-                                      const LlvmCodegenOptions &options,
-                                      Diagnostics &diagnostics) {
+std::optional<LlvmModule> buildModule(const FirProgram &program, std::string_view sourcePath,
+                                      const LlvmCodegenOptions &options, Diagnostics &diagnostics) {
     const auto triple = options.targetTriple.empty()
                             ? defaultLlvmTargetTriple()
                             : llvm::Triple::normalize(options.targetTriple);
@@ -1153,8 +2015,7 @@ std::optional<LlvmModule> buildModule(const FirProgram &program,
     result.target = std::move(target);
     result.module->setTargetTriple(llvm::Triple(triple));
     result.module->setDataLayout(result.target->createDataLayout());
-    LlvmEmitter emitter(program, sourcePath, options, diagnostics, *result.context,
-                        *result.module);
+    LlvmEmitter emitter(program, sourcePath, options, diagnostics, *result.context, *result.module);
     if (!emitter.run()) {
         return std::nullopt;
     }
@@ -1176,8 +2037,7 @@ std::optional<LlvmModule> buildModule(const FirProgram &program,
         passes.registerFunctionAnalyses(functions);
         passes.registerLoopAnalyses(loops);
         passes.crossRegisterProxies(loops, functions, cgscc, modules);
-        auto pipeline =
-            passes.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
+        auto pipeline = passes.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
         pipeline.run(*result.module, modules);
     }
     return result;
@@ -1189,10 +2049,8 @@ std::string defaultLlvmTargetTriple() {
     return llvm::Triple::normalize(llvm::sys::getDefaultTargetTriple());
 }
 
-std::optional<std::string> emitLlvmIr(const FirProgram &program,
-                                      std::string_view sourcePath,
-                                      const LlvmCodegenOptions &options,
-                                      Diagnostics &diagnostics) {
+std::optional<std::string> emitLlvmIr(const FirProgram &program, std::string_view sourcePath,
+                                      const LlvmCodegenOptions &options, Diagnostics &diagnostics) {
     auto generated = buildModule(program, sourcePath, options, diagnostics);
     if (!generated.has_value()) {
         return std::nullopt;
@@ -1205,8 +2063,7 @@ std::optional<std::string> emitLlvmIr(const FirProgram &program,
 }
 
 bool emitLlvmObject(const FirProgram &program, const std::filesystem::path &output,
-                    std::string_view sourcePath,
-                    const LlvmCodegenOptions &options,
+                    std::string_view sourcePath, const LlvmCodegenOptions &options,
                     Diagnostics &diagnostics) {
     auto generated = buildModule(program, sourcePath, options, diagnostics);
     if (!generated.has_value()) {
@@ -1219,8 +2076,8 @@ bool emitLlvmObject(const FirProgram &program, const std::filesystem::path &outp
         return false;
     }
     llvm::legacy::PassManager passes;
-    if (generated->target->addPassesToEmitFile(
-            passes, object, nullptr, llvm::CodeGenFileType::ObjectFile)) {
+    if (generated->target->addPassesToEmitFile(passes, object, nullptr,
+                                               llvm::CodeGenFileType::ObjectFile)) {
         diagnostics.error("FDN8004", "LLVM target cannot emit object files", {});
         return false;
     }

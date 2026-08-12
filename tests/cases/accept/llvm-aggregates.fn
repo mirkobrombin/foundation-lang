@@ -1,0 +1,95 @@
+struct Profile {
+    name String
+    score i32
+}
+
+struct Envelope {
+    profile Profile
+
+    fn drop(&self) void {
+        print("drop envelope")
+    }
+}
+
+enum Delivery {
+    Missing
+    Ready(Profile)
+    Failed(String)
+}
+
+fn makeProfile() Result<Profile, String> {
+    .Ok(Profile { name = "Ada" score = 5 })
+}
+
+fn expectedFailure() Result<i32, String> {
+    .Err("expected")
+}
+
+fn tune($profile Profile) Profile {
+    var result = profile
+    result.score = result.score * 2
+    result
+}
+
+fn consume($profile Profile) i32 {
+    profile.score
+}
+
+fn unpack($profile Profile) i32 {
+    const Profile { name score } = profile
+    print(name)
+    score
+}
+
+fn resolve($delivery Delivery) i32 {
+    match delivery {
+        Missing: 0
+        Ready(profile): profile.score
+        Failed(message): {
+            print(message)
+            -1
+        }
+    }
+}
+
+fn fallback() i32 {
+    const value = expectedFailure() else error {
+        print(error)
+        return 7
+    }
+    value
+}
+
+fn main() i32 {
+    const loaded = makeProfile() else error {
+        panic(error)
+    }
+    var tuned = tune($loaded)
+    const old = replace tuned.score with 42
+    const updated = consume($tuned)
+    const unpacked = unpack(Profile { name = "Ada" score = 8 })
+
+    var delivery Delivery = .Missing
+    delivery = .Ready(Profile { name = "ready" score = 11 })
+    const ready = resolve($delivery)
+    delivery = .Failed("failed")
+    const failed = resolve($delivery)
+
+    const optional Option<i32> = .Some(3)
+    const option = match optional {
+        None: 0
+        Some(value): value
+    }
+
+    const envelope = Envelope {
+        profile = Profile { name = "nested" score = 1 }
+    }
+    discard envelope
+
+    if old != 10 || updated != 42 || unpacked != 8 || ready != 11 ||
+        failed != -1 || option != 3 || fallback() != 7 {
+        return 1
+    }
+    print("llvm aggregates")
+    0
+}
