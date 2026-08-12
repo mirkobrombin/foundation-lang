@@ -17,8 +17,7 @@ enum RouteError {
 service Prefix {
     value String
 
-    @di.Inject()
-    fn New() Prefix {
+    ctor New() {
         Prefix { value = "bound" }
     }
 

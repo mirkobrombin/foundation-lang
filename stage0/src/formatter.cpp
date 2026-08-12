@@ -188,7 +188,7 @@ bool spaceBetween(const std::vector<Token> &tokens, std::size_t index,
             return !genericDelimiters[index - 1];
         }
         return previous != TokenKind::Identifier && previous != TokenKind::Fn &&
-               previous != TokenKind::Capture &&
+               previous != TokenKind::Ctor && previous != TokenKind::Capture &&
                previous != TokenKind::RightParen && previous != TokenKind::RightBracket;
     }
     if (current == TokenKind::LeftBracket) {
@@ -235,6 +235,7 @@ std::vector<bool> genericDelimiters(const std::vector<Token> &tokens) {
         const auto functionParameters = index >= 2 &&
                                         tokens[index - 1].kind == TokenKind::Identifier &&
                                         (tokens[index - 2].kind == TokenKind::Fn ||
+                                         tokens[index - 2].kind == TokenKind::Ctor ||
                                          tokens[index - 2].kind == TokenKind::Task);
         if (functionParameters) {
             for (auto current = index + 1; current < tokens.size(); ++current) {

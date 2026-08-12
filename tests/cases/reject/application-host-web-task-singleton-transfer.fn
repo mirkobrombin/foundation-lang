@@ -7,8 +7,7 @@ import foundation.web
 service SharedState {
     value String
 
-    @di.Inject()
-    fn New() SharedState {
+    ctor New() {
         SharedState { value = "shared" }
     }
 }

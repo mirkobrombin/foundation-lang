@@ -744,13 +744,12 @@
         "body": [
             "@di.Scope(${1|.Transient,.Scoped,.Singleton|})",
             "service ${2:Name} {",
-            "    @di.Inject()",
-            "    fn New(${3}) ${2:Name} {",
+            "    ctor New(${3}) {",
             "        ${2:Name} { ${4} }",
             "    }",
             "}"
         ],
-        "description": "Declare a service with a static DI constructor"
+        "description": "Declare a service with a typed constructor"
     },
     "Build generated application": {
         "prefix": "apphost",

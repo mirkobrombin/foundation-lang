@@ -1,16 +1,14 @@
 import foundation.di
 
 service Left {
-    @di.Inject()
-    fn New(right Right) Left {
+    ctor New(right Right) {
         discard right
         Left {}
     }
 }
 
 service Right {
-    @di.Inject()
-    fn New(left Left) Right {
+    ctor New(left Left) {
         discard left
         Right {}
     }

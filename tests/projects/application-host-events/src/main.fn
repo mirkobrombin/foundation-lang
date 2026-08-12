@@ -23,8 +23,7 @@ fn handleAccount(event AccountEvent) Result<void, DeliveryError> {
 service Accounts {
     bus own events.Bus<AccountEvent, DeliveryError>
 
-    @di.Inject()
-    fn New() Accounts {
+    ctor New() {
         var bus = events.NewBus<AccountEvent, DeliveryError>(.StopOnFirstError)
         discard bus.Subscribe($handleAccount, .Normal)
         Accounts { bus = bus }

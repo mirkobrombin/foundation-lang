@@ -4,16 +4,14 @@ import foundation.di
 
 @di.Scope(.Scoped)
 service First {
-    @di.Inject()
-    fn New() Result<First, bool> {
+    ctor New() Result<bool> {
         .Ok(First {})
     }
 }
 
 @di.Scope(.Scoped)
 service Second {
-    @di.Inject()
-    fn New() Result<Second, String> {
+    ctor New() Result<String> {
         .Ok(Second {})
     }
 }

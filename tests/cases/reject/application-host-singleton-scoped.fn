@@ -4,16 +4,14 @@ import foundation.di
 
 @di.Scope(.Scoped)
 service Session {
-    @di.Inject()
-    fn New() Session {
+    ctor New() {
         Session {}
     }
 }
 
 @di.Scope(.Singleton)
 service Server {
-    @di.Inject()
-    fn New(session Session) Server {
+    ctor New(session Session) {
         discard session
         Server {}
     }

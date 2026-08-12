@@ -2,8 +2,7 @@ import foundation.di
 
 @di.Scope(.Transient)
 service RequestState {
-    @di.Inject()
-    fn New() RequestState {
+    ctor New() {
         RequestState {}
     }
 }
@@ -12,8 +11,7 @@ service RequestState {
 service Application {
     state RequestState
 
-    @di.Inject()
-    fn New($state RequestState) Application {
+    ctor New($state RequestState) {
         Application { state = state }
     }
 }

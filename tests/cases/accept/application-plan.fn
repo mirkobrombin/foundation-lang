@@ -6,8 +6,7 @@ contract Clock {
 }
 
 service Fallible {
-    @di.Inject()
-    fn New() Result<Fallible, bool> {
+    ctor New() Result<bool> {
         .Ok(Fallible {})
     }
 }
@@ -15,8 +14,7 @@ service Fallible {
 @di.Name("system")
 @di.Scope(.Singleton)
 service SystemClock implements Clock {
-    @di.Inject()
-    fn New() SystemClock {
+    ctor New() {
         SystemClock {}
     }
 
@@ -29,13 +27,16 @@ service SystemClock implements Clock {
 service Greeter {
     prefix String
 
-    @di.Inject()
-    fn New(
+    ctor New(
         @di.From("system") clock Clock,
-        @di.Input() $prefix String
-    ) Greeter {
+        $prefix String
+    ) {
         discard clock
         Greeter { prefix = prefix }
+    }
+
+    ctor Empty() {
+        Greeter { prefix = "" }
     }
 
     @actions.Name("greeter.greet")

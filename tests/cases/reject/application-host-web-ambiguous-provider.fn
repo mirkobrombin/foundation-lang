@@ -10,8 +10,7 @@ contract Store {
 @di.Name("first")
 @di.Scope(.Singleton)
 service FirstStore implements Store {
-    @di.Inject()
-    fn New() FirstStore {
+    ctor New() {
         FirstStore {}
     }
 
@@ -23,8 +22,7 @@ service FirstStore implements Store {
 @di.Name("second")
 @di.Scope(.Singleton)
 service SecondStore implements Store {
-    @di.Inject()
-    fn New() SecondStore {
+    ctor New() {
         SecondStore {}
     }
 

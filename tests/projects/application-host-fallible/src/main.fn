@@ -11,8 +11,7 @@ enum StartupError {
 service Greeter {
     prefix String
 
-    @di.Inject()
-    fn New(@di.Input() $prefix String) Result<Greeter, StartupError> {
+    ctor New($prefix String) Result<StartupError> {
         if prefix == "" return .Err(.Invalid)
         .Ok(Greeter { prefix = prefix })
     }

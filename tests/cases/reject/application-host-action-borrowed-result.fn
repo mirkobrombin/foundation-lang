@@ -5,8 +5,7 @@ import foundation.di
 
 @di.Scope(.Singleton)
 service Source {
-    @di.Inject()
-    fn New() Source {
+    ctor New() {
         Source {}
     }
 

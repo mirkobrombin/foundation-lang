@@ -33,7 +33,7 @@ struct Counter implements Readable {
 }
 
 methods Counter {
-    fn New(value i32) Counter {
+    ctor New(value i32) {
         Counter { value = value }
     }
 }
@@ -47,7 +47,7 @@ struct Box<T> implements Boxed<T> {
 }
 
 methods Box<T> {
-    fn New($value T) Box<T> {
+    ctor New($value T) {
         Box<T> { value = value }
     }
 }

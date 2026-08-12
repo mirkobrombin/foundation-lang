@@ -299,7 +299,8 @@ std::string functionDetail(const Function &function) {
                                         ? "pipeline "
                                         : "saga ")
                   : function.action ? std::string("action ")
-                                : function.task ? std::string("task ")
+                  : function.constructor ? std::string("ctor ")
+                  : function.task ? std::string("task ")
                                 : function.cSymbol.has_value() ? std::string("extern c fn ")
                                                                : std::string("fn ");
     if (function.blocking) {
@@ -327,7 +328,14 @@ std::string functionDetail(const Function &function) {
             result += parameterDetail(parameter);
         }
     }
-    result += ") " + displayTypeSyntax(function.returnType);
+    result += ')';
+    if (function.constructor) {
+        if (function.returnType.name == "Result" && function.returnType.arguments.size() == 2) {
+            result += " Result<" + displayTypeSyntax(function.returnType.arguments[1]) + '>';
+        }
+    } else {
+        result += ' ' + displayTypeSyntax(function.returnType);
+    }
     return result;
 }
 
@@ -1675,7 +1683,8 @@ bool validIdentifier(std::string_view name) {
 bool reservedIdentifier(std::string_view name) {
     static const std::set<std::string_view> reserved{
         "package", "import", "as",      "extern", "struct", "service", "enum",  "contract",
-        "attribute", "implements", "extends", "delegate", "fn", "action", "task", "test", "spawn",
+        "attribute", "implements", "extends", "delegate", "fn", "ctor", "action", "task",
+        "test", "spawn",
         "const", "var", "return", "discard", "if", "else", "while", "for", "in", "break",
         "continue", "select", "timeout", "unsafe", "match", "capture", "replace", "with",
         "new", "own", "view", "edit", "true", "false", "print", "panic", "len", "i8", "i16",

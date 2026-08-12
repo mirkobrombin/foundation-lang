@@ -1,5 +1,5 @@
 format foundation.lock/v1
 root test.host.app 1.0.0
 target linux
-package test.host.greeter 1.0.0 sha256:8b049cbfa1461162097e120bb6efe54e35e6b888f7ca0dbe7314f130ae7508f4 path ../service
+package test.host.greeter 1.0.0 sha256:1beb64ff9a3cdeeb3d04b7deb0841bdef4a2c7e50a66d1b96571aec7d18caeb4 path ../service
 edge test.host.app test.host.greeter

@@ -16,7 +16,7 @@ struct Trace implements Combiner {
 }
 
 methods Trace {
-    fn New(value i32) Trace {
+    ctor New(value i32) {
         Trace { value = value }
     }
 }

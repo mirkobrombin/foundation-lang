@@ -487,7 +487,7 @@
             "patterns": [
                 {
                     "name": "meta.function.definition.foundation",
-                    "begin": "\\b(fn|task)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "begin": "\\b(fn|ctor|task)\\s+([A-Za-z_][A-Za-z0-9_]*)",
                     "beginCaptures": {
                         "1": { "name": "keyword.declaration.function.foundation" },
                         "2": { "name": "entity.name.function.foundation" }
@@ -651,7 +651,7 @@
             "patterns": [
                 {
                     "name": "keyword.declaration.foundation",
-                    "match": "\\b(attribute|extern|struct|enum|contract|implements|extends|delegate|fn|methods|service|action|state_machine|pipeline|saga|task|test)\\b"
+                    "match": "\\b(attribute|extern|struct|enum|contract|implements|extends|delegate|fn|ctor|methods|service|action|state_machine|pipeline|saga|task|test)\\b"
                 },
                 {
                     "name": "keyword.declaration.attribute.foundation",

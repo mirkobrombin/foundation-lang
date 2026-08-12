@@ -31,6 +31,7 @@ enum class AttributeTarget {
     Enum,
     Contract,
     Method,
+    Constructor,
     Action,
     Field,
     Variant,
@@ -416,6 +417,7 @@ struct Function {
     bool inferredReturn{};
     std::vector<bool> transferableTypeParameters;
     std::optional<StateTimeoutFunction> stateTimeout;
+    bool constructor{};
 };
 
 enum class StructKind {

@@ -552,10 +552,23 @@ bool requiresApplicationHost(const FirProgram &program) {
     }
     return std::any_of(program.functions.begin(), program.functions.end(),
                        [&](const auto &function) {
-                           return hasAttribute(program, function.attributes,
-                                               "foundation.web.Route") ||
-                                  hasAttribute(program, function.attributes,
-                                               "foundation.di.Inject");
+                           if (hasAttribute(program, function.attributes,
+                                            "foundation.web.Route")) {
+                               return true;
+                           }
+                           if (!function.constructor) {
+                               return false;
+                           }
+                           const auto separator = function.name.rfind('.');
+                           if (separator == std::string::npos) {
+                               return false;
+                           }
+                           const auto owner =
+                               std::string_view(function.name).substr(0, separator);
+                           return std::any_of(program.structs.begin(), program.structs.end(),
+                                              [&](const auto &type) {
+                                                  return type.service && type.name == owner;
+                                              });
                        });
 }
 

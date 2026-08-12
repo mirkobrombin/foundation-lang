@@ -120,6 +120,8 @@ const char *tokenName(TokenKind kind) {
         return "delegate";
     case TokenKind::Fn:
         return "fn";
+    case TokenKind::Ctor:
+        return "ctor";
     case TokenKind::Action:
         return "action";
     case TokenKind::Task:
@@ -475,6 +477,8 @@ Token Lexer::identifier() {
         kind = TokenKind::Delegate;
     } else if (text == "fn") {
         kind = TokenKind::Fn;
+    } else if (text == "ctor") {
+        kind = TokenKind::Ctor;
     } else if (text == "action") {
         kind = TokenKind::Action;
     } else if (text == "task") {

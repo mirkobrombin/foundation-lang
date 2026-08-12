@@ -337,6 +337,15 @@ Program Parser::parse() {
             }
             continue;
         }
+        if (check(TokenKind::Ctor)) {
+            diagnostics_.error(
+                "FDN1242",
+                "constructor must be declared inside a struct, service, or methods block",
+                current().span);
+            discardConstructor("$invalid", {});
+            restoreProgram(expressions, statements, blocks, functions);
+            continue;
+        }
         diagnostics_.error("FDN1001", "expected type or function declaration",
                            current().span);
         advance();
@@ -397,6 +406,10 @@ std::optional<AttributeTarget> Parser::attributeTarget() {
     if (kind == TokenKind::Fn) {
         advance();
         return AttributeTarget::Function;
+    }
+    if (kind == TokenKind::Ctor) {
+        advance();
+        return AttributeTarget::Constructor;
     }
     if (kind == TokenKind::Struct) {
         advance();
@@ -804,9 +817,11 @@ StructDeclaration Parser::structDeclaration(bool service) {
             advance();
             continue;
         }
-        if (check(TokenKind::Fn) || check(TokenKind::Action)) {
-            const auto action = check(TokenKind::Action);
-            auto declaration = method(name.text, parameters, action);
+        if (check(TokenKind::Fn) || check(TokenKind::Ctor) || check(TokenKind::Action)) {
+            const auto kind = check(TokenKind::Ctor)     ? MemberKind::Constructor
+                              : check(TokenKind::Action) ? MemberKind::Action
+                                                         : MemberKind::Method;
+            auto declaration = method(name.text, parameters, kind);
             declaration.attributes = std::move(parsedAttributes.applications);
             program_.functions.push_back(std::move(declaration));
             continue;
@@ -872,13 +887,15 @@ void Parser::methodsDeclaration() {
             advance();
             continue;
         }
-        if (!check(TokenKind::Fn) && !check(TokenKind::Action)) {
+        if (!check(TokenKind::Fn) && !check(TokenKind::Ctor) && !check(TokenKind::Action)) {
             diagnostics_.error("FDN1164", "expected method declaration", current().span);
             advance();
             continue;
         }
-        const auto action = check(TokenKind::Action);
-        auto declaration = method(owner.text, parameters, action);
+        const auto kind = check(TokenKind::Ctor)     ? MemberKind::Constructor
+                          : check(TokenKind::Action) ? MemberKind::Action
+                                                     : MemberKind::Method;
+        auto declaration = method(owner.text, parameters, kind);
         declaration.attributes = std::move(parsedAttributes.applications);
         program_.functions.push_back(std::move(declaration));
     }
@@ -894,6 +911,11 @@ EnumDeclaration Parser::enumDeclaration() {
     std::vector<EnumVariant> variants;
     while (!check(TokenKind::RightBrace) && !atEnd()) {
         auto parsedAttributes = attributes(false);
+        if (check(TokenKind::Ctor)) {
+            diagnostics_.error("FDN1243", "enum cannot declare constructors", current().span);
+            discardConstructor(name.text, parameters);
+            continue;
+        }
         if (!check(TokenKind::Identifier)) {
             diagnostics_.error("FDN1045", "expected enum variant name", current().span);
             advance();
@@ -1396,6 +1418,11 @@ ContractDeclaration Parser::contractDeclaration() {
             advance();
             continue;
         }
+        if (check(TokenKind::Ctor)) {
+            diagnostics_.error("FDN1244", "contract cannot declare constructors", current().span);
+            discardConstructor(name.text, parameters);
+            continue;
+        }
         if (!check(TokenKind::Fn)) {
             diagnostics_.error("FDN1098", "expected contract method", current().span);
             advance();
@@ -1528,20 +1555,30 @@ Function Parser::testDeclaration() {
 }
 
 Function Parser::method(const std::string &owner,
-                        const std::vector<std::string> &typeParameters, bool action) {
-    const auto start = expect(action ? TokenKind::Action : TokenKind::Fn, "FDN1100",
-                              action ? "expected action" : "expected fn");
+                        const std::vector<std::string> &typeParameters,
+                        MemberKind kind) {
+    const auto constructor = kind == MemberKind::Constructor;
+    const auto action = kind == MemberKind::Action;
+    const auto declarationKind = constructor ? TokenKind::Ctor
+                                 : action      ? TokenKind::Action
+                                               : TokenKind::Fn;
+    const auto start = expect(declarationKind, "FDN1100",
+                              constructor ? "expected ctor"
+                              : action      ? "expected action"
+                                            : "expected fn");
     const auto name = expect(TokenKind::Identifier, "FDN1101", "expected method name");
     expect(TokenKind::LeftParen, "FDN1102", "expected ( after method name");
     std::vector<Parameter> parameters;
     std::optional<ReceiverKind> access;
     auto parseParameters = true;
     const auto targetReceiver =
-        (check(TokenKind::Identifier) && current().text == "self") ||
-        ((check(TokenKind::Ampersand) || check(TokenKind::Dollar)) &&
-         peek(1).kind == TokenKind::Identifier && peek(1).text == "self");
-    if (check(TokenKind::View) || check(TokenKind::Edit) || check(TokenKind::Own) ||
-        targetReceiver) {
+        !constructor && ((check(TokenKind::Identifier) && current().text == "self") ||
+                         ((check(TokenKind::Ampersand) || check(TokenKind::Dollar)) &&
+                          peek(1).kind == TokenKind::Identifier &&
+                          peek(1).text == "self"));
+    if (!constructor &&
+        (check(TokenKind::View) || check(TokenKind::Edit) || check(TokenKind::Own) ||
+         targetReceiver)) {
         const auto receiverStart = current();
         access = receiver("FDN1103", "expected self, &self, or $self receiver");
         std::vector<TypeSyntax> ownerArguments;
@@ -1564,7 +1601,33 @@ Function Parser::method(const std::string &owner,
         } while (match(TokenKind::Comma));
     }
     expect(TokenKind::RightParen, "FDN1104", "expected ) after method parameters");
-    auto returnType = typeSyntax("FDN1105", "expected method return type");
+    TypeSyntax returnType;
+    if (constructor) {
+        std::vector<TypeSyntax> arguments;
+        arguments.reserve(typeParameters.size());
+        for (const auto &parameter : typeParameters) {
+            arguments.push_back({parameter, {}, start.span});
+        }
+        TypeSyntax ownerType{owner, std::move(arguments), start.span};
+        if (check(TokenKind::LeftBrace)) {
+            returnType = std::move(ownerType);
+        } else {
+            auto result = typeSyntax("FDN1240", "expected constructor body or Result<Error>");
+            if (result.name != "Result" || result.arguments.size() != 1) {
+                diagnostics_.error(
+                    "FDN1241",
+                    "constructor result is implicit; fallible constructors use Result<Error>",
+                    result.span);
+                returnType = std::move(ownerType);
+            } else {
+                auto errorType = std::move(result.arguments.front());
+                returnType =
+                    TypeSyntax{"Result", {std::move(ownerType), std::move(errorType)}, result.span};
+            }
+        }
+    } else {
+        returnType = typeSyntax("FDN1105", "expected method return type");
+    }
     const auto tailResult = returnType.name != "void" || !returnType.arguments.empty();
     auto previousTypeParameters = std::move(activeTypeParameters_);
     activeTypeParameters_ = typeParameters;
@@ -1575,7 +1638,18 @@ Function Parser::method(const std::string &owner,
                     false, {}, {}, false, false, false, std::nullopt, std::nullopt, action,
                     std::nullopt, std::nullopt, false, {}, std::nullopt};
     result.action = action;
+    result.constructor = constructor;
     return result;
+}
+
+void Parser::discardConstructor(const std::string &owner,
+                                const std::vector<std::string> &typeParameters) {
+    const auto expressions = program_.expressions.size();
+    const auto statements = program_.statements.size();
+    const auto blocks = program_.blocks.size();
+    const auto functions = program_.functions.size();
+    static_cast<void>(method(owner, typeParameters, MemberKind::Constructor));
+    restoreProgram(expressions, statements, blocks, functions);
 }
 
 ContractMethod Parser::contractMethod(const std::string &owner,

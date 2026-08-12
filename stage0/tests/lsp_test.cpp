@@ -1831,7 +1831,7 @@ void distributedMethodsExposeDocumentationAndParameters() {
               "package sample.profile\n"
               "methods User {\n"
               "    // Creates a user with the supplied display name.\n"
-              "    fn New($name String) User { User { Name = name } }\n"
+              "    ctor New($name String) { User { Name = name } }\n"
               "}\n");
     writeFile(rename,
               "package sample.profile\n"
@@ -1971,12 +1971,12 @@ void distributedMethodsExposeDocumentationAndParameters() {
                completion.find("Rename($${1:name})$0") != std::string::npos &&
                completion.find("editor.action.triggerParameterHints") != std::string::npos,
            "member completion carries documentation, parameter placeholders, and signature trigger");
-    expect(associatedCompletion.find("\"label\":\"New\"") != std::string::npos &&
+    expect(associatedCompletion.find("\"kind\":4,\"label\":\"New\"") != std::string::npos &&
                associatedCompletion.find("Creates a user with the supplied display name.") !=
                    std::string::npos &&
                associatedCompletion.find("New($${1:name})$0") != std::string::npos,
-           "type completion exposes associated functions without instance members");
-    expect(localTypeCompletion.find("\"label\":\"New\"") != std::string::npos &&
+           "type completion exposes constructors without instance members");
+    expect(localTypeCompletion.find("\"kind\":4,\"label\":\"New\"") != std::string::npos &&
                localTypeCompletion.find("New($${1:name})$0") != std::string::npos &&
                localTypeCompletion.find("\"label\":\"Rename\"") == std::string::npos,
            "same-package type completion survives an incomplete top-level access");
@@ -1987,13 +1987,15 @@ void distributedMethodsExposeDocumentationAndParameters() {
     expect(definition.find(renameUri) != std::string::npos,
            "method definition navigates to its distributed source file");
     expect(compositeType.find("\"typeName\":\"User\"") != std::string::npos &&
-               compositeType.find("\"methodCount\":2") != std::string::npos &&
+               compositeType.find("\"constructorCount\":1") != std::string::npos &&
+               compositeType.find("\"methodCount\":1") != std::string::npos &&
                compositeType.find("\"fileCount\":3") != std::string::npos &&
+               compositeType.find("\"kind\":\"constructor\"") != std::string::npos &&
                compositeType.find("\"kind\":\"method\"") != std::string::npos &&
                compositeType.find("// Replaces the displayed profile name.") != std::string::npos &&
                compositeType.find(renameUri) != std::string::npos,
            "composite type request preserves documented source locations across files");
-    expect(userHover.find("1 field, 2 methods across 3 files") != std::string::npos &&
+    expect(userHover.find("1 field, 1 constructor, 1 method across 3 files") != std::string::npos &&
                userHover.find("**Fields**") != std::string::npos &&
                userHover.find("The name shown to people.") != std::string::npos &&
                userHover.find("foundationComposite") != std::string::npos,
@@ -3673,7 +3675,7 @@ void servicesAndActionsExposeEditorDetails() {
         "service CounterService {\n"
         "    value i32\n"
         "\n"
-        "    fn New(initial i32) CounterService {\n"
+        "    ctor New(initial i32) {\n"
         "        CounterService { value = initial }\n"
         "    }\n"
         "\n"
@@ -4562,8 +4564,7 @@ void webActivationExposesEditorDetails() {
         "\n"
         "@di.Scope(.Transient)\n"
         "service RejectedService {\n"
-        "    @di.Inject()\n"
-        "    fn New() Result<RejectedService, ActivationError> {\n"
+        "    ctor New() Result<ActivationError> {\n"
         "        .Err(.Rejected)\n"
         "    }\n"
         "}\n"
@@ -4618,22 +4619,28 @@ void webActivationExposesEditorDetails() {
     const auto hover =
         "{\"jsonrpc\":\"2.0\",\"id\":221,\"method\":\"textDocument/hover\","
         "\"params\":{\"textDocument\":{\"uri\":\"" +
-        sourceUri + "\"},\"position\":{\"line\":26,\"character\":12}}}";
+        sourceUri + "\"},\"position\":{\"line\":25,\"character\":12}}}";
     const auto middlewareHover =
         "{\"jsonrpc\":\"2.0\",\"id\":222,\"method\":\"textDocument/hover\","
         "\"params\":{\"textDocument\":{\"uri\":\"" +
-        sourceUri + "\"},\"position\":{\"line\":41,\"character\":8}}}";
+        sourceUri + "\"},\"position\":{\"line\":40,\"character\":8}}}";
+    const auto constructorHover =
+        "{\"jsonrpc\":\"2.0\",\"id\":223,\"method\":\"textDocument/hover\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\"},\"position\":{\"line\":11,\"character\":9}}}";
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
     std::istringstream input(
         frame(initialize) + frame(open) + frame(hover) + frame(middlewareHover) +
+        frame(constructorHover) +
         frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
     const auto response = responseFor(output.str(), 221);
     const auto middlewareResponse = responseFor(output.str(), 222);
+    const auto constructorResponse = responseFor(output.str(), 223);
 
     expect(status == 0, "web activation language server transcript exits cleanly");
     expect(errors.str().empty(), "web activation requests write no server errors");
@@ -4643,6 +4650,8 @@ void webActivationExposesEditorDetails() {
                    std::string::npos &&
                middlewareResponse.find("complete generated application") != std::string::npos,
            "web middleware hover exposes its typed signature and documentation");
+    expect(constructorResponse.find("ctor New() Result<ActivationError>") != std::string::npos,
+           "service constructor hover exposes its implicit owner result");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);

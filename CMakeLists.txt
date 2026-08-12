@@ -1074,6 +1074,27 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership-markers.fn
     )
     add_test(
+        NAME stage0.check.constructors
+        COMMAND foundationc check
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/constructors.fn
+    )
+    foreach(constructor_case IN ITEMS
+            "constructor-top-level;FDN1242"
+            "constructor-enum;FDN1243"
+            "constructor-contract;FDN1244"
+            "constructor-explicit-return;FDN1241")
+        list(GET constructor_case 0 constructor_name)
+        list(GET constructor_case 1 constructor_code)
+        add_test(
+            NAME stage0.check.${constructor_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${constructor_name}.fn
+                -DCODE=${constructor_code}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
+    add_test(
         NAME stage0.run.ownership-markers
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -2298,8 +2319,9 @@ if(BUILD_TESTING)
             "application-ambiguous-provider;FDN2308"
             "application-cycle;FDN2311"
             "application-lifetime-capture;FDN2310"
-            "application-inject-struct;FDN2318"
-            "application-orphan-input;FDN2319"
+            "application-missing-constructor;FDN2301"
+            "application-multiple-constructors;FDN2302"
+            "application-orphan-from;FDN2319"
             "application-empty-provider-name;FDN2345"
             "application-empty-provider-selector;FDN2346"
             "application-duplicate-action;FDN2315"

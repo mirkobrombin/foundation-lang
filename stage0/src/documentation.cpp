@@ -135,6 +135,8 @@ std::string_view targetName(AttributeTarget target) {
         return "contract";
     case AttributeTarget::Method:
         return "method";
+    case AttributeTarget::Constructor:
+        return "ctor";
     case AttributeTarget::Action:
         return "action";
     case AttributeTarget::Field:

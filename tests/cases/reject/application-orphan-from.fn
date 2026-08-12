@@ -1,0 +1,13 @@
+import foundation.di
+
+struct Store {}
+
+fn create(@di.From("primary") value Store) Store {
+    value
+}
+
+fn main() i32 {
+    const value = create(Store {})
+    discard value
+    0
+}

@@ -1,0 +1,38 @@
+enum BuildError {
+    Empty
+}
+
+struct User {
+    name String
+
+    ctor New($name String) {
+        User { name = name }
+    }
+
+    ctor Empty() {
+        User { name = "" }
+    }
+}
+
+struct Greeter {
+    prefix String
+
+    ctor New($prefix String) Result<BuildError> {
+        if !prefix return .Err(.Empty)
+        .Ok(Greeter { prefix = prefix })
+    }
+}
+
+fn main() i32 {
+    const user = User.New("Mirko")
+    const empty = User.Empty()
+    if user.name != "Mirko" return 1
+    if empty.name != "" return 2
+
+    const greeter = Greeter.New("Hello, ") else error {
+        discard error
+        return 3
+    }
+    if greeter.prefix != "Hello, " return 4
+    0
+}

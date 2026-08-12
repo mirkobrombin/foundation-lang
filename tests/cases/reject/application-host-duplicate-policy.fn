@@ -5,8 +5,7 @@ import foundation.di
 
 @di.Scope(.Singleton)
 service Runner {
-    @di.Inject()
-    fn New() Runner {
+    ctor New() {
         Runner {}
     }
 

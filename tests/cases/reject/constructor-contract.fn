@@ -1,0 +1,9 @@
+contract Factory {
+    ctor New() {
+        0
+    }
+}
+
+fn main() i32 {
+    0
+}

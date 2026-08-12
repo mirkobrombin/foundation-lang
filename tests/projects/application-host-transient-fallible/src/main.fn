@@ -9,8 +9,7 @@ enum ActivationError {
 }
 
 service Worker {
-    @di.Inject()
-    fn New(@di.Input() allow bool) Result<Worker, ActivationError> {
+    ctor New(allow bool) Result<ActivationError> {
         if !allow return .Err(.Denied)
         .Ok(Worker {})
     }

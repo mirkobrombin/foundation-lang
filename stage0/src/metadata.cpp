@@ -49,6 +49,8 @@ const char *targetName(FirAttributeTarget target) {
         return "contract";
     case FirAttributeTarget::Method:
         return "method";
+    case FirAttributeTarget::Constructor:
+        return "ctor";
     case FirAttributeTarget::Action:
         return "action";
     case FirAttributeTarget::Field:
@@ -458,10 +460,12 @@ std::string emitMetadata(const FirProgram &program) {
             continue;
         }
         const auto kind = function.action                 ? "action"
+                          : function.constructor          ? "ctor"
                           : function.method               ? "method"
                                                           : "fn";
         emitDeclaration(out, program, first, function.name, kind, function.attributes,
-                        function.action || function.stateTransition.has_value());
+                        function.action || function.constructor ||
+                            function.stateTransition.has_value());
         for (std::size_t parameter = 0; parameter < function.parameterAttributes.size();
              ++parameter) {
             const auto local = function.parameters[parameter];

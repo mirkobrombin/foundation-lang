@@ -15,8 +15,7 @@ enum AsyncError {
 
 @di.Scope(.Scoped)
 service RequestState {
-    @di.Inject()
-    fn New() RequestState {
+    ctor New() {
         print("scoped")
         RequestState {}
     }
@@ -28,8 +27,7 @@ service RequestState {
 
 @di.Scope(.Transient)
 service RequestStep {
-    @di.Inject()
-    fn New(state RequestState) RequestStep {
+    ctor New(state RequestState) {
         if state.Value() != 1 {
             panic("invalid scoped dependency")
         }
@@ -44,8 +42,7 @@ service RequestStep {
 
 @di.Scope(.Transient)
 service RejectedService {
-    @di.Inject()
-    fn New() Result<RejectedService, ActivationError> {
+    ctor New() Result<ActivationError> {
         .Err(.Rejected)
     }
 }
@@ -54,8 +51,7 @@ service RejectedService {
 service AsyncValue {
     text String
 
-    @di.Inject()
-    fn New() AsyncValue {
+    ctor New() {
         print("async")
         AsyncValue { text = "async ok" }
     }

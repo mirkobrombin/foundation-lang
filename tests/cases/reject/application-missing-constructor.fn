@@ -1,15 +1,9 @@
-package test.host
-
 import foundation.actions
 import foundation.di
 
 @di.Scope(.Singleton)
-service Runner {
-    ctor New() {
-        Runner {}
-    }
-
-    @actions.Name("ActionNames")
+service Commands {
+    @actions.Name("run")
     action Run(self) i32 {
         0
     }

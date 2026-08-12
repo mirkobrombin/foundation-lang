@@ -3,8 +3,7 @@ import foundation.di
 
 @di.Scope(.Singleton)
 service Session {
-    @di.Inject()
-    fn New() Session {
+    ctor New() {
         Session {}
     }
 

@@ -10,8 +10,7 @@ contract Store {
 @di.Name("primary")
 @di.Scope(.Singleton)
 service PrimaryStore implements Store {
-    @di.Inject()
-    fn New() PrimaryStore {
+    ctor New() {
         PrimaryStore {}
     }
 
@@ -23,8 +22,7 @@ service PrimaryStore implements Store {
 @di.Name("secondary")
 @di.Scope(.Singleton)
 service SecondaryStore implements Store {
-    @di.Inject()
-    fn New() SecondaryStore {
+    ctor New() {
         SecondaryStore {}
     }
 
@@ -37,11 +35,10 @@ service SecondaryStore implements Store {
 service Reader {
     value i32
 
-    @di.Inject()
-    fn New(
+    ctor New(
         @di.From("primary") primary Store,
         @di.From("secondary") secondary Store
-    ) Reader {
+    ) {
         Reader { value = primary.Value() * 10 + secondary.Value() }
     }
 

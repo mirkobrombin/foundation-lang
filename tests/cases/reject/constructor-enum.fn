@@ -1,0 +1,11 @@
+enum Choice {
+    None
+
+    ctor New() {
+        .None
+    }
+}
+
+fn main() i32 {
+    0
+}

@@ -1,11 +1,12 @@
 import foundation.di
 
-struct Database {}
+contract Database {
+    fn Ready(self) bool
+}
 
 @di.Scope(.Singleton)
 service Api {
-    @di.Inject()
-    fn New(database Database) Api {
+    ctor New(database Database) {
         discard database
         Api {}
     }

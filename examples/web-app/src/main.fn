@@ -17,8 +17,7 @@ service AppInfo {
     name String
     version String
 
-    @di.Inject()
-    fn New() AppInfo {
+    ctor New() {
         AppInfo { name = "Foundation Web" version = "0.1.0" }
     }
 
@@ -31,8 +30,7 @@ service AppInfo {
 service RequestInfo {
     marker String
 
-    @di.Inject()
-    fn New() RequestInfo {
+    ctor New() {
         RequestInfo { marker = "request" }
     }
 
@@ -45,8 +43,7 @@ service RequestInfo {
 service UserPresenter {
     ready bool
 
-    @di.Inject()
-    fn New(requestInfo RequestInfo, info AppInfo) UserPresenter {
+    ctor New(requestInfo RequestInfo, info AppInfo) {
         UserPresenter {
             ready = requestInfo.Ready() && info.Label() == "Foundation Web 0.1.0"
         }

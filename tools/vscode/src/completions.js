@@ -46,7 +46,7 @@ const staticCompletions = [
     { label: "import", kind: "Keyword" },
     { label: "as", kind: "Keyword" },
     { label: "attribute", kind: "Keyword", detail: "Declare typed compile-time metadata" },
-    { label: "targets(...)", kind: "Keyword", insertText: "targets(${1|fn,struct,service,enum,contract,method,action,field,variant,parameter|})" },
+    { label: "targets(...)", kind: "Keyword", insertText: "targets(${1|fn,struct,service,enum,contract,method,ctor,action,field,variant,parameter|})" },
     { label: "repeatable", kind: "Keyword", detail: "Allow repeated applications of an attribute" },
     { label: "extern", kind: "Keyword", detail: "Declare a C ABI import or export" },
     { label: "c", kind: "Value", detail: "C application binary interface" },
@@ -98,6 +98,7 @@ const staticCompletions = [
     { label: "test", kind: "Keyword", detail: "Declare an executable test" },
     { label: "unsafe", kind: "Keyword", detail: "Bound raw pointer operations" },
     { label: "fn", kind: "Keyword" },
+    { label: "ctor", kind: "Keyword", detail: "Declare an associated constructor with an implicit owner result" },
     { label: "const", kind: "Keyword", detail: "Declare an immutable binding" },
     { label: "var", kind: "Keyword" },
     { label: "return", kind: "Keyword" },
@@ -190,9 +191,7 @@ const staticCompletions = [
     { label: "foundation.resiliency.web", kind: "Module", detail: "Owned stateful web resilience middleware" },
     { label: "foundation.di", kind: "Module", detail: "Static dependency graph metadata" },
     { label: "foundation.actions", kind: "Module", detail: "Typed action dispatch metadata" },
-    { label: "@di.Inject()", kind: "Keyword", detail: "Select a service constructor", insertText: "@di.Inject()" },
     { label: "@di.Scope(...)", kind: "Keyword", detail: "Set a service lifetime", insertText: "@di.Scope(${1|.Transient,.Scoped,.Singleton|})" },
-    { label: "@di.Input()", kind: "Keyword", detail: "Supply an application boundary value", insertText: "@di.Input()" },
     { label: "@di.Name(...)", kind: "Keyword", detail: "Name a service provider", insertText: "@di.Name(\"${1:name}\")" },
     { label: "@di.From(...)", kind: "Keyword", detail: "Select a named provider", insertText: "@di.From(\"${1:name}\")" },
     { label: "@actions.Name(...)", kind: "Keyword", detail: "Set an action dispatch name", insertText: "@actions.Name(\"${1:name}\")" },
@@ -1980,17 +1979,18 @@ function topLevelDepths(source) {
 }
 
 function collectMethods(source, owner, contract = false) {
-    return [...source.matchAll(
-        /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)/g
-    )].map((match) => ({
-        name: match[1],
-        kind: "Method",
+    const declarations = contract
+        ? /\b(fn)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)/g
+        : /\b(fn|ctor|action)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)/g;
+    return [...source.matchAll(declarations)].map((match) => ({
+        name: match[2],
+        kind: match[1] === "ctor" ? "Constructor" : "Method",
         owner,
         contract,
         defaultMethod: contract && /^[^\n{]*\{/.test(
             source.slice(match.index + match[0].length)
         ),
-        parameters: collectParameters(match[2])
+        parameters: collectParameters(match[3])
     }));
 }
 
@@ -2059,10 +2059,11 @@ function skipType(tokens, offset) {
 }
 
 function collectStructFields(source) {
-    const surface = topLevelSurface(source).replace(
-        /\bfn\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)\s+[^\n{]+/g,
-        ""
-    );
+    const surface = topLevelSurface(source)
+        .replace(/\bctor\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)(?:\s+Result\s*<[^\n{]+>)?/g,
+            "")
+        .replace(/\b(?:fn|action)\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)\s+[^\n{]+/g,
+            "");
     const tokens = [...surface.matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*|[0-9]+|[<>,()[\]]/g)]
         .map((match) => match[0]);
     const fields = [];
@@ -2105,11 +2106,16 @@ function collectPackageDeclarations(source) {
         typeParameters: collectTypeParameters(match[2]),
         parameters: collectParameters(match[3])
     }));
-    const structs = collectBracedDeclarations(masked, "struct")
+    const structs = [
+        ...collectBracedDeclarations(masked, "struct"),
+        ...collectBracedDeclarations(masked, "service")
+            .map((declaration) => ({ ...declaration, service: true }))
+    ]
         .filter((declaration) => /^[A-Z]/.test(declaration.name))
         .map((declaration) => ({
         name: declaration.name,
         kind: "Struct",
+        service: Boolean(declaration.service),
         typeParameters: declaration.typeParameters,
         methods: collectMethods(declaration.body, declaration.name)
             .filter((method) => /^[A-Z]/.test(method.name))
@@ -2209,8 +2215,8 @@ function importedCompletions(source, projectSources) {
             for (const method of declaration.methods || []) {
                 completions.push({
                     label: method.name,
-                    kind: "Method",
-                    detail: `Exported method of ${declaration.name} from ${imported.packageName}`,
+                    kind: method.kind,
+                    detail: `Exported ${method.kind.toLowerCase()} of ${declaration.name} from ${imported.packageName}`,
                     insertText: `${method.name}(${method.parameters.map((name, index) =>
                         `\${${index + 1}:${name}}`).join(", ")})`
                 });
@@ -2238,7 +2244,11 @@ function collectCompletions(source, projectSources = []) {
     const depths = topLevelDepths(masked);
     const completions = [...staticCompletions, ...importedCompletions(source, projectSources)];
     const functions = /\b(?:fn|task)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<([^>{}]*)>)?\s*\(([^)]*)\)/g;
-    const structs = collectBracedDeclarations(masked, "struct");
+    const structs = [
+        ...collectBracedDeclarations(masked, "struct"),
+        ...collectBracedDeclarations(masked, "service")
+            .map((declaration) => ({ ...declaration, service: true }))
+    ];
     const methodBlocks = collectBracedDeclarations(masked, "methods");
     const enums = collectBracedDeclarations(masked, "enum");
     const contracts = collectBracedDeclarations(masked, "contract");
@@ -2271,7 +2281,11 @@ function collectCompletions(source, projectSources = []) {
         completions.push({
             label: name,
             kind: "Struct",
-            detail: declaration.implementations
+            detail: declaration.service
+                ? `Foundation service${declaration.implementations
+                    ? ` implements ${declaration.implementations.trim()}${delegation}`
+                    : ""}`
+                : declaration.implementations
                 ? `Foundation struct implements ${declaration.implementations.trim()}${delegation}`
                 : typeParameters.length === 0
                 ? "Foundation struct"
@@ -2291,8 +2305,8 @@ function collectCompletions(source, projectSources = []) {
         for (const method of collectMethods(declaration.body, name)) {
             completions.push({
                 label: method.name,
-                kind: "Method",
-                detail: `Method of ${name}`,
+                kind: method.kind,
+                detail: `${method.kind} of ${name}`,
                 insertText: `${method.name}(${method.parameters.map((parameter, index) =>
                     `\${${index + 1}:${parameter}}`).join(", ")})`
             });
@@ -2303,8 +2317,8 @@ function collectCompletions(source, projectSources = []) {
         for (const method of collectMethods(declaration.body, declaration.name)) {
             completions.push({
                 label: method.name,
-                kind: "Method",
-                detail: `Distributed method of ${declaration.name}`,
+                kind: method.kind,
+                detail: `Distributed ${method.kind.toLowerCase()} of ${declaration.name}`,
                 insertText: `${method.name}(${method.parameters.map((parameter, index) =>
                     `\${${index + 1}:${parameter}}`).join(", ")})`
             });

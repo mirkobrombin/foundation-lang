@@ -1,0 +1,15 @@
+import foundation.di
+
+service Helper {
+    ctor Empty() {
+        Helper {}
+    }
+
+    ctor Default() {
+        Helper {}
+    }
+}
+
+fn main() i32 {
+    0
+}

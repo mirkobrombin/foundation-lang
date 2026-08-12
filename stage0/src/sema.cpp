@@ -418,6 +418,8 @@ class Analyzer {
             return FirAttributeTarget::Contract;
         case AttributeTarget::Method:
             return FirAttributeTarget::Method;
+        case AttributeTarget::Constructor:
+            return FirAttributeTarget::Constructor;
         case AttributeTarget::Action:
             return FirAttributeTarget::Action;
         case AttributeTarget::Field:
@@ -1296,6 +1298,8 @@ class Analyzer {
             return "contract";
         case FirAttributeTarget::Method:
             return "method";
+        case FirAttributeTarget::Constructor:
+            return "ctor";
         case FirAttributeTarget::Action:
             return "action";
         case FirAttributeTarget::Field:
@@ -1478,6 +1482,7 @@ class Analyzer {
             const auto attributeTarget =
                 source.action
                     ? FirAttributeTarget::Action
+                    : source.constructor ? FirAttributeTarget::Constructor
                     : !source.ownerType.empty() ? FirAttributeTarget::Method
                                                 : FirAttributeTarget::Function;
             target.attributes = resolveAttributes(source.attributes, attributeTarget,
@@ -1724,6 +1729,35 @@ class Analyzer {
                     if (function.action && methodName == "drop") {
                         diagnostics_.error("FDN2215", "action cannot be named drop",
                                            function.span);
+                    }
+                    if (function.constructor && !ownerIsStruct) {
+                        diagnostics_.error("FDN2240",
+                                           "constructor owner must be a struct or service",
+                                           function.span);
+                    }
+                    if (function.constructor && function.receiver.has_value()) {
+                        diagnostics_.error("FDN2241", "constructor cannot declare a receiver",
+                                           function.span);
+                    }
+                    if (function.constructor && ownerIsStruct) {
+                        std::vector<Type> arguments;
+                        arguments.reserve(function.typeParameters.size());
+                        for (std::size_t parameter = 0; parameter < function.typeParameters.size();
+                             ++parameter) {
+                            arguments.emplace_back(TypeKind::Parameter, parameter);
+                        }
+                        const Type constructed{TypeKind::Struct, structOwner->second,
+                                               std::move(arguments)};
+                        const auto valid = semantic.returnType == constructed ||
+                                           (isResult(semantic.returnType) &&
+                                            semantic.returnType.arguments.size() == 2 &&
+                                            semantic.returnType.arguments.front() == constructed);
+                        if (!valid) {
+                            diagnostics_.error(
+                                "FDN2242",
+                                "constructor must produce its owner or Result of its owner",
+                                function.span);
+                        }
                     }
                     if (function.receiver.has_value()) {
                         if (!methods_[owner].emplace(methodName, index).second) {

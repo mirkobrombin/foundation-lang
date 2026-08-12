@@ -32,6 +32,7 @@ enum class FirAttributeTarget {
     Enum,
     Contract,
     Method,
+    Constructor,
     Action,
     Field,
     Variant,
@@ -562,6 +563,7 @@ struct FirFunction {
     std::optional<FirStateTransitionFunction> stateTransition;
     std::optional<FirWorkflowFunction> workflow;
     std::optional<FirStateTimeoutFunction> stateTimeout;
+    bool constructor{};
 };
 
 struct FirStructField {

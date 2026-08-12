@@ -21,9 +21,7 @@ namespace foundation {
 
 namespace {
 
-constexpr std::string_view injectAttribute = "foundation.di.Inject";
 constexpr std::string_view scopeAttribute = "foundation.di.Scope";
-constexpr std::string_view inputAttribute = "foundation.di.Input";
 constexpr std::string_view nameAttribute = "foundation.di.Name";
 constexpr std::string_view fromAttribute = "foundation.di.From";
 constexpr std::string_view actionNameAttribute = "foundation.actions.Name";
@@ -1162,6 +1160,15 @@ std::vector<FirStructId> providerCandidates(const FirProgram &program, const Typ
     return candidates;
 }
 
+bool serviceDependencyType(const FirProgram &program, const Type &requested) {
+    const auto base = baseType(requested);
+    if (base.kind == TypeKind::Contract) {
+        return true;
+    }
+    return base.kind == TypeKind::Struct && base.declaration < program.structs.size() &&
+           program.structs[base.declaration].service;
+}
+
 std::string joinServiceNames(const FirProgram &program,
                              const std::vector<FirStructId> &services) {
     std::string result;
@@ -2245,7 +2252,8 @@ std::string emitApplicationHostSource(const FirProgram &program,
                 if (errorType.has_value() && *errorType != candidate) {
                     diagnostics.error(
                         "FDN2340",
-                        "fallible constructors in one action activation must use the same error type",
+                        "fallible constructors in one action activation must use the same error "
+                        "type",
                         constructor.sourceSpan);
                 } else {
                     errorType = candidate;
@@ -4930,24 +4938,16 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
     for (FirFunctionId index = 0; index < program.functions.size(); ++index) {
         const auto &function = program.functions[index];
         const auto owner = servicesByName.find(ownerName(function));
-        const auto injected = hasAttribute(program, function.attributes, injectAttribute);
-        if (injected) {
-            if (owner == servicesByName.end()) {
-                diagnostics.error("FDN2318", "@di.Inject owner must be a service",
-                                  function.sourceSpan);
-            } else {
-                constructors[owner->second].push_back(index);
-                pending.insert(owner->second);
-            }
+        const auto serviceConstructor = function.constructor && owner != servicesByName.end();
+        if (serviceConstructor) {
+            constructors[owner->second].push_back(index);
+            pending.insert(owner->second);
         }
         for (std::size_t parameter = 0;
              parameter < function.parameterAttributes.size(); ++parameter) {
             const auto &attributes = function.parameterAttributes[parameter];
-            if (!injected &&
-                (hasAttribute(program, attributes, inputAttribute) ||
-                 hasAttribute(program, attributes, fromAttribute))) {
-                diagnostics.error("FDN2319",
-                                  "DI parameter metadata requires an @di.Inject constructor",
+            if (!serviceConstructor && hasAttribute(program, attributes, fromAttribute)) {
+                diagnostics.error("FDN2319", "@di.From requires a service constructor parameter",
                                   function.sourceSpan);
             }
         }
@@ -5366,30 +5366,39 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
             diagnostics.error("FDN2345", "DI provider name cannot be empty", type.sourceSpan);
         }
         if (constructors[service].empty()) {
-            diagnostics.error("FDN2301", "service requires one @di.Inject constructor",
+            diagnostics.error("FDN2301", "service requires a ctor declaration",
                               type.sourceSpan);
             continue;
         }
+        auto constructor = constructors[service].front();
         if (constructors[service].size() != 1) {
-            diagnostics.error("FDN2302", "service has more than one @di.Inject constructor",
-                              program.functions[constructors[service].back()].sourceSpan);
-            continue;
+            const auto canonical =
+                std::find_if(constructors[service].begin(), constructors[service].end(),
+                             [&](const auto candidate) {
+                                 return shortName(program.functions[candidate].name) == "New";
+                             });
+            if (canonical == constructors[service].end()) {
+                diagnostics.error(
+                    "FDN2302",
+                    "service with multiple constructors requires one canonical ctor New",
+                    program.functions[constructors[service].back()].sourceSpan);
+                continue;
+            }
+            constructor = *canonical;
         }
 
-        const auto constructor = constructors[service].front();
         const auto &function = program.functions[constructor];
         auto fallible = false;
         if (function.receiver.has_value()) {
-            diagnostics.error("FDN2303", "@di.Inject constructor must be an associated function",
+            diagnostics.error("FDN2303", "service constructor cannot declare a receiver",
                               function.sourceSpan);
         }
         if (function.generic) {
-            diagnostics.error("FDN2304", "@di.Inject constructor cannot be generic",
+            diagnostics.error("FDN2304", "service constructor cannot be generic",
                               function.sourceSpan);
         }
         if (!returnsService(program, function, service, fallible)) {
-            diagnostics.error("FDN2305",
-                              "@di.Inject constructor must return its service or Result of it",
+            diagnostics.error("FDN2305", "constructor must produce its service or Result of it",
                               function.sourceSpan);
         }
 
@@ -5398,9 +5407,9 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
             const auto local = function.parameters[parameter];
             const auto &localValue = function.locals[local];
             const auto &attributes = function.parameterAttributes[parameter];
-            const auto input = hasAttribute(program, attributes, inputAttribute);
             const auto requestedName =
                 stringArgument(findAttribute(program, attributes, fromAttribute));
+            const auto input = !serviceDependencyType(program, localValue.type);
             Dependency dependency{localValue.name, localValue.type,
                                   parameterMode(function, parameter), std::nullopt, input};
 
@@ -5408,7 +5417,8 @@ std::string emitApplicationArtifact(const FirProgram &program, Diagnostics &diag
                 diagnostics.error("FDN2346", "DI provider selector cannot be empty",
                                   parameterSpan(function));
             } else if (input && requestedName.has_value()) {
-                diagnostics.error("FDN2306", "DI input cannot also select a named provider",
+                diagnostics.error("FDN2306",
+                                  "application input cannot select a named service provider",
                                   parameterSpan(function));
             } else if (!input) {
                 const auto candidates = providerCandidates(program, localValue.type,

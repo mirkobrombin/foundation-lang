@@ -5,8 +5,7 @@ contract Store {
 }
 
 service MemoryStore implements Store {
-    @di.Inject()
-    fn New() MemoryStore {
+    ctor New() {
         MemoryStore {}
     }
 
@@ -16,8 +15,7 @@ service MemoryStore implements Store {
 }
 
 service FileStore implements Store {
-    @di.Inject()
-    fn New() FileStore {
+    ctor New() {
         FileStore {}
     }
 
@@ -28,8 +26,7 @@ service FileStore implements Store {
 
 @di.Scope(.Singleton)
 service Api {
-    @di.Inject()
-    fn New(store Store) Api {
+    ctor New(store Store) {
         discard store
         Api {}
     }

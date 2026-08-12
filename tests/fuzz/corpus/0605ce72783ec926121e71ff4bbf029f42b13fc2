@@ -1,7 +1,7 @@
 attribute Managed(value bool) targets(service)
 attribute Handler(name e i32
 
-    fn New(initial i32) CounterService {
+    ctor New(initial i32) {
         CounterService { value = initial }
     }
 

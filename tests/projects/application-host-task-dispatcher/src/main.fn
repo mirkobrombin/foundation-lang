@@ -15,8 +15,7 @@ task calculate($cancel concurrent.Cancellation, value i32) Result<i32, WorkError
 
 @di.Scope(.Singleton)
 service Worker {
-    @di.Inject()
-    fn New() Worker {
+    ctor New() {
         Worker {}
     }
 

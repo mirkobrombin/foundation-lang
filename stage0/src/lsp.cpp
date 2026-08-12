@@ -1107,7 +1107,9 @@ std::string receiverDetail(ReceiverKind receiver) {
 }
 
 std::string functionDetail(const Function &function) {
-    auto prefix = function.task ? std::string("task ")
+    auto prefix = function.action                ? std::string("action ")
+                  : function.constructor         ? std::string("ctor ")
+                  : function.task                ? std::string("task ")
                                 : function.cSymbol.has_value() ? std::string("extern c fn ")
                                                                : std::string("fn ");
     if (function.blocking) {
@@ -1135,7 +1137,14 @@ std::string functionDetail(const Function &function) {
             result += parameterDetail(parameter);
         }
     }
-    result += ") " + displayTypeSyntax(function.returnType);
+    result += ')';
+    if (function.constructor) {
+        if (function.returnType.name == "Result" && function.returnType.arguments.size() == 2) {
+            result += " Result<" + displayTypeSyntax(function.returnType.arguments[1]) + '>';
+        }
+    } else {
+        result += ' ' + displayTypeSyntax(function.returnType);
+    }
     return result;
 }
 
@@ -1192,7 +1201,8 @@ std::vector<SymbolItem> documentSymbols(const ProjectAnalysis &analysis,
                 continue;
             }
             owner.children.push_back(
-                {shortName(function.name), functionDetail(function), 6, function.span, {}});
+                {shortName(function.name), functionDetail(function),
+                 function.constructor ? 9 : 6, function.span, {}});
         }
     };
     for (const auto &declaration : analysis.program.structs) {
@@ -2560,6 +2570,12 @@ class LanguageServer {
                         "pointer construction, arithmetic, dereference, slice storage access, "
                         "and C ABI calls whose signature contains a raw pointer. Type checking "
                         "and ownership rules remain active.";
+                } else if (keyword == "ctor") {
+                    documentation =
+                        "```foundation\nctor New(value String) {\n    Item { value = value }\n}"
+                        "\n```\n\nDeclares an associated constructor. The owner type and "
+                        "infallible result are implicit. Use `Result<Error>` after the parameter "
+                        "list for a fallible constructor.";
                 }
                 if (!documentation.empty()) {
                     return Json::object(
@@ -2757,16 +2773,26 @@ class LanguageServer {
         if (type != nullptr && type->id.kind == LanguageSymbolKind::Struct) {
             const auto &declaration = analysis->program.structs[type->id.owner];
             auto methodCount = std::size_t{};
+            auto constructorCount = std::size_t{};
             std::set<std::size_t> sourceFiles{declaration.span.source};
             for (const auto &function : analysis->program.functions) {
                 if (function.ownerType != declaration.name) {
                     continue;
                 }
-                ++methodCount;
+                if (function.constructor) {
+                    ++constructorCount;
+                } else {
+                    ++methodCount;
+                }
                 sourceFiles.insert(function.span.source);
             }
             auto summary = "\n\n" + std::to_string(declaration.fields.size()) +
-                           (declaration.fields.size() == 1 ? " field, " : " fields, ") +
+                           (declaration.fields.size() == 1 ? " field" : " fields");
+            if (constructorCount != 0) {
+                summary += ", " + std::to_string(constructorCount) +
+                           (constructorCount == 1 ? " constructor" : " constructors");
+            }
+            summary += ", " +
                            std::to_string(methodCount) +
                            (methodCount == 1 ? " method across " : " methods across ") +
                            std::to_string(sourceFiles.size()) +
@@ -3081,13 +3107,18 @@ class LanguageServer {
         };
         std::vector<MethodFragment> externalMethods;
         auto methodCount = std::size_t{};
+        auto constructorCount = std::size_t{};
         std::set<std::size_t> sourceFiles{declaration->span.source};
         for (const auto &function : analysis->program.functions) {
             if (function.ownerType != declaration->name ||
                 function.span.source >= analysis->sources.size()) {
                 continue;
             }
-            ++methodCount;
+            if (function.constructor) {
+                ++constructorCount;
+            } else {
+                ++methodCount;
+            }
             sourceFiles.insert(function.span.source);
             const auto &source = analysis->sources[function.span.source];
             const auto extent = declarationExtent(source.contents, function.span);
@@ -3148,10 +3179,13 @@ class LanguageServer {
                                      prefix, 0));
         for (const auto &method : externalMethods) {
             const auto &source = analysis->sources[method.extent.source];
-            const auto key = "method:" + source.identity + ':' +
+            const auto kind = method.function->constructor ? std::string("constructor")
+                              : method.function->action     ? std::string("action")
+                                                            : std::string("method");
+            const auto key = kind + ':' + source.identity + ':' +
                              std::to_string(method.extent.offset) + ':' +
                              shortName(method.function->name);
-            fragments.push_back(fragment(key, "method", shortName(method.function->name),
+            fragments.push_back(fragment(key, kind, shortName(method.function->name),
                                          method.extent, 4));
         }
         fragments.push_back(fragment("struct-suffix", declarationKind,
@@ -3184,6 +3218,7 @@ class LanguageServer {
              {"documentation", structSymbol == nullptr ? std::string{}
                                                        : structSymbol->documentation},
              {"fieldCount", static_cast<double>(declaration->fields.size())},
+             {"constructorCount", static_cast<double>(constructorCount)},
              {"methodCount", static_cast<double>(methodCount)},
              {"fileCount", static_cast<double>(sourceFiles.size())},
              {"imports", Json(std::move(importValues))},
@@ -3994,7 +4029,7 @@ class LanguageServer {
                 continue;
             }
             const auto name = shortName(function.name);
-            addCompletion(items, name, 2, functionDetail(function),
+            addCompletion(items, name, function.constructor ? 4 : 2, functionDetail(function),
                           functionCallSnippet(function, name),
                           languageDocumentation(analysis, function.span));
         }
@@ -4341,7 +4376,8 @@ class LanguageServer {
         if (!attributeContext) {
             constexpr std::string_view keywords[] = {
                 "package", "import", "as",      "extern", "struct", "service", "enum",  "contract",
-                "attribute", "implements", "extends", "delegate", "methods", "fn", "action", "task", "test",
+                "attribute", "implements", "extends", "delegate", "methods", "fn",
+                "ctor", "action", "task", "test",
                 "state_machine", "state", "on", "from", "to", "after", "pipeline", "saga",
                 "step", "using", "retry", "exponential", "max", "compensate", "spawn", "unsafe",
                 "const",    "var",

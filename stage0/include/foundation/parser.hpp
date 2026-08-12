@@ -29,6 +29,12 @@ class Parser {
         std::vector<AttributeApplication> applications;
     };
 
+    enum class MemberKind {
+        Method,
+        Constructor,
+        Action,
+    };
+
     [[nodiscard]] bool atEnd() const;
     [[nodiscard]] const Token &current() const;
     [[nodiscard]] const Token &previous() const;
@@ -59,7 +65,9 @@ class Parser {
     Function function(bool external = false, bool task = false);
     Function testDeclaration();
     Function method(const std::string &owner, const std::vector<std::string> &typeParameters,
-                    bool action = false);
+                    MemberKind kind = MemberKind::Method);
+    void discardConstructor(const std::string &owner,
+                            const std::vector<std::string> &typeParameters);
     ContractMethod contractMethod(const std::string &owner,
                                   const std::vector<std::string> &typeParameters);
     ReceiverKind receiver(const char *code, const char *message);

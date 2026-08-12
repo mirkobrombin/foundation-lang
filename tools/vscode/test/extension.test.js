@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.138.0");
+    assert.equal(manifest.version, "0.139.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -1181,6 +1181,7 @@ test("grammar and completions track compiler keywords", () => {
         "extends",
         "delegate",
         "fn",
+        "ctor",
         "action",
         "task",
         "unsafe",
@@ -1239,7 +1240,7 @@ test("grammar and completions track compiler keywords", () => {
         assert.ok(completionLabels.has(type));
     }
     for (const keyword of [
-        "const", "methods", "delegate", "service", "action", "state_machine", "pipeline",
+        "const", "methods", "delegate", "service", "ctor", "action", "state_machine", "pipeline",
         "state", "on", "from", "to", "after", "saga", "step", "using", "retry", "exponential", "max", "compensate", "task",
         "spawn", "select", "test", "unsafe", "new", "for", "in"
     ]) {
@@ -1271,7 +1272,7 @@ test("grammar and completions track compiler keywords", () => {
     assert.ok(completionLabels.has("targets(...)"));
     assert.ok(completionLabels.has("foundation.di"));
     assert.ok(completionLabels.has("foundation.actions"));
-    assert.ok(completionLabels.has("@di.Inject()"));
+    assert.equal(completionLabels.has("@di.Inject()"), false);
     assert.ok(completionLabels.has("@actions.Name(...)"));
     assert.ok(completionLabels.has("repeatable"));
     for (const standard of [
@@ -2095,6 +2096,10 @@ test("tracks accepted bindings and distributed methods", () => {
         }
 
         methods User {
+            ctor New(name String) {
+                User { name = name }
+            }
+
             fn displayName(self) String { self.name }
             fn rename(&self, name String) void { self.name = name }
         }
@@ -2112,6 +2117,8 @@ test("tracks accepted bindings and distributed methods", () => {
     assert.equal(byLabel.get("user").detail, "Local binding");
     assert.equal(byLabel.get("index").detail, "Loop binding");
     assert.equal(byLabel.get("item").detail, "Loop binding");
+    assert.equal(byLabel.get("New").kind, "Constructor");
+    assert.equal(byLabel.get("New").detail, "Distributed constructor of User");
     assert.equal(byLabel.get("displayName").detail, "Distributed method of User");
     assert.equal(byLabel.get("rename").detail, "Distributed method of User");
 });
@@ -2172,6 +2179,26 @@ test("collects structs and their fields", () => {
     assert.equal(byLabel.get("name").detail, "Field of User");
     assert.equal(byLabel.get("group").detail, "Field of User");
     assert.equal(byLabel.has("Group"), false);
+});
+
+test("collects service constructors without treating signatures as fields", () => {
+    const completions = collectCompletions(`
+        service Greeter {
+            prefix String
+
+            ctor New(prefix String) {
+                Greeter { prefix = prefix }
+            }
+        }
+        fn main() i32 { 0 }
+    `);
+    const byLabel = new Map(completions.map((entry) => [entry.label, entry]));
+
+    assert.equal(byLabel.get("Greeter").detail, "Foundation service");
+    assert.equal(byLabel.get("Greeter").insertText, "Greeter { prefix = ${1:prefix} }");
+    assert.equal(byLabel.get("New").kind, "Constructor");
+    assert.equal(byLabel.get("New").detail, "Constructor of Greeter");
+    assert.equal(byLabel.has("ctor"), true);
 });
 
 test("collects functions, parameters, and local bindings", () => {

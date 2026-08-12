@@ -7,14 +7,8 @@ enum Lifetime {
     Singleton
 }
 
-// Selects the associated constructor used to build a service.
-attribute Inject() targets(method)
-
 // Declares the lifetime used when the host registers a service. Services are transient by default.
 attribute Scope(value Lifetime) targets(service)
-
-// Supplies this constructor parameter from the application boundary.
-attribute Input() targets(parameter)
 
 // Gives a service provider a non-empty stable name for disambiguation.
 attribute Name(value String) targets(service)

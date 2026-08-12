@@ -30,6 +30,7 @@ enum class TokenKind {
     Extends,
     Delegate,
     Fn,
+    Ctor,
     Action,
     Task,
     Test,

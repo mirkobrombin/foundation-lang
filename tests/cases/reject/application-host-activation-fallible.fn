@@ -4,22 +4,19 @@ import foundation.actions
 import foundation.di
 
 service First {
-    @di.Inject()
-    fn New() Result<First, bool> {
+    ctor New() Result<bool> {
         .Ok(First {})
     }
 }
 
 service Second {
-    @di.Inject()
-    fn New() Result<Second, String> {
+    ctor New() Result<String> {
         .Ok(Second {})
     }
 }
 
 service Runner {
-    @di.Inject()
-    fn New(first First, second Second) Runner {
+    ctor New(first First, second Second) {
         discard first
         discard second
         Runner {}

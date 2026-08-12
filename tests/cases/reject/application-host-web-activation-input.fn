@@ -7,8 +7,7 @@ import foundation.web
 service RequestState {
     value i32
 
-    @di.Inject()
-    fn New(@di.Input() value i32) RequestState {
+    ctor New(value i32) {
         RequestState { value = value }
     }
 }

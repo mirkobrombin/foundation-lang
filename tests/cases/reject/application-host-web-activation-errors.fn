@@ -13,16 +13,14 @@ enum SecondError {
 
 @di.Scope(.Transient)
 service FirstService {
-    @di.Inject()
-    fn New() Result<FirstService, FirstError> {
+    ctor New() Result<FirstError> {
         .Err(.Failed)
     }
 }
 
 @di.Scope(.Transient)
 service SecondService {
-    @di.Inject()
-    fn New() Result<SecondService, SecondError> {
+    ctor New() Result<SecondError> {
         .Err(.Failed)
     }
 }

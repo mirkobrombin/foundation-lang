@@ -175,8 +175,8 @@ value with `$`. Singleton services cannot be transferred, and the same request-l
 cannot be transferred through multiple parameters. Owned request values and services remain alive
 in the task frame until the generated adapter joins it. Cancellation already requested by the
 enclosing server task is forwarded to the handler task. Non-singleton web activation cannot use
-`@di.Input()` because the request adapter has no
-implicit application values. Fallible constructors in one route graph share one error type and
+constructors with application-boundary inputs because the request adapter has no implicit
+application values. Fallible constructors in one route graph share one error type and
 produce an activation-specific `FoundationWebError` variant. Every request-local value is dropped
 when the adapter returns. `@web.Body()` accepts either raw `String` or a local concrete struct
 marked `@bind.Bindable()`. Typed bodies require a valid JSON content type and use the same generated

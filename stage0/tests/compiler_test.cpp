@@ -2419,13 +2419,19 @@ void servicesAndActionsLowerToStaticApplicationMetadata() {
     constexpr std::string_view source = R"(
 attribute Managed(value bool) targets(service)
 attribute Handler(name String) targets(action)
+attribute Factory() targets(ctor)
 
 @Managed(true)
 service CounterService {
     value i32
 
-    fn New(initial i32) CounterService {
+    @Factory()
+    ctor New(initial i32) {
         CounterService { value = initial }
+    }
+
+    ctor Zero() {
+        CounterService { value = 0 }
     }
 
     @Handler("counter.add")
@@ -2436,7 +2442,7 @@ service CounterService {
 }
 
 fn main() i32 {
-    var counter = CounterService { value = 40 }
+    var counter = CounterService.New(40)
     counter.Add(2) - 42
 }
 )";
@@ -2453,6 +2459,11 @@ fn main() i32 {
                                      [](const auto &function) { return function.action; });
     expect(action != first.program.functions.end() && action->receiver.has_value(),
            "action remains a receiver method in the AST");
+    const auto constructor =
+        std::find_if(first.program.functions.begin(), first.program.functions.end(),
+                     [](const auto &function) { return function.constructor; });
+    expect(constructor != first.program.functions.end() && !constructor->receiver.has_value(),
+           "constructor remains an associated declaration in the AST");
     if (!first.fir.has_value() || !second.fir.has_value()) {
         expect(false, "service and action program lowers to FIR");
         return;
@@ -2462,10 +2473,18 @@ fn main() i32 {
     expect(std::any_of(first.fir->functions.begin(), first.fir->functions.end(),
                        [](const auto &function) { return function.action; }),
            "action identity survives into FIR");
+    expect(std::any_of(first.fir->functions.begin(), first.fir->functions.end(),
+                       [](const auto &function) { return function.constructor; }),
+           "constructor identity survives into FIR");
     const auto metadata = foundation::emitMetadata(*first.fir);
-    expect(metadata.find("\"kind\":\"service\"") != std::string::npos &&
-               metadata.find("\"kind\":\"action\"") != std::string::npos,
-           "service and action emit static application metadata");
+    expect(metadata.find("\"kind\":\"service\"") != std::string::npos,
+           "service emits static application metadata");
+    expect(metadata.find("\"kind\":\"ctor\"") != std::string::npos,
+           "constructor emits static application metadata");
+    expect(metadata.find("\"id\":\"Zero\"") != std::string::npos,
+           "unannotated constructor emits static application metadata");
+    expect(metadata.find("\"kind\":\"action\"") != std::string::npos,
+           "action emits static application metadata");
     expect(foundation::emitC(*first.fir, "service.fn") ==
                foundation::emitC(*second.fir, "service.fn"),
            "service and action C emission is deterministic");

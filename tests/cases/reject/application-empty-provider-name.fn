@@ -2,8 +2,7 @@ import foundation.di
 
 @di.Name("")
 service Store {
-    @di.Inject()
-    fn New() Store {
+    ctor New() {
         Store {}
     }
 }

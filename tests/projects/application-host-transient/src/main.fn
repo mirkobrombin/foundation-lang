@@ -7,8 +7,7 @@ import foundation.di
 service Seed {
     initial i32
 
-    @di.Inject()
-    fn New(@di.Input() initial i32) Seed {
+    ctor New(initial i32) {
         Seed { initial = initial }
     }
 }
@@ -16,8 +15,7 @@ service Seed {
 service Step {
     amount i32
 
-    @di.Inject()
-    fn New(@di.Input() amount i32) Step {
+    ctor New(amount i32) {
         Step { amount = amount }
     }
 }
@@ -26,8 +24,7 @@ service Counter {
     value i32
     step Step
 
-    @di.Inject()
-    fn New(seed Seed, $step Step, @di.Input() offset i32) Counter {
+    ctor New(seed Seed, $step Step, offset i32) {
         Counter { value = seed.initial + offset step = step }
     }
 

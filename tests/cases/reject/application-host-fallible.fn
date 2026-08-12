@@ -4,16 +4,14 @@ import foundation.di
 
 @di.Scope(.Singleton)
 service Worker {
-    @di.Inject()
-    fn New() Result<Worker, bool> {
+    ctor New() Result<bool> {
         .Ok(Worker {})
     }
 }
 
 @di.Scope(.Singleton)
 service Logger {
-    @di.Inject()
-    fn New() Result<Logger, String> {
+    ctor New() Result<String> {
         .Ok(Logger {})
     }
 }

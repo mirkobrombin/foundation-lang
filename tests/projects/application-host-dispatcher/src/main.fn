@@ -23,8 +23,7 @@ struct Policies implements actions.Authorizer {
 service Calculator {
     calls i32
 
-    @di.Inject()
-    fn New() Calculator {
+    ctor New() {
         Calculator { calls = 0 }
     }
 
@@ -45,8 +44,7 @@ service Calculator {
 }
 
 service Worker {
-    @di.Inject()
-    fn New(@di.Input() allow bool) Result<Worker, ActivationError> {
+    ctor New(allow bool) Result<ActivationError> {
         if !allow return .Err(.Denied)
         .Ok(Worker {})
     }

@@ -2,8 +2,7 @@ import foundation.actions
 import foundation.di
 
 service Commands {
-    @di.Inject()
-    fn New() Commands {
+    ctor New() {
         Commands {}
     }
 

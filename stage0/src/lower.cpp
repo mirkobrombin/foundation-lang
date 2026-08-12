@@ -246,6 +246,7 @@ class Lowerer {
             function.receiver = lowerReceiver(*source.receiver);
         }
         function.action = source.action;
+        function.constructor = source.constructor;
         if (source.stateTransition.has_value()) {
             FirStateTransitionFunction transition;
             transition.sourceVariants = source.stateTransition->sourceVariants;

@@ -5,8 +5,7 @@ import foundation.di
 
 @di.Scope(.Singleton)
 service Calculator {
-    @di.Inject()
-    fn New() Calculator {
+    ctor New() {
         Calculator {}
     }
 

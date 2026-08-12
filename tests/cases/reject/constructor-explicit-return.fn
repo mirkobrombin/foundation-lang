@@ -1,0 +1,9 @@
+struct User {
+    ctor New() User {
+        User {}
+    }
+}
+
+fn main() i32 {
+    0
+}
