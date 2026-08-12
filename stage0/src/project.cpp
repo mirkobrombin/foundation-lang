@@ -1010,7 +1010,8 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
 std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
                                          Diagnostics &diagnostics,
                                          const std::vector<SourceOverlay> &overlays,
-                                         ProjectMode mode) {
+                                         ProjectMode mode,
+                                         TargetPlatform target) {
     std::error_code error;
     std::unordered_map<std::string, std::string> overlayContents;
     for (const auto &overlay : overlays) {
@@ -1040,7 +1041,7 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
     if (packageInput) {
         const auto sdk = *parsePackageVersion("0.1.0");
         const auto package = loadLockedPackageProject(
-            *packageManifest, sdk, hostTargetPlatform(), defaultPackageCachePath(),
+            *packageManifest, sdk, target, defaultPackageCachePath(),
             mode == ProjectMode::Test);
         if (!package.value.has_value()) {
             for (const auto &packageError : package.errors) {
@@ -1244,7 +1245,7 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
             continue;
         }
         Lexer lexer(*contents, diagnostics, index);
-        Parser parser(lexer.scan(), diagnostics, index == 0);
+        Parser parser(lexer.scan(), diagnostics, index == 0, target);
         auto program = parser.parse();
         if ((directoryInput || packageInput) && !program.hasPackageDeclaration) {
             diagnostics.error("FDN3003", "project source must declare a package",

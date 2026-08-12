@@ -770,6 +770,14 @@ if(BUILD_TESTING)
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/package-workflow-test
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-package-workflow.cmake
     )
+    add_test(
+        NAME stage0.target-selection.cli
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DPROJECT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/target-selection
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/target-selection-test
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-target-selection.cmake
+    )
     add_test(NAME runtime.string COMMAND foundation_runtime_string_test)
     add_test(NAME runtime.guard COMMAND foundation_runtime_guard_test)
     add_test(NAME runtime.u64 COMMAND foundation_runtime_u64_test)

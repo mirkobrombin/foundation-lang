@@ -16,6 +16,10 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#if defined(__APPLE__)
+extern void arc4random_buf(void *buffer, size_t length);
+#endif
+
 _Static_assert(sizeof(uintptr_t) <= sizeof(uint64_t), "runtime handles require a 64-bit carrier");
 
 #if defined(_WIN32)

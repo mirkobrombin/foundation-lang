@@ -15,6 +15,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__APPLE__)
+#include <xlocale.h>
+#endif
+
 enum {
     FDN_PARSE_OK = 0,
     FDN_PARSE_EMPTY = 1,

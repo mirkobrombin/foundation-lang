@@ -33,7 +33,9 @@ the source corpus migrates. Executables may receive a borrowed command-line Stri
 `fn main(args [String]) i32`; the generated C adapter owns and releases the temporary slice storage.
 Package-scope `@target(linux)`, `@target(macos)`, and `@target(windows)` declarations are selected
 before linking. The Foundation-source `std.platform` package exposes that choice through a typed
-API without C preprocessor conditions in application code.
+API without C preprocessor conditions in application code. `check`, `emit-c`, `emit-c-header`,
+and `emit-metadata` accept an explicit target; the target must match the package lock. Native
+build, run, and test commands retain the host target until a matching cross toolchain is configured.
 Package-defined attributes carry typed constant metadata on declarations and members. Stage 0
 checks their package visibility, targets, repetition, arguments, and metadata-safe aggregate
 types. FIR retains the resolved values, and `emit-metadata` writes the deterministic

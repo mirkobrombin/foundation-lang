@@ -14,6 +14,19 @@ TargetPlatform hostTargetPlatform() {
 #endif
 }
 
+std::optional<TargetPlatform> parseTargetPlatform(std::string_view value) {
+    if (value == "linux") {
+        return TargetPlatform::Linux;
+    }
+    if (value == "macos") {
+        return TargetPlatform::MacOS;
+    }
+    if (value == "windows") {
+        return TargetPlatform::Windows;
+    }
+    return std::nullopt;
+}
+
 std::string_view targetPlatformName(TargetPlatform target) {
     switch (target) {
     case TargetPlatform::Linux:

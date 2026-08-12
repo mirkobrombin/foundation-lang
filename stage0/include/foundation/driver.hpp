@@ -40,20 +40,26 @@ enum class FormatMode {
     const std::filesystem::path &path,
     const std::vector<SourceOverlay> &overlays = {},
     AnalyzeOptions options = {},
-    ProjectMode mode = ProjectMode::Production);
+    ProjectMode mode = ProjectMode::Production,
+    TargetPlatform target = hostTargetPlatform());
 [[nodiscard]] Compilation compile(const std::filesystem::path &path,
-                                  const std::vector<SourceOverlay> &overlays = {});
-[[nodiscard]] int checkFile(const std::filesystem::path &path);
+                                  const std::vector<SourceOverlay> &overlays = {},
+                                  TargetPlatform target = hostTargetPlatform());
+[[nodiscard]] int checkFile(const std::filesystem::path &path,
+                            TargetPlatform target = hostTargetPlatform());
 [[nodiscard]] int lintFile(
     const std::filesystem::path &path,
     std::optional<CodeStandardProfile> profile = std::nullopt);
 [[nodiscard]] int formatPath(const std::filesystem::path &path, FormatMode mode);
 [[nodiscard]] int emitCFile(const std::filesystem::path &source,
-                            const std::filesystem::path &output);
+                            const std::filesystem::path &output,
+                            TargetPlatform target = hostTargetPlatform());
 [[nodiscard]] int emitCHeaderFile(const std::filesystem::path &source,
-                                  const std::filesystem::path &output);
+                                  const std::filesystem::path &output,
+                                  TargetPlatform target = hostTargetPlatform());
 [[nodiscard]] int emitMetadataFile(const std::filesystem::path &source,
-                                   const std::filesystem::path &output);
+                                   const std::filesystem::path &output,
+                                   TargetPlatform target = hostTargetPlatform());
 [[nodiscard]] int emitPackageInterfaceFile(const std::filesystem::path &source,
                                            const std::filesystem::path &output);
 [[nodiscard]] int emitStateMachineDiagramFile(

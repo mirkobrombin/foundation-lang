@@ -3,6 +3,7 @@
 
 #include "foundation/ast.hpp"
 #include "foundation/diagnostic.hpp"
+#include "foundation/target.hpp"
 
 #include <filesystem>
 #include <optional>
@@ -29,7 +30,8 @@ enum class ProjectMode {
 [[nodiscard]] std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
                                                        Diagnostics &diagnostics,
                                                        const std::vector<SourceOverlay> &overlays = {},
-                                                       ProjectMode mode = ProjectMode::Production);
+                                                       ProjectMode mode = ProjectMode::Production,
+                                                       TargetPlatform target = hostTargetPlatform());
 
 } // namespace foundation
 

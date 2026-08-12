@@ -456,14 +456,9 @@ std::optional<AttributeTarget> Parser::attributeTarget() {
 }
 
 TargetPlatform Parser::targetArgument(const Token &argument) {
-    if (argument.text == "linux") {
-        return TargetPlatform::Linux;
-    }
-    if (argument.text == "macos") {
-        return TargetPlatform::MacOS;
-    }
-    if (argument.text == "windows") {
-        return TargetPlatform::Windows;
+    const auto target = parseTargetPlatform(argument.text);
+    if (target.has_value()) {
+        return *target;
     }
     diagnostics_.error("FDN1142", "unknown target " + argument.text, argument.span);
     return TargetPlatform::Unknown;

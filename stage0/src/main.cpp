@@ -12,14 +12,17 @@ namespace {
 
 void printUsage(std::ostream &output) {
     output << "usage:\n"
-           << "  foundationc check <source-or-project>\n"
+           << "  foundationc check <source-or-project> [--target <platform>]\n"
            << "  foundationc lint <source-or-project> [--profile <valid|standard|strict>]\n"
            << "  foundationc format <source>\n"
            << "  foundationc format --check <source-or-project>\n"
            << "  foundationc format --write <source-or-project>\n"
-           << "  foundationc emit-c <source-or-project> -o <output.c>\n"
-           << "  foundationc emit-c-header <source-or-project> -o <output.h>\n"
-           << "  foundationc emit-metadata <source-or-project> -o <output.json>\n"
+           << "  foundationc emit-c <source-or-project> -o <output.c>"
+              " [--target <platform>]\n"
+           << "  foundationc emit-c-header <source-or-project> -o <output.h>"
+              " [--target <platform>]\n"
+           << "  foundationc emit-metadata <source-or-project> -o <output.json>"
+              " [--target <platform>]\n"
            << "  foundationc emit-pii <project> -o <output.json>\n"
            << "  foundationc emit-fsm <source-or-project> -o <output>"
               " --format <mermaid|graphviz> [--machine <name>]\n"
@@ -37,6 +40,24 @@ void printUsage(std::ostream &output) {
 
 bool outputArgumentsAreValid(int argc, char **argv) {
     return argc == 5 && std::string_view(argv[3]) == "-o";
+}
+
+std::optional<foundation::TargetPlatform> parseTargetArguments(int argc, char **argv,
+                                                               int start) {
+    if (argc == start) {
+        return foundation::hostTargetPlatform();
+    }
+    if (argc != start + 2 || std::string_view(argv[start]) != "--target") {
+        return std::nullopt;
+    }
+    return foundation::parseTargetPlatform(argv[start + 1]);
+}
+
+std::optional<foundation::TargetPlatform> parseOutputTargetArguments(int argc, char **argv) {
+    if (argc < 5 || std::string_view(argv[3]) != "-o") {
+        return std::nullopt;
+    }
+    return parseTargetArguments(argc, argv, 5);
 }
 
 bool parseOpenAPIArguments(int argc, char **argv, std::optional<std::string> &title,
@@ -145,8 +166,13 @@ int main(int argc, char **argv) {
         if (command == "package") {
             return foundation::runPackageCommand(argc, argv);
         }
-        if (command == "check" && argc == 3) {
-            return foundation::checkFile(std::filesystem::path(argv[2]));
+        if (command == "check" && argc >= 3) {
+            const auto target = parseTargetArguments(argc, argv, 3);
+            if (!target.has_value()) {
+                printUsage(std::cerr);
+                return 2;
+            }
+            return foundation::checkFile(std::filesystem::path(argv[2]), *target);
         }
         if (command == "lint" && argc == 3) {
             return foundation::lintFile(std::filesystem::path(argv[2]));
@@ -174,17 +200,32 @@ int main(int argc, char **argv) {
                                               foundation::FormatMode::Write);
             }
         }
-        if (command == "emit-c" && outputArgumentsAreValid(argc, argv)) {
+        if (command == "emit-c") {
+            const auto target = parseOutputTargetArguments(argc, argv);
+            if (!target.has_value()) {
+                printUsage(std::cerr);
+                return 2;
+            }
             return foundation::emitCFile(std::filesystem::path(argv[2]),
-                                         std::filesystem::path(argv[4]));
+                                         std::filesystem::path(argv[4]), *target);
         }
-        if (command == "emit-c-header" && outputArgumentsAreValid(argc, argv)) {
+        if (command == "emit-c-header") {
+            const auto target = parseOutputTargetArguments(argc, argv);
+            if (!target.has_value()) {
+                printUsage(std::cerr);
+                return 2;
+            }
             return foundation::emitCHeaderFile(std::filesystem::path(argv[2]),
-                                               std::filesystem::path(argv[4]));
+                                               std::filesystem::path(argv[4]), *target);
         }
-        if (command == "emit-metadata" && outputArgumentsAreValid(argc, argv)) {
+        if (command == "emit-metadata") {
+            const auto target = parseOutputTargetArguments(argc, argv);
+            if (!target.has_value()) {
+                printUsage(std::cerr);
+                return 2;
+            }
             return foundation::emitMetadataFile(std::filesystem::path(argv[2]),
-                                                std::filesystem::path(argv[4]));
+                                                std::filesystem::path(argv[4]), *target);
         }
         if (command == "emit-pii" && outputArgumentsAreValid(argc, argv)) {
             return foundation::emitPackageInterfaceFile(std::filesystem::path(argv[2]),

@@ -624,9 +624,10 @@ std::optional<SourceOverlay> deriveProjectSource(const ProjectAnalysis &analysis
 ProjectAnalysis analyzeProject(const std::filesystem::path &path,
                                const std::vector<SourceOverlay> &overlays,
                                AnalyzeOptions options,
-                               ProjectMode mode) {
+                               ProjectMode mode,
+                               TargetPlatform target) {
     ProjectAnalysis analysis;
-    auto loaded = loadProject(path, analysis.diagnostics, overlays, mode);
+    auto loaded = loadProject(path, analysis.diagnostics, overlays, mode, target);
     if (!loaded.has_value()) {
         return analysis;
     }
@@ -643,7 +644,7 @@ ProjectAnalysis analyzeProject(const std::filesystem::path &path,
     if (generated.has_value()) {
         auto completeOverlays = overlays;
         completeOverlays.push_back(*generated);
-        loaded = loadProject(path, analysis.diagnostics, completeOverlays, mode);
+        loaded = loadProject(path, analysis.diagnostics, completeOverlays, mode, target);
         if (!loaded.has_value()) {
             return analysis;
         }
@@ -658,9 +659,10 @@ ProjectAnalysis analyzeProject(const std::filesystem::path &path,
 }
 
 Compilation compile(const std::filesystem::path &path,
-                    const std::vector<SourceOverlay> &overlays) {
+                    const std::vector<SourceOverlay> &overlays,
+                    TargetPlatform target) {
     Compilation compilation;
-    auto analysis = analyzeProject(path, overlays);
+    auto analysis = analyzeProject(path, overlays, {}, ProjectMode::Production, target);
     compilation.sources = std::move(analysis.sources);
     compilation.diagnostics = std::move(analysis.diagnostics);
     if (!analysis.semantic.has_value()) {
@@ -674,8 +676,8 @@ Compilation compile(const std::filesystem::path &path,
     return compilation;
 }
 
-int checkFile(const std::filesystem::path &path) {
-    const auto compilation = compile(path);
+int checkFile(const std::filesystem::path &path, TargetPlatform target) {
+    const auto compilation = compile(path, {}, target);
     return report(path, compilation);
 }
 
@@ -741,24 +743,27 @@ int formatPath(const std::filesystem::path &path, FormatMode mode) {
     return 0;
 }
 
-int emitCFile(const std::filesystem::path &source, const std::filesystem::path &output) {
-    const auto compilation = compile(source);
+int emitCFile(const std::filesystem::path &source, const std::filesystem::path &output,
+              TargetPlatform target) {
+    const auto compilation = compile(source, {}, target);
     if (const auto status = report(source, compilation); status != 0) {
         return status;
     }
     return writeFile(output, compilation.generatedC) ? 0 : 1;
 }
 
-int emitCHeaderFile(const std::filesystem::path &source, const std::filesystem::path &output) {
-    const auto compilation = compile(source);
+int emitCHeaderFile(const std::filesystem::path &source, const std::filesystem::path &output,
+                    TargetPlatform target) {
+    const auto compilation = compile(source, {}, target);
     if (const auto status = report(source, compilation); status != 0) {
         return status;
     }
     return writeFile(output, compilation.generatedCHeader) ? 0 : 1;
 }
 
-int emitMetadataFile(const std::filesystem::path &source, const std::filesystem::path &output) {
-    const auto compilation = compile(source);
+int emitMetadataFile(const std::filesystem::path &source, const std::filesystem::path &output,
+                     TargetPlatform target) {
+    const auto compilation = compile(source, {}, target);
     if (const auto status = report(source, compilation); status != 0) {
         return status;
     }

@@ -74,19 +74,6 @@ bool publishWithoutReplacement(const std::filesystem::path &source,
 #endif
 }
 
-std::optional<TargetPlatform> parseTarget(std::string_view value) {
-    if (value == "linux") {
-        return TargetPlatform::Linux;
-    }
-    if (value == "macos") {
-        return TargetPlatform::MacOS;
-    }
-    if (value == "windows") {
-        return TargetPlatform::Windows;
-    }
-    return std::nullopt;
-}
-
 bool parseOptions(int argc, char **argv, int start, PackageOptions &options) {
     for (auto index = start; index < argc; index += 2) {
         if (index + 1 >= argc) {
@@ -103,7 +90,7 @@ bool parseOptions(int argc, char **argv, int start, PackageOptions &options) {
             if (options.target.has_value()) {
                 return false;
             }
-            options.target = parseTarget(value);
+            options.target = parseTargetPlatform(value);
             if (!options.target.has_value()) {
                 return false;
             }

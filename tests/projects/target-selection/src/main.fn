@@ -1,0 +1,16 @@
+package test.target_selection
+
+@target(linux)
+fn platformLabel() String {
+    "linux-only"
+}
+
+@target(macos)
+fn platformLabel() String {
+    "macos-only"
+}
+
+fn main() i32 {
+    print(platformLabel())
+    0
+}
