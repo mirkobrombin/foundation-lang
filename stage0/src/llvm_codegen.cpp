@@ -49,9 +49,19 @@ struct LlvmModule {
     std::unique_ptr<llvm::TargetMachine> target;
 };
 
+struct EmittedCleanup {
+    llvm::Value *address{};
+    Type type{invalidType};
+};
+
 struct EmittedValue {
     llvm::Value *value{};
     bool diverges{};
+    std::vector<EmittedCleanup> cleanups;
+
+    EmittedValue(llvm::Value *emitted = nullptr, bool exits = false,
+                 std::vector<EmittedCleanup> cleanupValues = {})
+        : value(emitted), diverges(exits), cleanups(std::move(cleanupValues)) {}
 };
 
 std::string safeName(std::string_view name) {
@@ -191,6 +201,9 @@ class LlvmEmitter {
             context_, {pointerType(), pointerType(), pointerType()}, "fdn.function");
         channelType_ =
             llvm::StructType::create(context_, {pointerType(), pointerType()}, "fdn.channel");
+        selectCaseType_ = llvm::StructType::create(
+            context_, {pointerType(), pointerType(), llvm::Type::getInt32Ty(context_)},
+            "fdn.channel.select.case");
     }
 
     bool run() {
@@ -202,6 +215,7 @@ class LlvmEmitter {
         if (diagnostics_.hasErrors()) {
             return false;
         }
+        declareChannelDrops();
         declareFunctions();
         if (diagnostics_.hasErrors()) {
             return false;
@@ -214,6 +228,10 @@ class LlvmEmitter {
             }
         }
         emitNativeWrappers();
+        if (!diagnostics_.hasErrors()) {
+            emitChannelDrops();
+            emitTaskAdapters();
+        }
         if (!diagnostics_.hasErrors()) {
             emitMainWrapper();
         }
@@ -233,6 +251,33 @@ class LlvmEmitter {
         llvm::Function *drop{};
         std::vector<llvm::Function *> methods;
         llvm::GlobalVariable *vtable{};
+    };
+
+    struct ChannelDrop {
+        Type type{invalidType};
+        FirFunctionId owner{};
+        llvm::Function *function{};
+    };
+
+    struct TaskAdapter {
+        llvm::StructType *frame{};
+        llvm::Function *poll{};
+        llvm::Function *moveResult{};
+        llvm::Function *dropFrame{};
+        std::vector<std::size_t> argumentFields;
+        std::size_t argumentsActiveField{};
+        std::size_t stateField{};
+        std::optional<std::size_t> resultField;
+        std::optional<std::size_t> resultActiveField;
+        std::vector<std::size_t> localFields;
+        std::vector<std::optional<std::size_t>> localActiveFields;
+        std::vector<std::optional<std::size_t>> blockingFields;
+        std::vector<std::optional<std::size_t>> callbackFields;
+        std::vector<std::optional<std::size_t>> expressionStates;
+        std::vector<std::optional<std::size_t>> statementStates;
+        std::vector<llvm::Function *> blockingWorkers;
+        std::vector<llvm::Function *> callbackStarts;
+        std::vector<llvm::Function *> callbackCancels;
     };
 
     llvm::PointerType *pointerType() const { return llvm::PointerType::get(context_, 0); }
@@ -720,11 +765,76 @@ class LlvmEmitter {
                            [&](const Type &argument) { return containsAggregate(argument); });
     }
 
+    void declareChannelDrops() {
+        for (FirFunctionId owner = 0; owner < program_.functions.size(); ++owner) {
+            const auto &function = program_.functions[owner];
+            for (const auto &expression : function.expressions) {
+                const auto *channel = std::get_if<FirChannelExpression>(&expression.value);
+                if (channel == nullptr || channel->payload == voidType ||
+                    !typeRequiresDrop(channel->payload)) {
+                    continue;
+                }
+                if (std::any_of(
+                        channelDrops_.begin(), channelDrops_.end(),
+                        [&](const ChannelDrop &drop) { return drop.type == channel->payload; })) {
+                    continue;
+                }
+                if (auto *payload = typeOf(channel->payload);
+                    payload == nullptr || payload->isVoidTy()) {
+                    fail(expression.span, "LLVM backend cannot lower this channel payload drop");
+                    continue;
+                }
+                const auto id = channelDrops_.size();
+                auto *callback =
+                    llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(context_),
+                                                                   {pointerType()}, false),
+                                           llvm::GlobalValue::InternalLinkage,
+                                           "fdn_channel_drop_value_" + std::to_string(id), module_);
+                channelDrops_.push_back({channel->payload, owner, callback});
+            }
+        }
+    }
+
+    llvm::Function *declareCallbackTarget(FirFunctionId id) {
+        const auto &function = program_.functions[id];
+        if (function.hasBody || !function.cSymbol.has_value()) {
+            fail(function.sourceSpan, "LLVM callback declaration has no native start symbol");
+            return nullptr;
+        }
+        std::vector<llvm::Type *> parameters;
+        parameters.reserve(function.parameters.size() + 1);
+        for (const auto local : function.parameters) {
+            auto *parameter =
+                local < function.locals.size() ? typeOf(function.locals[local].type) : nullptr;
+            if (parameter == nullptr || parameter->isVoidTy()) {
+                fail(function.sourceSpan, "LLVM callback declaration has an unsupported parameter");
+                return nullptr;
+            }
+            parameters.push_back(parameter);
+        }
+        parameters.push_back(pointerType());
+        auto callee = module_.getOrInsertFunction(
+            *function.cSymbol,
+            llvm::FunctionType::get(llvm::Type::getVoidTy(context_), parameters, false));
+        auto *target = llvm::dyn_cast<llvm::Function>(callee.getCallee());
+        if (target == nullptr) {
+            fail(function.sourceSpan, "LLVM callback start symbol has a conflicting type");
+        }
+        return target;
+    }
+
     void declareFunctions() {
         functions_.resize(program_.functions.size());
         nativeFunctions_.resize(program_.functions.size());
         for (FirFunctionId id = 0; id < program_.functions.size(); ++id) {
             const auto &function = program_.functions[id];
+            if (function.task) {
+                continue;
+            }
+            if (function.callback) {
+                functions_[id] = declareCallbackTarget(id);
+                continue;
+            }
             auto *signature = functionType(function);
             if (signature == nullptr) {
                 continue;
@@ -748,6 +858,597 @@ class LlvmEmitter {
                 }
             }
         }
+        if (!diagnostics_.hasErrors()) {
+            declareTaskAdapters();
+        }
+    }
+
+    void declareTaskAdapters() {
+        taskAdapters_.resize(program_.functions.size());
+        for (FirFunctionId id = 0; id < program_.functions.size(); ++id) {
+            const auto &function = program_.functions[id];
+            if (!function.task) {
+                continue;
+            }
+
+            TaskAdapter adapter;
+            std::vector<llvm::Type *> fields;
+            const auto addField = [&](llvm::Type *type) {
+                const auto field = fields.size();
+                fields.push_back(type);
+                return field;
+            };
+            adapter.argumentFields.reserve(function.parameters.size());
+            for (const auto local : function.parameters) {
+                auto *type =
+                    local < function.locals.size() ? typeOf(function.locals[local].type) : nullptr;
+                if (type == nullptr || type->isVoidTy()) {
+                    fail(function.sourceSpan, "LLVM task has an unsupported parameter type");
+                    break;
+                }
+                adapter.argumentFields.push_back(addField(type));
+            }
+            adapter.argumentsActiveField = addField(llvm::Type::getInt1Ty(context_));
+            adapter.stateField = addField(llvm::Type::getInt32Ty(context_));
+            if (function.returnType != voidType) {
+                auto *type = typeOf(function.returnType);
+                if (type == nullptr || type->isVoidTy()) {
+                    fail(function.sourceSpan, "LLVM task has an unsupported result type");
+                    continue;
+                }
+                adapter.resultField = addField(type);
+                adapter.resultActiveField = addField(llvm::Type::getInt1Ty(context_));
+            }
+
+            adapter.localFields.reserve(function.locals.size());
+            adapter.localActiveFields.resize(function.locals.size());
+            for (FirLocalId local = 0; local < function.locals.size(); ++local) {
+                auto *type = typeOf(function.locals[local].type);
+                if (type == nullptr || type->isVoidTy()) {
+                    fail(function.sourceSpan, "LLVM task has an unsupported local type");
+                    break;
+                }
+                adapter.localFields.push_back(addField(type));
+                if (typeRequiresDrop(function.locals[local].type)) {
+                    adapter.localActiveFields[local] = addField(llvm::Type::getInt1Ty(context_));
+                }
+            }
+
+            adapter.expressionStates.resize(function.expressions.size());
+            adapter.blockingFields.resize(function.expressions.size());
+            adapter.callbackFields.resize(function.expressions.size());
+            adapter.blockingWorkers.resize(function.expressions.size());
+            adapter.callbackStarts.resize(function.expressions.size());
+            adapter.callbackCancels.resize(function.expressions.size());
+            adapter.statementStates.resize(function.statements.size());
+            std::size_t state = 1;
+            for (std::size_t expression = 0; expression < function.expressions.size();
+                 ++expression) {
+                const auto &value = function.expressions[expression].value;
+                if (std::holds_alternative<FirTaskWaitExpression>(value) ||
+                    std::holds_alternative<FirBlockingCallExpression>(value) ||
+                    std::holds_alternative<FirCallbackCallExpression>(value) ||
+                    std::holds_alternative<FirChannelSendExpression>(value) ||
+                    std::holds_alternative<FirChannelReceiveExpression>(value)) {
+                    adapter.expressionStates[expression] = state++;
+                }
+                if (std::holds_alternative<FirBlockingCallExpression>(value)) {
+                    adapter.blockingFields[expression] = addField(pointerType());
+                }
+                if (std::holds_alternative<FirCallbackCallExpression>(value)) {
+                    adapter.callbackFields[expression] = addField(pointerType());
+                }
+            }
+            for (std::size_t statement = 0; statement < function.statements.size(); ++statement) {
+                if (std::holds_alternative<FirSelectStatement>(
+                        function.statements[statement].value)) {
+                    adapter.statementStates[statement] = state++;
+                }
+            }
+            if (diagnostics_.hasErrors()) {
+                continue;
+            }
+
+            adapter.frame =
+                llvm::StructType::create(context_, fields, "fdn.task.frame." + std::to_string(id));
+            adapter.poll = llvm::Function::Create(
+                llvm::FunctionType::get(llvm::Type::getInt32Ty(context_),
+                                        {pointerType(), llvm::Type::getInt1Ty(context_)}, false),
+                llvm::GlobalValue::InternalLinkage, "fdn_task_poll_" + std::to_string(id), module_);
+            adapter.moveResult = llvm::Function::Create(
+                llvm::FunctionType::get(llvm::Type::getVoidTy(context_),
+                                        {pointerType(), pointerType()}, false),
+                llvm::GlobalValue::InternalLinkage, "fdn_task_move_result_" + std::to_string(id),
+                module_);
+            adapter.dropFrame = llvm::Function::Create(
+                llvm::FunctionType::get(llvm::Type::getVoidTy(context_), {pointerType()}, false),
+                llvm::GlobalValue::InternalLinkage, "fdn_task_drop_frame_" + std::to_string(id),
+                module_);
+            taskAdapters_[id] = std::move(adapter);
+        }
+    }
+
+    llvm::Value *frameField(llvm::StructType *frame, llvm::Value *value, std::size_t field,
+                            std::string_view name = {}) {
+        return builder_.CreateStructGEP(
+            frame, value, field,
+            name.empty() ? llvm::Twine{} : llvm::Twine(llvm::StringRef(name.data(), name.size())));
+    }
+
+    void bindTaskFrame(TaskAdapter &adapter, llvm::Value *frame) {
+        taskFrame_ = frame;
+        locals_.assign(function_->locals.size(), nullptr);
+        localActive_.assign(function_->locals.size(), nullptr);
+        for (FirLocalId local = 0; local < function_->locals.size(); ++local) {
+            locals_[local] =
+                frameField(adapter.frame, frame, adapter.localFields[local], "task.local");
+            if (adapter.localActiveFields[local].has_value()) {
+                localActive_[local] = frameField(
+                    adapter.frame, frame, *adapter.localActiveFields[local], "task.local.active");
+            }
+        }
+    }
+
+    void declareTaskHelpers(FirFunctionId id, TaskAdapter &adapter) {
+        const auto &function = program_.functions[id];
+        for (std::size_t expression = 0; expression < function.expressions.size(); ++expression) {
+            if (std::holds_alternative<FirBlockingCallExpression>(
+                    function.expressions[expression].value)) {
+                adapter.blockingWorkers[expression] = llvm::Function::Create(
+                    llvm::FunctionType::get(llvm::Type::getVoidTy(context_), {pointerType()},
+                                            false),
+                    llvm::GlobalValue::InternalLinkage,
+                    "fdn_task_blocking_" + std::to_string(id) + "_" + std::to_string(expression),
+                    module_);
+            }
+            const auto *callback =
+                std::get_if<FirCallbackCallExpression>(&function.expressions[expression].value);
+            if (callback == nullptr) {
+                continue;
+            }
+            adapter.callbackStarts[expression] = llvm::Function::Create(
+                llvm::FunctionType::get(llvm::Type::getVoidTy(context_),
+                                        {pointerType(), pointerType()}, false),
+                llvm::GlobalValue::InternalLinkage,
+                "fdn_task_callback_start_" + std::to_string(id) + "_" + std::to_string(expression),
+                module_);
+            if (callback->function < program_.functions.size() &&
+                program_.functions[callback->function].callbackCancelSymbol.has_value()) {
+                adapter.callbackCancels[expression] =
+                    llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(context_),
+                                                                   {pointerType()}, false),
+                                           llvm::GlobalValue::InternalLinkage,
+                                           "fdn_task_callback_cancel_" + std::to_string(id) + "_" +
+                                               std::to_string(expression),
+                                           module_);
+            }
+        }
+    }
+
+    llvm::CallInst *emitFunctionInvocation(FirFunctionId id,
+                                           const std::vector<llvm::Value *> &arguments,
+                                           llvm::Value *resultStorage, SourceSpan span) {
+        if (id >= functions_.size() || functions_[id] == nullptr) {
+            fail(span, "LLVM task helper has an invalid function target");
+            return nullptr;
+        }
+        const auto &target = program_.functions[id];
+        if (usesExternalResultPointer(target)) {
+            if (resultStorage == nullptr) {
+                fail(span, "LLVM task helper is missing indirect result storage");
+                return nullptr;
+            }
+            auto values = arguments;
+            values.insert(values.begin(), resultStorage);
+            auto *call = builder_.CreateCall(functions_[id], values);
+            call->addParamAttr(
+                0, llvm::Attribute::getWithStructRetType(context_, typeOf(target.returnType)));
+            return call;
+        }
+        auto *call = builder_.CreateCall(functions_[id], arguments);
+        if (resultStorage != nullptr && target.returnType != voidType) {
+            builder_.CreateStore(call, resultStorage);
+        }
+        return call;
+    }
+
+    void emitBlockingWorker(FirFunctionId id, TaskAdapter &adapter, FirExpressionId expressionId) {
+        const auto &source = program_.functions[id];
+        const auto *blocking =
+            std::get_if<FirBlockingCallExpression>(&source.expressions[expressionId].value);
+        auto *worker = adapter.blockingWorkers[expressionId];
+        if (blocking == nullptr || worker == nullptr ||
+            blocking->function >= program_.functions.size() ||
+            !program_.functions[blocking->function].blocking) {
+            fail(source.expressions[expressionId].span,
+                 "LLVM blocking task helper has an invalid target");
+            return;
+        }
+
+        function_ = &source;
+        functionId_ = id;
+        llvmFunction_ = worker;
+        taskPoll_ = true;
+        auto *entry = llvm::BasicBlock::Create(context_, "entry", worker);
+        builder_.SetInsertPoint(entry);
+        bindTaskFrame(adapter, worker->getArg(0));
+        frame_ = builder_.CreateAlloca(frameType_, nullptr, "frame");
+        enterFrame();
+
+        std::vector<llvm::Value *> arguments;
+        arguments.reserve(blocking->argumentStorages.size());
+        for (const auto storage : blocking->argumentStorages) {
+            arguments.push_back(loadLocal(storage));
+        }
+        llvm::Value *resultStorage{};
+        if (blocking->resultStorage.has_value()) {
+            resultStorage = locals_[*blocking->resultStorage];
+        }
+        emitFunctionInvocation(blocking->function, arguments, resultStorage,
+                               source.expressions[expressionId].span);
+        if (blocking->resultStorage.has_value()) {
+            activateLocal(*blocking->resultStorage);
+        }
+        leaveFrame();
+        builder_.CreateRetVoid();
+    }
+
+    llvm::Function *callbackCancelTarget(const FirFunction &target) {
+        if (!target.callbackCancelSymbol.has_value()) {
+            return nullptr;
+        }
+        auto callee = module_.getOrInsertFunction(
+            *target.callbackCancelSymbol,
+            llvm::FunctionType::get(llvm::Type::getVoidTy(context_), {pointerType()}, false));
+        return llvm::dyn_cast<llvm::Function>(callee.getCallee());
+    }
+
+    void emitCallbackHelpers(FirFunctionId id, TaskAdapter &adapter, FirExpressionId expressionId) {
+        const auto &source = program_.functions[id];
+        const auto *callback =
+            std::get_if<FirCallbackCallExpression>(&source.expressions[expressionId].value);
+        if (callback == nullptr || callback->function >= program_.functions.size() ||
+            !program_.functions[callback->function].callback ||
+            functions_[callback->function] == nullptr) {
+            fail(source.expressions[expressionId].span,
+                 "LLVM callback task helper has an invalid target");
+            return;
+        }
+
+        function_ = &source;
+        functionId_ = id;
+        taskPoll_ = true;
+        auto *start = adapter.callbackStarts[expressionId];
+        llvmFunction_ = start;
+        auto *entry = llvm::BasicBlock::Create(context_, "entry", start);
+        builder_.SetInsertPoint(entry);
+        bindTaskFrame(adapter, start->getArg(0));
+        frame_ = builder_.CreateAlloca(frameType_, nullptr, "frame");
+        enterNativeFrame(*program_.functions[callback->function].cSymbol,
+                         source.expressions[expressionId].span);
+        std::vector<llvm::Value *> arguments;
+        arguments.reserve(callback->argumentStorages.size() + 1);
+        for (const auto storage : callback->argumentStorages) {
+            arguments.push_back(loadLocal(storage));
+        }
+        arguments.push_back(start->getArg(1));
+        builder_.CreateCall(functions_[callback->function], arguments);
+        leaveFrame();
+        builder_.CreateRetVoid();
+
+        auto *cancel = adapter.callbackCancels[expressionId];
+        if (cancel == nullptr) {
+            return;
+        }
+        auto *target = callbackCancelTarget(program_.functions[callback->function]);
+        if (target == nullptr || !adapter.callbackFields[expressionId].has_value()) {
+            fail(source.expressions[expressionId].span,
+                 "LLVM callback cancellation has an invalid native target");
+            return;
+        }
+        llvmFunction_ = cancel;
+        entry = llvm::BasicBlock::Create(context_, "entry", cancel);
+        builder_.SetInsertPoint(entry);
+        frame_ = builder_.CreateAlloca(frameType_, nullptr, "frame");
+        auto *operation =
+            builder_.CreateLoad(pointerType(), frameField(adapter.frame, cancel->getArg(0),
+                                                          *adapter.callbackFields[expressionId]));
+        emitPanicUnless(
+            builder_.CreateICmpNE(operation, llvm::ConstantPointerNull::get(pointerType())),
+            "callback cancellation has no operation");
+        enterNativeFrame(*program_.functions[callback->function].callbackCancelSymbol,
+                         source.expressions[expressionId].span);
+        builder_.CreateCall(target, {operation});
+        leaveFrame();
+        builder_.CreateRetVoid();
+    }
+
+    void emitTaskHelpers(FirFunctionId id, TaskAdapter &adapter) {
+        for (FirExpressionId expression = 0; expression < program_.functions[id].expressions.size();
+             ++expression) {
+            if (adapter.blockingWorkers[expression] != nullptr) {
+                emitBlockingWorker(id, adapter, expression);
+            }
+            if (adapter.callbackStarts[expression] != nullptr) {
+                emitCallbackHelpers(id, adapter, expression);
+            }
+        }
+    }
+
+    void emitTaskAdapters() {
+        for (FirFunctionId id = 0; id < taskAdapters_.size(); ++id) {
+            if (!taskAdapters_[id].has_value()) {
+                continue;
+            }
+            auto &adapter = *taskAdapters_[id];
+            declareTaskHelpers(id, adapter);
+            emitTaskHelpers(id, adapter);
+            emitTaskPoll(id, adapter);
+            emitTaskMoveResult(id, adapter);
+            emitTaskDropFrame(id, adapter);
+        }
+        resetFunctionState();
+    }
+
+    void emitChannelDrops() {
+        for (auto &drop : channelDrops_) {
+            if (drop.owner >= program_.functions.size()) {
+                continue;
+            }
+            function_ = &program_.functions[drop.owner];
+            functionId_ = drop.owner;
+            llvmFunction_ = drop.function;
+            taskPoll_ = false;
+            taskFrame_ = nullptr;
+            frame_ = nullptr;
+            locals_.clear();
+            localActive_.clear();
+            auto *entry = llvm::BasicBlock::Create(context_, "entry", drop.function);
+            builder_.SetInsertPoint(entry);
+            dropAddress(drop.function->getArg(0), drop.type);
+            if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
+                builder_.CreateRetVoid();
+            }
+        }
+        resetFunctionState();
+    }
+
+    void resetFunctionState() {
+        function_ = nullptr;
+        llvmFunction_ = nullptr;
+        frame_ = nullptr;
+        taskFrame_ = nullptr;
+        taskAdapter_ = nullptr;
+        taskPreviousCancellation_ = nullptr;
+        taskPoll_ = false;
+        locals_.clear();
+        localActive_.clear();
+        taskStateBlocks_.clear();
+    }
+
+    std::size_t taskStateCount(const TaskAdapter &adapter) const {
+        std::size_t count{};
+        for (const auto state : adapter.expressionStates) {
+            if (state.has_value()) {
+                count = std::max(count, *state);
+            }
+        }
+        for (const auto state : adapter.statementStates) {
+            if (state.has_value()) {
+                count = std::max(count, *state);
+            }
+        }
+        return count;
+    }
+
+    void emitTaskPending() {
+        builder_.CreateCall(runtimeFunction("fdn_task_cancellation_leave",
+                                            llvm::Type::getVoidTy(context_),
+                                            {llvm::Type::getInt1Ty(context_)}),
+                            {taskPreviousCancellation_});
+        leaveFrame();
+        builder_.CreateRet(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0));
+    }
+
+    void emitTaskReady(llvm::Value *result = nullptr) {
+        if (taskAdapter_ == nullptr || taskFrame_ == nullptr) {
+            fail(function_->sourceSpan, "LLVM task completion has no frame");
+            return;
+        }
+        if (function_->returnType != voidType) {
+            if (result == nullptr || !taskAdapter_->resultField.has_value() ||
+                !taskAdapter_->resultActiveField.has_value()) {
+                fail(function_->sourceSpan, "LLVM task completed without a result");
+                return;
+            }
+            builder_.CreateStore(result, frameField(taskAdapter_->frame, taskFrame_,
+                                                    *taskAdapter_->resultField, "task.result"));
+            builder_.CreateStore(llvm::ConstantInt::getTrue(context_),
+                                 frameField(taskAdapter_->frame, taskFrame_,
+                                            *taskAdapter_->resultActiveField,
+                                            "task.result.active"));
+        }
+        builder_.CreateCall(runtimeFunction("fdn_task_cancellation_leave",
+                                            llvm::Type::getVoidTy(context_),
+                                            {llvm::Type::getInt1Ty(context_)}),
+                            {taskPreviousCancellation_});
+        leaveFrame();
+        builder_.CreateRet(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 1));
+    }
+
+    void emitTaskPoll(FirFunctionId id, TaskAdapter &adapter) {
+        function_ = &program_.functions[id];
+        functionId_ = id;
+        llvmFunction_ = adapter.poll;
+        taskPoll_ = true;
+        taskAdapter_ = &adapter;
+        taskFrame_ = adapter.poll->getArg(0);
+        auto *entry = llvm::BasicBlock::Create(context_, "entry", adapter.poll);
+        builder_.SetInsertPoint(entry);
+        bindTaskFrame(adapter, taskFrame_);
+        frame_ = builder_.CreateAlloca(frameType_, nullptr, "frame");
+        taskPreviousCancellation_ = builder_.CreateCall(
+            runtimeFunction("fdn_task_cancellation_enter", llvm::Type::getInt1Ty(context_),
+                            {llvm::Type::getInt1Ty(context_)}),
+            {adapter.poll->getArg(1)}, "task.cancellation.previous");
+        enterFrame();
+
+        const auto states = taskStateCount(adapter);
+        taskStateBlocks_.assign(states + 1, nullptr);
+        auto *initial = llvm::BasicBlock::Create(context_, "task.initial", adapter.poll);
+        auto *body = llvm::BasicBlock::Create(context_, "task.body", adapter.poll);
+        auto *invalid = llvm::BasicBlock::Create(context_, "task.invalid", adapter.poll);
+        auto *state = builder_.CreateLoad(
+            llvm::Type::getInt32Ty(context_),
+            frameField(adapter.frame, taskFrame_, adapter.stateField, "task.state"));
+        auto *dispatch = builder_.CreateSwitch(state, invalid, states + 1);
+        dispatch->addCase(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0), initial);
+        for (std::size_t index = 1; index <= states; ++index) {
+            taskStateBlocks_[index] = llvm::BasicBlock::Create(
+                context_, "task.state." + std::to_string(index), adapter.poll);
+            dispatch->addCase(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), index),
+                              taskStateBlocks_[index]);
+        }
+
+        builder_.SetInsertPoint(invalid);
+        builder_.CreateCall(
+            runtimeFunction("fdn_panic_cstr", llvm::Type::getVoidTy(context_), {pointerType()}),
+            {builder_.CreateGlobalString("invalid task state", "task.invalid.message")});
+        builder_.CreateUnreachable();
+
+        builder_.SetInsertPoint(initial);
+        for (std::size_t index = 0; index < function_->parameters.size(); ++index) {
+            const auto local = function_->parameters[index];
+            auto *argument = frameField(adapter.frame, taskFrame_, adapter.argumentFields[index],
+                                        "task.argument");
+            builder_.CreateStore(moveFromAddress(argument, function_->locals[local].type),
+                                 locals_[local]);
+            activateLocal(local);
+        }
+        builder_.CreateStore(llvm::ConstantInt::getFalse(context_),
+                             frameField(adapter.frame, taskFrame_, adapter.argumentsActiveField,
+                                        "task.arguments.active"));
+        builder_.CreateBr(body);
+
+        builder_.SetInsertPoint(body);
+        const auto exits = emitBlock(function_->body);
+        if (!diagnostics_.hasErrors() && !exits &&
+            builder_.GetInsertBlock()->getTerminator() == nullptr) {
+            if (function_->returnType == voidType) {
+                emitTaskReady();
+            } else if (function_->diverges) {
+                builder_.CreateUnreachable();
+            } else {
+                fail(function_->sourceSpan, "LLVM task reached the end without a result");
+            }
+        }
+    }
+
+    void emitPanicUnless(llvm::Value *condition, std::string_view message) {
+        auto *ready = llvm::BasicBlock::Create(context_, "check.ready", llvmFunction_);
+        auto *failed = llvm::BasicBlock::Create(context_, "check.failed", llvmFunction_);
+        builder_.CreateCondBr(condition, ready, failed);
+        builder_.SetInsertPoint(failed);
+        builder_.CreateCall(
+            runtimeFunction("fdn_panic_cstr", llvm::Type::getVoidTy(context_), {pointerType()}),
+            {builder_.CreateGlobalString(message, "check.message")});
+        builder_.CreateUnreachable();
+        builder_.SetInsertPoint(ready);
+    }
+
+    void emitTaskMoveResult(FirFunctionId id, TaskAdapter &adapter) {
+        function_ = &program_.functions[id];
+        functionId_ = id;
+        llvmFunction_ = adapter.moveResult;
+        taskPoll_ = false;
+        auto *entry = llvm::BasicBlock::Create(context_, "entry", adapter.moveResult);
+        builder_.SetInsertPoint(entry);
+        if (function_->returnType == voidType) {
+            builder_.CreateRetVoid();
+            return;
+        }
+        auto *frame = adapter.moveResult->getArg(0);
+        auto *target = adapter.moveResult->getArg(1);
+        auto *active =
+            frameField(adapter.frame, frame, *adapter.resultActiveField, "task.result.active");
+        emitPanicUnless(
+            builder_.CreateAnd(
+                builder_.CreateLoad(llvm::Type::getInt1Ty(context_), active),
+                builder_.CreateICmpNE(target, llvm::ConstantPointerNull::get(pointerType()))),
+            "task result is unavailable");
+        auto *source = frameField(adapter.frame, frame, *adapter.resultField, "task.result");
+        builder_.CreateStore(moveFromAddress(source, function_->returnType), target);
+        builder_.CreateStore(llvm::ConstantInt::getFalse(context_), active);
+        builder_.CreateRetVoid();
+    }
+
+    void emitTaskDropFrame(FirFunctionId id, TaskAdapter &adapter) {
+        function_ = &program_.functions[id];
+        functionId_ = id;
+        llvmFunction_ = adapter.dropFrame;
+        taskPoll_ = true;
+        taskAdapter_ = &adapter;
+        taskFrame_ = adapter.dropFrame->getArg(0);
+        frame_ = nullptr;
+        auto *entry = llvm::BasicBlock::Create(context_, "entry", adapter.dropFrame);
+        builder_.SetInsertPoint(entry);
+        bindTaskFrame(adapter, taskFrame_);
+
+        auto *dropArguments = llvm::BasicBlock::Create(context_, "arguments.drop", llvmFunction_);
+        auto *afterArguments = llvm::BasicBlock::Create(context_, "arguments.done", llvmFunction_);
+        builder_.CreateCondBr(builder_.CreateLoad(llvm::Type::getInt1Ty(context_),
+                                                  frameField(adapter.frame, taskFrame_,
+                                                             adapter.argumentsActiveField)),
+                              dropArguments, afterArguments);
+        builder_.SetInsertPoint(dropArguments);
+        for (std::size_t index = function_->parameters.size(); index-- > 0;) {
+            const auto local = function_->parameters[index];
+            dropAddress(frameField(adapter.frame, taskFrame_, adapter.argumentFields[index]),
+                        function_->locals[local].type);
+        }
+        builder_.CreateStore(llvm::ConstantInt::getFalse(context_),
+                             frameField(adapter.frame, taskFrame_, adapter.argumentsActiveField));
+        builder_.CreateBr(afterArguments);
+        builder_.SetInsertPoint(afterArguments);
+
+        for (std::size_t expression = 0; expression < function_->expressions.size(); ++expression) {
+            if (adapter.blockingFields[expression].has_value()) {
+                auto *slot =
+                    frameField(adapter.frame, taskFrame_, *adapter.blockingFields[expression]);
+                emitPanicUnless(
+                    builder_.CreateICmpEQ(builder_.CreateLoad(pointerType(), slot),
+                                          llvm::ConstantPointerNull::get(pointerType())),
+                    "task frame still has blocking work");
+            }
+            if (adapter.callbackFields[expression].has_value()) {
+                auto *slot =
+                    frameField(adapter.frame, taskFrame_, *adapter.callbackFields[expression]);
+                emitPanicUnless(
+                    builder_.CreateICmpEQ(builder_.CreateLoad(pointerType(), slot),
+                                          llvm::ConstantPointerNull::get(pointerType())),
+                    "task frame still has callback work");
+            }
+        }
+        for (std::size_t local = function_->locals.size(); local-- > 0;) {
+            dropLocal(local);
+        }
+        if (function_->returnType != voidType) {
+            auto *active = frameField(adapter.frame, taskFrame_, *adapter.resultActiveField);
+            auto *drop = llvm::BasicBlock::Create(context_, "result.drop", llvmFunction_);
+            auto *done = llvm::BasicBlock::Create(context_, "result.done", llvmFunction_);
+            builder_.CreateCondBr(builder_.CreateLoad(llvm::Type::getInt1Ty(context_), active),
+                                  drop, done);
+            builder_.SetInsertPoint(drop);
+            dropAddress(frameField(adapter.frame, taskFrame_, *adapter.resultField),
+                        function_->returnType);
+            builder_.CreateStore(llvm::ConstantInt::getFalse(context_), active);
+            builder_.CreateBr(done);
+            builder_.SetInsertPoint(done);
+        }
+        builder_.CreateCall(
+            runtimeFunction("fdn_dealloc", llvm::Type::getVoidTy(context_), {pointerType()}),
+            {taskFrame_});
+        builder_.CreateRetVoid();
     }
 
     llvm::Type *abiTypeOf(const Type &type) { return typeOf(type); }
@@ -780,6 +1481,10 @@ class LlvmEmitter {
         if (llvmFunction_ == nullptr || !llvmFunction_->empty()) {
             return;
         }
+        taskPoll_ = false;
+        taskAdapter_ = nullptr;
+        taskFrame_ = nullptr;
+        localActive_.assign(function_->locals.size(), nullptr);
         auto *entry = llvm::BasicBlock::Create(context_, "entry", llvmFunction_);
         builder_.SetInsertPoint(entry);
         locals_.assign(function_->locals.size(), nullptr);
@@ -851,12 +1556,595 @@ class LlvmEmitter {
             return true;
         }
         for (const auto statement : function_->blocks[id].statements) {
+            if (taskPoll_ && emitSuspendingStatement(statement)) {
+                if (builder_.GetInsertBlock()->getTerminator() != nullptr) {
+                    return true;
+                }
+                continue;
+            }
             if (emitStatement(statement)) {
                 return true;
             }
         }
         dropLocals(function_->blocks[id].drops);
         return builder_.GetInsertBlock()->getTerminator() != nullptr;
+    }
+
+    bool beginSuspension(std::size_t state, SourceSpan span) {
+        if (taskAdapter_ == nullptr || taskFrame_ == nullptr || state == 0 ||
+            state >= taskStateBlocks_.size() || taskStateBlocks_[state] == nullptr) {
+            fail(span, "LLVM task has an invalid suspension state");
+            return false;
+        }
+        builder_.CreateStore(
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), state),
+            frameField(taskAdapter_->frame, taskFrame_, taskAdapter_->stateField, "task.state"));
+        builder_.CreateBr(taskStateBlocks_[state]);
+        builder_.SetInsertPoint(taskStateBlocks_[state]);
+        setLocation(span);
+        return true;
+    }
+
+    void finishSuspension(llvm::Value *ready, std::string_view name) {
+        const auto prefix = std::string(name);
+        auto *resume = llvm::BasicBlock::Create(context_, prefix + ".ready", llvmFunction_);
+        auto *pending = llvm::BasicBlock::Create(context_, prefix + ".pending", llvmFunction_);
+        builder_.CreateCondBr(ready, resume, pending);
+        builder_.SetInsertPoint(pending);
+        emitTaskPending();
+        builder_.SetInsertPoint(resume);
+    }
+
+    void storeSuspendedResult(FirLocalId storage, std::optional<FirLocalId> target, bool discarded,
+                              SourceSpan span) {
+        if (storage >= function_->locals.size() || storage >= locals_.size()) {
+            fail(span, "LLVM task operation has invalid result storage");
+            return;
+        }
+        const auto &type = function_->locals[storage].type;
+        if (target.has_value()) {
+            if (*target >= function_->locals.size() || *target >= locals_.size()) {
+                fail(span, "LLVM task operation has an invalid result binding");
+                return;
+            }
+            builder_.CreateStore(moveFromAddress(locals_[storage], type), locals_[*target]);
+            deactivateLocal(storage);
+            activateLocal(*target);
+            return;
+        }
+        if (discarded) {
+            dropLocal(storage);
+            return;
+        }
+        if (type != voidType) {
+            fail(span, "LLVM task operation result is neither bound nor discarded");
+        }
+    }
+
+    bool emitSuspendingWait(FirExpressionId expression, const FirTaskWaitExpression &wait,
+                            std::optional<FirLocalId> resultLocal, bool discarded) {
+        const auto span = function_->expressions[expression].span;
+        const auto *task =
+            wait.task < function_->expressions.size()
+                ? std::get_if<FirMoveExpression>(&function_->expressions[wait.task].value)
+                : nullptr;
+        if (task == nullptr || task->local >= locals_.size()) {
+            fail(span, "LLVM suspending task wait does not consume a local handle");
+            return true;
+        }
+        const auto &resultType = function_->expressions[expression].type;
+        if (!resultLocal.has_value() && resultType != voidType) {
+            fail(span, "LLVM standalone task wait has a result");
+            return true;
+        }
+        const auto state = taskAdapter_->expressionStates[expression];
+        if (!state.has_value() || !beginSuspension(*state, span)) {
+            return true;
+        }
+        llvm::Value *result = llvm::ConstantPointerNull::get(pointerType());
+        if (resultLocal.has_value()) {
+            result = locals_[*resultLocal];
+        }
+        auto *ready = builder_.CreateCall(runtimeFunction("fdn_task_poll_wait",
+                                                          llvm::Type::getInt1Ty(context_),
+                                                          {pointerType(), pointerType()}),
+                                          {locals_[task->local], result}, "task.wait.ready");
+        finishSuspension(ready, "task.wait");
+        deactivateLocal(task->local);
+        if (resultLocal.has_value()) {
+            activateLocal(*resultLocal);
+        }
+        static_cast<void>(discarded);
+        return true;
+    }
+
+    bool emitSuspendingBlocking(FirExpressionId expression,
+                                const FirBlockingCallExpression &blocking,
+                                std::optional<FirLocalId> resultLocal, bool discarded) {
+        const auto span = function_->expressions[expression].span;
+        if (blocking.arguments.size() != blocking.argumentStorages.size() ||
+            !taskAdapter_->blockingFields[expression].has_value() ||
+            taskAdapter_->blockingWorkers[expression] == nullptr) {
+            fail(span, "LLVM blocking call has invalid persistent storage");
+            return true;
+        }
+        for (std::size_t index = 0; index < blocking.arguments.size(); ++index) {
+            const auto argument = emitExpression(blocking.arguments[index]);
+            if (argument.diverges) {
+                return true;
+            }
+            const auto parameter =
+                blocking.argumentParameters.empty() ? index : blocking.argumentParameters[index];
+            if (parameter >= blocking.argumentStorages.size()) {
+                fail(span, "LLVM blocking call has an invalid argument mapping");
+                return true;
+            }
+            const auto storage = blocking.argumentStorages[parameter];
+            builder_.CreateStore(argument.value, locals_[storage]);
+            activateLocal(storage);
+        }
+        const auto state = taskAdapter_->expressionStates[expression];
+        if (!state.has_value() || !beginSuspension(*state, span)) {
+            return true;
+        }
+        auto *slot = frameField(taskAdapter_->frame, taskFrame_,
+                                *taskAdapter_->blockingFields[expression], "task.blocking.slot");
+        auto *ready = builder_.CreateCall(
+            runtimeFunction("fdn_blocking_poll", llvm::Type::getInt1Ty(context_),
+                            {pointerType(), pointerType(), pointerType()}),
+            {slot, taskFrame_, taskAdapter_->blockingWorkers[expression]}, "task.blocking.ready");
+        finishSuspension(ready, "task.blocking");
+        if (blocking.resultStorage.has_value()) {
+            storeSuspendedResult(*blocking.resultStorage, resultLocal, discarded, span);
+        }
+        return true;
+    }
+
+    bool emitSuspendingCallback(FirExpressionId expression,
+                                const FirCallbackCallExpression &callback,
+                                std::optional<FirLocalId> resultLocal, bool discarded) {
+        const auto span = function_->expressions[expression].span;
+        if (callback.arguments.size() != callback.argumentStorages.size() ||
+            !taskAdapter_->callbackFields[expression].has_value() ||
+            taskAdapter_->callbackStarts[expression] == nullptr) {
+            fail(span, "LLVM callback call has invalid persistent storage");
+            return true;
+        }
+        for (std::size_t index = 0; index < callback.arguments.size(); ++index) {
+            const auto argument = emitExpression(callback.arguments[index]);
+            if (argument.diverges) {
+                return true;
+            }
+            const auto parameter =
+                callback.argumentParameters.empty() ? index : callback.argumentParameters[index];
+            if (parameter >= callback.argumentStorages.size()) {
+                fail(span, "LLVM callback call has an invalid argument mapping");
+                return true;
+            }
+            const auto storage = callback.argumentStorages[parameter];
+            builder_.CreateStore(argument.value, locals_[storage]);
+            activateLocal(storage);
+        }
+        const auto state = taskAdapter_->expressionStates[expression];
+        if (!state.has_value() || !beginSuspension(*state, span)) {
+            return true;
+        }
+        auto *slot = frameField(taskAdapter_->frame, taskFrame_,
+                                *taskAdapter_->callbackFields[expression], "task.callback.slot");
+        llvm::Value *cancel = llvm::ConstantPointerNull::get(pointerType());
+        if (taskAdapter_->callbackCancels[expression] != nullptr) {
+            cancel = taskAdapter_->callbackCancels[expression];
+        }
+        auto *ready =
+            builder_.CreateCall(runtimeFunction("fdn_reactor_poll", llvm::Type::getInt1Ty(context_),
+                                                {pointerType(), pointerType(), pointerType(),
+                                                 pointerType(), pointerType()}),
+                                {slot, taskFrame_, taskAdapter_->callbackStarts[expression], cancel,
+                                 locals_[callback.resultStorage]},
+                                "task.callback.ready");
+        finishSuspension(ready, "task.callback");
+        if (resultLocal.has_value()) {
+            builder_.CreateStore(loadLocal(callback.resultStorage), locals_[*resultLocal]);
+            activateLocal(*resultLocal);
+        } else if (!discarded && function_->expressions[expression].type != voidType) {
+            fail(span, "LLVM callback result is neither bound nor discarded");
+        }
+        return true;
+    }
+
+    bool channelResultTypes(FirLocalId storage, Type &resultType, Type &errorType,
+                            SourceSpan span) {
+        if (storage >= function_->locals.size()) {
+            fail(span, "LLVM channel operation has invalid Result storage");
+            return false;
+        }
+        resultType = function_->locals[storage].type;
+        if (resultType.kind != TypeKind::Enum || resultType.declaration >= program_.enums.size() ||
+            program_.enums[resultType.declaration].variants.size() != 2 ||
+            !program_.enums[resultType.declaration].variants[1].payload.has_value()) {
+            fail(span, "LLVM channel operation has an invalid Result type");
+            return false;
+        }
+        errorType = *program_.enums[resultType.declaration].variants[1].payload;
+        if (errorType.kind != TypeKind::Enum || errorType.declaration >= program_.enums.size() ||
+            program_.enums[errorType.declaration].variants.size() < 2) {
+            fail(span, "LLVM channel operation has an invalid ChannelError type");
+            return false;
+        }
+        return true;
+    }
+
+    void setEnumTag(llvm::Value *address, const Type &type, FirVariantId variant) {
+        builder_.CreateStore(
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), variant),
+            builder_.CreateStructGEP(enumTypes_[type.declaration], address, 0, "enum.tag.address"));
+    }
+
+    bool emitSuspendingChannel(FirExpressionId expression, const FirChannelSendExpression *send,
+                               const FirChannelReceiveExpression *receive,
+                               std::optional<FirLocalId> resultLocal, bool discarded) {
+        const auto span = function_->expressions[expression].span;
+        const auto resultStorage = send != nullptr ? send->resultStorage : receive->resultStorage;
+        Type resultType;
+        Type errorType;
+        if (!channelResultTypes(resultStorage, resultType, errorType, span)) {
+            return true;
+        }
+        builder_.CreateStore(llvm::Constant::getNullValue(typeOf(resultType)),
+                             locals_[resultStorage]);
+        deactivateLocal(resultStorage);
+        if (send != nullptr && send->value.has_value()) {
+            if (!send->valueStorage.has_value()) {
+                fail(span, "LLVM channel send has no persistent value storage");
+                return true;
+            }
+            const auto value = emitExpression(*send->value);
+            if (value.diverges) {
+                return true;
+            }
+            builder_.CreateStore(value.value, locals_[*send->valueStorage]);
+            activateLocal(*send->valueStorage);
+        }
+        const auto state = taskAdapter_->expressionStates[expression];
+        if (!state.has_value() || !beginSuspension(*state, span)) {
+            return true;
+        }
+        llvm::Value *status{};
+        if (send != nullptr) {
+            llvm::Value *value = llvm::ConstantPointerNull::get(pointerType());
+            if (send->valueStorage.has_value()) {
+                value = locals_[*send->valueStorage];
+            }
+            status = builder_.CreateCall(runtimeFunction("fdn_channel_poll_send",
+                                                         llvm::Type::getInt32Ty(context_),
+                                                         {pointerType(), pointerType()}),
+                                         {loadLocal(send->sender), value}, "channel.send.status");
+        } else {
+            llvm::Value *value = llvm::ConstantPointerNull::get(pointerType());
+            const auto &success = program_.enums[resultType.declaration].variants[0];
+            if (success.payload.has_value()) {
+                value = enumPayloadAddress(locals_[resultStorage], resultType, 0, span);
+            }
+            status = builder_.CreateCall(
+                runtimeFunction("fdn_channel_poll_receive", llvm::Type::getInt32Ty(context_),
+                                {pointerType(), pointerType()}),
+                {loadLocal(receive->receiver), value}, "channel.receive.status");
+        }
+        finishSuspension(builder_.CreateICmpNE(
+                             status, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0)),
+                         send != nullptr ? "channel.send" : "channel.receive");
+
+        if (send != nullptr && send->valueStorage.has_value()) {
+            auto *transferred = llvm::BasicBlock::Create(context_, "channel.sent", llvmFunction_);
+            auto *failed = llvm::BasicBlock::Create(context_, "channel.unsent", llvmFunction_);
+            auto *done = llvm::BasicBlock::Create(context_, "channel.send.done", llvmFunction_);
+            builder_.CreateCondBr(
+                builder_.CreateICmpEQ(status,
+                                      llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 1)),
+                transferred, failed);
+            builder_.SetInsertPoint(transferred);
+            deactivateLocal(*send->valueStorage);
+            builder_.CreateBr(done);
+            builder_.SetInsertPoint(failed);
+            dropLocal(*send->valueStorage);
+            builder_.CreateBr(done);
+            builder_.SetInsertPoint(done);
+        }
+
+        auto *success = llvm::BasicBlock::Create(context_, "channel.result.ok", llvmFunction_);
+        auto *failure = llvm::BasicBlock::Create(context_, "channel.result.err", llvmFunction_);
+        auto *complete = llvm::BasicBlock::Create(context_, "channel.result.done", llvmFunction_);
+        builder_.CreateCondBr(
+            builder_.CreateICmpEQ(status,
+                                  llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 1)),
+            success, failure);
+        builder_.SetInsertPoint(success);
+        setEnumTag(locals_[resultStorage], resultType, 0);
+        builder_.CreateBr(complete);
+        builder_.SetInsertPoint(failure);
+        auto *error = enumPayloadAddress(locals_[resultStorage], resultType, 1, span);
+        auto *closed = builder_.CreateICmpEQ(
+            status, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 2));
+        builder_.CreateStore(
+            builder_.CreateSelect(closed,
+                                  llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0),
+                                  llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 1)),
+            builder_.CreateStructGEP(enumTypes_[errorType.declaration], error, 0));
+        setEnumTag(locals_[resultStorage], resultType, 1);
+        builder_.CreateBr(complete);
+        builder_.SetInsertPoint(complete);
+        activateLocal(resultStorage);
+        storeSuspendedResult(resultStorage, resultLocal, discarded, span);
+        return true;
+    }
+
+    void emitSelectSendCleanup(const FirSelectStatement &selection,
+                               std::optional<std::size_t> selected) {
+        for (std::size_t index = 0; index < selection.operations.size(); ++index) {
+            const auto &arm = selection.operations[index];
+            if (!arm.send || !arm.valueStorage.has_value()) {
+                continue;
+            }
+            if (selected.has_value() && *selected == index) {
+                deactivateLocal(*arm.valueStorage);
+            } else {
+                dropLocal(*arm.valueStorage);
+            }
+        }
+    }
+
+    llvm::Value *selectDeadline(const FirSelectStatement &selection, SourceSpan span) {
+        auto *maximum = llvm::ConstantInt::getAllOnesValue(llvm::Type::getInt64Ty(context_));
+        if (!selection.timeout.has_value()) {
+            return maximum;
+        }
+        const auto &timeout = *selection.timeout;
+        llvm::Value *duration{};
+        if (timeout.duration.has_value()) {
+            const auto value = emitExpression(*timeout.duration);
+            if (value.diverges || value.value == nullptr ||
+                !value.value->getType()->isIntegerTy()) {
+                fail(span, "LLVM select timeout has an invalid duration");
+                return nullptr;
+            }
+            duration = value.value;
+            if (duration->getType() != llvm::Type::getInt64Ty(context_)) {
+                duration =
+                    builder_.CreateIntCast(duration, llvm::Type::getInt64Ty(context_), false);
+            }
+        } else {
+            duration =
+                llvm::ConstantInt::get(llvm::Type::getInt64Ty(context_), timeout.nanoseconds);
+        }
+        auto *now = builder_.CreateCall(
+            runtimeFunction("fdn_monotonic_nanoseconds", llvm::Type::getInt64Ty(context_), {}), {},
+            "select.now");
+        auto *remaining = builder_.CreateSub(maximum, now);
+        return builder_.CreateSelect(builder_.CreateICmpUGT(duration, remaining), maximum,
+                                     builder_.CreateAdd(now, duration), "select.deadline");
+    }
+
+    void emitSelect(FirStatementId statementId, const FirSelectStatement &selection,
+                    SourceSpan span) {
+        if (selection.operations.empty() || statementId >= taskAdapter_->statementStates.size()) {
+            fail(span, "LLVM select has no channel operations");
+            return;
+        }
+        for (const auto &arm : selection.operations) {
+            if (!arm.send) {
+                if (arm.resultStorage < function_->locals.size()) {
+                    const auto &resultType = function_->locals[arm.resultStorage].type;
+                    if (auto *layout = typeOf(resultType);
+                        layout != nullptr && !layout->isVoidTy()) {
+                        builder_.CreateStore(llvm::Constant::getNullValue(layout),
+                                             locals_[arm.resultStorage]);
+                        deactivateLocal(arm.resultStorage);
+                    }
+                }
+                continue;
+            }
+            if (!arm.value.has_value()) {
+                continue;
+            }
+            if (!arm.valueStorage.has_value()) {
+                fail(arm.span, "LLVM select send has no persistent value storage");
+                return;
+            }
+            const auto value = emitExpression(*arm.value);
+            if (value.diverges) {
+                return;
+            }
+            builder_.CreateStore(value.value, locals_[*arm.valueStorage]);
+            activateLocal(*arm.valueStorage);
+        }
+
+        auto *deadline = selectDeadline(selection, span);
+        if (deadline == nullptr) {
+            return;
+        }
+        builder_.CreateStore(deadline, locals_[selection.deadlineStorage]);
+        const auto state = taskAdapter_->statementStates[statementId];
+        if (!state.has_value() || !beginSuspension(*state, span)) {
+            return;
+        }
+
+        auto *casesType = llvm::ArrayType::get(selectCaseType_, selection.operations.size());
+        auto *cases = builder_.CreateAlloca(casesType, nullptr, "select.cases");
+        for (std::size_t index = 0; index < selection.operations.size(); ++index) {
+            const auto &arm = selection.operations[index];
+            auto *item = builder_.CreateInBoundsGEP(
+                casesType, cases,
+                {llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0),
+                 llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), index)});
+            builder_.CreateStore(loadLocal(arm.endpoint),
+                                 builder_.CreateStructGEP(selectCaseType_, item, 0));
+            llvm::Value *value = llvm::ConstantPointerNull::get(pointerType());
+            if (arm.send && arm.valueStorage.has_value()) {
+                value = locals_[*arm.valueStorage];
+            } else if (!arm.send) {
+                Type resultType;
+                Type errorType;
+                if (!channelResultTypes(arm.resultStorage, resultType, errorType, arm.span)) {
+                    return;
+                }
+                static_cast<void>(errorType);
+                if (program_.enums[resultType.declaration].variants[0].payload.has_value()) {
+                    value = enumPayloadAddress(locals_[arm.resultStorage], resultType, 0, arm.span);
+                }
+            }
+            builder_.CreateStore(value, builder_.CreateStructGEP(selectCaseType_, item, 1));
+            builder_.CreateStore(
+                llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), arm.send ? 1 : 2),
+                builder_.CreateStructGEP(selectCaseType_, item, 2));
+        }
+        auto *selected = builder_.CreateAlloca(sizeType(), nullptr, "select.selected");
+        builder_.CreateStore(llvm::ConstantInt::getAllOnesValue(sizeType()), selected);
+        auto *status = builder_.CreateCall(
+            runtimeFunction("fdn_channel_poll_select", llvm::Type::getInt32Ty(context_),
+                            {pointerType(), pointerType(), sizeType(),
+                             llvm::Type::getInt64Ty(context_), pointerType()}),
+            {taskFrame_, cases, llvm::ConstantInt::get(sizeType(), selection.operations.size()),
+             loadLocal(selection.deadlineStorage), selected},
+            "select.status");
+        finishSuspension(builder_.CreateICmpNE(
+                             status, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0)),
+                         "select");
+
+        auto *timeout = llvm::BasicBlock::Create(context_, "select.timeout", llvmFunction_);
+        auto *operation = llvm::BasicBlock::Create(context_, "select.operation", llvmFunction_);
+        auto *error = llvm::BasicBlock::Create(context_, "select.error", llvmFunction_);
+        auto *merge = llvm::BasicBlock::Create(context_, "select.end", llvmFunction_);
+        builder_.CreateCondBr(
+            builder_.CreateICmpEQ(status,
+                                  llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 4)),
+            timeout, operation);
+
+        bool continues{};
+        builder_.SetInsertPoint(timeout);
+        emitSelectSendCleanup(selection, std::nullopt);
+        if (selection.timeout.has_value()) {
+            if (!emitBlock(selection.timeout->body)) {
+                builder_.CreateBr(merge);
+                continues = true;
+            }
+        } else {
+            builder_.CreateCall(
+                runtimeFunction("fdn_panic_cstr", llvm::Type::getVoidTy(context_), {pointerType()}),
+                {builder_.CreateGlobalString("select reached an unavailable timeout",
+                                             "select.timeout.message")});
+            builder_.CreateUnreachable();
+        }
+
+        builder_.SetInsertPoint(operation);
+        auto *ready = llvm::BasicBlock::Create(context_, "select.ready", llvmFunction_);
+        builder_.CreateCondBr(
+            builder_.CreateICmpEQ(status,
+                                  llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 1)),
+            ready, error);
+
+        builder_.SetInsertPoint(error);
+        const auto &errorType = function_->locals[selection.errorLocal].type;
+        if (errorType.kind != TypeKind::Enum || errorType.declaration >= program_.enums.size()) {
+            fail(span, "LLVM select has an invalid ChannelError binding");
+            builder_.CreateUnreachable();
+        } else {
+            auto *closed = builder_.CreateICmpEQ(
+                status, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 2));
+            builder_.CreateStore(
+                builder_.CreateSelect(closed,
+                                      llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0),
+                                      llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 1)),
+                builder_.CreateStructGEP(enumTypes_[errorType.declaration],
+                                         locals_[selection.errorLocal], 0));
+            activateLocal(selection.errorLocal);
+            emitSelectSendCleanup(selection, std::nullopt);
+            if (!emitBlock(selection.errorBlock)) {
+                builder_.CreateBr(merge);
+                continues = true;
+            }
+        }
+
+        builder_.SetInsertPoint(ready);
+        auto *invalid = llvm::BasicBlock::Create(context_, "select.invalid", llvmFunction_);
+        auto *selectedValue = builder_.CreateLoad(sizeType(), selected, "select.index");
+        auto *branches = builder_.CreateSwitch(selectedValue, invalid, selection.operations.size());
+        for (std::size_t index = 0; index < selection.operations.size(); ++index) {
+            const auto &arm = selection.operations[index];
+            auto *branch = llvm::BasicBlock::Create(
+                context_, "select.case." + std::to_string(index), llvmFunction_);
+            branches->addCase(llvm::ConstantInt::get(sizeType(), index), branch);
+            builder_.SetInsertPoint(branch);
+            if (arm.binding.has_value()) {
+                Type resultType;
+                Type errorTypeValue;
+                if (channelResultTypes(arm.resultStorage, resultType, errorTypeValue, arm.span)) {
+                    static_cast<void>(errorTypeValue);
+                    bindEnumPayload(locals_[arm.resultStorage], resultType, 0, *arm.binding, true,
+                                    arm.span);
+                }
+            }
+            emitSelectSendCleanup(selection, index);
+            if (!emitBlock(arm.body)) {
+                builder_.CreateBr(merge);
+                continues = true;
+            }
+        }
+        builder_.SetInsertPoint(invalid);
+        builder_.CreateCall(
+            runtimeFunction("fdn_panic_cstr", llvm::Type::getVoidTy(context_), {pointerType()}),
+            {builder_.CreateGlobalString("invalid select branch", "select.invalid.message")});
+        builder_.CreateUnreachable();
+
+        builder_.SetInsertPoint(merge);
+        if (!continues) {
+            builder_.CreateUnreachable();
+        }
+    }
+
+    bool emitSuspendingStatement(FirStatementId statementId) {
+        if (statementId >= function_->statements.size() || taskAdapter_ == nullptr) {
+            return false;
+        }
+        const auto &statement = function_->statements[statementId];
+        if (const auto *selection = std::get_if<FirSelectStatement>(&statement.value)) {
+            emitSelect(statementId, *selection, statement.span);
+            return true;
+        }
+
+        std::optional<FirLocalId> resultLocal;
+        bool discarded{};
+        FirExpressionId expression{};
+        if (const auto *variable = std::get_if<FirVariableStatement>(&statement.value)) {
+            expression = variable->initializer;
+            resultLocal = variable->local;
+        } else if (const auto *value = std::get_if<FirExpressionStatement>(&statement.value)) {
+            expression = value->expression;
+        } else if (const auto *value = std::get_if<FirDiscardStatement>(&statement.value)) {
+            expression = value->expression;
+            discarded = true;
+        } else {
+            return false;
+        }
+        if (expression >= function_->expressions.size()) {
+            return false;
+        }
+        const auto &value = function_->expressions[expression].value;
+        if (const auto *wait = std::get_if<FirTaskWaitExpression>(&value)) {
+            return emitSuspendingWait(expression, *wait, resultLocal, discarded);
+        }
+        if (const auto *blocking = std::get_if<FirBlockingCallExpression>(&value)) {
+            return emitSuspendingBlocking(expression, *blocking, resultLocal, discarded);
+        }
+        if (const auto *callback = std::get_if<FirCallbackCallExpression>(&value)) {
+            return emitSuspendingCallback(expression, *callback, resultLocal, discarded);
+        }
+        if (const auto *send = std::get_if<FirChannelSendExpression>(&value)) {
+            return emitSuspendingChannel(expression, send, nullptr, resultLocal, discarded);
+        }
+        if (const auto *receive = std::get_if<FirChannelReceiveExpression>(&value)) {
+            return emitSuspendingChannel(expression, nullptr, receive, resultLocal, discarded);
+        }
+        return false;
     }
 
     bool emitStatement(FirStatementId id) {
@@ -870,6 +2158,7 @@ class LlvmEmitter {
             const auto value = emitExpression(variable->initializer);
             if (!value.diverges && variable->local < locals_.size()) {
                 builder_.CreateStore(value.value, locals_[variable->local]);
+                activateLocal(variable->local);
             }
         } else if (const auto *binding = std::get_if<FirLetElseStatement>(&statement.value)) {
             return emitLetElse(*binding, statement.span);
@@ -882,8 +2171,17 @@ class LlvmEmitter {
             const auto value = emitExpression(assignment->value);
             if (!value.diverges) {
                 if (auto *address = emitAddress(assignment->target); address != nullptr) {
-                    dropAddress(address, function_->expressions[assignment->target].type);
+                    const auto *local = std::get_if<FirLocalExpression>(
+                        &function_->expressions[assignment->target].value);
+                    if (local != nullptr) {
+                        dropLocal(local->local);
+                    } else {
+                        dropAddress(address, function_->expressions[assignment->target].type);
+                    }
                     builder_.CreateStore(value.value, address);
+                    if (local != nullptr) {
+                        activateLocal(local->local);
+                    }
                 }
             }
         } else if (const auto *expression = std::get_if<FirExpressionStatement>(&statement.value)) {
@@ -900,11 +2198,15 @@ class LlvmEmitter {
             }
             if (!value.diverges) {
                 dropLocals(returned->drops);
-                leaveFrame();
-                if (returned->value.has_value()) {
-                    builder_.CreateRet(value.value);
+                if (taskPoll_) {
+                    emitTaskReady(returned->value.has_value() ? value.value : nullptr);
                 } else {
-                    builder_.CreateRetVoid();
+                    leaveFrame();
+                    if (returned->value.has_value()) {
+                        builder_.CreateRet(value.value);
+                    } else {
+                        builder_.CreateRetVoid();
+                    }
                 }
             }
         } else if (const auto *branch = std::get_if<FirIfStatement>(&statement.value)) {
@@ -942,6 +2244,15 @@ class LlvmEmitter {
         }
         const auto resultType = function_->expressions[binding.initializer].type;
         auto *result = valueAddress(initializer.value, resultType, "let.result");
+        return emitLetElseResult(binding, result, resultType, span);
+    }
+
+    bool emitLetElseResult(const FirLetElseStatement &binding, llvm::Value *result,
+                           const Type &resultType, SourceSpan span) {
+        if (result == nullptr) {
+            fail(span, "LLVM Result binding has no value storage");
+            return true;
+        }
         auto *tag = enumTag(result, resultType, span);
         if (tag == nullptr) {
             return true;
@@ -977,6 +2288,15 @@ class LlvmEmitter {
         }
         const auto resultType = function_->expressions[binding.expression].type;
         auto *result = valueAddress(initializer.value, resultType, "result.else");
+        return emitResultElseResult(binding, result, resultType, span);
+    }
+
+    bool emitResultElseResult(const FirResultElseStatement &binding, llvm::Value *result,
+                              const Type &resultType, SourceSpan span) {
+        if (result == nullptr) {
+            fail(span, "LLVM Result handling has no value storage");
+            return true;
+        }
         auto *tag = enumTag(result, resultType, span);
         if (tag == nullptr) {
             return true;
@@ -1007,10 +2327,11 @@ class LlvmEmitter {
             return;
         }
         auto sourceType = function_->expressions[destructure.initializer].type;
+        const auto heapOwned = destructure.owned && sourceType.kind == TypeKind::Own;
         llvm::Value *source{};
-        if (destructure.owned) {
+        if (heapOwned) {
             source = initializer.value;
-            if (sourceType.kind == TypeKind::Own && sourceType.arguments.size() == 1) {
+            if (sourceType.arguments.size() == 1) {
                 sourceType = sourceType.arguments.front();
             }
         } else {
@@ -1026,8 +2347,14 @@ class LlvmEmitter {
                                                        "channel.field.address");
                 builder_.CreateStore(moveFromAddress(field, function_->locals[binding.local].type),
                                      locals_[binding.local]);
+                activateLocal(binding.local);
             }
             dropAddress(source, sourceType);
+            if (heapOwned) {
+                builder_.CreateCall(runtimeFunction("fdn_dealloc", llvm::Type::getVoidTy(context_),
+                                                    {pointerType()}),
+                                    {initializer.value});
+            }
             return;
         }
         if (sourceType.kind != TypeKind::Struct ||
@@ -1046,9 +2373,13 @@ class LlvmEmitter {
             }
             const auto &type = function_->locals[binding.local].type;
             builder_.CreateStore(moveFromAddress(field, type), locals_[binding.local]);
+            activateLocal(binding.local);
         }
-        if (destructure.owned) {
-            dropValue(initializer.value, function_->expressions[destructure.initializer].type);
+        if (heapOwned) {
+            dropAddress(source, sourceType);
+            builder_.CreateCall(
+                runtimeFunction("fdn_dealloc", llvm::Type::getVoidTy(context_), {pointerType()}),
+                {initializer.value});
         } else {
             dropAddress(source, sourceType);
         }
@@ -1225,7 +2556,9 @@ class LlvmEmitter {
                 fail(expression.span, "LLVM backend received an invalid move source");
                 return {};
             }
-            return {moveFromAddress(address, expression.type), false};
+            auto *value = moveFromAddress(address, expression.type);
+            deactivateLocal(moved->local);
+            return {value, false};
         }
         if (const auto *ownership = std::get_if<FirOwnershipExpression>(&expression.value)) {
             return emitOwnership(*ownership, expression.type, expression.span);
@@ -1248,6 +2581,29 @@ class LlvmEmitter {
         }
         if (const auto *contract = std::get_if<FirContractExpression>(&expression.value)) {
             return emitContract(*contract, expression.type, expression.span);
+        }
+        if (const auto *spawn = std::get_if<FirSpawnExpression>(&expression.value)) {
+            return emitSpawn(*spawn, expression.span);
+        }
+        if (const auto *wait = std::get_if<FirTaskWaitExpression>(&expression.value)) {
+            if (taskPoll_) {
+                fail(expression.span, "LLVM task wait did not lower as a suspending statement");
+                return {};
+            }
+            return emitTaskWait(*wait, expression.type, expression.span);
+        }
+        if (const auto *channel = std::get_if<FirChannelExpression>(&expression.value)) {
+            return emitChannel(*channel, expression.span);
+        }
+        if (const auto *clone = std::get_if<FirChannelSenderCloneExpression>(&expression.value)) {
+            return emitChannelSenderClone(*clone, expression.span);
+        }
+        if (std::holds_alternative<FirBlockingCallExpression>(expression.value) ||
+            std::holds_alternative<FirCallbackCallExpression>(expression.value) ||
+            std::holds_alternative<FirChannelSendExpression>(expression.value) ||
+            std::holds_alternative<FirChannelReceiveExpression>(expression.value)) {
+            fail(expression.span, "LLVM suspending operation did not lower as a task statement");
+            return {};
         }
         if (const auto *literal = std::get_if<FirStructExpression>(&expression.value)) {
             return emitStruct(*literal, expression.span);
@@ -1448,10 +2804,200 @@ class LlvmEmitter {
             return operand;
         }
         if (typeRequiresDrop(operandType)) {
-            fail(span, "LLVM backend cannot borrow a temporary value that requires drop yet");
+            auto *address = valueAddress(operand.value, operandType, "borrow.temporary");
+            if (address == nullptr) {
+                fail(span, "LLVM backend cannot preserve this borrowed temporary");
+                return {};
+            }
+            auto result = EmittedValue{address, false, std::move(operand.cleanups)};
+            result.cleanups.push_back({address, operandType});
+            return result;
+        }
+        return {valueAddress(operand.value, operandType, "borrow.temporary"), false,
+                std::move(operand.cleanups)};
+    }
+
+    std::vector<llvm::Value *> orderValues(const std::vector<llvm::Value *> &values,
+                                           const std::vector<std::size_t> &parameters,
+                                           SourceSpan span) {
+        if (parameters.empty()) {
+            return values;
+        }
+        if (parameters.size() != values.size()) {
+            fail(span, "LLVM call has an invalid argument mapping");
             return {};
         }
-        return {valueAddress(operand.value, operandType, "borrow.temporary"), false};
+        std::vector<llvm::Value *> ordered(values.size());
+        std::vector<bool> assigned(values.size());
+        for (std::size_t index = 0; index < values.size(); ++index) {
+            const auto parameter = parameters[index];
+            if (parameter >= values.size() || assigned[parameter]) {
+                fail(span, "LLVM call has an invalid argument mapping");
+                return {};
+            }
+            ordered[parameter] = values[index];
+            assigned[parameter] = true;
+        }
+        return ordered;
+    }
+
+    EmittedValue emitSpawn(const FirSpawnExpression &spawn, SourceSpan span) {
+        if (spawn.call >= function_->expressions.size()) {
+            fail(span, "LLVM spawn has an invalid task call");
+            return {};
+        }
+        const auto *call =
+            std::get_if<FirCallExpression>(&function_->expressions[spawn.call].value);
+        if (call == nullptr || call->kind != FirCallKind::Function ||
+            call->function >= program_.functions.size() ||
+            !program_.functions[call->function].task || call->function >= taskAdapters_.size() ||
+            !taskAdapters_[call->function].has_value()) {
+            fail(span, "LLVM spawn did not receive a task call");
+            return {};
+        }
+
+        std::vector<llvm::Value *> arguments;
+        arguments.reserve(call->arguments.size());
+        for (const auto argument : call->arguments) {
+            const auto value = emitExpression(argument);
+            if (value.diverges) {
+                return value;
+            }
+            arguments.push_back(value.value);
+        }
+        arguments = orderValues(arguments, call->argumentParameters, span);
+        if (arguments.size() != call->arguments.size()) {
+            return {};
+        }
+
+        auto &adapter = *taskAdapters_[call->function];
+        const auto size = module_.getDataLayout().getTypeAllocSize(adapter.frame);
+        if (size.isScalable()) {
+            fail(span, "LLVM cannot allocate a scalable task frame");
+            return {};
+        }
+        auto *frame = builder_.CreateCall(
+            runtimeFunction("fdn_alloc", pointerType(), {sizeType()}),
+            {llvm::ConstantInt::get(sizeType(), size.getFixedValue())}, "task.frame");
+        builder_.CreateStore(llvm::Constant::getNullValue(adapter.frame), frame);
+        for (std::size_t index = 0; index < arguments.size(); ++index) {
+            builder_.CreateStore(
+                arguments[index],
+                frameField(adapter.frame, frame, adapter.argumentFields[index], "task.argument"));
+        }
+        builder_.CreateStore(llvm::ConstantInt::getTrue(context_),
+                             frameField(adapter.frame, frame, adapter.argumentsActiveField,
+                                        "task.arguments.active"));
+        auto *task = builder_.CreateCall(
+            runtimeFunction("fdn_task_spawn", pointerType(),
+                            {pointerType(), pointerType(), pointerType(), pointerType()}),
+            {frame, adapter.poll, adapter.moveResult, adapter.dropFrame}, "task");
+        return {task, false};
+    }
+
+    EmittedValue emitTaskWait(const FirTaskWaitExpression &wait, const Type &type,
+                              SourceSpan span) {
+        const auto task = emitExpression(wait.task);
+        if (task.diverges) {
+            return task;
+        }
+        if (task.value == nullptr || !task.value->getType()->isPointerTy()) {
+            fail(span, "LLVM task wait has an invalid handle");
+            return {};
+        }
+        auto *handle = builder_.CreateAlloca(pointerType(), nullptr, "task.wait.handle");
+        builder_.CreateStore(task.value, handle);
+        if (type == voidType) {
+            builder_.CreateCall(runtimeFunction("fdn_task_wait", llvm::Type::getVoidTy(context_),
+                                                {pointerType(), pointerType()}),
+                                {handle, llvm::ConstantPointerNull::get(pointerType())});
+            return {nullptr, false};
+        }
+        auto *layout = typeOf(type);
+        if (layout == nullptr || layout->isVoidTy()) {
+            fail(span, "LLVM task wait has an unsupported result type");
+            return {};
+        }
+        auto *result = builder_.CreateAlloca(layout, nullptr, "task.wait.result");
+        builder_.CreateStore(llvm::Constant::getNullValue(layout), result);
+        builder_.CreateCall(runtimeFunction("fdn_task_wait", llvm::Type::getVoidTy(context_),
+                                            {pointerType(), pointerType()}),
+                            {handle, result});
+        return {builder_.CreateLoad(layout, result, "task.wait.value"), false};
+    }
+
+    llvm::Function *channelDropFunction(const Type &type) const {
+        const auto found = std::find_if(channelDrops_.begin(), channelDrops_.end(),
+                                        [&](const ChannelDrop &drop) { return drop.type == type; });
+        return found == channelDrops_.end() ? nullptr : found->function;
+    }
+
+    EmittedValue emitChannel(const FirChannelExpression &channel, SourceSpan span) {
+        const auto capacity = emitExpression(channel.capacity);
+        if (capacity.diverges) {
+            return capacity;
+        }
+        auto *capacityValue = capacity.value;
+        if (capacityValue == nullptr || !capacityValue->getType()->isIntegerTy()) {
+            fail(span, "LLVM channel capacity is not an integer");
+            return {};
+        }
+        if (capacityValue->getType() != sizeType()) {
+            capacityValue = builder_.CreateIntCast(capacityValue, sizeType(), false);
+        }
+
+        std::uint64_t payloadSize{};
+        if (channel.payload != voidType) {
+            auto *payload = typeOf(channel.payload);
+            if (payload == nullptr || payload->isVoidTy()) {
+                fail(span, "LLVM channel has an unsupported payload type");
+                return {};
+            }
+            const auto size = module_.getDataLayout().getTypeAllocSize(payload);
+            if (size.isScalable()) {
+                fail(span, "LLVM channel payload has a scalable layout");
+                return {};
+            }
+            payloadSize = size.getFixedValue();
+        }
+        llvm::Value *drop = llvm::ConstantPointerNull::get(pointerType());
+        if (typeRequiresDrop(channel.payload)) {
+            drop = channelDropFunction(channel.payload);
+            if (drop == nullptr) {
+                fail(span, "LLVM channel payload drop callback is unavailable");
+                return {};
+            }
+        }
+        auto *sender = builder_.CreateAlloca(pointerType(), nullptr, "channel.sender");
+        auto *receiver = builder_.CreateAlloca(pointerType(), nullptr, "channel.receiver");
+        builder_.CreateStore(llvm::ConstantPointerNull::get(pointerType()), sender);
+        builder_.CreateStore(llvm::ConstantPointerNull::get(pointerType()), receiver);
+        builder_.CreateCall(
+            runtimeFunction("fdn_channel_open", llvm::Type::getVoidTy(context_),
+                            {sizeType(), sizeType(), pointerType(), pointerType(), pointerType()}),
+            {llvm::ConstantInt::get(sizeType(), payloadSize), capacityValue, drop, sender,
+             receiver});
+        llvm::Value *result = llvm::Constant::getNullValue(channelType_);
+        result = builder_.CreateInsertValue(result, builder_.CreateLoad(pointerType(), sender), 0);
+        result =
+            builder_.CreateInsertValue(result, builder_.CreateLoad(pointerType(), receiver), 1);
+        return {result, false};
+    }
+
+    EmittedValue emitChannelSenderClone(const FirChannelSenderCloneExpression &clone,
+                                        SourceSpan span) {
+        const auto sender = emitExpression(clone.sender);
+        if (sender.diverges) {
+            return sender;
+        }
+        if (sender.value == nullptr || !sender.value->getType()->isPointerTy()) {
+            fail(span, "LLVM sender clone has an invalid handle");
+            return {};
+        }
+        return {builder_.CreateCall(
+                    runtimeFunction("fdn_channel_clone_sender", pointerType(), {pointerType()}),
+                    {sender.value}, "channel.sender.clone"),
+                false};
     }
 
     EmittedValue emitContract(const FirContractExpression &contract, const Type &type,
@@ -1982,24 +3528,13 @@ class LlvmEmitter {
                 return arguments.back();
             }
         }
-        std::vector<llvm::Value *> values;
-        values.reserve(arguments.size());
-        std::transform(arguments.begin(), arguments.end(), std::back_inserter(values),
+        std::vector<llvm::Value *> sourceValues;
+        sourceValues.reserve(arguments.size());
+        std::transform(arguments.begin(), arguments.end(), std::back_inserter(sourceValues),
                        [](const auto &argument) { return argument.value; });
-        if (!call.argumentParameters.empty()) {
-            if (call.argumentParameters.size() != values.size()) {
-                fail(span, "LLVM call argument mapping has the wrong size");
-                return {};
-            }
-            std::vector<llvm::Value *> ordered(values.size());
-            for (std::size_t index = 0; index < values.size(); ++index) {
-                if (call.argumentParameters[index] >= ordered.size()) {
-                    fail(span, "LLVM call argument mapping is invalid");
-                    return {};
-                }
-                ordered[call.argumentParameters[index]] = values[index];
-            }
-            values = std::move(ordered);
+        auto values = orderValues(sourceValues, call.argumentParameters, span);
+        if (values.size() != sourceValues.size()) {
+            return {};
         }
         setLocation(span);
         llvm::Value *result{};
@@ -2147,10 +3682,16 @@ class LlvmEmitter {
             break;
         }
         }
-        for (std::size_t index = 0; index < values.size() && index < call.argumentDrops.size();
-             ++index) {
+        for (std::size_t index = 0;
+             index < sourceValues.size() && index < call.argumentDrops.size(); ++index) {
             if (call.argumentDrops[index]) {
-                dropValue(values[index], function_->expressions[call.arguments[index]].type);
+                dropValue(sourceValues[index], function_->expressions[call.arguments[index]].type);
+            }
+        }
+        for (auto argument = arguments.rbegin(); argument != arguments.rend(); ++argument) {
+            for (auto cleanup = argument->cleanups.rbegin(); cleanup != argument->cleanups.rend();
+                 ++cleanup) {
+                dropAddress(cleanup->address, cleanup->type);
             }
         }
         return {result, false};
@@ -2243,8 +3784,49 @@ class LlvmEmitter {
             fail(function_->sourceSpan, "LLVM backend received an invalid local");
             return nullptr;
         }
-        return builder_.CreateLoad(locals_[local]->getAllocatedType(), locals_[local],
-                                   "local.value");
+        auto *type =
+            local < function_->locals.size() ? typeOf(function_->locals[local].type) : nullptr;
+        if (type == nullptr || type->isVoidTy()) {
+            fail(function_->sourceSpan, "LLVM backend cannot load this local");
+            return nullptr;
+        }
+        return builder_.CreateLoad(type, locals_[local], "local.value");
+    }
+
+    void activateLocal(FirLocalId local) {
+        if (!taskPoll_ || local >= localActive_.size() || localActive_[local] == nullptr ||
+            builder_.GetInsertBlock()->getTerminator() != nullptr) {
+            return;
+        }
+        builder_.CreateStore(llvm::ConstantInt::getTrue(context_), localActive_[local]);
+    }
+
+    void deactivateLocal(FirLocalId local) {
+        if (!taskPoll_ || local >= localActive_.size() || localActive_[local] == nullptr ||
+            builder_.GetInsertBlock()->getTerminator() != nullptr) {
+            return;
+        }
+        builder_.CreateStore(llvm::ConstantInt::getFalse(context_), localActive_[local]);
+    }
+
+    void dropLocal(FirLocalId local) {
+        if (local >= function_->locals.size() || local >= locals_.size() ||
+            locals_[local] == nullptr || !typeRequiresDrop(function_->locals[local].type)) {
+            return;
+        }
+        if (!taskPoll_ || local >= localActive_.size() || localActive_[local] == nullptr) {
+            dropAddress(locals_[local], function_->locals[local].type);
+            return;
+        }
+        auto *drop = llvm::BasicBlock::Create(context_, "local.drop", llvmFunction_);
+        auto *done = llvm::BasicBlock::Create(context_, "local.drop.end", llvmFunction_);
+        builder_.CreateCondBr(
+            builder_.CreateLoad(llvm::Type::getInt1Ty(context_), localActive_[local]), drop, done);
+        builder_.SetInsertPoint(drop);
+        dropAddress(locals_[local], function_->locals[local].type);
+        builder_.CreateStore(llvm::ConstantInt::getFalse(context_), localActive_[local]);
+        builder_.CreateBr(done);
+        builder_.SetInsertPoint(done);
     }
 
     bool isPlaceExpression(FirExpressionId id) const {
@@ -2396,6 +3978,7 @@ class LlvmEmitter {
             value = builder_.CreateLoad(layout, payload, "enum.binding");
         }
         builder_.CreateStore(value, locals_[local]);
+        activateLocal(local);
         return true;
     }
 
@@ -2609,6 +4192,20 @@ class LlvmEmitter {
                                     function_->sourceSpan.column)});
     }
 
+    void enterNativeFrame(std::string_view symbol, SourceSpan span) {
+        const auto source =
+            function_->sourcePath.empty() ? sourcePath_ : std::string_view(function_->sourcePath);
+        auto *functionNameValue = builder_.CreateGlobalString(symbol, "frame.native.function");
+        auto *sourceName = builder_.CreateGlobalString(source, "frame.native.source");
+        builder_.CreateCall(
+            runtimeFunction("fdn_frame_enter_native", llvm::Type::getVoidTy(context_),
+                            {pointerType(), pointerType(), pointerType(),
+                             llvm::Type::getInt32Ty(context_), llvm::Type::getInt32Ty(context_)}),
+            {frame_, functionNameValue, sourceName,
+             llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), span.line),
+             llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), span.column)});
+    }
+
     void leaveFrame() {
         builder_.CreateCall(
             runtimeFunction("fdn_frame_leave", llvm::Type::getVoidTy(context_), {pointerType()}),
@@ -2695,6 +4292,12 @@ class LlvmEmitter {
             auto *value = builder_.CreateLoad(pointerType(), address, "drop.own.value");
             dropOwned(value, type);
             builder_.CreateStore(llvm::ConstantPointerNull::get(pointerType()), address);
+            return;
+        }
+        if (type.kind == TypeKind::Task) {
+            builder_.CreateCall(
+                runtimeFunction("fdn_task_drop", llvm::Type::getVoidTy(context_), {pointerType()}),
+                {address});
             return;
         }
         if (type.kind == TypeKind::Sender || type.kind == TypeKind::Receiver) {
@@ -2811,10 +4414,7 @@ class LlvmEmitter {
 
     void dropLocals(const std::vector<FirLocalId> &locals) {
         for (const auto local : locals) {
-            if (local >= function_->locals.size() || local >= locals_.size()) {
-                continue;
-            }
-            dropAddress(locals_[local], function_->locals[local].type);
+            dropLocal(local);
         }
     }
 
@@ -2952,6 +4552,7 @@ class LlvmEmitter {
     llvm::StructType *frameType_{};
     llvm::StructType *channelType_{};
     llvm::StructType *functionValueType_{};
+    llvm::StructType *selectCaseType_{};
     std::vector<llvm::StructType *> structTypes_;
     std::vector<llvm::StructType *> enumTypes_;
     std::vector<llvm::StructType *> contractTypes_;
@@ -2963,13 +4564,21 @@ class LlvmEmitter {
     std::vector<llvm::Function *> functionAdapters_;
     std::vector<llvm::Function *> closureDrops_;
     std::map<std::string, ContractSupport> contractSupports_;
+    std::vector<ChannelDrop> channelDrops_;
+    std::vector<std::optional<TaskAdapter>> taskAdapters_;
     const FirFunction *function_{};
     FirFunctionId functionId_{};
     llvm::Function *llvmFunction_{};
     llvm::AllocaInst *frame_{};
-    std::vector<llvm::AllocaInst *> locals_;
+    std::vector<llvm::Value *> locals_;
     std::vector<llvm::Value *> captureAddresses_;
+    std::vector<llvm::Value *> localActive_;
     std::vector<LoopTarget> loops_;
+    bool taskPoll_{};
+    TaskAdapter *taskAdapter_{};
+    llvm::Value *taskFrame_{};
+    llvm::Value *taskPreviousCancellation_{};
+    std::vector<llvm::BasicBlock *> taskStateBlocks_;
 };
 
 std::optional<LlvmModule> buildModule(const FirProgram &program, std::string_view sourcePath,
