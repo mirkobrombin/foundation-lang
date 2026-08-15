@@ -1264,13 +1264,13 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native.cmake
     )
     add_test(
-        NAME stage0.run.llvm.unsupported
+        NAME stage0.run.llvm.closures
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.fn
-            -DPATTERN=error\\[FDN8001\\]
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.out
             -DBACKEND=llvm
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
         NAME stage0.check.state-machine

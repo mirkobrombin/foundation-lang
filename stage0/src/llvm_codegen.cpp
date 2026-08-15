@@ -855,6 +855,11 @@ class LlvmEmitter {
                     nativeFunctions_[id] =
                         llvm::Function::Create(nativeSignature, llvm::GlobalValue::ExternalLinkage,
                                                *function.cSymbol, module_);
+                    if (usesExternalResultPointer(function)) {
+                        nativeFunctions_[id]->addParamAttr(
+                            0, llvm::Attribute::getWithStructRetType(
+                                   context_, typeOf(function.returnType)));
+                    }
                 }
             }
         }
@@ -1454,14 +1459,19 @@ class LlvmEmitter {
     llvm::Type *abiTypeOf(const Type &type) { return typeOf(type); }
 
     llvm::FunctionType *nativeFunctionType(const FirFunction &function) {
-        auto *result =
-            function.diverges ? llvm::Type::getVoidTy(context_) : abiTypeOf(function.returnType);
+        const auto indirectResult = usesExternalResultPointer(function);
+        auto *result = function.diverges || indirectResult ? llvm::Type::getVoidTy(context_)
+                                                           : abiTypeOf(function.returnType);
         if (result == nullptr) {
             fail(function.sourceSpan,
                  "LLVM backend does not support the C ABI return type of " + function.name);
             return nullptr;
         }
         std::vector<llvm::Type *> parameters;
+        parameters.reserve(function.parameters.size() + (indirectResult ? 1 : 0));
+        if (indirectResult) {
+            parameters.push_back(pointerType());
+        }
         for (const auto local : function.parameters) {
             auto *parameter = abiTypeOf(function.locals[local].type);
             if (parameter == nullptr || parameter->isVoidTy()) {
@@ -2796,8 +2806,11 @@ class LlvmEmitter {
             operandType.kind == TypeKind::Edit) {
             return emitExpression(ownership.operand);
         }
-        if (auto *address = emitAddress(ownership.operand); address != nullptr) {
-            return {address, false};
+        if (isPlaceExpression(ownership.operand)) {
+            if (auto *address = emitAddress(ownership.operand); address != nullptr) {
+                return {address, false};
+            }
+            return {};
         }
         const auto operand = emitExpression(ownership.operand);
         if (operand.diverges) {
@@ -4052,6 +4065,8 @@ class LlvmEmitter {
             return;
         }
         dropAddress(storage, type);
+    }
+
     std::size_t structFieldIndex(const Type &type, FirFieldId field) const {
         return field + (type.kind == TypeKind::Struct &&
                                 type.declaration < program_.structs.size() &&
@@ -4229,8 +4244,9 @@ class LlvmEmitter {
         if (value == nullptr || type.arguments.size() != 1) {
             return;
         }
-        auto *drop = llvm::BasicBlock::Create(context_, "drop.own", llvmFunction_);
-        auto *done = llvm::BasicBlock::Create(context_, "drop.own.end", llvmFunction_);
+        auto *owner = builder_.GetInsertBlock()->getParent();
+        auto *drop = llvm::BasicBlock::Create(context_, "drop.own", owner);
+        auto *done = llvm::BasicBlock::Create(context_, "drop.own.end", owner);
         builder_.CreateCondBr(
             builder_.CreateICmpNE(value, llvm::ConstantPointerNull::get(pointerType())), drop,
             done);
@@ -4272,8 +4288,9 @@ class LlvmEmitter {
             auto *value = builder_.CreateLoad(functionValueType_, address, "drop.function");
             auto *environment = builder_.CreateExtractValue(value, 0);
             auto *dropFunction = builder_.CreateExtractValue(value, 2);
-            auto *drop = llvm::BasicBlock::Create(context_, "drop.closure", llvmFunction_);
-            auto *done = llvm::BasicBlock::Create(context_, "drop.closure.end", llvmFunction_);
+            auto *owner = builder_.GetInsertBlock()->getParent();
+            auto *drop = llvm::BasicBlock::Create(context_, "drop.closure", owner);
+            auto *done = llvm::BasicBlock::Create(context_, "drop.closure.end", owner);
             builder_.CreateCondBr(
                 builder_.CreateICmpNE(dropFunction,
                                       llvm::ConstantPointerNull::get(pointerType())),
@@ -4286,7 +4303,6 @@ class LlvmEmitter {
             builder_.SetInsertPoint(done);
             builder_.CreateStore(llvm::Constant::getNullValue(functionValueType_), address);
             return;
-        }
         }
         if (type.kind == TypeKind::Own && type.arguments.size() == 1) {
             auto *value = builder_.CreateLoad(pointerType(), address, "drop.own.value");
@@ -4339,8 +4355,9 @@ class LlvmEmitter {
             if (declaration.dropFunction.has_value()) {
                 auto *active = builder_.CreateStructGEP(structTypes_[type.declaration], address, 0,
                                                         "drop.active.address");
-                auto *drop = llvm::BasicBlock::Create(context_, "drop.struct", llvmFunction_);
-                auto *done = llvm::BasicBlock::Create(context_, "drop.struct.end", llvmFunction_);
+                auto *owner = builder_.GetInsertBlock()->getParent();
+                auto *drop = llvm::BasicBlock::Create(context_, "drop.struct", owner);
+                auto *done = llvm::BasicBlock::Create(context_, "drop.struct.end", owner);
                 builder_.CreateCondBr(
                     builder_.CreateLoad(llvm::Type::getInt1Ty(context_), active, "drop.active"),
                     drop, done);
@@ -4377,11 +4394,12 @@ class LlvmEmitter {
             if (tag == nullptr) {
                 return;
             }
-            auto *done = llvm::BasicBlock::Create(context_, "drop.enum.end", llvmFunction_);
-            auto *invalid = llvm::BasicBlock::Create(context_, "drop.enum.invalid", llvmFunction_);
+            auto *owner = builder_.GetInsertBlock()->getParent();
+            auto *done = llvm::BasicBlock::Create(context_, "drop.enum.end", owner);
+            auto *invalid = llvm::BasicBlock::Create(context_, "drop.enum.invalid", owner);
             auto *selection = builder_.CreateSwitch(tag, invalid, declaration.variants.size());
             for (std::size_t variant = 0; variant < declaration.variants.size(); ++variant) {
-                auto *branch = llvm::BasicBlock::Create(context_, "drop.enum", llvmFunction_);
+                auto *branch = llvm::BasicBlock::Create(context_, "drop.enum", owner);
                 selection->addCase(
                     llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), variant), branch);
                 builder_.SetInsertPoint(branch);
@@ -4465,15 +4483,26 @@ class LlvmEmitter {
             llvm::IRBuilder<> builder(entry);
             auto *frame = builder.CreateAlloca(frameType_, nullptr, "frame");
             enterNativeFrame(builder, frame, function);
+            const auto indirectResult = usesExternalResultPointer(function);
+            auto *resultStorage = indirectResult ? wrapper->getArg(0) : nullptr;
             std::vector<llvm::Value *> arguments;
-            for (std::size_t index = 0; index < wrapper->arg_size(); ++index) {
+            arguments.reserve(function.parameters.size());
+            for (std::size_t index = 0; index < function.parameters.size(); ++index) {
                 const auto local = function.parameters[index];
-                auto *value = wrapper->getArg(index);
+                auto *value = wrapper->getArg(index + (indirectResult ? 1 : 0));
                 arguments.push_back(function.hasBody
                                         ? fromAbi(builder, value, function.locals[local].type)
                                         : toAbi(builder, value, function.locals[local].type));
             }
-            auto *result = builder.CreateCall(target, arguments);
+            auto invocationArguments = arguments;
+            if (indirectResult) {
+                invocationArguments.insert(invocationArguments.begin(), resultStorage);
+            }
+            auto *result = builder.CreateCall(target, invocationArguments);
+            if (indirectResult) {
+                result->addParamAttr(
+                    0, llvm::Attribute::getWithStructRetType(context_, typeOf(function.returnType)));
+            }
             if (function.diverges) {
                 builder.CreateUnreachable();
                 continue;
@@ -4484,6 +4513,8 @@ class LlvmEmitter {
                                                                     {pointerType()}, false)),
                 {frame});
             if (function.returnType == voidType) {
+                builder.CreateRetVoid();
+            } else if (indirectResult) {
                 builder.CreateRetVoid();
             } else {
                 builder.CreateRet(function.hasBody ? toAbi(builder, result, function.returnType)
