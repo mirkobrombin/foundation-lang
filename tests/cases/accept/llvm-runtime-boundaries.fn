@@ -1,0 +1,97 @@
+extern c fn nativeSum(values *const i32, length usize) i32 as foundation_llvm_sum
+
+extern c fn nativeReady(value bool) bool as foundation_llvm_ready
+
+contract CounterValue {
+    fn current(self) i32
+    fn add(&self, amount i32) void
+    fn take($self) i32
+}
+
+struct Counter implements CounterValue {
+    value i32
+
+    fn current(self) i32 {
+        self.value
+    }
+
+    fn add(&self, amount i32) void {
+        self.value = self.value + amount
+    }
+
+    fn take($self) i32 {
+        self.value
+    }
+}
+
+fn read(value CounterValue) i32 {
+    value.current()
+}
+
+fn editCounter(&value CounterValue, amount i32) void {
+    value.add(amount)
+}
+
+fn consumeCounter($value own CounterValue) i32 {
+    value.take()
+}
+
+fn double(value i32) i32 {
+    value * 2
+}
+
+fn apply(value i32, operation fn(i32) i32) i32 {
+    operation(value)
+}
+
+fn sum(values [i32]) i32 {
+    var total = 0
+    for value in values {
+        total = total + value
+    }
+    total
+}
+
+fn native(values [i32]) i32 {
+    // SAFETY: the slice data remains live for the duration of the native call.
+    unsafe {
+        return nativeSum(values.pointer, len(values))
+    }
+}
+
+fn main() i32 {
+    var values = [10, 20, 12]
+    const fromSlice = sum(values)
+    const fromNative = native(values)
+    if fromSlice != 42 || fromNative != 42 || !nativeReady(true) return 1
+
+    var counter = Counter { value = 40 }
+    editCounter(&counter, 1)
+    if read(counter) != 41 return 2
+    const add = fn(amount i32) i32 capture(&counter) {
+        counter.value = counter.value + amount
+        counter.value
+    }
+    const factor = 2
+    const scale = fn(value i32) i32 capture(factor) {
+        value * factor
+    }
+    const borrowedLabel = "view"
+    const borrowedLength = fn() usize capture(borrowedLabel) {
+        len(borrowedLabel)
+    }
+    const ownedLabel = "owned"
+    const ownedLength = fn() usize capture($ownedLabel) {
+        len(ownedLabel)
+    }
+    const consumed = own Counter { value = 42 }
+    const operation fn(i32) i32 = double
+    if add(1) != 42 || scale(21) != 42 || borrowedLength() != 4 ||
+        ownedLength() != 5 || apply(21, operation) != 42 ||
+        consumeCounter($consumed) != 42 {
+        return 2
+    }
+
+    print("llvm runtime boundaries")
+    0
+}

@@ -28,12 +28,14 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -116,6 +118,32 @@ std::string integerTypeTag(Type type) {
     }
 }
 
+std::string llvmTypeKey(const Type &type) {
+    std::string result =
+        std::to_string(static_cast<int>(type.kind)) + ':' + std::to_string(type.declaration);
+    for (const auto &argument : type.arguments) {
+        result += '[' + llvmTypeKey(argument) + ']';
+    }
+    return result;
+}
+
+std::string functionAdapterName(const FirProgram &program, FirFunctionId id) {
+    return functionName(program, id) + "_value_adapter";
+}
+
+std::string closureEnvironmentName(const FirProgram &program, FirFunctionId id) {
+    return functionName(program, id) + "_environment";
+}
+
+std::string closureDropName(const FirProgram &program, FirFunctionId id) {
+    return closureEnvironmentName(program, id) + "_drop";
+}
+
+std::string vtableName(const Type &contract, const Type &concrete) {
+    return "fdn_vtable_c" + std::to_string(contract.declaration) + "_s" +
+           std::to_string(concrete.declaration);
+}
+
 void initializeLlvmTargets() {
     static std::once_flag initialized;
     std::call_once(initialized, [] {
@@ -151,13 +179,16 @@ class LlvmEmitter {
           options_(options), diagnostics_(diagnostics), context_(context), module_(module),
           builder_(context) {
         stringType_ = llvm::StructType::create(
-            context_, {pointerType(), sizeType(), llvm::Type::getInt8Ty(context_)}, "fdn.string");
-        frameType_ = llvm::StructType::create(context_,
-                                              {pointerType(), pointerType(), pointerType(),
-                                               pointerType(), llvm::Type::getInt32Ty(context_),
-                                               llvm::Type::getInt32Ty(context_),
-                                               llvm::Type::getInt8Ty(context_)},
-                                              "fdn.frame");
+            context_, {pointerType(), sizeType(), llvm::Type::getInt8Ty(context_)},
+            "fdn.string");
+        frameType_ = llvm::StructType::create(
+            context_, {pointerType(), pointerType(), pointerType(), pointerType(),
+                       llvm::Type::getInt32Ty(context_),
+                       llvm::Type::getInt32Ty(context_),
+                       llvm::Type::getInt8Ty(context_)},
+            "fdn.frame");
+        functionValueType_ = llvm::StructType::create(
+            context_, {pointerType(), pointerType(), pointerType()}, "fdn.function");
         channelType_ =
             llvm::StructType::create(context_, {pointerType(), pointerType()}, "fdn.channel");
     }
@@ -167,7 +198,7 @@ class LlvmEmitter {
             fail({}, "program has no LLVM entry point");
             return false;
         }
-        declareAggregateTypes();
+        prepareTypes();
         if (diagnostics_.hasErrors()) {
             return false;
         }
@@ -175,11 +206,14 @@ class LlvmEmitter {
         if (diagnostics_.hasErrors()) {
             return false;
         }
+        declareCallableSupport();
+        emitCallableSupport();
         for (FirFunctionId id = 0; id < program_.functions.size(); ++id) {
             if (program_.functions[id].hasBody) {
                 emitFunction(id);
             }
         }
+        emitNativeWrappers();
         if (!diagnostics_.hasErrors()) {
             emitMainWrapper();
         }
@@ -192,6 +226,15 @@ class LlvmEmitter {
         llvm::BasicBlock *continueBlock{};
     };
 
+    struct ContractSupport {
+        Type contract{invalidType};
+        Type concrete{invalidType};
+        std::vector<FirContractMethodTarget> targets;
+        llvm::Function *drop{};
+        std::vector<llvm::Function *> methods;
+        llvm::GlobalVariable *vtable{};
+    };
+
     llvm::PointerType *pointerType() const { return llvm::PointerType::get(context_, 0); }
 
     llvm::IntegerType *sizeType() const {
@@ -199,70 +242,103 @@ class LlvmEmitter {
         return llvm::IntegerType::get(context_, bits == 0 ? 64 : bits);
     }
 
-    void declareAggregateTypes() {
-        structTypes_.reserve(program_.structs.size());
-        for (std::size_t id = 0; id < program_.structs.size(); ++id) {
-            structTypes_.push_back(
-                llvm::StructType::create(context_, "fdn.struct." + std::to_string(id)));
+    void prepareTypes() {
+        structTypes_.resize(program_.structs.size());
+        for (FirStructId id = 0; id < program_.structs.size(); ++id) {
+            structTypes_[id] =
+                llvm::StructType::create(context_, "fdn.struct." + std::to_string(id));
         }
-        enumTypes_.reserve(program_.enums.size());
-        for (std::size_t id = 0; id < program_.enums.size(); ++id) {
-            enumTypes_.push_back(
-                llvm::StructType::create(context_, "fdn.enum." + std::to_string(id)));
+        enumTypes_.resize(program_.enums.size());
+        for (FirEnumId id = 0; id < program_.enums.size(); ++id) {
+            enumTypes_[id] =
+                llvm::StructType::create(context_, "fdn.enum." + std::to_string(id));
         }
-
-        for (std::size_t id = 0; id < program_.structs.size(); ++id) {
-            const auto &declaration = program_.structs[id];
-            std::vector<llvm::Type *> fields;
-            fields.reserve(declaration.fields.size() +
-                           (declaration.dropFunction.has_value() ? 1 : 0));
-            if (declaration.dropFunction.has_value()) {
-                fields.push_back(llvm::Type::getInt1Ty(context_));
-            }
-            for (const auto &field : declaration.fields) {
-                auto *type = typeOf(field.type);
-                if (type == nullptr || type->isVoidTy()) {
-                    fail(declaration.sourceSpan, "LLVM backend cannot lay out field " + field.name +
-                                                     " of " + declaration.name);
-                    type = llvm::Type::getInt8Ty(context_);
-                }
-                fields.push_back(type);
-            }
-            structTypes_[id]->setBody(fields);
+        contractTypes_.resize(program_.contracts.size());
+        contractVtableTypes_.resize(program_.contracts.size());
+        for (FirContractId id = 0; id < program_.contracts.size(); ++id) {
+            contractTypes_[id] = llvm::StructType::create(context_, {pointerType(), pointerType()},
+                                                          "fdn.contract." + std::to_string(id));
+            std::vector<llvm::Type *> entries(program_.contracts[id].methods.size() + 1,
+                                              pointerType());
+            contractVtableTypes_[id] = llvm::StructType::create(
+                context_, entries, "fdn.contract." + std::to_string(id) + ".vtable");
         }
-
-        for (std::size_t id = 0; id < program_.enums.size(); ++id) {
+        for (FirStructId id = 0; id < program_.structs.size(); ++id) {
+            layOutStruct(id);
+        }
+        for (FirEnumId id = 0; id < program_.enums.size(); ++id) {
             const auto &declaration = program_.enums[id];
-            std::vector<llvm::Type *> fields;
+            std::vector<llvm::Type *> fields{llvm::Type::getInt32Ty(context_)};
             fields.reserve(declaration.variants.size() + 1);
-            fields.push_back(llvm::Type::getInt32Ty(context_));
             for (const auto &variant : declaration.variants) {
-                llvm::Type *type = llvm::Type::getInt8Ty(context_);
-                if (variant.payload.has_value()) {
-                    type = typeOf(*variant.payload);
-                    if (type == nullptr || type->isVoidTy()) {
-                        fail({}, "LLVM backend cannot lay out variant " + variant.name + " of " +
-                                     declaration.name);
-                        type = llvm::Type::getInt8Ty(context_);
-                    }
+                auto *payload = variant.payload.has_value()
+                                    ? typeOf(*variant.payload)
+                                    : static_cast<llvm::Type *>(
+                                          llvm::Type::getInt8Ty(context_));
+                if (payload == nullptr || payload->isVoidTy()) {
+                    fail({}, "LLVM backend cannot lay out variant " + variant.name +
+                                 " of " + declaration.name);
+                    payload = llvm::Type::getInt8Ty(context_);
                 }
-                fields.push_back(type);
+                fields.push_back(payload);
             }
             enumTypes_[id]->setBody(fields);
         }
-        for (std::size_t id = 0; id < structTypes_.size(); ++id) {
+        for (FirStructId id = 0; id < program_.structs.size(); ++id) {
             if (!structTypes_[id]->isSized()) {
                 fail(program_.structs[id].sourceSpan,
                      "LLVM backend cannot resolve the layout of " + program_.structs[id].name);
             }
         }
-        for (std::size_t id = 0; id < enumTypes_.size(); ++id) {
+        for (FirEnumId id = 0; id < program_.enums.size(); ++id) {
             if (!enumTypes_[id]->isSized()) {
-                fail({}, "LLVM backend cannot resolve the layout of " + program_.enums[id].name);
+                fail({}, "LLVM backend cannot resolve the layout of " +
+                             program_.enums[id].name);
             }
+        }
+        closureEnvironmentTypes_.resize(program_.functions.size());
+        for (FirFunctionId id = 0; id < program_.functions.size(); ++id) {
+            const auto &function = program_.functions[id];
+            if (!function.closure) {
+                continue;
+            }
+            std::vector<llvm::Type *> fields;
+            for (const auto &local : function.locals) {
+                if (!local.capture) {
+                    continue;
+                }
+                fields.push_back(local.captureMode == FirCaptureMode::View ||
+                                         local.captureMode == FirCaptureMode::Edit
+                                     ? static_cast<llvm::Type *>(pointerType())
+                                     : typeOf(local.type));
+            }
+            if (fields.empty()) {
+                continue;
+            }
+            closureEnvironmentTypes_[id] =
+                llvm::StructType::create(context_, fields, closureEnvironmentName(program_, id));
         }
     }
 
+    void layOutStruct(FirStructId id) {
+        std::vector<llvm::Type *> fields;
+        if (program_.structs[id].dropFunction.has_value()) {
+            fields.push_back(llvm::Type::getInt1Ty(context_));
+        }
+        for (const auto &field : program_.structs[id].fields) {
+            auto *fieldType = typeOf(field.type);
+            if (fieldType == nullptr || fieldType->isVoidTy()) {
+                fail(program_.structs[id].sourceSpan,
+                     "LLVM backend does not support a field of " + program_.structs[id].name);
+                fieldType = llvm::Type::getInt8Ty(context_);
+            }
+            fields.push_back(fieldType);
+        }
+        if (fields.empty()) {
+            fields.push_back(llvm::Type::getInt8Ty(context_));
+        }
+        structTypes_[id]->setBody(fields);
+    }
     llvm::Type *typeOf(const Type &type) {
         switch (type.kind) {
         case TypeKind::Void:
@@ -294,14 +370,21 @@ class LlvmEmitter {
         case TypeKind::Raw:
         case TypeKind::RawConst:
         case TypeKind::Own:
-        case TypeKind::View:
-        case TypeKind::Edit:
         case TypeKind::Task:
         case TypeKind::Sender:
         case TypeKind::Receiver:
             return pointerType();
         case TypeKind::Channel:
             return channelType_;
+        case TypeKind::View:
+        case TypeKind::Edit:
+            if (type.arguments.size() == 1 && type.arguments.front().kind == TypeKind::Slice) {
+                return sliceType(type.arguments.front());
+            }
+            if (type.arguments.size() == 1 && type.arguments.front().kind == TypeKind::Contract) {
+                return typeOf(type.arguments.front());
+            }
+            return pointerType();
         case TypeKind::Array:
             if (type.arguments.size() == 1) {
                 if (auto *element = typeOf(type.arguments.front());
@@ -316,13 +399,259 @@ class LlvmEmitter {
         case TypeKind::Enum:
             return type.declaration < enumTypes_.size() ? enumTypes_[type.declaration] : nullptr;
         case TypeKind::Invalid:
-        case TypeKind::Slice:
         case TypeKind::Parameter:
-        case TypeKind::Contract:
-        case TypeKind::Function:
             return nullptr;
+        case TypeKind::Slice:
+            return sliceType(type);
+        case TypeKind::Contract:
+            return type.declaration < contractTypes_.size() ? contractTypes_[type.declaration]
+                                                            : nullptr;
+        case TypeKind::Function:
+            return functionValueType_;
         }
         return nullptr;
+    }
+
+    llvm::StructType *sliceType(const Type &slice) {
+        if (slice.arguments.size() != 1) {
+            return nullptr;
+        }
+        const auto key = llvmTypeKey(slice);
+        if (const auto found = sliceTypes_.find(key); found != sliceTypes_.end()) {
+            return found->second;
+        }
+        auto *element = typeOf(slice.arguments.front());
+        if (element == nullptr || element->isVoidTy()) {
+            return nullptr;
+        }
+        auto *result = llvm::StructType::create(context_, {pointerType(), sizeType()},
+                                                "fdn.slice." + safeName(key));
+        sliceTypes_.emplace(key, result);
+        return result;
+    }
+
+    llvm::FunctionType *callableType(const Type &type) {
+        if (type.kind != TypeKind::Function || type.arguments.empty()) {
+            return nullptr;
+        }
+        auto *result = typeOf(type.arguments.front());
+        if (result == nullptr) {
+            return nullptr;
+        }
+        std::vector<llvm::Type *> parameters{pointerType()};
+        for (std::size_t index = 1; index < type.arguments.size(); ++index) {
+            auto *parameter = typeOf(type.arguments[index]);
+            if (parameter == nullptr || parameter->isVoidTy()) {
+                return nullptr;
+            }
+            parameters.push_back(parameter);
+        }
+        return llvm::FunctionType::get(result, parameters, false);
+    }
+
+    void declareCallableSupport() {
+        functionAdapters_.resize(program_.functions.size());
+        closureDrops_.resize(program_.functions.size());
+        for (const auto &function : program_.functions) {
+            for (const auto &expression : function.expressions) {
+                if (const auto *value =
+                        std::get_if<FirFunctionValueExpression>(&expression.value)) {
+                    if (value->function >= program_.functions.size() ||
+                        functionAdapters_[value->function] != nullptr) {
+                        continue;
+                    }
+                    auto *signature = callableType(expression.type);
+                    if (signature == nullptr) {
+                        fail(expression.span,
+                             "LLVM backend cannot lower this function value signature");
+                        continue;
+                    }
+                    functionAdapters_[value->function] = llvm::Function::Create(
+                        signature, llvm::GlobalValue::InternalLinkage,
+                        functionAdapterName(program_, value->function), module_);
+                }
+                if (const auto *closure = std::get_if<FirClosureExpression>(&expression.value)) {
+                    if (closure->function >= program_.functions.size() ||
+                        closureEnvironmentTypes_[closure->function] == nullptr ||
+                        closureDrops_[closure->function] != nullptr) {
+                        continue;
+                    }
+                    closureDrops_[closure->function] = llvm::Function::Create(
+                        llvm::FunctionType::get(llvm::Type::getVoidTy(context_), {pointerType()},
+                                                false),
+                        llvm::GlobalValue::InternalLinkage,
+                        closureDropName(program_, closure->function), module_);
+                }
+                if (const auto *contract = std::get_if<FirContractExpression>(&expression.value)) {
+                    declareContractSupport(*contract, expression.span);
+                }
+            }
+        }
+    }
+
+    void declareContractSupport(const FirContractExpression &expression, SourceSpan span) {
+        if (expression.contractType.kind != TypeKind::Contract ||
+            expression.contractType.declaration >= program_.contracts.size()) {
+            fail(span, "LLVM backend received an invalid contract conversion");
+            return;
+        }
+        const auto key =
+            llvmTypeKey(expression.contractType) + ':' + llvmTypeKey(expression.concreteType);
+        if (contractSupports_.contains(key)) {
+            return;
+        }
+        ContractSupport support;
+        support.contract = expression.contractType;
+        support.concrete = expression.concreteType;
+        support.targets = expression.methods;
+        auto *dropSignature =
+            llvm::FunctionType::get(llvm::Type::getVoidTy(context_), {pointerType()}, false);
+        support.drop = llvm::Function::Create(
+            dropSignature, llvm::GlobalValue::InternalLinkage,
+            vtableName(support.contract, support.concrete) + "_drop", module_);
+        const auto &contract = program_.contracts[support.contract.declaration];
+        if (contract.methods.size() != support.targets.size()) {
+            fail(span, "LLVM backend received an incomplete contract vtable");
+            return;
+        }
+        for (std::size_t method = 0; method < contract.methods.size(); ++method) {
+            if (support.targets[method].contractDefault ||
+                !support.targets[method].delegatePath.empty()) {
+                fail(span,
+                     "LLVM backend has not lowered delegated or default contract methods yet");
+                return;
+            }
+            std::vector<llvm::Type *> parameters{pointerType()};
+            for (const auto &parameter : contract.methods[method].parameters) {
+                auto *type = typeOf(parameter);
+                if (type == nullptr || type->isVoidTy()) {
+                    fail(span, "LLVM backend cannot lower a contract method parameter");
+                    return;
+                }
+                parameters.push_back(type);
+            }
+            auto *result = typeOf(contract.methods[method].returnType);
+            if (result == nullptr) {
+                fail(span, "LLVM backend cannot lower a contract method result");
+                return;
+            }
+            support.methods.push_back(llvm::Function::Create(
+                llvm::FunctionType::get(result, parameters, false),
+                llvm::GlobalValue::InternalLinkage,
+                vtableName(support.contract, support.concrete) + "_m" + std::to_string(method),
+                module_));
+        }
+        std::vector<llvm::Constant *> entries;
+        entries.push_back(support.drop);
+        entries.insert(entries.end(), support.methods.begin(), support.methods.end());
+        support.vtable = new llvm::GlobalVariable(
+            module_, contractVtableTypes_[support.contract.declaration], true,
+            llvm::GlobalValue::InternalLinkage,
+            llvm::ConstantStruct::get(contractVtableTypes_[support.contract.declaration], entries),
+            vtableName(support.contract, support.concrete));
+        contractSupports_.emplace(key, std::move(support));
+    }
+
+    void emitCallableSupport() {
+        for (FirFunctionId id = 0; id < functionAdapters_.size(); ++id) {
+            if (functionAdapters_[id] != nullptr) {
+                emitFunctionAdapter(id);
+            }
+            if (closureDrops_[id] != nullptr) {
+                emitClosureDrop(id);
+            }
+        }
+        for (auto &[key, support] : contractSupports_) {
+            static_cast<void>(key);
+            emitContractSupport(support);
+        }
+    }
+
+    void emitFunctionAdapter(FirFunctionId id) {
+        auto *adapter = functionAdapters_[id];
+        auto *block = llvm::BasicBlock::Create(context_, "entry", adapter);
+        llvm::IRBuilder<> builder(block);
+        std::vector<llvm::Value *> arguments;
+        auto argument = adapter->arg_begin();
+        ++argument;
+        for (; argument != adapter->arg_end(); ++argument) {
+            arguments.push_back(&*argument);
+        }
+        auto *call = builder.CreateCall(functions_[id], arguments);
+        if (program_.functions[id].diverges) {
+            builder.CreateUnreachable();
+        } else if (program_.functions[id].returnType == voidType) {
+            builder.CreateRetVoid();
+        } else {
+            builder.CreateRet(call);
+        }
+    }
+
+    void emitClosureDrop(FirFunctionId id) {
+        auto *function = closureDrops_[id];
+        auto *block = llvm::BasicBlock::Create(context_, "entry", function);
+        llvm::IRBuilderBase::InsertPointGuard guard(builder_);
+        builder_.SetInsertPoint(block);
+        auto *environment = function->getArg(0);
+        const auto &target = program_.functions[id];
+        std::size_t captureIndex{};
+        for (FirLocalId local = 0; local < target.locals.size(); ++local) {
+            const auto &capture = target.locals[local];
+            if (!capture.capture) {
+                continue;
+            }
+            auto *field =
+                builder_.CreateStructGEP(closureEnvironmentTypes_[id], environment, captureIndex++);
+            if (capture.captureMode != FirCaptureMode::View &&
+                capture.captureMode != FirCaptureMode::Edit) {
+                dropAddress(field, capture.type);
+            }
+        }
+        builder_.CreateCall(
+            runtimeFunction("fdn_dealloc", llvm::Type::getVoidTy(context_), {pointerType()}),
+            {environment});
+        builder_.CreateRetVoid();
+    }
+
+    void emitContractSupport(ContractSupport &support) {
+        {
+            auto *block = llvm::BasicBlock::Create(context_, "entry", support.drop);
+            llvm::IRBuilderBase::InsertPointGuard guard(builder_);
+            builder_.SetInsertPoint(block);
+            auto *data = support.drop->getArg(0);
+            auto *finish = llvm::BasicBlock::Create(context_, "drop", support.drop);
+            auto *done = llvm::BasicBlock::Create(context_, "done", support.drop);
+            builder_.CreateCondBr(
+                builder_.CreateICmpEQ(data, llvm::ConstantPointerNull::get(pointerType())), done,
+                finish);
+            builder_.SetInsertPoint(finish);
+            dropAddress(data, support.concrete);
+            builder_.CreateCall(
+                runtimeFunction("fdn_dealloc", llvm::Type::getVoidTy(context_), {pointerType()}),
+                {data});
+            builder_.CreateBr(done);
+            builder_.SetInsertPoint(done);
+            builder_.CreateRetVoid();
+        }
+        const auto &contract = program_.contracts[support.contract.declaration];
+        for (std::size_t method = 0; method < support.methods.size(); ++method) {
+            auto *adapter = support.methods[method];
+            auto *block = llvm::BasicBlock::Create(context_, "entry", adapter);
+            llvm::IRBuilder<> builder(block);
+            const auto target = support.targets[method].function;
+            std::vector<llvm::Value *> arguments{adapter->getArg(0)};
+            for (std::size_t index = 1; index < adapter->arg_size(); ++index) {
+                arguments.push_back(adapter->getArg(index));
+            }
+            auto *call = builder.CreateCall(functions_[target], arguments);
+            if (program_.functions[target].diverges) {
+                builder.CreateUnreachable();
+            } else if (contract.methods[method].returnType == voidType) {
+                builder.CreateRetVoid();
+            } else {
+                builder.CreateRet(call);
+            }
+        }
     }
 
     llvm::FunctionType *functionType(const FirFunction &function) {
@@ -335,8 +664,12 @@ class LlvmEmitter {
             return nullptr;
         }
         std::vector<llvm::Type *> parameters;
-        parameters.reserve(function.parameters.size() + (indirectResult ? 1 : 0));
+        parameters.reserve(function.parameters.size() + (indirectResult ? 1 : 0) +
+                           (function.closure ? 1 : 0));
         if (indirectResult) {
+            parameters.push_back(pointerType());
+        }
+        if (function.closure) {
             parameters.push_back(pointerType());
         }
         for (const auto local : function.parameters) {
@@ -365,9 +698,8 @@ class LlvmEmitter {
                 return nullptr;
             }
         }
-        if (function.closure || function.task || function.callback ||
-            function.stateTransition.has_value() || function.stateTimeout.has_value() ||
-            function.workflow.has_value()) {
+        if (function.task || function.callback || function.stateTransition.has_value() ||
+            function.stateTimeout.has_value() || function.workflow.has_value()) {
             fail(function.sourceSpan,
                  "LLVM backend has not lowered the specialized function " + function.name);
             return nullptr;
@@ -390,17 +722,15 @@ class LlvmEmitter {
 
     void declareFunctions() {
         functions_.resize(program_.functions.size());
+        nativeFunctions_.resize(program_.functions.size());
         for (FirFunctionId id = 0; id < program_.functions.size(); ++id) {
             const auto &function = program_.functions[id];
             auto *signature = functionType(function);
             if (signature == nullptr) {
                 continue;
             }
-            const auto symbol = !function.hasBody && function.cSymbol.has_value()
-                                    ? *function.cSymbol
-                                    : functionName(program_, id);
             auto *declaration = llvm::Function::Create(
-                signature, llvm::GlobalValue::ExternalLinkage, symbol, module_);
+                signature, llvm::GlobalValue::ExternalLinkage, functionName(program_, id), module_);
             if (function.diverges) {
                 declaration->addFnAttr(llvm::Attribute::NoReturn);
             }
@@ -409,7 +739,38 @@ class LlvmEmitter {
                                                  context_, typeOf(function.returnType)));
             }
             functions_[id] = declaration;
+            if (function.cSymbol.has_value()) {
+                auto *nativeSignature = nativeFunctionType(function);
+                if (nativeSignature != nullptr) {
+                    nativeFunctions_[id] =
+                        llvm::Function::Create(nativeSignature, llvm::GlobalValue::ExternalLinkage,
+                                               *function.cSymbol, module_);
+                }
+            }
         }
+    }
+
+    llvm::Type *abiTypeOf(const Type &type) { return typeOf(type); }
+
+    llvm::FunctionType *nativeFunctionType(const FirFunction &function) {
+        auto *result =
+            function.diverges ? llvm::Type::getVoidTy(context_) : abiTypeOf(function.returnType);
+        if (result == nullptr) {
+            fail(function.sourceSpan,
+                 "LLVM backend does not support the C ABI return type of " + function.name);
+            return nullptr;
+        }
+        std::vector<llvm::Type *> parameters;
+        for (const auto local : function.parameters) {
+            auto *parameter = abiTypeOf(function.locals[local].type);
+            if (parameter == nullptr || parameter->isVoidTy()) {
+                fail(function.sourceSpan,
+                     "LLVM backend does not support a C ABI parameter of " + function.name);
+                return nullptr;
+            }
+            parameters.push_back(parameter);
+        }
+        return llvm::FunctionType::get(result, parameters, false);
     }
 
     void emitFunction(FirFunctionId id) {
@@ -422,7 +783,11 @@ class LlvmEmitter {
         auto *entry = llvm::BasicBlock::Create(context_, "entry", llvmFunction_);
         builder_.SetInsertPoint(entry);
         locals_.assign(function_->locals.size(), nullptr);
+        captureAddresses_.assign(function_->locals.size(), nullptr);
         for (FirLocalId local = 0; local < function_->locals.size(); ++local) {
+            if (function_->locals[local].capture) {
+                continue;
+            }
             auto *type = typeOf(function_->locals[local].type);
             if (type == nullptr || type->isVoidTy()) {
                 fail(function_->sourceSpan,
@@ -435,10 +800,31 @@ class LlvmEmitter {
         if (diagnostics_.hasErrors()) {
             return;
         }
+        auto argument = llvmFunction_->arg_begin();
+        if (function_->closure) {
+            auto *environment = &*argument++;
+            auto *environmentType = closureEnvironmentTypes_[id];
+            std::size_t captureIndex{};
+            for (FirLocalId local = 0; local < function_->locals.size(); ++local) {
+                const auto &capture = function_->locals[local];
+                if (!capture.capture) {
+                    continue;
+                }
+                auto *field =
+                    builder_.CreateStructGEP(environmentType, environment, captureIndex++);
+                if (capture.captureMode == FirCaptureMode::View ||
+                    capture.captureMode == FirCaptureMode::Edit) {
+                    captureAddresses_[local] =
+                        builder_.CreateLoad(pointerType(), field, "capture.address");
+                } else {
+                    captureAddresses_[local] = field;
+                }
+            }
+        }
         std::size_t parameterIndex{};
-        for (auto &argument : llvmFunction_->args()) {
+        for (; argument != llvmFunction_->arg_end(); ++argument) {
             const auto local = function_->parameters[parameterIndex++];
-            builder_.CreateStore(&argument, locals_[local]);
+            builder_.CreateStore(&*argument, locals_[local]);
         }
         frame_ = builder_.CreateAlloca(frameType_, nullptr, "frame");
         enterFrame();
@@ -525,6 +911,8 @@ class LlvmEmitter {
             return emitIf(*branch);
         } else if (const auto *loop = std::get_if<FirWhileStatement>(&statement.value)) {
             emitWhile(*loop);
+        } else if (const auto *loop = std::get_if<FirForStatement>(&statement.value)) {
+            emitFor(*loop, statement.span);
         } else if (const auto *broken = std::get_if<FirBreakStatement>(&statement.value)) {
             dropLocals(broken->drops);
             if (loops_.empty()) {
@@ -723,6 +1111,58 @@ class LlvmEmitter {
         builder_.SetInsertPoint(exitBlock);
     }
 
+    void emitFor(const FirForStatement &loop, SourceSpan span) {
+        if (loop.next.has_value()) {
+            fail(span, "LLVM backend has not lowered iterator for loops yet");
+            return;
+        }
+        const auto sequence = emitExpression(loop.sequence);
+        if (sequence.diverges || loop.sequenceStorage >= locals_.size() ||
+            loop.index >= locals_.size() || loop.value >= locals_.size()) {
+            return;
+        }
+        builder_.CreateStore(sequence.value, locals_[loop.sequenceStorage]);
+        builder_.CreateStore(llvm::ConstantInt::get(sizeType(), 0), locals_[loop.index]);
+        auto *conditionBlock = llvm::BasicBlock::Create(context_, "for.condition", llvmFunction_);
+        auto *bodyBlock = llvm::BasicBlock::Create(context_, "for.body", llvmFunction_);
+        auto *nextBlock = llvm::BasicBlock::Create(context_, "for.next", llvmFunction_);
+        auto *exitBlock = llvm::BasicBlock::Create(context_, "for.end", llvmFunction_);
+        builder_.CreateBr(conditionBlock);
+        builder_.SetInsertPoint(conditionBlock);
+        auto *index = loadLocal(loop.index);
+        auto *length = builder_.CreateExtractValue(loadLocal(loop.sequenceStorage), 1);
+        builder_.CreateCondBr(builder_.CreateICmpULT(index, length), bodyBlock, exitBlock);
+        builder_.SetInsertPoint(bodyBlock);
+        auto *data = builder_.CreateExtractValue(loadLocal(loop.sequenceStorage), 0);
+        const auto &valueType = function_->locals[loop.value].type;
+        auto *elementType = valueType.kind == TypeKind::View || valueType.kind == TypeKind::Edit
+                                ? typeOf(valueType.arguments.front())
+                                : typeOf(valueType);
+        auto *element = builder_.CreateInBoundsGEP(elementType, data, index);
+        if (valueType.kind == TypeKind::View || valueType.kind == TypeKind::Edit) {
+            builder_.CreateStore(element, locals_[loop.value]);
+        } else {
+            builder_.CreateStore(builder_.CreateLoad(elementType, element), locals_[loop.value]);
+        }
+        loops_.push_back({exitBlock, nextBlock});
+        const auto exits = emitBlock(loop.body);
+        loops_.pop_back();
+        if (!exits) {
+            builder_.CreateBr(nextBlock);
+        }
+        builder_.SetInsertPoint(nextBlock);
+        auto *next = builder_.CreateCall(
+            runtimeFunction("fdn_usize_add", sizeType(), {sizeType(), sizeType()}),
+            {loadLocal(loop.index), llvm::ConstantInt::get(sizeType(), 1)});
+        builder_.CreateStore(next, locals_[loop.index]);
+        builder_.CreateBr(conditionBlock);
+        builder_.SetInsertPoint(exitBlock);
+        if (loop.ownsSequence) {
+            dropValue(loadLocal(loop.sequenceStorage),
+                      function_->locals[loop.sequenceStorage].type);
+        }
+    }
+
     EmittedValue emitExpression(FirExpressionId id) {
         if (id >= function_->expressions.size()) {
             fail(function_->sourceSpan, "LLVM backend received an invalid expression");
@@ -759,6 +1199,9 @@ class LlvmEmitter {
                 value, llvm::ConstantInt::get(llvm::Type::getInt8Ty(context_), 0), 2);
             return {value, false};
         }
+        if (const auto *array = std::get_if<FirArrayExpression>(&expression.value)) {
+            return emitArray(*array, expression.type);
+        }
         if (const auto *local = std::get_if<FirLocalExpression>(&expression.value)) {
             return {loadLocal(local->local), false};
         }
@@ -768,17 +1211,31 @@ class LlvmEmitter {
             if (address == nullptr || target == nullptr) {
                 return {};
             }
+            const auto &localType = function_->locals[read->local].type;
+            if (localType.kind == TypeKind::View && localType.arguments.size() == 1 &&
+                (localType.arguments.front().kind == TypeKind::Slice ||
+                 localType.arguments.front().kind == TypeKind::Contract)) {
+                return {address, false};
+            }
             return {builder_.CreateLoad(target, address, "read"), false};
         }
         if (const auto *moved = std::get_if<FirMoveExpression>(&expression.value)) {
-            if (moved->local >= locals_.size() || locals_[moved->local] == nullptr) {
+            auto *address = localAddress(moved->local);
+            if (address == nullptr) {
                 fail(expression.span, "LLVM backend received an invalid move source");
                 return {};
             }
-            return {moveFromAddress(locals_[moved->local], expression.type), false};
+            return {moveFromAddress(address, expression.type), false};
         }
         if (const auto *ownership = std::get_if<FirOwnershipExpression>(&expression.value)) {
             return emitOwnership(*ownership, expression.type, expression.span);
+        }
+        if (const auto *functionValue =
+                std::get_if<FirFunctionValueExpression>(&expression.value)) {
+            return emitFunctionValue(*functionValue, expression.type, expression.span);
+        }
+        if (const auto *closure = std::get_if<FirClosureExpression>(&expression.value)) {
+            return emitClosure(*closure, expression.type, expression.span);
         }
         if (const auto *unary = std::get_if<FirUnaryExpression>(&expression.value)) {
             return emitUnary(*unary, expression.type, expression.span);
@@ -788,6 +1245,9 @@ class LlvmEmitter {
         }
         if (const auto *call = std::get_if<FirCallExpression>(&expression.value)) {
             return emitCall(*call, expression.type, expression.span);
+        }
+        if (const auto *contract = std::get_if<FirContractExpression>(&expression.value)) {
+            return emitContract(*contract, expression.type, expression.span);
         }
         if (const auto *literal = std::get_if<FirStructExpression>(&expression.value)) {
             return emitStruct(*literal, expression.span);
@@ -801,6 +1261,16 @@ class LlvmEmitter {
         if (const auto *constructor = std::get_if<FirEnumExpression>(&expression.value)) {
             return emitEnum(*constructor, expression.span);
         }
+        if (const auto *index = std::get_if<FirIndexExpression>(&expression.value)) {
+            auto *address = emitIndexAddress(*index, expression.span);
+            auto *type = typeOf(expression.type);
+            return address == nullptr || type == nullptr
+                       ? EmittedValue{}
+                       : EmittedValue{builder_.CreateLoad(type, address, "element.value"), false};
+        }
+        if (const auto *pointer = std::get_if<FirRawPointerExpression>(&expression.value)) {
+            return emitRawPointer(*pointer, expression.span);
+        }
         if (const auto *conditional = std::get_if<FirConditionalExpression>(&expression.value)) {
             return emitConditional(*conditional, expression.type);
         }
@@ -811,48 +1281,167 @@ class LlvmEmitter {
         return {};
     }
 
+    EmittedValue emitArray(const FirArrayExpression &array, const Type &type) {
+        auto *arrayType = llvm::dyn_cast_or_null<llvm::ArrayType>(typeOf(type));
+        if (arrayType == nullptr || array.elements.size() > arrayType->getNumElements()) {
+            fail({}, "LLVM backend received an invalid array literal");
+            return {};
+        }
+        auto *storage = builder_.CreateAlloca(arrayType, nullptr, "array.literal");
+        builder_.CreateStore(llvm::Constant::getNullValue(arrayType), storage);
+        for (std::size_t index = 0; index < array.elements.size(); ++index) {
+            const auto value = emitExpression(array.elements[index]);
+            if (value.diverges) {
+                return value;
+            }
+            auto *address = builder_.CreateInBoundsGEP(
+                arrayType, storage,
+                {llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0),
+                 llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), index)});
+            builder_.CreateStore(value.value, address);
+        }
+        return {builder_.CreateLoad(arrayType, storage), false};
+    }
+
+    EmittedValue emitFunctionValue(const FirFunctionValueExpression &function, const Type &,
+                                   SourceSpan span) {
+        if (function.function >= functionAdapters_.size() ||
+            functionAdapters_[function.function] == nullptr) {
+            fail(span, "LLVM backend received an invalid function value");
+            return {};
+        }
+        llvm::Value *value = llvm::PoisonValue::get(functionValueType_);
+        value = builder_.CreateInsertValue(value, llvm::ConstantPointerNull::get(pointerType()), 0);
+        value = builder_.CreateInsertValue(value, functionAdapters_[function.function], 1);
+        value = builder_.CreateInsertValue(value, llvm::ConstantPointerNull::get(pointerType()), 2);
+        return {value, false};
+    }
+
+    EmittedValue emitClosure(const FirClosureExpression &closure, const Type &, SourceSpan span) {
+        if (closure.function >= functions_.size() || functions_[closure.function] == nullptr) {
+            fail(span, "LLVM backend received an invalid closure");
+            return {};
+        }
+        llvm::Value *environment = llvm::ConstantPointerNull::get(pointerType());
+        llvm::Value *drop = llvm::ConstantPointerNull::get(pointerType());
+        if (!closure.captures.empty()) {
+            auto *environmentType = closureEnvironmentTypes_[closure.function];
+            if (environmentType == nullptr) {
+                fail(span, "LLVM backend received an invalid closure environment");
+                return {};
+            }
+            environment = allocate(environmentType, "closure.environment");
+            const auto &target = program_.functions[closure.function];
+            std::size_t captureIndex{};
+            FirLocalId targetLocal{};
+            for (const auto &capture : closure.captures) {
+                while (targetLocal < target.locals.size() && !target.locals[targetLocal].capture) {
+                    ++targetLocal;
+                }
+                if (targetLocal >= target.locals.size()) {
+                    fail(span, "LLVM backend received an invalid closure capture");
+                    return {};
+                }
+                auto *field =
+                    builder_.CreateStructGEP(environmentType, environment, captureIndex++);
+                if (capture.mode == FirCaptureMode::View || capture.mode == FirCaptureMode::Edit) {
+                    auto *address = localAddress(capture.local);
+                    if (address == nullptr) {
+                        fail(span, "LLVM backend cannot borrow this closure capture");
+                        return {};
+                    }
+                    builder_.CreateStore(address, field);
+                } else {
+                    auto *value = loadLocal(capture.local);
+                    builder_.CreateStore(value, field);
+                    if (capture.mode == FirCaptureMode::Own) {
+                        builder_.CreateStore(llvm::Constant::getNullValue(value->getType()),
+                                             localAddress(capture.local));
+                    }
+                }
+                ++targetLocal;
+            }
+            drop = closureDrops_[closure.function];
+        }
+        llvm::Value *value = llvm::PoisonValue::get(functionValueType_);
+        value = builder_.CreateInsertValue(value, environment, 0);
+        value = builder_.CreateInsertValue(value, functions_[closure.function], 1);
+        value = builder_.CreateInsertValue(value, drop, 2);
+        return {value, false};
+    }
+
     EmittedValue emitOwnership(const FirOwnershipExpression &ownership, const Type &type,
                                SourceSpan span) {
+        if (ownership.operand >= function_->expressions.size()) {
+            fail(span, "LLVM backend received an invalid ownership operand");
+            return {};
+        }
+        const auto &operandType = function_->expressions[ownership.operand].type;
         if (ownership.operation == FirOwnershipOperator::View && type.kind != TypeKind::View) {
             return emitExpression(ownership.operand);
         }
-        const auto &operandType = function_->expressions[ownership.operand].type;
         if (ownership.operation == FirOwnershipOperator::Own) {
-            const auto operand = emitExpression(ownership.operand);
-            if (operand.diverges) {
-                return operand;
-            }
             if (type.kind != TypeKind::Own || type.arguments.size() != 1) {
                 fail(span, "LLVM backend received an invalid own expression");
                 return {};
+            }
+            const auto operand = emitExpression(ownership.operand);
+            if (operand.diverges) {
+                return operand;
             }
             auto *target = typeOf(type.arguments.front());
             if (target == nullptr || !target->isSized()) {
                 fail(span, "LLVM backend cannot allocate this owned value");
                 return {};
             }
-            const auto bytes = module_.getDataLayout().getTypeAllocSize(target);
-            if (bytes.isScalable()) {
-                fail(span, "LLVM backend cannot allocate a scalable owned value");
-                return {};
-            }
-            setLocation(span);
-            auto *storage =
-                builder_.CreateCall(runtimeFunction("fdn_alloc", pointerType(), {sizeType()}),
-                                    {llvm::ConstantInt::get(sizeType(), bytes.getFixedValue())});
+            auto *storage = allocate(target, "owned.value");
             builder_.CreateStore(operand.value, storage);
             return {storage, false};
         }
-
+        if (type.arguments.size() == 1 && type.arguments.front().kind == TypeKind::Slice) {
+            if (operandType.kind == TypeKind::View || operandType.kind == TypeKind::Edit ||
+                operandType.kind == TypeKind::Slice) {
+                return emitExpression(ownership.operand);
+            }
+            auto array = operandType;
+            llvm::Value *address{};
+            if (array.kind == TypeKind::Own && array.arguments.size() == 1) {
+                const auto operand = emitExpression(ownership.operand);
+                if (operand.diverges) {
+                    return operand;
+                }
+                address = operand.value;
+                array = array.arguments.front();
+            } else {
+                address = emitAddress(ownership.operand);
+            }
+            if (array.kind != TypeKind::Array || array.arguments.size() != 1 ||
+                address == nullptr) {
+                fail(span, "LLVM backend cannot form this slice borrow");
+                return {};
+            }
+            auto *arrayType = llvm::dyn_cast_or_null<llvm::ArrayType>(typeOf(array));
+            auto *slice = typeOf(type);
+            if (arrayType == nullptr || slice == nullptr) {
+                fail(span, "LLVM backend cannot lay out this slice borrow");
+                return {};
+            }
+            auto *data = builder_.CreateInBoundsGEP(
+                arrayType, address,
+                {llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0),
+                 llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0)});
+            llvm::Value *value = llvm::PoisonValue::get(slice);
+            value = builder_.CreateInsertValue(value, data, 0);
+            value = builder_.CreateInsertValue(
+                value, llvm::ConstantInt::get(sizeType(), array.declaration), 1);
+            return {value, false};
+        }
         if (operandType.kind == TypeKind::Own || operandType.kind == TypeKind::View ||
             operandType.kind == TypeKind::Edit) {
             return emitExpression(ownership.operand);
         }
-        if (isPlaceExpression(ownership.operand)) {
-            if (auto *address = emitAddress(ownership.operand); address != nullptr) {
-                return {address, false};
-            }
-            return {};
+        if (auto *address = emitAddress(ownership.operand); address != nullptr) {
+            return {address, false};
         }
         const auto operand = emitExpression(ownership.operand);
         if (operand.diverges) {
@@ -863,6 +1452,30 @@ class LlvmEmitter {
             return {};
         }
         return {valueAddress(operand.value, operandType, "borrow.temporary"), false};
+    }
+
+    EmittedValue emitContract(const FirContractExpression &contract, const Type &type,
+                              SourceSpan span) {
+        const auto value = emitExpression(contract.value);
+        if (value.diverges) {
+            return value;
+        }
+        const auto key =
+            llvmTypeKey(contract.contractType) + ':' + llvmTypeKey(contract.concreteType);
+        const auto found = contractSupports_.find(key);
+        if (found == contractSupports_.end()) {
+            fail(span, "LLVM backend received an unregistered contract conversion");
+            return {};
+        }
+        llvm::Value *contractValue = llvm::PoisonValue::get(typeOf(contract.contractType));
+        contractValue = builder_.CreateInsertValue(contractValue, value.value, 0);
+        contractValue = builder_.CreateInsertValue(contractValue, found->second.vtable, 1);
+        if (type.kind != TypeKind::Own) {
+            return {contractValue, false};
+        }
+        auto *storage = allocate(typeOf(contract.contractType), "owned.contract");
+        builder_.CreateStore(contractValue, storage);
+        return {storage, false};
     }
 
     EmittedValue emitStruct(const FirStructExpression &literal, SourceSpan span) {
@@ -1126,6 +1739,19 @@ class LlvmEmitter {
                 false};
     }
 
+    llvm::Value *allocate(llvm::Type *type, std::string_view name) {
+        if (type == nullptr || !type->isSized()) {
+            fail(function_->sourceSpan, "LLVM backend cannot allocate this value");
+            return nullptr;
+        }
+        llvm::Value *size = llvm::ConstantExpr::getSizeOf(type);
+        if (size->getType() != sizeType()) {
+            size = builder_.CreateIntCast(size, sizeType(), false);
+        }
+        return builder_.CreateCall(runtimeFunction("fdn_alloc", pointerType(), {sizeType()}),
+                                   {size}, name);
+    }
+
     EmittedValue emitUnary(const FirUnaryExpression &unary, const Type &type, SourceSpan span) {
         const auto operand = emitExpression(unary.operand);
         if (operand.diverges) {
@@ -1182,6 +1808,12 @@ class LlvmEmitter {
         case FirBinaryOperator::Multiply:
         case FirBinaryOperator::Divide:
         case FirBinaryOperator::Remainder:
+            if ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) &&
+                binary.operation == FirBinaryOperator::Add && type.arguments.size() == 1) {
+                return {builder_.CreateInBoundsGEP(typeOf(type.arguments.front()), left.value,
+                                                   integerToSize(right.value)),
+                        false};
+            }
             if (type == stringType && binary.operation == FirBinaryOperator::Add) {
                 auto *result = builder_.CreateAlloca(stringType_, nullptr, "string.concat.result");
                 builder_.CreateCall(
@@ -1354,6 +1986,21 @@ class LlvmEmitter {
         values.reserve(arguments.size());
         std::transform(arguments.begin(), arguments.end(), std::back_inserter(values),
                        [](const auto &argument) { return argument.value; });
+        if (!call.argumentParameters.empty()) {
+            if (call.argumentParameters.size() != values.size()) {
+                fail(span, "LLVM call argument mapping has the wrong size");
+                return {};
+            }
+            std::vector<llvm::Value *> ordered(values.size());
+            for (std::size_t index = 0; index < values.size(); ++index) {
+                if (call.argumentParameters[index] >= ordered.size()) {
+                    fail(span, "LLVM call argument mapping is invalid");
+                    return {};
+                }
+                ordered[call.argumentParameters[index]] = values[index];
+            }
+            values = std::move(ordered);
+        }
         setLocation(span);
         llvm::Value *result{};
         switch (call.kind) {
@@ -1395,10 +2042,26 @@ class LlvmEmitter {
             builder_.CreateUnreachable();
             return {llvm::PoisonValue::get(llvm::Type::getInt8Ty(context_)), true};
         case FirCallKind::Len:
-            if (values.size() == 1 &&
-                function_->expressions[call.arguments.front()].type == stringType) {
-                result = builder_.CreateExtractValue(values.front(), 1);
-                break;
+            if (values.size() == 1) {
+                auto sequence = function_->expressions[call.arguments.front()].type;
+                if (sequence == stringType) {
+                    result = builder_.CreateExtractValue(values.front(), 1);
+                    break;
+                }
+                if (sequence.kind == TypeKind::Array) {
+                    result = llvm::ConstantInt::get(sizeType(), sequence.declaration);
+                    break;
+                }
+                if (sequence.kind == TypeKind::Slice) {
+                    result = builder_.CreateExtractValue(values.front(), 1);
+                    break;
+                }
+                if ((sequence.kind == TypeKind::View || sequence.kind == TypeKind::Edit) &&
+                    sequence.arguments.size() == 1 &&
+                    sequence.arguments.front().kind == TypeKind::Slice) {
+                    result = builder_.CreateExtractValue(values.front(), 1);
+                    break;
+                }
             }
             fail(span, "LLVM len call does not support this value yet");
             return {};
@@ -1424,10 +2087,65 @@ class LlvmEmitter {
                 return {};
             }
             break;
-        case FirCallKind::FunctionValue:
-        case FirCallKind::Contract:
-            fail(span, "LLVM backend has not lowered this call kind yet");
-            return {};
+        case FirCallKind::FunctionValue: {
+            if (call.local >= function_->locals.size()) {
+                fail(span, "LLVM backend received an invalid callable local");
+                return {};
+            }
+            auto callableTypeValue = function_->locals[call.local].type;
+            llvm::Value *callable = loadLocal(call.local);
+            if ((callableTypeValue.kind == TypeKind::View ||
+                 callableTypeValue.kind == TypeKind::Edit) &&
+                callableTypeValue.arguments.size() == 1) {
+                callableTypeValue = callableTypeValue.arguments.front();
+                callable = builder_.CreateLoad(functionValueType_, callable);
+            }
+            auto *signature = callableType(callableTypeValue);
+            if (signature == nullptr) {
+                fail(span, "LLVM backend cannot lower this callable signature");
+                return {};
+            }
+            auto *environment = builder_.CreateExtractValue(callable, 0);
+            auto *target = builder_.CreateExtractValue(callable, 1);
+            values.insert(values.begin(), environment);
+            result = builder_.CreateCall(signature, target, values);
+            break;
+        }
+        case FirCallKind::Contract: {
+            if (values.empty() || call.contract >= program_.contracts.size() ||
+                call.method >= program_.contracts[call.contract].methods.size()) {
+                fail(span, "LLVM backend received an invalid contract call");
+                return {};
+            }
+            const auto receiverType = function_->expressions[call.arguments.front()].type;
+            auto *receiver = values.front();
+            const auto boxed = receiverType.kind == TypeKind::Own;
+            auto *contractType = contractTypes_[call.contract];
+            if (boxed) {
+                receiver = builder_.CreateLoad(contractType, receiver);
+            }
+            auto *data = builder_.CreateExtractValue(receiver, 0);
+            auto *vtable = builder_.CreateExtractValue(receiver, 1);
+            auto *methodAddress = builder_.CreateStructGEP(contractVtableTypes_[call.contract],
+                                                           vtable, call.method + 1);
+            auto *target = builder_.CreateLoad(pointerType(), methodAddress);
+            const auto &method = program_.contracts[call.contract].methods[call.method];
+            std::vector<llvm::Type *> parameterTypes{pointerType()};
+            for (const auto &parameter : method.parameters) {
+                parameterTypes.push_back(typeOf(parameter));
+            }
+            auto *signature =
+                llvm::FunctionType::get(typeOf(method.returnType), parameterTypes, false);
+            std::vector<llvm::Value *> methodArguments{data};
+            methodArguments.insert(methodArguments.end(), values.begin() + 1, values.end());
+            result = builder_.CreateCall(signature, target, methodArguments);
+            if (contractCallConsumesReceiver(call)) {
+                builder_.CreateCall(runtimeFunction("fdn_dealloc", llvm::Type::getVoidTy(context_),
+                                                    {pointerType()}),
+                                    {values.front()});
+            }
+            break;
+        }
         }
         for (std::size_t index = 0; index < values.size() && index < call.argumentDrops.size();
              ++index) {
@@ -1436,6 +2154,13 @@ class LlvmEmitter {
             }
         }
         return {result, false};
+    }
+
+    bool contractCallConsumesReceiver(const FirCallExpression &call) const {
+        return call.kind == FirCallKind::Contract && call.contract < program_.contracts.size() &&
+               call.method < program_.contracts[call.contract].methods.size() &&
+               program_.contracts[call.contract].methods[call.method].receiver ==
+                   FirReceiverKind::Own;
     }
 
     llvm::Value *emitNumericConversion(llvm::Value *value, Type source, Type target,
@@ -1510,6 +2235,10 @@ class LlvmEmitter {
     }
 
     llvm::Value *loadLocal(FirLocalId local) {
+        if (local < captureAddresses_.size() && captureAddresses_[local] != nullptr) {
+            auto *type = typeOf(function_->locals[local].type);
+            return builder_.CreateLoad(type, captureAddresses_[local], "capture.value");
+        }
         if (local >= locals_.size() || locals_[local] == nullptr) {
             fail(function_->sourceSpan, "LLVM backend received an invalid local");
             return nullptr;
@@ -1542,7 +2271,19 @@ class LlvmEmitter {
         }
         if (const auto *local =
                 std::get_if<FirLocalExpression>(&function_->expressions[id].value)) {
-            return local->local < locals_.size() ? locals_[local->local] : nullptr;
+            return localAddress(local->local);
+        }
+        if (const auto *field =
+                std::get_if<FirFieldExpression>(&function_->expressions[id].value)) {
+            return emitFieldAddress(*field);
+        }
+        if (const auto *index =
+                std::get_if<FirIndexExpression>(&function_->expressions[id].value)) {
+            return emitIndexAddress(*index, function_->expressions[id].span);
+        }
+        if (const auto *unary = std::get_if<FirUnaryExpression>(&function_->expressions[id].value);
+            unary != nullptr && unary->operation == FirUnaryOperator::Dereference) {
+            return emitExpression(unary->operand).value;
         }
         if (const auto *read = std::get_if<FirReadExpression>(&function_->expressions[id].value)) {
             return loadLocal(read->local);
@@ -1728,6 +2469,112 @@ class LlvmEmitter {
             return;
         }
         dropAddress(storage, type);
+    std::size_t structFieldIndex(const Type &type, FirFieldId field) const {
+        return field + (type.kind == TypeKind::Struct &&
+                                type.declaration < program_.structs.size() &&
+                                program_.structs[type.declaration].dropFunction.has_value()
+                            ? 1
+                            : 0);
+    }
+
+    llvm::Value *emitFieldAddress(const FirFieldExpression &field) {
+        if (field.base >= function_->expressions.size()) {
+            return nullptr;
+        }
+        auto baseType = function_->expressions[field.base].type;
+        llvm::Value *base{};
+        if (baseType.kind == TypeKind::Own || baseType.kind == TypeKind::View ||
+            baseType.kind == TypeKind::Edit) {
+            base = emitExpression(field.base).value;
+            if (baseType.arguments.size() != 1) {
+                return nullptr;
+            }
+            baseType = baseType.arguments.front();
+        } else {
+            base = emitAddress(field.base);
+        }
+        auto *type = llvm::dyn_cast_or_null<llvm::StructType>(typeOf(baseType));
+        if (base == nullptr || type == nullptr) {
+            fail(function_->expressions[field.base].span, "LLVM backend cannot address this field");
+            return nullptr;
+        }
+        return builder_.CreateStructGEP(type, base, structFieldIndex(baseType, field.field));
+    }
+
+    llvm::Value *emitIndexAddress(const FirIndexExpression &index, SourceSpan span) {
+        if (index.base >= function_->expressions.size()) {
+            return nullptr;
+        }
+        const auto value = emitExpression(index.index);
+        if (value.diverges) {
+            return nullptr;
+        }
+        auto sequence = function_->expressions[index.base].type;
+        llvm::Value *data{};
+        llvm::Value *length{};
+        if (sequence.kind == TypeKind::Own && sequence.arguments.size() == 1) {
+            data = emitExpression(index.base).value;
+            sequence = sequence.arguments.front();
+        } else if ((sequence.kind == TypeKind::View || sequence.kind == TypeKind::Edit) &&
+                   sequence.arguments.size() == 1 &&
+                   sequence.arguments.front().kind == TypeKind::Slice) {
+            auto slice = emitExpression(index.base).value;
+            sequence = sequence.arguments.front();
+            data = builder_.CreateExtractValue(slice, 0);
+            length = builder_.CreateExtractValue(slice, 1);
+        } else {
+            data = emitAddress(index.base);
+        }
+        if (sequence.kind == TypeKind::Array && sequence.arguments.size() == 1) {
+            length = llvm::ConstantInt::get(sizeType(), sequence.declaration);
+            auto *checked = builder_.CreateCall(
+                runtimeFunction("fdn_bounds_check", sizeType(), {sizeType(), sizeType()}),
+                {integerToSize(value.value), length});
+            auto *array = llvm::cast<llvm::ArrayType>(typeOf(sequence));
+            return builder_.CreateInBoundsGEP(
+                array, data,
+                {llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0), checked});
+        }
+        if (sequence.kind == TypeKind::Slice && sequence.arguments.size() == 1) {
+            auto *checked = builder_.CreateCall(
+                runtimeFunction("fdn_bounds_check", sizeType(), {sizeType(), sizeType()}),
+                {integerToSize(value.value), length});
+            return builder_.CreateInBoundsGEP(typeOf(sequence.arguments.front()), data, checked);
+        }
+        fail(span, "LLVM backend cannot index this value");
+        return nullptr;
+    }
+
+    EmittedValue emitRawPointer(const FirRawPointerExpression &pointer, SourceSpan span) {
+        if (pointer.base >= function_->expressions.size()) {
+            return {};
+        }
+        auto type = function_->expressions[pointer.base].type;
+        const auto base = emitExpression(pointer.base);
+        if (base.diverges) {
+            return base;
+        }
+        if ((type.kind == TypeKind::View || type.kind == TypeKind::Edit) &&
+            type.arguments.size() == 1 && type.arguments.front().kind == TypeKind::Slice) {
+            return {builder_.CreateExtractValue(base.value, 0), false};
+        }
+        if (type.kind == TypeKind::Slice) {
+            return {builder_.CreateExtractValue(base.value, 0), false};
+        }
+        fail(span, "LLVM backend cannot expose a raw pointer for this value");
+        return {};
+    }
+
+    llvm::Value *integerToSize(llvm::Value *value) {
+        return value->getType() == sizeType() ? value
+                                              : builder_.CreateIntCast(value, sizeType(), false);
+    }
+
+    llvm::Value *localAddress(FirLocalId local) const {
+        if (local < captureAddresses_.size() && captureAddresses_[local] != nullptr) {
+            return captureAddresses_[local];
+        }
+        return local < locals_.size() ? locals_[local] : nullptr;
     }
 
     llvm::FunctionCallee runtimeFunction(std::string_view name, llvm::Type *result,
@@ -1781,6 +2628,38 @@ class LlvmEmitter {
                              column);
     }
 
+    void dropOwned(llvm::Value *value, const Type &type) {
+        if (value == nullptr || type.arguments.size() != 1) {
+            return;
+        }
+        auto *drop = llvm::BasicBlock::Create(context_, "drop.own", llvmFunction_);
+        auto *done = llvm::BasicBlock::Create(context_, "drop.own.end", llvmFunction_);
+        builder_.CreateCondBr(
+            builder_.CreateICmpNE(value, llvm::ConstantPointerNull::get(pointerType())), drop,
+            done);
+        builder_.SetInsertPoint(drop);
+        const auto &target = type.arguments.front();
+        if (target.kind == TypeKind::Contract &&
+            target.declaration < contractVtableTypes_.size()) {
+            auto *contract = builder_.CreateLoad(typeOf(target), value, "owned.contract");
+            auto *data = builder_.CreateExtractValue(contract, 0);
+            auto *vtable = builder_.CreateExtractValue(contract, 1);
+            auto *dropSlot =
+                builder_.CreateStructGEP(contractVtableTypes_[target.declaration], vtable, 0);
+            auto *dropFunction = builder_.CreateLoad(pointerType(), dropSlot);
+            auto *signature =
+                llvm::FunctionType::get(llvm::Type::getVoidTy(context_), {pointerType()}, false);
+            builder_.CreateCall(signature, dropFunction, {data});
+        } else {
+            dropAddress(value, target);
+        }
+        builder_.CreateCall(
+            runtimeFunction("fdn_dealloc", llvm::Type::getVoidTy(context_), {pointerType()}),
+            {value});
+        builder_.CreateBr(done);
+        builder_.SetInsertPoint(done);
+    }
+
     void dropAddress(llvm::Value *address, const Type &type) {
         if (address == nullptr || !typeRequiresDrop(type) ||
             builder_.GetInsertBlock()->getTerminator() != nullptr) {
@@ -1792,21 +2671,30 @@ class LlvmEmitter {
                                 {address});
             return;
         }
-        if (type.kind == TypeKind::Own && type.arguments.size() == 1) {
-            auto *value = builder_.CreateLoad(pointerType(), address, "drop.own.value");
-            auto *drop = llvm::BasicBlock::Create(context_, "drop.own", llvmFunction_);
-            auto *done = llvm::BasicBlock::Create(context_, "drop.own.end", llvmFunction_);
+        if (type.kind == TypeKind::Function) {
+            auto *value = builder_.CreateLoad(functionValueType_, address, "drop.function");
+            auto *environment = builder_.CreateExtractValue(value, 0);
+            auto *dropFunction = builder_.CreateExtractValue(value, 2);
+            auto *drop = llvm::BasicBlock::Create(context_, "drop.closure", llvmFunction_);
+            auto *done = llvm::BasicBlock::Create(context_, "drop.closure.end", llvmFunction_);
             builder_.CreateCondBr(
-                builder_.CreateICmpNE(value, llvm::ConstantPointerNull::get(pointerType())), drop,
-                done);
+                builder_.CreateICmpNE(dropFunction,
+                                      llvm::ConstantPointerNull::get(pointerType())),
+                drop, done);
             builder_.SetInsertPoint(drop);
-            dropAddress(value, type.arguments.front());
-            builder_.CreateCall(
-                runtimeFunction("fdn_dealloc", llvm::Type::getVoidTy(context_), {pointerType()}),
-                {value});
-            builder_.CreateStore(llvm::ConstantPointerNull::get(pointerType()), address);
+            auto *signature =
+                llvm::FunctionType::get(llvm::Type::getVoidTy(context_), {pointerType()}, false);
+            builder_.CreateCall(signature, dropFunction, {environment});
             builder_.CreateBr(done);
             builder_.SetInsertPoint(done);
+            builder_.CreateStore(llvm::Constant::getNullValue(functionValueType_), address);
+            return;
+        }
+        }
+        if (type.kind == TypeKind::Own && type.arguments.size() == 1) {
+            auto *value = builder_.CreateLoad(pointerType(), address, "drop.own.value");
+            dropOwned(value, type);
+            builder_.CreateStore(llvm::ConstantPointerNull::get(pointerType()), address);
             return;
         }
         if (type.kind == TypeKind::Sender || type.kind == TypeKind::Receiver) {
@@ -1930,6 +2818,80 @@ class LlvmEmitter {
         }
     }
 
+    llvm::Value *toAbi(llvm::IRBuilder<> &builder, llvm::Value *value, const Type &type) {
+        static_cast<void>(builder);
+        static_cast<void>(type);
+        return value;
+    }
+
+    llvm::Value *fromAbi(llvm::IRBuilder<> &builder, llvm::Value *value, const Type &type) {
+        static_cast<void>(builder);
+        static_cast<void>(type);
+        return value;
+    }
+
+    void enterNativeFrame(llvm::IRBuilder<> &builder, llvm::Value *frame,
+                          const FirFunction &function) {
+        const auto source =
+            function.sourcePath.empty() ? sourcePath_ : std::string_view(function.sourcePath);
+        auto *symbol = builder.CreateGlobalString(*function.cSymbol, "native.symbol");
+        auto *sourceName = builder.CreateGlobalString(source, "native.source");
+        builder.CreateCall(
+            module_.getOrInsertFunction(
+                "fdn_frame_enter_native",
+                llvm::FunctionType::get(llvm::Type::getVoidTy(context_),
+                                        {pointerType(), pointerType(), pointerType(),
+                                         llvm::Type::getInt32Ty(context_),
+                                         llvm::Type::getInt32Ty(context_)},
+                                        false)),
+            {frame, symbol, sourceName,
+             llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), function.sourceSpan.line),
+             llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), function.sourceSpan.column)});
+    }
+
+    void emitNativeWrappers() {
+        for (FirFunctionId id = 0; id < program_.functions.size(); ++id) {
+            const auto &function = program_.functions[id];
+            if (!function.cSymbol.has_value() || functions_[id] == nullptr ||
+                nativeFunctions_[id] == nullptr) {
+                continue;
+            }
+            auto *wrapper = function.hasBody ? nativeFunctions_[id] : functions_[id];
+            auto *target = function.hasBody ? functions_[id] : nativeFunctions_[id];
+            if (!wrapper->empty()) {
+                continue;
+            }
+            auto *entry = llvm::BasicBlock::Create(context_, "entry", wrapper);
+            llvm::IRBuilder<> builder(entry);
+            auto *frame = builder.CreateAlloca(frameType_, nullptr, "frame");
+            enterNativeFrame(builder, frame, function);
+            std::vector<llvm::Value *> arguments;
+            for (std::size_t index = 0; index < wrapper->arg_size(); ++index) {
+                const auto local = function.parameters[index];
+                auto *value = wrapper->getArg(index);
+                arguments.push_back(function.hasBody
+                                        ? fromAbi(builder, value, function.locals[local].type)
+                                        : toAbi(builder, value, function.locals[local].type));
+            }
+            auto *result = builder.CreateCall(target, arguments);
+            if (function.diverges) {
+                builder.CreateUnreachable();
+                continue;
+            }
+            builder.CreateCall(
+                module_.getOrInsertFunction("fdn_frame_leave",
+                                            llvm::FunctionType::get(llvm::Type::getVoidTy(context_),
+                                                                    {pointerType()}, false)),
+                {frame});
+            if (function.returnType == voidType) {
+                builder.CreateRetVoid();
+            } else {
+                builder.CreateRet(function.hasBody ? toAbi(builder, result, function.returnType)
+                                                   : fromAbi(builder, result, function.returnType));
+            }
+        }
+    }
+
     void emitMainWrapper() {
         const auto &entry = program_.functions[program_.main];
         if (!entry.parameters.empty()) {
@@ -1989,14 +2951,24 @@ class LlvmEmitter {
     llvm::StructType *stringType_{};
     llvm::StructType *frameType_{};
     llvm::StructType *channelType_{};
+    llvm::StructType *functionValueType_{};
     std::vector<llvm::StructType *> structTypes_;
     std::vector<llvm::StructType *> enumTypes_;
+    std::vector<llvm::StructType *> contractTypes_;
+    std::vector<llvm::StructType *> contractVtableTypes_;
+    std::vector<llvm::StructType *> closureEnvironmentTypes_;
+    std::unordered_map<std::string, llvm::StructType *> sliceTypes_;
     std::vector<llvm::Function *> functions_;
+    std::vector<llvm::Function *> nativeFunctions_;
+    std::vector<llvm::Function *> functionAdapters_;
+    std::vector<llvm::Function *> closureDrops_;
+    std::map<std::string, ContractSupport> contractSupports_;
     const FirFunction *function_{};
     FirFunctionId functionId_{};
     llvm::Function *llvmFunction_{};
     llvm::AllocaInst *frame_{};
     std::vector<llvm::AllocaInst *> locals_;
+    std::vector<llvm::Value *> captureAddresses_;
     std::vector<LoopTarget> loops_;
 };
 

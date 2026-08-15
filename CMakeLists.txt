@@ -1178,10 +1178,31 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.llvm.runtime-boundaries
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/llvm-runtime-boundaries.fn
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/llvm_runtime_boundaries.c
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/llvm-runtime-boundaries.out
+            -DBACKEND=llvm
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
+    )
+    add_test(
+        NAME stage0.run.llvm.c-abi
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi/native/native.c
+            -DNATIVE_SECOND=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi/native/support.c
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi/expected.out
+            -DBACKEND=llvm
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native.cmake
+    )
+    add_test(
         NAME stage0.run.llvm.unsupported
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/closures.fn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/callback-native.fn
             -DPATTERN=error\\[FDN8001\\]
             -DBACKEND=llvm
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake

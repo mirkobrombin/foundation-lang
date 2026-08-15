@@ -3,8 +3,13 @@ if(NOT DEFINED COMPILER OR NOT DEFINED SOURCE OR NOT DEFINED NATIVE OR
     message(FATAL_ERROR "native run assertion is missing an input")
 endif()
 
+set(command "${COMPILER}" run "${SOURCE}" --native "${NATIVE}")
+if(DEFINED BACKEND)
+    list(APPEND command --backend "${BACKEND}")
+endif()
+
 execute_process(
-    COMMAND "${COMPILER}" run "${SOURCE}" --native "${NATIVE}"
+    COMMAND ${command}
     RESULT_VARIABLE result
     OUTPUT_VARIABLE output
     ERROR_VARIABLE error
