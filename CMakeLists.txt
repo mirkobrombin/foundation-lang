@@ -1326,6 +1326,21 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.llvm.machine-scalars
+        COMMAND foundationc run
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/machine-scalars.fn
+            --backend llvm
+    )
+    add_test(
+        NAME stage0.run.llvm.lock
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/lock.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/lock.out
+            -DBACKEND=llvm
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
         NAME stage0.check.state-machine
         COMMAND foundationc check
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.fn

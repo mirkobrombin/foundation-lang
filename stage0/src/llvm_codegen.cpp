@@ -30,6 +30,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -2900,7 +2901,7 @@ class LlvmEmitter {
             return emitRawPointer(*pointer, expression.span);
         }
         if (const auto *conditional = std::get_if<FirConditionalExpression>(&expression.value)) {
-            return emitConditional(*conditional, expression.type);
+            return emitConditional(*conditional, expression.type, expression.span);
         }
         if (const auto *match = std::get_if<FirMatchExpression>(&expression.value)) {
             return emitMatch(*match, expression.type, expression.span);
@@ -3930,12 +3931,12 @@ class LlvmEmitter {
                                            llvm::ConstantPointerNull::get(pointerType()));
             break;
         case FirCallKind::NumericConversion:
-            if (values.size() != 1) {
+            if (values.size() != 1 || call.typeArguments.size() != 2) {
                 fail(span, "LLVM numeric conversion has invalid arguments");
                 return {};
             }
-            result = emitNumericConversion(
-                values.front(), function_->expressions[call.arguments.front()].type, type, span);
+            result = emitNumericConversion(values.front(), call.typeArguments[0],
+                                           call.typeArguments[1], type, span);
             if (result == nullptr) {
                 return {};
             }
@@ -4022,8 +4023,8 @@ class LlvmEmitter {
                    FirReceiverKind::Own;
     }
 
-    llvm::Value *emitNumericConversion(llvm::Value *value, Type source, Type target,
-                                       SourceSpan span) {
+    llvm::Value *emitUncheckedNumericConversion(llvm::Value *value, Type source, Type target,
+                                                SourceSpan span) {
         auto *targetType = typeOf(target);
         if (targetType == nullptr) {
             fail(span, "LLVM numeric conversion has an unsupported target type");
@@ -4047,7 +4048,202 @@ class LlvmEmitter {
         return nullptr;
     }
 
-    EmittedValue emitConditional(const FirConditionalExpression &conditional, const Type &type) {
+    llvm::Value *emitFiniteCondition(llvm::Value *value) {
+        auto *positiveInfinity = llvm::ConstantFP::getInfinity(value->getType());
+        auto *negativeInfinity = llvm::ConstantFP::getInfinity(value->getType(), true);
+        return builder_.CreateAnd(builder_.CreateFCmpOGT(value, negativeInfinity),
+                                  builder_.CreateFCmpOLT(value, positiveInfinity));
+    }
+
+    llvm::Value *emitIntegerRangeCondition(llvm::Value *value, Type source, Type target,
+                                           SourceSpan span) {
+        auto *targetType = llvm::dyn_cast_or_null<llvm::IntegerType>(typeOf(target));
+        if (!isInteger(source) || targetType == nullptr) {
+            fail(span, "LLVM integer range check received invalid types");
+            return nullptr;
+        }
+        auto *wideType = llvm::Type::getInt128Ty(context_);
+        auto *wideValue = builder_.CreateIntCast(value, wideType, isSignedInteger(source));
+        const auto bits = targetType->getBitWidth();
+        const auto minimum = isSignedInteger(target)
+                                 ? llvm::APInt::getSignedMinValue(bits).sext(128)
+                                 : llvm::APInt(128, 0);
+        const auto maximum = isSignedInteger(target)
+                                 ? llvm::APInt::getSignedMaxValue(bits).sext(128)
+                                 : llvm::APInt::getMaxValue(bits).zext(128);
+        return builder_.CreateAnd(
+            builder_.CreateICmpSGE(wideValue, llvm::ConstantInt::get(context_, minimum)),
+            builder_.CreateICmpSLE(wideValue, llvm::ConstantInt::get(context_, maximum)));
+    }
+
+    llvm::Value *emitFloatIntegerRangeCondition(llvm::Value *value, Type target,
+                                                SourceSpan span) {
+        auto *targetType = llvm::dyn_cast_or_null<llvm::IntegerType>(typeOf(target));
+        if (!isInteger(target) || targetType == nullptr) {
+            fail(span, "LLVM floating range check received an invalid target type");
+            return nullptr;
+        }
+        const auto bits = targetType->getBitWidth();
+        const auto lower = isSignedInteger(target)
+                               ? -std::ldexp(1.0, static_cast<int>(bits - 1))
+                               : 0.0;
+        const auto upper = std::ldexp(
+            1.0, static_cast<int>(bits - (isSignedInteger(target) ? 1 : 0)));
+        return builder_.CreateAnd(
+            builder_.CreateFCmpOGE(value, llvm::ConstantFP::get(value->getType(), lower)),
+            builder_.CreateFCmpOLT(value, llvm::ConstantFP::get(value->getType(), upper)));
+    }
+
+    llvm::Value *emitNumericConversion(llvm::Value *value, Type source, Type target,
+                                       const Type &resultType, SourceSpan span) {
+        if (resultType == target) {
+            return emitUncheckedNumericConversion(value, source, target, span);
+        }
+        if (resultType.kind != TypeKind::Enum ||
+            resultType.declaration >= program_.enums.size() ||
+            program_.enums[resultType.declaration].name != "Result" ||
+            program_.enums[resultType.declaration].variants.size() != 2 ||
+            !program_.enums[resultType.declaration].variants[0].payload.has_value() ||
+            !program_.enums[resultType.declaration].variants[1].payload.has_value()) {
+            fail(span, "LLVM fallible numeric conversion has an invalid Result type");
+            return nullptr;
+        }
+        const auto errorType = *program_.enums[resultType.declaration].variants[1].payload;
+        if (errorType.kind != TypeKind::Enum || errorType.declaration >= program_.enums.size() ||
+            program_.enums[errorType.declaration].name != "NumberError" ||
+            program_.enums[errorType.declaration].variants.size() != 3) {
+            fail(span, "LLVM fallible numeric conversion has an invalid NumberError type");
+            return nullptr;
+        }
+        auto *layout = llvm::dyn_cast_or_null<llvm::StructType>(typeOf(resultType));
+        if (layout == nullptr) {
+            fail(span, "LLVM fallible numeric conversion has no Result layout");
+            return nullptr;
+        }
+
+        auto *storage = createEntryAlloca(layout, "numeric.result");
+        builder_.CreateStore(llvm::Constant::getNullValue(layout), storage);
+        auto *done = llvm::BasicBlock::Create(context_, "numeric.done", llvmFunction_);
+        const auto emitSuccess = [&](llvm::Value *converted) {
+            auto *payload = enumPayloadAddress(storage, resultType, 0, span);
+            if (payload != nullptr) {
+                builder_.CreateStore(converted, payload);
+                setEnumTag(storage, resultType, 0);
+                builder_.CreateBr(done);
+            }
+        };
+        const auto emitFailure = [&](FirVariantId variant) {
+            auto *payload = enumPayloadAddress(storage, resultType, 1, span);
+            if (payload != nullptr) {
+                llvm::Value *error = llvm::Constant::getNullValue(typeOf(errorType));
+                error = builder_.CreateInsertValue(
+                    error, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), variant), 0);
+                builder_.CreateStore(error, payload);
+                setEnumTag(storage, resultType, 1);
+                builder_.CreateBr(done);
+            }
+        };
+
+        if (isInteger(source) && isInteger(target)) {
+            auto *success = llvm::BasicBlock::Create(context_, "numeric.success", llvmFunction_);
+            auto *outOfRange =
+                llvm::BasicBlock::Create(context_, "numeric.out_of_range", llvmFunction_);
+            auto *condition = emitIntegerRangeCondition(value, source, target, span);
+            if (condition == nullptr) {
+                return nullptr;
+            }
+            builder_.CreateCondBr(condition, success, outOfRange);
+            builder_.SetInsertPoint(success);
+            emitSuccess(emitUncheckedNumericConversion(value, source, target, span));
+            builder_.SetInsertPoint(outOfRange);
+            emitFailure(0);
+        } else if (isFloating(source) && isInteger(target)) {
+            auto *range = llvm::BasicBlock::Create(context_, "numeric.range", llvmFunction_);
+            auto *convert = llvm::BasicBlock::Create(context_, "numeric.convert", llvmFunction_);
+            auto *success = llvm::BasicBlock::Create(context_, "numeric.success", llvmFunction_);
+            auto *nonFinite =
+                llvm::BasicBlock::Create(context_, "numeric.non_finite", llvmFunction_);
+            auto *outOfRange =
+                llvm::BasicBlock::Create(context_, "numeric.out_of_range", llvmFunction_);
+            auto *precisionLoss =
+                llvm::BasicBlock::Create(context_, "numeric.precision_loss", llvmFunction_);
+            builder_.CreateCondBr(emitFiniteCondition(value), range, nonFinite);
+            builder_.SetInsertPoint(nonFinite);
+            emitFailure(1);
+            builder_.SetInsertPoint(range);
+            auto *condition = emitFloatIntegerRangeCondition(value, target, span);
+            if (condition == nullptr) {
+                return nullptr;
+            }
+            builder_.CreateCondBr(condition, convert, outOfRange);
+            builder_.SetInsertPoint(outOfRange);
+            emitFailure(0);
+            builder_.SetInsertPoint(convert);
+            auto *converted = emitUncheckedNumericConversion(value, source, target, span);
+            auto *roundTrip = emitUncheckedNumericConversion(converted, target, source, span);
+            builder_.CreateCondBr(builder_.CreateFCmpOEQ(roundTrip, value), success,
+                                  precisionLoss);
+            builder_.SetInsertPoint(success);
+            emitSuccess(converted);
+            builder_.SetInsertPoint(precisionLoss);
+            emitFailure(2);
+        } else {
+            auto *convert = llvm::BasicBlock::Create(context_, "numeric.convert", llvmFunction_);
+            auto *check = llvm::BasicBlock::Create(context_, "numeric.check", llvmFunction_);
+            auto *roundTrip = isInteger(source)
+                                  ? llvm::BasicBlock::Create(context_, "numeric.round_trip",
+                                                             llvmFunction_)
+                                  : nullptr;
+            auto *success = llvm::BasicBlock::Create(context_, "numeric.success", llvmFunction_);
+            auto *nonFinite = isFloating(source)
+                                  ? llvm::BasicBlock::Create(context_, "numeric.non_finite",
+                                                             llvmFunction_)
+                                  : nullptr;
+            auto *outOfRange =
+                llvm::BasicBlock::Create(context_, "numeric.out_of_range", llvmFunction_);
+            auto *precisionLoss =
+                llvm::BasicBlock::Create(context_, "numeric.precision_loss", llvmFunction_);
+            if (isFloating(source)) {
+                builder_.CreateCondBr(emitFiniteCondition(value), convert, nonFinite);
+                builder_.SetInsertPoint(nonFinite);
+                emitFailure(1);
+            } else {
+                builder_.CreateBr(convert);
+            }
+            builder_.SetInsertPoint(convert);
+            auto *converted = emitUncheckedNumericConversion(value, source, target, span);
+            builder_.CreateCondBr(emitFiniteCondition(converted), check, outOfRange);
+            builder_.SetInsertPoint(outOfRange);
+            emitFailure(0);
+            builder_.SetInsertPoint(check);
+            if (isInteger(source)) {
+                auto *condition = emitFloatIntegerRangeCondition(converted, source, span);
+                if (condition == nullptr) {
+                    return nullptr;
+                }
+                builder_.CreateCondBr(condition, roundTrip, precisionLoss);
+                builder_.SetInsertPoint(roundTrip);
+                auto *restored =
+                    emitUncheckedNumericConversion(converted, target, source, span);
+                builder_.CreateCondBr(builder_.CreateICmpEQ(restored, value), success,
+                                      precisionLoss);
+            } else {
+                auto *restored =
+                    emitUncheckedNumericConversion(converted, target, source, span);
+                builder_.CreateCondBr(builder_.CreateFCmpOEQ(restored, value), success,
+                                      precisionLoss);
+            }
+            builder_.SetInsertPoint(success);
+            emitSuccess(converted);
+            builder_.SetInsertPoint(precisionLoss);
+            emitFailure(2);
+        }
+        builder_.SetInsertPoint(done);
+        return builder_.CreateLoad(layout, storage, "numeric.result.value");
+    }
+
+    EmittedValue emitConditional(const FirConditionalExpression &conditional, const Type &type,
+                                 SourceSpan span) {
         const auto condition = emitExpression(conditional.condition);
         if (condition.diverges) {
             return condition;
@@ -4058,12 +4254,21 @@ class LlvmEmitter {
         builder_.CreateCondBr(condition.value, thenBlock, elseBlock);
 
         std::vector<std::pair<llvm::Value *, llvm::BasicBlock *>> incoming;
+        auto hasMergeIncoming = false;
         builder_.SetInsertPoint(thenBlock);
         if (!emitBlock(conditional.thenBlock)) {
             const auto thenValue = emitExpression(conditional.thenValue);
             if (!thenValue.diverges) {
+                if (type != voidType && thenValue.value == nullptr) {
+                    fail(span, "LLVM conditional branch did not produce a value");
+                    builder_.CreateUnreachable();
+                    return {llvm::PoisonValue::get(llvm::Type::getInt8Ty(context_)), true};
+                }
                 builder_.CreateBr(mergeBlock);
-                incoming.emplace_back(thenValue.value, builder_.GetInsertBlock());
+                hasMergeIncoming = true;
+                if (type != voidType) {
+                    incoming.emplace_back(thenValue.value, builder_.GetInsertBlock());
+                }
             }
         }
 
@@ -4071,17 +4276,28 @@ class LlvmEmitter {
         if (!emitBlock(conditional.elseBlock)) {
             const auto elseValue = emitExpression(conditional.elseValue);
             if (!elseValue.diverges) {
+                if (type != voidType && elseValue.value == nullptr) {
+                    fail(span, "LLVM conditional branch did not produce a value");
+                    builder_.CreateUnreachable();
+                    return {llvm::PoisonValue::get(llvm::Type::getInt8Ty(context_)), true};
+                }
                 builder_.CreateBr(mergeBlock);
-                incoming.emplace_back(elseValue.value, builder_.GetInsertBlock());
+                hasMergeIncoming = true;
+                if (type != voidType) {
+                    incoming.emplace_back(elseValue.value, builder_.GetInsertBlock());
+                }
             }
         }
 
-        if (incoming.empty()) {
+        if (!hasMergeIncoming) {
             mergeBlock->eraseFromParent();
             return {llvm::PoisonValue::get(llvm::Type::getInt8Ty(context_)), true};
         }
 
         builder_.SetInsertPoint(mergeBlock);
+        if (type == voidType) {
+            return {nullptr, false};
+        }
         if (incoming.size() == 1) {
             return {incoming.front().first, false};
         }
