@@ -6,8 +6,11 @@
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/Analysis/LoopAnalysisManager.h>
+#include <llvm/BinaryFormat/Dwarf.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DataLayout.h>
+#include <llvm/IR/DIBuilder.h>
+#include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LegacyPassManager.h>
@@ -204,6 +207,7 @@ class LlvmEmitter {
         selectCaseType_ = llvm::StructType::create(
             context_, {pointerType(), pointerType(), llvm::Type::getInt32Ty(context_)},
             "fdn.channel.select.case");
+        initializeDebugInfo();
     }
 
     bool run() {
@@ -234,6 +238,9 @@ class LlvmEmitter {
         }
         if (!diagnostics_.hasErrors()) {
             emitMainWrapper();
+        }
+        if (!diagnostics_.hasErrors() && debugBuilder_ != nullptr) {
+            debugBuilder_->finalize();
         }
         return !diagnostics_.hasErrors();
     }
@@ -285,6 +292,178 @@ class LlvmEmitter {
     llvm::IntegerType *sizeType() const {
         const auto bits = module_.getDataLayout().getPointerSizeInBits();
         return llvm::IntegerType::get(context_, bits == 0 ? 64 : bits);
+    }
+
+    void initializeDebugInfo() {
+        if (!options_.debugInfo) {
+            return;
+        }
+        debugBuilder_ = std::make_unique<llvm::DIBuilder>(module_);
+        const auto path = sourcePath_.empty() ? std::filesystem::path("program.fn")
+                                              : std::filesystem::path(sourcePath_);
+        primaryDebugFile_ = debugFile(path.generic_string());
+        const llvm::Triple triple(module_.getTargetTriple());
+        module_.addModuleFlag(llvm::Module::Warning, "Debug Info Version",
+                              llvm::DEBUG_METADATA_VERSION);
+        if (triple.isOSWindows()) {
+            module_.addModuleFlag(llvm::Module::Warning, "CodeView", 1);
+        } else {
+            module_.addModuleFlag(llvm::Module::Warning, "Dwarf Version", 5);
+        }
+        debugBuilder_->createCompileUnit(
+            llvm::dwarf::DW_LANG_C11, primaryDebugFile_, "Foundation Lang 0.1.0",
+            options_.optimize, "", 0);
+    }
+
+    llvm::DIFile *debugFile(std::string_view source) {
+        auto path = source.empty() ? std::filesystem::path("program.fn")
+                                   : std::filesystem::path(source);
+        const auto key = path.lexically_normal().generic_string();
+        if (const auto existing = debugFiles_.find(key); existing != debugFiles_.end()) {
+            return existing->second;
+        }
+        auto directory = path.parent_path().generic_string();
+        if (directory.empty()) {
+            directory = ".";
+        }
+        auto filename = path.filename().generic_string();
+        if (filename.empty()) {
+            filename = "program.fn";
+        }
+        auto *file = debugBuilder_->createFile(filename, directory);
+        debugFiles_.emplace(key, file);
+        return file;
+    }
+
+    std::string debugTypeName(const Type &type) const {
+        switch (type.kind) {
+        case TypeKind::Struct:
+            if (type.declaration < program_.structs.size()) {
+                return program_.structs[type.declaration].name;
+            }
+            break;
+        case TypeKind::Enum:
+            if (type.declaration < program_.enums.size()) {
+                return program_.enums[type.declaration].name;
+            }
+            break;
+        case TypeKind::Contract:
+            if (type.declaration < program_.contracts.size()) {
+                return program_.contracts[type.declaration].name;
+            }
+            break;
+        default:
+            break;
+        }
+        return typeName(type);
+    }
+
+    llvm::DIType *debugType(const Type &type) {
+        if (debugBuilder_ == nullptr || type.kind == TypeKind::Void ||
+            type.kind == TypeKind::Never) {
+            return nullptr;
+        }
+        auto *llvmType = typeOf(type);
+        const auto bits = llvmType == nullptr
+                              ? 0
+                              : module_.getDataLayout()
+                                    .getTypeSizeInBits(llvmType)
+                                    .getFixedValue();
+        if (isSignedInteger(type)) {
+            return debugBuilder_->createBasicType(debugTypeName(type), bits,
+                                                  llvm::dwarf::DW_ATE_signed);
+        }
+        if (isUnsignedInteger(type)) {
+            return debugBuilder_->createBasicType(debugTypeName(type), bits,
+                                                  llvm::dwarf::DW_ATE_unsigned);
+        }
+        if (isFloating(type)) {
+            return debugBuilder_->createBasicType(debugTypeName(type), bits,
+                                                  llvm::dwarf::DW_ATE_float);
+        }
+        if (type.kind == TypeKind::Bool) {
+            return debugBuilder_->createBasicType("bool", bits,
+                                                  llvm::dwarf::DW_ATE_boolean);
+        }
+        if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst ||
+            type.kind == TypeKind::Own || type.kind == TypeKind::View ||
+            type.kind == TypeKind::Edit || type.kind == TypeKind::Task ||
+            type.kind == TypeKind::Sender || type.kind == TypeKind::Receiver) {
+            auto *target = type.arguments.size() == 1 ? debugType(type.arguments.front())
+                                                     : nullptr;
+            return debugBuilder_->createPointerType(
+                target, module_.getDataLayout().getPointerSizeInBits(), 0, std::nullopt,
+                debugTypeName(type));
+        }
+        return debugBuilder_->createUnspecifiedType(debugTypeName(type));
+    }
+
+    llvm::DISubroutineType *debugFunctionType(const FirFunction &function) {
+        std::vector<llvm::Metadata *> types;
+        types.reserve(function.parameters.size() + 1);
+        types.push_back(debugType(function.returnType));
+        for (const auto local : function.parameters) {
+            types.push_back(local < function.locals.size() ? debugType(function.locals[local].type)
+                                                            : nullptr);
+        }
+        return debugBuilder_->createSubroutineType(debugBuilder_->getOrCreateTypeArray(types));
+    }
+
+    void attachFunctionDebugInfo(const FirFunction &function) {
+        if (debugBuilder_ == nullptr || llvmFunction_ == nullptr) {
+            return;
+        }
+        auto *file = debugFile(function.sourcePath.empty() ? sourcePath_ : function.sourcePath);
+        currentSubprogram_ = debugBuilder_->createFunction(
+            file, traceFunctionName(function), llvmFunction_->getName(), file,
+            static_cast<unsigned>(function.sourceSpan.line), debugFunctionType(function),
+            static_cast<unsigned>(function.sourceSpan.line), llvm::DINode::FlagPrototyped,
+            llvm::DISubprogram::SPFlagDefinition |
+                (options_.optimize ? llvm::DISubprogram::SPFlagOptimized
+                                   : llvm::DISubprogram::SPFlagZero));
+        llvmFunction_->setSubprogram(currentSubprogram_);
+        builder_.SetCurrentDebugLocation(llvm::DILocation::get(
+            context_, static_cast<unsigned>(function.sourceSpan.line),
+            static_cast<unsigned>(function.sourceSpan.column), currentSubprogram_));
+    }
+
+    void declareLocalDebugInfo(FirLocalId local) {
+        if (debugBuilder_ == nullptr || currentSubprogram_ == nullptr ||
+            local >= function_->locals.size() || local >= locals_.size() ||
+            locals_[local] == nullptr) {
+            return;
+        }
+        const auto &source = function_->locals[local];
+        if (source.name.empty()) {
+            return;
+        }
+        const auto parameter =
+            std::find(function_->parameters.begin(), function_->parameters.end(), local);
+        llvm::DILocalVariable *variable{};
+        auto *file = debugFile(function_->sourcePath.empty() ? sourcePath_ : function_->sourcePath);
+        if (parameter != function_->parameters.end()) {
+            variable = debugBuilder_->createParameterVariable(
+                currentSubprogram_, source.name,
+                static_cast<unsigned>(std::distance(function_->parameters.begin(), parameter) +
+                                      1),
+                file, static_cast<unsigned>(function_->sourceSpan.line), debugType(source.type),
+                true);
+        } else {
+            variable = debugBuilder_->createAutoVariable(
+                currentSubprogram_, source.name, file,
+                static_cast<unsigned>(function_->sourceSpan.line), debugType(source.type), true);
+        }
+        debugBuilder_->insertDeclare(
+            locals_[local], variable, debugBuilder_->createExpression(),
+            llvm::DILocation::get(context_, static_cast<unsigned>(function_->sourceSpan.line),
+                                  static_cast<unsigned>(function_->sourceSpan.column),
+                                  currentSubprogram_),
+            builder_.GetInsertBlock());
+    }
+
+    void clearDebugLocation() {
+        builder_.SetCurrentDebugLocation({});
+        currentSubprogram_ = nullptr;
     }
 
     void prepareTypes() {
@@ -1189,6 +1368,7 @@ class LlvmEmitter {
             declareTaskHelpers(id, adapter);
             emitTaskHelpers(id, adapter);
             emitTaskPoll(id, adapter);
+            clearDebugLocation();
             emitTaskMoveResult(id, adapter);
             emitTaskDropFrame(id, adapter);
         }
@@ -1219,6 +1399,7 @@ class LlvmEmitter {
     }
 
     void resetFunctionState() {
+        clearDebugLocation();
         function_ = nullptr;
         llvmFunction_ = nullptr;
         frame_ = nullptr;
@@ -1291,6 +1472,10 @@ class LlvmEmitter {
         auto *entry = llvm::BasicBlock::Create(context_, "entry", adapter.poll);
         builder_.SetInsertPoint(entry);
         bindTaskFrame(adapter, taskFrame_);
+        attachFunctionDebugInfo(*function_);
+        for (FirLocalId local = 0; local < function_->locals.size(); ++local) {
+            declareLocalDebugInfo(local);
+        }
         frame_ = builder_.CreateAlloca(frameType_, nullptr, "frame");
         taskPreviousCancellation_ = builder_.CreateCall(
             runtimeFunction("fdn_task_cancellation_enter", llvm::Type::getInt1Ty(context_),
@@ -1497,6 +1682,7 @@ class LlvmEmitter {
         localActive_.assign(function_->locals.size(), nullptr);
         auto *entry = llvm::BasicBlock::Create(context_, "entry", llvmFunction_);
         builder_.SetInsertPoint(entry);
+        attachFunctionDebugInfo(*function_);
         locals_.assign(function_->locals.size(), nullptr);
         captureAddresses_.assign(function_->locals.size(), nullptr);
         for (FirLocalId local = 0; local < function_->locals.size(); ++local) {
@@ -1511,6 +1697,7 @@ class LlvmEmitter {
             }
             locals_[local] = builder_.CreateAlloca(type, nullptr, "local." + std::to_string(local));
             builder_.CreateStore(llvm::Constant::getNullValue(type), locals_[local]);
+            declareLocalDebugInfo(local);
         }
         if (diagnostics_.hasErrors()) {
             return;
@@ -1558,6 +1745,7 @@ class LlvmEmitter {
                      "LLVM backend reached the end of a value-returning function");
             }
         }
+        clearDebugLocation();
     }
 
     bool emitBlock(FirBlockId id) {
@@ -4228,6 +4416,11 @@ class LlvmEmitter {
     }
 
     void setLocation(SourceSpan span) {
+        if (currentSubprogram_ != nullptr) {
+            builder_.SetCurrentDebugLocation(llvm::DILocation::get(
+                context_, static_cast<unsigned>(span.line), static_cast<unsigned>(span.column),
+                currentSubprogram_));
+        }
         if (frame_ == nullptr || builder_.GetInsertBlock() == nullptr ||
             builder_.GetInsertBlock()->getTerminator() != nullptr) {
             return;
@@ -4534,6 +4727,25 @@ class LlvmEmitter {
             llvm::Function::Create(signature, llvm::GlobalValue::ExternalLinkage, "main", module_);
         auto *block = llvm::BasicBlock::Create(context_, "entry", main);
         builder_.SetInsertPoint(block);
+        if (debugBuilder_ != nullptr) {
+            auto *file = debugFile(entry.sourcePath.empty() ? sourcePath_ : entry.sourcePath);
+            std::vector<llvm::Metadata *> types{debugType(i32Type)};
+            auto *subprogram = debugBuilder_->createFunction(
+                file, "main", "main", file, static_cast<unsigned>(entry.sourceSpan.line),
+                debugBuilder_->createSubroutineType(
+                    debugBuilder_->getOrCreateTypeArray(types)),
+                static_cast<unsigned>(entry.sourceSpan.line), llvm::DINode::FlagPrototyped,
+                llvm::DISubprogram::SPFlagDefinition |
+                    (options_.optimize ? llvm::DISubprogram::SPFlagOptimized
+                                       : llvm::DISubprogram::SPFlagZero));
+            main->setSubprogram(subprogram);
+            currentSubprogram_ = subprogram;
+            builder_.SetCurrentDebugLocation(llvm::DILocation::get(
+                context_, static_cast<unsigned>(entry.sourceSpan.line),
+                static_cast<unsigned>(entry.sourceSpan.column), subprogram));
+        } else {
+            clearDebugLocation();
+        }
         auto *entryFunction = functions_[program_.main];
         if (options_.entry.has_value()) {
             builder_.CreateCall(entryFunction);
@@ -4584,6 +4796,10 @@ class LlvmEmitter {
     llvm::StructType *channelType_{};
     llvm::StructType *functionValueType_{};
     llvm::StructType *selectCaseType_{};
+    std::unique_ptr<llvm::DIBuilder> debugBuilder_;
+    llvm::DIFile *primaryDebugFile_{};
+    llvm::DISubprogram *currentSubprogram_{};
+    std::unordered_map<std::string, llvm::DIFile *> debugFiles_;
     std::vector<llvm::StructType *> structTypes_;
     std::vector<llvm::StructType *> enumTypes_;
     std::vector<llvm::StructType *> contractTypes_;

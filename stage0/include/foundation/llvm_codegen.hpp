@@ -15,6 +15,7 @@ struct LlvmCodegenOptions {
     std::string targetTriple;
     bool optimize{true};
     bool verifyAllocations{};
+    bool debugInfo{true};
     std::optional<FirFunctionId> entry;
 };
 

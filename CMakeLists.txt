@@ -1160,6 +1160,23 @@ if(BUILD_TESTING)
             -o ${CMAKE_CURRENT_BINARY_DIR}/hello.ll
     )
     add_test(
+        NAME stage0.emit.llvm.debug-info
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/llvm-aggregates.fn
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/llvm-debug-info.ll
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-llvm-debug-info.cmake
+    )
+    add_test(
+        NAME stage0.build.llvm.option-order
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.out
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/build-option-order
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-build-options.cmake
+    )
+    add_test(
         NAME stage0.run.llvm.accept
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
