@@ -235,6 +235,7 @@ class LlvmEmitter {
         if (!diagnostics_.hasErrors()) {
             emitChannelDrops();
             emitTaskAdapters();
+            emitDropHelpers();
         }
         if (!diagnostics_.hasErrors()) {
             emitMainWrapper();
@@ -261,6 +262,12 @@ class LlvmEmitter {
     };
 
     struct ChannelDrop {
+        Type type{invalidType};
+        FirFunctionId owner{};
+        llvm::Function *function{};
+    };
+
+    struct DropHelper {
         Type type{invalidType};
         FirFunctionId owner{};
         llvm::Function *function{};
@@ -1375,6 +1382,48 @@ class LlvmEmitter {
         resetFunctionState();
     }
 
+    llvm::Function *declareDropHelper(const Type &type) {
+        const auto found =
+            std::find_if(dropHelpers_.begin(), dropHelpers_.end(),
+                         [&](const DropHelper &helper) { return helper.type == type; });
+        if (found != dropHelpers_.end()) {
+            return found->function;
+        }
+        const auto id = dropHelpers_.size();
+        auto *function = llvm::Function::Create(
+            llvm::FunctionType::get(llvm::Type::getVoidTy(context_), {pointerType()}, false),
+            llvm::GlobalValue::InternalLinkage, "fdn_drop_value_" + std::to_string(id), module_);
+        dropHelpers_.push_back(DropHelper{.type = type, .owner = functionId_, .function = function});
+        return function;
+    }
+
+    void emitDropHelpers() {
+        for (std::size_t index = 0; index < dropHelpers_.size(); ++index) {
+            const auto type = dropHelpers_[index].type;
+            const auto owner = dropHelpers_[index].owner;
+            auto *function = dropHelpers_[index].function;
+            if (owner >= program_.functions.size() || function == nullptr ||
+                !function->empty()) {
+                continue;
+            }
+            function_ = &program_.functions[owner];
+            functionId_ = owner;
+            llvmFunction_ = function;
+            taskPoll_ = false;
+            taskFrame_ = nullptr;
+            frame_ = nullptr;
+            locals_.clear();
+            localActive_.clear();
+            auto *entry = llvm::BasicBlock::Create(context_, "entry", function);
+            builder_.SetInsertPoint(entry);
+            emitCompositeDropAddress(function->getArg(0), type);
+            if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
+                builder_.CreateRetVoid();
+            }
+        }
+        resetFunctionState();
+    }
+
     void emitChannelDrops() {
         for (auto &drop : channelDrops_) {
             if (drop.owner >= program_.functions.size()) {
@@ -2354,10 +2403,17 @@ class LlvmEmitter {
         setLocation(statement.span);
         if (const auto *variable = std::get_if<FirVariableStatement>(&statement.value)) {
             const auto value = emitExpression(variable->initializer);
-            if (!value.diverges && variable->local < locals_.size()) {
-                builder_.CreateStore(value.value, locals_[variable->local]);
-                activateLocal(variable->local);
+            if (value.diverges) {
+                return true;
             }
+            if (value.value == nullptr || variable->local >= locals_.size()) {
+                if (!diagnostics_.hasErrors()) {
+                    fail(statement.span, "LLVM variable initializer did not produce a value");
+                }
+                return true;
+            }
+            builder_.CreateStore(value.value, locals_[variable->local]);
+            activateLocal(variable->local);
         } else if (const auto *binding = std::get_if<FirLetElseStatement>(&statement.value)) {
             return emitLetElse(*binding, statement.span);
         } else if (const auto *binding = std::get_if<FirResultElseStatement>(&statement.value)) {
@@ -2367,28 +2423,36 @@ class LlvmEmitter {
             emitStructDestructure(*destructure, statement.span);
         } else if (const auto *assignment = std::get_if<FirAssignmentStatement>(&statement.value)) {
             const auto value = emitExpression(assignment->value);
-            if (!value.diverges) {
-                if (auto *address = emitAddress(assignment->target); address != nullptr) {
-                    const auto *local = std::get_if<FirLocalExpression>(
-                        &function_->expressions[assignment->target].value);
-                    if (local != nullptr) {
-                        dropLocal(local->local);
-                    } else {
-                        dropAddress(address, function_->expressions[assignment->target].type);
-                    }
-                    builder_.CreateStore(value.value, address);
-                    if (local != nullptr) {
-                        activateLocal(local->local);
-                    }
+            if (value.diverges) {
+                return true;
+            }
+            if (value.value == nullptr) {
+                if (!diagnostics_.hasErrors()) {
+                    fail(statement.span, "LLVM assignment did not produce a value");
+                }
+                return true;
+            }
+            if (auto *address = emitAddress(assignment->target); address != nullptr) {
+                const auto *local = std::get_if<FirLocalExpression>(
+                    &function_->expressions[assignment->target].value);
+                if (local != nullptr) {
+                    dropLocal(local->local);
+                } else {
+                    dropAddress(address, function_->expressions[assignment->target].type);
+                }
+                builder_.CreateStore(value.value, address);
+                if (local != nullptr) {
+                    activateLocal(local->local);
                 }
             }
         } else if (const auto *expression = std::get_if<FirExpressionStatement>(&statement.value)) {
-            emitExpression(expression->expression);
+            return emitExpression(expression->expression).diverges;
         } else if (const auto *discard = std::get_if<FirDiscardStatement>(&statement.value)) {
             const auto value = emitExpression(discard->expression);
-            if (!value.diverges) {
-                dropValue(value.value, function_->expressions[discard->expression].type);
+            if (value.diverges) {
+                return true;
             }
+            dropValue(value.value, function_->expressions[discard->expression].type);
         } else if (const auto *returned = std::get_if<FirReturnStatement>(&statement.value)) {
             EmittedValue value;
             if (returned->value.has_value()) {
@@ -2650,6 +2714,12 @@ class LlvmEmitter {
             loop.index >= locals_.size() || loop.value >= locals_.size()) {
             return;
         }
+        if (sequence.value == nullptr) {
+            if (!diagnostics_.hasErrors()) {
+                fail(span, "LLVM for sequence did not produce a value");
+            }
+            return;
+        }
         builder_.CreateStore(sequence.value, locals_[loop.sequenceStorage]);
         builder_.CreateStore(llvm::ConstantInt::get(sizeType(), 0), locals_[loop.index]);
         auto *conditionBlock = llvm::BasicBlock::Create(context_, "for.condition", llvmFunction_);
@@ -2689,6 +2759,10 @@ class LlvmEmitter {
         if (loop.ownsSequence) {
             dropValue(loadLocal(loop.sequenceStorage),
                       function_->locals[loop.sequenceStorage].type);
+        }
+        for (auto cleanup = sequence.cleanups.rbegin(); cleanup != sequence.cleanups.rend();
+             ++cleanup) {
+            dropAddress(cleanup->address, cleanup->type);
         }
     }
 
@@ -2959,15 +3033,27 @@ class LlvmEmitter {
             }
             auto array = operandType;
             llvm::Value *address{};
+            std::vector<EmittedCleanup> cleanups;
             if (array.kind == TypeKind::Own && array.arguments.size() == 1) {
                 const auto operand = emitExpression(ownership.operand);
                 if (operand.diverges) {
                     return operand;
                 }
                 address = operand.value;
+                cleanups = std::move(operand.cleanups);
                 array = array.arguments.front();
-            } else {
+            } else if (isPlaceExpression(ownership.operand)) {
                 address = emitAddress(ownership.operand);
+            } else {
+                auto operand = emitExpression(ownership.operand);
+                if (operand.diverges) {
+                    return operand;
+                }
+                address = valueAddress(operand.value, array, "slice.temporary");
+                cleanups = std::move(operand.cleanups);
+                if (address != nullptr && typeRequiresDrop(array)) {
+                    cleanups.push_back({address, array});
+                }
             }
             if (array.kind != TypeKind::Array || array.arguments.size() != 1 ||
                 address == nullptr) {
@@ -2988,7 +3074,7 @@ class LlvmEmitter {
             value = builder_.CreateInsertValue(value, data, 0);
             value = builder_.CreateInsertValue(
                 value, llvm::ConstantInt::get(sizeType(), array.declaration), 1);
-            return {value, false};
+            return {value, false, std::move(cleanups)};
         }
         if (operandType.kind == TypeKind::Own || operandType.kind == TypeKind::View ||
             operandType.kind == TypeKind::Edit) {
@@ -3349,8 +3435,23 @@ class LlvmEmitter {
         }
         const auto inspectedType = function_->expressions[match.value].type;
         llvm::Value *storage{};
-        if (inspectedType.kind == TypeKind::Own || inspectedType.kind == TypeKind::View ||
-            inspectedType.kind == TypeKind::Edit) {
+        if (taskPoll_ && match.valueStorage.has_value()) {
+            const auto persistent = *match.valueStorage;
+            if (persistent >= locals_.size() || inspected.value == nullptr) {
+                fail(span, "LLVM task match has invalid persistent value storage");
+                return {};
+            }
+            builder_.CreateStore(inspected.value, locals_[persistent]);
+            activateLocal(persistent);
+            if (inspectedType.kind == TypeKind::Own || inspectedType.kind == TypeKind::View ||
+                inspectedType.kind == TypeKind::Edit) {
+                storage = loadLocal(persistent);
+            } else {
+                storage = locals_[persistent];
+            }
+        } else if (inspectedType.kind == TypeKind::Own ||
+                   inspectedType.kind == TypeKind::View ||
+                   inspectedType.kind == TypeKind::Edit) {
             storage = inspected.value;
         } else {
             storage = valueAddress(inspected.value, inspectedType, "match.value");
@@ -3376,7 +3477,7 @@ class LlvmEmitter {
                 fail(span, "LLVM backend cannot lay out the result of this match");
                 return {};
             }
-            result = builder_.CreateAlloca(resultType, nullptr, "match.result");
+            result = createEntryAlloca(resultType, "match.result");
             builder_.CreateStore(llvm::Constant::getNullValue(resultType), result);
         }
 
@@ -3442,6 +3543,13 @@ class LlvmEmitter {
             auto exits = builder_.GetInsertBlock()->getTerminator() != nullptr;
             if (!exits) {
                 for (const auto statement : function_->blocks[arm.block].statements) {
+                    if (taskPoll_ && emitSuspendingStatement(statement)) {
+                        if (builder_.GetInsertBlock()->getTerminator() != nullptr) {
+                            exits = true;
+                            break;
+                        }
+                        continue;
+                    }
                     if (emitStatement(statement)) {
                         exits = true;
                         break;
@@ -3462,7 +3570,11 @@ class LlvmEmitter {
                         builder_.CreateStore(armValue.value, result);
                     }
                     dropLocals(arm.drops);
-                    dropMatchValue(storage, inspected.value, inspectedType);
+                    if (taskPoll_ && match.valueStorage.has_value()) {
+                        dropLocal(*match.valueStorage);
+                    } else {
+                        dropMatchValue(storage, inspected.value, inspectedType);
+                    }
                     builder_.CreateBr(merge);
                     hasMergeIncoming = true;
                 }
@@ -3744,6 +3856,11 @@ class LlvmEmitter {
             if (call.function >= functions_.size() || functions_[call.function] == nullptr) {
                 fail(span, "LLVM backend received an invalid function call");
                 return {};
+            }
+            if (program_.functions[call.function].diverges) {
+                builder_.CreateCall(functions_[call.function], values);
+                builder_.CreateUnreachable();
+                return {llvm::PoisonValue::get(llvm::Type::getInt8Ty(context_)), true};
             }
             if (usesExternalResultPointer(program_.functions[call.function])) {
                 auto *storage = builder_.CreateAlloca(typeOf(type), nullptr, "external.result");
@@ -4363,6 +4480,12 @@ class LlvmEmitter {
         return local < locals_.size() ? locals_[local] : nullptr;
     }
 
+    llvm::AllocaInst *createEntryAlloca(llvm::Type *type, const llvm::Twine &name) {
+        auto &entry = llvmFunction_->getEntryBlock();
+        llvm::IRBuilder<> entryBuilder(&entry, entry.begin());
+        return entryBuilder.CreateAlloca(type, nullptr, name);
+    }
+
     llvm::FunctionCallee runtimeFunction(std::string_view name, llvm::Type *result,
                                          std::vector<llvm::Type *> parameters) {
         return module_.getOrInsertFunction(llvm::StringRef(name.data(), name.size()),
@@ -4466,67 +4589,7 @@ class LlvmEmitter {
         builder_.SetInsertPoint(done);
     }
 
-    void dropAddress(llvm::Value *address, const Type &type) {
-        if (address == nullptr || !typeRequiresDrop(type) ||
-            builder_.GetInsertBlock()->getTerminator() != nullptr) {
-            return;
-        }
-        if (type == stringType) {
-            builder_.CreateCall(runtimeFunction("fdn_string_drop", llvm::Type::getVoidTy(context_),
-                                                {pointerType()}),
-                                {address});
-            return;
-        }
-        if (type.kind == TypeKind::Function) {
-            auto *value = builder_.CreateLoad(functionValueType_, address, "drop.function");
-            auto *environment = builder_.CreateExtractValue(value, 0);
-            auto *dropFunction = builder_.CreateExtractValue(value, 2);
-            auto *owner = builder_.GetInsertBlock()->getParent();
-            auto *drop = llvm::BasicBlock::Create(context_, "drop.closure", owner);
-            auto *done = llvm::BasicBlock::Create(context_, "drop.closure.end", owner);
-            builder_.CreateCondBr(
-                builder_.CreateICmpNE(dropFunction,
-                                      llvm::ConstantPointerNull::get(pointerType())),
-                drop, done);
-            builder_.SetInsertPoint(drop);
-            auto *signature =
-                llvm::FunctionType::get(llvm::Type::getVoidTy(context_), {pointerType()}, false);
-            builder_.CreateCall(signature, dropFunction, {environment});
-            builder_.CreateBr(done);
-            builder_.SetInsertPoint(done);
-            builder_.CreateStore(llvm::Constant::getNullValue(functionValueType_), address);
-            return;
-        }
-        if (type.kind == TypeKind::Own && type.arguments.size() == 1) {
-            auto *value = builder_.CreateLoad(pointerType(), address, "drop.own.value");
-            dropOwned(value, type);
-            builder_.CreateStore(llvm::ConstantPointerNull::get(pointerType()), address);
-            return;
-        }
-        if (type.kind == TypeKind::Task) {
-            builder_.CreateCall(
-                runtimeFunction("fdn_task_drop", llvm::Type::getVoidTy(context_), {pointerType()}),
-                {address});
-            return;
-        }
-        if (type.kind == TypeKind::Sender || type.kind == TypeKind::Receiver) {
-            builder_.CreateCall(runtimeFunction(type.kind == TypeKind::Sender
-                                                    ? "fdn_channel_drop_sender"
-                                                    : "fdn_channel_drop_receiver",
-                                                llvm::Type::getVoidTy(context_), {pointerType()}),
-                                {address});
-            return;
-        }
-        if (type.kind == TypeKind::Channel) {
-            auto *receiver =
-                builder_.CreateStructGEP(channelType_, address, 1, "channel.receiver.address");
-            auto *sender =
-                builder_.CreateStructGEP(channelType_, address, 0, "channel.sender.address");
-            dropAddress(receiver, Type{TypeKind::Receiver});
-            dropAddress(sender, Type{TypeKind::Sender});
-            builder_.CreateStore(llvm::Constant::getNullValue(channelType_), address);
-            return;
-        }
+    void emitCompositeDropAddress(llvm::Value *address, const Type &type) {
         if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
             auto *array = llvm::dyn_cast_or_null<llvm::ArrayType>(typeOf(type));
             if (array == nullptr) {
@@ -4610,6 +4673,76 @@ class LlvmEmitter {
             builder_.SetInsertPoint(done);
             builder_.CreateStore(llvm::Constant::getNullValue(enumTypes_[type.declaration]),
                                  address);
+            return;
+        }
+        fail(function_->sourceSpan, "LLVM backend cannot emit a composite drop helper");
+    }
+
+    void dropAddress(llvm::Value *address, const Type &type) {
+        if (address == nullptr || !typeRequiresDrop(type) ||
+            builder_.GetInsertBlock()->getTerminator() != nullptr) {
+            return;
+        }
+        if (type == stringType) {
+            builder_.CreateCall(runtimeFunction("fdn_string_drop", llvm::Type::getVoidTy(context_),
+                                                {pointerType()}),
+                                {address});
+            return;
+        }
+        if (type.kind == TypeKind::Function) {
+            auto *value = builder_.CreateLoad(functionValueType_, address, "drop.function");
+            auto *environment = builder_.CreateExtractValue(value, 0);
+            auto *dropFunction = builder_.CreateExtractValue(value, 2);
+            auto *owner = builder_.GetInsertBlock()->getParent();
+            auto *drop = llvm::BasicBlock::Create(context_, "drop.closure", owner);
+            auto *done = llvm::BasicBlock::Create(context_, "drop.closure.end", owner);
+            builder_.CreateCondBr(
+                builder_.CreateICmpNE(dropFunction,
+                                      llvm::ConstantPointerNull::get(pointerType())),
+                drop, done);
+            builder_.SetInsertPoint(drop);
+            auto *signature =
+                llvm::FunctionType::get(llvm::Type::getVoidTy(context_), {pointerType()}, false);
+            builder_.CreateCall(signature, dropFunction, {environment});
+            builder_.CreateBr(done);
+            builder_.SetInsertPoint(done);
+            builder_.CreateStore(llvm::Constant::getNullValue(functionValueType_), address);
+            return;
+        }
+        if (type.kind == TypeKind::Own && type.arguments.size() == 1) {
+            auto *value = builder_.CreateLoad(pointerType(), address, "drop.own.value");
+            dropOwned(value, type);
+            builder_.CreateStore(llvm::ConstantPointerNull::get(pointerType()), address);
+            return;
+        }
+        if (type.kind == TypeKind::Task) {
+            builder_.CreateCall(
+                runtimeFunction("fdn_task_drop", llvm::Type::getVoidTy(context_), {pointerType()}),
+                {address});
+            return;
+        }
+        if (type.kind == TypeKind::Sender || type.kind == TypeKind::Receiver) {
+            builder_.CreateCall(runtimeFunction(type.kind == TypeKind::Sender
+                                                    ? "fdn_channel_drop_sender"
+                                                    : "fdn_channel_drop_receiver",
+                                                llvm::Type::getVoidTy(context_), {pointerType()}),
+                                {address});
+            return;
+        }
+        if (type.kind == TypeKind::Channel) {
+            auto *receiver =
+                builder_.CreateStructGEP(channelType_, address, 1, "channel.receiver.address");
+            auto *sender =
+                builder_.CreateStructGEP(channelType_, address, 0, "channel.sender.address");
+            dropAddress(receiver, Type{TypeKind::Receiver});
+            dropAddress(sender, Type{TypeKind::Sender});
+            builder_.CreateStore(llvm::Constant::getNullValue(channelType_), address);
+            return;
+        }
+        if ((type.kind == TypeKind::Array && type.arguments.size() == 1) ||
+            (type.kind == TypeKind::Struct && type.declaration < program_.structs.size()) ||
+            (type.kind == TypeKind::Enum && type.declaration < program_.enums.size())) {
+            builder_.CreateCall(declareDropHelper(type), {address});
             return;
         }
         fail(function_->sourceSpan, "LLVM backend has not lowered drop for this value type yet");
@@ -4812,6 +4945,7 @@ class LlvmEmitter {
     std::vector<llvm::Function *> closureDrops_;
     std::map<std::string, ContractSupport> contractSupports_;
     std::vector<ChannelDrop> channelDrops_;
+    std::vector<DropHelper> dropHelpers_;
     std::vector<std::optional<TaskAdapter>> taskAdapters_;
     const FirFunction *function_{};
     FirFunctionId functionId_{};
