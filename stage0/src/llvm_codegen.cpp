@@ -253,12 +253,20 @@ class LlvmEmitter {
         llvm::BasicBlock *continueBlock{};
     };
 
+    struct DefaultContractSupport {
+        Type contract{invalidType};
+        std::vector<std::size_t> effectiveMethods;
+        std::vector<llvm::Function *> methods;
+        llvm::GlobalVariable *vtable{};
+    };
+
     struct ContractSupport {
         Type contract{invalidType};
         Type concrete{invalidType};
         std::vector<FirContractMethodTarget> targets;
         llvm::Function *drop{};
         std::vector<llvm::Function *> methods;
+        std::vector<std::optional<DefaultContractSupport>> defaults;
         llvm::GlobalVariable *vtable{};
     };
 
@@ -747,12 +755,6 @@ class LlvmEmitter {
             return;
         }
         for (std::size_t method = 0; method < contract.methods.size(); ++method) {
-            if (support.targets[method].contractDefault ||
-                !support.targets[method].delegatePath.empty()) {
-                fail(span,
-                     "LLVM backend has not lowered delegated or default contract methods yet");
-                return;
-            }
             std::vector<llvm::Type *> parameters{pointerType()};
             for (const auto &parameter : contract.methods[method].parameters) {
                 auto *type = typeOf(parameter);
@@ -772,6 +774,64 @@ class LlvmEmitter {
                 llvm::GlobalValue::InternalLinkage,
                 vtableName(support.contract, support.concrete) + "_m" + std::to_string(method),
                 module_));
+        }
+        support.defaults.resize(contract.methods.size());
+        for (std::size_t method = 0; method < contract.methods.size(); ++method) {
+            const auto &target = support.targets[method];
+            if (!target.contractDefault) {
+                continue;
+            }
+            if (target.defaultContract.kind != TypeKind::Contract ||
+                target.defaultContract.declaration >= program_.contracts.size()) {
+                fail(span, "LLVM default method has an invalid origin contract");
+                return;
+            }
+            DefaultContractSupport self;
+            self.contract = target.defaultContract;
+            const auto &origin = program_.contracts[target.defaultContract.declaration];
+            for (std::size_t originMethod = 0; originMethod < origin.methods.size();
+                 ++originMethod) {
+                const auto found = std::find_if(
+                    contract.methods.begin(), contract.methods.end(), [&](const auto &candidate) {
+                        return candidate.name == origin.methods[originMethod].name;
+                    });
+                if (found == contract.methods.end()) {
+                    fail(span, "LLVM default method is missing an effective contract method");
+                    return;
+                }
+                self.effectiveMethods.push_back(
+                    static_cast<std::size_t>(found - contract.methods.begin()));
+                std::vector<llvm::Type *> parameters{pointerType()};
+                for (const auto &parameter : origin.methods[originMethod].parameters) {
+                    auto *type = typeOf(parameter);
+                    if (type == nullptr || type->isVoidTy()) {
+                        fail(span, "LLVM default method has an unsupported parameter");
+                        return;
+                    }
+                    parameters.push_back(type);
+                }
+                auto *result = typeOf(origin.methods[originMethod].returnType);
+                if (result == nullptr) {
+                    fail(span, "LLVM default method has an unsupported result");
+                    return;
+                }
+                self.methods.push_back(llvm::Function::Create(
+                    llvm::FunctionType::get(result, parameters, false),
+                    llvm::GlobalValue::InternalLinkage,
+                    vtableName(support.contract, support.concrete) + "_m" +
+                        std::to_string(method) + "_self_m" + std::to_string(originMethod),
+                    module_));
+            }
+            std::vector<llvm::Constant *> entries{support.drop};
+            entries.insert(entries.end(), self.methods.begin(), self.methods.end());
+            self.vtable = new llvm::GlobalVariable(
+                module_, contractVtableTypes_[target.defaultContract.declaration], true,
+                llvm::GlobalValue::InternalLinkage,
+                llvm::ConstantStruct::get(
+                    contractVtableTypes_[target.defaultContract.declaration], entries),
+                vtableName(support.contract, support.concrete) + "_m" +
+                    std::to_string(method) + "_self");
+            support.defaults[method] = std::move(self);
         }
         std::vector<llvm::Constant *> entries;
         entries.push_back(support.drop);
@@ -866,12 +926,65 @@ class LlvmEmitter {
             builder_.CreateRetVoid();
         }
         const auto &contract = program_.contracts[support.contract.declaration];
+        for (const auto &defaultSupport : support.defaults) {
+            if (!defaultSupport.has_value()) {
+                continue;
+            }
+            const auto &origin = program_.contracts[defaultSupport->contract.declaration];
+            for (std::size_t method = 0; method < defaultSupport->methods.size(); ++method) {
+                auto *adapter = defaultSupport->methods[method];
+                auto *block = llvm::BasicBlock::Create(context_, "entry", adapter);
+                llvm::IRBuilder<> builder(block);
+                std::vector<llvm::Value *> arguments;
+                for (auto &argument : adapter->args()) {
+                    arguments.push_back(&argument);
+                }
+                auto *call =
+                    builder.CreateCall(support.methods[defaultSupport->effectiveMethods[method]],
+                                       arguments);
+                if (origin.methods[method].returnType == voidType) {
+                    builder.CreateRetVoid();
+                } else {
+                    builder.CreateRet(call);
+                }
+            }
+        }
         for (std::size_t method = 0; method < support.methods.size(); ++method) {
             auto *adapter = support.methods[method];
             auto *block = llvm::BasicBlock::Create(context_, "entry", adapter);
             llvm::IRBuilder<> builder(block);
             const auto target = support.targets[method].function;
-            std::vector<llvm::Value *> arguments{adapter->getArg(0)};
+            if (target >= program_.functions.size() || functions_[target] == nullptr) {
+                fail({}, "LLVM contract adapter has an invalid implementation");
+                return;
+            }
+            llvm::Value *receiver = adapter->getArg(0);
+            if (support.targets[method].contractDefault) {
+                const auto &self = support.defaults[method];
+                if (!self.has_value()) {
+                    fail({}, "LLVM contract adapter has no default self vtable");
+                    return;
+                }
+                llvm::Value *value = llvm::Constant::getNullValue(typeOf(self->contract));
+                value = builder.CreateInsertValue(value, receiver, 0);
+                value = builder.CreateInsertValue(value, self->vtable, 1);
+                receiver = value;
+            } else {
+                auto current = support.concrete;
+                for (const auto field : support.targets[method].delegatePath) {
+                    if (current.kind != TypeKind::Struct ||
+                        current.declaration >= program_.structs.size() ||
+                        field >= program_.structs[current.declaration].fields.size()) {
+                        fail({}, "LLVM contract adapter has an invalid delegation path");
+                        return;
+                    }
+                    receiver = builder.CreateStructGEP(
+                        structTypes_[current.declaration], receiver,
+                        structFieldIndex(current.declaration, field), "delegate.field");
+                    current = program_.structs[current.declaration].fields[field].type;
+                }
+            }
+            std::vector<llvm::Value *> arguments{receiver};
             for (std::size_t index = 1; index < adapter->arg_size(); ++index) {
                 arguments.push_back(adapter->getArg(index));
             }
@@ -3007,6 +3120,16 @@ class LlvmEmitter {
         }
         const auto &operandType = function_->expressions[ownership.operand].type;
         if (ownership.operation == FirOwnershipOperator::View && type.kind != TypeKind::View) {
+            if (operandType.kind == TypeKind::Own && operandType.arguments.size() == 1 &&
+                operandType.arguments.front().kind == TypeKind::Contract) {
+                const auto operand = emitExpression(ownership.operand);
+                if (operand.diverges) {
+                    return operand;
+                }
+                return {builder_.CreateLoad(typeOf(operandType.arguments.front()), operand.value,
+                                            "owned.contract.view"),
+                        false, std::move(operand.cleanups)};
+            }
             return emitExpression(ownership.operand);
         }
         if (ownership.operation == FirOwnershipOperator::Own) {
@@ -3079,6 +3202,16 @@ class LlvmEmitter {
         }
         if (operandType.kind == TypeKind::Own || operandType.kind == TypeKind::View ||
             operandType.kind == TypeKind::Edit) {
+            if (operandType.kind == TypeKind::Own && operandType.arguments.size() == 1 &&
+                operandType.arguments.front().kind == TypeKind::Contract) {
+                auto operand = emitExpression(ownership.operand);
+                if (operand.diverges) {
+                    return operand;
+                }
+                return {builder_.CreateLoad(typeOf(operandType.arguments.front()), operand.value,
+                                            "owned.contract.view"),
+                        false, std::move(operand.cleanups)};
+            }
             return emitExpression(ownership.operand);
         }
         if (isPlaceExpression(ownership.operand)) {
