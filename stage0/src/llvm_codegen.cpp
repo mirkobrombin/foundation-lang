@@ -4641,6 +4641,10 @@ class LlvmEmitter {
             sequence = sequence.arguments.front();
             data = builder_.CreateExtractValue(slice, 0);
             length = builder_.CreateExtractValue(slice, 1);
+        } else if (sequence.kind == TypeKind::Slice && sequence.arguments.size() == 1) {
+            auto slice = emitExpression(index.base).value;
+            data = builder_.CreateExtractValue(slice, 0);
+            length = builder_.CreateExtractValue(slice, 1);
         } else {
             data = emitAddress(index.base);
         }
@@ -5067,18 +5071,32 @@ class LlvmEmitter {
 
     void emitMainWrapper() {
         const auto &entry = program_.functions[program_.main];
-        if (!entry.parameters.empty()) {
-            fail(entry.sourceSpan, "LLVM backend has not lowered command-line arguments yet");
+        const auto acceptsArguments = entry.parameters.size() == 1;
+        if (entry.parameters.size() > 1) {
+            fail(entry.sourceSpan, "LLVM entry point has an invalid parameter count");
             return;
         }
-        auto *signature = llvm::FunctionType::get(llvm::Type::getInt32Ty(context_), {}, false);
+        std::vector<llvm::Type *> parameters;
+        if (acceptsArguments) {
+            parameters = {llvm::Type::getInt32Ty(context_), pointerType()};
+        }
+        auto *signature = llvm::FunctionType::get(llvm::Type::getInt32Ty(context_), parameters,
+                                                  false);
         auto *main =
             llvm::Function::Create(signature, llvm::GlobalValue::ExternalLinkage, "main", module_);
+        if (acceptsArguments) {
+            main->getArg(0)->setName("argc");
+            main->getArg(1)->setName("argv");
+        }
         auto *block = llvm::BasicBlock::Create(context_, "entry", main);
         builder_.SetInsertPoint(block);
         if (debugBuilder_ != nullptr) {
             auto *file = debugFile(entry.sourcePath.empty() ? sourcePath_ : entry.sourcePath);
             std::vector<llvm::Metadata *> types{debugType(i32Type)};
+            if (acceptsArguments) {
+                types.push_back(debugType(i32Type));
+                types.push_back(debugBuilder_->createUnspecifiedType("char **"));
+            }
             auto *subprogram = debugBuilder_->createFunction(
                 file, "main", "main", file, static_cast<unsigned>(entry.sourceSpan.line),
                 debugBuilder_->createSubroutineType(
@@ -5104,7 +5122,114 @@ class LlvmEmitter {
             builder_.CreateRet(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0));
             return;
         }
-        auto *result = builder_.CreateCall(entryFunction);
+        llvm::CallInst *result{};
+        llvm::Value *argumentValues{};
+        if (acceptsArguments) {
+            const auto parameter = entry.parameters.front();
+            if (parameter >= entry.locals.size()) {
+                fail(entry.sourceSpan, "LLVM entry point has an invalid argument parameter");
+                return;
+            }
+            auto *argumentType = llvm::dyn_cast_or_null<llvm::StructType>(
+                typeOf(entry.locals[parameter].type));
+            const auto argumentSize = module_.getDataLayout().getTypeAllocSize(stringType_);
+            if (argumentType == nullptr || argumentSize.isScalable()) {
+                fail(entry.sourceSpan, "LLVM entry point has an invalid argument layout");
+                return;
+            }
+
+            auto *argc = main->getArg(0);
+            auto *argv = main->getArg(1);
+            auto *nativeCount = builder_.CreateSelect(
+                builder_.CreateICmpSGT(
+                    argc, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 1)),
+                builder_.CreateSub(argc,
+                                   llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 1)),
+                llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0));
+            auto *count = builder_.CreateIntCast(nativeCount, sizeType(), false,
+                                                 "argument.count");
+            const auto sizeBits = sizeType()->getIntegerBitWidth();
+            const auto maximumCount =
+                llvm::APInt::getMaxValue(sizeBits)
+                    .udiv(llvm::APInt(sizeBits, argumentSize.getFixedValue()));
+            auto *overflow = llvm::BasicBlock::Create(context_, "arguments.overflow", main);
+            auto *choose = llvm::BasicBlock::Create(context_, "arguments.choose", main);
+            builder_.CreateCondBr(
+                builder_.CreateICmpUGT(count,
+                                       llvm::ConstantInt::get(context_, maximumCount)),
+                overflow, choose);
+            builder_.SetInsertPoint(overflow);
+            auto *message = builder_.CreateGlobalString("command-line argument count overflow",
+                                                        "arguments.overflow.message");
+            builder_.CreateCall(
+                runtimeFunction("fdn_panic_cstr", llvm::Type::getVoidTy(context_),
+                                {pointerType()}),
+                {message});
+            builder_.CreateUnreachable();
+
+            auto *allocateArguments =
+                llvm::BasicBlock::Create(context_, "arguments.allocate", main);
+            auto *emptyArguments = llvm::BasicBlock::Create(context_, "arguments.empty", main);
+            auto *argumentsReady = llvm::BasicBlock::Create(context_, "arguments.ready", main);
+            builder_.SetInsertPoint(choose);
+            builder_.CreateCondBr(
+                builder_.CreateICmpNE(count, llvm::ConstantInt::get(sizeType(), 0)),
+                allocateArguments, emptyArguments);
+            builder_.SetInsertPoint(allocateArguments);
+            auto *allocationBytes = builder_.CreateMul(
+                count, llvm::ConstantInt::get(sizeType(), argumentSize.getFixedValue()));
+            auto *allocated = builder_.CreateCall(
+                runtimeFunction("fdn_alloc", pointerType(), {sizeType()}), {allocationBytes},
+                "argument.values");
+            builder_.CreateBr(argumentsReady);
+            builder_.SetInsertPoint(emptyArguments);
+            builder_.CreateBr(argumentsReady);
+            builder_.SetInsertPoint(argumentsReady);
+            auto *values = builder_.CreatePHI(pointerType(), 2, "argument.values");
+            values->addIncoming(allocated, allocateArguments);
+            values->addIncoming(llvm::ConstantPointerNull::get(pointerType()), emptyArguments);
+
+            auto *loop = llvm::BasicBlock::Create(context_, "arguments.loop", main);
+            auto *copy = llvm::BasicBlock::Create(context_, "arguments.copy", main);
+            auto *copied = llvm::BasicBlock::Create(context_, "arguments.copied", main);
+            builder_.CreateBr(loop);
+            builder_.SetInsertPoint(loop);
+            auto *index = builder_.CreatePHI(sizeType(), 2, "argument.index");
+            index->addIncoming(llvm::ConstantInt::get(sizeType(), 0), argumentsReady);
+            builder_.CreateCondBr(builder_.CreateICmpULT(index, count), copy, copied);
+            builder_.SetInsertPoint(copy);
+            auto *nativeIndex =
+                builder_.CreateAdd(index, llvm::ConstantInt::get(sizeType(), 1));
+            auto *argumentAddress =
+                builder_.CreateInBoundsGEP(pointerType(), argv, nativeIndex);
+            auto *argument = builder_.CreateLoad(pointerType(), argumentAddress);
+            auto *length = builder_.CreateCall(
+                runtimeFunction("strlen", sizeType(), {pointerType()}), {argument});
+            llvm::Value *string = llvm::Constant::getNullValue(stringType_);
+            string = builder_.CreateInsertValue(string, argument, 0);
+            string = builder_.CreateInsertValue(string, length, 1);
+            string = builder_.CreateInsertValue(
+                string, llvm::ConstantInt::get(llvm::Type::getInt8Ty(context_), 0), 2);
+            auto *target = builder_.CreateInBoundsGEP(stringType_, values, index);
+            builder_.CreateStore(string, target);
+            auto *next = builder_.CreateAdd(index, llvm::ConstantInt::get(sizeType(), 1));
+            builder_.CreateBr(loop);
+            index->addIncoming(next, copy);
+
+            builder_.SetInsertPoint(copied);
+            argumentValues = values;
+            llvm::Value *arguments = llvm::Constant::getNullValue(argumentType);
+            arguments = builder_.CreateInsertValue(arguments, values, 0);
+            arguments = builder_.CreateInsertValue(arguments, count, 1);
+            result = builder_.CreateCall(entryFunction, {arguments});
+        } else {
+            result = builder_.CreateCall(entryFunction);
+        }
+        if (argumentValues != nullptr) {
+            builder_.CreateCall(
+                runtimeFunction("fdn_dealloc", llvm::Type::getVoidTy(context_), {pointerType()}),
+                {argumentValues});
+        }
         if (options_.verifyAllocations) {
             emitAllocationCheck();
         }
