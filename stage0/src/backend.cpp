@@ -2,7 +2,7 @@
 
 namespace foundation {
 
-BackendKind defaultBackendKind() { return BackendKind::C; }
+BackendKind defaultBackendKind() { return BackendKind::Llvm; }
 
 std::optional<BackendKind> parseBackendKind(std::string_view value) {
     if (value == "c") {

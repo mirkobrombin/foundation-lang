@@ -1,4 +1,5 @@
 #include "foundation/application.hpp"
+#include "foundation/backend.hpp"
 #include "foundation/codegen.hpp"
 #include "foundation/diagnostic.hpp"
 #include "foundation/documentation.hpp"
@@ -49,6 +50,13 @@ CheckedProgram check(std::string_view source,
 
 bool hasCode(const foundation::Diagnostics &diagnostics, std::string_view code);
 void expect(bool condition, std::string_view message);
+
+void llvmIsTheDefaultNativeBackend() {
+    expect(foundation::defaultBackendKind() == foundation::BackendKind::Llvm,
+           "LLVM is the default native backend");
+    expect(foundation::parseBackendKind("c") == foundation::BackendKind::C,
+           "the C11 backend remains selectable");
+}
 
 void targetAttributesSelectOneDeclaration() {
     constexpr std::string_view source = R"(
@@ -2889,6 +2897,7 @@ fn main() i32 { 0 }
 } // namespace
 
 int main() {
+    llvmIsTheDefaultNativeBackend();
     targetAttributesSelectOneDeclaration();
     typedAttributesEmitMetadataWithoutRuntimeCode();
     typedProgramLowersToDeterministicC();

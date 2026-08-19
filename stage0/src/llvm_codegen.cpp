@@ -4491,6 +4491,11 @@ class LlvmEmitter {
         if (right.diverges) {
             return right;
         }
+        const auto finish = [&](llvm::Value *result) {
+            dropInspectedTemporary(binary.left, left);
+            dropInspectedTemporary(binary.right, right);
+            return EmittedValue{result, false};
+        };
         switch (binary.operation) {
         case FirBinaryOperator::Add:
         case FirBinaryOperator::Subtract:
@@ -4499,9 +4504,9 @@ class LlvmEmitter {
         case FirBinaryOperator::Remainder:
             if ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) &&
                 binary.operation == FirBinaryOperator::Add && type.arguments.size() == 1) {
-                return {builder_.CreateInBoundsGEP(typeOf(type.arguments.front()), left.value,
-                                                   integerToSize(right.value)),
-                        false};
+                return finish(builder_.CreateInBoundsGEP(typeOf(type.arguments.front()),
+                                                         left.value,
+                                                         integerToSize(right.value)));
             }
             if (type == stringType && binary.operation == FirBinaryOperator::Add) {
                 auto *result = builder_.CreateAlloca(stringType_, nullptr, "string.concat.result");
@@ -4509,20 +4514,20 @@ class LlvmEmitter {
                     runtimeFunction("fdn_abi_string_concat", llvm::Type::getVoidTy(context_),
                                     {pointerType(), pointerType(), pointerType()}),
                     {result, stringAddress(left.value), stringAddress(right.value)});
-                return {builder_.CreateLoad(stringType_, result), false};
+                return finish(builder_.CreateLoad(stringType_, result));
             }
             if (isFloating(type)) {
                 switch (binary.operation) {
                 case FirBinaryOperator::Add:
-                    return {builder_.CreateFAdd(left.value, right.value), false};
+                    return finish(builder_.CreateFAdd(left.value, right.value));
                 case FirBinaryOperator::Subtract:
-                    return {builder_.CreateFSub(left.value, right.value), false};
+                    return finish(builder_.CreateFSub(left.value, right.value));
                 case FirBinaryOperator::Multiply:
-                    return {builder_.CreateFMul(left.value, right.value), false};
+                    return finish(builder_.CreateFMul(left.value, right.value));
                 case FirBinaryOperator::Divide:
-                    return {builder_.CreateFDiv(left.value, right.value), false};
+                    return finish(builder_.CreateFDiv(left.value, right.value));
                 case FirBinaryOperator::Remainder:
-                    return {builder_.CreateFRem(left.value, right.value), false};
+                    return finish(builder_.CreateFRem(left.value, right.value));
                 default:
                     break;
                 }
@@ -4551,7 +4556,7 @@ class LlvmEmitter {
                 setLocation(span);
                 auto callee = runtimeFunction("fdn_" + integerTypeTag(type) + "_" + operation,
                                               typeOf(type), {typeOf(type), typeOf(type)});
-                return {builder_.CreateCall(callee, {left.value, right.value}), false};
+                return finish(builder_.CreateCall(callee, {left.value, right.value}));
             }
             break;
         case FirBinaryOperator::Equal:
@@ -4564,26 +4569,26 @@ class LlvmEmitter {
                     builder_.CreateCall(callee,
                                         {stringAddress(left.value), stringAddress(right.value)}),
                     llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0));
-                return {binary.operation == FirBinaryOperator::Equal ? equal
-                                                                     : builder_.CreateNot(equal),
-                        false};
+                return finish(binary.operation == FirBinaryOperator::Equal
+                                  ? equal
+                                  : builder_.CreateNot(equal));
             }
             if (left.value->getType()->isFloatingPointTy()) {
                 auto *comparison = binary.operation == FirBinaryOperator::Equal
                                        ? builder_.CreateFCmpOEQ(left.value, right.value)
                                        : builder_.CreateFCmpUNE(left.value, right.value);
-                return {comparison, false};
+                return finish(comparison);
             }
-            return {binary.operation == FirBinaryOperator::Equal
-                        ? builder_.CreateICmpEQ(left.value, right.value)
-                        : builder_.CreateICmpNE(left.value, right.value),
-                    false};
+            return finish(binary.operation == FirBinaryOperator::Equal
+                              ? builder_.CreateICmpEQ(left.value, right.value)
+                              : builder_.CreateICmpNE(left.value, right.value));
         case FirBinaryOperator::Less:
         case FirBinaryOperator::LessEqual:
         case FirBinaryOperator::Greater:
         case FirBinaryOperator::GreaterEqual:
-            return emitComparison(binary.operation, left.value, right.value,
-                                  function_->expressions[binary.left].type);
+            return finish(emitComparison(binary.operation, left.value, right.value,
+                                         function_->expressions[binary.left].type)
+                              .value);
         case FirBinaryOperator::And:
         case FirBinaryOperator::Or:
             break;
@@ -5084,39 +5089,44 @@ class LlvmEmitter {
 
         std::vector<std::pair<llvm::Value *, llvm::BasicBlock *>> incoming;
         auto hasMergeIncoming = false;
-        builder_.SetInsertPoint(thenBlock);
-        if (!emitBlock(conditional.thenBlock)) {
-            const auto thenValue = emitExpression(conditional.thenValue);
-            if (!thenValue.diverges) {
-                if (type != voidType && thenValue.value == nullptr) {
-                    fail(span, "LLVM conditional branch did not produce a value");
-                    builder_.CreateUnreachable();
-                    return {llvm::PoisonValue::get(llvm::Type::getInt8Ty(context_)), true};
+        const auto emitBranch = [&](FirBlockId block, FirExpressionId value) {
+            if (block >= function_->blocks.size()) {
+                fail(span, "LLVM backend received an invalid conditional branch");
+                return;
+            }
+            for (const auto statement : function_->blocks[block].statements) {
+                if (taskPoll_ && emitSuspendingStatement(statement)) {
+                    if (builder_.GetInsertBlock()->getTerminator() != nullptr) {
+                        return;
+                    }
+                    continue;
                 }
-                builder_.CreateBr(mergeBlock);
-                hasMergeIncoming = true;
-                if (type != voidType) {
-                    incoming.emplace_back(thenValue.value, builder_.GetInsertBlock());
+                if (emitStatement(statement)) {
+                    return;
                 }
             }
-        }
+            const auto result = emitExpression(value);
+            if (result.diverges) {
+                return;
+            }
+            if (type != voidType && result.value == nullptr) {
+                fail(span, "LLVM conditional branch did not produce a value");
+                builder_.CreateUnreachable();
+                return;
+            }
+            dropLocals(function_->blocks[block].drops);
+            builder_.CreateBr(mergeBlock);
+            hasMergeIncoming = true;
+            if (type != voidType) {
+                incoming.emplace_back(result.value, builder_.GetInsertBlock());
+            }
+        };
+
+        builder_.SetInsertPoint(thenBlock);
+        emitBranch(conditional.thenBlock, conditional.thenValue);
 
         builder_.SetInsertPoint(elseBlock);
-        if (!emitBlock(conditional.elseBlock)) {
-            const auto elseValue = emitExpression(conditional.elseValue);
-            if (!elseValue.diverges) {
-                if (type != voidType && elseValue.value == nullptr) {
-                    fail(span, "LLVM conditional branch did not produce a value");
-                    builder_.CreateUnreachable();
-                    return {llvm::PoisonValue::get(llvm::Type::getInt8Ty(context_)), true};
-                }
-                builder_.CreateBr(mergeBlock);
-                hasMergeIncoming = true;
-                if (type != voidType) {
-                    incoming.emplace_back(elseValue.value, builder_.GetInsertBlock());
-                }
-            }
-        }
+        emitBranch(conditional.elseBlock, conditional.elseValue);
 
         if (!hasMergeIncoming) {
             mergeBlock->eraseFromParent();
@@ -5203,6 +5213,9 @@ class LlvmEmitter {
         }
         if (const auto *field = std::get_if<FirFieldExpression>(&expression)) {
             return isPlaceExpression(field->base);
+        }
+        if (const auto *index = std::get_if<FirIndexExpression>(&expression)) {
+            return isPlaceExpression(index->base);
         }
         if (const auto *unary = std::get_if<FirUnaryExpression>(&expression)) {
             return unary->operation == FirUnaryOperator::Dereference;
@@ -5479,6 +5492,7 @@ class LlvmEmitter {
         }
         if (sequence.kind == TypeKind::Array && sequence.arguments.size() == 1) {
             length = llvm::ConstantInt::get(sizeType(), sequence.declaration);
+            setLocation(span);
             auto *checked = builder_.CreateCall(
                 runtimeFunction("fdn_bounds_check", sizeType(), {sizeType(), sizeType()}),
                 {integerToSize(value.value), length});
@@ -5488,6 +5502,7 @@ class LlvmEmitter {
                 {llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0), checked});
         }
         if (sequence.kind == TypeKind::Slice && sequence.arguments.size() == 1) {
+            setLocation(span);
             auto *checked = builder_.CreateCall(
                 runtimeFunction("fdn_bounds_check", sizeType(), {sizeType(), sizeType()}),
                 {integerToSize(value.value), length});
@@ -5803,6 +5818,17 @@ class LlvmEmitter {
             return;
         }
         dropAddress(valueAddress(value, type, "drop.value"), type);
+    }
+
+    void dropInspectedTemporary(FirExpressionId id, const EmittedValue &expression) {
+        for (auto cleanup = expression.cleanups.rbegin(); cleanup != expression.cleanups.rend();
+             ++cleanup) {
+            dropAddress(cleanup->address, cleanup->type);
+        }
+        if (id < function_->expressions.size() && !isPlaceExpression(id) &&
+            typeRequiresDrop(function_->expressions[id].type)) {
+            dropValue(expression.value, function_->expressions[id].type);
+        }
     }
 
     void dropLocals(const std::vector<FirLocalId> &locals) {
