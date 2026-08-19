@@ -2819,10 +2819,6 @@ class LlvmEmitter {
     }
 
     void emitFor(const FirForStatement &loop, SourceSpan span) {
-        if (loop.next.has_value()) {
-            fail(span, "LLVM backend has not lowered iterator for loops yet");
-            return;
-        }
         const auto sequence = emitExpression(loop.sequence);
         if (sequence.diverges || loop.sequenceStorage >= locals_.size() ||
             loop.index >= locals_.size() || loop.value >= locals_.size()) {
@@ -2835,7 +2831,96 @@ class LlvmEmitter {
             return;
         }
         builder_.CreateStore(sequence.value, locals_[loop.sequenceStorage]);
+        activateLocal(loop.sequenceStorage);
         builder_.CreateStore(llvm::ConstantInt::get(sizeType(), 0), locals_[loop.index]);
+        if (loop.next.has_value()) {
+            const auto optionType = function_->expressions[*loop.next].type;
+            if (optionType.kind != TypeKind::Enum ||
+                optionType.declaration >= program_.enums.size() ||
+                program_.enums[optionType.declaration].variants.size() != 2 ||
+                !program_.enums[optionType.declaration].variants[1].payload.has_value()) {
+                fail(span, "LLVM iterator has an invalid Option result");
+                return;
+            }
+            auto *optionLayout = typeOf(optionType);
+            if (optionLayout == nullptr || optionLayout->isVoidTy()) {
+                fail(span, "LLVM iterator has no Option layout");
+                return;
+            }
+            auto *nextStorage = createEntryAlloca(optionLayout, "iterator.next");
+            auto *conditionBlock =
+                llvm::BasicBlock::Create(context_, "iterator.condition", llvmFunction_);
+            auto *noneBlock = llvm::BasicBlock::Create(context_, "iterator.none", llvmFunction_);
+            auto *someBlock = llvm::BasicBlock::Create(context_, "iterator.some", llvmFunction_);
+            auto *bodyBlock = llvm::BasicBlock::Create(context_, "iterator.body", llvmFunction_);
+            auto *nextBlock = llvm::BasicBlock::Create(context_, "iterator.next", llvmFunction_);
+            auto *invalidBlock =
+                llvm::BasicBlock::Create(context_, "iterator.invalid", llvmFunction_);
+            auto *exitBlock = llvm::BasicBlock::Create(context_, "iterator.end", llvmFunction_);
+            builder_.CreateBr(conditionBlock);
+            builder_.SetInsertPoint(conditionBlock);
+            const auto next = emitExpression(*loop.next);
+            if (next.diverges) {
+                noneBlock->eraseFromParent();
+                someBlock->eraseFromParent();
+                bodyBlock->eraseFromParent();
+                nextBlock->eraseFromParent();
+                invalidBlock->eraseFromParent();
+                exitBlock->eraseFromParent();
+                return;
+            }
+            if (next.value == nullptr) {
+                fail(span, "LLVM iterator did not produce an Option value");
+                return;
+            }
+            builder_.CreateStore(next.value, nextStorage);
+            auto *tag = enumTag(nextStorage, optionType, span);
+            if (tag == nullptr) {
+                return;
+            }
+            auto *dispatch = builder_.CreateSwitch(tag, invalidBlock, 2);
+            dispatch->addCase(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0),
+                              noneBlock);
+            dispatch->addCase(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 1),
+                              someBlock);
+
+            builder_.SetInsertPoint(noneBlock);
+            dropAddress(nextStorage, optionType);
+            builder_.CreateBr(exitBlock);
+            builder_.SetInsertPoint(someBlock);
+            if (!bindEnumPayload(nextStorage, optionType, 1, loop.value, true, span)) {
+                return;
+            }
+            dropAddress(nextStorage, optionType);
+            builder_.CreateBr(bodyBlock);
+            builder_.SetInsertPoint(invalidBlock);
+            builder_.CreateCall(
+                runtimeFunction("fdn_invalid_enum_tag", llvm::Type::getVoidTy(context_), {}));
+            builder_.CreateUnreachable();
+
+            builder_.SetInsertPoint(bodyBlock);
+            loops_.push_back({exitBlock, nextBlock});
+            const auto exits = emitBlock(loop.body);
+            loops_.pop_back();
+            if (!exits) {
+                builder_.CreateBr(nextBlock);
+            }
+            builder_.SetInsertPoint(nextBlock);
+            auto *index = builder_.CreateCall(
+                runtimeFunction("fdn_usize_add", sizeType(), {sizeType(), sizeType()}),
+                {loadLocal(loop.index), llvm::ConstantInt::get(sizeType(), 1)});
+            builder_.CreateStore(index, locals_[loop.index]);
+            builder_.CreateBr(conditionBlock);
+            builder_.SetInsertPoint(exitBlock);
+            if (loop.ownsSequence) {
+                dropLocal(loop.sequenceStorage);
+            }
+            for (auto cleanup = sequence.cleanups.rbegin();
+                 cleanup != sequence.cleanups.rend(); ++cleanup) {
+                dropAddress(cleanup->address, cleanup->type);
+            }
+            return;
+        }
         auto *conditionBlock = llvm::BasicBlock::Create(context_, "for.condition", llvmFunction_);
         auto *bodyBlock = llvm::BasicBlock::Create(context_, "for.body", llvmFunction_);
         auto *nextBlock = llvm::BasicBlock::Create(context_, "for.next", llvmFunction_);
@@ -2871,8 +2956,7 @@ class LlvmEmitter {
         builder_.CreateBr(conditionBlock);
         builder_.SetInsertPoint(exitBlock);
         if (loop.ownsSequence) {
-            dropValue(loadLocal(loop.sequenceStorage),
-                      function_->locals[loop.sequenceStorage].type);
+            dropLocal(loop.sequenceStorage);
         }
         for (auto cleanup = sequence.cleanups.rbegin(); cleanup != sequence.cleanups.rend();
              ++cleanup) {
