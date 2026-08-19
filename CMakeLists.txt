@@ -713,6 +713,15 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-tests.cmake
     )
     add_test(
+        NAME tooling.test.cli.llvm
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSUCCESS=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/test-declarations.fn
+            -DISOLATION=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/test-isolation.fn
+            -DBACKEND=llvm
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-tests.cmake
+    )
+    add_test(
         NAME stage0.check.test-empty-name
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -1373,6 +1382,42 @@ if(BUILD_TESTING)
         COMMAND foundationc run
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/range.fn
             --backend llvm
+    )
+    add_test(
+        NAME stage0.run.llvm.state-machine
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine.out
+            -DBACKEND=llvm
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.llvm.state-machine-timeout
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine-timeout.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine-timeout.out
+            -DBACKEND=llvm
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.llvm.workflows
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/workflows.out
+            -DBACKEND=llvm
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.llvm.fsm-machine
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fsm-machine.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fsm-machine.out
+            -DBACKEND=llvm
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
         NAME stage0.check.state-machine

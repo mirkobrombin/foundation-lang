@@ -1,5 +1,10 @@
+set(backend_args)
+if(DEFINED BACKEND)
+    list(APPEND backend_args --backend "${BACKEND}")
+endif()
+
 execute_process(
-    COMMAND "${COMPILER}" test "${SUCCESS}"
+    COMMAND "${COMPILER}" test "${SUCCESS}" ${backend_args}
     RESULT_VARIABLE success_status
     OUTPUT_VARIABLE success_output
     ERROR_VARIABLE success_error
@@ -14,7 +19,7 @@ if(NOT success_output MATCHES "ok addition returns the sum" OR
 endif()
 
 execute_process(
-    COMMAND "${COMPILER}" test "${ISOLATION}"
+    COMMAND "${COMPILER}" test "${ISOLATION}" ${backend_args}
     RESULT_VARIABLE isolation_status
     OUTPUT_VARIABLE isolation_output
     ERROR_VARIABLE isolation_error

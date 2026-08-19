@@ -1043,12 +1043,6 @@ class LlvmEmitter {
                 return nullptr;
             }
         }
-        if (function.task || function.callback || function.stateTransition.has_value() ||
-            function.stateTimeout.has_value() || function.workflow.has_value()) {
-            fail(function.sourceSpan,
-                 "LLVM backend has not lowered the specialized function " + function.name);
-            return nullptr;
-        }
         return llvm::FunctionType::get(result, parameters, false);
     }
 
@@ -1832,6 +1826,609 @@ class LlvmEmitter {
         return llvm::FunctionType::get(result, parameters, false);
     }
 
+    void storeEnumTag(llvm::Value* address, const Type& type, FirVariantId variant,
+                      SourceSpan span) {
+        if (address == nullptr || type.kind != TypeKind::Enum ||
+            type.declaration >= program_.enums.size() ||
+            variant >= program_.enums[type.declaration].variants.size()) {
+            fail(span, "LLVM backend received an invalid enum tag destination");
+            return;
+        }
+        auto* tag =
+            builder_.CreateStructGEP(enumTypes_[type.declaration], address, 0, "enum.tag.address");
+        builder_.CreateStore(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), variant),
+                             tag);
+    }
+
+    llvm::Value* newStorage(const Type& type, const llvm::Twine& name, SourceSpan span) {
+        auto* layout = typeOf(type);
+        if (layout == nullptr || layout->isVoidTy()) {
+            fail(span, "LLVM backend cannot allocate specialized value storage");
+            return nullptr;
+        }
+        auto* storage = createEntryAlloca(layout, name);
+        builder_.CreateStore(llvm::Constant::getNullValue(layout), storage);
+        return storage;
+    }
+
+    void returnStoredValue(llvm::Value* storage, const Type& type) {
+        leaveFrame();
+        builder_.CreateRet(moveFromAddress(storage, type));
+    }
+
+    void dropTransitionParameters(const FirStateTransitionFunction& transition,
+                                  bool preserveDestination) {
+        for (std::size_t index = 1; index < function_->parameters.size(); ++index) {
+            const auto parameter = function_->parameters[index];
+            if ((preserveDestination && transition.destinationParameter == parameter) ||
+                (index < function_->readParameters.size() && function_->readParameters[index]) ||
+                parameter >= function_->locals.size()) {
+                continue;
+            }
+            const auto& type = function_->locals[parameter].type;
+            if (type.kind != TypeKind::View && type.kind != TypeKind::Edit) {
+                dropAddress(locals_[parameter], type);
+            }
+        }
+    }
+
+    void emitStateTransitionFunction() {
+        if (!function_->stateTransition.has_value() || function_->parameters.empty() ||
+            function_->returnType.kind != TypeKind::Enum ||
+            function_->returnType.declaration >= program_.enums.size() ||
+            program_.enums[function_->returnType.declaration].variants.size() < 2 ||
+            !program_.enums[function_->returnType.declaration].variants[1].payload.has_value()) {
+            fail(function_->sourceSpan, "LLVM backend received an invalid state transition");
+            return;
+        }
+        const auto& transition = *function_->stateTransition;
+        const auto receiverLocal = function_->parameters.front();
+        if (receiverLocal >= function_->locals.size()) {
+            fail(function_->sourceSpan, "LLVM state transition has an invalid receiver");
+            return;
+        }
+        const auto& receiverType = function_->locals[receiverLocal].type;
+        if (receiverType.kind != TypeKind::Edit || receiverType.arguments.size() != 1 ||
+            receiverType.arguments.front().kind != TypeKind::Enum) {
+            fail(function_->sourceSpan, "LLVM state transition receiver is not editable state");
+            return;
+        }
+        const auto machineType = receiverType.arguments.front();
+        auto* receiver = loadLocal(receiverLocal);
+        auto* result =
+            newStorage(function_->returnType, "transition.result", function_->sourceSpan);
+        if (receiver == nullptr || result == nullptr) {
+            return;
+        }
+
+        auto* sourceTag = enumTag(receiver, machineType, function_->sourceSpan);
+        llvm::Value* allowed = llvm::ConstantInt::getFalse(context_);
+        for (const auto variant : transition.sourceVariants) {
+            allowed = builder_.CreateOr(
+                allowed,
+                builder_.CreateICmpEQ(
+                    sourceTag, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), variant)));
+        }
+        auto* accepted = llvm::BasicBlock::Create(context_, "transition.accepted", llvmFunction_);
+        auto* rejected = llvm::BasicBlock::Create(context_, "transition.rejected", llvmFunction_);
+        builder_.CreateCondBr(allowed, accepted, rejected);
+
+        builder_.SetInsertPoint(accepted);
+        dropAddress(receiver, machineType);
+        storeEnumTag(receiver, machineType, transition.destinationVariant, function_->sourceSpan);
+        if (transition.destinationParameter.has_value()) {
+            const auto parameter = *transition.destinationParameter;
+            if (parameter >= function_->locals.size() ||
+                transition.destinationVariant >=
+                    program_.enums[machineType.declaration].variants.size() ||
+                !program_.enums[machineType.declaration]
+                     .variants[transition.destinationVariant]
+                     .payload.has_value()) {
+                fail(function_->sourceSpan,
+                     "LLVM state transition has an invalid destination payload");
+                return;
+            }
+            const auto& payloadType = *program_.enums[machineType.declaration]
+                                           .variants[transition.destinationVariant]
+                                           .payload;
+            auto* payload = enumPayloadAddress(receiver, machineType, transition.destinationVariant,
+                                               function_->sourceSpan);
+            builder_.CreateStore(moveFromAddress(locals_[parameter], payloadType), payload);
+        }
+        dropTransitionParameters(transition, true);
+        storeEnumTag(result, function_->returnType, 0, function_->sourceSpan);
+        returnStoredValue(result, function_->returnType);
+
+        builder_.SetInsertPoint(rejected);
+        dropTransitionParameters(transition, false);
+        const auto errorType =
+            *program_.enums[function_->returnType.declaration].variants[1].payload;
+        auto* error = newStorage(errorType, "transition.error", function_->sourceSpan);
+        if (error == nullptr || errorType.kind != TypeKind::Enum ||
+            errorType.declaration >= program_.enums.size() ||
+            program_.enums[errorType.declaration].variants.empty()) {
+            fail(function_->sourceSpan, "LLVM state transition has an invalid error type");
+            return;
+        }
+        storeEnumTag(error, errorType, 0, function_->sourceSpan);
+        auto* payload = enumPayloadAddress(result, function_->returnType, 1, function_->sourceSpan);
+        builder_.CreateStore(moveFromAddress(error, errorType), payload);
+        storeEnumTag(result, function_->returnType, 1, function_->sourceSpan);
+        returnStoredValue(result, function_->returnType);
+    }
+
+    void emitStateTimeoutFunction() {
+        if (!function_->stateTimeout.has_value() || function_->parameters.size() != 1 ||
+            function_->returnType.kind != TypeKind::Enum ||
+            function_->returnType.declaration >= program_.enums.size() ||
+            program_.enums[function_->returnType.declaration].variants.size() < 2 ||
+            !program_.enums[function_->returnType.declaration].variants[1].payload.has_value()) {
+            fail(function_->sourceSpan, "LLVM backend received an invalid state timeout");
+            return;
+        }
+        const auto& timeout = *function_->stateTimeout;
+        const auto stateLocal = function_->parameters.front();
+        if (stateLocal >= function_->locals.size()) {
+            fail(function_->sourceSpan, "LLVM state timeout has an invalid state parameter");
+            return;
+        }
+        const auto& stateType = function_->locals[stateLocal].type;
+        const auto borrowed = stateType.kind == TypeKind::View && stateType.arguments.size() == 1 &&
+                              stateType.arguments.front().kind == TypeKind::Enum;
+        if (stateType.kind != TypeKind::Enum && !borrowed) {
+            fail(function_->sourceSpan, "LLVM state timeout parameter is not state");
+            return;
+        }
+        const auto machineType = borrowed ? stateType.arguments.front() : stateType;
+        auto* state = borrowed ? loadLocal(stateLocal) : locals_[stateLocal];
+        auto* result = newStorage(function_->returnType, "timeout.result", function_->sourceSpan);
+        if (state == nullptr || result == nullptr) {
+            return;
+        }
+        auto* sourceTag = enumTag(state, machineType, function_->sourceSpan);
+        llvm::Value* covered = llvm::ConstantInt::getFalse(context_);
+        for (const auto variant : timeout.sourceVariants) {
+            covered = builder_.CreateOr(
+                covered,
+                builder_.CreateICmpEQ(
+                    sourceTag, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), variant)));
+        }
+        auto* some = llvm::BasicBlock::Create(context_, "timeout.some", llvmFunction_);
+        auto* none = llvm::BasicBlock::Create(context_, "timeout.none", llvmFunction_);
+        builder_.CreateCondBr(covered, some, none);
+
+        builder_.SetInsertPoint(some);
+        auto* payload = enumPayloadAddress(result, function_->returnType, 1, function_->sourceSpan);
+        builder_.CreateStore(
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(context_), timeout.nanoseconds), payload);
+        storeEnumTag(result, function_->returnType, 1, function_->sourceSpan);
+        returnStoredValue(result, function_->returnType);
+
+        builder_.SetInsertPoint(none);
+        storeEnumTag(result, function_->returnType, 0, function_->sourceSpan);
+        returnStoredValue(result, function_->returnType);
+    }
+
+    llvm::Value* workflowArgument(FirFunctionId target, llvm::Value* address, const Type& valueType,
+                                  SourceSpan span) {
+        if (target >= program_.functions.size() || address == nullptr ||
+            program_.functions[target].parameters.size() != 1) {
+            fail(span, "LLVM workflow target has an invalid argument");
+            return nullptr;
+        }
+        const auto& targetFunction = program_.functions[target];
+        const auto parameter = targetFunction.parameters.front();
+        if (parameter >= targetFunction.locals.size()) {
+            fail(span, "LLVM workflow target has an invalid parameter");
+            return nullptr;
+        }
+        const auto& parameterType = targetFunction.locals[parameter].type;
+        if (parameterType.kind == TypeKind::View || parameterType.kind == TypeKind::Edit) {
+            if (valueType.kind == TypeKind::View || valueType.kind == TypeKind::Edit) {
+                return builder_.CreateLoad(typeOf(valueType), address, "workflow.argument");
+            }
+            return address;
+        }
+        auto* layout = typeOf(parameterType);
+        if (layout == nullptr || layout->isVoidTy()) {
+            fail(span, "LLVM workflow target argument has no layout");
+            return nullptr;
+        }
+        return builder_.CreateLoad(layout, address, "workflow.argument");
+    }
+
+    llvm::Value* emitWorkflowCall(const FirWorkflowStep& step, FirFunctionId target,
+                                  llvm::Value* argument, const Type& argumentType,
+                                  bool compensation) {
+        if (target >= program_.functions.size() || target >= functions_.size() ||
+            functions_[target] == nullptr) {
+            fail(function_->sourceSpan, "LLVM workflow has an invalid callable");
+            return nullptr;
+        }
+        const auto& targetFunction = program_.functions[target];
+        if (targetFunction.returnType.kind != TypeKind::Enum ||
+            targetFunction.returnType.declaration >= program_.enums.size() ||
+            program_.enums[targetFunction.returnType.declaration].variants.size() < 2) {
+            fail(function_->sourceSpan, "LLVM workflow callable does not return Result");
+            return nullptr;
+        }
+        const auto attempts = compensation ? std::size_t{1} : step.attempts;
+        if (attempts == 0 || attempts > static_cast<std::size_t>(UINT32_MAX)) {
+            fail(function_->sourceSpan, "LLVM workflow retry count is out of range");
+            return nullptr;
+        }
+        auto* result =
+            newStorage(targetFunction.returnType, "workflow.call.result", function_->sourceSpan);
+        if (result == nullptr) {
+            return nullptr;
+        }
+        auto* initial = builder_.GetInsertBlock();
+        auto* call = llvm::BasicBlock::Create(context_, "workflow.call", llvmFunction_);
+        auto* retry = llvm::BasicBlock::Create(context_, "workflow.retry", llvmFunction_);
+        auto* done = llvm::BasicBlock::Create(context_, "workflow.call.done", llvmFunction_);
+        builder_.CreateBr(call);
+        builder_.SetInsertPoint(call);
+        auto* attempt = builder_.CreatePHI(llvm::Type::getInt32Ty(context_), 2, "workflow.attempt");
+        attempt->addIncoming(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0), initial);
+        auto* value = workflowArgument(target, argument, argumentType, function_->sourceSpan);
+        if (value == nullptr) {
+            return nullptr;
+        }
+        auto* invocation = builder_.CreateCall(functions_[target], {value});
+        builder_.CreateStore(invocation, result);
+        auto* tag = enumTag(result, targetFunction.returnType, function_->sourceSpan);
+        auto* succeeded =
+            builder_.CreateICmpEQ(tag, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0));
+        auto* nextAttempt = builder_.CreateAdd(
+            attempt, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 1));
+        auto* exhausted = builder_.CreateICmpUGE(
+            nextAttempt, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), attempts));
+        builder_.CreateCondBr(builder_.CreateOr(succeeded, exhausted), done, retry);
+
+        builder_.SetInsertPoint(retry);
+        dropAddress(result, targetFunction.returnType);
+        builder_.CreateCall(runtimeFunction("fdn_retry_wait", llvm::Type::getVoidTy(context_),
+                                            {llvm::Type::getInt32Ty(context_)}),
+                            {attempt});
+        auto* retryBlock = builder_.GetInsertBlock();
+        builder_.CreateBr(call);
+        attempt->addIncoming(nextAttempt, retryBlock);
+        builder_.SetInsertPoint(done);
+        return result;
+    }
+
+    void emitWorkflowResult(llvm::Value* stepResult, const Type& stepResultType,
+                            FirVariantId variant) {
+        if (function_->returnType.kind != TypeKind::Enum ||
+            function_->returnType.declaration >= program_.enums.size() ||
+            stepResultType.kind != TypeKind::Enum ||
+            stepResultType.declaration >= program_.enums.size() || variant > 1 ||
+            variant >= program_.enums[function_->returnType.declaration].variants.size() ||
+            variant >= program_.enums[stepResultType.declaration].variants.size()) {
+            fail(function_->sourceSpan, "LLVM workflow has an invalid result shape");
+            return;
+        }
+        auto* result = newStorage(function_->returnType, "workflow.return", function_->sourceSpan);
+        if (result == nullptr) {
+            return;
+        }
+        const auto& source = program_.enums[stepResultType.declaration].variants[variant].payload;
+        const auto& destination =
+            program_.enums[function_->returnType.declaration].variants[variant].payload;
+        if (source.has_value() != destination.has_value() ||
+            (source.has_value() && *source != *destination)) {
+            fail(function_->sourceSpan, "LLVM workflow result payloads do not match");
+            return;
+        }
+        if (source.has_value()) {
+            auto* sourcePayload =
+                enumPayloadAddress(stepResult, stepResultType, variant, function_->sourceSpan);
+            auto* destinationPayload =
+                enumPayloadAddress(result, function_->returnType, variant, function_->sourceSpan);
+            builder_.CreateStore(moveFromAddress(sourcePayload, *source), destinationPayload);
+        }
+        storeEnumTag(result, function_->returnType, variant, function_->sourceSpan);
+        returnStoredValue(result, function_->returnType);
+    }
+
+    void emitPipelineFunction(const FirWorkflowFunction& workflow) {
+        if (function_->parameters.size() != 1 || workflow.steps.empty()) {
+            fail(function_->sourceSpan, "LLVM backend received an invalid pipeline");
+            return;
+        }
+        const auto input = function_->parameters.front();
+        if (input >= function_->locals.size()) {
+            fail(function_->sourceSpan, "LLVM pipeline has an invalid input");
+            return;
+        }
+        llvm::Value* current = locals_[input];
+        Type currentType = function_->locals[input].type;
+        bool currentOwned{};
+
+        for (std::size_t index = 0; index < workflow.steps.size(); ++index) {
+            const auto& step = workflow.steps[index];
+            if (step.function >= program_.functions.size()) {
+                fail(function_->sourceSpan, "LLVM pipeline has an invalid step");
+                return;
+            }
+            const auto& target = program_.functions[step.function];
+            auto* stepResult = emitWorkflowCall(step, step.function, current, currentType, false);
+            if (stepResult == nullptr) {
+                return;
+            }
+            if (currentOwned) {
+                dropAddress(current, currentType);
+            }
+            auto* failed = llvm::BasicBlock::Create(context_, "pipeline.failed", llvmFunction_);
+            auto* succeeded =
+                llvm::BasicBlock::Create(context_, "pipeline.succeeded", llvmFunction_);
+            auto* tag = enumTag(stepResult, target.returnType, function_->sourceSpan);
+            builder_.CreateCondBr(
+                builder_.CreateICmpEQ(tag,
+                                      llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 1)),
+                failed, succeeded);
+
+            builder_.SetInsertPoint(failed);
+            emitWorkflowResult(stepResult, target.returnType, 1);
+
+            builder_.SetInsertPoint(succeeded);
+            if (index + 1 == workflow.steps.size()) {
+                emitWorkflowResult(stepResult, target.returnType, 0);
+                return;
+            }
+            const auto& success = program_.enums[target.returnType.declaration].variants[0].payload;
+            if (!success.has_value()) {
+                fail(function_->sourceSpan, "LLVM non-final pipeline step has no success payload");
+                return;
+            }
+            current = newStorage(*success, "pipeline.value", function_->sourceSpan);
+            if (current == nullptr) {
+                return;
+            }
+            auto* payload =
+                enumPayloadAddress(stepResult, target.returnType, 0, function_->sourceSpan);
+            builder_.CreateStore(moveFromAddress(payload, *success), current);
+            currentType = *success;
+            currentOwned = true;
+        }
+    }
+
+    llvm::Value* sagaCompensationFailures(const FirWorkflowFunction& workflow, std::size_t failed,
+                                          llvm::Value* argument, const Type& argumentType,
+                                          llvm::Value* details, const Type& originalError) {
+        if (workflow.failureDetailsType.kind != TypeKind::Struct ||
+            workflow.failureDetailsType.declaration >= program_.structs.size()) {
+            fail(function_->sourceSpan, "LLVM saga has an invalid failure details type");
+            return nullptr;
+        }
+        const auto& declaration = program_.structs[workflow.failureDetailsType.declaration];
+        std::size_t compensationCapacity{};
+        for (std::size_t current = failed; current > 0; --current) {
+            compensationCapacity += workflow.steps[current - 1].compensation.has_value() ? 1 : 0;
+        }
+        if (declaration.fields.size() < 3 || declaration.fields[0].type != originalError ||
+            declaration.fields[1].type != usizeType ||
+            declaration.fields[2].type.kind != TypeKind::Array ||
+            declaration.fields[2].type.arguments.size() != 1 ||
+            declaration.fields[2].type.arguments.front() != originalError ||
+            declaration.fields[2].type.declaration < compensationCapacity) {
+            fail(function_->sourceSpan, "LLVM saga has an invalid compensation error storage");
+            return nullptr;
+        }
+        auto* count = createEntryAlloca(sizeType(), "saga.compensation.count");
+        builder_.CreateStore(llvm::ConstantInt::get(sizeType(), 0), count);
+        for (std::size_t current = failed; current > 0; --current) {
+            const auto& completed = workflow.steps[current - 1];
+            if (!completed.compensation.has_value()) {
+                continue;
+            }
+            const auto compensation = *completed.compensation;
+            auto* compensationResult =
+                emitWorkflowCall(completed, compensation, argument, argumentType, true);
+            if (compensationResult == nullptr || compensation >= program_.functions.size()) {
+                return nullptr;
+            }
+            const auto& compensationFunction = program_.functions[compensation];
+            if (compensationFunction.returnType.kind != TypeKind::Enum ||
+                compensationFunction.returnType.declaration >= program_.enums.size() ||
+                program_.enums[compensationFunction.returnType.declaration].variants.size() < 2 ||
+                !program_.enums[compensationFunction.returnType.declaration]
+                     .variants[1]
+                     .payload.has_value() ||
+                *program_.enums[compensationFunction.returnType.declaration].variants[1].payload !=
+                    originalError) {
+                fail(function_->sourceSpan,
+                     "LLVM saga compensation has an incompatible error type");
+                return nullptr;
+            }
+            auto* failedCompensation =
+                llvm::BasicBlock::Create(context_, "saga.compensation.failed", llvmFunction_);
+            auto* compensationDone =
+                llvm::BasicBlock::Create(context_, "saga.compensation.done", llvmFunction_);
+            auto* tag =
+                enumTag(compensationResult, compensationFunction.returnType, function_->sourceSpan);
+            builder_.CreateCondBr(
+                builder_.CreateICmpEQ(tag,
+                                      llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 1)),
+                failedCompensation, compensationDone);
+
+            builder_.SetInsertPoint(failedCompensation);
+            auto* errors =
+                structFieldAddress(details, workflow.failureDetailsType, 2, function_->sourceSpan);
+            auto* array =
+                llvm::dyn_cast_or_null<llvm::ArrayType>(typeOf(declaration.fields[2].type));
+            if (errors == nullptr || array == nullptr) {
+                fail(function_->sourceSpan, "LLVM saga cannot address compensation error storage");
+                return nullptr;
+            }
+            auto* index = builder_.CreateLoad(sizeType(), count, "saga.compensation.index");
+            auto* destination = builder_.CreateInBoundsGEP(
+                array, errors,
+                {llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0), index});
+            auto* source = enumPayloadAddress(compensationResult, compensationFunction.returnType,
+                                              1, function_->sourceSpan);
+            builder_.CreateStore(moveFromAddress(source, originalError), destination);
+            builder_.CreateStore(builder_.CreateAdd(index, llvm::ConstantInt::get(sizeType(), 1)),
+                                 count);
+            builder_.CreateBr(compensationDone);
+
+            builder_.SetInsertPoint(compensationDone);
+            dropAddress(compensationResult, compensationFunction.returnType);
+        }
+        return count;
+    }
+
+    void emitSagaFailure(const FirWorkflowFunction& workflow, std::size_t failed,
+                         llvm::Value* failedResult, llvm::Value* argument,
+                         const Type& argumentType) {
+        if (failed >= workflow.steps.size() ||
+            workflow.steps[failed].function >= program_.functions.size() ||
+            workflow.failureType.kind != TypeKind::Enum ||
+            workflow.failureType.declaration >= program_.enums.size() ||
+            program_.enums[workflow.failureType.declaration].variants.size() < 2 ||
+            function_->returnType.kind != TypeKind::Enum ||
+            function_->returnType.declaration >= program_.enums.size() ||
+            program_.enums[function_->returnType.declaration].variants.size() < 2 ||
+            !program_.enums[function_->returnType.declaration].variants[1].payload.has_value() ||
+            *program_.enums[function_->returnType.declaration].variants[1].payload !=
+                workflow.failureType) {
+            fail(function_->sourceSpan, "LLVM saga has an invalid failure shape");
+            return;
+        }
+        const auto& failedFunction = program_.functions[workflow.steps[failed].function];
+        if (failedFunction.returnType.kind != TypeKind::Enum ||
+            failedFunction.returnType.declaration >= program_.enums.size() ||
+            program_.enums[failedFunction.returnType.declaration].variants.size() < 2 ||
+            !program_.enums[failedFunction.returnType.declaration]
+                 .variants[1]
+                 .payload.has_value()) {
+            fail(function_->sourceSpan, "LLVM saga step has an invalid failure payload");
+            return;
+        }
+        const auto originalType =
+            *program_.enums[failedFunction.returnType.declaration].variants[1].payload;
+        const auto& stepFailurePayload =
+            program_.enums[workflow.failureType.declaration].variants[0].payload;
+        const auto& compensationFailurePayload =
+            program_.enums[workflow.failureType.declaration].variants[1].payload;
+        if (!stepFailurePayload.has_value() || *stepFailurePayload != originalType ||
+            !compensationFailurePayload.has_value() ||
+            *compensationFailurePayload != workflow.failureDetailsType) {
+            fail(function_->sourceSpan, "LLVM saga failure variants do not match workflow types");
+            return;
+        }
+        auto* original = newStorage(originalType, "saga.original.error", function_->sourceSpan);
+        auto* details =
+            newStorage(workflow.failureDetailsType, "saga.failure.details", function_->sourceSpan);
+        auto* failure = newStorage(workflow.failureType, "saga.failure", function_->sourceSpan);
+        if (original == nullptr || details == nullptr || failure == nullptr) {
+            return;
+        }
+        auto* failedPayload =
+            enumPayloadAddress(failedResult, failedFunction.returnType, 1, function_->sourceSpan);
+        builder_.CreateStore(moveFromAddress(failedPayload, originalType), original);
+        auto* count = sagaCompensationFailures(workflow, failed, argument, argumentType, details,
+                                               originalType);
+        if (count == nullptr) {
+            return;
+        }
+        auto* stepFailure = llvm::BasicBlock::Create(context_, "saga.step.failure", llvmFunction_);
+        auto* compensationFailure =
+            llvm::BasicBlock::Create(context_, "saga.compensation.failure", llvmFunction_);
+        auto* failureReady =
+            llvm::BasicBlock::Create(context_, "saga.failure.ready", llvmFunction_);
+        auto* failureCount = builder_.CreateLoad(sizeType(), count, "saga.failure.count");
+        builder_.CreateCondBr(
+            builder_.CreateICmpEQ(failureCount, llvm::ConstantInt::get(sizeType(), 0)), stepFailure,
+            compensationFailure);
+
+        builder_.SetInsertPoint(stepFailure);
+        auto* stepPayload =
+            enumPayloadAddress(failure, workflow.failureType, 0, function_->sourceSpan);
+        builder_.CreateStore(moveFromAddress(original, originalType), stepPayload);
+        storeEnumTag(failure, workflow.failureType, 0, function_->sourceSpan);
+        builder_.CreateBr(failureReady);
+
+        builder_.SetInsertPoint(compensationFailure);
+        auto* originalField =
+            structFieldAddress(details, workflow.failureDetailsType, 0, function_->sourceSpan);
+        auto* countField =
+            structFieldAddress(details, workflow.failureDetailsType, 1, function_->sourceSpan);
+        builder_.CreateStore(moveFromAddress(original, originalType), originalField);
+        builder_.CreateStore(failureCount, countField);
+        auto* compensationPayload =
+            enumPayloadAddress(failure, workflow.failureType, 1, function_->sourceSpan);
+        builder_.CreateStore(moveFromAddress(details, workflow.failureDetailsType),
+                             compensationPayload);
+        storeEnumTag(failure, workflow.failureType, 1, function_->sourceSpan);
+        builder_.CreateBr(failureReady);
+
+        builder_.SetInsertPoint(failureReady);
+        auto* result = newStorage(function_->returnType, "saga.return", function_->sourceSpan);
+        if (result == nullptr) {
+            return;
+        }
+        auto* payload = enumPayloadAddress(result, function_->returnType, 1, function_->sourceSpan);
+        builder_.CreateStore(moveFromAddress(failure, workflow.failureType), payload);
+        storeEnumTag(result, function_->returnType, 1, function_->sourceSpan);
+        returnStoredValue(result, function_->returnType);
+    }
+
+    void emitSagaFunction(const FirWorkflowFunction& workflow) {
+        if (function_->parameters.size() != 1 || workflow.steps.empty()) {
+            fail(function_->sourceSpan, "LLVM backend received an invalid saga");
+            return;
+        }
+        const auto input = function_->parameters.front();
+        if (input >= function_->locals.size()) {
+            fail(function_->sourceSpan, "LLVM saga has an invalid input");
+            return;
+        }
+        auto* argument = locals_[input];
+        const auto argumentType = function_->locals[input].type;
+        for (std::size_t index = 0; index < workflow.steps.size(); ++index) {
+            const auto& step = workflow.steps[index];
+            if (step.function >= program_.functions.size()) {
+                fail(function_->sourceSpan, "LLVM saga has an invalid step");
+                return;
+            }
+            const auto& target = program_.functions[step.function];
+            auto* stepResult = emitWorkflowCall(step, step.function, argument, argumentType, false);
+            if (stepResult == nullptr) {
+                return;
+            }
+            auto* failed = llvm::BasicBlock::Create(context_, "saga.failed", llvmFunction_);
+            auto* succeeded = llvm::BasicBlock::Create(context_, "saga.succeeded", llvmFunction_);
+            auto* tag = enumTag(stepResult, target.returnType, function_->sourceSpan);
+            builder_.CreateCondBr(
+                builder_.CreateICmpEQ(tag,
+                                      llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 1)),
+                failed, succeeded);
+
+            builder_.SetInsertPoint(failed);
+            emitSagaFailure(workflow, index, stepResult, argument, argumentType);
+
+            builder_.SetInsertPoint(succeeded);
+            if (index + 1 == workflow.steps.size()) {
+                emitWorkflowResult(stepResult, target.returnType, 0);
+                return;
+            }
+            dropAddress(stepResult, target.returnType);
+        }
+    }
+
+    void emitWorkflowFunction() {
+        if (!function_->workflow.has_value()) {
+            fail(function_->sourceSpan, "LLVM backend received missing workflow metadata");
+            return;
+        }
+        if (function_->workflow->kind == FirWorkflowKind::Pipeline) {
+            emitPipelineFunction(*function_->workflow);
+        } else {
+            emitSagaFunction(*function_->workflow);
+        }
+    }
+
     void emitFunction(FirFunctionId id) {
         function_ = &program_.functions[id];
         functionId_ = id;
@@ -1893,6 +2490,21 @@ class LlvmEmitter {
         }
         frame_ = builder_.CreateAlloca(frameType_, nullptr, "frame");
         enterFrame();
+        if (function_->stateTransition.has_value()) {
+            emitStateTransitionFunction();
+            clearDebugLocation();
+            return;
+        }
+        if (function_->stateTimeout.has_value()) {
+            emitStateTimeoutFunction();
+            clearDebugLocation();
+            return;
+        }
+        if (function_->workflow.has_value()) {
+            emitWorkflowFunction();
+            clearDebugLocation();
+            return;
+        }
         const auto exits = emitBlock(function_->body);
         if (diagnostics_.hasErrors()) {
             return;
