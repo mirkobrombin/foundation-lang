@@ -32,11 +32,14 @@ typedef struct fdn_frame {
     uint8_t native_boundary;
 } fdn_frame;
 
+#ifndef FOUNDATION_FDN_STRING_DEFINED
+#define FOUNDATION_FDN_STRING_DEFINED
 typedef struct fdn_string {
     const char *data;
     size_t length;
     uint8_t owned;
 } fdn_string;
+#endif
 
 typedef struct fdn_task fdn_task;
 typedef struct fdn_channel fdn_channel;
@@ -76,10 +79,13 @@ typedef struct fdn_channel_select_case {
     fdn_channel_select_kind kind;
 } fdn_channel_select_case;
 
+#ifndef FOUNDATION_FDN_STRING_STATIC_DEFINED
+#define FOUNDATION_FDN_STRING_STATIC_DEFINED
 static inline fdn_string fdn_string_static(const char *data, size_t length) {
     fdn_string value = {data, length, 0};
     return value;
 }
+#endif
 
 void fdn_frame_enter(fdn_frame *frame, const char *package_name, const char *function_name,
                      const char *source_file, uint32_t line, uint32_t column);

@@ -17,6 +17,7 @@ struct LlvmCodegenOptions {
     bool verifyAllocations{};
     bool debugInfo{true};
     std::optional<FirFunctionId> entry;
+    std::optional<std::string> libraryPackage;
 };
 
 [[nodiscard]] std::string defaultLlvmTargetTriple();

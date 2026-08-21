@@ -34,6 +34,8 @@ void printUsage(std::ostream &output) {
            << "  foundationc emit-app-host <source-or-project> -o <output.fn>\n"
            << "  foundationc build <source-or-project> -o <executable>"
               " [--backend <llvm|c>] [--native <input>]...\n"
+           << "  foundationc build-library <project> -o <directory>"
+              " --kind <static|shared> [--backend <llvm|c>] [--native <input>]...\n"
            << "  foundationc run <source-or-project> [--backend <llvm|c>]"
               " [--native <input>]... [-- <argument>...]\n"
            << "  foundationc test <source-or-project> [--backend <llvm|c>]"
@@ -169,6 +171,48 @@ bool parseBuildArguments(int argc, char **argv, int start,
         }
     }
     return outputSeen;
+}
+
+bool parseLibraryArguments(int argc, char **argv, int start,
+                           std::filesystem::path &output,
+                           foundation::LibraryKind &kind,
+                           std::vector<std::filesystem::path> &nativeInputs,
+                           foundation::BackendKind &backend) {
+    auto outputSeen = false;
+    auto kindSeen = false;
+    auto backendSeen = false;
+    for (auto index = start; index < argc; index += 2) {
+        if (index + 1 >= argc) {
+            return false;
+        }
+        const std::string_view option = argv[index];
+        const std::string_view value = argv[index + 1];
+        if (option == "-o" && !outputSeen) {
+            output = value;
+            outputSeen = true;
+        } else if (option == "--kind" && !kindSeen) {
+            if (value == "static") {
+                kind = foundation::LibraryKind::Static;
+            } else if (value == "shared") {
+                kind = foundation::LibraryKind::Shared;
+            } else {
+                return false;
+            }
+            kindSeen = true;
+        } else if (option == "--native") {
+            nativeInputs.emplace_back(value);
+        } else if (option == "--backend" && !backendSeen) {
+            const auto parsed = foundation::parseBackendKind(value);
+            if (!parsed.has_value()) {
+                return false;
+            }
+            backend = *parsed;
+            backendSeen = true;
+        } else {
+            return false;
+        }
+    }
+    return outputSeen && kindSeen;
 }
 
 bool parseRunArguments(int argc, char **argv, int start,
@@ -340,6 +384,18 @@ int main(int argc, char **argv) {
             }
             return foundation::buildFile(std::filesystem::path(argv[2]), output, nativeInputs,
                                          backend);
+        }
+        if (command == "build-library" && argc >= 7) {
+            std::filesystem::path output;
+            auto kind = foundation::LibraryKind::Static;
+            std::vector<std::filesystem::path> nativeInputs;
+            auto backend = foundation::defaultBackendKind();
+            if (!parseLibraryArguments(argc, argv, 3, output, kind, nativeInputs, backend)) {
+                printUsage(std::cerr);
+                return 2;
+            }
+            return foundation::buildLibrary(std::filesystem::path(argv[2]), output, kind,
+                                            nativeInputs, backend);
         }
         if (command == "run" && argc >= 3) {
             std::vector<std::filesystem::path> nativeInputs;

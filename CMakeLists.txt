@@ -94,9 +94,11 @@ else()
     target_link_libraries(foundation_compiler PRIVATE ${FOUNDATION_LLVM_LIBRARIES})
 endif()
 get_filename_component(FOUNDATION_C_COMPILER_NAME "${CMAKE_C_COMPILER}" NAME)
+get_filename_component(FOUNDATION_ARCHIVER_NAME "${CMAKE_AR}" NAME)
 target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_C_COMPILER="${FOUNDATION_C_COMPILER_NAME}"
     FOUNDATION_C_COMPILER_ID="${CMAKE_C_COMPILER_ID}"
+    FOUNDATION_ARCHIVER="${FOUNDATION_ARCHIVER_NAME}"
     FOUNDATION_RUNTIME_INCLUDE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/include"
     FOUNDATION_RUNTIME_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c"
     FOUNDATION_RUNTIME_CRYPTO_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c"
@@ -1154,6 +1156,20 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/native-interface
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/native-interface-test
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-pii.cmake
+    )
+    add_test(
+        NAME stage0.build.library-artifacts
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/native-interface
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/native-library-artifact-test
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DCXX_COMPILER=${CMAKE_CXX_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSYSTEM_NAME=${CMAKE_SYSTEM_NAME}
+            -DNM=${CMAKE_NM}
+            -DREADELF=${CMAKE_READELF}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-library-artifacts.cmake
     )
     add_test(
         NAME stage0.run.accept

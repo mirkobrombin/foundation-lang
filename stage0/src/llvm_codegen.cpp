@@ -189,9 +189,15 @@ class LlvmEmitter {
     LlvmEmitter(const FirProgram &source, std::string_view sourcePath,
                 const LlvmCodegenOptions &options, Diagnostics &diagnostics,
                 llvm::LLVMContext &context, llvm::Module &module)
-        : program_(prepareFirForBackend(source, options.entry)), sourcePath_(sourcePath),
+        : program_(options.libraryPackage.has_value()
+                       ? specializePackageInterface(source, *options.libraryPackage)
+                       : prepareFirForBackend(source, options.entry)),
+          sourcePath_(sourcePath),
           options_(options), diagnostics_(diagnostics), context_(context), module_(module),
           builder_(context) {
+        if (options_.libraryPackage.has_value()) {
+            program_.main = program_.functions.size();
+        }
         stringType_ = llvm::StructType::create(
             context_, {pointerType(), sizeType(), llvm::Type::getInt8Ty(context_)},
             "fdn.string");
@@ -212,7 +218,8 @@ class LlvmEmitter {
     }
 
     bool run() {
-        if (program_.main >= program_.functions.size()) {
+        if (!options_.libraryPackage.has_value() &&
+            program_.main >= program_.functions.size()) {
             fail({}, "program has no LLVM entry point");
             return false;
         }
@@ -238,7 +245,7 @@ class LlvmEmitter {
             emitTaskAdapters();
             emitDropHelpers();
         }
-        if (!diagnostics_.hasErrors()) {
+        if (!diagnostics_.hasErrors() && !options_.libraryPackage.has_value()) {
             emitMainWrapper();
         }
         if (!diagnostics_.hasErrors() && debugBuilder_ != nullptr) {
@@ -1133,8 +1140,11 @@ class LlvmEmitter {
             if (signature == nullptr) {
                 continue;
             }
-            auto *declaration = llvm::Function::Create(
-                signature, llvm::GlobalValue::ExternalLinkage, functionName(program_, id), module_);
+            const auto linkage = options_.libraryPackage.has_value()
+                                     ? llvm::GlobalValue::InternalLinkage
+                                     : llvm::GlobalValue::ExternalLinkage;
+            auto *declaration = llvm::Function::Create(signature, linkage,
+                                                       functionName(program_, id), module_);
             if (function.diverges) {
                 declaration->addFnAttr(llvm::Attribute::NoReturn);
             }

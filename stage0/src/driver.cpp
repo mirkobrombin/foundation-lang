@@ -517,6 +517,196 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
     return arguments;
 }
 
+std::filesystem::path runtimeIncludeDirectory() {
+    return sdkAsset("runtime/include", std::filesystem::path{FOUNDATION_RUNTIME_INCLUDE});
+}
+
+std::vector<std::filesystem::path> runtimeSourceFiles() {
+    return {
+        sdkAsset("runtime/src/runtime.c", std::filesystem::path{FOUNDATION_RUNTIME_SOURCE}),
+        sdkAsset("runtime/src/crypto.c", std::filesystem::path{FOUNDATION_RUNTIME_CRYPTO_SOURCE}),
+        sdkAsset("runtime/src/parse.c", std::filesystem::path{FOUNDATION_RUNTIME_PARSE_SOURCE}),
+        sdkAsset("runtime/src/task.c", std::filesystem::path{FOUNDATION_RUNTIME_TASK_SOURCE}),
+        sdkAsset("runtime/src/cancellation.c",
+                 std::filesystem::path{FOUNDATION_RUNTIME_CANCELLATION_SOURCE}),
+        sdkAsset("runtime/src/channel.c", std::filesystem::path{FOUNDATION_RUNTIME_CHANNEL_SOURCE}),
+        sdkAsset("runtime/src/blocking.c", std::filesystem::path{FOUNDATION_RUNTIME_BLOCKING_SOURCE}),
+        sdkAsset("runtime/src/pool.c", std::filesystem::path{FOUNDATION_RUNTIME_POOL_SOURCE}),
+        sdkAsset("runtime/src/reactor.c", std::filesystem::path{FOUNDATION_RUNTIME_REACTOR_SOURCE}),
+        sdkAsset("runtime/src/resiliency.c",
+                 std::filesystem::path{FOUNDATION_RUNTIME_RESILIENCY_SOURCE}),
+        sdkAsset("runtime/src/net.c", std::filesystem::path{FOUNDATION_RUNTIME_NET_SOURCE}),
+        sdkAsset("runtime/src/plugin.c", std::filesystem::path{FOUNDATION_RUNTIME_PLUGIN_SOURCE}),
+        sdkAsset("runtime/src/plugin_sandbox.c",
+                 std::filesystem::path{FOUNDATION_RUNTIME_PLUGIN_SANDBOX_SOURCE}),
+    };
+}
+
+bool compileLibraryObject(const std::filesystem::path &source,
+                          const std::filesystem::path &output,
+                          const std::filesystem::path &generatedInclude,
+                          bool positionIndependent) {
+    const auto runtimeInclude = runtimeIncludeDirectory();
+    const std::string compilerId = FOUNDATION_C_COMPILER_ID;
+    std::vector<std::string> arguments{FOUNDATION_C_COMPILER};
+    if (compilerId == "MSVC") {
+        arguments.insert(arguments.end(), {"/nologo", "/std:c11", "/O2", "/W4", "/WX", "/c",
+                                           source.string(), "/I" + runtimeInclude.string(),
+                                           "/I" + generatedInclude.string(),
+                                           "/Fo:" + output.string()});
+    } else {
+        arguments.insert(arguments.end(), {"-std=c11", "-O2", "-Wall", "-Wextra",
+                                           "-Wpedantic", "-Werror"});
+        if (positionIndependent) {
+            arguments.push_back("-fPIC");
+        }
+        arguments.insert(arguments.end(), {"-I", runtimeInclude.string(), "-I",
+                                           generatedInclude.string(), "-c", source.string(),
+                                           "-o", output.string()});
+    }
+    return runProcess(arguments, ProcessOutput::StdoutToStderr) == 0;
+}
+
+std::string sharedLibraryFilename(std::string_view name, unsigned int soVersion) {
+#ifdef _WIN32
+    static_cast<void>(soVersion);
+    return std::string(name) + ".dll";
+#elif defined(__APPLE__)
+    return "lib" + std::string(name) +
+           (soVersion == 0 ? std::string{} : "." + std::to_string(soVersion)) + ".dylib";
+#else
+    return "lib" + std::string(name) + ".so" +
+           (soVersion == 0 ? std::string{} : "." + std::to_string(soVersion));
+#endif
+}
+
+std::string sharedLibraryLinkFilename(std::string_view name) {
+#ifdef _WIN32
+    return std::string(name) + ".dll";
+#elif defined(__APPLE__)
+    return "lib" + std::string(name) + ".dylib";
+#else
+    return "lib" + std::string(name) + ".so";
+#endif
+}
+
+std::string staticLibraryFilename(std::string_view name) {
+#if defined(_WIN32) && defined(_MSC_VER)
+    return std::string(name) + ".lib";
+#else
+    return "lib" + std::string(name) + ".a";
+#endif
+}
+
+std::string renderElfVersionScript(const PackageInterface &interface) {
+    std::ostringstream output;
+    output << "FOUNDATION_" << interface.abiMajor << " {\n    global:\n";
+    for (const auto &function : interface.exports) {
+        output << "        " << function.cSymbol << ";\n";
+    }
+    output << "        fdn_alloc;\n"
+              "        fdn_dealloc;\n"
+              "        fdn_string_drop;\n"
+              "        fdn_panic;\n"
+              "        fdn_panic_cstr;\n"
+              "    local:\n"
+              "        *;\n"
+              "};\n";
+    return output.str();
+}
+
+#if defined(__APPLE__)
+std::string renderExportList(const PackageInterface &interface, bool leadingUnderscore) {
+    std::ostringstream output;
+    const auto prefix = leadingUnderscore ? "_" : "";
+    for (const auto &function : interface.exports) {
+        output << prefix << function.cSymbol << '\n';
+    }
+    output << prefix << "fdn_alloc\n"
+           << prefix << "fdn_dealloc\n"
+           << prefix << "fdn_string_drop\n"
+           << prefix << "fdn_panic\n"
+           << prefix << "fdn_panic_cstr\n";
+    return output.str();
+}
+#endif
+
+#ifdef _WIN32
+std::string renderWindowsDefinition(const PackageInterface &interface) {
+    std::ostringstream output;
+    output << "LIBRARY " << interface.library << "\nEXPORTS\n";
+    for (const auto &function : interface.exports) {
+        output << "    " << function.cSymbol << '\n';
+    }
+    output << "    fdn_alloc\n"
+              "    fdn_dealloc\n"
+              "    fdn_string_drop\n"
+              "    fdn_panic\n"
+              "    fdn_panic_cstr\n";
+    return output.str();
+}
+#endif
+
+bool archiveLibrary(const std::filesystem::path &output,
+                    const std::vector<std::filesystem::path> &objects) {
+    std::vector<std::string> arguments;
+    const std::string compilerId = FOUNDATION_C_COMPILER_ID;
+    if (compilerId == "MSVC") {
+        arguments = {FOUNDATION_ARCHIVER, "/NOLOGO", "/Brepro", "/OUT:" + output.string()};
+    } else {
+        arguments = {FOUNDATION_ARCHIVER, "rcs", output.string()};
+    }
+    for (const auto &object : objects) {
+        arguments.push_back(object.string());
+    }
+    return runProcess(arguments, ProcessOutput::StdoutToStderr) == 0;
+}
+
+bool linkSharedLibrary(const std::filesystem::path &output,
+                       const std::vector<std::filesystem::path> &objects,
+                       const PackageInterface &interface,
+                       const std::filesystem::path &controlFile,
+                       const std::filesystem::path &importLibrary) {
+    static_cast<void>(interface);
+    static_cast<void>(importLibrary);
+    std::vector<std::string> arguments{FOUNDATION_C_COMPILER};
+    const std::string compilerId = FOUNDATION_C_COMPILER_ID;
+    if (compilerId == "MSVC") {
+        arguments.insert(arguments.end(), {"/nologo", "/LD", "/Fe:" + output.string()});
+        for (const auto &object : objects) {
+            arguments.push_back(object.string());
+        }
+        arguments.insert(arguments.end(), {"bcrypt.lib", "ws2_32.lib", "/link",
+                                           "/Brepro",
+                                           "/DEF:" + controlFile.string(),
+                                           "/IMPLIB:" + importLibrary.string()});
+        return runProcess(arguments, ProcessOutput::StdoutToStderr) == 0;
+    }
+
+    arguments.push_back("-shared");
+    for (const auto &object : objects) {
+        arguments.push_back(object.string());
+    }
+#ifdef _WIN32
+    arguments.insert(arguments.end(), {"-Wl,--no-undefined", controlFile.string(),
+                                       "-Wl,--out-implib," + importLibrary.string(),
+                                       "-lbcrypt", "-lws2_32"});
+#elif defined(__APPLE__)
+    const auto installName = "@rpath/" + sharedLibraryFilename(interface.library,
+                                                                 interface.soVersion);
+    arguments.insert(arguments.end(), {"-Wl,-undefined,error", "-Wl,-install_name," + installName,
+                                       "-Wl,-exported_symbols_list," + controlFile.string(),
+                                       "-pthread"});
+#else
+    arguments.insert(arguments.end(), {"-Wl,--no-undefined",
+                                       "-Wl,-soname," + output.filename().string(),
+                                       "-Wl,--version-script," + controlFile.string(),
+                                       "-pthread", "-ldl"});
+#endif
+    arguments.insert(arguments.end(), {"-o", output.string()});
+    return runProcess(arguments, ProcessOutput::StdoutToStderr) == 0;
+}
+
 int buildCompilation(const std::filesystem::path &source, const std::filesystem::path &output,
                      const std::filesystem::path &temporarySource,
                      const std::filesystem::path &temporaryHeader,
@@ -539,6 +729,7 @@ int buildCompilation(const std::filesystem::path &source, const std::filesystem:
                                 .optimize = true,
                                 .verifyAllocations = false,
                                 .entry = std::nullopt,
+                                .libraryPackage = std::nullopt,
                             },
                             compilation.diagnostics)) {
             return report(source, compilation);
@@ -796,6 +987,7 @@ int emitLlvmIrFile(const std::filesystem::path &source,
             .optimize = true,
             .verifyAllocations = false,
             .entry = std::nullopt,
+            .libraryPackage = std::nullopt,
         },
         compilation.diagnostics);
     if (!generated.has_value()) {
@@ -1096,6 +1288,253 @@ int buildFile(const std::filesystem::path &source, const std::filesystem::path &
                             backend);
 }
 
+int buildLibrary(const std::filesystem::path &source,
+                 const std::filesystem::path &outputDirectory,
+                 LibraryKind kind,
+                 const std::vector<std::filesystem::path> &nativeInputs,
+                 BackendKind backend) {
+    const auto manifestPath = discoverPackageManifest(source);
+    if (!manifestPath.has_value()) {
+        std::cerr << "foundationc: build-library requires a package project\n";
+        return 2;
+    }
+    const auto manifest = readPackageManifest(*manifestPath);
+    if (!manifest.value.has_value()) {
+        for (const auto &error : manifest.errors) {
+            std::cerr << renderPackageError(error);
+        }
+        return 1;
+    }
+    if (!manifest.value->nativeLibrary || !manifest.value->nativeName.has_value()) {
+        std::cerr << "foundationc: build-library requires native_library c and native_name\n";
+        return 2;
+    }
+    const auto lockPath = manifestPath->parent_path() / "foundation.lock";
+    const auto lock = readPackageLock(lockPath);
+    if (!lock.value.has_value()) {
+        for (const auto &error : lock.errors) {
+            std::cerr << renderPackageError(error);
+        }
+        return 1;
+    }
+    if (lock.value->target != hostTargetPlatform()) {
+        std::cerr << "foundationc: build-library requires a lock for the host target\n";
+        return 2;
+    }
+
+    auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false},
+                                   ProjectMode::Production, lock.value->target);
+    std::optional<FirProgram> fir;
+    std::optional<PackageInterface> packageInterface;
+    if (analysis.semantic.has_value()) {
+        fir = lower(analysis.program, *analysis.semantic);
+        packageInterface = buildPackageInterface(*fir, *manifest.value, *lock.value,
+                                                 analysis.diagnostics);
+        if (packageInterface.has_value() && packageInterface->exports.empty()) {
+            analysis.diagnostics.error("FDN2122", "native library exports no C ABI functions",
+                                       {0, 0, 1, 1});
+            packageInterface.reset();
+        }
+    }
+    Compilation result;
+    result.sources = analysis.sources;
+    result.diagnostics = analysis.diagnostics;
+    if (const auto status = report(source, result); status != 0) {
+        return status;
+    }
+    if (!fir.has_value() || !packageInterface.has_value()) {
+        return 1;
+    }
+    for (const auto &input : nativeInputs) {
+        const auto extension = input.extension();
+        if (extension != ".c" && extension != ".o" && extension != ".obj") {
+            std::cerr << "foundationc: native library inputs must be C sources or objects\n";
+            return 2;
+        }
+    }
+
+    auto temporary = createTempDirectory();
+    if (!temporary.has_value()) {
+        return 1;
+    }
+    const auto header = temporary->path() / "foundation_abi.h";
+    const auto headerContents = emitPackageCHeader(*fir, manifest.value->name,
+                                                   packageInterface->library);
+    const auto interfaceContents = renderPackageInterfaceJson(*packageInterface);
+    if (!writeFile(header, headerContents)) {
+        return 1;
+    }
+
+#ifdef _WIN32
+    constexpr std::string_view objectExtension = ".obj";
+#else
+    constexpr std::string_view objectExtension = ".o";
+#endif
+    std::vector<std::filesystem::path> objects;
+    const auto generatedObject = temporary->path() / ("foundation" + std::string(objectExtension));
+    const auto librarySourceIdentity = manifestPath->filename().generic_string();
+    if (backend == BackendKind::Llvm) {
+        Diagnostics diagnostics;
+        if (!emitLlvmObject(
+                *fir, generatedObject, librarySourceIdentity,
+                LlvmCodegenOptions{
+                    .targetTriple = defaultLlvmTargetTriple(),
+                    .optimize = true,
+                    .verifyAllocations = false,
+                    .entry = std::nullopt,
+                    .libraryPackage = manifest.value->name,
+                },
+                diagnostics)) {
+            std::cerr << renderDiagnostics(source.string(), {}, diagnostics);
+            return 1;
+        }
+    } else {
+        const auto generatedSource = temporary->path() / "foundation.c";
+        if (!writeFile(generatedSource,
+                       emitPackageC(*fir, manifest.value->name, librarySourceIdentity)) ||
+            !compileLibraryObject(generatedSource, generatedObject, temporary->path(),
+                                  kind == LibraryKind::Shared)) {
+            return 1;
+        }
+    }
+    objects.push_back(generatedObject);
+
+    const auto runtimeSources = runtimeSourceFiles();
+    for (std::size_t index = 0; index < runtimeSources.size(); ++index) {
+        const auto object = temporary->path() /
+                            ("runtime-" + std::to_string(index) + std::string(objectExtension));
+        if (!compileLibraryObject(runtimeSources[index], object, temporary->path(),
+                                  kind == LibraryKind::Shared)) {
+            return 1;
+        }
+        objects.push_back(object);
+    }
+    for (std::size_t index = 0; index < nativeInputs.size(); ++index) {
+        const auto &input = nativeInputs[index];
+        if (input.extension() == ".c") {
+            const auto object = temporary->path() /
+                                ("native-" + std::to_string(index) +
+                                 std::string(objectExtension));
+            if (!compileLibraryObject(input, object, temporary->path(),
+                                      kind == LibraryKind::Shared)) {
+                return 1;
+            }
+            objects.push_back(object);
+            continue;
+        }
+        objects.push_back(input);
+    }
+
+    const auto artifactName = kind == LibraryKind::Shared
+                                  ? sharedLibraryFilename(packageInterface->library,
+                                                          packageInterface->soVersion)
+                                  : staticLibraryFilename(packageInterface->library);
+    const auto artifact = temporary->path() / artifactName;
+    const auto importLibrary = temporary->path() /
+                               staticLibraryFilename(packageInterface->library);
+    if (kind == LibraryKind::Static) {
+        if (!archiveLibrary(artifact, objects)) {
+            return 1;
+        }
+    } else {
+        const auto control = temporary->path() /
+#ifdef _WIN32
+                             "exports.def";
+        const auto controlContents = renderWindowsDefinition(*packageInterface);
+#elif defined(__APPLE__)
+                             "exports.list";
+        const auto controlContents = renderExportList(*packageInterface, true);
+#else
+                             "exports.map";
+        const auto controlContents = renderElfVersionScript(*packageInterface);
+#endif
+        if (!writeFile(control, controlContents) ||
+            !linkSharedLibrary(artifact, objects, *packageInterface, control, importLibrary)) {
+            return 1;
+        }
+    }
+
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(outputDirectory, error);
+    if (!error && std::filesystem::is_symlink(status)) {
+        std::cerr << "foundationc: refusing symbolic-link output directory\n";
+        return 1;
+    }
+    error.clear();
+    const auto includeDirectory = outputDirectory / "include";
+    const auto runtimeHeaderDirectory = includeDirectory / "foundation";
+    const auto libraryDirectory = outputDirectory / "lib";
+    const auto metadataDirectory = outputDirectory / "share" / "foundation";
+    std::filesystem::create_directories(runtimeHeaderDirectory, error);
+    if (!error) {
+        std::filesystem::create_directories(libraryDirectory, error);
+    }
+    if (!error) {
+        std::filesystem::create_directories(metadataDirectory, error);
+    }
+    if (error) {
+        std::cerr << "foundationc: cannot create library output directories: "
+                  << error.message() << '\n';
+        return 1;
+    }
+    const auto runtimeHeader = readSourceFile(runtimeIncludeDirectory() / "foundation" /
+                                              "library.h");
+    if (!runtimeHeader.has_value() ||
+        !writeFile(includeDirectory / (packageInterface->library + ".h"), headerContents) ||
+        !writeFile(runtimeHeaderDirectory / "library.h", *runtimeHeader) ||
+        !writeFile(metadataDirectory / (packageInterface->library + ".pii.json"),
+                   interfaceContents)) {
+        return 1;
+    }
+    const auto publishedArtifact = libraryDirectory / artifactName;
+    std::filesystem::copy_file(artifact, publishedArtifact,
+                               std::filesystem::copy_options::overwrite_existing, error);
+    if (error) {
+        std::cerr << "foundationc: cannot publish " << publishedArtifact.string() << ": "
+                  << error.message() << '\n';
+        return 1;
+    }
+#ifndef _WIN32
+    if (kind == LibraryKind::Shared) {
+        const auto linkName = sharedLibraryLinkFilename(packageInterface->library);
+        if (linkName != artifactName) {
+            const auto publishedLink = libraryDirectory / linkName;
+            error.clear();
+            std::filesystem::remove(publishedLink, error);
+            if (!error) {
+                std::filesystem::create_symlink(publishedArtifact.filename(), publishedLink,
+                                                error);
+            }
+            if (error) {
+                std::cerr << "foundationc: cannot publish shared library link: "
+                          << error.message() << '\n';
+                return 1;
+            }
+        }
+    }
+#endif
+#ifdef _WIN32
+    if (kind == LibraryKind::Shared && std::filesystem::exists(importLibrary)) {
+        std::filesystem::copy_file(importLibrary,
+                                   libraryDirectory / importLibrary.filename(),
+                                   std::filesystem::copy_options::overwrite_existing, error);
+        if (error) {
+            std::cerr << "foundationc: cannot publish import library: " << error.message()
+                      << '\n';
+            return 1;
+        }
+    }
+#endif
+    std::cout << "library " << publishedArtifact.generic_string() << '\n'
+              << "header "
+              << (includeDirectory / (packageInterface->library + ".h")).generic_string()
+              << '\n'
+              << "interface "
+              << (metadataDirectory / (packageInterface->library + ".pii.json")).generic_string()
+              << '\n';
+    return 0;
+}
+
 int runFile(const std::filesystem::path &source,
             const std::vector<std::filesystem::path> &nativeInputs,
             const std::vector<std::string> &arguments,
@@ -1174,7 +1613,8 @@ int runTests(const std::filesystem::path &source,
                     LlvmCodegenOptions{.targetTriple = defaultLlvmTargetTriple(),
                                        .optimize = true,
                                        .verifyAllocations = true,
-                                       .entry = function},
+                                       .entry = function,
+                                       .libraryPackage = std::nullopt},
                     diagnostics)) {
                 std::cerr << renderDiagnostics(source.string(), {}, diagnostics);
                 return 1;

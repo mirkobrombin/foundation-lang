@@ -63,6 +63,19 @@ std::string cString(std::string_view value) {
     return out.str();
 }
 
+std::string cHeaderGuard(std::string_view identity) {
+    std::string guard = "FOUNDATION_";
+    guard.reserve(guard.size() + identity.size() + 8);
+    for (const auto raw : identity) {
+        const auto byte = static_cast<unsigned char>(raw);
+        guard.push_back(std::isalnum(byte) != 0
+                            ? static_cast<char>(std::toupper(byte))
+                            : '_');
+    }
+    guard += "_C_ABI_H";
+    return guard;
+}
+
 std::string cTypeTag(const Type &type) {
     switch (type.kind) {
     case TypeKind::Void:
@@ -5193,8 +5206,14 @@ void emitWorkflowBody(std::ostringstream &out, const FirProgram &program,
 }
 
 std::string emitCImpl(const FirProgram &source, std::string_view sourcePath,
-                      std::optional<FirFunctionId> testEntry) {
-    auto program = prepareFirForBackend(source, testEntry);
+                      std::optional<FirFunctionId> testEntry,
+                      std::optional<std::string_view> libraryPackage = std::nullopt) {
+    auto program = libraryPackage.has_value()
+                       ? specializePackageInterface(source, *libraryPackage)
+                       : prepareFirForBackend(source, testEntry);
+    if (libraryPackage.has_value()) {
+        program.main = program.functions.size();
+    }
     const auto contractUses = collectContractUses(program);
     std::vector<Type> arrays;
     std::vector<Type> slices;
@@ -5206,7 +5225,8 @@ std::string emitCImpl(const FirProgram &source, std::string_view sourcePath,
     out << "#include <stdbool.h>\n";
     out << "#include <stdint.h>\n";
     out << "#include <math.h>\n";
-    if (!testEntry.has_value() && !program.functions[program.main].parameters.empty()) {
+    if (!libraryPackage.has_value() && !testEntry.has_value() &&
+        !program.functions[program.main].parameters.empty()) {
         out << "#include <string.h>\n";
     }
     out << "#include \"foundation/runtime.h\"\n\n";
@@ -5495,6 +5515,9 @@ std::string emitCImpl(const FirProgram &source, std::string_view sourcePath,
         out << '\n';
         emitExportedWrapper(out, program, index, sourcePath);
     }
+    if (libraryPackage.has_value()) {
+        return out.str();
+    }
     if (testEntry.has_value()) {
         emitTestMainWrapper(out, program, program.main);
     } else {
@@ -5517,6 +5540,11 @@ FirProgram prepareFirForBackend(const FirProgram &source,
 
 std::string emitC(const FirProgram &source, std::string_view sourcePath) {
     return emitCImpl(source, sourcePath, std::nullopt);
+}
+
+std::string emitPackageC(const FirProgram &source, std::string_view packageName,
+                         std::string_view sourcePath) {
+    return emitCImpl(source, sourcePath, std::nullopt, packageName);
 }
 
 std::string emitTestC(const FirProgram &source, FirFunctionId test,
@@ -5558,6 +5586,54 @@ std::string emitCHeader(const FirProgram &source) {
     out << "#ifdef __cplusplus\n";
     out << "}\n";
     out << "#endif\n\n";
+    out << "#endif\n";
+    return out.str();
+}
+
+std::string emitPackageCHeader(const FirProgram &source, std::string_view packageName,
+                               std::string_view libraryName) {
+    const auto program = specializePackageInterface(source, packageName);
+    std::vector<const FirFunction *> exports;
+    for (const auto &function : program.functions) {
+        if (function.cSymbol.has_value() && function.hasBody) {
+            exports.push_back(&function);
+        }
+    }
+    std::sort(exports.begin(), exports.end(), [](const auto *left, const auto *right) {
+        return *left->cSymbol < *right->cSymbol;
+    });
+
+    const auto guard = cHeaderGuard(libraryName);
+    std::ostringstream out;
+    out << "#ifndef " << guard << "\n";
+    out << "#define " << guard << "\n\n";
+    out << "#include <stdbool.h>\n";
+    out << "#include <stdint.h>\n";
+    out << "#include \"foundation/library.h\"\n\n";
+    out << "#if defined(FOUNDATION_LIBRARY_STATIC)\n";
+    out << "#define FOUNDATION_LIBRARY_API\n";
+    out << "#elif defined(_WIN32)\n";
+    out << "#define FOUNDATION_LIBRARY_API __declspec(dllimport)\n";
+    out << "#elif defined(__GNUC__) || defined(__clang__)\n";
+    out << "#define FOUNDATION_LIBRARY_API __attribute__((visibility(\"default\")))\n";
+    out << "#else\n";
+    out << "#define FOUNDATION_LIBRARY_API\n";
+    out << "#endif\n\n";
+    out << "#ifdef __cplusplus\n";
+    out << "extern \"C\" {\n";
+    out << "#endif\n\n";
+    for (const auto *function : exports) {
+        out << "FOUNDATION_LIBRARY_API ";
+        emitCAbiSignature(out, *function, true);
+        out << ";\n";
+    }
+    if (!exports.empty()) {
+        out << '\n';
+    }
+    out << "#ifdef __cplusplus\n";
+    out << "}\n";
+    out << "#endif\n\n";
+    out << "#undef FOUNDATION_LIBRARY_API\n\n";
     out << "#endif\n";
     return out.str();
 }

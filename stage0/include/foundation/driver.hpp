@@ -39,6 +39,11 @@ enum class FormatMode {
     Write,
 };
 
+enum class LibraryKind {
+    Static,
+    Shared,
+};
+
 [[nodiscard]] ProjectAnalysis analyzeProject(
     const std::filesystem::path &path,
     const std::vector<SourceOverlay> &overlays = {},
@@ -84,6 +89,12 @@ enum class FormatMode {
                             const std::filesystem::path &output,
                             const std::vector<std::filesystem::path> &nativeInputs = {},
                             BackendKind backend = defaultBackendKind());
+[[nodiscard]] int buildLibrary(
+    const std::filesystem::path &source,
+    const std::filesystem::path &outputDirectory,
+    LibraryKind kind,
+    const std::vector<std::filesystem::path> &nativeInputs = {},
+    BackendKind backend = defaultBackendKind());
 [[nodiscard]] int runFile(const std::filesystem::path &source,
                           const std::vector<std::filesystem::path> &nativeInputs = {},
                           const std::vector<std::string> &arguments = {},
