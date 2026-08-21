@@ -127,6 +127,7 @@ file(READ "${shared_dist}/include/sample_native.h" header)
 foreach(expected IN ITEMS
         "FOUNDATION_LIBRARY_API"
         "FOUNDATION_SAMPLE_NATIVE_C_ABI_H"
+        "sample_callback"
         "sample_increment"
         "foundation/library.h")
     string(FIND "${header}" "${expected}" found)
@@ -242,8 +243,10 @@ if(SYSTEM_NAME STREQUAL "Linux")
     )
     if(NOT nm_result EQUAL 0 OR
        NOT symbols MATCHES "sample_increment" OR
+       NOT symbols MATCHES "sample_callback" OR
        NOT symbols MATCHES "fdn_string_drop" OR
        symbols MATCHES "fdn_fn_" OR
+       symbols MATCHES "sample_native_double_(start|cancel)" OR
        symbols MATCHES "[ \\t]main(@|$)")
         message(FATAL_ERROR "shared library export surface is invalid:\n${symbols}")
     endif()

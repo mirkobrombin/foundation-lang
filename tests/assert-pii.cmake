@@ -58,7 +58,13 @@ foreach(expected IN ITEMS
         "\"package\":\"sample.native\""
         "\"library\":\"sample_native\""
         "\"c_symbol\":\"sample_increment\""
+        "\"c_symbol\":\"sample_callback\""
         "\"c_symbol\":\"sample_native_increment\""
+        "\"c_symbol\":\"sample_native_double_start\""
+        "\"protocol\":\"foundation_reactor_v1\""
+        "\"lifetime\":\"once\""
+        "\"context_handle\":\"foundation.reactor.operation\""
+        "\"cancel_symbol\":\"sample_native_double_cancel\""
         "\"ecosystem\":\"c\""
         "\"identifier\":\"libfuse\""
         "\"canonical_sha256\":\"sha256:")

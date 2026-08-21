@@ -2161,15 +2161,59 @@ fn main() i32 { 0 }
 
     auto callback = *checked.fir;
     for (auto &function : callback.functions) {
-        if (function.cSymbol == "sample_native_label")
+        if (function.cSymbol == "sample_native_label") {
             function.callback = true;
+            function.returnType = foundation::i32Type;
+            function.callbackCancelSymbol = "sample_native_cancel";
+        }
     }
     foundation::Diagnostics callbackDiagnostics;
-    expect(!foundation::buildPackageInterface(callback, manifest, lock,
-                                               callbackDiagnostics)
-                .has_value() &&
-               hasCode(callbackDiagnostics, "FDN2120"),
-           "PII rejects callback imports until their full C ABI is modeled");
+    const auto callbackInterface = foundation::buildPackageInterface(
+        callback, manifest, lock, callbackDiagnostics);
+    const auto callbackImport =
+        callbackInterface.has_value()
+            ? std::find_if(callbackInterface->imports.begin(), callbackInterface->imports.end(),
+                           [](const auto &function) {
+                               return function.cSymbol == "sample_native_label";
+                           })
+            : std::vector<foundation::PiiFunction>::const_iterator{};
+    expect(callbackInterface.has_value() && !callbackDiagnostics.hasErrors() &&
+               callbackImport != callbackInterface->imports.end() &&
+               callbackImport->callback.has_value() &&
+               callbackImport->result.kind == foundation::PiiTypeKind::Void &&
+               callbackImport->errors == foundation::PiiErrorConvention::Infallible &&
+               callbackImport->callback->errors ==
+                   foundation::PiiErrorConvention::ForeignStatus &&
+               callbackImport->callback->protocol ==
+                   foundation::PiiCallbackProtocol::FoundationReactorV1 &&
+               callbackImport->callback->lifetime == foundation::PiiCallbackLifetime::Once &&
+               callbackImport->callback->contextHandle == "foundation.reactor.operation" &&
+               callbackImport->callback->cancelSymbol == "sample_native_cancel" &&
+               callbackImport->callback->parameters.size() == 1 &&
+               callbackImport->callback->parameters.front().type.kind ==
+                   foundation::PiiTypeKind::I32,
+           "PII records the complete Foundation reactor callback protocol");
+
+    for (auto &function : callback.functions) {
+        if (function.cSymbol == "sample_native_label")
+            function.callbackCancelSymbol.reset();
+    }
+    foundation::Diagnostics callbackWithoutCancelDiagnostics;
+    const auto callbackWithoutCancel = foundation::buildPackageInterface(
+        callback, manifest, lock, callbackWithoutCancelDiagnostics);
+    const auto callbackWithoutCancelImport =
+        callbackWithoutCancel.has_value()
+            ? std::find_if(callbackWithoutCancel->imports.begin(),
+                           callbackWithoutCancel->imports.end(), [](const auto &function) {
+                               return function.cSymbol == "sample_native_label";
+                           })
+            : std::vector<foundation::PiiFunction>::const_iterator{};
+    expect(callbackWithoutCancel.has_value() &&
+               !callbackWithoutCancelDiagnostics.hasErrors() &&
+               callbackWithoutCancelImport != callbackWithoutCancel->imports.end() &&
+               callbackWithoutCancelImport->callback.has_value() &&
+               !callbackWithoutCancelImport->callback->cancelSymbol.has_value(),
+           "PII preserves a reactor callback without a cancel symbol");
 }
 
 void rawPointersLowerToExplicitCBoundaries() {

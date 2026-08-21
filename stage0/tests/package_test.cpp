@@ -246,7 +246,8 @@ void packageInterfacesRenderCanonically() {
          "sha256:test", foundation::TargetPlatform::Linux, foundation::PiiAbi::C11});
     const auto first = foundation::renderPackageInterfaceJson(packageInterface);
     const auto second = foundation::renderPackageInterfaceJson(packageInterface);
-    expect(first == second && first.find("\"kind\":\"path\"") != std::string::npos &&
+    expect(first == second && first.find("\"abi_minor\":1") != std::string::npos &&
+               first.find("\"kind\":\"path\"") != std::string::npos &&
                first.find("\"canonical_sha256\":\"sha256:") != std::string::npos,
            "package interface JSON is canonical and preserves resolver provenance");
 }

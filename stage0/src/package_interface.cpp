@@ -66,6 +66,10 @@ std::string lifetimeName(PiiCallbackLifetime value) {
     constexpr std::string_view names[]{"call_scoped", "retained", "once"};
     return name(value, names);
 }
+std::string protocolName(PiiCallbackProtocol value) {
+    constexpr std::string_view names[]{"direct", "foundation_reactor_v1"};
+    return name(value, names);
+}
 bool scalar(PiiTypeKind value) { return value >= PiiTypeKind::I8 && value <= PiiTypeKind::Bool; }
 
 void typeJson(std::ostream& out, const PiiType& type) {
@@ -110,9 +114,12 @@ void callbackJson(std::ostream& out, const PiiCallback& callback) {
     out << "],\"result\":";
     typeJson(out, callback.result);
     out << ",\"error_convention\":" << quote(errorName(callback.errors))
-        << ",\"lifetime\":" << quote(lifetimeName(callback.lifetime));
+        << ",\"lifetime\":" << quote(lifetimeName(callback.lifetime))
+        << ",\"protocol\":" << quote(protocolName(callback.protocol));
     if (callback.contextHandle)
         out << ",\"context_handle\":" << quote(*callback.contextHandle);
+    if (callback.cancelSymbol)
+        out << ",\"cancel_symbol\":" << quote(*callback.cancelSymbol);
     out << '}';
 }
 void functionJson(std::ostream& out, const PiiFunction& function) {
@@ -313,6 +320,21 @@ PiiFunction piiFunction(const FirProgram& program, const FirFunction& function) 
         result.parameters.push_back(
             {value.name, boundaryType(program, value.type), parameterOwnership(value.type)});
     }
+    if (function.callback) {
+        PiiCallback callback;
+        callback.name = result.foundationName + ".completion";
+        callback.parameters.push_back({"status", piiType(program, i32Type),
+                                       PiiOwnership::Value});
+        callback.result = piiType(program, voidType);
+        callback.errors = PiiErrorConvention::ForeignStatus;
+        callback.lifetime = PiiCallbackLifetime::Once;
+        callback.protocol = PiiCallbackProtocol::FoundationReactorV1;
+        callback.contextHandle = "foundation.reactor.operation";
+        callback.cancelSymbol = function.callbackCancelSymbol;
+        result.result = piiType(program, voidType);
+        result.resultOwnership = PiiOwnership::Value;
+        result.callback = std::move(callback);
+    }
     result.source =
         PiiSourceSpan{function.sourcePath, function.sourceSpan.offset, function.sourceSpan.length,
                       function.sourceSpan.line, function.sourceSpan.column};
@@ -332,9 +354,10 @@ bool validateCAbiV1(const PiiType& type, PiiOwnership ownership, bool result, st
         return false;
     }
     if (scalar(type.kind)) {
-        if (ownership == PiiOwnership::Value)
+        if (ownership == PiiOwnership::Value ||
+            (!result && ownership == PiiOwnership::ExclusiveBorrow))
             return true;
-        reason = "C ABI v1 scalar ownership must be value";
+        reason = "C ABI v1 scalar ownership must be value or an exclusive parameter borrow";
         return false;
     }
     if (type.kind == PiiTypeKind::String) {
@@ -368,7 +391,8 @@ std::string renderPackageInterfaceJson(PackageInterface value) {
                                              b.resolver, b.digest, b.target);
     });
     std::ostringstream out;
-    out << "{\"format\":1,\"abi_major\":1,\"abi_minor\":0,\"package\":" << quote(value.package)
+    out << "{\"format\":" << value.format << ",\"abi_major\":" << value.abiMajor
+        << ",\"abi_minor\":" << value.abiMinor << ",\"package\":" << quote(value.package)
         << ",\"version\":" << quote(value.version.string())
         << ",\"sdk\":" << quote(value.sdk.string()) << ",\"library\":" << quote(value.library)
         << ",\"soversion\":" << value.soVersion
@@ -411,13 +435,6 @@ std::optional<PackageInterface> buildPackageInterface(const FirProgram& source,
     for (const auto& function : program.functions) {
         if (!function.cSymbol.has_value())
             continue;
-        if (function.callback) {
-            diagnostics.error("FDN2120",
-                              "C ABI v1 package interfaces do not yet model callback start, "
-                              "completion, and cancel symbols",
-                              function.sourceSpan);
-            continue;
-        }
         auto lowered = piiFunction(program, function);
         const auto sourcePath = std::filesystem::path(lowered.source->path);
         const auto parent = std::find(sourcePath.begin(), sourcePath.end(), "..");

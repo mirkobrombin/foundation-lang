@@ -57,6 +57,7 @@ enum class PiiOwnership {
 };
 enum class PiiErrorConvention { Infallible, StatusOut, TaggedResult, OptionTag, ForeignStatus };
 enum class PiiCallbackLifetime { CallScoped, Retained, Once };
+enum class PiiCallbackProtocol { Direct, FoundationReactorV1 };
 
 struct PiiType {
     PiiTypeKind kind{PiiTypeKind::Void};
@@ -94,7 +95,9 @@ struct PiiCallback {
     PiiType result;
     PiiErrorConvention errors{PiiErrorConvention::Infallible};
     PiiCallbackLifetime lifetime{PiiCallbackLifetime::CallScoped};
+    PiiCallbackProtocol protocol{PiiCallbackProtocol::Direct};
     std::optional<std::string> contextHandle;
+    std::optional<std::string> cancelSymbol;
 };
 
 struct PiiFunction {
@@ -125,7 +128,7 @@ struct ForeignProvenance {
 struct PackageInterface {
     unsigned int format{1};
     unsigned int abiMajor{1};
-    unsigned int abiMinor{};
+    unsigned int abiMinor{1};
     std::string package;
     PackageVersion version;
     PackageRequirement sdk;

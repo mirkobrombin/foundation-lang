@@ -2,6 +2,20 @@ package sample.native
 
 extern c fn nativeIncrement(value i32) i32 as sample_native_increment
 
+@callback(cancel = sample_native_double_cancel)
+extern c fn nativeDouble(value i32, &result i32) i32 as sample_native_double_start
+
+task doubleValue(value i32) i32 {
+    var result = 0
+    const status = nativeDouble(value, &result)
+    status + result
+}
+
 extern c fn FoundationIncrement(value i32) i32 as sample_increment {
     nativeIncrement(value)
+}
+
+extern c fn FoundationCallback(value i32) i32 as sample_callback {
+    const pending = spawn doubleValue(value)
+    $pending.wait()
 }
