@@ -1,0 +1,150 @@
+package foundation.logger
+
+import std.collections
+
+// Receives one owned entry and reports a concrete transport error type.
+contract Sink<E> {
+    // Consumes one entry and returns a transport-specific failure.
+    fn Write(&self, $entry own Entry) Result<void, E>
+}
+
+// Writes compact structured JSON to standard output.
+struct ConsoleSink implements Sink<RenderError> {
+    // Writes one compact JSON entry to standard output.
+    fn Write(&self, $entry own Entry) Result<void, RenderError> {
+        const rendered = RenderJSON($entry) else error {
+            return .Err(error)
+        }
+        print(rendered)
+        .Ok
+    }
+}
+
+// Writes Compact Log Event Format records to standard output.
+struct CLEFSink implements Sink<RenderError> {
+    // Writes one CLEF entry to standard output.
+    fn Write(&self, $entry own Entry) Result<void, RenderError> {
+        const rendered = RenderCLEF($entry) else error {
+            return .Err(error)
+        }
+        print(rendered)
+        .Ok
+    }
+}
+
+// Applies one logger policy before one typed output adapter.
+struct Pipeline<E> {
+    logger own Logger
+    sink own Sink<E>
+
+    // Changes the minimum severity admitted by later calls.
+    fn SetLevel(&self, level Level) void {
+        self.logger.SetLevel(level)
+    }
+
+    // Retains one owned field for later entries.
+    fn Bind(&self, $field Field) void {
+        self.logger.Bind($field)
+    }
+
+    // Replaces the trace and span attached to later entries.
+    fn BindTrace(&self, $trace Trace) void {
+        self.logger.BindTrace($trace)
+    }
+
+    // Removes trace identity from later entries.
+    fn ClearTrace(&self) void {
+        self.logger.ClearTrace()
+    }
+
+    // Delivers one entry and reports whether its threshold admitted it.
+    fn Log(
+        &self,
+        level Level,
+        message String,
+        $fields own collections.List<Field>
+    ) Result<bool, E> {
+        const prepared = self.logger.Prepare(level, message, $fields)
+        writePrepared<E>(
+            &self.sink,
+            $prepared
+        )
+    }
+
+    // Delivers one debug entry when debug logging is enabled.
+    fn Debug(
+        &self,
+        message String,
+        $fields own collections.List<Field>
+    ) Result<bool, E> {
+        self.Log(.Debug, message, $fields)
+    }
+
+    // Delivers one informational entry.
+    fn Info(
+        &self,
+        message String,
+        $fields own collections.List<Field>
+    ) Result<bool, E> {
+        self.Log(.Info, message, $fields)
+    }
+
+    // Delivers one warning entry.
+    fn Warn(
+        &self,
+        message String,
+        $fields own collections.List<Field>
+    ) Result<bool, E> {
+        self.Log(.Warn, message, $fields)
+    }
+
+    // Delivers one error entry.
+    fn Error(
+        &self,
+        message String,
+        $fields own collections.List<Field>
+    ) Result<bool, E> {
+        self.Log(.Error, message, $fields)
+    }
+}
+
+// Creates a compact JSON standard-output sink.
+fn NewConsoleSink() own ConsoleSink {
+    own ConsoleSink {}
+}
+
+// Creates a CLEF standard-output sink.
+fn NewCLEFSink() own CLEFSink {
+    own CLEFSink {}
+}
+
+// Creates a synchronous logger around one statically checked sink contract.
+fn NewPipeline<E>(
+    $sink own Sink<E>,
+    minimum Level
+) own Pipeline<E> {
+    own Pipeline<E> {
+        logger = NewWith(minimum)
+        sink = sink
+    }
+}
+
+fn writePrepared<E>(
+    &sink Sink<E>,
+    $prepared Option<own Entry>
+) Result<bool, E> {
+    match prepared {
+        None: .Ok(false)
+        Some(entry): writeEntry<E>(&sink, $entry)
+    }
+}
+
+fn writeEntry<E>(
+    &sink Sink<E>,
+    $entry own Entry
+) Result<bool, E> {
+    sink.Write($entry) else error {
+        return .Err(error)
+    }
+    .Ok(true)
+}

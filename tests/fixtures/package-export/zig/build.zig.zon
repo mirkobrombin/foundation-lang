@@ -1,0 +1,9 @@
+.{
+    .name = .foundation_export_consumer,
+    .version = "0.0.0",
+    .fingerprint = 0x8d1dc94712345678,
+    .dependencies = .{
+        .sample_native = .{ .path = "../zig" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "main.zig" },
+}

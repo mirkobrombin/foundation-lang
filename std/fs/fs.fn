@@ -7,6 +7,9 @@ enum Error {
     InvalidUtf8
     LineTooLong
     TooLarge
+    InvalidInterval
+    ResourceLimit
+    Cancelled
     Closed
     Io
 }
@@ -20,6 +23,13 @@ extern c fn nextDirectoryNative(handle u64, &name String) i32 as foundation_runt
 extern c fn closeDirectoryNative(handle u64) i32 as foundation_runtime_fs_close_directory
 extern c fn isDirectoryNative(path String, &result bool) i32 as foundation_runtime_fs_is_directory
 extern c fn modifiedNative(path String, &result u64) i32 as foundation_runtime_fs_modified
+@callback(cancel = foundation_runtime_fs_watch_cancel)
+extern c fn watchNative(
+    path String,
+    intervalMilliseconds u64,
+    &kind u32,
+    &eventPath String
+) i32 as foundation_runtime_fs_watch_start
 @blocking
 extern c fn createPrivateDirectoryNative(path String) i32 as foundation_runtime_fs_create_private_directory
 
@@ -56,6 +66,13 @@ fn readErrorFor(status i32) Error {
         return .InvalidUtf8
     }
     errorFor(status)
+}
+
+fn watchErrorFor(status i32) Error {
+    if status == 2 return .Cancelled
+    if status == 3 return .InvalidPath
+    if status == 4 return .ResourceLimit
+    .Io
 }
 
 // Reads one UTF-8 file without blocking the Foundation executor.
@@ -243,4 +260,28 @@ fn Modified(path String) Result<u64, Error> {
         return .Ok(result)
     }
     .Err(errorFor(status))
+}
+
+enum EventKind {
+    Created
+    Modified
+    Removed
+}
+
+struct Event {
+    Kind EventKind
+    Path String
+}
+
+// Waits for the next observed change without blocking the Foundation executor.
+task WatchNext($path String, intervalMilliseconds u64) Result<Event, Error> {
+    if intervalMilliseconds == 0 return .Err(.InvalidInterval)
+    var kind u32 = 0
+    var eventPath = ""
+    const status = watchNative(path, intervalMilliseconds, &kind, &eventPath)
+    if status != 0 return .Err(watchErrorFor(status))
+    if kind == 1 return .Ok(Event { Kind = .Created Path = eventPath })
+    if kind == 2 return .Ok(Event { Kind = .Modified Path = eventPath })
+    if kind == 3 return .Ok(Event { Kind = .Removed Path = eventPath })
+    .Err(.Io)
 }

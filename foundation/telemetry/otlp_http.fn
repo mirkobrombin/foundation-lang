@@ -1,0 +1,336 @@
+package foundation.telemetry
+
+import foundation.httpx
+
+struct httpOtlpRequest {
+    request own OtlpRequest
+    reply Sender<httpOtlpReply>
+}
+
+enum httpOtlpReply {
+    Completed
+    Failed(error OtlpError)
+}
+
+struct httpOtlpState {
+    client own httpx.Client<httpx.NetworkError>
+}
+
+struct httpOtlpPrepared {
+    Request httpx.Request
+    Encoding OtlpEncoding
+}
+
+// Sends OTLP payloads through one explicitly configured Foundation HTTP client.
+// The actor retains client ownership so custom TLS transports and middleware stay
+// active for every export.
+struct HttpOtlpTransport implements OtlpTransport {
+    actor Task<own httpOtlpState>
+    sender Sender<httpOtlpRequest>
+
+    fn Export(&self, $request own OtlpRequest) Task<Result<void, OtlpError>> {
+        spawn submitHttpOtlp(self.sender.clone(), $request)
+    }
+}
+
+// Creates an OTLP-over-HTTP transport around an application-selected transport.
+fn NewHttpOtlpTransportWith(
+    $transport own httpx.Transport<httpx.NetworkError>,
+    maximumPayloadSize u64,
+    maximumResponseSize u64
+) Result<own OtlpTransport, OtlpError> {
+    var builder = httpx.New<httpx.NetworkError>($transport)
+    NewHttpOtlpTransportWithClient(
+        $builder.Build(),
+        maximumPayloadSize,
+        maximumResponseSize
+    )
+}
+
+// Creates an OTLP-over-HTTP transport around a fully configured HTTP client.
+// Callers can preserve custom TLS, authentication, retry, breaker, and middleware
+// policy by passing the completed client owner.
+fn NewHttpOtlpTransportWithClient(
+    $client own httpx.Client<httpx.NetworkError>,
+    maximumPayloadSize u64,
+    maximumResponseSize u64
+) Result<own OtlpTransport, OtlpError> {
+    if maximumPayloadSize == 0 || maximumResponseSize == 0 {
+        discard client
+        return .Err(.PayloadTooLarge)
+    }
+    const Channel { sender receiver } = channel<httpOtlpRequest>(64)
+    const actor = spawn serveHttpOtlp(
+        $receiver,
+        $client,
+        maximumPayloadSize,
+        maximumResponseSize
+    )
+    .Ok(own HttpOtlpTransport { actor = actor sender = sender })
+}
+
+// Creates a default bounded OTLP-over-HTTP transport using the explicit HTTP/1.1
+// network transport. Applications needing HTTPS select a verified transport.
+fn NewHttpOtlpTransport(
+    maximumPayloadSize u64,
+    maximumResponseSize u64
+) Result<own OtlpTransport, OtlpError> {
+    NewHttpOtlpTransportWith(
+        httpx.Network(),
+        maximumPayloadSize,
+        maximumResponseSize
+    )
+}
+
+// Creates the standard bounded OTLP-over-HTTP transport.
+fn HttpOtlpTransport() own OtlpTransport {
+    const transport = NewHttpOtlpTransport(67108864, 4194304) else error {
+        discard error
+        panic("default OTLP HTTP transport construction failed")
+    }
+    transport
+}
+
+task submitHttpOtlp(
+    $sender Sender<httpOtlpRequest>,
+    $request own OtlpRequest
+) Result<void, OtlpError> {
+    const Channel { sender as reply receiver } = channel<httpOtlpReply>(1)
+    select {
+        sender.send(httpOtlpRequest { request = $request reply = reply }): {
+            const received = receiver.receive()
+            return match received {
+                Ok(reply): match reply {
+                    Completed: .Ok
+                    Failed(error): .Err(error)
+                }
+                Err(error): {
+                    discard error
+                    .Err(.Unavailable)
+                }
+            }
+        }
+        else error: {
+            discard error
+            return .Err(.Unavailable)
+        }
+    }
+}
+
+task serveHttpOtlp(
+    $receiver Receiver<httpOtlpRequest>,
+    $initialClient own httpx.Client<httpx.NetworkError>,
+    maximumPayloadSize u64,
+    maximumResponseSize u64
+) own httpOtlpState {
+    var inbox = receiver
+    var client = initialClient
+    while true {
+        select {
+            const value = inbox.receive(): {
+                const httpOtlpRequest { request reply } = value
+                const prepared = prepareHttpOtlpRequest(
+                    $request,
+                    maximumPayloadSize,
+                    maximumResponseSize
+                )
+                match prepared {
+                    Err(error): {
+                        discard reply.send(.Failed(error = error))
+                    }
+                    Ok(prepared): {
+                        const httpOtlpPrepared { Request Encoding } = prepared
+                        const Channel { sender receiver as restored } =
+                            channel<own httpx.Client<httpx.NetworkError>>(1)
+                        const pending = spawn executeHttpOtlp(
+                            $client,
+                            $Request,
+                            Encoding,
+                            $reply,
+                            $sender,
+                            maximumResponseSize
+                        )
+                        $pending.wait()
+                        select {
+                            const returned = restored.receive(): {
+                                client = returned
+                            }
+                            else error: {
+                                discard error
+                                panic("OTLP client worker ended without restoring its client")
+                            }
+                        }
+                    }
+                }
+            }
+            else error: {
+                discard error
+                return own httpOtlpState { client = client }
+            }
+        }
+    }
+    panic("OTLP actor loop ended unexpectedly")
+}
+
+task executeHttpOtlp(
+    $client own httpx.Client<httpx.NetworkError>,
+    $request httpx.Request,
+    encoding OtlpEncoding,
+    $reply Sender<httpOtlpReply>,
+    $restored Sender<own httpx.Client<httpx.NetworkError>>,
+    maximumResponseSize u64
+) void {
+    const pending = client.Do($request)
+    const completed = $pending.wait()
+    const httpx.DoOutcome { Client Value } = completed
+    const result Result<void, OtlpError> = match Value {
+        Ok(response): otlpResponse($response, encoding, maximumResponseSize)
+        Err(error): .Err(otlpClientError(error))
+    }
+    discard reply.send(httpOtlpReplyFor(result))
+    discard restored.send($Client)
+}
+
+fn httpOtlpReplyFor(value Result<void, OtlpError>) httpOtlpReply {
+    match value {
+        Ok: .Completed
+        Err(error): .Failed(error = error)
+    }
+}
+
+fn prepareHttpOtlpRequest(
+    $value own OtlpRequest,
+    maximumPayloadSize u64,
+    maximumResponseSize u64
+) Result<httpOtlpPrepared, OtlpError> {
+    const OtlpRequest { Endpoint Encoding Payload } = value
+    if !validOtlpEndpoint(Endpoint) {
+        discard Payload
+        return .Err(.InvalidEndpoint)
+    }
+    const length = Payload.Len() else error {
+        discard error
+        discard Payload
+        return .Err(.Failed)
+    }
+    if length > maximumPayloadSize {
+        discard Payload
+        return .Err(.PayloadTooLarge)
+    }
+    const created = httpx.NewBinaryRequest("POST", $Endpoint, $Payload) else error {
+        return .Err(otlpRequestError(error))
+    }
+    var request = created
+    request.MaximumResponseSize = maximumResponseSize
+    request.FollowRedirects = false
+    request.SetHeader("Content-Type", otlpContentType(Encoding)) else error {
+        discard error
+        discard request
+        return .Err(.Failed)
+    }
+    request.SetHeader("Accept", otlpContentType(Encoding)) else error {
+        discard error
+        discard request
+        return .Err(.Failed)
+    }
+    .Ok(httpOtlpPrepared { Request = request Encoding = Encoding })
+}
+
+fn otlpContentType(encoding OtlpEncoding) String {
+    match encoding {
+        Protobuf: "application/x-protobuf"
+        JSON: "application/json"
+    }
+}
+
+fn otlpResponse(
+    $response httpx.Response,
+    encoding OtlpEncoding,
+    maximumResponseSize u64
+) Result<void, OtlpError> {
+    var active = response
+    const length = active.Body.Len() else error {
+        discard error
+        discard active
+        return .Err(.Rejected)
+    }
+    if length > maximumResponseSize {
+        discard active
+        return .Err(.Rejected)
+    }
+    const status = active.Status
+    const contentType = active.Header("Content-Type")
+    discard active
+    otlpStatus(status, contentType, encoding)
+}
+
+fn otlpStatus(
+    status i32,
+    contentType Option<String>,
+    encoding OtlpEncoding
+) Result<void, OtlpError> {
+    if status == 200 {
+        const expected = otlpContentType(encoding)
+        return match contentType {
+            Some(value): {
+                if value == expected {
+                    .Ok
+                } else {
+                    .Err(.Rejected)
+                }
+            }
+            None: .Err(.Rejected)
+        }
+    }
+    if status == 429 || status == 502 || status == 503 || status == 504 {
+        return .Err(.Unavailable)
+    }
+    .Err(.Rejected)
+}
+
+fn otlpRequestError(error httpx.RequestError) OtlpError {
+    match error {
+        EmptyMethod: .Failed
+        InvalidURL: .InvalidEndpoint
+        InvalidHeader: .Failed
+        InvalidResponseLimit: .Failed
+        InvalidRedirectLimit: .Failed
+        InvalidTimeout: .Failed
+        InvalidBody: .Failed
+    }
+}
+
+fn otlpClientError(error httpx.ClientError<httpx.NetworkError>) OtlpError {
+    match error {
+        InvalidRequest(value): otlpRequestError(value)
+        Transport(value): otlpNetworkError(value)
+        RetryConfiguration(value): {
+            discard value
+            .Failed
+        }
+        Cancelled: .Unavailable
+        CircuitOpen: .Unavailable
+        InvalidRedirect: .Rejected
+        TooManyRedirects: .Rejected
+        ResponseTooLarge: .Rejected
+        ResponseBodyUnavailable: .Unavailable
+    }
+}
+
+fn otlpNetworkError(error httpx.NetworkError) OtlpError {
+    match error {
+        InvalidRequest(value): otlpRequestError(value)
+        Network(value): {
+            discard value
+            .Unavailable
+        }
+        InvalidURL: .InvalidEndpoint
+        TLSUnavailable: .Unavailable
+        Cancelled: .Unavailable
+        Timeout: .Unavailable
+        PoolUnavailable: .Unavailable
+        InvalidResponse: .Unavailable
+        UnsupportedFraming: .Unavailable
+        ResponseTooLarge: .Rejected
+    }
+}

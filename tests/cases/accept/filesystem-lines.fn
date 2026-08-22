@@ -22,6 +22,9 @@ fn isLineTooLong($value Result<Option<String>, fs.Error>) bool {
             InvalidUtf8: false
             LineTooLong: true
             TooLarge: false
+            InvalidInterval: false
+            ResourceLimit: false
+            Cancelled: false
             Closed: false
             Io: false
         }

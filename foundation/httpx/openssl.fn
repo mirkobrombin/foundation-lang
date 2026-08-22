@@ -1,0 +1,325 @@
+package foundation.httpx
+
+import std.bytes
+import std.collections
+import std.concurrent
+import std.text
+
+@blocking
+extern c fn connectNative(
+    serverName String,
+    port u64,
+    &connection u64
+) i32 as foundation_openssl_tls_connect
+extern c fn closeNative(
+    &connection u64
+) void as foundation_openssl_tls_close
+@blocking
+extern c fn requestNative(
+    serverName String,
+    port u64,
+    requestHead String,
+    body u64,
+    maximumBody u64,
+    timeoutNanoseconds i64,
+    cancellation u64,
+    &responseHead String,
+    &responseBody u64
+) i32 as foundation_openssl_tls_http11
+@blocking
+extern c fn requestWithAuthorityNative(
+    serverName String,
+    port u64,
+    authorityBundle u64,
+    requestHead String,
+    body u64,
+    maximumBody u64,
+    timeoutNanoseconds i64,
+    cancellation u64,
+    &responseHead String,
+    &responseBody u64
+) i32 as foundation_openssl_tls_http11_ca
+
+// Owns a verified OpenSSL TLS connection. It is not a plain TCP handle.
+struct OpenSSLTLSConnection {
+    handle u64
+
+    fn drop(&self) void {
+        closeNative(&self.handle)
+    }
+}
+
+// Opens one TLS connection with SNI and hostname verification. The adapter never retries as plaintext.
+task OpenSSLConnect(
+    $serverName String,
+    port u64
+) Result<own OpenSSLTLSConnection, TLSError> {
+    ValidateServerName(serverName) else error {
+        return .Err(error)
+    }
+    if port == 0 || port > 65535 return .Err(.ProtocolFailed)
+    var connection u64 = 0
+    const status = connectNative(serverName, port, &connection)
+    if status != 0 return .Err(openSSLTLError(status))
+    .Ok(own OpenSSLTLSConnection { handle = connection })
+}
+
+fn openSSLTLError(status i32) TLSError {
+    if status == 6 return .InvalidServerName
+    if status == 7 return .PeerVerificationFailed
+    if status == 8 return .HandshakeFailed
+    if status == 11 return .Timeout
+    if status == 12 return .Cancelled
+    if status == 1 return .Unavailable
+    .ProtocolFailed
+}
+
+// Sends HTTP/1.1 only after the OpenSSL adapter has completed a verified TLS handshake.
+struct OpenSSLTLSProvider implements TLSProvider {
+    fn Send(&self, $request Request) Task<Result<Response, TLSError>> {
+        const source = concurrent.NewCancellationSource()
+        const cancellation = source.Token()
+        discard source
+        spawn sendOpenSSL($request, .None, $cancellation)
+    }
+
+    fn SendWithCancellation(
+        &self,
+        $request Request,
+        $cancellation concurrent.Cancellation
+    ) Task<Result<Response, TLSError>> {
+        spawn sendOpenSSL($request, .None, $cancellation)
+    }
+}
+
+// Uses one explicit local trust bundle instead of ambient system trust.
+struct OpenSSLTLSAuthorityProvider implements TLSProvider {
+    authorityBundle own bytes.Bytes
+
+    fn Send(&self, $request Request) Task<Result<Response, TLSError>> {
+        const authority = self.authorityBundle.Copy() else error {
+            discard error
+            return spawn unavailableOpenSSLRequest($request)
+        }
+        const source = concurrent.NewCancellationSource()
+        const cancellation = source.Token()
+        discard source
+        spawn sendOpenSSL($request, .Some(authority), $cancellation)
+    }
+
+    fn SendWithCancellation(
+        &self,
+        $request Request,
+        $cancellation concurrent.Cancellation
+    ) Task<Result<Response, TLSError>> {
+        const authority = self.authorityBundle.Copy() else error {
+            discard error
+            discard cancellation
+            return spawn unavailableOpenSSLRequest($request)
+        }
+        spawn sendOpenSSL($request, .Some(authority), $cancellation)
+    }
+}
+
+// Creates the complete HTTPS transport provider. Applications link it explicitly.
+fn OpenSSLTLS() own TLSProvider {
+    own OpenSSLTLSProvider {}
+}
+
+// Creates an HTTPS provider with one caller-owned PEM trust bundle.
+fn OpenSSLTLSWithAuthority(
+    $authorityBundle own bytes.Bytes
+) own TLSProvider {
+    own OpenSSLTLSAuthorityProvider { authorityBundle = authorityBundle }
+}
+
+task unavailableOpenSSLRequest($request Request) Result<Response, TLSError> {
+    discard request
+    .Err(.Unavailable)
+}
+
+task sendOpenSSL(
+    $request Request,
+    $trustBundle Option<own bytes.Bytes>,
+    $cancellation concurrent.Cancellation
+) Result<Response, TLSError> {
+    if cancellation.IsRequested() {
+        discard request
+        discard trustBundle
+        discard cancellation
+        return .Err(.Cancelled)
+    }
+    var activeRequest = request
+    const target = networkTargetFor(activeRequest.URL) else error {
+        discard error
+        discard trustBundle
+        discard cancellation
+        return .Err(.ProtocolFailed)
+    }
+    const networkTarget { host authority as targetAuthority path port secure } = target
+    discard targetAuthority
+    if !secure {
+        discard host
+        discard path
+        discard trustBundle
+        discard cancellation
+        return .Err(.InvalidServerName)
+    }
+    const bodyLength = activeRequest.Body.Len() else error {
+        discard error
+        discard host
+        discard path
+        discard trustBundle
+        discard cancellation
+        return .Err(.ProtocolFailed)
+    }
+    activeRequest.SetHeader("Connection", "close") else error {
+        discard error
+        discard host
+        discard path
+        discard trustBundle
+        discard cancellation
+        return .Err(.ProtocolFailed)
+    }
+    const head = encodeRequestHead(&activeRequest, $path, .None, bodyLength) else error {
+        discard error
+        discard host
+        discard trustBundle
+        discard cancellation
+        return .Err(.ProtocolFailed)
+    }
+    const timeoutNanoseconds = activeRequest.Timeout.Nanoseconds()
+    if timeoutNanoseconds <= 0 {
+        discard activeRequest
+        discard cancellation
+        return .Err(.ProtocolFailed)
+    }
+    var responseHead = ""
+    var body u64 = 0
+    var nativeStatus i32 = 0
+    match trustBundle {
+        None: {
+            const status = requestNative(
+                host,
+                port,
+                head,
+                bytes.RuntimeHandle(activeRequest.Body),
+                activeRequest.MaximumResponseSize,
+                timeoutNanoseconds,
+                cancellation.RuntimeHandle(),
+                &responseHead,
+                &body
+            )
+            nativeStatus = status
+        }
+        Some(bundle): {
+            const status = requestWithAuthorityNative(
+                host,
+                port,
+                bytes.RuntimeHandle(bundle),
+                head,
+                bytes.RuntimeHandle(activeRequest.Body),
+                activeRequest.MaximumResponseSize,
+                timeoutNanoseconds,
+                cancellation.RuntimeHandle(),
+                &responseHead,
+                &body
+            )
+            discard bundle
+            nativeStatus = status
+        }
+    }
+    discard activeRequest
+    discard cancellation
+    if nativeStatus != 0 return .Err(openSSLTLError(nativeStatus))
+    const claimed = bytes.ClaimRuntimeHandle(body) else error {
+        discard error
+        return .Err(.ProtocolFailed)
+    }
+    const parsed = parseOpenSSLResponseHead($responseHead) else error {
+        discard error
+        discard claimed
+        return .Err(.ProtocolFailed)
+    }
+    const responseHeadParts { status headers } = parsed
+    .Ok(Response {
+        Status = status
+        Headers = headers
+        Body = claimed
+    })
+}
+
+struct responseHeadParts {
+    status i32
+    headers own collections.List<Header>
+}
+
+fn parseOpenSSLResponseHead($value String) Result<own responseHeadParts, TLSError> {
+    const first = text.Find(value, "\r\n")
+    const firstEnd = match first {
+        None: {
+            return .Err(.ProtocolFailed)
+        }
+        Some(index): index
+    }
+    const statusLine = text.Slice(value, 0, firstEnd) else error {
+        discard error
+        return .Err(.ProtocolFailed)
+    }
+    const status = parseStatus(statusLine) else error {
+        discard error
+        return .Err(.ProtocolFailed)
+    }
+    discard statusLine
+    const initial = text.Slice(value, firstEnd + 2, text.ByteLen(value)) else error {
+        discard error
+        return .Err(.ProtocolFailed)
+    }
+    const headers = parseOpenSSLHeaders($initial) else error {
+        discard error
+        return .Err(.ProtocolFailed)
+    }
+    .Ok(own responseHeadParts { status = status headers = headers })
+}
+
+fn parseOpenSSLHeaders(
+    $remaining String
+) Result<own collections.List<Header>, TLSError> {
+    var activeRemaining = remaining
+    var activeHeaders = collections.NewList<Header>()
+    var complete = false
+    while !complete {
+        const lineEnd = text.Find(activeRemaining, "\r\n")
+        const end = match lineEnd {
+            None: {
+                return .Err(.ProtocolFailed)
+            }
+            Some(index): index
+        }
+        if end == 0 {
+            complete = true
+        } else {
+        const line = text.Slice(activeRemaining, 0, end) else error {
+            discard error
+            return .Err(.ProtocolFailed)
+        }
+        const next = text.Slice(
+            activeRemaining,
+            end + 2,
+            text.ByteLen(activeRemaining)
+        ) else error {
+            discard error
+            discard line
+            return .Err(.ProtocolFailed)
+        }
+        const header = parseHeader($line) else error {
+            discard error
+            discard next
+            return .Err(.ProtocolFailed)
+        }
+        activeHeaders.PushFront($header)
+        activeRemaining = next
+        }
+    }
+    .Ok(reverseHeaders($activeHeaders))
+}

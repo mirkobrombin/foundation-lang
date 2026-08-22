@@ -1,0 +1,624 @@
+package foundation.plugin
+
+import std.bytes
+import std.collections
+import std.text
+
+@blocking
+extern c fn wamrEngineOpenNative(
+    adapterPath String,
+    &handle u64
+) i32 as foundation_runtime_wamr_engine_open
+@blocking
+extern c fn wamrEngineCloseNative(
+    &handle u64
+) i32 as foundation_runtime_wamr_engine_close
+@blocking
+extern c fn wamrModuleOpenNative(
+    engine u64,
+    path String,
+    payloadLimit u64,
+    &handle u64
+) i32 as foundation_runtime_wamr_module_open
+@blocking
+extern c fn wamrModuleAllowReadNative(
+    module u64,
+    path String
+) i32 as foundation_runtime_wamr_module_allow_read
+@blocking
+extern c fn wamrModuleAllowWriteNative(
+    module u64,
+    path String
+) i32 as foundation_runtime_wamr_module_allow_write
+@blocking
+extern c fn wamrModuleSetEnvironmentNative(
+    module u64,
+    key String,
+    value String
+) i32 as foundation_runtime_wamr_module_set_environment
+@blocking
+extern c fn wamrModuleAddArgumentNative(
+    module u64,
+    value String
+) i32 as foundation_runtime_wamr_module_add_argument
+@blocking
+extern c fn wamrModuleAddCapabilityNative(
+    module u64,
+    name String,
+    context u64,
+    handler extern c fn(u64, String, u64, &u64) i32
+) i32 as foundation_runtime_wamr_module_add_capability
+@blocking
+extern c fn wamrModuleDeclareCapabilityNative(
+    module u64,
+    name String
+) i32 as foundation_runtime_wamr_module_declare_capability
+@blocking
+extern c fn wamrModulePrepareTimedNative(
+    module u64,
+    timeoutNanoseconds u64
+) i32 as foundation_runtime_wamr_module_prepare_timed
+@blocking
+extern c fn wamrModuleMetadataTimedNative(
+    module u64,
+    timeoutNanoseconds u64,
+    &output u64
+) i32 as foundation_runtime_wamr_module_metadata_timed
+@blocking
+extern c fn wamrModuleStartTimedNative(
+    module u64,
+    timeoutNanoseconds u64
+) i32 as foundation_runtime_wamr_module_start_timed
+@blocking
+extern c fn wamrModuleStopTimedNative(
+    module u64,
+    timeoutNanoseconds u64
+) i32 as foundation_runtime_wamr_module_stop_timed
+@blocking
+extern c fn wamrModuleCancelNative(
+    module u64
+) i32 as foundation_runtime_wamr_module_cancel
+@blocking
+extern c fn wamrModuleCallNative(
+    module u64,
+    method String,
+    input u64,
+    timeoutNanoseconds u64,
+    &output u64
+) i32 as foundation_runtime_wamr_module_call
+@blocking
+extern c fn wamrModuleCloseNative(
+    &handle u64
+) i32 as foundation_runtime_wamr_module_close
+
+// Binds an explicitly selected WAMR provider library. The base runtime never
+// discovers a provider through the environment or a default search path.
+struct WamrEngine implements WasmEngine {
+    handle u64
+
+    fn Open(
+        &self,
+        path String,
+        &metadata WasmMetadata,
+        &policy WasmCapabilityPolicy,
+        &wasi WasiCapabilities
+    ) Result<own WasmModule, WasmHostStatus> {
+        const valid = metadata.Validate(&policy) else error {
+            discard error
+            return .Err(.Denied)
+        }
+        discard valid
+        if self.handle == 0 return .Err(.HandlerError)
+        const pendingOpen = spawn openWamrModule(
+            self.handle,
+            text.Copy(path),
+            policy.PayloadLimit()
+        )
+        const opened = $pendingOpen.wait() else status {
+            return .Err(status)
+        }
+        var handle = opened
+        const wasiCopy = copyWamrWasi(&wasi)
+        const pendingWasi = spawn applyWamrWasi(handle, $wasiCopy)
+        const configured = $pendingWasi.wait()
+        const wamrWasiOutcome { Wasi Value } = configured
+        Value else status {
+            discard Wasi
+            const pendingClose = spawn closeWamrHandleStatus(handle)
+            discard $pendingClose.wait()
+            return .Err(status)
+        }
+        discard Wasi
+        const capabilities = metadata.Capabilities()
+        const pendingDeclarations = spawn applyWamrDeclarations(handle, $capabilities)
+        const declarationStatus = $pendingDeclarations.wait()
+        wamrOutcome(declarationStatus) else status {
+            const pendingClose = spawn closeWamrHandleStatus(handle)
+            discard $pendingClose.wait()
+            return .Err(status)
+        }
+        const callTimeout = policy.CallTimeoutNanoseconds()
+        const pendingPrepare = spawn prepareWamrModuleWithTimeout(handle, callTimeout)
+        const prepared = $pendingPrepare.wait()
+        wamrOutcome(prepared) else status {
+            const pendingClose = spawn closeWamrHandleStatus(handle)
+            discard $pendingClose.wait()
+            return .Err(status)
+        }
+        const pendingMetadata = spawn readWamrMetadata(handle, callTimeout)
+        const guestMetadata = $pendingMetadata.wait() else status {
+            const pendingClose = spawn closeWamrHandleStatus(handle)
+            discard $pendingClose.wait()
+            return .Err(status)
+        }
+        var discovered = guestMetadata
+        if !discovered.Matches(&metadata) {
+            discard discovered
+            const pendingClose = spawn closeWamrHandleStatus(handle)
+            discard $pendingClose.wait()
+            return .Err(.InvalidRequest)
+        }
+        const guestValid = discovered.Validate(&policy) else error {
+            discard error
+            discard discovered
+            const pendingClose = spawn closeWamrHandleStatus(handle)
+            discard $pendingClose.wait()
+            return .Err(.Denied)
+        }
+        discard guestValid
+        const bindings = policy.BindingsFor(&discovered)
+        const pendingBindings = spawn applyWamrBindings(handle, $bindings)
+        const bindingStatus = $pendingBindings.wait()
+        wamrOutcome(bindingStatus) else status {
+            discard discovered
+            const pendingClose = spawn closeWamrHandleStatus(handle)
+            discard $pendingClose.wait()
+            return .Err(status)
+        }
+        discard discovered
+        const pendingStart = spawn startWamrModuleWithTimeout(handle, callTimeout)
+        const started = $pendingStart.wait()
+        wamrOutcome(started) else status {
+            const pendingClose = spawn closeWamrHandleStatus(handle)
+            discard $pendingClose.wait()
+            return .Err(status)
+        }
+        .Ok(own WamrModule {
+            handle = handle
+            callTimeoutNanoseconds = callTimeout
+        })
+    }
+
+    // Closes the explicit provider handle after every opened module is closed.
+    fn Close($self) Result<void, WasmHostStatus> {
+        const pending = spawn closeWamrEngine($self)
+        const status = $pending.wait()
+        wamrOutcome(status)
+    }
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        discard spawn closeWamrEngineHandle(handle)
+    }
+}
+
+// Owns one WAMR guest instance and never exposes guest pointers to Foundation.
+struct WamrModule implements WasmModule {
+    handle u64
+    callTimeoutNanoseconds u64
+
+    fn Call(
+        &self,
+        method String,
+        $input own bytes.Bytes
+    ) Result<own bytes.Bytes, WasmHostStatus> {
+        if self.handle == 0 || !validWasmName(method) {
+            discard input
+            return .Err(.InvalidRequest)
+        }
+        const pending = spawn callWamrModuleWithTimeout(
+            self.handle,
+            self.callTimeoutNanoseconds,
+            text.Copy(method),
+            $input
+        )
+        const timed = $pending.wait()
+        const wamrTimedCall { TimedOut Value } = timed
+        if TimedOut {
+            const handle = replace self.handle with 0
+            discard Value
+            const pendingClose = spawn closeWamrHandleOutcome(handle)
+            const closeOutcome = $pendingClose.wait()
+            if !wamrStatusOk(closeOutcome.Status) {
+                self.handle = closeOutcome.Handle
+            }
+            return .Err(.Closed)
+        }
+        Value
+    }
+
+    // Releases the guest instance and its provider-owned resources exactly once.
+    fn Close($self) Result<void, WasmHostStatus> {
+        var active = self
+        const handle = replace active.handle with 0
+        if handle == 0 return .Ok
+        const pendingStop = spawn stopWamrModuleWithTimeout(
+            handle,
+            active.callTimeoutNanoseconds
+        )
+        const stopped = $pendingStop.wait()
+        const closing = spawn closeWamrHandleOutcome(handle)
+        const closeOutcome = $closing.wait()
+        if !wamrStatusOk(closeOutcome.Status) {
+            active.handle = closeOutcome.Handle
+        }
+        const stopOutcome = wamrOutcome(stopped)
+        match stopOutcome {
+            Err(error): {
+                discard closeOutcome
+                return .Err(error)
+            }
+            Ok: wamrOutcome(closeOutcome.Status)
+        }
+    }
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        discard spawn cancelAndCloseWamrHandle(handle)
+    }
+}
+
+// Opens the WAMR adapter at one application-supplied path.
+fn NewWamrEngine(
+    adapterPath String
+) Result<own WamrEngine, WasmHostStatus> {
+    if text.ByteLen(adapterPath) == 0 return .Err(.InvalidRequest)
+    const pending = spawn openWamrEngine(text.Copy(adapterPath))
+    $pending.wait()
+}
+
+struct wamrWasiOutcome {
+    Wasi own WasiCapabilities
+    Value Result<void, WasmHostStatus>
+}
+
+struct wamrTimedCall {
+    TimedOut bool
+    Value Result<own bytes.Bytes, WasmHostStatus>
+}
+
+struct wamrCloseOutcome {
+    Handle u64
+    Status WasmHostStatus
+}
+
+fn wamrStatusOk(status WasmHostStatus) bool {
+    match status {
+        Ok: true
+        Denied: false
+        InvalidRequest: false
+        HandlerError: false
+        PayloadTooLarge: false
+        ReadOnlyUnsupported: false
+        Closed: false
+    }
+}
+
+task applyWamrWasi(
+    module u64,
+    $wasi own WasiCapabilities
+) wamrWasiOutcome {
+    var active = wasi
+    const reads = copyWasmStrings(replace active.ReadPaths with newWasmStrings())
+    const wasmStringCopy { Values as restoredReads Copy as readCopy } = reads
+    active.ReadPaths = restoredReads
+    if !readCopy.IsEmpty() {
+        discard readCopy
+        return wamrWasiOutcome { Wasi = active Value = .Err(.ReadOnlyUnsupported) }
+    }
+    discard readCopy
+
+    const writes = copyWasmStrings(replace active.WritePaths with newWasmStrings())
+    const wasmStringCopy { Values as restoredWrites Copy as writeCopy } = writes
+    active.WritePaths = restoredWrites
+    var writePaths = writeCopy
+    while !writePaths.IsEmpty() {
+        const path = wasmStringValue(writePaths.PopFront())
+        const status = wamrModuleAllowWriteNative(module, path)
+        if status != 0 return wamrWasiOutcome { Wasi = active Value = .Err(wamrStatus(status)) }
+    }
+
+    const environment = copyWasmProperties(
+        replace active.Environment with newWasmProperties()
+    )
+    const wasmPropertyCopy {
+        Values as restoredEnvironment
+        Copy as environmentCopy
+    } = environment
+    active.Environment = restoredEnvironment
+    var entries = environmentCopy
+    while !entries.IsEmpty() {
+        const entry = wasmPropertyValue(entries.PopFront())
+        const status = wamrModuleSetEnvironmentNative(
+            module,
+            entry.Key,
+            entry.Value
+        )
+        if status != 0 return wamrWasiOutcome { Wasi = active Value = .Err(wamrStatus(status)) }
+    }
+
+    const arguments = copyWasmStrings(replace active.Arguments with newWasmStrings())
+    const wasmStringCopy {
+        Values as restoredArguments
+        Copy as argumentCopy
+    } = arguments
+    active.Arguments = restoredArguments
+    var values = argumentCopy
+    while !values.IsEmpty() {
+        const argument = wasmStringValue(values.PopFront())
+        const status = wamrModuleAddArgumentNative(module, argument)
+        if status != 0 return wamrWasiOutcome { Wasi = active Value = .Err(wamrStatus(status)) }
+    }
+    wamrWasiOutcome { Wasi = active Value = .Ok }
+}
+
+task applyWamrBindings(
+    module u64,
+    $bindings own collections.List<wasmCapabilityBinding>
+) WasmHostStatus {
+    var values = bindings
+    while !values.IsEmpty() {
+        const binding = wasmCapabilityBindingValue(values.PopFront())
+        const status = wamrModuleAddCapabilityNative(
+            module,
+            binding.Name,
+            binding.Context,
+            binding.Handler
+        )
+        if status != 0 return wamrStatus(status)
+    }
+    .Ok
+}
+
+task applyWamrDeclarations(
+    module u64,
+    $capabilities own collections.List<String>
+) WasmHostStatus {
+    var values = capabilities
+    while !values.IsEmpty() {
+        const name = wasmStringValue(values.PopFront())
+        const status = wamrModuleDeclareCapabilityNative(module, name)
+        if status != 0 return wamrStatus(status)
+    }
+    .Ok
+}
+
+task readWamrMetadata(
+    handle u64,
+    timeoutNanoseconds u64
+) Result<own WasmMetadata, WasmHostStatus> {
+    var output u64 = 0
+    const status = wamrModuleMetadataTimedNative(handle, timeoutNanoseconds, &output)
+    if status != 0 return .Err(wamrStatus(status))
+    const content = bytes.ClaimRuntimeHandle(output) else error {
+        discard error
+        return .Err(.HandlerError)
+    }
+    const source = content.Text() else error {
+        discard error
+        discard content
+        return .Err(.InvalidRequest)
+    }
+    discard content
+    const metadata = ParseWasmMetadata(source) else error {
+        discard error
+        discard source
+        return .Err(.InvalidRequest)
+    }
+    discard source
+    .Ok(metadata)
+}
+
+task openWamrEngine($adapterPath String) Result<own WamrEngine, WasmHostStatus> {
+    var handle u64 = 0
+    const status = wamrEngineOpenNative(adapterPath, &handle)
+    if status != 0 return .Err(wamrStatus(status))
+    .Ok(own WamrEngine { handle = handle })
+}
+
+task closeWamrEngine($engine own WamrEngine) WasmHostStatus {
+    var active = engine
+    const status = wamrEngineCloseNative(&active.handle)
+    if status == 0 return .Ok
+    wamrStatus(status)
+}
+
+task closeWamrEngineHandle(handle u64) void {
+    var active = handle
+    discard wamrEngineCloseNative(&active)
+}
+
+task openWamrModule(
+    engine u64,
+    $path String,
+    payloadLimit u64
+) Result<u64, WasmHostStatus> {
+    var handle u64 = 0
+    const status = wamrModuleOpenNative(engine, path, payloadLimit, &handle)
+    discard path
+    if status != 0 return .Err(wamrStatus(status))
+    .Ok(handle)
+}
+
+task prepareWamrModuleWithTimeout(
+    handle u64,
+    timeoutNanoseconds u64
+) WasmHostStatus {
+    const status = wamrModulePrepareTimedNative(handle, timeoutNanoseconds)
+    if status == 0 return .Ok
+    wamrStatus(status)
+}
+
+task cancelWamrModule(handle u64) WasmHostStatus {
+    const status = wamrModuleCancelNative(handle)
+    if status == 0 return .Ok
+    wamrStatus(status)
+}
+
+task startWamrModuleWithTimeout(
+    handle u64,
+    timeoutNanoseconds u64
+) WasmHostStatus {
+    const status = wamrModuleStartTimedNative(handle, timeoutNanoseconds)
+    if status == 0 return .Ok
+    wamrStatus(status)
+}
+
+task stopWamrModuleWithTimeout(
+    handle u64,
+    timeoutNanoseconds u64
+) WasmHostStatus {
+    const status = wamrModuleStopTimedNative(handle, timeoutNanoseconds)
+    if status == 0 return .Ok
+    wamrStatus(status)
+}
+
+task closeWamrHandle(handle u64) void {
+    var active = handle
+    discard wamrModuleCloseNative(&active)
+}
+
+task closeWamrHandleStatus(handle u64) WasmHostStatus {
+    var active = handle
+    const status = wamrModuleCloseNative(&active)
+    if status == 0 return .Ok
+    wamrStatus(status)
+}
+
+task closeWamrHandleOutcome(handle u64) wamrCloseOutcome {
+    var active = handle
+    const status = wamrModuleCloseNative(&active)
+    wamrCloseOutcome {
+        Handle = active
+        Status = .Ok if status == 0 else wamrStatus(status)
+    }
+}
+
+task cancelAndCloseWamrHandle(handle u64) void {
+    if handle == 0 return
+    discard wamrModuleCancelNative(handle)
+    var active = handle
+    discard wamrModuleCloseNative(&active)
+}
+
+task closeWamrModule($module own WamrModule) WasmHostStatus {
+    var active = module
+    const status = wamrModuleCloseNative(&active.handle)
+    if status == 0 return .Ok
+    wamrStatus(status)
+}
+
+task callWamrModule(
+    handle u64,
+    timeoutNanoseconds u64,
+    $method String,
+    $input own bytes.Bytes
+) Result<own bytes.Bytes, WasmHostStatus> {
+    var output u64 = 0
+    const inputHandle = bytes.RuntimeHandle(input)
+    const status = wamrModuleCallNative(
+        handle,
+        method,
+        inputHandle,
+        timeoutNanoseconds,
+        &output
+    )
+    discard method
+    discard input
+    if status != 0 return .Err(wamrStatus(status))
+    const claimed = bytes.ClaimRuntimeHandle(output) else error {
+        discard error
+        return .Err(.HandlerError)
+    }
+    .Ok(claimed)
+}
+
+task callWamrModuleWithTimeout(
+    handle u64,
+    timeoutNanoseconds u64,
+    $method String,
+    $input own bytes.Bytes
+) wamrTimedCall {
+    const pending = spawn callWamrModule(
+        handle,
+        timeoutNanoseconds,
+        $method,
+        $input
+    )
+    const value = $pending.wait()
+    match value {
+        Err(status): wamrTimedCall {
+            TimedOut = match status {
+                Closed: true
+                Ok: false
+                Denied: false
+                InvalidRequest: false
+                HandlerError: false
+                PayloadTooLarge: false
+                ReadOnlyUnsupported: false
+            }
+            Value = .Err(status)
+        }
+        Ok(output): wamrTimedCall {
+            TimedOut = false
+            Value = .Ok(output)
+        }
+    }
+}
+
+fn copyWamrWasi(&value WasiCapabilities) own WasiCapabilities {
+    const readValues = copyWasmStrings(replace value.ReadPaths with newWasmStrings())
+    const wasmStringCopy { Values as restoredReads Copy as reads } = readValues
+    value.ReadPaths = restoredReads
+    const writeValues = copyWasmStrings(replace value.WritePaths with newWasmStrings())
+    const wasmStringCopy { Values as restoredWrites Copy as writes } = writeValues
+    value.WritePaths = restoredWrites
+    const environmentValues = copyWasmProperties(
+        replace value.Environment with newWasmProperties()
+    )
+    const wasmPropertyCopy {
+        Values as restoredEnvironment
+        Copy as environment
+    } = environmentValues
+    value.Environment = restoredEnvironment
+    const argumentValues = copyWasmStrings(replace value.Arguments with newWasmStrings())
+    const wasmStringCopy { Values as restoredArguments Copy as arguments } = argumentValues
+    value.Arguments = restoredArguments
+    own WasiCapabilities {
+        ReadPaths = reads
+        WritePaths = writes
+        Environment = environment
+        Arguments = arguments
+    }
+}
+
+fn wamrStatus(value i32) WasmHostStatus {
+    if value == 1 return .Denied
+    if value == 2 return .InvalidRequest
+    if value == 4 return .PayloadTooLarge
+    if value == 6 return .ReadOnlyUnsupported
+    if value == 5 return .Closed
+    .HandlerError
+}
+
+fn wamrOutcome(status WasmHostStatus) Result<void, WasmHostStatus> {
+    match status {
+        Ok: .Ok
+        Denied: .Err(.Denied)
+        InvalidRequest: .Err(.InvalidRequest)
+        HandlerError: .Err(.HandlerError)
+        PayloadTooLarge: .Err(.PayloadTooLarge)
+        ReadOnlyUnsupported: .Err(.ReadOnlyUnsupported)
+        Closed: .Err(.Closed)
+    }
+}

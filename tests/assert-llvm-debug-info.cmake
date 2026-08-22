@@ -21,4 +21,15 @@ foreach(marker IN ITEMS "!DICompileUnit" "!DISubprogram" "!DILocalVariable" "!db
     endif()
 endforeach()
 
+if(DEFINED EXPECTED_SOURCE)
+    cmake_path(ABSOLUTE_PATH EXPECTED_SOURCE NORMALIZE OUTPUT_VARIABLE expected_source)
+    cmake_path(GET expected_source FILENAME expected_filename)
+    cmake_path(GET expected_source PARENT_PATH expected_directory)
+    set(expected_file "!DIFile(filename: \"${expected_filename}\", directory: \"${expected_directory}\")")
+    string(FIND "${ir}" "${expected_file}" position)
+    if(position EQUAL -1)
+        message(FATAL_ERROR "LLVM output does not identify ${expected_source}")
+    endif()
+endif()
+
 message(STATUS "LLVM output contains source-level debug metadata")

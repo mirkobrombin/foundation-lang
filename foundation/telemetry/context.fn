@@ -1,0 +1,109 @@
+package foundation.telemetry
+
+import std.text
+
+// Classifies invalid W3C traceparent values without flattening the cause.
+enum TraceparentError {
+    // Reports a value whose byte length cannot represent version 00.
+    InvalidLength
+    // Reports missing separators between fixed-width fields.
+    InvalidSeparator
+    // Reports a trace context version other than 00.
+    UnsupportedVersion
+    // Reports a trace ID that is not lowercase hexadecimal.
+    InvalidTraceID
+    // Reports a parent ID that is not lowercase hexadecimal.
+    InvalidParentID
+    // Reports trace flags that are not lowercase hexadecimal.
+    InvalidFlags
+    // Reports the reserved all-zero trace ID.
+    ZeroTraceID
+    // Reports the reserved all-zero parent ID.
+    ZeroParentID
+}
+
+// Stores one validated W3C traceparent value.
+struct TraceContext {
+    // Stores the 128-bit trace ID as 32 lowercase hexadecimal digits.
+    TraceID String
+    // Stores the 64-bit parent span ID as 16 lowercase hexadecimal digits.
+    ParentID String
+    // Stores the one-byte trace flags as two lowercase hexadecimal digits.
+    TraceFlags String
+}
+
+// Parses the fixed-width W3C traceparent version 00 wire representation.
+fn ParseTraceparent(value String) Result<TraceContext, TraceparentError> {
+    if text.ByteLen(value) != 55 return .Err(.InvalidLength)
+    if byteAt(value, 2) != 45 || byteAt(value, 35) != 45 ||
+        byteAt(value, 52) != 45 {
+        return .Err(.InvalidSeparator)
+    }
+
+    const version = slice(value, 0, 2)
+    if version != "00" return .Err(.UnsupportedVersion)
+
+    const traceID = slice(value, 3, 35)
+    if !isLowerHex(traceID) return .Err(.InvalidTraceID)
+    if allZero(traceID) return .Err(.ZeroTraceID)
+
+    const parentID = slice(value, 36, 52)
+    if !isLowerHex(parentID) return .Err(.InvalidParentID)
+    if allZero(parentID) return .Err(.ZeroParentID)
+
+    const traceFlags = slice(value, 53, 55)
+    if !isLowerHex(traceFlags) return .Err(.InvalidFlags)
+
+    .Ok(TraceContext {
+        TraceID = traceID
+        ParentID = parentID
+        TraceFlags = traceFlags
+    })
+}
+
+// Encodes one trace context using W3C traceparent version 00.
+fn EncodeTraceparent(context TraceContext) String {
+    "00-" + context.TraceID + "-" + context.ParentID + "-" + context.TraceFlags
+}
+
+fn isLowerHex(value String) bool {
+    var index u64 = 0
+    const length = text.ByteLen(value)
+    while index < length {
+        const character = byteAt(value, index)
+        const digit = character >= 48 && character <= 57
+        const lowercase = character >= 97 && character <= 102
+        if !digit && !lowercase return false
+        index = index + 1
+    }
+    true
+}
+
+fn allZero(value String) bool {
+    var index u64 = 0
+    const length = text.ByteLen(value)
+    while index < length {
+        if byteAt(value, index) != 48 return false
+        index = index + 1
+    }
+    true
+}
+
+fn byteAt(value String, index u64) u64 {
+    match text.ByteAt(value, index) {
+        Ok(result): result
+        Err(error): invalidTraceparentInvariant(error)
+    }
+}
+
+fn slice(value String, start u64, end u64) String {
+    match text.Slice(value, start, end) {
+        Ok(result): result
+        Err(error): invalidTraceparentInvariant(error)
+    }
+}
+
+fn invalidTraceparentInvariant(error text.RangeError) never {
+    discard error
+    panic("traceparent parser invariant failed")
+}

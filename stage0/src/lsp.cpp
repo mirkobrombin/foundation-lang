@@ -6,6 +6,7 @@
 #include "foundation/lexer.hpp"
 #include "foundation/lint.hpp"
 #include "foundation/package.hpp"
+#include "foundation/sema.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1064,7 +1065,8 @@ emptyTestAt(const ProjectAnalysis &analysis, std::size_t sourceId, std::size_t o
 }
 
 std::string typeParametersSuffix(const std::vector<std::string> &parameters,
-                                 const std::vector<bool> *transferable = nullptr) {
+                                 const std::vector<bool> *transferable = nullptr,
+                                 const std::vector<std::optional<TypeSyntax>> *constraints = nullptr) {
     if (parameters.empty()) {
         return {};
     }
@@ -1077,6 +1079,10 @@ std::string typeParametersSuffix(const std::vector<std::string> &parameters,
         if (transferable != nullptr && index < transferable->size() &&
             (*transferable)[index]) {
             result += " transferable";
+        }
+        if (constraints != nullptr && index < constraints->size() &&
+            (*constraints)[index].has_value()) {
+            result += ' ' + displayTypeSyntax(*(*constraints)[index]);
         }
     }
     result += '>';
@@ -1130,7 +1136,8 @@ std::string functionDetail(const Function &function) {
     }
     std::string result = prefix + shortName(function.name) +
                          typeParametersSuffix(function.typeParameters,
-                                              &function.transferableTypeParameters) + '(';
+                                              &function.transferableTypeParameters,
+                                              &function.typeParameterConstraints) + '(';
     for (std::size_t index = 0; index < function.parameters.size(); ++index) {
         if (index != 0) {
             result += ", ";
@@ -1753,6 +1760,21 @@ struct CachedAnalysis {
     std::optional<LanguageIndex> languageIndex;
 };
 
+struct CompletionAnalysisKey {
+    std::string root;
+    std::string document;
+    std::string contents;
+
+    [[nodiscard]] bool operator==(const CompletionAnalysisKey &other) const {
+        return root == other.root && document == other.document && contents == other.contents;
+    }
+};
+
+struct CachedCompletionAnalysis {
+    CompletionAnalysisKey key;
+    CachedAnalysis analysis;
+};
+
 class LanguageServer {
   public:
     LanguageServer(std::ostream &output, std::ostream &errors)
@@ -2104,7 +2126,7 @@ class LanguageServer {
         return result;
     }
 
-    [[nodiscard]] ProjectAnalysis analyzeCompletion(
+    [[nodiscard]] const ProjectAnalysis &analyzeCompletion(
         const OpenDocument &document, const CompletionAccess &access,
         std::optional<std::size_t> receiverStart = std::nullopt) const {
         auto source = document.contents;
@@ -2114,6 +2136,13 @@ class LanguageServer {
             if (source[offset] != '\r' && source[offset] != '\n') {
                 source[offset] = ' ';
             }
+        }
+        const auto root = normalizedPath(analysisRoot(document));
+        const CompletionAnalysisKey key{root.generic_string(),
+                                        document.path.generic_string(), source};
+        if (completionAnalysisCache_.has_value() &&
+            completionAnalysisCache_->key == key) {
+            return completionAnalysisCache_->analysis.project;
         }
         auto inputs = overlays();
         auto replaced = false;
@@ -2125,12 +2154,15 @@ class LanguageServer {
             }
         }
         if (!replaced) {
-            inputs.push_back({document.path, std::move(source)});
+            inputs.push_back({document.path, source});
         }
-        return analyzeProject(analysisRoot(document), inputs,
-                              AnalyzeOptions{.requireMain = false,
-                                             .retainInvalidModel = true},
-                              ProjectMode::Test);
+        auto analysis = analyzeProject(root, inputs,
+                                       AnalyzeOptions{.requireMain = false,
+                                                      .retainInvalidModel = true},
+                                       ProjectMode::Test);
+        completionAnalysisCache_ = {
+            std::move(key), CachedAnalysis{std::move(analysis), std::nullopt}};
+        return completionAnalysisCache_->analysis.project;
     }
 
     [[nodiscard]] std::string sourceUri(const std::filesystem::path &path) const {
@@ -2143,7 +2175,10 @@ class LanguageServer {
         return pathToFileUri(path);
     }
 
-    void invalidateAnalyses() { analysisCache_.clear(); }
+    void invalidateAnalyses() {
+        analysisCache_.clear();
+        completionAnalysisCache_.reset();
+    }
 
     [[nodiscard]] const ProjectAnalysis &analyzeRoot(
         const std::filesystem::path &root) const {
@@ -2155,18 +2190,31 @@ class LanguageServer {
         auto analysis = analyzeProject(root, overlays(),
                                        AnalyzeOptions{.requireMain = false},
                                        ProjectMode::Test);
+        if (!analysis.semantic.has_value() && !analysis.program.functions.empty()) {
+            Diagnostics completionDiagnostics;
+            analysis.semantic = analyze(
+                analysis.program, completionDiagnostics,
+                AnalyzeOptions{.requireMain = false, .retainInvalidModel = true});
+        }
         if (!analysis.diagnostics.hasErrors()) {
             auto profile = CodeStandardProfile::Standard;
+            std::vector<CodeStandardRuleSetting> settings;
             if (const auto manifestPath = discoverPackageManifest(root);
                 manifestPath.has_value()) {
                 const auto manifest = readPackageManifest(*manifestPath);
                 if (manifest.value.has_value()) {
                     profile = manifest.value->codeStandard;
+                    settings = manifest.value->codeStandardRules;
                 }
             }
-            const auto findings = lintProject(analysis, profile);
+            const auto findings = lintProject(
+                analysis, profile, rootProjectSourceIds(root, analysis), settings);
             for (const auto &finding : findings.all()) {
-                analysis.diagnostics.warning(finding.code, finding.message, finding.span);
+                if (finding.severity == DiagnosticSeverity::Error) {
+                    analysis.diagnostics.error(finding.code, finding.message, finding.span);
+                } else {
+                    analysis.diagnostics.warning(finding.code, finding.message, finding.span);
+                }
             }
         }
         const auto inserted = analysisCache_.emplace(
@@ -2176,11 +2224,25 @@ class LanguageServer {
 
     [[nodiscard]] const LanguageIndex &languageIndex(
         const ProjectAnalysis &analysis) const {
-        for (auto &[key, cached] : analysisCache_) {
-            static_cast<void>(key);
-            if (&cached.project != &analysis) {
-                continue;
+        const auto findIndex = [&analysis](auto &cache) -> const LanguageIndex * {
+            for (auto &[key, cached] : cache) {
+                static_cast<void>(key);
+                if (&cached.project != &analysis) {
+                    continue;
+                }
+                if (!cached.languageIndex.has_value()) {
+                    cached.languageIndex = buildLanguageIndex(cached.project);
+                }
+                return &*cached.languageIndex;
             }
+            return nullptr;
+        };
+        if (const auto *index = findIndex(analysisCache_); index != nullptr) {
+            return *index;
+        }
+        if (completionAnalysisCache_.has_value() &&
+            &completionAnalysisCache_->analysis.project == &analysis) {
+            auto &cached = completionAnalysisCache_->analysis;
             if (!cached.languageIndex.has_value()) {
                 cached.languageIndex = buildLanguageIndex(cached.project);
             }
@@ -4304,7 +4366,7 @@ class LanguageServer {
                         source.contents[receiver->first])) != 0) {
                     eraseReceiver = receiver->first;
                 }
-                const auto completion =
+                const auto &completion =
                     analyzeCompletion(document->second, *access, eraseReceiver);
                 const auto completionSource = sourceIdForUri(completion, *uri);
                 if (!completionSource.has_value()) {
@@ -5308,6 +5370,7 @@ class LanguageServer {
     std::vector<std::filesystem::path> workspaceRoots_;
     std::map<std::string, OpenDocument> documents_;
     mutable std::map<std::string, CachedAnalysis> analysisCache_;
+    mutable std::optional<CachedCompletionAnalysis> completionAnalysisCache_;
     std::set<std::string> publishedUris_;
     bool initialized_{};
     bool shutdown_{};

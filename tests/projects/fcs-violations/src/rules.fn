@@ -1,0 +1,58 @@
+package fcs.violations
+
+// NOTE: Marker diagnostics are configurable.
+// TODO: Marker diagnostics are configurable.
+// FIXME: Marker diagnostics are configurable.
+// SAFETY: Marker diagnostics are configurable.
+
+struct Undocumented {
+    Value i32
+}
+
+extern c fn UnsafeBoundary(value *const u8) usize as fcs_unsafe_boundary
+
+fn badLayout(first i32,
+    second i32
+) i32 {
+    first + second
+}
+
+fn fallible() Result<void, bool> {
+    .Err(false)
+}
+
+fn ignoredResult() void {
+    discard fallible()
+}
+
+fn complex(value i32) i32 {
+    var result = value
+    if result > 0 { result = result + 1 }
+    if result > 1 { result = result + 1 }
+    if result > 2 { result = result + 1 }
+    if result > 3 { result = result + 1 }
+    if result > 4 { result = result + 1 }
+    if result > 5 { result = result + 1 }
+    if result > 6 { result = result + 1 }
+    if result > 7 { result = result + 1 }
+    if result > 8 { result = result + 1 }
+    result
+}
+
+fn ready() bool {
+    true
+}
+
+fn choices() i32 {
+    const selected = 1 if ready() else 0
+    selected
+}
+
+fn longLine() String {
+    "This deliberate Foundation Code Standard fixture line is longer than the strict profile width."
+}
+
+// fcs:ignore FCS9001 Internal lint diagnostics cannot be suppressed.
+fn invalidSuppression() i32 {
+    0
+}

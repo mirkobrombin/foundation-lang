@@ -1,0 +1,7 @@
+struct Value {}
+
+fn identity<T Value>($value T) T {
+    value
+}
+
+fn main() i32 { 0 }

@@ -1,3 +1,5 @@
+attribute WorkflowTag(value String) targets(fn)
+
 fn double(value i32) Result<i32, bool> {
     .Ok(value * 2)
 }
@@ -6,6 +8,7 @@ fn addOne(value i32) Result<i32, bool> {
     .Ok(value + 1)
 }
 
+@WorkflowTag("transform")
 pipeline Transform(input i32) Result<i32, bool> {
     step double using double retry exponential(max = 2)
     step add using addOne

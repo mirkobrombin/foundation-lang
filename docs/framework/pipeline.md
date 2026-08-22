@@ -38,4 +38,5 @@ remain visible. Stateful middleware implements `Middleware<T, U, E>` and is rest
 call. `Then` consumes the builder; attempting to register more middleware afterwards is a
 use-after-move diagnostic.
 
-The terminal handler is mandatory by construction. An empty-pipeline zero result cannot be expressed safely for an arbitrary move-only output.
+The terminal handler is mandatory by construction. This intentionally replaces Foundation v2's
+empty-pipeline zero result, which cannot be expressed safely for an arbitrary move-only output.

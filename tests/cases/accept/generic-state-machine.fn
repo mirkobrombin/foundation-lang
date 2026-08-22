@@ -1,0 +1,44 @@
+state_machine Slot<T> {
+    state Empty
+    state Full(value T)
+
+    on Put($value T) from Empty to Full(value)
+    on Reset from Full to Empty after 1.milliseconds
+}
+
+fn storesPayload(value Slot<String>) bool {
+    match value {
+        Empty: false
+        Full(payload): payload == "payload"
+    }
+}
+
+fn hasResetTimeout(value Slot<String>) bool {
+    const duration = Slot<String>.TimeoutForReset(value)
+    match duration {
+        None: false
+        Some(nanoseconds): nanoseconds == 1000000
+    }
+}
+
+fn main() i32 {
+    var slot Slot<String> = .Empty
+    var payload String = "payload"
+    slot.Put($payload) else error {
+        discard error
+        return 1
+    }
+    if !storesPayload(slot) return 2
+    if !hasResetTimeout(slot) return 3
+    slot.Reset() else error {
+        discard error
+        return 4
+    }
+    const empty = match slot {
+        Empty: true
+        Full(value): false
+    }
+    if !empty return 5
+    print("generic state machine ok")
+    0
+}

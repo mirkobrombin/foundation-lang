@@ -125,7 +125,11 @@ fn surroundResponse(
 ) Result<web.Response, web.DispatchError<AppError>> {
     const web.Response { Status Headers Body } = response
     discard Headers
-    .Ok(web.Text(Status, prefix + Body + suffix))
+    const bodyText = Body.Text() else error {
+        discard error
+        return .Err(.Handler(error = .Failed))
+    }
+    .Ok(web.Text(Status, prefix + bodyText + suffix))
 }
 
 fn request($path String) web.Request {
@@ -150,7 +154,11 @@ fn takeBody($response web.Response) String {
     const web.Response { Status Headers Body } = response
     discard Status
     discard Headers
-    Body
+    const bodyText = Body.Text() else error {
+        discard error
+        return ""
+    }
+    bodyText
 }
 
 fn failureBody($error web.DispatchError<AppError>) String {

@@ -1,0 +1,604 @@
+package sample.source
+
+enum GreetingError {
+    EmptyName
+    Rejected(String)
+}
+
+struct Profile {
+    Name String
+    Score i32
+
+    ctor New($name String, score i32) {
+        Profile { Name = name Score = score }
+    }
+
+    ctor Empty() {
+        Profile { Name = "" Score = 0 }
+    }
+
+    ctor Checked($name String, score i32) Result<GreetingError> {
+        if !name return .Err(.EmptyName)
+        .Ok(Profile { Name = name Score = score })
+    }
+
+    fn Origin() Profile {
+        Profile { Name = "origin" Score = 0 }
+    }
+
+    fn Display(self) String {
+        "" + self.Name
+    }
+
+    fn Rename(&self, $name String) void {
+        self.Name = name
+    }
+
+    fn AddScore(&self, delta i32) void {
+        self.Score = self.Score + delta
+    }
+
+    fn BumpTwice(&self) void {
+        self.AddScore(1)
+        self.AddScore(1)
+    }
+
+    fn ChooseAndBump(&self) i32 {
+        42 if self.bumpCondition() else 0
+    }
+
+    fn ReplaceName(&self, $name String) String {
+        replace self.Name with name
+    }
+
+    fn ReplaceSliceOrdered(&self, &values [i32]) i32 {
+        replace values[self.replacementIndex()] with self.replacementValue()
+    }
+
+    fn ReplacePanicOrder(&self, &values [i32]) i32 {
+        replace values[self.replacementIndex()] with Divide(1, 0)
+    }
+
+    fn DestructureGenerated(&self) String {
+        const Profile { Name as name Score as score } = self.profileForDestructure()
+        if score != 42 || self.Score != 1 return "invalid"
+        name
+    }
+
+    fn WithBonus(self, delta i32) i32 {
+        self.scoreWith(delta)
+    }
+
+    fn scoreWith(self, delta i32) i32 {
+        self.Score + delta
+    }
+
+    fn bumpCondition(&self) bool {
+        self.Score = self.Score + 1
+        true
+    }
+
+    fn replacementValue(&self) i32 {
+        self.Score = self.Score * 10 + 1
+        42
+    }
+
+    fn replacementIndex(&self) usize {
+        self.Score = self.Score * 10 + 2
+        1
+    }
+
+    fn profileForDestructure(&self) Profile {
+        self.Score = self.Score + 1
+        Profile { Name = "Foundation" Score = 42 }
+    }
+}
+
+fn twice(value i32) i32 {
+    value * 2
+}
+
+fn genericIdentity<T>($value T) T {
+    value
+}
+
+fn genericAssignAt<T>(&values [T], index usize, $value T) void {
+    values[index] = value
+}
+
+struct Box<T> {
+    Value T
+
+    ctor New($value T) {
+        Box<T> { Value = value }
+    }
+
+    fn Marker(self) i32 {
+        42
+    }
+
+    fn Set(&self, $value T) void {
+        self.Value = value
+    }
+}
+
+struct BoxI32 {
+    Code i32
+}
+
+struct FunctionCounter {
+    Value i32
+}
+
+enum SourceOperation {
+    Missing
+    Apply(fn(i32) i32)
+}
+
+fn ApplyFunction(value i32, operation fn(i32) i32) i32 {
+    operation(value)
+}
+
+fn incrementCounter(&counter FunctionCounter) void {
+    counter.Value = counter.Value + 1
+}
+
+fn consumeOperationText($value String) String {
+    value + "!"
+}
+
+fn makeOffset(offset i32) fn(i32) i32 {
+    fn(value i32) i32 capture(offset) {
+        value + offset
+    }
+}
+
+fn compose($operation fn(i32) i32) fn(i32) i32 {
+    fn(value i32) i32 capture($operation) {
+        operation(operation(value))
+    }
+}
+
+fn editThroughClosure(&counter FunctionCounter) i32 {
+    const operation = fn() i32 capture(&counter) {
+        counter.Value = counter.Value + 1
+        counter.Value
+    }
+    operation()
+}
+
+fn FunctionNamed() i32 {
+    const operation fn(i32) i32 = twice
+    ApplyFunction(21, operation)
+}
+
+fn GenericDirect() i32 {
+    genericIdentity<i32>(42)
+}
+
+fn GenericInferred() i32 {
+    genericIdentity(42)
+}
+
+fn GenericText() String {
+    genericIdentity<String>("Foundation")
+}
+
+fn GenericFunctionValue() i32 {
+    const operation fn(i32) i32 = genericIdentity<i32>
+    operation(42)
+}
+
+fn GenericEdit() i32 {
+    var values = [0]
+    const operation fn(&[i32], usize, $i32) void = genericAssignAt<i32>
+    operation(&values, 0, 42)
+    values[0]
+}
+
+fn GenericStructNumber() Box<i32> {
+    Box<i32>.New(42)
+}
+
+fn GenericStructText() Box<String> {
+    Box<String>.New("Foundation")
+}
+
+fn GenericStructMethods() i32 {
+    const box = Box<i32>.New(42)
+    box.Value
+}
+
+fn GenericStructNested() Box<Box<i32>> {
+    Box<Box<i32>>.New(Box<i32>.New(42))
+}
+
+fn GenericStructDestructure() i32 {
+    const Box { Value as value } = Box<i32>.New(42)
+    value
+}
+
+fn GenericStructNameCollision() BoxI32 {
+    BoxI32 { Code = 42 }
+}
+
+fn FunctionPayload() i32 {
+    const operation = SourceOperation.Apply(twice)
+    match operation {
+        Missing: 0
+        Apply(call): call(21)
+    }
+}
+
+fn FunctionEdit() i32 {
+    const operation fn(&FunctionCounter) void = incrementCounter
+    var counter = FunctionCounter { Value = 41 }
+    operation(&counter)
+    counter.Value
+}
+
+fn FunctionOwn() String {
+    const operation fn($String) String = consumeOperationText
+    const value = "Foundation"
+    operation($value)
+}
+
+fn ClosureCopy() i32 {
+    var factor = 2
+    const operation = fn(value i32) i32 capture(factor) {
+        value * factor
+    }
+    factor = 3
+    operation(21)
+}
+
+fn ClosureEdit() i32 {
+    var total = 40
+    const operation = fn(value i32) i32 capture(&total) {
+        total = total + value
+        total
+    }
+    discard operation(1)
+    operation(1)
+}
+
+fn ClosureOwn() String {
+    const prefix = "Found"
+    const operation = fn($suffix String) String capture($prefix) {
+        prefix + suffix
+    }
+    operation("ation")
+}
+
+fn ClosureReturn() i32 {
+    const operation = makeOffset(2)
+    operation(40)
+}
+
+fn ClosureFunctionCapture() i32 {
+    const operation = compose($twice)
+    operation(11)
+}
+
+fn ClosureBorrowedEdit() i32 {
+    var counter = FunctionCounter { Value = 41 }
+    const result = editThroughClosure(&counter)
+    if counter.Value != 42 return 0
+    result
+}
+
+fn foundationAddI32(value i32) i32 {
+    value
+}
+
+fn Add(left i32, right i32) i32 {
+    left + right
+}
+
+fn Subtract(left i32, right i32) i32 {
+    left - right
+}
+
+fn Multiply(left i32, right i32) i32 {
+    left * right
+}
+
+fn Divide(left i32, right i32) i32 {
+    left / right
+}
+
+fn Remainder(left i32, right i32) i32 {
+    left % right
+}
+
+fn ShiftLeft(left i32, right i32) i32 {
+    left << right
+}
+
+fn ShiftRight(left i32, right i32) i32 {
+    left >> right
+}
+
+fn ShiftUnsigned(left u32, right u32) u32 {
+    left >> right
+}
+
+fn ShiftCompound(value i32, count i32) i32 {
+    var result = value
+    result <<= count
+    result
+}
+
+fn ShiftOverflow() i32 {
+    1073741824 << 1
+}
+
+fn ShiftInvalidCount() i32 {
+    1 << 32
+}
+
+fn Negate(value i32) i32 {
+    -value
+}
+
+fn AddUnsigned(left u32, right u32) u32 {
+    left + right
+}
+
+fn SubtractUnsigned(left u32, right u32) u32 {
+    left - right
+}
+
+fn NameSafety(
+    int32 i32,
+    len i32,
+    foundationState i32
+) i32 {
+    foundationAddI32(int32) + len + foundationState
+}
+
+fn Greet(name String) String {
+    if !name {
+        return "Hello, stranger"
+    }
+    "Hello, " + name
+}
+
+fn TextLength(value String) usize {
+    len(value)
+}
+
+fn QuoteLine(value String) String {
+    "line 1\n\"" + value + "\"\\end"
+}
+
+fn SameText(left String, right String) bool {
+    left == right
+}
+
+fn Accent() String {
+    "héllo 🙂"
+}
+
+fn MakeProfile(name String, score i32) Profile {
+    Profile { Name = "" + name Score = score }
+}
+
+fn RenameProfile(profile Profile, name String) Profile {
+    Profile { Name = "" + name Score = profile.Score }
+}
+
+fn ProfileName(profile Profile) String {
+    "" + profile.Name
+}
+
+fn IncreaseScore(profile Profile, delta i32) i32 {
+    profile.Score + delta
+}
+
+fn MethodScore(profile Profile, delta i32) i32 {
+    profile.WithBonus(delta)
+}
+
+fn ChooseLabel(ready bool) String {
+    if ready {
+        const prefix = "Found"
+        prefix + "ation"
+    } else {
+        "fallback"
+    }
+}
+
+fn ChooseNumber(ready bool) i32 {
+    42 if ready else 7
+}
+
+fn ChooseNested(first bool, second bool) i32 {
+    42 if first else 21 if second else 0
+}
+
+fn LazyThen() i32 {
+    42 if true else Divide(1, 0)
+}
+
+fn LazyElse() i32 {
+    Divide(1, 0) if false else 42
+}
+
+fn ReplaceLocal() String {
+    var value = "old"
+    const previous = replace value with "new"
+    previous + ":" + value
+}
+
+fn ReplaceArrayElement() i32 {
+    var values = [10, 20]
+    const previous = replace values[1] with 42
+    previous + values[1]
+}
+
+fn DestructureLocal() i32 {
+    const profile = Profile { Name = "local" Score = 42 }
+    const Profile { Name Score } = profile
+    if Name != "local" return 0
+    Score
+}
+
+fn BuildNumbers() [3]i32 {
+    [10, 20, 30]
+}
+
+fn BuildWords() [2]String {
+    ["Foundation", " Lang"]
+}
+
+fn EmptyNumbers() [0]i32 {
+    []
+}
+
+fn SumFixed(values [3]i32) i32 {
+    values[0] + values[1] + values[2]
+}
+
+fn SumSlice(values [i32]) i32 {
+    var total = 0
+    for index, value in values {
+        if index == 1 continue
+        total = total + value
+    }
+    total
+}
+
+fn JoinWords(values [String]) String {
+    var result = ""
+    for value in values {
+        result = result + value
+    }
+    result
+}
+
+fn BumpSlice(&values [i32]) void {
+    for &value in values {
+        value = value + 1
+    }
+}
+
+fn SequenceIsEmpty(values [i32]) bool {
+    !values
+}
+
+fn FixedLength(values [3]i32) usize {
+    len(values)
+}
+
+fn SliceLength(values [i32]) usize {
+    len(values)
+}
+
+fn FirstSlice(values [i32]) i32 {
+    values[0]
+}
+
+fn MatrixValue(values [2] [2]i32) i32 {
+    values[1][0]
+}
+
+fn FirstProfileName(values [Profile]) String {
+    "" + values[0].Name
+}
+
+fn SumBuiltNumbers() i32 {
+    const values = BuildNumbers()
+    SumSlice(values)
+}
+
+fn SumTemporaryNumbers() i32 {
+    SumSlice(BuildNumbers())
+}
+
+fn BumpAndSum() i32 {
+    var values = [1, 2, 3]
+    BumpSlice(&values)
+    SumFixed(values)
+}
+
+fn MaybeName(name String) Option<String> {
+    if !name return .None
+    .Some("" + name)
+}
+
+fn ReadOptional(value Option<String>) String {
+    match value {
+        None: "none"
+        Some(name): "" + name
+    }
+}
+
+fn DescribeOptional(value Option<String>) String {
+    match value {
+        None: "none"
+        Some(name) if name == "Foundation": "foundation"
+        Some(name): "" + name
+    }
+}
+
+fn RenderGreeting(name String) Result<String, GreetingError> {
+    if !name return .Err(.EmptyName)
+    .Ok("Hello, " + name)
+}
+
+fn RenderOrFallback(name String) String {
+    const value = RenderGreeting(name) else error {
+        discard error
+        return "fallback"
+    }
+    value
+}
+
+fn ValidateName(name String) Result<void, GreetingError> {
+    if !name return .Err(.EmptyName)
+    .Ok
+}
+
+fn IsValidName(name String) bool {
+    ValidateName(name) else error {
+        discard error
+        return false
+    }
+    true
+}
+
+fn DescribeError(error GreetingError) String {
+    match error {
+        EmptyName: "empty name"
+        Rejected(reason): "rejected: " + reason
+    }
+}
+
+fn Clamp(value i32, minimum i32, maximum i32) i32 {
+    if value < minimum {
+        return minimum
+    }
+    if value > maximum {
+        return maximum
+    }
+    value
+}
+
+fn TwicePlus(value i32, extra i32) i32 {
+    twice(value) + extra
+}
+
+fn SumTo(limit i32) i32 {
+    var current = 0
+    var total = 0
+    while current < limit {
+        total = total + current
+        current = current + 1
+    }
+    total
+}
+
+fn IsWithin(value i32, minimum i32, maximum i32) bool {
+    value >= minimum && value <= maximum
+}

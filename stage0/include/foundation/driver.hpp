@@ -7,6 +7,7 @@
 #include "foundation/diagnostic.hpp"
 #include "foundation/fir.hpp"
 #include "foundation/fsm.hpp"
+#include "foundation/package_export.hpp"
 #include "foundation/project.hpp"
 #include "foundation/sema.hpp"
 
@@ -33,6 +34,10 @@ struct ProjectAnalysis {
     Diagnostics diagnostics;
 };
 
+[[nodiscard]] std::vector<std::size_t>
+rootProjectSourceIds(const std::filesystem::path &path,
+                     const ProjectAnalysis &analysis);
+
 enum class FormatMode {
     Stdout,
     Check,
@@ -57,7 +62,8 @@ enum class LibraryKind {
                             TargetPlatform target = hostTargetPlatform());
 [[nodiscard]] int lintFile(
     const std::filesystem::path &path,
-    std::optional<CodeStandardProfile> profile = std::nullopt);
+    std::optional<CodeStandardProfile> profile = std::nullopt,
+    const std::vector<CodeStandardRuleSetting> &settings = {});
 [[nodiscard]] int formatPath(const std::filesystem::path &path, FormatMode mode);
 [[nodiscard]] int emitCFile(const std::filesystem::path &source,
                             const std::filesystem::path &output,
@@ -88,6 +94,7 @@ enum class LibraryKind {
 [[nodiscard]] int buildFile(const std::filesystem::path &source,
                             const std::filesystem::path &output,
                             const std::vector<std::filesystem::path> &nativeInputs = {},
+                            const std::vector<std::string> &nativeLinks = {},
                             BackendKind backend = defaultBackendKind());
 [[nodiscard]] int buildLibrary(
     const std::filesystem::path &source,
@@ -96,13 +103,21 @@ enum class LibraryKind {
     const std::vector<std::filesystem::path> &nativeInputs = {},
     BackendKind backend = defaultBackendKind(),
     bool positionIndependent = false);
+[[nodiscard]] int exportPackage(
+    const std::filesystem::path &source,
+    const std::filesystem::path &outputDirectory,
+    PackageExportFormat format,
+    const std::vector<std::filesystem::path> &nativeInputs = {},
+    BackendKind backend = defaultBackendKind());
 [[nodiscard]] int runFile(const std::filesystem::path &source,
                           const std::vector<std::filesystem::path> &nativeInputs = {},
+                          const std::vector<std::string> &nativeLinks = {},
                           const std::vector<std::string> &arguments = {},
                           BackendKind backend = defaultBackendKind());
 [[nodiscard]] int runTests(
     const std::filesystem::path &source,
     const std::vector<std::filesystem::path> &nativeInputs = {},
+    const std::vector<std::string> &nativeLinks = {},
     BackendKind backend = defaultBackendKind());
 
 } // namespace foundation

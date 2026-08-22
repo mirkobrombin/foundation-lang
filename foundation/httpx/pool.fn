@@ -1,0 +1,439 @@
+package foundation.httpx
+
+import std.collections
+import std.concurrent
+import std.format
+import std.net
+import std.text
+
+// Reports invalid persistent transport configuration.
+enum NetworkConfigurationError {
+    // The idle connection limit cannot be negative.
+    InvalidMaximumIdleConnections
+    // The proxy must be an absolute plaintext HTTP authority URL.
+    InvalidProxy
+    // The proxy authorization value cannot be written as an HTTP header.
+    InvalidProxyAuthorization
+}
+
+// Selects one explicit forward proxy for plaintext HTTP requests.
+struct Proxy {
+    // Stores an absolute HTTP URL whose path is empty or `/`.
+    URL String
+    // Supplies one complete Proxy-Authorization header value.
+    Authorization Option<String> = .None
+}
+
+// Configures persistent connection retention and optional proxy routing.
+struct NetworkPolicy {
+    // Bounds idle connections retained by one transport.
+    MaximumIdleConnections i32 = 8
+    // Routes plaintext HTTP requests through one explicit forward proxy.
+    Proxy Option<Proxy> = .None
+}
+
+@concurrent.Transferable()
+struct pooledConnection {
+    key String
+    reader own net.TcpReader
+    writer own net.TcpWriter
+}
+
+enum poolOperation {
+    Take(key String)
+    Return(value own pooledConnection)
+}
+
+enum poolResponse {
+    Connection(value Option<own pooledConnection>)
+    Done
+}
+
+struct poolRequest {
+    operation poolOperation
+    reply Sender<poolResponse>
+}
+
+struct poolState {
+    connections own collections.List<own pooledConnection>
+    maximumIdle i32
+}
+
+enum poolError {
+    Closed
+    Cancelled
+}
+
+struct networkRoute {
+    key String
+    connectHost String
+    connectPort u64
+    requestTarget String
+    proxyAuthorization Option<String>
+}
+
+struct networkPoolHandle {
+    sender Sender<poolRequest>
+    proxyEnabled bool
+    proxyHost String
+    proxyPort u64
+    proxyAuthorization String
+    hasProxyAuthorization bool
+
+    fn Clone(self) networkPoolHandle {
+        networkPoolHandle {
+            sender = self.sender.clone()
+            proxyEnabled = self.proxyEnabled
+            proxyHost = text.Copy(self.proxyHost)
+            proxyPort = self.proxyPort
+            proxyAuthorization = text.Copy(self.proxyAuthorization)
+            hasProxyAuthorization = self.hasProxyAuthorization
+        }
+    }
+
+    fn Route(
+        self,
+        $target networkTarget,
+        url String
+    ) Result<networkRoute, RequestError> {
+        if !self.proxyEnabled {
+            const key = directConnectionKey(target)
+            const networkTarget { host authority path port secure } = target
+            discard authority
+            discard secure
+            return .Ok(networkRoute {
+                key = key
+                connectHost = host
+                connectPort = port
+                requestTarget = path
+                proxyAuthorization = .None
+            })
+        }
+
+        discard target
+        const requestTarget = proxyRequestTarget(url) else error {
+            return .Err(error)
+        }
+        var authorization Option<String> = .None
+        if self.hasProxyAuthorization {
+            authorization = .Some(text.Copy(self.proxyAuthorization))
+        }
+        .Ok(networkRoute {
+            key = proxyConnectionKey(self.proxyHost, self.proxyPort)
+            connectHost = text.Copy(self.proxyHost)
+            connectPort = self.proxyPort
+            requestTarget = requestTarget
+            proxyAuthorization = authorization
+        })
+    }
+
+    fn Take(
+        self,
+        $key String
+    ) Task<Result<Option<own pooledConnection>, poolError>> {
+        spawn takeFromPool(self.sender.clone(), $key)
+    }
+
+    fn Return(
+        self,
+        $connection own pooledConnection
+    ) Task<Result<void, poolError>> {
+        spawn returnToPool(self.sender.clone(), $connection)
+    }
+}
+
+struct networkPool {
+    actor Task<void>
+    handle networkPoolHandle
+
+    fn Handle(self) networkPoolHandle {
+        self.handle.Clone()
+    }
+}
+
+fn openNetworkPool(
+    $policy NetworkPolicy
+) Result<own networkPool, NetworkConfigurationError> {
+    const NetworkPolicy { MaximumIdleConnections Proxy } = policy
+    if MaximumIdleConnections < 0 {
+        discard Proxy
+        return .Err(.InvalidMaximumIdleConnections)
+    }
+
+    var proxyEnabled = false
+    var proxyHost = ""
+    var proxyPort u64 = 0
+    var proxyAuthorization = ""
+    var hasProxyAuthorization = false
+    match Proxy {
+        None: {}
+        Some(proxy): {
+            const Proxy { URL Authorization } = proxy
+            const target = networkTargetFor(URL) else error {
+                discard error
+                discard Authorization
+                return .Err(.InvalidProxy)
+            }
+            discard URL
+            const networkTarget { host authority path port secure } = target
+            discard authority
+            if secure || path != "/" {
+                discard host
+                discard path
+                discard Authorization
+                return .Err(.InvalidProxy)
+            }
+            discard path
+            match Authorization {
+                None: {}
+                Some(value): {
+                    if !validHeaderValue(value) {
+                        discard host
+                        discard value
+                        return .Err(.InvalidProxyAuthorization)
+                    }
+                    proxyAuthorization = value
+                    hasProxyAuthorization = true
+                }
+            }
+            proxyEnabled = true
+            proxyHost = host
+            proxyPort = port
+        }
+    }
+
+    const Channel { sender receiver } = channel<poolRequest>(64)
+    const initial = own poolState {
+        connections = collections.NewList<own pooledConnection>()
+        maximumIdle = MaximumIdleConnections
+    }
+    const actor = spawn servePool($receiver, $initial)
+    .Ok(own networkPool {
+        actor = actor
+        handle = networkPoolHandle {
+            sender = sender
+            proxyEnabled = proxyEnabled
+            proxyHost = proxyHost
+            proxyPort = proxyPort
+            proxyAuthorization = proxyAuthorization
+            hasProxyAuthorization = hasProxyAuthorization
+        }
+    })
+}
+
+task servePool(
+    $receiver Receiver<poolRequest>,
+    $initial own poolState
+) void {
+    var inbox = receiver
+    var current = initial
+    while true {
+        select {
+            const incoming = inbox.receive(): {
+                const poolRequest { operation reply } = incoming
+                const response = applyPool(&current, $operation)
+                discard reply.send($response)
+            }
+            else error: {
+                discard error
+                return
+            }
+        }
+    }
+}
+
+fn applyPool(
+    &current poolState,
+    $operation poolOperation
+) poolResponse {
+    match operation {
+        Take(key): .Connection(value = takeMatching(&current, $key))
+        Return(connection): retainConnection(&current, $connection)
+    }
+}
+
+fn takeMatching(
+    &current poolState,
+    $key String
+) Option<own pooledConnection> {
+    var source = replace current.connections with
+    collections.NewList<own pooledConnection>()
+    var restored = collections.NewList<own pooledConnection>()
+    var found Option<own pooledConnection> = .None
+    var selected = false
+    while !source.IsEmpty() {
+        const connection = requiredPooled(source.PopFront())
+        if !selected && connection.key == key {
+            found = .Some(connection)
+            selected = true
+        } else {
+            restored.PushFront($connection)
+        }
+    }
+    current.connections = reverseConnections($restored)
+    discard key
+    found
+}
+
+fn retainConnection(
+    &current poolState,
+    $connection own pooledConnection
+) poolResponse {
+    if current.maximumIdle > current.connections.Len() {
+        current.connections.PushFront($connection)
+    } else {
+        discard connection
+    }
+    .Done
+}
+
+task takeFromPool(
+    $requests Sender<poolRequest>,
+    $key String
+) Result<Option<own pooledConnection>, poolError> {
+    const pending = spawn exchangePool(
+        $requests,
+        .Take(key = key)
+    )
+    const completed = $pending.wait()
+    const response = completed else error {
+        return .Err(error)
+    }
+    match response {
+        Connection(value): .Ok(value)
+        Done: unexpectedPoolResponse()
+    }
+}
+
+task returnToPool(
+    $requests Sender<poolRequest>,
+    $connection own pooledConnection
+) Result<void, poolError> {
+    const pending = spawn exchangePool(
+        $requests,
+        .Return(value = connection)
+    )
+    const completed = $pending.wait()
+    const response = completed else error {
+        return .Err(error)
+    }
+    match response {
+        Done: .Ok
+        Connection(value): unexpectedPoolValue($value)
+    }
+}
+
+task exchangePool(
+    $requests Sender<poolRequest>,
+    $operation poolOperation
+) Result<poolResponse, poolError> {
+    const Channel { sender receiver } = channel<poolResponse>(1)
+    select {
+        requests.send(poolRequest {
+            operation = operation
+            reply = sender
+        }): {
+            const received = receiver.receive()
+            return match received {
+                Ok(value): .Ok(value)
+                Err(error): .Err(mapPoolChannelError(error))
+            }
+        }
+        else error: return .Err(mapPoolChannelError(error))
+    }
+}
+
+fn mapPoolChannelError(error ChannelError) poolError {
+    match error {
+        Closed: .Closed
+        Cancelled: .Cancelled
+        Timeout: .Cancelled
+    }
+}
+
+fn requiredPooled(
+    $value Option<own pooledConnection>
+) own pooledConnection {
+    match value {
+        None: missingPooledConnection()
+        Some(connection): connection
+    }
+}
+
+fn reverseConnections(
+    $values own collections.List<own pooledConnection>
+) own collections.List<own pooledConnection> {
+    var source = values
+    var result = collections.NewList<own pooledConnection>()
+    while !source.IsEmpty() {
+        result.PushFront(requiredPooled(source.PopFront()))
+    }
+    result
+}
+
+fn directConnectionKey(target networkTarget) String {
+    const scheme = "https" if target.secure else "http"
+    scheme + "://" + normalizedConnectionHost(target.host) + ":" +
+        format.U64(target.port)
+}
+
+fn proxyConnectionKey(host String, port u64) String {
+    "proxy://" + normalizedConnectionHost(host) + ":" + format.U64(port)
+}
+
+fn normalizedConnectionHost(value String) String {
+    var builder = text.NewBuilder()
+    var offset u64 = 0
+    const length = text.ByteLen(value)
+    while offset < length {
+        const written = builder.WriteCodePoint(
+            lowerAscii(urlByteAt(value, offset))
+        ) else error {
+            discard error
+            discard builder
+            panic("httpx pool host invariant failed")
+        }
+        discard written
+        offset = offset + 1
+    }
+    const result = builder.Finish() else error {
+        discard error
+        panic("httpx pool host invariant failed")
+    }
+    result
+}
+
+fn proxyRequestTarget(value String) Result<String, RequestError> {
+    const parts = parseAbsoluteURL(value) else error {
+        return .Err(error)
+    }
+    const authority = authorityWithoutUser(parts.authority)
+    if text.IsEmpty(authority) {
+        discard parts
+        return .Err(.InvalidURL)
+    }
+    const path = requestPath(value, parts.pathStart) else error {
+        discard error
+        discard parts
+        discard authority
+        return .Err(.InvalidURL)
+    }
+    const result = parts.scheme + "://" + authority + path
+    discard parts
+    .Ok(result)
+}
+
+fn unexpectedPoolResponse() never {
+    panic("httpx pool response invariant failed")
+}
+
+fn unexpectedPoolValue(
+    $value Option<own pooledConnection>
+) never {
+    discard value
+    panic("httpx pool response invariant failed")
+}
+
+fn missingPooledConnection() own pooledConnection {
+    panic("httpx pool storage invariant failed")
+}

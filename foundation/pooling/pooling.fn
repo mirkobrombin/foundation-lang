@@ -1,0 +1,309 @@
+package foundation.pooling
+
+import std.collections
+
+// Reports that the pool owner can no longer complete an operation.
+enum Error {
+    // The pool owner no longer accepts requests.
+    Closed
+
+    // The operation was cancelled before its response arrived.
+    Cancelled
+}
+
+// Reports invalid pool construction policy.
+enum ConfigurationError {
+    // The retained-item limit cannot be negative.
+    InvalidMaximumRetained
+}
+
+// Defines deterministic retention and cleanup for one pool.
+struct Policy<T> {
+    // Bounds retained items. Zero disables retention.
+    MaximumRetained i32 = 64
+
+    // Runs before every returned item is retained or released.
+    Finalize Option < transferable fn(&T) void > = .None
+}
+
+enum operation<T> {
+    Get
+    Put(value T)
+    Len
+}
+
+enum response<T> {
+    Item(value T)
+    Done
+    Length(value i32)
+}
+
+struct request<T> {
+    operation operation<T>
+    reply Sender<response<T>>
+}
+
+struct state<T> {
+    items own collections.List<T>
+    factory transferable fn() T
+    finalize Option < transferable fn(&T) void >
+        maximumRetained i32
+}
+
+// Sends operations to one pool owner task.
+struct Handle<T> {
+    sender Sender<request<T>>
+
+    // Creates another independently owned handle to the same pool.
+    fn Clone(self) Handle<T> {
+        Handle<T> { sender = self.sender.clone() }
+    }
+
+    // Takes one retained item or creates a fresh item with the factory.
+    fn Get(self) Task<Result<T, Error>> {
+        spawn get<T>(self.sender.clone())
+    }
+
+    // Finalizes one item and retains it when capacity remains.
+    fn Put(self, $value T) Task<Result<void, Error>> {
+        spawn put<T>(self.sender.clone(), $value)
+    }
+
+    // Returns the current retained-item count.
+    fn Len(self) Task<Result<i32, Error>> {
+        spawn length<T>(self.sender.clone())
+    }
+}
+
+// Owns one deterministic task-safe generic object pool.
+struct Pool<T> {
+    actor Task<void>
+    handle Handle<T>
+
+    // Creates another independently owned handle to the same pool.
+    fn Handle(self) Handle<T> {
+        self.handle.Clone()
+    }
+
+    // Takes one retained item or creates a fresh item with the factory.
+    fn Get(self) Task<Result<T, Error>> {
+        self.handle.Get()
+    }
+
+    // Finalizes one item and retains it when capacity remains.
+    fn Put(self, $value T) Task<Result<void, Error>> {
+        self.handle.Put($value)
+    }
+
+    // Returns the current retained-item count.
+    fn Len(self) Task<Result<i32, Error>> {
+        self.handle.Len()
+    }
+}
+
+// Creates a pool with a deterministic 64-item retention limit.
+fn New<T transferable>(
+    $factory transferable fn() T
+) own Pool<T> {
+    newPool<T>($factory, .None, 64)
+}
+
+// Creates a pool with validated retention and cleanup policy.
+fn NewWith<T transferable>(
+    $factory transferable fn() T,
+    $policy Policy<T>
+) Result<own Pool<T>, ConfigurationError> {
+    const Policy { MaximumRetained Finalize } = policy
+    if MaximumRetained < 0 {
+        discard factory
+        discard Finalize
+        return .Err(.InvalidMaximumRetained)
+    }
+    .Ok(newPool<T>($factory, $Finalize, MaximumRetained))
+}
+
+fn newPool<T transferable>(
+    $factory transferable fn() T,
+    $finalize Option < transferable fn(&T) void >,
+    maximumRetained i32
+) own Pool<T> {
+    const Channel { sender receiver } = channel<request<T>>(64)
+    const initial = own state<T> {
+        items = collections.NewList<T>()
+        factory = factory
+        finalize = finalize
+        maximumRetained = maximumRetained
+    }
+    const actor = spawn serve<T>($receiver, $initial)
+    own Pool<T> {
+        actor = actor
+        handle = Handle<T> { sender = sender }
+    }
+}
+
+task serve<T>(
+    $receiver Receiver<request<T>>,
+    $initial own state<T>
+) void {
+    var inbox = receiver
+    var current = initial
+    while true {
+        select {
+            const incoming = inbox.receive(): {
+                const request { operation reply } = incoming
+                const result = apply<T>(&current, $operation)
+                discard reply.send($result)
+            }
+            else error: {
+                discard error
+                return
+            }
+        }
+    }
+}
+
+fn apply<T>(
+    &current state<T>,
+    $operation operation<T>
+) response<T> {
+    match operation {
+        Get: take<T>(&current)
+        Put(value): retain<T>(&current, $value)
+        Len: .Length(value = current.items.Len())
+    }
+}
+
+fn take<T>(&current state<T>) response<T> {
+    const retained = current.items.PopFront()
+    match retained {
+        None: .Item(value = create<T>(current.factory))
+        Some(value): .Item(value = value)
+    }
+}
+
+fn create<T>(factory transferable fn() T) T {
+    factory()
+}
+
+fn retain<T>(&current state<T>, $value T) response<T> {
+    var item = value
+    runFinalizer<T>(&current, &item)
+    if current.maximumRetained > current.items.Len() {
+        current.items.PushFront($item)
+    } else {
+        discard item
+    }
+    .Done
+}
+
+fn runFinalizer<T>(&current state<T>, &value T) void {
+    const selected = replace current.finalize with .None
+    match selected {
+        None: {
+            return
+        }
+        Some(finalize): {
+            finalize(&value)
+            current.finalize = .Some(finalize)
+            return
+        }
+    }
+}
+
+task get<T>(
+    $requests Sender<request<T>>
+) Result<T, Error> {
+    const pending = spawn sendRequest<T>($requests, .Get)
+    const received = $pending.wait()
+    match received {
+        Err(error): .Err(error)
+        Ok(value): requireItem<T>($value)
+    }
+}
+
+task put<T>(
+    $requests Sender<request<T>>,
+    $value T
+) Result<void, Error> {
+    const pending = spawn sendRequest<T>(
+        $requests,
+        .Put(value = value)
+    )
+    const received = $pending.wait()
+    match received {
+        Err(error): .Err(error)
+        Ok(value): requireDone<T>($value)
+    }
+}
+
+task length<T>(
+    $requests Sender<request<T>>
+) Result<i32, Error> {
+    const pending = spawn sendRequest<T>($requests, .Len)
+    const received = $pending.wait()
+    match received {
+        Err(error): .Err(error)
+        Ok(value): requireLength<T>($value)
+    }
+}
+
+task sendRequest<T>(
+    $requests Sender<request<T>>,
+    $operation operation<T>
+) Result<response<T>, Error> {
+    const Channel { sender receiver } = channel<response<T>>(1)
+    select {
+        requests.send(request<T> {
+            operation = operation
+            reply = sender
+        }): {
+            const received = receiver.receive()
+            return match received {
+                Ok(value): .Ok(value)
+                Err(error): .Err(mapChannelError(error))
+            }
+        }
+        else error: return .Err(mapChannelError(error))
+    }
+}
+
+fn mapChannelError(error ChannelError) Error {
+    match error {
+        Closed: .Closed
+        Cancelled: .Cancelled
+        Timeout: .Cancelled
+    }
+}
+
+fn requireItem<T>($value response<T>) Result<T, Error> {
+    match value {
+        Item(item): .Ok(item)
+        Done: unexpectedDone()
+        Length(length): unexpectedResponse<i32>($length)
+    }
+}
+
+fn requireDone<T>($value response<T>) Result<void, Error> {
+    match value {
+        Done: .Ok
+        Item(item): unexpectedResponse<T>($item)
+        Length(length): unexpectedResponse<i32>($length)
+    }
+}
+
+fn requireLength<T>($value response<T>) Result<i32, Error> {
+    match value {
+        Length(length): .Ok(length)
+        Done: unexpectedDone()
+        Item(item): unexpectedResponse<T>($item)
+    }
+}
+
+fn unexpectedResponse<T>($value T) never {
+    discard value
+    panic("pooling response invariant failed")
+}
+
+fn unexpectedDone() never {
+    panic("pooling response invariant failed")
+}

@@ -10,7 +10,8 @@ int main(void) {
                                                  UINT32_C(0x9abcdef0));
 
     if (strcmp(FDN_WASM_ABI_NAME, "foundation:plugin") != 0 ||
-        version != UINT64_C(0x0000000100000000)) {
+        version != UINT64_C(0x0000000100000000) ||
+        FDN_WASM_ERROR_RESULT != UINT64_MAX) {
         return 1;
     }
     if (fdn_wasm_buffer_pointer(buffer) != UINT32_C(0x12345678) ||
@@ -20,7 +21,13 @@ int main(void) {
     if (FDN_WASM_HOST_OK != 0 || FDN_WASM_HOST_DENIED != 1 ||
         FDN_WASM_HOST_INVALID_REQUEST != 2 ||
         FDN_WASM_HOST_HANDLER_ERROR != 3 ||
-        FDN_WASM_HOST_PAYLOAD_TOO_LARGE != 4) {
+        FDN_WASM_HOST_PAYLOAD_TOO_LARGE != 4 ||
+        strcmp(FDN_WASM_IMPORT_HOST_CALL, "host_call") != 0 ||
+        strcmp(FDN_WASM_IMPORT_RESPONSE_LENGTH, "host_response_len") != 0 ||
+        strcmp(FDN_WASM_IMPORT_RESPONSE_READ, "host_response_read") != 0 ||
+        strcmp(FDN_WASM_IMPORT_ERROR_LENGTH, "host_error_len") != 0 ||
+        strcmp(FDN_WASM_IMPORT_ERROR_READ, "host_error_read") != 0 ||
+        strcmp(FDN_WASM_EXPORT_MEMORY, "memory") != 0) {
         return 3;
     }
     return 0;

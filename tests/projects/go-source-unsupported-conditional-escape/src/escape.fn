@@ -1,0 +1,11 @@
+package sample.conditional_escape
+
+fn EscapeFromConditional(flag bool) i32 {
+    const value = if flag {
+        if flag return 1
+        2
+    } else {
+        3
+    }
+    value
+}

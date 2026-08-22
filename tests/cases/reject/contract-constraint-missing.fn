@@ -1,0 +1,17 @@
+contract Counter {
+    fn increment(&self) void
+}
+
+struct Value {
+    value i32
+}
+
+fn bump<T Counter>(&value T) void {
+    value.increment()
+}
+
+fn main() i32 {
+    var value = Value { value = 1 }
+    bump(&value)
+    0
+}

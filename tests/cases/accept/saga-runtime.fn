@@ -1,0 +1,148 @@
+package test.saga_runtime
+
+import std.collections
+import foundation.saga as sagas
+
+enum WorkError {
+    Rejected
+}
+
+task value(number i32) Result<i32, WorkError> {
+    .Ok(number)
+}
+
+fn accept(number i32) Result<void, WorkError> {
+    discard number
+    .Ok
+}
+
+fn reject(number i32) Result<void, WorkError> {
+    discard number
+    .Err(.Rejected)
+}
+
+fn completed($result Result<void, sagas.RunError<i32, WorkError>>) bool {
+    match result {
+        Ok: true
+        Err(error): unexpectedRunError($error)
+    }
+}
+
+fn duplicate($result Result<void, sagas.RunError<i32, WorkError>>) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            Duplicate: true
+            Store(failure): discardStoreAccessFailure($failure)
+            OperationQueued: false
+            Record(failure): discardStoreWriteFailure($failure)
+            Complete(failure): discardStoreWriteFailure($failure)
+            Release(failure): discardReleaseFailure($failure)
+            DeadLetter(failure): discardDeadLetterPushFailure($failure)
+        }
+    }
+}
+
+fn queued($result Result<void, sagas.RunError<i32, WorkError>>) bool {
+    match result {
+        Ok: false
+        Err(error): match error {
+            Duplicate: false
+            Store(failure): discardStoreAccessFailure($failure)
+            OperationQueued: true
+            Record(failure): discardStoreWriteFailure($failure)
+            Complete(failure): discardStoreWriteFailure($failure)
+            Release(failure): discardReleaseFailure($failure)
+            DeadLetter(failure): discardDeadLetterPushFailure($failure)
+        }
+    }
+}
+
+fn unexpectedRunError($error sagas.RunError<i32, WorkError>) bool {
+    match error {
+        Duplicate: false
+        Store(failure): discardStoreAccessFailure($failure)
+        OperationQueued: false
+        Record(failure): discardStoreWriteFailure($failure)
+        Complete(failure): discardStoreWriteFailure($failure)
+        Release(failure): discardReleaseFailure($failure)
+        DeadLetter(failure): discardDeadLetterPushFailure($failure)
+    }
+}
+
+fn discardStoreAccessFailure($failure sagas.StoreAccessFailure<i32>) bool {
+    discard failure
+    false
+}
+
+fn discardStoreWriteFailure($failure sagas.StoreWriteFailure) bool {
+    discard failure
+    false
+}
+
+fn discardReleaseFailure($failure sagas.ReleaseFailure<i32, WorkError>) bool {
+    discard failure
+    false
+}
+
+fn discardDeadLetterPushFailure(
+    $failure sagas.DeadLetterPushFailure<i32, WorkError>
+) bool {
+    discard failure
+    false
+}
+
+fn requiredValue($value Option<i32>) i32 {
+    match value {
+        Some(number): number
+        None: panic("saga value missing")
+    }
+}
+
+fn requiredLetter(
+    $value Option<sagas.DeadLetter<i32, WorkError>>
+) sagas.DeadLetter<i32, WorkError> {
+    match value {
+        Some(letter): letter
+        None: panic("saga dead letter missing")
+    }
+}
+
+fn joined(
+    $result Result<own collections.List<i32>, WorkError>
+) own collections.List<i32> {
+    match result {
+        Ok(values): values
+        Err(error): {
+            discard error
+            panic("saga group failed")
+        }
+    }
+}
+
+fn main() i32 {
+    var group = sagas.NewGroup<i32, WorkError>()
+    group.Add(spawn value(11))
+    group.Add(spawn value(22))
+    const joining = spawn sagas.Join($group)
+    var values = joined($joining.wait())
+    if requiredValue(values.PopFront()) != 11 return 1
+    if requiredValue(values.PopFront()) != 22 return 2
+
+    var store = sagas.NewMemoryStore()
+    var letters = sagas.NewMemoryDeadLetters<i32, WorkError>()
+    if !completed(sagas.RunOnceReserved(&store, &letters, "accepted", 7, accept)) return 3
+    if !duplicate(sagas.RunOnceReserved(&store, &letters, "accepted", 8, accept)) return 4
+    if !queued(sagas.RunOnceReserved(&store, &letters, "rejected", 9, reject)) return 5
+
+    var failed = $letters.Drain()
+    if failed.Len() != 1 return 6
+    const letter = requiredLetter(failed.PopFront())
+    if letter.Key != "rejected" || letter.Input != 9 return 7
+    match letter.Error {
+        Rejected: {}
+    }
+
+    print("saga runtime ok")
+    0
+}

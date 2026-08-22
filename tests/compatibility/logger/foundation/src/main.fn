@@ -1,0 +1,46 @@
+package test.compatibility.logger
+
+import foundation.logger
+import std.collections
+import std.time
+
+fn require($value Result<void, logger.RenderError>) void {
+    match value {
+        Ok: {
+            return
+        }
+        Err(error): {
+            discard error
+            panic("logger compatibility sink failed")
+        }
+    }
+}
+
+fn fields() own collections.List<logger.Field> {
+    const bound = logger.WithField(
+        logger.Fields(),
+        "service",
+        "catalog"
+    )
+    logger.WithField($bound, "request", "r-42")
+}
+
+fn entry(level logger.Level) own logger.Entry {
+    logger.NewEntry(
+        level,
+        time.FromUnix(0),
+        "served",
+        fields(),
+        logger.Trace { TraceID = "" SpanID = "" }
+    )
+}
+
+fn main() i32 {
+    var console = logger.NewConsoleSink()
+    require($console.Write(entry(.Info)))
+
+    var clef = logger.NewCLEFSink()
+    require($clef.Write(entry(.Info)))
+    require($clef.Write(entry(.Warn)))
+    0
+}

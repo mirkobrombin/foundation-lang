@@ -100,5 +100,5 @@ The router also preserves stateless function middleware through `Use`. Stateful 
 implements `web.Middleware<E>` and receives an editable receiver, so mutable policy remains owned
 by the application graph instead of escaping through a borrowed closure.
 
-Foundation uses task cancellation and owned permits instead
+The Foundation forms preserve the v2 policy while using task cancellation and owned permits instead
 of ambient contexts and callback-scoped slot release.

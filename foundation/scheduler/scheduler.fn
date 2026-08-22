@@ -54,7 +54,7 @@ struct Cron {
 }
 
 methods Cron {
-    // Parses a five-field cron expression.
+    // Parses the v2-compatible five-field cron subset.
     fn Parse(expression String) Result<Cron, CronError> {
         var cursor = cronCursor { offset = 0 }
         const minute = parseCronField(expression, &cursor, 0, 59) else error {

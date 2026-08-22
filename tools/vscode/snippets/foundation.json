@@ -42,6 +42,16 @@
         ],
         "description": "Read one UTF-8 file without blocking the Foundation executor"
     },
+    "Watch next filesystem event": {
+        "prefix": "watchnext",
+        "body": [
+            "const ${1:watching} = spawn fs.WatchNext(${2:path}, ${3:intervalMilliseconds})",
+            "const ${4:event} = \\$${1:watching}.wait() else ${5:error} {",
+            "    ${6:return}",
+            "}"
+        ],
+        "description": "Wait for one created, modified, or removed filesystem event"
+    },
     "TCP client tasks": {
         "prefix": "tcpclient",
         "body": [
@@ -506,6 +516,15 @@
         ],
         "description": "Declare a generic function"
     },
+    "Contract-constrained generic function": {
+        "prefix": "fngcontract",
+        "body": [
+            "fn ${1:bump}<${2:T} ${3:Counter}>(&${4:value} ${2:T}) ${5:void} {",
+            "    ${4:value}.${6:method}()",
+            "}"
+        ],
+        "description": "Declare a generic function constrained by a contract"
+    },
     "Function value type": {
         "prefix": "fntype",
         "body": "fn(${1:i32}) ${2:i32}",
@@ -895,6 +914,11 @@
         "prefix": "indexset",
         "body": "${1:values}[${2:index}] = ${3:value}",
         "description": "Replace an indexed element"
+    },
+    "Compound assignment": {
+        "prefix": "compound",
+        "body": "${1:place} ${2|+=,-=,*=,/=,%=,<<=,>>=|} ${3:value}",
+        "description": "Update an editable place with a checked compound operator"
     },
     "Authenticated web handler": {
         "prefix": "authhandler",

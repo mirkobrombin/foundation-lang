@@ -1,0 +1,368 @@
+import foundation.plugin
+import std.bytes
+import std.time
+
+fn main(args [String]) i32 {
+    if len(args) != 2 && len(args) != 5 return 1
+    var metadata = fixtureMetadata()
+    var policy = plugin.NewWasmCapabilityPolicy()
+    const echoGrant = policy.Grant("test.echo", 0, WamrTestCapability) else error {
+        discard error
+        return 2
+    }
+    discard echoGrant
+    const adminGrant = policy.Grant("test.admin", 0, WamrTestCapability) else error {
+        discard error
+        return 31
+    }
+    discard adminGrant
+    var wasi = plugin.NewWasiCapabilities()
+    plugin.AllowWasiWrite(&wasi, ".") else error {
+        discard error
+        return 3
+    }
+    plugin.SetWasiEnvironment(&wasi, "MODE", "test") else error {
+        discard error
+        return 4
+    }
+    plugin.AddWasiArgument(&wasi, "fixture") else error {
+        discard error
+        return 5
+    }
+    var readOnlyWasi = plugin.NewWasiCapabilities()
+    plugin.AllowWasiRead(&readOnlyWasi, "/readonly") else error {
+        discard error
+        return 6
+    }
+    const readOnlyEngineCreated = plugin.NewWamrEngine(args[0]) else error {
+        discard error
+        return 7
+    }
+    var readOnlyEngine = readOnlyEngineCreated
+    const readOnly = readOnlyEngine.Open(args[1], &metadata, &policy, &readOnlyWasi)
+    const readOnlyRejected = match readOnly {
+        Ok(module): {
+            discard module.Close()
+            false
+        }
+        Err(error): statusIsReadOnlyUnsupported(error)
+    }
+    readOnlyEngine.Close() else error {
+        discard error
+        return 8
+    }
+    if !readOnlyRejected return 9
+
+    const engineCreated = plugin.NewWamrEngine(args[0]) else error {
+        discard error
+        return 10
+    }
+    var engine = engineCreated
+    const moduleOpened = engine.Open(args[1], &metadata, &policy, &wasi) else error {
+        discard error
+        discard engine.Close()
+        return 11
+    }
+    var module = moduleOpened
+    const output = module.Call("echo", bytes.FromText("foundation")) else error {
+        discard error
+        discard module.Close()
+        discard engine.Close()
+        return 12
+    }
+    const text = output.Text() else error {
+        discard error
+        discard output
+        discard module.Close()
+        discard engine.Close()
+        return 13
+    }
+    if text != "foundation" {
+        discard module.Close()
+        discard engine.Close()
+        return 14
+    }
+    const capability = module.Call("capability", bytes.FromText("foundation")) else error {
+        discard error
+        discard module.Close()
+        discard engine.Close()
+        return 15
+    }
+    const capabilityText = capability.Text() else error {
+        discard error
+        discard capability
+        discard module.Close()
+        discard engine.Close()
+        return 16
+    }
+    if capabilityText != "host:foundation" {
+        discard module.Close()
+        discard engine.Close()
+        return 17
+    }
+    if !callTextEquals(&module, "undeclared", "denied") {
+        discard module.Close()
+        discard engine.Close()
+        return 32
+    }
+    if len(args) == 5 {
+        const invalidRange = module.Call("bad-range", bytes.FromText(""))
+        const rangeRejected = match invalidRange {
+            Ok(value): {
+                discard value
+                false
+            }
+            Err(error): statusIsHandlerError(error)
+        }
+        if !rangeRejected {
+            discard module.Close()
+            discard engine.Close()
+            return 18
+        }
+        if !callRejected(&module, "error") {
+            discard module.Close()
+            discard engine.Close()
+            return 19
+        }
+        if !callTextEquals(&module, "last-error-probe", "read") {
+            discard module.Close()
+            discard engine.Close()
+            return 20
+        }
+        if !callRejected(&module, "alias-input") ||
+            !callRejected(&module, "alias-method") {
+            discard module.Close()
+            discard engine.Close()
+            return 21
+        }
+    }
+    module.Close() else error {
+        discard error
+        discard engine.Close()
+        return 22
+    }
+    if len(args) == 5 {
+        if !rejectMismatchedMetadata(&engine, args[1], &policy, &wasi) {
+            discard engine.Close()
+            return 23
+        }
+        if !rejectModule(&engine, args[2], &metadata, &policy, &wasi) {
+            discard engine.Close()
+            return 24
+        }
+        if !rejectModule(&engine, args[3], &metadata, &policy, &wasi) {
+            discard engine.Close()
+            return 25
+        }
+        if !rejectModule(&engine, args[4], &metadata, &policy, &wasi) {
+            discard engine.Close()
+            return 26
+        }
+    }
+    policy.SetCallTimeout(time.Milliseconds(25)) else error {
+        discard error
+        discard engine.Close()
+        return 27
+    }
+    const timedModuleOpened = engine.Open(args[1], &metadata, &policy, &wasi) else error {
+        discard error
+        discard engine.Close()
+        return 28
+    }
+    var timedModule = timedModuleOpened
+    const hung = timedModule.Call("hang", bytes.FromText(""))
+    const timedOut = match hung {
+        Ok(value): {
+            discard value
+            false
+        }
+        Err(error): statusIsClosed(error)
+    }
+    discard timedModule.Close()
+    if !timedOut {
+        discard engine.Close()
+        return 29
+    }
+    engine.Close() else error {
+        discard error
+        return 30
+    }
+    print("ok")
+    0
+}
+
+fn fixtureMetadata() own plugin.WasmMetadata {
+    var metadata = metadataValue(plugin.NewWasmMetadata(
+        "fixture",
+        "1.0.0",
+        "Foundation WAMR fixture"
+    ))
+    addMethod(&metadata, "echo")
+    addMethod(&metadata, "capability")
+    addMethod(&metadata, "undeclared")
+    addMethod(&metadata, "bad-range")
+    addMethod(&metadata, "error")
+    addMethod(&metadata, "last-error-probe")
+    addMethod(&metadata, "alias-input")
+    addMethod(&metadata, "alias-method")
+    addMethod(&metadata, "hang")
+    const capability = metadata.RequireCapability("test.echo") else error {
+        discard error
+        panic("WAMR capability metadata failed")
+    }
+    discard capability
+    discard metadata.SetProperty("language", "c")
+    metadata
+}
+
+fn callRejected(&module plugin.WasmModule, method String) bool {
+    const called = module.Call(method, bytes.FromText("foundation"))
+    match called {
+        Ok(value): {
+            discard value
+            false
+        }
+        Err(error): statusIsHandlerError(error)
+    }
+}
+
+fn callTextEquals(
+    &module plugin.WasmModule,
+    method String,
+    expected String
+) bool {
+    const called = module.Call(method, bytes.FromText("")) else error {
+        discard error
+        return false
+    }
+    const text = called.Text() else error {
+        discard error
+        discard called
+        return false
+    }
+    text == expected
+}
+
+fn addMethod(&metadata plugin.WasmMetadata, name String) void {
+    const added = metadata.AddMethod(name) else error {
+        discard error
+        panic("WAMR method metadata failed")
+    }
+    discard added
+}
+
+fn rejectMismatchedMetadata(
+    &engine plugin.WamrEngine,
+    path String,
+    &policy plugin.WasmCapabilityPolicy,
+    &wasi plugin.WasiCapabilities
+) bool {
+    var mismatch = metadataValue(plugin.NewWasmMetadata("fixture", "2.0.0", "wrong"))
+    const opened = engine.Open(path, &mismatch, &policy, &wasi)
+    match opened {
+        Ok(module): {
+            discard module.Close()
+            false
+        }
+        Err(error): statusIsInvalidRequest(error)
+    }
+}
+
+fn rejectModule(
+    &engine plugin.WamrEngine,
+    path String,
+    &metadata plugin.WasmMetadata,
+    &policy plugin.WasmCapabilityPolicy,
+    &wasi plugin.WasiCapabilities
+) bool {
+    const opened = engine.Open(path, &metadata, &policy, &wasi)
+    match opened {
+        Ok(module): {
+            discard module.Close()
+            false
+        }
+        Err(error): statusIsInvalidRequest(error) || statusIsHandlerError(error)
+    }
+}
+
+extern c fn WamrTestCapability(
+    context u64,
+    operation String,
+    input u64,
+    &output u64
+) i32 as foundation_test_wamr_capability {
+    discard context
+    if operation != "invoke" return 3
+    const value = bytes.ClaimRuntimeHandle(input) else error {
+        discard error
+        return 3
+    }
+    const source = value.Text() else error {
+        discard error
+        discard value
+        return 3
+    }
+    discard value
+    output = bytes.TakeRuntimeHandle(bytes.FromText("host:" + source))
+    0
+}
+
+fn statusIsClosed(value plugin.WasmHostStatus) bool {
+    match value {
+        Ok: false
+        Denied: false
+        InvalidRequest: false
+        HandlerError: false
+        PayloadTooLarge: false
+        ReadOnlyUnsupported: false
+        Closed: true
+    }
+}
+
+fn statusIsReadOnlyUnsupported(value plugin.WasmHostStatus) bool {
+    match value {
+        Ok: false
+        Denied: false
+        InvalidRequest: false
+        HandlerError: false
+        PayloadTooLarge: false
+        ReadOnlyUnsupported: true
+        Closed: false
+    }
+}
+
+fn statusIsInvalidRequest(value plugin.WasmHostStatus) bool {
+    match value {
+        Ok: false
+        Denied: false
+        InvalidRequest: true
+        HandlerError: false
+        PayloadTooLarge: false
+        ReadOnlyUnsupported: false
+        Closed: false
+    }
+}
+
+fn statusIsHandlerError(value plugin.WasmHostStatus) bool {
+    match value {
+        Ok: false
+        Denied: false
+        InvalidRequest: false
+        HandlerError: true
+        PayloadTooLarge: false
+        ReadOnlyUnsupported: false
+        Closed: false
+    }
+}
+
+fn metadataValue(
+    $value Result<own plugin.WasmMetadata, plugin.WasmMetadataError>
+) own plugin.WasmMetadata {
+    match value {
+        Ok(metadata): metadata
+        Err(error): {
+            discard error
+            panic("WAMR metadata fixture failed")
+        }
+    }
+}

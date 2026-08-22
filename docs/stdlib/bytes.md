@@ -36,7 +36,9 @@ nonce and 16-byte authentication tag. Authentication failure never returns parti
 set and get, supports explicit shared ownership through `Clone`, and clears native key/value memory
 on replacement, deletion, and final close. Application code should prefer the framework store.
 
-`RuntimeHandle` and `ClaimRuntimeHandle` are the low-level bridge used by first-party standard
-packages that exchange owned bytes with the runtime ABI. The handle is opaque, mutable storage is
-never exposed, and claiming transfers exactly one runtime allocation into a `Bytes` owner.
-Application code should use the typed byte operations instead of persisting or comparing handles.
+`RuntimeHandle`, `TakeRuntimeHandle`, and `ClaimRuntimeHandle` are the low-level bridge used by
+first-party packages that exchange owned bytes with the runtime ABI. `RuntimeHandle` borrows one
+opaque handle for a call. `TakeRuntimeHandle` consumes a `Bytes` owner and transfers its handle to
+the callback. `ClaimRuntimeHandle` transfers one runtime allocation back into a `Bytes` owner.
+Mutable storage is never exposed. Application code should use typed byte operations instead of
+persisting or comparing handles.

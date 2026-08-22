@@ -1,0 +1,13 @@
+contract Counter {
+    fn read(self) i32
+}
+
+fn read<T Counter>(value T) i32 {
+    value.read()
+}
+
+fn dynamic(value Counter) i32 {
+    read(value)
+}
+
+fn main() i32 { 0 }

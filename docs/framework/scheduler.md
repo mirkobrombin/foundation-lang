@@ -1,7 +1,7 @@
 # `foundation.scheduler`
 
 `foundation.scheduler` owns recurring and ad hoc tasks behind one actor. Cron expressions use the
-five-field subset: each minute, hour, day, month, and weekday field is either `*` or
+five-field Foundation v2 subset: each minute, hour, day, month, and weekday field is either `*` or
 one decimal value in range.
 
 ```foundation
@@ -38,7 +38,7 @@ and then joins it. Both consume the scheduler, so later use is a compile-time ow
 `Tick` exposes deterministic UTC evaluation for tests, simulations, and externally clocked hosts.
 `Start` performs the same evaluation once per second with `std.time.Now`. A job runs at most once
 per UTC minute. A restored record scans missed minutes for the next matching instant, capped at
-five years.
+five years like Foundation v2.
 
 ## Persistent state
 

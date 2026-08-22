@@ -1,0 +1,10 @@
+provider ABI: foundation_wamr_provider_v2
+provider ABI version: 2.0
+WAMR version: 2.4.5
+WAMR revision: 25bd7eb63e828e4bd242cc9b38d260b4b31c6605
+positive guest: tests/fixtures/wasm_plugin_fixture.c
+negative guest: bad signature
+negative guest: invalid metadata
+negative guest: missing memory export
+concurrency fixture: runtime/providers/wamr/wamr_provider_test.c
+runtime bridge fixture: runtime/tests/wamr_bridge_test.c

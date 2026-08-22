@@ -1,0 +1,5 @@
+format foundation.package/v1
+name sample.conditional_escape
+version 1.0.0
+sdk ^0.1.0
+source src

@@ -1,0 +1,248 @@
+package foundation.logger
+
+import std.collections
+import std.concurrent
+import std.json
+import std.text
+import std.time
+
+// Reports a structured output encoding failure.
+enum RenderError {
+    // Reports that the event timestamp could not be formatted.
+    Time
+    // Reports a duplicate structured field in the selected output shape.
+    DuplicateField
+    // Reports a caller field reserved by the CLEF format.
+    ReservedField
+    // Reports that the final JSON document could not be encoded.
+    JSON
+}
+
+// Carries one owned log event across synchronous or asynchronous adapters.
+@concurrent.Transferable()
+struct Entry {
+    // Stores the checked severity.
+    Level Level
+    // Stores the wall-clock event timestamp.
+    Time time.Instant
+    // Stores the human-readable event message.
+    Message String
+    // Owns normalized structured fields.
+    Fields own collections.List<Field>
+    // Stores an optional explicit trace ID. Empty means absent.
+    TraceID String
+    // Stores an optional explicit span ID. Empty means absent.
+    SpanID String
+}
+
+// Creates one entry without applying a logger threshold or bound fields.
+fn NewEntry(
+    level Level,
+    timestamp time.Instant,
+    $message String,
+    $fields own collections.List<Field>,
+    $trace Trace
+) own Entry {
+    const Trace { TraceID SpanID } = trace
+    own Entry {
+        Level = level
+        Time = timestamp
+        Message = message
+        Fields = fields
+        TraceID = TraceID
+        SpanID = SpanID
+    }
+}
+
+// Renders one deterministic compact text line.
+fn RenderText($entry own Entry) String {
+    const Entry { Level Time Message Fields TraceID SpanID } = entry
+    discard Time
+    var result = LevelText(Level) + " " + Message
+    var active = Fields
+    while !active.IsEmpty() {
+        const field = fieldValue(active.PopFront())
+        result = result + " " + field.Key + "=" + field.Value
+    }
+    if !text.Equal(TraceID, "") {
+        result = result + " trace_id=" + TraceID
+    }
+    if !text.Equal(SpanID, "") {
+        result = result + " span_id=" + SpanID
+    }
+    result
+}
+
+// Renders one compact JSON object compatible with the v2 console shape.
+fn RenderJSON($entry own Entry) Result<String, RenderError> {
+    const Entry { Level Time Message Fields TraceID SpanID } = entry
+    const timestamp = Time.FormatUtc() else error {
+        discard error
+        return .Err(.Time)
+    }
+    var root = json.NewObject()
+    setObject(&root, "level", .Text(LevelText(Level))) else error {
+        return .Err(error)
+    }
+    setObject(&root, "time", .Text(timestamp)) else error {
+        return .Err(error)
+    }
+    setObject(&root, "msg", .Text(Message)) else error {
+        return .Err(error)
+    }
+    addNestedFields(&root, $Fields) else error {
+        return .Err(error)
+    }
+    addTraceFields(&root, $TraceID, $SpanID) else error {
+        return .Err(error)
+    }
+    stringify($root)
+}
+
+// Renders one CLEF object with structured fields flattened at the root.
+fn RenderCLEF($entry own Entry) Result<String, RenderError> {
+    const Entry { Level Time Message Fields TraceID SpanID } = entry
+    const timestamp = Time.FormatUtc() else error {
+        discard error
+        return .Err(.Time)
+    }
+    var root = json.NewObject()
+    addFlatFields(&root, $Fields) else error {
+        return .Err(error)
+    }
+    setObject(&root, "@t", .Text(timestamp)) else error {
+        return .Err(error)
+    }
+    setObject(&root, "@m", .Text(Message)) else error {
+        return .Err(error)
+    }
+    addCLEFLevel(&root, Level) else error {
+        return .Err(error)
+    }
+    addCLEFTrace(&root, $TraceID, $SpanID) else error {
+        return .Err(error)
+    }
+    stringify($root)
+}
+
+fn addNestedFields(
+    &root json.Object,
+    $fields own collections.List<Field>
+) Result<void, RenderError> {
+    var active = fields
+    if active.IsEmpty() {
+        discard active
+        return .Ok
+    }
+    var object = json.NewObject()
+    while !active.IsEmpty() {
+        const Field { Key Value } = fieldValue(active.PopFront())
+        setObject(&object, $Key, .Text(Value)) else error {
+            return .Err(error)
+        }
+    }
+    setObject(&root, "fields", .Object(object))
+}
+
+fn addFlatFields(
+    &root json.Object,
+    $fields own collections.List<Field>
+) Result<void, RenderError> {
+    var active = fields
+    while !active.IsEmpty() {
+        const Field { Key Value } = fieldValue(active.PopFront())
+        if clefReserved(Key) {
+            discard Key
+            discard Value
+            return .Err(.ReservedField)
+        }
+        setObject(&root, $Key, .Text(Value)) else error {
+            return .Err(error)
+        }
+    }
+    .Ok
+}
+
+fn addTraceFields(
+    &root json.Object,
+    $traceID String,
+    $spanID String
+) Result<void, RenderError> {
+    if !text.Equal(traceID, "") {
+        setObject(&root, "trace_id", .Text(traceID)) else error {
+            return .Err(error)
+        }
+    } else {
+        discard traceID
+    }
+    if !text.Equal(spanID, "") {
+        setObject(&root, "span_id", .Text(spanID)) else error {
+            return .Err(error)
+        }
+    } else {
+        discard spanID
+    }
+    .Ok
+}
+
+fn addCLEFTrace(
+    &root json.Object,
+    $traceID String,
+    $spanID String
+) Result<void, RenderError> {
+    if !text.Equal(traceID, "") {
+        setObject(&root, "TraceId", .Text(traceID)) else error {
+            return .Err(error)
+        }
+    } else {
+        discard traceID
+    }
+    if !text.Equal(spanID, "") {
+        setObject(&root, "SpanId", .Text(spanID)) else error {
+            return .Err(error)
+        }
+    } else {
+        discard spanID
+    }
+    .Ok
+}
+
+fn addCLEFLevel(
+    &root json.Object,
+    level Level
+) Result<void, RenderError> {
+    match level {
+        Debug: setObject(&root, "@l", .Text("Debug"))
+        Info: .Ok
+        Warn: setObject(&root, "@l", .Text("Warning"))
+        Error: setObject(&root, "@l", .Text("Error"))
+        Fatal: setObject(&root, "@l", .Text("Fatal"))
+    }
+}
+
+fn clefReserved(key String) bool {
+    key == "@t" || key == "@m" || key == "@l" ||
+        key == "TraceId" || key == "SpanId"
+}
+
+fn setObject(
+    &object json.Object,
+    $key String,
+    $value json.Value
+) Result<void, RenderError> {
+    object.Set($key, $value) else error {
+        discard error
+        return .Err(.DuplicateField)
+    }
+    .Ok
+}
+
+fn stringify(
+    $object own json.Object
+) Result<String, RenderError> {
+    const rendered = json.Stringify(.Object(object)) else error {
+        discard error
+        return .Err(.JSON)
+    }
+    .Ok(rendered)
+}

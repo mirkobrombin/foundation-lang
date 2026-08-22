@@ -8,8 +8,8 @@
 #include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/BinaryFormat/Dwarf.h>
 #include <llvm/IR/Constants.h>
-#include <llvm/IR/DataLayout.h>
 #include <llvm/IR/DIBuilder.h>
+#include <llvm/IR/DataLayout.h>
 #include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
@@ -32,6 +32,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -67,6 +68,28 @@ struct EmittedValue {
                  std::vector<EmittedCleanup> cleanupValues = {})
         : value(emitted), diverges(exits), cleanups(std::move(cleanupValues)) {}
 };
+
+FirBinaryOperator assignmentBinary(FirAssignmentOperator operation) {
+    switch (operation) {
+    case FirAssignmentOperator::Add:
+        return FirBinaryOperator::Add;
+    case FirAssignmentOperator::Subtract:
+        return FirBinaryOperator::Subtract;
+    case FirAssignmentOperator::Multiply:
+        return FirBinaryOperator::Multiply;
+    case FirAssignmentOperator::Divide:
+        return FirBinaryOperator::Divide;
+    case FirAssignmentOperator::Remainder:
+        return FirBinaryOperator::Remainder;
+    case FirAssignmentOperator::ShiftLeft:
+        return FirBinaryOperator::ShiftLeft;
+    case FirAssignmentOperator::ShiftRight:
+        return FirBinaryOperator::ShiftRight;
+    case FirAssignmentOperator::Assign:
+        break;
+    }
+    std::terminate();
+}
 
 std::string safeName(std::string_view name) {
     std::string result;
@@ -322,8 +345,10 @@ class LlvmEmitter {
             return;
         }
         debugBuilder_ = std::make_unique<llvm::DIBuilder>(module_);
-        const auto path = sourcePath_.empty() ? std::filesystem::path("program.fn")
-                                              : std::filesystem::path(sourcePath_);
+        const auto path = !options_.sourcePaths.empty()
+                              ? std::filesystem::path(options_.sourcePaths.front())
+                              : sourcePath_.empty() ? std::filesystem::path("program.fn")
+                                                    : std::filesystem::path(sourcePath_);
         primaryDebugFile_ = debugFile(path.generic_string());
         const llvm::Triple triple(module_.getTargetTriple());
         module_.addModuleFlag(llvm::Module::Warning, "Debug Info Version",
@@ -356,6 +381,13 @@ class LlvmEmitter {
         auto *file = debugBuilder_->createFile(filename, directory);
         debugFiles_.emplace(key, file);
         return file;
+    }
+
+    llvm::DIFile *debugFile(const FirFunction &function) {
+        if (function.sourceSpan.source < options_.sourcePaths.size()) {
+            return debugFile(options_.sourcePaths[function.sourceSpan.source]);
+        }
+        return debugFile(function.sourcePath.empty() ? sourcePath_ : function.sourcePath);
     }
 
     std::string debugTypeName(const Type &type) const {
@@ -436,7 +468,7 @@ class LlvmEmitter {
         if (debugBuilder_ == nullptr || llvmFunction_ == nullptr) {
             return;
         }
-        auto *file = debugFile(function.sourcePath.empty() ? sourcePath_ : function.sourcePath);
+        auto *file = debugFile(function);
         currentSubprogram_ = debugBuilder_->createFunction(
             file, traceFunctionName(function), llvmFunction_->getName(), file,
             static_cast<unsigned>(function.sourceSpan.line), debugFunctionType(function),
@@ -463,7 +495,7 @@ class LlvmEmitter {
         const auto parameter =
             std::find(function_->parameters.begin(), function_->parameters.end(), local);
         llvm::DILocalVariable *variable{};
-        auto *file = debugFile(function_->sourcePath.empty() ? sourcePath_ : function_->sourcePath);
+        auto *file = debugFile(*function_);
         if (parameter != function_->parameters.end()) {
             variable = debugBuilder_->createParameterVariable(
                 currentSubprogram_, source.name,
@@ -3164,6 +3196,29 @@ class LlvmEmitter {
                        std::get_if<FirStructDestructureStatement>(&statement.value)) {
             emitStructDestructure(*destructure, statement.span);
         } else if (const auto *assignment = std::get_if<FirAssignmentStatement>(&statement.value)) {
+            if (assignment->operation != FirAssignmentOperator::Assign) {
+                auto* address = emitAddress(assignment->target);
+                if (address == nullptr) {
+                    return true;
+                }
+                const auto type = function_->expressions[assignment->target].type;
+                auto* left = builder_.CreateLoad(typeOf(type), address);
+                const auto right = emitExpression(assignment->value);
+                if (right.diverges || right.value == nullptr) {
+                    return true;
+                }
+                auto* result = emitArithmetic(assignmentBinary(assignment->operation), type, left,
+                                              right.value, statement.span);
+                if (result == nullptr) {
+                    return true;
+                }
+                if (type == stringType) {
+                    dropAddress(address, type);
+                }
+                builder_.CreateStore(result, address);
+                dropInspectedTemporary(assignment->value, right);
+                return false;
+            }
             const auto value = emitExpression(assignment->value);
             if (value.diverges) {
                 return true;
@@ -3840,17 +3895,26 @@ class LlvmEmitter {
         }
         const auto &operandType = function_->expressions[ownership.operand].type;
         if (ownership.operation == FirOwnershipOperator::View && type.kind != TypeKind::View) {
+            auto operand = emitExpression(ownership.operand);
+            if (operand.diverges) {
+                return operand;
+            }
+            auto *value = operand.value;
             if (operandType.kind == TypeKind::Own && operandType.arguments.size() == 1 &&
                 operandType.arguments.front().kind == TypeKind::Contract) {
-                const auto operand = emitExpression(ownership.operand);
-                if (operand.diverges) {
-                    return operand;
-                }
-                return {builder_.CreateLoad(typeOf(operandType.arguments.front()), operand.value,
-                                            "owned.contract.view"),
-                        false, std::move(operand.cleanups)};
+                value = builder_.CreateLoad(typeOf(operandType.arguments.front()), operand.value,
+                                            "owned.contract.view");
             }
-            return emitExpression(ownership.operand);
+            if (!isPlaceExpression(ownership.operand) && typeRequiresDrop(operandType)) {
+                auto *address =
+                    valueAddress(operand.value, operandType, "borrow.temporary");
+                if (address == nullptr) {
+                    fail(span, "LLVM backend cannot preserve this borrowed temporary");
+                    return {};
+                }
+                operand.cleanups.push_back({address, operandType});
+            }
+            return {value, false, std::move(operand.cleanups)};
         }
         if (ownership.operation == FirOwnershipOperator::Own) {
             if (type.kind != TypeKind::Own || type.arguments.size() != 1) {
@@ -3879,12 +3943,20 @@ class LlvmEmitter {
             llvm::Value *address{};
             std::vector<EmittedCleanup> cleanups;
             if (array.kind == TypeKind::Own && array.arguments.size() == 1) {
-                const auto operand = emitExpression(ownership.operand);
+                auto operand = emitExpression(ownership.operand);
                 if (operand.diverges) {
                     return operand;
                 }
                 address = operand.value;
                 cleanups = std::move(operand.cleanups);
+                if (!isPlaceExpression(ownership.operand)) {
+                    auto *owner = valueAddress(address, array, "slice.owner.temporary");
+                    if (owner == nullptr) {
+                        fail(span, "LLVM backend cannot preserve this owned slice temporary");
+                        return {};
+                    }
+                    cleanups.push_back({owner, array});
+                }
                 array = array.arguments.front();
             } else if (isPlaceExpression(ownership.operand)) {
                 address = emitAddress(ownership.operand);
@@ -3922,17 +3994,26 @@ class LlvmEmitter {
         }
         if (operandType.kind == TypeKind::Own || operandType.kind == TypeKind::View ||
             operandType.kind == TypeKind::Edit) {
+            auto operand = emitExpression(ownership.operand);
+            if (operand.diverges) {
+                return operand;
+            }
+            auto *value = operand.value;
             if (operandType.kind == TypeKind::Own && operandType.arguments.size() == 1 &&
                 operandType.arguments.front().kind == TypeKind::Contract) {
-                auto operand = emitExpression(ownership.operand);
-                if (operand.diverges) {
-                    return operand;
-                }
-                return {builder_.CreateLoad(typeOf(operandType.arguments.front()), operand.value,
-                                            "owned.contract.view"),
-                        false, std::move(operand.cleanups)};
+                value = builder_.CreateLoad(typeOf(operandType.arguments.front()), operand.value,
+                                            "owned.contract.view");
             }
-            return emitExpression(ownership.operand);
+            if (operandType.kind == TypeKind::Own &&
+                !isPlaceExpression(ownership.operand)) {
+                auto *owner = valueAddress(operand.value, operandType, "borrow.owner.temporary");
+                if (owner == nullptr) {
+                    fail(span, "LLVM backend cannot preserve this borrowed owner temporary");
+                    return {};
+                }
+                operand.cleanups.push_back({owner, operandType});
+            }
+            return {value, false, std::move(operand.cleanups)};
         }
         if (isPlaceExpression(ownership.operand)) {
             if (auto *address = emitAddress(ownership.operand); address != nullptr) {
@@ -4502,6 +4583,78 @@ class LlvmEmitter {
         return {};
     }
 
+    llvm::Value *emitArithmetic(FirBinaryOperator operation, const Type &type,
+                                llvm::Value *left, llvm::Value *right, SourceSpan span) {
+        if ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) &&
+            (operation == FirBinaryOperator::Add ||
+             operation == FirBinaryOperator::Subtract) &&
+            type.arguments.size() == 1) {
+            auto *offset = integerToSize(right);
+            if (operation == FirBinaryOperator::Subtract) {
+                offset = builder_.CreateNeg(offset);
+            }
+            return builder_.CreateInBoundsGEP(typeOf(type.arguments.front()), left, offset);
+        }
+        if (type == stringType && operation == FirBinaryOperator::Add) {
+            auto *result = builder_.CreateAlloca(stringType_, nullptr, "string.concat.result");
+            builder_.CreateCall(
+                runtimeFunction("fdn_abi_string_concat", llvm::Type::getVoidTy(context_),
+                                {pointerType(), pointerType(), pointerType()}),
+                {result, stringAddress(left), stringAddress(right)});
+            return builder_.CreateLoad(stringType_, result);
+        }
+        if (isFloating(type)) {
+            switch (operation) {
+            case FirBinaryOperator::Add:
+                return builder_.CreateFAdd(left, right);
+            case FirBinaryOperator::Subtract:
+                return builder_.CreateFSub(left, right);
+            case FirBinaryOperator::Multiply:
+                return builder_.CreateFMul(left, right);
+            case FirBinaryOperator::Divide:
+                return builder_.CreateFDiv(left, right);
+            case FirBinaryOperator::Remainder:
+                return builder_.CreateFRem(left, right);
+            default:
+                break;
+            }
+        }
+        if (isInteger(type)) {
+            std::string name;
+            switch (operation) {
+            case FirBinaryOperator::Add:
+                name = "add";
+                break;
+            case FirBinaryOperator::Subtract:
+                name = "subtract";
+                break;
+            case FirBinaryOperator::Multiply:
+                name = "multiply";
+                break;
+            case FirBinaryOperator::Divide:
+                name = "divide";
+                break;
+            case FirBinaryOperator::Remainder:
+                name = "remainder";
+                break;
+            case FirBinaryOperator::ShiftLeft:
+                name = "shift_left";
+                break;
+            case FirBinaryOperator::ShiftRight:
+                name = "shift_right";
+                break;
+            default:
+                break;
+            }
+            setLocation(span);
+            auto callee = runtimeFunction("fdn_" + integerTypeTag(type) + "_" + name,
+                                          typeOf(type), {typeOf(type), typeOf(type)});
+            return builder_.CreateCall(callee, {left, right});
+        }
+        fail(span, "LLVM backend has not lowered this arithmetic operation yet");
+        return nullptr;
+    }
+
     EmittedValue emitBinary(const FirBinaryExpression &binary, const Type &type, SourceSpan span) {
         if (binary.operation == FirBinaryOperator::And ||
             binary.operation == FirBinaryOperator::Or) {
@@ -4526,63 +4679,9 @@ class LlvmEmitter {
         case FirBinaryOperator::Multiply:
         case FirBinaryOperator::Divide:
         case FirBinaryOperator::Remainder:
-            if ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) &&
-                binary.operation == FirBinaryOperator::Add && type.arguments.size() == 1) {
-                return finish(builder_.CreateInBoundsGEP(typeOf(type.arguments.front()),
-                                                         left.value,
-                                                         integerToSize(right.value)));
-            }
-            if (type == stringType && binary.operation == FirBinaryOperator::Add) {
-                auto *result = builder_.CreateAlloca(stringType_, nullptr, "string.concat.result");
-                builder_.CreateCall(
-                    runtimeFunction("fdn_abi_string_concat", llvm::Type::getVoidTy(context_),
-                                    {pointerType(), pointerType(), pointerType()}),
-                    {result, stringAddress(left.value), stringAddress(right.value)});
-                return finish(builder_.CreateLoad(stringType_, result));
-            }
-            if (isFloating(type)) {
-                switch (binary.operation) {
-                case FirBinaryOperator::Add:
-                    return finish(builder_.CreateFAdd(left.value, right.value));
-                case FirBinaryOperator::Subtract:
-                    return finish(builder_.CreateFSub(left.value, right.value));
-                case FirBinaryOperator::Multiply:
-                    return finish(builder_.CreateFMul(left.value, right.value));
-                case FirBinaryOperator::Divide:
-                    return finish(builder_.CreateFDiv(left.value, right.value));
-                case FirBinaryOperator::Remainder:
-                    return finish(builder_.CreateFRem(left.value, right.value));
-                default:
-                    break;
-                }
-            }
-            if (isInteger(type)) {
-                std::string operation;
-                switch (binary.operation) {
-                case FirBinaryOperator::Add:
-                    operation = "add";
-                    break;
-                case FirBinaryOperator::Subtract:
-                    operation = "subtract";
-                    break;
-                case FirBinaryOperator::Multiply:
-                    operation = "multiply";
-                    break;
-                case FirBinaryOperator::Divide:
-                    operation = "divide";
-                    break;
-                case FirBinaryOperator::Remainder:
-                    operation = "remainder";
-                    break;
-                default:
-                    break;
-                }
-                setLocation(span);
-                auto callee = runtimeFunction("fdn_" + integerTypeTag(type) + "_" + operation,
-                                              typeOf(type), {typeOf(type), typeOf(type)});
-                return finish(builder_.CreateCall(callee, {left.value, right.value}));
-            }
-            break;
+        case FirBinaryOperator::ShiftLeft:
+        case FirBinaryOperator::ShiftRight:
+            return finish(emitArithmetic(binary.operation, type, left.value, right.value, span));
         case FirBinaryOperator::Equal:
         case FirBinaryOperator::NotEqual:
             if (function_->expressions[binary.left].type == stringType) {
@@ -4708,9 +4807,25 @@ class LlvmEmitter {
         if (values.size() != sourceValues.size()) {
             return {};
         }
+        if (call.kind == FirCallKind::Contract && !contractCallConsumesReceiver(call) &&
+            !call.arguments.empty() && !isPlaceExpression(call.arguments.front())) {
+            const auto &receiverType = function_->expressions[call.arguments.front()].type;
+            if (receiverType.kind == TypeKind::Own) {
+                auto *owner = valueAddress(sourceValues.front(), receiverType,
+                                           "contract.receiver.owner.temporary");
+                if (owner == nullptr) {
+                    fail(span, "LLVM backend cannot preserve this contract owner temporary");
+                    return {};
+                }
+                arguments.front().cleanups.push_back({owner, receiverType});
+            }
+        }
         setLocation(span);
         llvm::Value *result{};
         switch (call.kind) {
+        case FirCallKind::Constrained:
+            fail(span, "LLVM backend received an unresolved constrained call");
+            return {};
         case FirCallKind::Function:
             if (call.function >= functions_.size() || functions_[call.function] == nullptr) {
                 fail(span, "LLVM backend received an invalid function call");
@@ -5495,10 +5610,6 @@ class LlvmEmitter {
         if (index.base >= function_->expressions.size()) {
             return nullptr;
         }
-        const auto value = emitExpression(index.index);
-        if (value.diverges) {
-            return nullptr;
-        }
         auto sequence = function_->expressions[index.base].type;
         llvm::Value *data{};
         llvm::Value *length{};
@@ -5518,6 +5629,10 @@ class LlvmEmitter {
             length = builder_.CreateExtractValue(slice, 1);
         } else {
             data = emitAddress(index.base);
+        }
+        const auto value = emitExpression(index.index);
+        if (value.diverges) {
+            return nullptr;
         }
         if (sequence.kind == TypeKind::Array && sequence.arguments.size() == 1) {
             length = llvm::ConstantInt::get(sizeType(), sequence.declaration);
@@ -5975,7 +6090,7 @@ class LlvmEmitter {
         auto *block = llvm::BasicBlock::Create(context_, "entry", main);
         builder_.SetInsertPoint(block);
         if (debugBuilder_ != nullptr) {
-            auto *file = debugFile(entry.sourcePath.empty() ? sourcePath_ : entry.sourcePath);
+            auto *file = debugFile(entry);
             std::vector<llvm::Metadata *> types{debugType(i32Type)};
             if (acceptsArguments) {
                 types.push_back(debugType(i32Type));

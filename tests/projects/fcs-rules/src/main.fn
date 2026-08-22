@@ -1,0 +1,8 @@
+package fcs.rules
+
+// Returns the selected value.
+fn Select(ready bool) i32 {
+    // fcs:ignore FCS1001 Protocol literal must remain unchanged.
+    const protocolLiteral = "a deliberate source-width exception that validates a motivated FCS suppression fixture"
+    1 if ready else 0
+}

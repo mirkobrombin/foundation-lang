@@ -91,6 +91,8 @@ enum class BinaryOperator {
     Multiply,
     Divide,
     Remainder,
+    ShiftLeft,
+    ShiftRight,
     Equal,
     NotEqual,
     Less,
@@ -208,6 +210,7 @@ struct ConditionalExpression {
     AstExpressionId thenValue{};
     AstBlockId elseBlock{};
     AstExpressionId elseValue{};
+    bool postfix{};
 };
 
 struct FunctionExpression {
@@ -248,8 +251,20 @@ struct StructDestructureStatement {
     AstExpressionId initializer{};
 };
 
+enum class AssignmentOperator {
+    Assign,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
+    ShiftLeft,
+    ShiftRight,
+};
+
 struct AssignmentStatement {
     AstExpressionId target{};
+    AssignmentOperator operation{AssignmentOperator::Assign};
     AstExpressionId value{};
 };
 
@@ -418,6 +433,7 @@ struct Function {
     std::vector<bool> transferableTypeParameters;
     std::optional<StateTimeoutFunction> stateTimeout;
     bool constructor{};
+    std::vector<std::optional<TypeSyntax>> typeParameterConstraints;
 };
 
 enum class StructKind {

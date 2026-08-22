@@ -1,5 +1,7 @@
 import foundation.plugin
+import std.bytes
 import std.format
+import std.time
 
 fn main() i32 {
     const invalidName = plugin.NewWasmMetadata("Invalid", "1.0.0", "")
@@ -52,18 +54,18 @@ fn main() i32 {
     }
     if !deniedAsExpected return 9
 
-    const granted = policy.Grant("test.echo") else error {
+    const granted = policy.Grant("test.echo", 0, TestCapability) else error {
         discard error
         return 10
     }
     discard granted
-    const duplicateGrant = policy.Grant("test.echo")
+    const duplicateGrant = policy.Grant("test.echo", 0, TestCapability)
     const duplicateGrantFailed = match duplicateGrant {
         Ok(added): unexpectedBool(added)
         Err(error): metadataErrorCode(error.Kind) == 7
     }
     if !duplicateGrantFailed return 11
-    const invalidGrant = policy.Grant("Invalid")
+    const invalidGrant = policy.Grant("Invalid", 0, TestCapability)
     const invalidGrantFailed = match invalidGrant {
         Ok(added): unexpectedBool(added)
         Err(error): metadataErrorCode(error.Kind) == 6
@@ -74,6 +76,32 @@ fn main() i32 {
         return 13
     }
     discard valid
+    const invalidTimeout = policy.SetCallTimeout(time.Zero())
+    const invalidTimeoutFailed = match invalidTimeout {
+        Ok: false
+        Err(error): metadataErrorCode(error.Kind) == 10
+    }
+    if !invalidTimeoutFailed return 14
+    policy.SetCallTimeout(time.Milliseconds(25)) else error {
+        discard error
+        return 15
+    }
+    if policy.CallTimeoutNanoseconds() != 25000000 return 16
+
+    const parsed = plugin.ParseWasmMetadata(
+        "{\"name\":\"fixture\",\"version\":\"1.0.0\",\"description\":\"sample\",\"methods\":[\"echo\"],\"capabilities\":[\"test.echo\"],\"properties\":{\"language\":\"foundation\"}}"
+    ) else error {
+        discard error
+        return 17
+    }
+    var parsedMetadata = parsed
+    if !parsedMetadata.Matches(&metadata) return 18
+    const invalidDocument = plugin.ParseWasmMetadata("{\"name\":")
+    const invalidDocumentFailed = match invalidDocument {
+        Ok(value): unexpectedMetadata($value)
+        Err(error): metadataErrorCode(error.Kind) == 11
+    }
+    if !invalidDocumentFailed return 19
 
     var methodNames = metadata.Methods()
     var capabilities = metadata.Capabilities()
@@ -147,7 +175,26 @@ fn metadataErrorCode(kind plugin.WasmMetadataErrorKind) i32 {
         DuplicateCapability: 7
         CapabilityDenied: 8
         InvalidPayloadLimit: 9
+        InvalidCallTimeout: 10
+        InvalidDocument: 11
+        MetadataMismatch: 12
     }
+}
+
+extern c fn TestCapability(
+    context u64,
+    operation String,
+    input u64,
+    &output u64
+) i32 as foundation_test_wasm_capability {
+    discard context
+    discard operation
+    const value = bytes.ClaimRuntimeHandle(input) else error {
+        discard error
+        return 3
+    }
+    output = bytes.TakeRuntimeHandle($value)
+    0
 }
 
 fn hostStatus(status plugin.WasmHostStatus) String {
@@ -157,6 +204,8 @@ fn hostStatus(status plugin.WasmHostStatus) String {
         InvalidRequest: "invalid_request"
         HandlerError: "handler_error"
         PayloadTooLarge: "payload_too_large"
+        ReadOnlyUnsupported: "read_only_unsupported"
+        Closed: "closed"
     }
 }
 

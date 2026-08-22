@@ -59,7 +59,11 @@ fn takeBody($response web.Response) String {
     const web.Response { Status Headers Body } = response
     discard Status
     discard Headers
-    Body
+    const bodyText = Body.Text() else error {
+        discard error
+        return ""
+    }
+    bodyText
 }
 
 fn dispatchFailure(error web.DispatchError<AppError>) String {

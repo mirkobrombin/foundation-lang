@@ -66,6 +66,10 @@ fn main() i32 {
         discard error
         return 4
     }
-    print(response.Body)
+    const body = response.TextBody() else error {
+        discard error
+        return 5
+    }
+    print(body)
     0
 }

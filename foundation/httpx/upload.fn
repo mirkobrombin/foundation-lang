@@ -1,0 +1,615 @@
+package foundation.httpx
+
+import std.bytes
+import std.net
+import std.text
+import foundation.resiliency
+
+// Represents one request body chunk or clean source completion.
+enum UploadPart {
+    // Owns one non-empty chunk ready for the network transport.
+    Chunk(value own bytes.Bytes)
+    // Marks the exact end of the declared request body.
+    Complete
+}
+
+// Returns a request body owner beside one typed read result.
+struct UploadReadOutcome<E> {
+    // Restores the request body after success, completion, or failure.
+    Body own UploadBody<E>
+    // Contains one chunk, clean completion, or a source failure.
+    Value Result<UploadPart, E>
+}
+
+// Defines one pull-based request body opened for a single attempt.
+contract UploadBody<E> {
+    // Reads no more than maximum bytes and returns the body owner.
+    fn Read(
+        $self,
+        maximum u64
+    ) Task<own UploadReadOutcome<E>>
+}
+
+// Opens a fresh request body for each admitted attempt or redirect.
+contract UploadPlan<E> {
+    // Returns the exact number of bytes produced by every opened body.
+    fn Length(self) u64
+
+    // Reports whether Open may be called more than once.
+    fn Replayable(self) bool
+
+    // Opens one body without buffering it in the HTTP client.
+    fn Open(&self) Task<Result<own UploadBody<E>, E>>
+}
+
+// Owns request metadata and the plan that produces its body.
+struct UploadRequest<E> {
+    // Stores method, URL, headers, redirects, timeout, and response limit.
+    Head Request
+    // Opens the body used by each admitted network attempt.
+    Body own UploadPlan<E>
+}
+
+// Preserves request, network, source, replay, and retry failures.
+enum UploadError<E> {
+    // Preserves invalid request metadata before opening a body.
+    InvalidRequest(error RequestError)
+    // Preserves a DNS, TCP, protocol, pooling, or TLS failure.
+    Network(error NetworkError)
+    // Preserves a failure returned by the request body source.
+    Source(error E)
+    // Rejects a source that completes before its declared length.
+    SourceEndedEarly
+    // Rejects a source that exceeds its declared length.
+    SourceExceededLength
+    // Rejects an empty chunk because it cannot advance the stream.
+    EmptyChunk
+    // Rejects retry or body-preserving redirect without a replayable plan.
+    ReplayRequired
+    // Preserves invalid retry policy configuration.
+    RetryConfiguration(error resiliency.ConfigurationError)
+    // Reports cancellation while waiting between attempts.
+    Cancelled
+    // Reports a malformed redirect target.
+    InvalidRedirect
+    // Reports exhaustion of the request redirect budget.
+    TooManyRedirects
+}
+
+// Collects upload transport and retry policy before execution.
+struct UploadBuilder<E> {
+    pool own networkPool
+    retry Option<resiliency.RetryOptions<UploadError<E>>>
+
+    // Replaces the retry policy used for complete upload attempts.
+    fn WithRetry(
+        &self,
+        $options resiliency.RetryOptions<UploadError<E>>
+    ) void {
+        const previous = replace self.retry with .None
+        discard previous
+        self.retry = .Some(options)
+    }
+
+    // Consumes configuration so it cannot change during an upload.
+    fn Build($self) own UploadClient<E> {
+        const UploadBuilder { pool retry } = self
+        own UploadClient<E> { pool = pool retry = retry }
+    }
+}
+
+// Owns one serially reusable streaming request client.
+struct UploadClient<E> {
+    pool own networkPool
+    retry Option<resiliency.RetryOptions<UploadError<E>>>
+
+    // Sends one streaming request and restores the reusable client owner.
+    fn Do(
+        $self,
+        $request UploadRequest<E>
+    ) Task<own UploadOutcome<E>> {
+        spawn executeUpload<E>($self, $request)
+    }
+}
+
+// Returns one upload result without losing the reusable client owner.
+struct UploadOutcome<E> {
+    // Restores the reusable serial client owner after execution.
+    Client own UploadClient<E>
+    // Preserves the complete response or typed upload failure.
+    Value Result<Response, UploadError<E>>
+}
+
+struct uploadAttemptState<E> {
+    pool networkPoolHandle
+    request Request
+    body own UploadPlan<E>
+    length u64
+    replayable bool
+}
+
+struct uploadExecutionState<E> {
+    attempt own uploadAttemptState<E>
+    retry Option<resiliency.RetryOptions<UploadError<E>>>
+}
+
+struct missingUploadBody<E> implements UploadBody<E> {
+    fn Read(
+        $self,
+        maximum u64
+    ) Task<own UploadReadOutcome<E>> {
+        discard self
+        discard maximum
+        spawn missingUploadRead<E>()
+    }
+}
+
+struct missingUploadPlan<E> implements UploadPlan<E> {
+    fn Length(self) u64 {
+        discard self
+        0
+    }
+
+    fn Replayable(self) bool {
+        discard self
+        false
+    }
+
+    fn Open(&self) Task<Result<own UploadBody<E>, E>> {
+        discard self
+        spawn missingUploadOpen<E>()
+    }
+}
+
+// Creates request metadata around one pull-based upload plan.
+fn NewUploadRequest<E>(
+    $method String,
+    $url String,
+    $body own UploadPlan<E>
+) Result<UploadRequest<E>, RequestError> {
+    const head = NewRequest($method, $url, "") else error {
+        discard body
+        return .Err(error)
+    }
+    .Ok(UploadRequest<E> { Head = head Body = body })
+}
+
+// Creates a persistent upload client builder with explicit network policy.
+fn NewUpload<E>(
+    $policy NetworkPolicy
+) Result<own UploadBuilder<E>, NetworkConfigurationError> {
+    const pool = openNetworkPool($policy) else error {
+        return .Err(error)
+    }
+    .Ok(own UploadBuilder<E> { pool = pool retry = .None })
+}
+
+task executeUpload<E>(
+    $client own UploadClient<E>,
+    $request UploadRequest<E>
+) own UploadOutcome<E> {
+    const UploadClient { pool retry } = client
+    const UploadRequest { Head Body } = request
+    var activeHead = Head
+    const length = Body.Length()
+    const replayable = Body.Replayable()
+    validateUploadHead(&activeHead) else error {
+        discard Body
+        return own UploadOutcome<E> {
+            Client = own UploadClient<E> { pool = pool retry = retry }
+            Value = .Err(.InvalidRequest(error = error))
+        }
+    }
+
+    var state = own uploadExecutionState<E> {
+        attempt = own uploadAttemptState<E> {
+            pool = pool.Handle()
+            request = activeHead
+            body = Body
+            length = length
+            replayable = replayable
+        }
+        retry = retry
+    }
+    const result = executeUploadPolicy<E>(&state)
+    const uploadExecutionState { attempt retry as restoredRetry } = state
+    const uploadAttemptState {
+        pool as unusedPool
+        request as unusedRequest
+        body as unusedBody
+        length as unusedLength
+        replayable as unusedReplayable
+    } = attempt
+    discard unusedPool
+    discard unusedRequest
+    discard unusedBody
+    discard unusedLength
+    discard unusedReplayable
+    own UploadOutcome<E> {
+        Client = own UploadClient<E> { pool = pool retry = restoredRetry }
+        Value = result
+    }
+}
+
+fn executeUploadPolicy<E>(
+    &state uploadExecutionState<E>
+) Result<Response, UploadError<E>> {
+    const policy = replace state.retry with .None
+    match policy {
+        None: runUploadAttempt<E>(&state.attempt)
+        Some(options): executeUploadRetry<E>(&state, $options)
+    }
+}
+
+fn executeUploadRetry<E>(
+    &state uploadExecutionState<E>,
+    $options resiliency.RetryOptions<UploadError<E>>
+) Result<Response, UploadError<E>> {
+    if options.Attempts > 1 && !state.attempt.replayable {
+        state.retry = .Some(options)
+        return .Err(.ReplayRequired)
+    }
+    const placeholderPool = state.attempt.pool.Clone()
+    const current = replace state.attempt with
+    missingUploadAttempt<E>($placeholderPool)
+    const pending = spawn resiliency.RetryStateful<
+    uploadAttemptState<E>,
+    Response,
+    UploadError<E>
+    >($current, $runUploadAttempt<E>, $options)
+    const retried = $pending.wait()
+    const resiliency.StatefulRetryOutcome {
+        State
+        Options
+        Value
+    } = retried
+    state.attempt = State
+    state.retry = .Some(Options)
+    match Value {
+        Ok(response): .Ok(response)
+        Err(error): match error {
+            Operation(value): .Err(value)
+            InvalidConfiguration(value): {
+                .Err(.RetryConfiguration(error = value))
+            }
+            Cancelled: .Err(.Cancelled)
+        }
+    }
+}
+
+fn runUploadAttempt<E>(
+    &state uploadAttemptState<E>
+) Result<Response, UploadError<E>> {
+    const request = copyRequest(&state.request) else error {
+        return .Err(.InvalidRequest(error = error))
+    }
+    runUploadRedirect<E>(&state, $request, 0, true)
+}
+
+fn runUploadRedirect<E>(
+    &state uploadAttemptState<E>,
+    $request Request,
+    redirects u64,
+    includeBody bool
+) Result<Response, UploadError<E>> {
+    var previous = request
+    const sent = copyRequest(&previous) else error {
+        discard previous
+        return .Err(.InvalidRequest(error = error))
+    }
+    const response = if includeBody {
+        sendUploadAttempt<E>(&state, $sent)
+    } else {
+        sendUploadWithoutBody<E>(&state, $sent)
+    } else error {
+        discard previous
+        return .Err(error)
+    }
+    var completed = response
+    const preservesBody = !redirectsAsGet(
+        completed.Status,
+        previous.Method
+    )
+    const next = redirectedRequest<NetworkError>(
+        $previous,
+        &completed
+    ) else error {
+        discard error
+        discard completed
+        return .Err(.InvalidRedirect)
+    }
+    match next {
+        None: .Ok(completed)
+        Some(value): {
+            discard completed
+            const nextRedirect = redirects + 1
+            if nextRedirect > value.MaximumRedirects {
+                discard value
+                return .Err(.TooManyRedirects)
+            }
+            if preservesBody && !state.replayable {
+                discard value
+                return .Err(.ReplayRequired)
+            }
+            runUploadRedirect<E>(
+                &state,
+                $value,
+                nextRedirect,
+                preservesBody
+            )
+        }
+    }
+}
+
+fn sendUploadAttempt<E>(
+    &state uploadAttemptState<E>,
+    $request Request
+) Result<Response, UploadError<E>> {
+    const opening = state.body.Open()
+    const opened = $opening.wait()
+    const body = opened else error {
+        discard request
+        return .Err(.Source(error = error))
+    }
+    const sending = spawn sendUploadNetwork<E>(
+        $request,
+        $body,
+        state.length,
+        state.pool.Clone()
+    )
+    const result = $sending.wait()
+    result
+}
+
+fn sendUploadWithoutBody<E>(
+    &state uploadAttemptState<E>,
+    $request Request
+) Result<Response, UploadError<E>> {
+    const sending = spawn sendNetwork($request, state.pool.Clone())
+    const result = $sending.wait()
+    match result {
+        Ok(response): .Ok(response)
+        Err(error): .Err(.Network(error = error))
+    }
+}
+
+task sendUploadNetwork<E>(
+    $request Request,
+    $body own UploadBody<E>,
+    bodyLength u64,
+    $pool networkPoolHandle
+) Result<Response, UploadError<E>> {
+    var activeRequest = request
+    var activeBody = body
+    const target = networkTargetFor(activeRequest.URL) else error {
+        discard error
+        discard activeBody
+        return .Err(.InvalidRequest(error = .InvalidURL))
+    }
+    var activeTarget = target
+    const deadline = net.DeadlineAfter(activeRequest.Timeout) else error {
+        discard error
+        discard activeTarget
+        discard activeBody
+        return .Err(.InvalidRequest(error = .InvalidTimeout))
+    }
+    if activeTarget.secure {
+        discard activeTarget
+        discard activeBody
+        return .Err(.Network(error = .TLSUnavailable))
+    }
+
+    const route = pool.Route(
+        $activeTarget,
+        activeRequest.URL
+    ) else error {
+        discard activeBody
+        return .Err(.InvalidRequest(error = error))
+    }
+    const networkRoute {
+        key as routeKey
+        connectHost
+        connectPort
+        requestTarget
+        proxyAuthorization
+    } = route
+    const acquiring = spawn acquireNetworkConnection(
+        pool.Clone(),
+        text.Copy(routeKey),
+        $connectHost,
+        connectPort,
+        deadline
+    )
+    const acquired = $acquiring.wait()
+    const connection = acquired else error {
+        discard routeKey
+        discard requestTarget
+        discard proxyAuthorization
+        discard activeBody
+        return .Err(.Network(error = error))
+    }
+    const pooledConnection {
+        key as connectionKey
+        reader as Reader
+        writer as Writer
+    } = connection
+    var reader = Reader
+    var writer = Writer
+    const wire = encodeRequestHead(
+        &activeRequest,
+        $requestTarget,
+        $proxyAuthorization,
+        bodyLength
+    ) else error {
+        discard error
+        discard routeKey
+        discard connectionKey
+        discard reader
+        discard writer
+        discard activeBody
+        return .Err(.InvalidRequest(error = .InvalidURL))
+    }
+    discard routeKey
+
+    const writing = spawn net.WriteAllUntil($writer, $wire, deadline)
+    const writeOutcome = $writing.wait()
+    const net.WriteOutcome {
+        Writer as restoredWriter
+        Value as writeResult
+    } = writeOutcome
+    writer = restoredWriter
+    writeResult else error {
+        discard activeBody
+        discard reader
+        discard writer
+        return .Err(.Network(error = .Network(error = error)))
+    }
+
+    var remaining = bodyLength
+    var complete = false
+    while !complete {
+        const reading = activeBody.Read(65536)
+        const outcome = $reading.wait()
+        const UploadReadOutcome {
+            Body as restoredBody
+            Value
+        } = outcome
+        activeBody = restoredBody
+        const part = Value else error {
+            discard activeBody
+            discard reader
+            discard writer
+            return .Err(.Source(error = error))
+        }
+        match part {
+            Chunk(chunk): {
+                const length = chunk.Len() else error {
+                    discard error
+                    discard chunk
+                    discard activeBody
+                    discard reader
+                    discard writer
+                    return .Err(.SourceExceededLength)
+                }
+                if length == 0 {
+                    discard chunk
+                    discard activeBody
+                    discard reader
+                    discard writer
+                    return .Err(.EmptyChunk)
+                }
+                if length > remaining {
+                    discard chunk
+                    discard activeBody
+                    discard reader
+                    discard writer
+                    return .Err(.SourceExceededLength)
+                }
+                const bodyWriteOutcome = writeUploadChunk(
+                    $writer,
+                    $chunk,
+                    deadline
+                )
+                const net.WriteOutcome {
+                    Writer as bodyWriter
+                    Value as bodyWriteResult
+                } = bodyWriteOutcome
+                writer = bodyWriter
+                bodyWriteResult else error {
+                    discard activeBody
+                    discard reader
+                    discard writer
+                    return .Err(.Network(error = .Network(error = error)))
+                }
+                remaining = remaining - length
+            }
+            Complete: {
+                if remaining != 0 {
+                    discard activeBody
+                    discard reader
+                    discard writer
+                    return .Err(.SourceEndedEarly)
+                }
+                complete = true
+            }
+        }
+    }
+    discard activeBody
+
+    const reading = spawn readStreamingResponse(
+        $reader,
+        $writer,
+        $pool,
+        $connectionKey,
+        text.Copy(activeRequest.Method),
+        activeRequest.MaximumResponseSize,
+        deadline,
+        0,
+        requestAllowsReuse(&activeRequest)
+    )
+    const streamed = $reading.wait()
+    const response = streamed else error {
+        return .Err(.Network(error = error))
+    }
+    const StreamingResponse { Status Headers Body } = response
+    const collecting = spawn collectNetworkBody(
+        $Body,
+        activeRequest.MaximumResponseSize
+    )
+    const collected = $collecting.wait()
+    const responseBody = collected else error {
+        discard Headers
+        return .Err(.Network(error = error))
+    }
+    .Ok(Response { Status = Status Headers = Headers Body = responseBody })
+}
+
+fn validateUploadHead(&request Request) Result<void, RequestError> {
+    const length = request.Body.Len() else error {
+        discard error
+        return .Err(.InvalidBody)
+    }
+    if length != 0 || hasHeader(&request, "Content-Length") ||
+        hasHeader(&request, "Transfer-Encoding") {
+        return .Err(.InvalidBody)
+    }
+    validateRequest(&request)
+}
+
+fn writeUploadChunk(
+    $writer own net.TcpWriter,
+    $chunk own bytes.Bytes,
+    deadline net.Deadline
+) net.WriteOutcome {
+    const pending = spawn net.WriteAllBytesUntil(
+        $writer,
+        $chunk,
+        deadline
+    )
+    $pending.wait()
+}
+
+fn missingUploadAttempt<E>(
+    $pool networkPoolHandle
+) own uploadAttemptState<E> {
+    const request = NewRequest("GET", "http://127.0.0.1/", "")
+    else error {
+        discard error
+        panic("httpx upload placeholder request invariant failed")
+    }
+    own uploadAttemptState<E> {
+        pool = pool
+        request = request
+        body = own missingUploadPlan<E> {}
+        length = 0
+        replayable = false
+    }
+}
+
+task missingUploadRead<E>() own UploadReadOutcome<E> {
+    panic("httpx upload placeholder body reached")
+}
+
+task missingUploadOpen<E>() Result<own UploadBody<E>, E> {
+    panic("httpx upload placeholder plan reached")
+}

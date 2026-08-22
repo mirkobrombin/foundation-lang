@@ -1,0 +1,14 @@
+package sample.generic_struct
+
+struct guarded<T> {
+    value T
+
+    fn drop(&self) void {
+        return
+    }
+}
+
+fn GenericStruct() i32 {
+    const value = guarded<i32> { value = 42 }
+    value.value
+}

@@ -43,8 +43,9 @@ static void foundation_native_sleep(uint64_t milliseconds) {
 static void foundation_native_finish_read(foundation_native_read *read) {
     foundation_native_sleep(read->delay);
     *read->result = (int32_t)(read->value * UINT64_C(2));
-    fdn_reactor_complete(read->operation, 2);
+    fdn_reactor_operation *operation = read->operation;
     fdn_dealloc(read);
+    fdn_reactor_complete(operation, 2);
 }
 
 #if defined(_WIN32)

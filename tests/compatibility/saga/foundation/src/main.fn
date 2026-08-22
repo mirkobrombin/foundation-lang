@@ -1,0 +1,44 @@
+package test.compatibility.saga
+
+import foundation.saga as sagas
+import std.collections
+
+enum WorkError {
+    Failed
+}
+
+task value(number i32) Result<i32, WorkError> {
+    .Ok(number)
+}
+
+fn joined($result Result<own collections.List<i32>, WorkError>) bool {
+    match result {
+        Ok(values): {
+            var active = values
+            const first = active.PopFront()
+            const second = active.PopFront()
+            discard active
+            match first {
+                Some(left): match second {
+                    Some(right): left == 11 && right == 22
+                    None: false
+                }
+                None: false
+            }
+        }
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn main() i32 {
+    var group = sagas.NewGroup<i32, WorkError>()
+    group.Add(spawn value(11))
+    group.Add(spawn value(22))
+    const waiting = spawn sagas.Join($group)
+    if !joined($waiting.wait()) return 1
+    print("saga pinned v2 ok")
+    0
+}

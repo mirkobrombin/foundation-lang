@@ -1,0 +1,551 @@
+package test.httpx_upload
+
+import foundation.httpx
+import foundation.resiliency
+import std.bytes
+import std.format
+import std.net
+import std.text
+import std.time
+
+enum SourceFailure {
+    InvalidLimit
+    InvalidSlice
+}
+
+struct textUploadBody implements httpx.UploadBody<SourceFailure> {
+    value String
+    offset u64
+
+    fn Read(
+        $self,
+        maximum u64
+    ) Task<own httpx.UploadReadOutcome<SourceFailure>> {
+        spawn readTextUpload($self, maximum)
+    }
+}
+
+struct textUploadPlan implements httpx.UploadPlan<SourceFailure> {
+    value String
+    replayable bool
+    declared u64
+
+    fn Length(self) u64 {
+        self.declared
+    }
+
+    fn Replayable(self) bool {
+        self.replayable
+    }
+
+    fn Open(&self) Task<Result<own httpx.UploadBody<SourceFailure>, SourceFailure>> {
+        spawn openTextUpload(text.Copy(self.value))
+    }
+}
+
+struct requestRead {
+    reader own net.TcpReader
+    valid bool
+}
+
+struct serverResult {
+    listener own net.TcpListener
+    valid bool
+}
+
+enum expectedMismatch {
+    Short
+    Long
+}
+
+task openTextUpload(
+    $value String
+) Result<own httpx.UploadBody<SourceFailure>, SourceFailure> {
+    .Ok(own textUploadBody { value = value offset = 0 })
+}
+
+task readTextUpload(
+    $body own textUploadBody,
+    maximum u64
+) own httpx.UploadReadOutcome<SourceFailure> {
+    const textUploadBody { value offset } = body
+    if maximum == 0 {
+        return own httpx.UploadReadOutcome<SourceFailure> {
+            Body = own textUploadBody { value = value offset = offset }
+            Value = .Err(.InvalidLimit)
+        }
+    }
+    const length = text.ByteLen(value)
+    if offset >= length {
+        return own httpx.UploadReadOutcome<SourceFailure> {
+            Body = own textUploadBody { value = value offset = offset }
+            Value = .Ok(.Complete)
+        }
+    }
+    var count u64 = 3
+    const remaining = length - offset
+    if maximum < count {
+        count = maximum
+    }
+    if remaining < count {
+        count = remaining
+    }
+    const part = text.Slice(value, offset, offset + count) else error {
+        discard error
+        return own httpx.UploadReadOutcome<SourceFailure> {
+            Body = own textUploadBody { value = value offset = offset }
+            Value = .Err(.InvalidSlice)
+        }
+    }
+    const chunk = bytes.FromText(part)
+    discard part
+    own httpx.UploadReadOutcome<SourceFailure> {
+        Body = own textUploadBody {
+            value = value
+            offset = offset + count
+        }
+        Value = .Ok(.Chunk(value = chunk))
+    }
+}
+
+fn listenerOr(
+    $value Result<own net.TcpListener, net.Error>
+) own net.TcpListener {
+    match value {
+        Ok(listener): listener
+        Err(error): failNet(error)
+    }
+}
+
+fn connectionOr(
+    $value Result<own net.TcpConnection, net.Error>
+) own net.TcpConnection {
+    match value {
+        Ok(connection): connection
+        Err(error): failNet(error)
+    }
+}
+
+fn pairOr($value Result<net.StreamPair, net.Error>) net.StreamPair {
+    match value {
+        Ok(pair): pair
+        Err(error): failNet(error)
+    }
+}
+
+fn lineOr($value Result<Option<String>, net.Error>) String {
+    match value {
+        Err(error): failNet(error)
+        Ok(optional): match optional {
+            None: panic("unexpected upload EOF")
+            Some(line): line
+        }
+    }
+}
+
+fn textOr($value Result<String, net.Error>) String {
+    match value {
+        Ok(value): value
+        Err(error): failNet(error)
+    }
+}
+
+fn writeOk($value Result<void, net.Error>) bool {
+    match value {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn failNet(error net.Error) never {
+    discard error
+    panic("upload network operation failed")
+}
+
+task readRequest(
+    $reader own net.TcpReader,
+    $expectedLine String
+) own requestRead {
+    const firstPending = spawn net.ReadLine($reader)
+    const firstOutcome = $firstPending.wait()
+    const net.ReadLineOutcome { Reader as reader1 Value as value1 } = firstOutcome
+    const line1 = lineOr($value1)
+    const secondPending = spawn net.ReadLine($reader1)
+    const secondOutcome = $secondPending.wait()
+    const net.ReadLineOutcome { Reader as reader2 Value as value2 } = secondOutcome
+    const line2 = lineOr($value2)
+    const thirdPending = spawn net.ReadLine($reader2)
+    const thirdOutcome = $thirdPending.wait()
+    const net.ReadLineOutcome { Reader as reader3 Value as value3 } = thirdOutcome
+    const line3 = lineOr($value3)
+    const fourthPending = spawn net.ReadLine($reader3)
+    const fourthOutcome = $fourthPending.wait()
+    const net.ReadLineOutcome { Reader as reader4 Value as value4 } = fourthOutcome
+    const line4 = lineOr($value4)
+    const fifthPending = spawn net.ReadLine($reader4)
+    const fifthOutcome = $fifthPending.wait()
+    const net.ReadLineOutcome { Reader as reader5 Value as value5 } = fifthOutcome
+    const line5 = lineOr($value5)
+    const bodyPending = spawn net.ReadExact($reader5, 11)
+    const bodyOutcome = $bodyPending.wait()
+    const net.ReadOutcome { Reader Value as bodyValue } = bodyOutcome
+    const body = textOr($bodyValue)
+    const valid = line1 == expectedLine &&
+        text.StartsWith(line2, "Host: 127.0.0.1:") &&
+        line3 == "Connection: keep-alive" &&
+        line4 == "Content-Length: 11" &&
+        line5 == "" && body == "stream-body"
+    discard line1
+    discard line2
+    discard line3
+    discard line4
+    discard line5
+    discard body
+    own requestRead { reader = Reader valid = valid }
+}
+
+task serveUpload(
+    $listener own net.TcpListener,
+    port u64
+) own serverResult {
+    const firstAccept = spawn net.Accept($listener)
+    const firstAccepted = $firstAccept.wait()
+    const net.AcceptOutcome {
+        Listener as listener2
+        Value as firstValue
+    } = firstAccepted
+    const firstConnection = connectionOr($firstValue)
+    const firstPair = pairOr(firstConnection.Split())
+    const net.StreamPair { Reader as firstReader Writer as firstWriter } = firstPair
+    const firstReading = spawn readRequest(
+        $firstReader,
+        "POST /start HTTP/1.1"
+    )
+    const first = $firstReading.wait()
+    const requestRead { reader as completedFirstReader valid as firstValid } = first
+    discard completedFirstReader
+    const firstWriting = spawn net.WriteAll(
+        $firstWriter,
+        "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://127.0.0.1:" +
+        format.U64(port) +
+        "/final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    const firstWritten = $firstWriting.wait()
+    const net.WriteOutcome {
+        Writer as completedFirstWriter
+        Value as firstWriteValue
+    } = firstWritten
+    const firstWriteOk = writeOk($firstWriteValue)
+    discard completedFirstWriter
+
+    const secondAccept = spawn net.Accept($listener2)
+    const secondAccepted = $secondAccept.wait()
+    const net.AcceptOutcome { Listener Value as secondValue } = secondAccepted
+    const secondConnection = connectionOr($secondValue)
+    const secondPair = pairOr(secondConnection.Split())
+    const net.StreamPair { Reader as secondReader Writer as secondWriter } = secondPair
+    const secondReading = spawn readRequest(
+        $secondReader,
+        "POST /final HTTP/1.1"
+    )
+    const second = $secondReading.wait()
+    const requestRead { reader as completedSecondReader valid as secondValid } = second
+    discard completedSecondReader
+    const secondWriting = spawn net.WriteAll(
+        $secondWriter,
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
+    )
+    const secondWritten = $secondWriting.wait()
+    const net.WriteOutcome {
+        Writer as completedSecondWriter
+        Value as secondWriteValue
+    } = secondWritten
+    const secondWriteOk = writeOk($secondWriteValue)
+    discard completedSecondWriter
+    own serverResult {
+        listener = Listener
+        valid = firstValid && firstWriteOk && secondValid && secondWriteOk
+    }
+}
+
+task drainUpload(
+    $listener own net.TcpListener
+) own net.TcpListener {
+    const accepting = spawn net.Accept($listener)
+    const accepted = $accepting.wait()
+    const net.AcceptOutcome { Listener Value } = accepted
+    const connection = connectionOr($Value)
+    const pair = pairOr(connection.Split())
+    const net.StreamPair { Reader Writer } = pair
+    discard Writer
+    var active = Reader
+    var complete = false
+    while !complete {
+        const reading = spawn net.ReadSomeBytes($active, 65536)
+        const outcome = $reading.wait()
+        const net.ReadSomeBytesOutcome {
+            Reader as restoredReader
+            Value as readValue
+        } = outcome
+        active = restoredReader
+        match readValue {
+            Err(error): {
+                discard error
+                complete = true
+            }
+            Ok(optional): match optional {
+                None: {
+                    complete = true
+                }
+                Some(chunk): {
+                    discard chunk
+                }
+            }
+        }
+    }
+    discard active
+    Listener
+}
+
+fn requestOr(
+    $value Result<httpx.UploadRequest<SourceFailure>, httpx.RequestError>
+) httpx.UploadRequest<SourceFailure> {
+    match value {
+        Ok(request): request
+        Err(error): {
+            discard error
+            panic("upload request construction failed")
+        }
+    }
+}
+
+fn builderOr(
+    $value Result<own httpx.UploadBuilder<SourceFailure>, httpx.NetworkConfigurationError>
+) own httpx.UploadBuilder<SourceFailure> {
+    match value {
+        Ok(builder): builder
+        Err(error): {
+            discard error
+            panic("upload client construction failed")
+        }
+    }
+}
+
+fn responseText($response httpx.Response) String {
+    const httpx.Response { Status Headers Body } = response
+    if Status != 200 {
+        discard Headers
+        discard Body
+        return ""
+    }
+    discard Headers
+    const value = Body.Text() else error {
+        discard error
+        discard Body
+        return ""
+    }
+    value
+}
+
+fn replayRejected(
+    $value own httpx.UploadOutcome<SourceFailure>
+) own httpx.UploadClient<SourceFailure> {
+    const httpx.UploadOutcome { Client Value } = value
+    match Value {
+        Ok(response): {
+            discard response
+            panic("non-replayable upload reached the network")
+        }
+        Err(error): match error {
+            ReplayRequired: Client
+            InvalidRequest(value): {
+                discard value
+                discard Client
+                panic("unexpected upload request error")
+            }
+            Network(value): {
+                discard value
+                discard Client
+                panic("unexpected upload network error")
+            }
+            Source(value): {
+                discard value
+                discard Client
+                panic("unexpected upload source error")
+            }
+            SourceEndedEarly: {
+                discard Client
+                panic("unexpected short upload")
+            }
+            SourceExceededLength: {
+                discard Client
+                panic("unexpected long upload")
+            }
+            EmptyChunk: {
+                discard Client
+                panic("unexpected empty upload chunk")
+            }
+            RetryConfiguration(value): {
+                discard value
+                discard Client
+                panic("unexpected retry configuration error")
+            }
+            Cancelled: {
+                discard Client
+                panic("unexpected upload cancellation")
+            }
+            InvalidRedirect: {
+                discard Client
+                panic("unexpected upload redirect")
+            }
+            TooManyRedirects: {
+                discard Client
+                panic("unexpected upload redirect limit")
+            }
+        }
+    }
+}
+
+fn mismatchRejected(
+    $value own httpx.UploadOutcome<SourceFailure>,
+    expected expectedMismatch
+) bool {
+    const httpx.UploadOutcome { Client Value } = value
+    discard Client
+    match Value {
+        Ok(response): {
+            discard response
+            false
+        }
+        Err(error): match error {
+            SourceEndedEarly: match expected {
+                Short: true
+                Long: false
+            }
+            SourceExceededLength: match expected {
+                Short: false
+                Long: true
+            }
+            InvalidRequest(value): {
+                discard value
+                false
+            }
+            Network(value): {
+                discard value
+                false
+            }
+            Source(value): {
+                discard value
+                false
+            }
+            EmptyChunk: false
+            ReplayRequired: false
+            RetryConfiguration(value): {
+                discard value
+                false
+            }
+            Cancelled: false
+            InvalidRedirect: false
+            TooManyRedirects: false
+        }
+    }
+}
+
+fn mismatchRequest(
+    port u64,
+    declared u64
+) httpx.UploadRequest<SourceFailure> {
+    requestOr(httpx.NewUploadRequest<SourceFailure>(
+            "POST",
+            "http://127.0.0.1:" + format.U64(port) + "/length",
+            own textUploadPlan {
+        value = "stream-body"
+        replayable = false
+        declared = declared
+    }
+        ))
+}
+
+fn mismatchClient() own httpx.UploadClient<SourceFailure> {
+    const builder = builderOr(httpx.NewUpload<SourceFailure>(
+            httpx.NetworkPolicy { MaximumIdleConnections = 0 }
+        ))
+    builder.Build()
+}
+
+fn main() i32 {
+    var retryBuilder = builderOr(httpx.NewUpload<SourceFailure>(
+            httpx.NetworkPolicy { MaximumIdleConnections = 0 }
+        ))
+    retryBuilder.WithRetry($resiliency.RetryOptions<httpx.UploadError<SourceFailure>> {
+        Attempts = 2
+        InitialDelay = time.Zero()
+        MaxDelay = time.Zero()
+    })
+    const retryClient = retryBuilder.Build()
+    const oneShot = requestOr(httpx.NewUploadRequest<SourceFailure>(
+            "POST",
+            "http://127.0.0.1:1/never",
+            own textUploadPlan {
+        value = "stream-body"
+        replayable = false
+        declared = 11
+    }
+        ))
+    const rejectedPending = retryClient.Do($oneShot)
+    const rejected = replayRejected($rejectedPending.wait())
+    discard rejected
+
+    const shortListener = listenerOr(net.Listen("127.0.0.1", 0))
+    const shortPort = shortListener.Port
+    const shortDrain = spawn drainUpload($shortListener)
+    const shortClient = mismatchClient()
+    const shortRequest = mismatchRequest(shortPort, 12)
+    const shortPending = shortClient.Do($shortRequest)
+    if !mismatchRejected($shortPending.wait(), .Short) return 1
+    discard $shortDrain.wait()
+
+    const longListener = listenerOr(net.Listen("127.0.0.1", 0))
+    const longPort = longListener.Port
+    const longDrain = spawn drainUpload($longListener)
+    const longClient = mismatchClient()
+    const longRequest = mismatchRequest(longPort, 10)
+    const longPending = longClient.Do($longRequest)
+    if !mismatchRejected($longPending.wait(), .Long) return 2
+    discard $longDrain.wait()
+
+    const listener = listenerOr(net.Listen("127.0.0.1", 0))
+    const port = listener.Port
+    const serving = spawn serveUpload($listener, port)
+    const builder = builderOr(httpx.NewUpload<SourceFailure>(
+            httpx.NetworkPolicy { MaximumIdleConnections = 0 }
+        ))
+    const client = builder.Build()
+    const request = requestOr(httpx.NewUploadRequest<SourceFailure>(
+            "POST",
+            "http://127.0.0.1:" + format.U64(port) + "/start",
+            own textUploadPlan {
+        value = "stream-body"
+        replayable = true
+        declared = 11
+    }
+        ))
+    const pending = client.Do($request)
+    const outcome = $pending.wait()
+    const httpx.UploadOutcome { Client Value } = outcome
+    discard Client
+    const response = Value else error {
+        discard error
+        return 3
+    }
+    const body = responseText($response)
+    const served = $serving.wait()
+    const serverResult { listener as completedListener valid } = served
+    discard completedListener
+    if body != "OK" || !valid return 4
+    print("httpx upload ok")
+    0
+}

@@ -1,0 +1,74 @@
+import std.fs
+import std.text
+
+extern c fn preparePath(&path String) i32 as foundation_watch_fixture_prepare
+
+@callback
+extern c fn changeFileNative(delayMilliseconds u64) i32 as foundation_watch_fixture_change_start
+
+extern c fn cleanupPath() i32 as foundation_watch_fixture_cleanup
+extern c fn liveWatchJobs() u64 as foundation_runtime_fs_watch_live_jobs
+
+task changeFile(delayMilliseconds u64) i32 {
+    const status = changeFileNative(delayMilliseconds)
+    status
+}
+
+fn main() i32 {
+    var path = ""
+    if preparePath(&path) != 0 return 1
+
+    const watcher = spawn fs.WatchNext($path, 5)
+    const writer = spawn changeFile(50)
+    const event = $watcher.wait() else error {
+        discard error
+        discard cleanupPath()
+        return 2
+    }
+    if $writer.wait() != 0 {
+        discard cleanupPath()
+        return 3
+    }
+    const modified = match event.Kind {
+        Modified: true
+        _: false
+    }
+    if !modified {
+        discard cleanupPath()
+        return 4
+    }
+    if !event.Path {
+        discard cleanupPath()
+        return 5
+    }
+
+    const cancelled = spawn fs.WatchNext(text.Copy(event.Path), 5)
+    discard cancelled
+    if liveWatchJobs() != 0 {
+        discard cleanupPath()
+        return 6
+    }
+
+    const invalid = spawn fs.WatchNext(text.Copy(event.Path), 0)
+    const invalidResult = $invalid.wait()
+    match invalidResult {
+        Ok(value): {
+            discard value
+            discard cleanupPath()
+            return 7
+        }
+        Err(error): {
+            const invalidInterval = match error {
+                InvalidInterval: true
+                _: false
+            }
+            if !invalidInterval {
+                discard cleanupPath()
+                return 8
+            }
+        }
+    }
+    if cleanupPath() != 0 return 7
+    print("modified")
+    0
+}

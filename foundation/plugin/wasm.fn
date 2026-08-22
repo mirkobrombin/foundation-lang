@@ -1,9 +1,12 @@
 package foundation.plugin
 
 import std.collections
+import std.bytes
 import std.fs
+import std.json
 import std.path
 import std.text
+import std.time
 
 // Matches the status returned to a WebAssembly guest after a host capability call.
 enum WasmHostStatus {
@@ -12,6 +15,8 @@ enum WasmHostStatus {
     InvalidRequest
     HandlerError
     PayloadTooLarge
+    ReadOnlyUnsupported
+    Closed
 }
 
 enum WasmMetadataErrorKind {
@@ -24,6 +29,9 @@ enum WasmMetadataErrorKind {
     DuplicateCapability
     CapabilityDenied
     InvalidPayloadLimit
+    InvalidCallTimeout
+    InvalidDocument
+    MetadataMismatch
 }
 
 enum WasmDiscoveryErrorKind {
@@ -31,6 +39,14 @@ enum WasmDiscoveryErrorKind {
     ReadDirectory
     InspectEntry
     CloseDirectory
+}
+
+// Classifies loading after discovery without flattening filesystem, metadata, or provider causes.
+enum WasmLoadError {
+    Discovery(error WasmDiscoveryError)
+    Metadata(error WasmMetadataError)
+    Provider(status WasmHostStatus)
+    DuplicateName
 }
 
 struct WasmMetadataError {
@@ -62,6 +78,17 @@ struct wasmStringCopy {
 struct wasmPropertyCopy {
     Values own collections.List<WasmProperty>
     Copy own collections.List<WasmProperty>
+}
+
+struct wasmCapabilityBinding {
+    Name String
+    Context u64
+    Handler extern c fn(u64, String, u64, &u64) i32
+}
+
+struct wasmCapabilityBindingCopy {
+    Values own collections.List<wasmCapabilityBinding>
+    Copy own collections.List<wasmCapabilityBinding>
 }
 
 // Owns validated guest metadata independently from a WebAssembly engine.
@@ -202,19 +229,68 @@ struct WasmMetadata {
         if denied == "" return .Ok(true)
         .Err(wasmMetadataError(.CapabilityDenied, denied))
     }
+
+    fn Matches(&self, &other WasmMetadata) bool {
+        if self.name != other.name || self.version != other.version ||
+            self.description != other.description {
+            return false
+        }
+        var methodValues = self.Methods()
+        var otherMethods = other.Methods()
+        if methodValues.Len() != otherMethods.Len() return false
+        discard otherMethods
+        while !methodValues.IsEmpty() {
+            if !other.HasMethod(wasmStringValue(methodValues.PopFront())) return false
+        }
+        var capabilities = self.Capabilities()
+        var otherCapabilities = other.Capabilities()
+        if capabilities.Len() != otherCapabilities.Len() return false
+        discard otherCapabilities
+        while !capabilities.IsEmpty() {
+            if !other.RequiresCapability(wasmStringValue(capabilities.PopFront())) {
+                return false
+            }
+        }
+        var properties = self.Properties()
+        var otherProperties = other.Properties()
+        if properties.Len() != otherProperties.Len() return false
+        discard otherProperties
+        while !properties.IsEmpty() {
+            const property = wasmPropertyValue(properties.PopFront())
+            const expected = other.Property(property.Key)
+            const equal = match expected {
+                None: false
+                Some(value): value == property.Value
+            }
+            if !equal return false
+        }
+        true
+    }
 }
 
 // Stores the host capabilities granted to one guest configuration.
 struct WasmCapabilityPolicy {
     grants own collections.List<String>
+    bindings own collections.List<wasmCapabilityBinding>
     payloadLimit u64
+    callTimeoutNanoseconds u64
 
-    fn Grant(&self, name String) Result<bool, WasmMetadataError> {
+    fn Grant(
+        &self,
+        name String,
+        context u64,
+        handler extern c fn(u64, String, u64, &u64) i32
+    ) Result<bool, WasmMetadataError> {
         if !validWasmName(name) return .Err(wasmMetadataError(.InvalidCapability, name))
         if self.Allows(name) {
             return .Err(wasmMetadataError(.DuplicateCapability, name))
         }
         self.grants.PushFront(text.Copy(name))
+        self.bindings.PushFront(wasmCapabilityBinding {
+            Name = text.Copy(name)
+            Context = context
+            Handler = handler
+        })
         .Ok(true)
     }
 
@@ -230,6 +306,56 @@ struct WasmCapabilityPolicy {
 
     fn PayloadLimit(self) u64 {
         self.payloadLimit
+    }
+
+    fn CallTimeoutNanoseconds(self) u64 {
+        self.callTimeoutNanoseconds
+    }
+
+    fn Bindings(&self) own collections.List<wasmCapabilityBinding> {
+        const copied = copyWasmCapabilityBindings(
+            replace self.bindings with newWasmCapabilityBindings()
+        )
+        const wasmCapabilityBindingCopy { Values Copy } = copied
+        self.bindings = Values
+        Copy
+    }
+
+    fn BindingsFor(
+        &self,
+        &metadata WasmMetadata
+    ) own collections.List<wasmCapabilityBinding> {
+        const copied = copyWasmCapabilityBindings(
+            replace self.bindings with newWasmCapabilityBindings()
+        )
+        const wasmCapabilityBindingCopy { Values Copy } = copied
+        self.bindings = Values
+        var source = Copy
+        var selected = newWasmCapabilityBindings()
+        while !source.IsEmpty() {
+            const binding = wasmCapabilityBindingValue(source.PopFront())
+            if metadata.RequiresCapability(binding.Name) {
+                selected.PushFront($binding)
+            } else {
+                discard binding
+            }
+        }
+        reverseWasmCapabilityBindings($selected)
+    }
+
+    fn SetCallTimeout(
+        &self,
+        duration time.Duration
+    ) Result<void, WasmMetadataError> {
+        if duration.Nanoseconds() <= 0 {
+            return .Err(wasmMetadataError(.InvalidCallTimeout, "call timeout"))
+        }
+        const converted = u64.From(duration.Nanoseconds()) else error {
+            discard error
+            return .Err(wasmMetadataError(.InvalidCallTimeout, "call timeout"))
+        }
+        self.callTimeoutNanoseconds = converted
+        .Ok
     }
 
     // Applies the same size, name, declaration, and grant order as the host ABI.
@@ -278,10 +404,272 @@ fn NewWasmMetadata(
     })
 }
 
+// Parses and validates the metadata document returned by a guest module.
+fn ParseWasmMetadata(
+    source String
+) Result<own WasmMetadata, WasmMetadataError> {
+    const length = text.ByteLen(source)
+    if length == 0 || length > 65536 {
+        return .Err(wasmMetadataError(.InvalidDocument, "metadata size"))
+    }
+    const parsed = json.Parse(source) else error {
+        discard error
+        return .Err(wasmMetadataError(.InvalidDocument, "metadata JSON"))
+    }
+    match parsed {
+        Object(object): parseWasmMetadataObject($object)
+        Null: .Err(wasmMetadataError(.InvalidDocument, "metadata object"))
+        Bool(value): {
+            discard value
+            .Err(wasmMetadataError(.InvalidDocument, "metadata object"))
+        }
+        Number(value): {
+            discard value
+            .Err(wasmMetadataError(.InvalidDocument, "metadata object"))
+        }
+        Text(value): {
+            discard value
+            .Err(wasmMetadataError(.InvalidDocument, "metadata object"))
+        }
+        Array(value): {
+            discard value
+            .Err(wasmMetadataError(.InvalidDocument, "metadata object"))
+        }
+    }
+}
+
+fn parseWasmMetadataObject(
+    $object own json.Object
+) Result<own WasmMetadata, WasmMetadataError> {
+    var fields = object
+    const name = wasmRequiredJsonText(&fields, "name") else error {
+        discard fields
+        return .Err(error)
+    }
+    const version = wasmRequiredJsonText(&fields, "version") else error {
+        discard name
+        discard fields
+        return .Err(error)
+    }
+    const description = wasmOptionalJsonText(&fields, "description") else error {
+        discard name
+        discard version
+        discard fields
+        return .Err(error)
+    }
+    const created = NewWasmMetadata(name, version, description) else error {
+        discard name
+        discard version
+        discard description
+        discard fields
+        return .Err(error)
+    }
+    discard name
+    discard version
+    discard description
+    var metadata = created
+    wasmAddMetadataStrings(&metadata, fields.Take("methods"), true) else error {
+        discard metadata
+        discard fields
+        return .Err(error)
+    }
+    wasmAddMetadataStrings(&metadata, fields.Take("capabilities"), false) else error {
+        discard metadata
+        discard fields
+        return .Err(error)
+    }
+    wasmAddMetadataProperties(&metadata, fields.Take("properties")) else error {
+        discard metadata
+        discard fields
+        return .Err(error)
+    }
+    discard fields
+    .Ok(metadata)
+}
+
+fn wasmRequiredJsonText(
+    &object json.Object,
+    key String
+) Result<String, WasmMetadataError> {
+    const selected = object.Take(key)
+    match selected {
+        None: .Err(wasmMetadataError(.InvalidDocument, key))
+        Some(value): wasmJsonText($value, key)
+    }
+}
+
+fn wasmOptionalJsonText(
+    &object json.Object,
+    key String
+) Result<String, WasmMetadataError> {
+    const selected = object.Take(key)
+    match selected {
+        None: .Ok("")
+        Some(value): wasmJsonText($value, key)
+    }
+}
+
+fn wasmJsonText(
+    $value json.Value,
+    key String
+) Result<String, WasmMetadataError> {
+    match value {
+        Text(content): .Ok(content)
+        Null: .Err(wasmMetadataError(.InvalidDocument, key))
+        Bool(item): {
+            discard item
+            .Err(wasmMetadataError(.InvalidDocument, key))
+        }
+        Number(item): {
+            discard item
+            .Err(wasmMetadataError(.InvalidDocument, key))
+        }
+        Array(item): {
+            discard item
+            .Err(wasmMetadataError(.InvalidDocument, key))
+        }
+        Object(item): {
+            discard item
+            .Err(wasmMetadataError(.InvalidDocument, key))
+        }
+    }
+}
+
+fn wasmAddMetadataStrings(
+    &metadata WasmMetadata,
+    $selected Option<json.Value>,
+    methodList bool
+) Result<void, WasmMetadataError> {
+    match selected {
+        None: .Ok
+        Some(value): match value {
+            Array(items): wasmAddMetadataArray(&metadata, $items, methodList)
+            Null: .Err(wasmMetadataError(.InvalidDocument, "metadata list"))
+            Bool(item): {
+                discard item
+                .Err(wasmMetadataError(.InvalidDocument, "metadata list"))
+            }
+            Number(item): {
+                discard item
+                .Err(wasmMetadataError(.InvalidDocument, "metadata list"))
+            }
+            Text(item): {
+                discard item
+                .Err(wasmMetadataError(.InvalidDocument, "metadata list"))
+            }
+            Object(item): {
+                discard item
+                .Err(wasmMetadataError(.InvalidDocument, "metadata list"))
+            }
+        }
+    }
+}
+
+fn wasmAddMetadataArray(
+    &metadata WasmMetadata,
+    $items own json.Array,
+    methodList bool
+) Result<void, WasmMetadataError> {
+    var values = items
+    while values.Len() > 0 {
+        const selected = values.PopFront()
+        const item = match selected {
+            None: {
+                return .Err(wasmMetadataError(.InvalidDocument, "metadata list"))
+            }
+            Some(value): {
+                const parsed = wasmJsonText($value, "metadata list")
+                match parsed {
+                    Ok(content): content
+                    Err(error): {
+                        return .Err(error)
+                    }
+                }
+            }
+        }
+        if methodList {
+            const added = metadata.AddMethod(item) else error {
+                return .Err(error)
+            }
+            discard added
+        } else {
+            const added = metadata.RequireCapability(item) else error {
+                return .Err(error)
+            }
+            discard added
+        }
+    }
+    .Ok
+}
+
+fn wasmAddMetadataProperties(
+    &metadata WasmMetadata,
+    $selected Option<json.Value>
+) Result<void, WasmMetadataError> {
+    match selected {
+        None: .Ok
+        Some(value): match value {
+            Object(fields): wasmAddMetadataPropertyObject(&metadata, $fields)
+            Null: .Err(wasmMetadataError(.InvalidDocument, "properties"))
+            Bool(item): {
+                discard item
+                .Err(wasmMetadataError(.InvalidDocument, "properties"))
+            }
+            Number(item): {
+                discard item
+                .Err(wasmMetadataError(.InvalidDocument, "properties"))
+            }
+            Text(item): {
+                discard item
+                .Err(wasmMetadataError(.InvalidDocument, "properties"))
+            }
+            Array(item): {
+                discard item
+                .Err(wasmMetadataError(.InvalidDocument, "properties"))
+            }
+        }
+    }
+}
+
+fn wasmAddMetadataPropertyObject(
+    &metadata WasmMetadata,
+    $object own json.Object
+) Result<void, WasmMetadataError> {
+    var fields = object
+    while fields.Len() > 0 {
+        const selectedKey = fields.FirstKey()
+        const key = match selectedKey {
+            None: {
+                return .Err(wasmMetadataError(.InvalidDocument, "properties"))
+            }
+            Some(value): value
+        }
+        const selectedValue = fields.Take(text.Copy(key))
+        const value = match selectedValue {
+            None: {
+                return .Err(wasmMetadataError(.InvalidDocument, "properties"))
+            }
+            Some(item): {
+                const parsed = wasmJsonText($item, text.Copy(key))
+                match parsed {
+                    Ok(content): content
+                    Err(error): {
+                        return .Err(error)
+                    }
+                }
+            }
+        }
+        discard metadata.SetProperty(key, value)
+    }
+    .Ok
+}
+
 fn NewWasmCapabilityPolicy() own WasmCapabilityPolicy {
     own WasmCapabilityPolicy {
         grants = newWasmStrings()
+        bindings = newWasmCapabilityBindings()
         payloadLimit = 8388608
+        callTimeoutNanoseconds = 5000000000
     }
 }
 
@@ -293,7 +681,9 @@ fn NewWasmCapabilityPolicyLimited(
     }
     .Ok(own WasmCapabilityPolicy {
         grants = newWasmStrings()
+        bindings = newWasmCapabilityBindings()
         payloadLimit = payloadLimit
+        callTimeoutNanoseconds = 5000000000
     })
 }
 
@@ -466,6 +856,27 @@ fn copyWasmProperties(
     }
 }
 
+fn copyWasmCapabilityBindings(
+    $values own collections.List<wasmCapabilityBinding>
+) wasmCapabilityBindingCopy {
+    var source = values
+    var restored = newWasmCapabilityBindings()
+    var result = newWasmCapabilityBindings()
+    while !source.IsEmpty() {
+        const current = wasmCapabilityBindingValue(source.PopFront())
+        result.PushFront(wasmCapabilityBinding {
+            Name = text.Copy(current.Name)
+            Context = current.Context
+            Handler = current.Handler
+        })
+        restored.PushFront($current)
+    }
+    wasmCapabilityBindingCopy {
+        Values = reverseWasmCapabilityBindings($restored)
+        Copy = result
+    }
+}
+
 fn reverseWasmStrings(
     $values own collections.List<String>
 ) own collections.List<String> {
@@ -488,12 +899,27 @@ fn reverseWasmProperties(
     result
 }
 
+fn reverseWasmCapabilityBindings(
+    $values own collections.List<wasmCapabilityBinding>
+) own collections.List<wasmCapabilityBinding> {
+    var source = values
+    var result = newWasmCapabilityBindings()
+    while !source.IsEmpty() {
+        result.PushFront(wasmCapabilityBindingValue(source.PopFront()))
+    }
+    result
+}
+
 fn newWasmStrings() own collections.List<String> {
     collections.NewList<String>()
 }
 
 fn newWasmProperties() own collections.List<WasmProperty> {
     collections.NewList<WasmProperty>()
+}
+
+fn newWasmCapabilityBindings() own collections.List<wasmCapabilityBinding> {
+    collections.NewList<wasmCapabilityBinding>()
 }
 
 fn wasmStringValue($value Option<String>) String {
@@ -517,10 +943,273 @@ fn wasmPropertyValue($value Option<WasmProperty>) WasmProperty {
     }
 }
 
+fn wasmCapabilityBindingValue(
+    $value Option<wasmCapabilityBinding>
+) wasmCapabilityBinding {
+    match value {
+        None: missingWasmCapabilityBinding()
+        Some(item): item
+    }
+}
+
 fn missingWasmString() String {
     panic("WebAssembly metadata string invariant failed")
 }
 
 fn missingWasmProperty() WasmProperty {
     panic("WebAssembly metadata property invariant failed")
+}
+
+fn missingWasmCapabilityBinding() wasmCapabilityBinding {
+    panic("WebAssembly capability binding invariant failed")
+}
+
+// Owns an opened guest module until Close releases provider resources.
+contract WasmModule {
+    fn Call(&self, method String, $input own bytes.Bytes) Result<own bytes.Bytes, WasmHostStatus>
+    fn Close($self) Result<void, WasmHostStatus>
+}
+
+// Opens validated modules through an explicit host-selected engine boundary.
+contract WasmEngine {
+    fn Open(
+        &self,
+        path String,
+        &metadata WasmMetadata,
+        &policy WasmCapabilityPolicy,
+        &wasi WasiCapabilities
+    ) Result<own WasmModule, WasmHostStatus>
+}
+
+// Declares every WASI resource granted to a guest; no ambient host authority exists.
+struct WasiCapabilities {
+    ReadPaths own collections.List<String>
+    WritePaths own collections.List<String>
+    Environment own collections.List<WasmProperty>
+    Arguments own collections.List<String>
+}
+
+fn NewWasiCapabilities() own WasiCapabilities {
+    own WasiCapabilities {
+        ReadPaths = collections.NewList<String>()
+        WritePaths = collections.NewList<String>()
+        Environment = collections.NewList<WasmProperty>()
+        Arguments = collections.NewList<String>()
+    }
+}
+
+// Grants one read-only preopened path to a WebAssembly guest.
+fn AllowWasiRead(&capabilities WasiCapabilities, guestPath String) Result<void, WasmMetadataError> {
+    if !validWasiPath(guestPath) return .Err(wasmMetadataError(.InvalidCapability, guestPath))
+    capabilities.ReadPaths.PushFront(text.Copy(guestPath))
+    .Ok
+}
+
+// Grants one writable preopened path to a WebAssembly guest.
+fn AllowWasiWrite(&capabilities WasiCapabilities, guestPath String) Result<void, WasmMetadataError> {
+    if !validWasiPath(guestPath) return .Err(wasmMetadataError(.InvalidCapability, guestPath))
+    capabilities.WritePaths.PushFront(text.Copy(guestPath))
+    .Ok
+}
+
+// Adds one explicit guest environment variable. The host environment is never inherited.
+fn SetWasiEnvironment(
+    &capabilities WasiCapabilities,
+    key String,
+    value String
+) Result<void, WasmMetadataError> {
+    if !validWasiEnvironmentKey(key) {
+        return .Err(wasmMetadataError(.InvalidCapability, key))
+    }
+    capabilities.Environment.PushFront(WasmProperty {
+        Key = text.Copy(key)
+        Value = text.Copy(value)
+    })
+    .Ok
+}
+
+// Adds one literal guest argument. The host process arguments are never inherited.
+fn AddWasiArgument(
+    &capabilities WasiCapabilities,
+    value String
+) Result<void, WasmMetadataError> {
+    if text.ByteLen(value) > 4096 return .Err(wasmMetadataError(.InvalidCapability, value))
+    capabilities.Arguments.PushFront(text.Copy(value))
+    .Ok
+}
+
+// Owns an opened module under its validated metadata name.
+struct wasmRegistryEntry {
+    name String
+    module own WasmModule
+}
+
+// Owns a deterministic set of discovered modules and releases every provider resource on close.
+struct WasmRegistry {
+    entries own collections.List<own wasmRegistryEntry>
+
+    fn Contains(&self, expected String) bool {
+        var source = replace self.entries with newWasmRegistryEntries()
+        var restored = newWasmRegistryEntries()
+        var found = false
+        while !source.IsEmpty() {
+            const current = wasmRegistryEntryValue(source.PopFront())
+            const wasmRegistryEntry { name module } = current
+            if name == expected { found = true }
+            restored.PushFront(own wasmRegistryEntry { name = name module = module })
+        }
+        self.entries = reverseWasmRegistryEntries($restored)
+        found
+    }
+
+    fn Register(
+        &self,
+        $metadata own WasmMetadata,
+        $module own WasmModule
+    ) Result<void, WasmLoadError> {
+        const name = metadata.Name()
+        if self.Contains(name) {
+            discard metadata
+            const closed = $module.Close()
+            match closed {
+                Ok: {
+                    return .Err(.DuplicateName)
+                }
+                Err(status): {
+                    return .Err(.Provider(status = status))
+                }
+            }
+        }
+        self.entries.PushFront(own wasmRegistryEntry { name = name module = module })
+        discard metadata
+        .Ok
+    }
+
+    // Closes every module, preserving the first provider status while never leaking later modules.
+    fn Close($self) Result<void, WasmHostStatus> {
+        var active = self
+        const entries = replace active.entries with newWasmRegistryEntries()
+        closeWasmRegistryEntries($entries)
+    }
+
+    fn drop(&self) void {
+        const entries = replace self.entries with newWasmRegistryEntries()
+        discard closeWasmRegistryEntries($entries)
+    }
+}
+
+// Opens every discovered path through one explicit engine. Metadata extraction remains caller-owned.
+fn LoadDiscovered(
+    &engine WasmEngine,
+    directory String,
+    &policy WasmCapabilityPolicy,
+    &wasi WasiCapabilities,
+    metadataFor fn(String) Result<own WasmMetadata, WasmMetadataError>
+) Result<own WasmRegistry, WasmLoadError> {
+    const discovered = DiscoverWasmPaths(directory) else error {
+        return .Err(.Discovery(error = error))
+    }
+    var paths = discovered
+    var registry = own WasmRegistry { entries = newWasmRegistryEntries() }
+    while !paths.IsEmpty() {
+        const modulePath = wasmStringValue(paths.PopFront())
+        const loadedMetadata = metadataFor(modulePath) else error {
+            discard $registry.Close()
+            return .Err(.Metadata(error = error))
+        }
+        var metadata = $loadedMetadata
+        const valid = metadata.Validate(&policy) else error {
+            discard $registry.Close()
+            return .Err(.Metadata(error = error))
+        }
+        discard valid
+        const module = engine.Open(modulePath, &metadata, &policy, &wasi) else status {
+            discard metadata
+            discard $registry.Close()
+            return .Err(.Provider(status = status))
+        }
+        registry.Register($metadata, $module) else error {
+            discard $registry.Close()
+            return .Err(error)
+        }
+    }
+    .Ok(registry)
+}
+
+fn validWasiPath(value String) bool {
+    text.ByteLen(value) > 0 && text.ByteLen(value) <= 4096
+}
+
+fn validWasiEnvironmentKey(value String) bool {
+    const length = text.ByteLen(value)
+    if length == 0 || length > 128 return false
+    var offset u64 = 0
+    while offset < length {
+        const byte = text.ByteAt(value, offset) else error {
+            discard error
+            return false
+        }
+        const letter = (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+        if offset == 0 {
+            if !letter && byte != 95 return false
+        } else {
+            if !letter && (byte < 48 || byte > 57) && byte != 95 return false
+        }
+        offset = offset + 1
+    }
+    true
+}
+
+fn closeWasmRegistryEntries(
+    $entries own collections.List<own wasmRegistryEntry>
+) Result<void, WasmHostStatus> {
+    var source = entries
+    var first Option<WasmHostStatus> = .None
+    while !source.IsEmpty() {
+        const current = wasmRegistryEntryValue(source.PopFront())
+        const wasmRegistryEntry { name module } = current
+        discard name
+        const closed = $module.Close()
+        match closed {
+            Ok: {}
+            Err(status): {
+                match first {
+                    None: {
+                        first = .Some(status)
+                    }
+                    Some(existing): {
+                        discard existing
+                    }
+                }
+            }
+        }
+    }
+    match first {
+        None: .Ok
+        Some(status): .Err(status)
+    }
+}
+
+fn newWasmRegistryEntries() own collections.List<own wasmRegistryEntry> {
+    collections.NewList<own wasmRegistryEntry>()
+}
+
+fn wasmRegistryEntryValue(
+    $value Option<own wasmRegistryEntry>
+) own wasmRegistryEntry {
+    match value {
+        Some(entry): entry
+        None: panic("WebAssembly registry invariant failed")
+    }
+}
+
+fn reverseWasmRegistryEntries(
+    $values own collections.List<own wasmRegistryEntry>
+) own collections.List<own wasmRegistryEntry> {
+    var source = values
+    var result = newWasmRegistryEntries()
+    while !source.IsEmpty() {
+        result.PushFront(wasmRegistryEntryValue(source.PopFront()))
+    }
+    result
 }

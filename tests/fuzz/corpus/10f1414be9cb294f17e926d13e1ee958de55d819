@@ -1,0 +1,19 @@
+task child(value i32) i32 {
+    value
+}
+
+task parent() i32 {
+    const pending = spawn child841)
+    const value = $pending.wait()
+    value + 1
+}
+
+fn)
+    const value = $pending.wait()
+    value + 1
+}
+
+fn mai main() i32 {
+    const pending = spawn parent()
+    $pending.wait()
+}

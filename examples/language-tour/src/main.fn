@@ -137,6 +137,10 @@ fn incrementCounter(&counter Counter) void {
     counter.increment()
 }
 
+fn bump<T Counter>(&counter T) void {
+    counter.increment()
+}
+
 fn makeCounter(value i32) own Counter {
     own TourCounter { value = value }
 }
@@ -354,7 +358,7 @@ fn main(args [String]) i32 {
     const callbackValue = apply(1, typedIdentity) + copyCallback(1) +
         viewCallback(1) + editCallback(1) + ownCallback()
     var counter = own TourCounter { value = 0 }
-    incrementCounter(&counter)
+    bump(&counter)
     const counterValue = readCounter(counter)
     const directCounterValue = counter.read()
     var counterProxy = TourCounterProxy { counter = TourCounter { value = 0 } }
@@ -366,6 +370,8 @@ fn main(args [String]) i32 {
     discard dynamicCounter
 
     var numbers = [1, 2, 3]
+    var compoundValue = 40
+    compoundValue += 2
     clearFirst(&numbers)
     const sequenceValue = sum(numbers)
     var iteratedValue = 0
@@ -523,7 +529,7 @@ fn main(args [String]) i32 {
         !beforeCancellation && afterCancellation && channelMatches && postfixValue == 42 &&
         widened == 120 && narrowed == 4 && decimal64 == 1.5 && emptyStringMatches &&
         emptyListMatches && workflowValue == 42 && pipelineValue == 41 && sagaValue == 42 &&
-        ignoredFailureValue == 42 && transferToken == 42 {
+        ignoredFailureValue == 42 && transferToken == 42 && compoundValue == 42 {
         return match state {
             Running: resultOr(verified, 0) + counterValue + directCounterValue +
                 sequenceValue + callbackValue - 20

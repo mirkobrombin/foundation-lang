@@ -1,0 +1,51 @@
+package test.compatibility.configuration.directory
+
+import foundation.bind
+import std.format
+import std.fs
+import std.text
+
+@bind.Bindable()
+struct Settings {
+    @bind.JsonName("host")
+    Host String
+
+    @bind.JsonName("port")
+    Port u16
+}
+
+fn read($path String) Result<String, fs.Error> {
+    const reading = spawn fs.ReadText($path)
+    $reading.wait()
+}
+
+fn accepted($value Result<void, bind.Error>) bool {
+    match value {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn main(args [String]) i32 {
+    const alphaContents = read(text.Copy(args[0])) else error {
+        discard error
+        return 1
+    }
+    const betaContents = read(text.Copy(args[1])) else error {
+        discard error
+        return 2
+    }
+    var alpha = Settings { Host = "" Port = 0 }
+    if !accepted(alpha.BindJSON(alphaContents)) return 3
+    var beta = Settings { Host = "" Port = 0 }
+    if !accepted(beta.BindJSON(betaContents)) return 4
+
+    print(alpha.Host)
+    print(format.U16(alpha.Port))
+    print(beta.Host)
+    print(format.U16(beta.Port))
+    0
+}

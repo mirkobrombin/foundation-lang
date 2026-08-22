@@ -28,6 +28,12 @@ enum Error {
     DuplicateKeyID
     // Reports a token whose key identifier is absent from the service.
     UnknownKeyID
+    // Reports an asymmetric algorithm that the selected provider does not support.
+    UnsupportedAlgorithm
+    // Reports malformed, incompatible, or policy-rejected asymmetric key material.
+    InvalidKey
+    // Preserves an explicit cryptographic provider failure without falling back to another algorithm.
+    ProviderFailure
 }
 
 // Defines validation shared by values accepted as authentication claims.

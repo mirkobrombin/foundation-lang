@@ -38,6 +38,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Checkout Foundation v2 baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: mirkobrombin/go-foundation
+          ref: 06679f06495151fbd0d491e76121ba98b939a291
+          path: build/go-foundation-v2
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
@@ -69,9 +76,17 @@ jobs:
         run: >-
           cmake --preset dev
           -DLLVM_DIR="$LLVM_DIR"
+          -DFOUNDATION_V2_SOURCE=${{ github.workspace }}/build/go-foundation-v2
 
       - name: Build
         run: cmake --build --preset dev
+
+      - name: Prepare package locks for host
+        run: >-
+          cmake
+          -DCOMPILER=${{ github.workspace }}/build/dev/foundationc
+          -DROOT=${{ github.workspace }}
+          -P tests/prepare-host-locks.cmake
 
       - name: Test three times
         run: |
@@ -88,6 +103,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Checkout Foundation v2 baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: mirkobrombin/go-foundation
+          ref: 06679f06495151fbd0d491e76121ba98b939a291
+          path: build/go-foundation-v2
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
@@ -108,9 +130,18 @@ jobs:
           -DBUILD_TESTING=ON
           -DFOUNDATION_WARNINGS_AS_ERRORS=ON
           "-DLLVM_DIR=$env:LLVM_DIR"
+          -DFOUNDATION_V2_SOURCE=${{ github.workspace }}/build/go-foundation-v2
 
       - name: Build
         run: cmake --build build/windows --config Debug
+
+      - name: Prepare package locks for host
+        shell: pwsh
+        run: >-
+          cmake
+          "-DCOMPILER=${{ github.workspace }}/build/windows/Debug/foundationc.exe"
+          "-DROOT=${{ github.workspace }}"
+          -P tests/prepare-host-locks.cmake
 
       - name: Test three times
         shell: cmd
@@ -130,6 +161,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Checkout Foundation v2 baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: mirkobrombin/go-foundation
+          ref: 06679f06495151fbd0d491e76121ba98b939a291
+          path: build/go-foundation-v2
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
@@ -155,6 +193,7 @@ jobs:
           -DFOUNDATION_WARNINGS_AS_ERRORS=ON
           -DFOUNDATION_BUILD_FUZZERS=ON
           -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm
+          -DFOUNDATION_V2_SOURCE=${{ github.workspace }}/build/go-foundation-v2
 
       - name: Build
         run: cmake --build build/fuzz
@@ -174,3 +213,324 @@ jobs:
           -max_total_time=10
           -verbosity=0
           build/fuzz/fuzz-corpus
+
+  linux-providers:
+    name: Linux optional providers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Checkout Foundation v2 baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: mirkobrombin/go-foundation
+          ref: 06679f06495151fbd0d491e76121ba98b939a291
+          path: build/go-foundation-v2
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: 1.25.x
+          cache: false
+
+      - name: Install LLVM 21
+        run: |
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          sudo apt-get install --no-install-recommends -y llvm-21-dev
+
+      - name: Build pinned OpenSSL
+        run: |
+          mkdir -p build/deps
+          cd build/deps
+          curl --fail --location --remote-name https://openssl-library.org/source/old/3.5/openssl-3.5.6.tar.gz
+          echo "deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736  openssl-3.5.6.tar.gz" | sha256sum --check --strict
+          tar -xzf openssl-3.5.6.tar.gz
+          cd openssl-3.5.6
+          ./Configure linux-x86_64 shared --prefix="${{ github.workspace }}/build/deps/openssl-3.5.6-prefix"
+          make -j"$(nproc)"
+          make install_sw
+
+      - name: Checkout and build pinned WAMR
+        run: |
+          git init build/deps/wasm-micro-runtime
+          git -C build/deps/wasm-micro-runtime remote add origin https://github.com/bytecodealliance/wasm-micro-runtime.git
+          git -C build/deps/wasm-micro-runtime fetch --depth 1 origin 25bd7eb63e828e4bd242cc9b38d260b4b31c6605
+          git -C build/deps/wasm-micro-runtime checkout --detach FETCH_HEAD
+          cmake -S build/deps/wasm-micro-runtime/product-mini/platforms/linux -B build/deps/wamr-build -G Ninja -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_FAST_INTERP=0 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_LIBC_WASI=1
+          cmake --build build/deps/wamr-build --parallel 4
+
+      - name: Configure providers
+        env:
+          CC: clang-21
+          CXX: clang++-21
+        run: >-
+          cmake -S . -B build/providers -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DBUILD_TESTING=ON
+          -DFOUNDATION_WARNINGS_AS_ERRORS=ON
+          -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm
+          -DFOUNDATION_V2_SOURCE=${{ github.workspace }}/build/go-foundation-v2
+          -DFOUNDATION_BUILD_OPENSSL_PROVIDER=ON
+          -DOPENSSL_ROOT_DIR=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix
+          -DFOUNDATION_BUILD_WAMR_PROVIDER=ON
+          -DFOUNDATION_WAMR_SOURCE=${{ github.workspace }}/build/deps/wasm-micro-runtime
+          -DFOUNDATION_WAMR_LIBRARY=${{ github.workspace }}/build/deps/wamr-build/libiwasm.a
+
+      - name: Build providers
+        run: cmake --build build/providers --parallel 4
+
+      - name: Prepare package locks for host
+        run: >-
+          cmake
+          -DCOMPILER=${{ github.workspace }}/build/providers/foundationc
+          -DROOT=${{ github.workspace }}
+          -P tests/prepare-host-locks.cmake
+
+      - name: Test providers
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/build/deps/openssl-3.5.6-prefix/lib64
+        run: ctest --test-dir build/providers --output-on-failure --parallel 4
+
+      - name: Configure WAMR ASan and UBSan
+        env:
+          CC: clang-21
+          CXX: clang++-21
+        run: >-
+          cmake -S . -B build/wamr-asan -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DBUILD_TESTING=ON
+          -DFOUNDATION_WARNINGS_AS_ERRORS=ON
+          -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm
+          -DFOUNDATION_V2_SOURCE=${{ github.workspace }}/build/go-foundation-v2
+          -DFOUNDATION_BUILD_WAMR_PROVIDER=ON
+          -DFOUNDATION_WAMR_SOURCE=${{ github.workspace }}/build/deps/wasm-micro-runtime
+          -DFOUNDATION_WAMR_LIBRARY=${{ github.workspace }}/build/deps/wamr-build/libiwasm.a
+          -DFOUNDATION_WAMR_SANITIZERS=ON
+
+      - name: Build WAMR ASan and UBSan
+        run: >-
+          cmake --build build/wamr-asan --parallel 4 --target
+          foundationc foundation_wamr_provider_test foundation_wamr_bridge_test
+          foundation_wamr_provider_fake
+
+      - name: Test WAMR ASan and UBSan
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:symbolize=0
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=0
+        run: >-
+          ctest --test-dir build/wamr-asan --output-on-failure
+          -R '^(runtime\.wamr-bridge|providers\.wamr\.native|stage0\.run\.plugin-wamr-provider-(fake|real))$'
+
+      - name: Configure WAMR TSan
+        env:
+          CC: clang-21
+          CXX: clang++-21
+        run: >-
+          cmake -S . -B build/wamr-tsan -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DBUILD_TESTING=ON
+          -DFOUNDATION_WARNINGS_AS_ERRORS=ON
+          -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm
+          -DFOUNDATION_V2_SOURCE=${{ github.workspace }}/build/go-foundation-v2
+          -DFOUNDATION_BUILD_WAMR_PROVIDER=ON
+          -DFOUNDATION_WAMR_SOURCE=${{ github.workspace }}/build/deps/wasm-micro-runtime
+          -DFOUNDATION_WAMR_LIBRARY=${{ github.workspace }}/build/deps/wamr-build/libiwasm.a
+          -DFOUNDATION_WAMR_TSAN=ON
+
+      - name: Build WAMR TSan
+        run: >-
+          cmake --build build/wamr-tsan --parallel 4 --target
+          foundationc foundation_wamr_provider_test foundation_wamr_bridge_test
+          foundation_wamr_provider_fake
+
+      - name: Test WAMR TSan
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+        run: >-
+          ctest --test-dir build/wamr-tsan --output-on-failure
+          -R '^(runtime\.wamr-bridge|providers\.wamr\.native|stage0\.run\.plugin-wamr-provider-(fake|real))$'
+
+  macos-providers:
+    name: macOS optional providers
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Checkout Foundation v2 baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: mirkobrombin/go-foundation
+          ref: 06679f06495151fbd0d491e76121ba98b939a291
+          path: build/go-foundation-v2
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: 1.25.x
+          cache: false
+
+      - name: Install LLVM 21
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          brew install llvm@21
+          echo "LLVM_DIR=$(brew --prefix llvm@21)/lib/cmake/llvm" >> "$GITHUB_ENV"
+
+      - name: Build pinned OpenSSL
+        run: |
+          mkdir -p build/deps
+          cd build/deps
+          curl --fail --location --remote-name https://openssl-library.org/source/old/3.5/openssl-3.5.6.tar.gz
+          echo "deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736  openssl-3.5.6.tar.gz" | shasum -a 256 --check
+          tar -xzf openssl-3.5.6.tar.gz
+          cd openssl-3.5.6
+          ./Configure shared --prefix="${{ github.workspace }}/build/deps/openssl-3.5.6-prefix"
+          make -j"$(sysctl -n hw.ncpu)"
+          make install_sw
+
+      - name: Checkout and build pinned WAMR
+        run: |
+          git init build/deps/wasm-micro-runtime
+          git -C build/deps/wasm-micro-runtime remote add origin https://github.com/bytecodealliance/wasm-micro-runtime.git
+          git -C build/deps/wasm-micro-runtime fetch --depth 1 origin 25bd7eb63e828e4bd242cc9b38d260b4b31c6605
+          git -C build/deps/wasm-micro-runtime checkout --detach FETCH_HEAD
+          cmake -S build/deps/wasm-micro-runtime/product-mini/platforms/darwin -B build/deps/wamr-build -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_FAST_INTERP=0 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_LIBC_WASI=1
+          cmake --build build/deps/wamr-build --parallel 4
+
+      - name: Configure providers
+        env:
+          CC: clang
+          CXX: clang++
+        run: >-
+          cmake -S . -B build/providers
+          -DCMAKE_BUILD_TYPE=Debug
+          -DBUILD_TESTING=ON
+          -DFOUNDATION_WARNINGS_AS_ERRORS=ON
+          -DLLVM_DIR="$LLVM_DIR"
+          -DFOUNDATION_V2_SOURCE=${{ github.workspace }}/build/go-foundation-v2
+          -DFOUNDATION_BUILD_OPENSSL_PROVIDER=ON
+          -DOPENSSL_ROOT_DIR=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix
+          -DFOUNDATION_BUILD_WAMR_PROVIDER=ON
+          -DFOUNDATION_WAMR_SOURCE=${{ github.workspace }}/build/deps/wasm-micro-runtime
+          -DFOUNDATION_WAMR_LIBRARY=${{ github.workspace }}/build/deps/wamr-build/libiwasm.a
+
+      - name: Build providers
+        run: cmake --build build/providers --parallel 4
+
+      - name: Prepare package locks for host
+        run: >-
+          cmake
+          -DCOMPILER=${{ github.workspace }}/build/providers/foundationc
+          -DROOT=${{ github.workspace }}
+          -P tests/prepare-host-locks.cmake
+
+      - name: Test providers
+        env:
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/build/deps/openssl-3.5.6-prefix/lib:${{ github.workspace }}/build/deps/openssl-3.5.6-prefix/lib64
+        run: ctest --test-dir build/providers --output-on-failure --parallel 4
+
+  windows-providers:
+    name: Windows optional providers
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Checkout Foundation v2 baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: mirkobrombin/go-foundation
+          ref: 06679f06495151fbd0d491e76121ba98b939a291
+          path: build/go-foundation-v2
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: 1.25.x
+          cache: false
+
+      - name: Install LLVM 21
+        shell: pwsh
+        run: |
+          choco upgrade llvm --version=21.1.8 --allow-downgrade --no-progress -y
+          "LLVM_DIR=C:\Program Files\LLVM\lib\cmake\llvm" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build pinned OpenSSL
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build/deps | Out-Null
+          Invoke-WebRequest -Uri https://openssl-library.org/source/old/3.5/openssl-3.5.6.tar.gz -OutFile build/deps/openssl-3.5.6.tar.gz
+          $digest = (Get-FileHash build/deps/openssl-3.5.6.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne "deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736") {
+            throw "OpenSSL source checksum mismatch"
+          }
+          tar -xzf build/deps/openssl-3.5.6.tar.gz -C build/deps
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $visualStudio = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $vcvars = Join-Path $visualStudio "VC\Auxiliary\Build\vcvars64.bat"
+          $source = Join-Path "${{ github.workspace }}" "build\deps\openssl-3.5.6"
+          $prefix = Join-Path "${{ github.workspace }}" "build\deps\openssl-3.5.6-prefix"
+          cmd /d /s /c "`"$vcvars`" && cd /d `"$source`" && perl Configure VC-WIN64A shared --prefix=`"$prefix`" && nmake && nmake install_sw"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Checkout and build pinned WAMR
+        shell: pwsh
+        run: |
+          git init build/deps/wasm-micro-runtime
+          git -C build/deps/wasm-micro-runtime remote add origin https://github.com/bytecodealliance/wasm-micro-runtime.git
+          git -C build/deps/wasm-micro-runtime fetch --depth 1 origin 25bd7eb63e828e4bd242cc9b38d260b4b31c6605
+          git -C build/deps/wasm-micro-runtime checkout --detach FETCH_HEAD
+          cmake -S build/deps/wasm-micro-runtime/product-mini/platforms/windows -B build/deps/wamr-build -A x64 -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_FAST_INTERP=0 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_LIBC_WASI=1
+          cmake --build build/deps/wamr-build --config Debug --parallel 4
+
+      - name: Configure providers
+        shell: pwsh
+        run: >-
+          cmake -S . -B build/providers -A x64
+          -DBUILD_TESTING=ON
+          -DFOUNDATION_WARNINGS_AS_ERRORS=ON
+          "-DLLVM_DIR=$env:LLVM_DIR"
+          -DFOUNDATION_V2_SOURCE=${{ github.workspace }}/build/go-foundation-v2
+          -DFOUNDATION_BUILD_OPENSSL_PROVIDER=ON
+          -DOPENSSL_ROOT_DIR=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix
+          -DFOUNDATION_BUILD_WAMR_PROVIDER=ON
+          -DFOUNDATION_WAMR_SOURCE=${{ github.workspace }}/build/deps/wasm-micro-runtime
+          -DFOUNDATION_WAMR_LIBRARY=${{ github.workspace }}/build/deps/wamr-build/Debug/libiwasm.lib
+
+      - name: Build providers
+        run: cmake --build build/providers --config Debug --parallel 4
+
+      - name: Prepare package locks for host
+        shell: pwsh
+        run: >-
+          cmake
+          -DCOMPILER=${{ github.workspace }}/build/providers/Debug/foundationc.exe
+          -DROOT=${{ github.workspace }}
+          -P tests/prepare-host-locks.cmake
+
+      - name: Test providers
+        shell: pwsh
+        run: |
+          $env:PATH = "${{ github.workspace }}\build\deps\openssl-3.5.6-prefix\bin;$env:PATH"
+          ctest --test-dir build/providers -C Debug --output-on-failure --parallel 4

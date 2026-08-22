@@ -1,0 +1,79 @@
+package test.telemetry_otlp_http_network
+
+import foundation.httpx
+import foundation.telemetry
+import std.bytes
+import std.format
+import std.net
+
+fn main() i32 {
+    const pending = spawn run()
+    $pending.wait()
+}
+
+task run() i32 {
+    const listener = net.Listen("127.0.0.1", 0) else error {
+        discard error
+        return 1
+    }
+    const port = listener.Port
+    const serving = spawn serveOtlp($listener)
+    const transport = telemetry.NewHttpOtlpTransport(64, 64) else error {
+        discard error
+        const returned = $serving.wait()
+        discard returned
+        return 2
+    }
+    const exporterCreated = telemetry.NewOtlpExporter(
+        "http://127.0.0.1:" + format.U64(port) + "/v1/traces",
+        .JSON,
+        $transport
+    ) else error {
+        discard error
+        const returned = $serving.wait()
+        discard returned
+        return 3
+    }
+    var exporter = exporterCreated
+    const pending = exporter.Export(bytes.FromText("payload"))
+    const result = $pending.wait()
+    const returned = $serving.wait()
+    discard returned
+    match result {
+        Ok: {
+            print("ok")
+            0
+        }
+        Err(error): {
+            discard error
+            4
+        }
+    }
+}
+
+task serveOtlp($listener own net.TcpListener) own net.TcpListener {
+    const accepting = spawn net.Accept($listener)
+    const accepted = $accepting.wait()
+    const net.AcceptOutcome { Listener Value } = accepted
+    const connection = Value else error {
+        discard error
+        return Listener
+    }
+    const split = connection.Split() else error {
+        discard error
+        return Listener
+    }
+    const net.StreamPair { Reader Writer } = split
+    discard Reader
+    const writing = spawn net.WriteAll(
+        $Writer,
+        "HTTP/1.1 200 OK\r\n" +
+            "Content-Type: application/json\r\n" +
+            "Content-Length: 0\r\n\r\n"
+    )
+    const written = $writing.wait()
+    const net.WriteOutcome { Writer as returned Value as outcome } = written
+    discard returned
+    discard outcome
+    Listener
+}

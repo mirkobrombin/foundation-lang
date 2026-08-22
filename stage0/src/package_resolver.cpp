@@ -257,7 +257,7 @@ lockRootPackageMetadata(PackageLock &lock, const PackageManifest &manifest,
         if (foreign.kind != "path") {
             errors.push_back({rootManifestPath, 1, 1, "FDN4057",
                               "foreign resolver kind " + foreign.kind +
-                                  " is declared for future use but is not supported"});
+                                  " is not supported; Foundation 1.0 accepts path resolvers"});
             continue;
         }
         std::error_code error;

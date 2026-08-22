@@ -249,7 +249,8 @@ std::string displayTypeSyntax(const TypeSyntax &type) {
 }
 
 std::string typeParameterSuffix(const std::vector<std::string> &parameters,
-                                const std::vector<bool> *transferable = nullptr) {
+                                const std::vector<bool> *transferable = nullptr,
+                                const std::vector<std::optional<TypeSyntax>> *constraints = nullptr) {
     if (parameters.empty()) {
         return {};
     }
@@ -262,6 +263,10 @@ std::string typeParameterSuffix(const std::vector<std::string> &parameters,
         if (transferable != nullptr && index < transferable->size() &&
             (*transferable)[index]) {
             result += " transferable";
+        }
+        if (constraints != nullptr && index < constraints->size() &&
+            (*constraints)[index].has_value()) {
+            result += ' ' + displayTypeSyntax(*(*constraints)[index]);
         }
     }
     result += '>';
@@ -319,7 +324,8 @@ std::string functionDetail(const Function &function) {
     }
     std::string result = prefix + shortName(function.name) +
                          typeParameterSuffix(function.typeParameters,
-                                             &function.transferableTypeParameters) + '(';
+                                             &function.transferableTypeParameters,
+                                             &function.typeParameterConstraints) + '(';
     for (std::size_t index = 0; index < function.parameters.size(); ++index) {
         if (index != 0) {
             result += ", ";
@@ -372,6 +378,17 @@ class IndexBuilder {
         : analysis_(analysis), semantic_(analysis.semantic ? &*analysis.semantic : nullptr),
           expressionOwners_(analysis.program.expressions.size()),
           statementOwners_(analysis.program.statements.size()) {
+        for (const auto &function : analysis_.program.functions) {
+            if (!function.workflow.has_value()) {
+                continue;
+            }
+            if (function.workflow->failureStruct.has_value()) {
+                generatedWorkflowTypes_.insert(*function.workflow->failureStruct);
+            }
+            if (function.workflow->failureEnum.has_value()) {
+                generatedWorkflowTypes_.insert(*function.workflow->failureEnum);
+            }
+        }
         if (semantic_ != nullptr) {
             localSymbols_.resize(semantic_->functions.size());
             localAliases_.resize(semantic_->functions.size());
@@ -474,7 +491,9 @@ class IndexBuilder {
         if (addDefinition) {
             occurrences_.push_back({symbol.id, symbol.definition, true});
         }
+        const auto id = symbol.id;
         symbols_.push_back(std::move(symbol));
+        symbolOffsets_.emplace(id, symbols_.size() - 1);
     }
 
     void addOccurrence(LanguageSymbolId symbol, SourceSpan span) {
@@ -485,9 +504,8 @@ class IndexBuilder {
     }
 
     const LanguageSymbol *symbol(LanguageSymbolId id) const {
-        const auto found = std::find_if(symbols_.begin(), symbols_.end(),
-                                        [id](const auto &value) { return value.id == id; });
-        return found == symbols_.end() ? nullptr : &*found;
+        const auto found = symbolOffsets_.find(id);
+        return found == symbolOffsets_.end() ? nullptr : &symbols_[found->second];
     }
 
     void addNamedOccurrence(LanguageSymbolId id, SourceSpan anchor,
@@ -638,15 +656,7 @@ class IndexBuilder {
     }
 
     bool generatedWorkflowType(std::string_view name) const {
-        return std::any_of(
-            analysis_.program.functions.begin(), analysis_.program.functions.end(),
-            [name](const auto &function) {
-                return function.workflow.has_value() &&
-                       ((function.workflow->failureStruct.has_value() &&
-                         *function.workflow->failureStruct == name) ||
-                        (function.workflow->failureEnum.has_value() &&
-                         *function.workflow->failureEnum == name));
-            });
+        return generatedWorkflowTypes_.contains(name);
     }
 
     void addDeclarations() {
@@ -1662,6 +1672,7 @@ class IndexBuilder {
     const ProjectAnalysis &analysis_;
     const SemanticModel *semantic_{};
     std::vector<LanguageSymbol> symbols_;
+    std::map<LanguageSymbolId, std::size_t, decltype(&idLess)> symbolOffsets_{idLess};
     std::vector<LanguageOccurrence> occurrences_;
     std::vector<LanguageCall> calls_;
     std::vector<LanguageTypeLink> typeLinks_;
@@ -1672,6 +1683,7 @@ class IndexBuilder {
     std::map<std::string, LanguageSymbolId> typeSymbols_;
     std::map<std::string, LanguageSymbolId> attributeSymbols_;
     std::map<std::size_t, LanguageSymbolId> functionSymbols_;
+    std::set<std::string, std::less<>> generatedWorkflowTypes_;
 };
 
 bool validIdentifier(std::string_view name) {

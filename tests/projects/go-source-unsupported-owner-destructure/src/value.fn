@@ -1,0 +1,14 @@
+package sample.owner_destructure
+
+struct Token {
+    Value String
+}
+
+fn makeToken() own Token {
+    own Token { Value = "Foundation" }
+}
+
+fn DestructureOwner() String {
+    const Token { Value } = makeToken()
+    Value
+}

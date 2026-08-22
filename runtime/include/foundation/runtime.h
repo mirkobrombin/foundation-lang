@@ -1,10 +1,10 @@
 #ifndef FOUNDATION_RUNTIME_H
 #define FOUNDATION_RUNTIME_H
 
-#include <stddef.h>
-#include <stdbool.h>
-#include <stdint.h>
 #include <float.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 static_assert(sizeof(float) == 4 && FLT_RADIX == 2 && FLT_MANT_DIG == 24,
@@ -176,6 +176,8 @@ _Noreturn void fdn_invalid_enum_tag(void);
     TYPE fdn_##NAME##_multiply(TYPE left, TYPE right); \
     TYPE fdn_##NAME##_divide(TYPE left, TYPE right); \
     TYPE fdn_##NAME##_remainder(TYPE left, TYPE right); \
+    TYPE fdn_##NAME##_shift_left(TYPE left, TYPE right); \
+    TYPE fdn_##NAME##_shift_right(TYPE left, TYPE right); \
     TYPE fdn_##NAME##_negate(TYPE value)
 
 #define FDN_DECLARE_UNSIGNED_ARITHMETIC(TYPE, NAME) \
@@ -183,7 +185,9 @@ _Noreturn void fdn_invalid_enum_tag(void);
     TYPE fdn_##NAME##_subtract(TYPE left, TYPE right); \
     TYPE fdn_##NAME##_multiply(TYPE left, TYPE right); \
     TYPE fdn_##NAME##_divide(TYPE left, TYPE right); \
-    TYPE fdn_##NAME##_remainder(TYPE left, TYPE right)
+    TYPE fdn_##NAME##_remainder(TYPE left, TYPE right); \
+    TYPE fdn_##NAME##_shift_left(TYPE left, TYPE right); \
+    TYPE fdn_##NAME##_shift_right(TYPE left, TYPE right)
 
 FDN_DECLARE_SIGNED_ARITHMETIC(int8_t, i8);
 FDN_DECLARE_SIGNED_ARITHMETIC(int16_t, i16);
@@ -270,6 +274,41 @@ int32_t foundation_runtime_hmac_sha256(uint64_t key_handle, uint64_t value_handl
                                        uint64_t *result);
 bool foundation_runtime_bytes_constant_time_equal(uint64_t left_handle,
                                                   uint64_t right_handle);
+typedef int32_t (*fdn_wamr_host_dispatch_fn)(void* context, const fdn_string* capability,
+                                             const fdn_string* operation, const uint8_t* input,
+                                             size_t input_length, uint8_t** response,
+                                             size_t* response_length, uint8_t** error,
+                                             size_t* error_length);
+/* The callback owns input_handle. On success it transfers output_handle back. */
+typedef int32_t (*fdn_wamr_capability_fn)(uint64_t context, const fdn_string* operation,
+                                          uint64_t input_handle, uint64_t* output_handle);
+int32_t foundation_runtime_wamr_engine_open(const fdn_string* adapter_path, uint64_t* handle);
+int32_t foundation_runtime_wamr_engine_close(uint64_t* handle);
+int32_t foundation_runtime_wamr_module_open(uint64_t engine_handle, const fdn_string* path,
+                                            uint64_t payload_limit, uint64_t* handle);
+int32_t foundation_runtime_wamr_module_allow_read(uint64_t handle, const fdn_string* path);
+int32_t foundation_runtime_wamr_module_allow_write(uint64_t handle, const fdn_string* path);
+int32_t foundation_runtime_wamr_module_set_environment(uint64_t handle, const fdn_string* key,
+                                                       const fdn_string* value);
+int32_t foundation_runtime_wamr_module_add_argument(uint64_t handle, const fdn_string* value);
+int32_t foundation_runtime_wamr_module_declare_capability(uint64_t handle, const fdn_string* name);
+int32_t foundation_runtime_wamr_module_add_capability(uint64_t handle, const fdn_string* name,
+                                                      uint64_t context,
+                                                      fdn_wamr_capability_fn handler);
+int32_t foundation_runtime_wamr_module_prepare(uint64_t handle);
+int32_t foundation_runtime_wamr_module_prepare_timed(uint64_t handle, uint64_t timeout_nanoseconds);
+int32_t foundation_runtime_wamr_module_metadata(uint64_t handle, uint64_t* output_handle);
+int32_t foundation_runtime_wamr_module_metadata_timed(uint64_t handle, uint64_t timeout_nanoseconds,
+                                                      uint64_t* output_handle);
+int32_t foundation_runtime_wamr_module_start(uint64_t handle);
+int32_t foundation_runtime_wamr_module_start_timed(uint64_t handle, uint64_t timeout_nanoseconds);
+int32_t foundation_runtime_wamr_module_stop(uint64_t handle);
+int32_t foundation_runtime_wamr_module_stop_timed(uint64_t handle, uint64_t timeout_nanoseconds);
+int32_t foundation_runtime_wamr_module_cancel(uint64_t handle);
+int32_t foundation_runtime_wamr_module_call(uint64_t handle, const fdn_string* method,
+                                            uint64_t input_handle, uint64_t timeout_nanoseconds,
+                                            uint64_t* output_handle);
+int32_t foundation_runtime_wamr_module_close(uint64_t* handle);
 int32_t foundation_runtime_aes256_gcm_encrypt(uint64_t key_handle,
                                               uint64_t value_handle,
                                               const fdn_string *associated_data,
@@ -358,6 +397,11 @@ int32_t foundation_runtime_fs_root_write_file(
     uint64_t handle, const fdn_string *relative_path, uint64_t bytes_handle,
     uint32_t permissions);
 int32_t foundation_runtime_fs_root_close(uint64_t *handle);
+void foundation_runtime_fs_watch_start(const fdn_string* path, uint64_t interval_milliseconds,
+                                       uint32_t* kind, fdn_string* event_path,
+                                       fdn_reactor_operation* operation);
+void foundation_runtime_fs_watch_cancel(fdn_reactor_operation* operation);
+uint64_t foundation_runtime_fs_watch_live_jobs(void);
 int32_t foundation_runtime_net_resolve(const fdn_string *host, uint64_t port,
                                        uint64_t *addresses);
 void foundation_runtime_net_addresses_close(uint64_t addresses);

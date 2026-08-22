@@ -53,7 +53,8 @@ class Parser {
     const Token &expect(TokenKind kind, const char *code, const char *message);
     std::pair<std::string, SourceSpan> qualifiedName(const char *code, const char *message,
                                                      bool allowKeywordSegments = false);
-    std::vector<std::string> typeParameters(std::vector<bool> *transferable = nullptr);
+    std::vector<std::string> typeParameters(std::vector<bool> *transferable = nullptr,
+                   std::vector<std::optional<TypeSyntax>>* constraints = nullptr);
     TypeSyntax typeSyntax(const char *code, const char *message);
     StructDeclaration structDeclaration(bool service = false);
     void methodsDeclaration();
@@ -92,6 +93,7 @@ class Parser {
     AstExpressionId logicalAnd();
     AstExpressionId equality();
     AstExpressionId comparison();
+    AstExpressionId shift();
     AstExpressionId term();
     AstExpressionId factor();
     AstExpressionId unary();
@@ -122,6 +124,7 @@ class Parser {
     std::size_t typeDepth_{};
     std::vector<std::string> activeTypeParameters_;
     std::vector<bool> activeTransferableTypeParameters_;
+    std::vector<std::optional<TypeSyntax>> activeTypeParameterConstraints_;
     bool expressionLimitReported_{};
     bool structLiteralsAllowed_{true};
     bool installBuiltins_{};

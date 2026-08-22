@@ -7,7 +7,7 @@ import std.net
 import std.parse
 import std.text
 
-// Reports DNS, TCP, protocol, framing, and unavailable TLS failures.
+// Reports DNS, TCP, protocol, framing, pooling, and unavailable TLS failures.
 enum NetworkError {
     // Preserves direct transport request validation failures.
     InvalidRequest(error RequestError)
@@ -17,6 +17,12 @@ enum NetworkError {
     InvalidURL
     // Rejects HTTPS until a verified TLS backend is configured.
     TLSUnavailable
+    // Reports cooperative cancellation from an installed transport provider.
+    Cancelled
+    // Reports a transport deadline before a complete response arrived.
+    Timeout
+    // Reports that the connection owner stopped during a request.
+    PoolUnavailable
     // Rejects a malformed HTTP status line or header block.
     InvalidResponse
     // Rejects response framing that cannot be bounded safely.
@@ -26,20 +32,24 @@ enum NetworkError {
 }
 
 struct networkTransport implements Transport<NetworkError> {
+    pool own networkPool
+
     fn Send(
         &self,
         $request Request
     ) Task<Result<Response, NetworkError>> {
-        spawn sendNetwork($request)
+        spawn sendNetwork($request, self.pool.Handle())
     }
 }
 
 struct networkStreamingTransport implements StreamingTransport<NetworkError> {
+    pool own networkPool
+
     fn Send(
         &self,
         $request Request
     ) Task<Result<StreamingResponse<NetworkError>, NetworkError>> {
-        spawn sendStreamingNetwork($request)
+        spawn sendStreamingNetwork($request, self.pool.Handle())
     }
 }
 
@@ -52,8 +62,16 @@ struct emptyNetworkBody implements ResponseBody<NetworkError> {
     }
 }
 
-struct fixedNetworkBody implements ResponseBody<NetworkError> {
+struct networkLease {
     reader own net.TcpReader
+    writer own net.TcpWriter
+    pool networkPoolHandle
+    key String
+    reusable bool
+}
+
+struct fixedNetworkBody implements ResponseBody<NetworkError> {
+    lease own networkLease
     remaining u64
     deadline net.Deadline
 
@@ -66,7 +84,7 @@ struct fixedNetworkBody implements ResponseBody<NetworkError> {
 }
 
 struct closeNetworkBody implements ResponseBody<NetworkError> {
-    reader own net.TcpReader
+    lease own networkLease
     remaining u64
     deadline net.Deadline
 
@@ -113,7 +131,7 @@ fn chunkedPhaseIsEnding(value chunkedPhase) bool {
 }
 
 struct chunkedNetworkBody implements ResponseBody<NetworkError> {
-    reader own net.TcpReader
+    lease own networkLease
     remainingBody u64
     remainingChunk u64
     phase chunkedPhase
@@ -139,17 +157,48 @@ struct networkTarget {
 
 // Creates a one-request HTTP/1.1 transport backed by std.net.
 fn Network() own Transport<NetworkError> {
-    own networkTransport {}
+    own networkTransport { pool = defaultNetworkPool() }
+}
+
+// Creates a persistent HTTP/1.1 transport with explicit network policy.
+fn NetworkWith(
+    $policy NetworkPolicy
+) Result<own Transport<NetworkError>, NetworkConfigurationError> {
+    const pool = openNetworkPool($policy) else error {
+        return .Err(error)
+    }
+    .Ok(own networkTransport { pool = pool })
 }
 
 // Creates a one-request HTTP/1.1 transport with a pull-based response body.
 fn StreamingNetwork() own StreamingTransport<NetworkError> {
-    own networkStreamingTransport {}
+    own networkStreamingTransport { pool = defaultNetworkPool() }
 }
 
-task sendNetwork($request Request) Result<Response, NetworkError> {
+// Creates a persistent streaming transport with explicit network policy.
+fn StreamingNetworkWith(
+    $policy NetworkPolicy
+) Result<own StreamingTransport<NetworkError>, NetworkConfigurationError> {
+    const pool = openNetworkPool($policy) else error {
+        return .Err(error)
+    }
+    .Ok(own networkStreamingTransport { pool = pool })
+}
+
+fn defaultNetworkPool() own networkPool {
+    const pool = openNetworkPool(NetworkPolicy {}) else error {
+        discard error
+        panic("httpx default network policy invariant failed")
+    }
+    pool
+}
+
+task sendNetwork(
+    $request Request,
+    $pool networkPoolHandle
+) Result<Response, NetworkError> {
     const maximumBody = request.MaximumResponseSize
-    const sending = spawn sendStreamingNetwork($request)
+    const sending = spawn sendStreamingNetwork($request, $pool)
     const streamed = $sending.wait()
     const response = streamed else error {
         return .Err(error)
@@ -169,7 +218,8 @@ task sendNetwork($request Request) Result<Response, NetworkError> {
 }
 
 task sendStreamingNetwork(
-    $request Request
+    $request Request,
+    $pool networkPoolHandle
 ) Result<StreamingResponse<NetworkError>, NetworkError> {
     var activeRequest = request
     validateRequest(&activeRequest) else error {
@@ -190,31 +240,62 @@ task sendStreamingNetwork(
         return .Err(.TLSUnavailable)
     }
 
-    const connecting = spawn net.ConnectUntil(
-        text.Copy(activeTarget.host),
-        activeTarget.port,
+    const route = pool.Route(
+        $activeTarget,
+        activeRequest.URL
+    ) else error {
+        return .Err(.InvalidRequest(error = error))
+    }
+    const networkRoute {
+        key as routeKey
+        connectHost
+        connectPort
+        requestTarget
+        proxyAuthorization
+    } = route
+    const acquiring = spawn acquireNetworkConnection(
+        pool.Clone(),
+        text.Copy(routeKey),
+        $connectHost,
+        connectPort,
         deadline
     )
-    const connectionValue = $connecting.wait()
-    const connection = connectionValue else error {
-        discard activeTarget
-        return .Err(.Network(error = error))
+    const acquired = $acquiring.wait()
+    const connection = acquired else error {
+        discard routeKey
+        discard requestTarget
+        discard proxyAuthorization
+        return .Err(error)
     }
-    const pair = connection.Split() else error {
-        discard activeTarget
-        return .Err(.Network(error = error))
-    }
-    const net.StreamPair { Reader Writer } = pair
+    const pooledConnection {
+        key as connectionKey
+        reader as Reader
+        writer as Writer
+    } = connection
     var reader = Reader
     var writer = Writer
-    const wire = encodeRequestHead(&activeRequest, &activeTarget) else error {
+    const bodyLength = activeRequest.Body.Len() else error {
         discard error
-        discard activeTarget
+        discard routeKey
+        discard connectionKey
+        discard reader
+        discard writer
+        return .Err(.InvalidRequest(error = .InvalidBody))
+    }
+    const wire = encodeRequestHead(
+        &activeRequest,
+        $requestTarget,
+        $proxyAuthorization,
+        bodyLength
+    ) else error {
+        discard error
+        discard routeKey
+        discard connectionKey
         discard reader
         discard writer
         return .Err(.InvalidURL)
     }
-    discard activeTarget
+    discard routeKey
 
     const writing = spawn net.WriteAllUntil($writer, $wire, deadline)
     const writeOutcome = $writing.wait()
@@ -230,7 +311,13 @@ task sendStreamingNetwork(
         return .Err(.Network(error = error))
     }
 
-    const body = replace activeRequest.Body with bytes.FromText("")
+    const body = activeRequest.Body.Copy() else error {
+        discard error
+        discard connectionKey
+        discard reader
+        discard writer
+        return .Err(.InvalidRequest(error = .InvalidBody))
+    }
     const bodyWriting = spawn net.WriteAllBytesUntil(
         $writer,
         $body,
@@ -248,25 +335,73 @@ task sendStreamingNetwork(
         discard writer
         return .Err(.Network(error = error))
     }
-    discard writer
-
     const reading = spawn readStreamingResponse(
         $reader,
+        $writer,
+        $pool,
+        $connectionKey,
         text.Copy(activeRequest.Method),
         activeRequest.MaximumResponseSize,
         deadline,
-        0
+        0,
+        requestAllowsReuse(&activeRequest)
     )
     const result = $reading.wait()
     result
 }
 
+task acquireNetworkConnection(
+    $pool networkPoolHandle,
+    $key String,
+    $host String,
+    port u64,
+    deadline net.Deadline
+) Result<own pooledConnection, NetworkError> {
+    const taking = pool.Take(text.Copy(key))
+    const taken = $taking.wait()
+    const available = taken else error {
+        discard error
+        discard key
+        discard host
+        return .Err(.PoolUnavailable)
+    }
+    match available {
+        Some(connection): {
+            discard key
+            discard host
+            .Ok(connection)
+        }
+        None: {
+            const connecting = spawn net.ConnectUntil($host, port, deadline)
+            const connectionValue = $connecting.wait()
+            const connection = connectionValue else error {
+                discard key
+                return .Err(.Network(error = error))
+            }
+            const pair = connection.Split() else error {
+                discard key
+                return .Err(.Network(error = error))
+            }
+            const net.StreamPair { Reader Writer } = pair
+            .Ok(own pooledConnection {
+                key = key
+                reader = Reader
+                writer = Writer
+            })
+        }
+    }
+}
+
 task readStreamingResponse(
     $reader own net.TcpReader,
+    $writer own net.TcpWriter,
+    $pool networkPoolHandle,
+    $key String,
     $method String,
     maximumBody u64,
     deadline net.Deadline,
-    informationalResponses u64
+    informationalResponses u64,
+    requestReusable bool
 ) Result<StreamingResponse<NetworkError>, NetworkError> {
     var active = reader
     const statusReading = spawn net.ReadLineLimitedUntil(
@@ -295,6 +430,8 @@ task readStreamingResponse(
     var contentLength Option<u64> = .None
     var sawContentLength = false
     var chunked = false
+    var responseClose = false
+    var responseKeepAlive = false
     var count u64 = 0
     var complete = false
     while !complete {
@@ -362,6 +499,14 @@ task readStreamingResponse(
                 }
                 chunked = true
             }
+            if equalFoldASCII(header.Name, "Connection") &&
+                headerContainsToken(header.Value, "close") {
+                responseClose = true
+            }
+            if equalFoldASCII(header.Name, "Connection") &&
+                headerContainsToken(header.Value, "keep-alive") {
+                responseKeepAlive = true
+            }
             headers.PushFront($header)
             count = count + 1
         }
@@ -380,10 +525,14 @@ task readStreamingResponse(
         discard contentLength
         const nextReading = spawn readStreamingResponse(
             $active,
+            $writer,
+            $pool,
+            $key,
             $method,
             maximumBody,
             deadline,
-            informationalResponses + 1
+            informationalResponses + 1,
+            requestReusable
         )
         const next = $nextReading.wait()
         return next
@@ -398,8 +547,15 @@ task readStreamingResponse(
             discard contentLength
             return .Err(.InvalidResponse)
         }
-        discard active
         discard contentLength
+        const releasing = spawn finishNetworkLease(own networkLease {
+            reader = active
+            writer = writer
+            pool = pool
+            key = key
+            reusable = requestReusable && responseKeepAlive && !responseClose
+        })
+        $releasing.wait()
         return .Ok(StreamingResponse<NetworkError> {
             Status = status
             Headers = headers
@@ -419,7 +575,14 @@ task readStreamingResponse(
             Status = status
             Headers = headers
             Body = own chunkedNetworkBody {
-                reader = active
+                lease = own networkLease {
+                    reader = active
+                    writer = writer
+                    pool = pool
+                    key = key
+                    reusable = requestReusable && responseKeepAlive &&
+                        !responseClose
+                }
                 remainingBody = maximumBody
                 remainingChunk = 0
                 phase = .Size
@@ -436,7 +599,13 @@ task readStreamingResponse(
             Status = status
             Headers = headers
             Body = own closeNetworkBody {
-                reader = active
+                lease = own networkLease {
+                    reader = active
+                    writer = writer
+                    pool = pool
+                    key = key
+                    reusable = false
+                }
                 remaining = maximumBody
                 deadline = deadline
             }
@@ -453,7 +622,14 @@ task readStreamingResponse(
         return .Err(.ResponseTooLarge)
     }
     if length == 0 {
-        discard active
+        const releasing = spawn finishNetworkLease(own networkLease {
+            reader = active
+            writer = writer
+            pool = pool
+            key = key
+            reusable = requestReusable && responseKeepAlive && !responseClose
+        })
+        $releasing.wait()
         return .Ok(StreamingResponse<NetworkError> {
             Status = status
             Headers = headers
@@ -464,7 +640,14 @@ task readStreamingResponse(
         Status = status
         Headers = headers
         Body = own fixedNetworkBody {
-            reader = active
+            lease = own networkLease {
+                reader = active
+                writer = writer
+                pool = pool
+                key = key
+                reusable = requestReusable && responseKeepAlive &&
+                    !responseClose
+            }
             remaining = length
             deadline = deadline
         }
@@ -545,11 +728,18 @@ task readFixedNetworkBody(
     $body own fixedNetworkBody,
     maximum u64
 ) own BodyReadOutcome<NetworkError> {
-    const fixedNetworkBody { reader remaining deadline } = body
+    const fixedNetworkBody { lease remaining deadline } = body
+    const networkLease { reader writer pool key reusable } = lease
     if maximum == 0 {
         return own BodyReadOutcome<NetworkError> {
             Body = own fixedNetworkBody {
-                reader = reader
+                lease = own networkLease {
+                    reader = reader
+                    writer = writer
+                    pool = pool
+                    key = key
+                    reusable = reusable
+                }
                 remaining = remaining
                 deadline = deadline
             }
@@ -557,7 +747,14 @@ task readFixedNetworkBody(
         }
     }
     if remaining == 0 {
-        discard reader
+        const releasing = spawn finishNetworkLease(own networkLease {
+            reader = reader
+            writer = writer
+            pool = pool
+            key = key
+            reusable = reusable
+        })
+        $releasing.wait()
         return own BodyReadOutcome<NetworkError> {
             Body = own emptyNetworkBody {}
             Value = .Ok(.Complete(trailers = newHeaderList()))
@@ -580,7 +777,13 @@ task readFixedNetworkBody(
     const optional = Value else error {
         return own BodyReadOutcome<NetworkError> {
             Body = own fixedNetworkBody {
-                reader = restoredReader
+                lease = own networkLease {
+                    reader = restoredReader
+                    writer = writer
+                    pool = pool
+                    key = key
+                    reusable = reusable
+                }
                 remaining = remaining
                 deadline = deadline
             }
@@ -590,6 +793,9 @@ task readFixedNetworkBody(
     match optional {
         None: {
             discard restoredReader
+            discard writer
+            discard pool
+            discard key
             return own BodyReadOutcome<NetworkError> {
                 Body = own emptyNetworkBody {}
                 Value = .Err(.Source(error = .InvalidResponse))
@@ -600,6 +806,9 @@ task readFixedNetworkBody(
                 discard error
                 discard chunk
                 discard restoredReader
+                discard writer
+                discard pool
+                discard key
                 return own BodyReadOutcome<NetworkError> {
                     Body = own emptyNetworkBody {}
                     Value = .Err(.Source(error = .InvalidResponse))
@@ -607,7 +816,13 @@ task readFixedNetworkBody(
             }
             return own BodyReadOutcome<NetworkError> {
                 Body = own fixedNetworkBody {
-                    reader = restoredReader
+                    lease = own networkLease {
+                        reader = restoredReader
+                        writer = writer
+                        pool = pool
+                        key = key
+                        reusable = reusable
+                    }
                     remaining = remaining - length
                     deadline = deadline
                 }
@@ -621,11 +836,18 @@ task readCloseNetworkBody(
     $body own closeNetworkBody,
     maximum u64
 ) own BodyReadOutcome<NetworkError> {
-    const closeNetworkBody { reader remaining deadline } = body
+    const closeNetworkBody { lease remaining deadline } = body
+    const networkLease { reader writer pool key reusable } = lease
     if maximum == 0 {
         return own BodyReadOutcome<NetworkError> {
             Body = own closeNetworkBody {
-                reader = reader
+                lease = own networkLease {
+                    reader = reader
+                    writer = writer
+                    pool = pool
+                    key = key
+                    reusable = reusable
+                }
                 remaining = remaining
                 deadline = deadline
             }
@@ -652,7 +874,13 @@ task readCloseNetworkBody(
     const optional = Value else error {
         return own BodyReadOutcome<NetworkError> {
             Body = own closeNetworkBody {
-                reader = restoredReader
+                lease = own networkLease {
+                    reader = restoredReader
+                    writer = writer
+                    pool = pool
+                    key = key
+                    reusable = reusable
+                }
                 remaining = remaining
                 deadline = deadline
             }
@@ -661,7 +889,14 @@ task readCloseNetworkBody(
     }
     match optional {
         None: {
-            discard restoredReader
+            const releasing = spawn finishNetworkLease(own networkLease {
+                reader = restoredReader
+                writer = writer
+                pool = pool
+                key = key
+                reusable = false
+            })
+            $releasing.wait()
             return own BodyReadOutcome<NetworkError> {
                 Body = own emptyNetworkBody {}
                 Value = .Ok(.Complete(trailers = newHeaderList()))
@@ -672,6 +907,9 @@ task readCloseNetworkBody(
                 discard error
                 discard chunk
                 discard restoredReader
+                discard writer
+                discard pool
+                discard key
                 return own BodyReadOutcome<NetworkError> {
                     Body = own emptyNetworkBody {}
                     Value = .Err(.Source(error = .InvalidResponse))
@@ -680,6 +918,9 @@ task readCloseNetworkBody(
             if length > remaining {
                 discard chunk
                 discard restoredReader
+                discard writer
+                discard pool
+                discard key
                 return own BodyReadOutcome<NetworkError> {
                     Body = own emptyNetworkBody {}
                     Value = .Err(.Source(error = .ResponseTooLarge))
@@ -687,7 +928,13 @@ task readCloseNetworkBody(
             }
             return own BodyReadOutcome<NetworkError> {
                 Body = own closeNetworkBody {
-                    reader = restoredReader
+                    lease = own networkLease {
+                        reader = restoredReader
+                        writer = writer
+                        pool = pool
+                        key = key
+                        reusable = reusable
+                    }
                     remaining = remaining - length
                     deadline = deadline
                 }
@@ -714,7 +961,7 @@ task readChunkedNetworkBody(
     maximum u64
 ) own BodyReadOutcome<NetworkError> {
     const chunkedNetworkBody {
-        reader
+        lease
         remainingBody
         remainingChunk
         phase
@@ -722,10 +969,17 @@ task readChunkedNetworkBody(
         trailerCount
         deadline
     } = body
+    const networkLease { reader writer pool key reusable } = lease
     if maximum == 0 {
         return own BodyReadOutcome<NetworkError> {
             Body = own chunkedNetworkBody {
-                reader = reader
+                lease = own networkLease {
+                    reader = reader
+                    writer = writer
+                    pool = pool
+                    key = key
+                    reusable = reusable
+                }
                 remainingBody = remainingBody
                 remainingChunk = remainingChunk
                 phase = phase
@@ -832,7 +1086,13 @@ task readChunkedNetworkBody(
             }
             return own BodyReadOutcome<NetworkError> {
                 Body = own chunkedNetworkBody {
-                    reader = active
+                    lease = own networkLease {
+                        reader = active
+                        writer = writer
+                        pool = pool
+                        key = key
+                        reusable = reusable
+                    }
                     remainingBody = bodyLeft
                     remainingChunk = chunkLeft
                     phase = activePhase
@@ -899,8 +1159,15 @@ task readChunkedNetworkBody(
         }
         if text.IsEmpty(trailer) {
             discard trailer
-            discard active
             const completedTrailers = reverseHeaders($activeTrailers)
+            const releasing = spawn finishNetworkLease(own networkLease {
+                reader = active
+                writer = writer
+                pool = pool
+                key = key
+                reusable = reusable
+            })
+            $releasing.wait()
             return own BodyReadOutcome<NetworkError> {
                 Body = own emptyNetworkBody {}
                 Value = .Ok(.Complete(trailers = completedTrailers))
@@ -1085,40 +1352,54 @@ fn requestPath(value String, start u64) Result<String, RequestError> {
 
 fn encodeRequestHead(
     &request Request,
-    &target networkTarget
+    $requestTarget String,
+    $proxyAuthorization Option<String>,
+    bodyLength u64
 ) Result<String, RequestError> {
     var builder = text.NewBuilder()
     writeBuilder(&builder, request.Method)
     writeBuilder(&builder, " ")
-    writeBuilder(&builder, target.path)
+    writeBuilder(&builder, requestTarget)
     writeBuilder(&builder, " HTTP/1.1\r\n")
+    discard requestTarget
 
     const hasHost = request.Header("Host")
     match hasHost {
         None: {
             writeBuilder(&builder, "Host: ")
+            const target = networkTargetFor(request.URL) else error {
+                discard error
+                discard proxyAuthorization
+                discard builder
+                return .Err(.InvalidURL)
+            }
             writeBuilder(&builder, target.authority)
+            discard target
             writeBuilder(&builder, "\r\n")
         }
         Some(value): {
             discard value
         }
     }
-    const hasConnection = request.Header("Connection")
-    match hasConnection {
-        None: writeBuilder(&builder, "Connection: close\r\n")
-        Some(value): {
-            discard value
+    if !hasHeader(&request, "Connection") {
+        writeBuilder(&builder, "Connection: keep-alive\r\n")
+    }
+    if !hasHeader(&request, "Proxy-Authorization") {
+        match proxyAuthorization {
+            None: {}
+            Some(value): {
+                writeBuilder(&builder, "Proxy-Authorization: ")
+                writeBuilder(&builder, value)
+                writeBuilder(&builder, "\r\n")
+                discard value
+            }
         }
+    } else {
+        discard proxyAuthorization
     }
     const hasLength = request.Header("Content-Length")
     match hasLength {
         None: {
-            const bodyLength = request.Body.Len() else error {
-                discard error
-                discard builder
-                return .Err(.InvalidBody)
-            }
             writeBuilder(&builder, "Content-Length: ")
             writeBuilder(&builder, format.U64(bodyLength))
             writeBuilder(&builder, "\r\n")
@@ -1167,6 +1448,67 @@ fn hasHeader(&request Request, name String) bool {
             true
         }
     }
+}
+
+fn requestAllowsReuse(&request Request) bool {
+    const value = request.Header("Connection")
+    match value {
+        None: true
+        Some(connection): {
+            const closes = headerContainsToken(connection, "close")
+            discard connection
+            !closes
+        }
+    }
+}
+
+fn headerContainsToken(value String, expected String) bool {
+    const length = text.ByteLen(value)
+    var start u64 = 0
+    while start < length {
+        while start < length && optionalWhitespace(urlByteAt(value, start)) {
+            start = start + 1
+        }
+        var end = start
+        while end < length && urlByteAt(value, end) != 44 {
+            end = end + 1
+        }
+        var trimmed = end
+        while trimmed > start &&
+            optionalWhitespace(urlByteAt(value, trimmed - 1)) {
+            trimmed = trimmed - 1
+        }
+        const token = text.Slice(value, start, trimmed) else error {
+            discard error
+            return false
+        }
+        if equalFoldASCII(token, expected) {
+            discard token
+            return true
+        }
+        discard token
+        start = end + 1
+    }
+    false
+}
+
+task finishNetworkLease($lease own networkLease) void {
+    const networkLease { reader writer pool key reusable } = lease
+    if !reusable {
+        discard reader
+        discard writer
+        discard pool
+        discard key
+        return
+    }
+    const returning = pool.Return(own pooledConnection {
+        key = key
+        reader = reader
+        writer = writer
+    })
+    const returned = $returning.wait()
+    discard returned
+    discard pool
 }
 
 fn requiredLine(

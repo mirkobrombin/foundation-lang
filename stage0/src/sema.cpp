@@ -46,6 +46,28 @@ enum class LoanState {
     Edit,
 };
 
+BinaryOperator assignmentBinary(AssignmentOperator operation) {
+    switch (operation) {
+    case AssignmentOperator::Add:
+        return BinaryOperator::Add;
+    case AssignmentOperator::Subtract:
+        return BinaryOperator::Subtract;
+    case AssignmentOperator::Multiply:
+        return BinaryOperator::Multiply;
+    case AssignmentOperator::Divide:
+        return BinaryOperator::Divide;
+    case AssignmentOperator::Remainder:
+        return BinaryOperator::Remainder;
+    case AssignmentOperator::ShiftLeft:
+        return BinaryOperator::ShiftLeft;
+    case AssignmentOperator::ShiftRight:
+        return BinaryOperator::ShiftRight;
+    case AssignmentOperator::Assign:
+        break;
+    }
+    std::terminate();
+}
+
 std::string semanticTypeKey(const Type &type) {
     std::string result = std::to_string(static_cast<unsigned int>(type.kind)) + ':' +
                          std::to_string(type.declaration);
@@ -858,6 +880,67 @@ class Analyzer {
         }
     }
 
+    void verifyContractTypeArguments(FirFunctionId function, const std::vector<Type>& arguments,
+                                     SourceSpan span) {
+        if (function >= model_.functions.size()) {
+            return;
+        }
+        const auto& constraints = model_.functions[function].typeParameterConstraints;
+        for (std::size_t index = 0; index < constraints.size() && index < arguments.size();
+             ++index) {
+            if (!constraints[index].has_value() || constraints[index]->kind != TypeKind::Contract) {
+                continue;
+            }
+            const auto required = substitute(*constraints[index], arguments);
+            auto satisfied = false;
+            if (arguments[index].kind == TypeKind::Parameter &&
+                currentFunction_ < model_.functions.size()) {
+                const auto& available = model_.functions[currentFunction_].typeParameterConstraints;
+                if (arguments[index].declaration < available.size() &&
+                    available[arguments[index].declaration].has_value()) {
+                    satisfied =
+                        contractSatisfies(*available[arguments[index].declaration], required);
+                }
+            } else {
+                const auto implemented =
+                    implementedContract(arguments[index], required.declaration);
+                satisfied = implemented.has_value() && !implemented->ambiguous &&
+                            implemented->contract == required;
+            }
+            if (!satisfied) {
+                diagnostics_.error("FDN2251",
+                                   "type argument " + displayType(arguments[index]) +
+                                       " does not implement " + displayType(required),
+                                   span);
+            }
+        }
+    }
+
+    bool contractSatisfies(const Type& provided, const Type& required) const {
+        if (provided.kind != TypeKind::Contract || required.kind != TypeKind::Contract) {
+            return false;
+        }
+        std::vector<Type> pending{provided};
+        std::unordered_set<std::string> visited;
+        while (!pending.empty()) {
+            auto current = std::move(pending.back());
+            pending.pop_back();
+            if (!visited.emplace(semanticTypeKey(current)).second) {
+                continue;
+            }
+            if (current == required) {
+                return true;
+            }
+            if (current.declaration >= model_.contracts.size()) {
+                continue;
+            }
+            for (const auto& parent : model_.contracts[current.declaration].parents) {
+                pending.push_back(substitute(parent, current.arguments));
+            }
+        }
+        return false;
+    }
+
     bool isParallelPoolStart(const Type &base, const Function &function,
                              std::string_view member) const {
         return member == "Start" && base.kind == TypeKind::Struct &&
@@ -1550,6 +1633,20 @@ class Analyzer {
             auto &semantic = model_.functions[index];
             setTypeParameters(function.typeParameters, function.span);
             semantic.typeParameterCount = function.typeParameters.size();
+            semantic.typeParameterConstraints.resize(function.typeParameters.size());
+            for (std::size_t parameter = 0; parameter < function.typeParameterConstraints.size() &&
+                                            parameter < semantic.typeParameterConstraints.size();
+                 ++parameter) {
+                if (!function.typeParameterConstraints[parameter].has_value()) {
+                    continue;
+                }
+                const auto constraint = resolveType(*function.typeParameterConstraints[parameter]);
+                semantic.typeParameterConstraints[parameter] = constraint;
+                if (constraint.kind != TypeKind::Contract) {
+                    diagnostics_.error("FDN2250", "type parameter constraint must be a contract",
+                                       function.typeParameterConstraints[parameter]->span);
+                }
+            }
             semantic.returnType = function.inferredReturn ? invalidType
                                                           : resolveType(function.returnType);
             if (function.blocking) {
@@ -2165,6 +2262,7 @@ class Analyzer {
         localSpans_.clear();
         moveStates_.clear();
         loanStates_.clear();
+        transferRoot_.reset();
         taskWaitRoot_.reset();
         taskWaitVoidStatement_ = false;
         channelStorage_ = 0;
@@ -2193,7 +2291,11 @@ class Analyzer {
                                    function.span);
                 return;
             }
-            const auto machine = Type{TypeKind::Enum, owner->second};
+            Type machine{TypeKind::Enum, owner->second};
+            for (std::size_t parameter = 0; parameter < function.typeParameters.size();
+                 ++parameter) {
+                machine.arguments.push_back(Type{TypeKind::Parameter, parameter});
+            }
             const auto receiver = Type{TypeKind::Edit, 0, {machine}};
             if (semantic.parameterTypes.empty()) {
                 diagnostics_.error("FDN2196", "state transition requires an edit receiver",
@@ -2207,8 +2309,7 @@ class Analyzer {
                 diagnostics_.error("FDN2197", "state transition requires a valid source state",
                                    function.span);
             }
-            if (transition.destinationVariant >=
-                model_.enums[owner->second].payloadTypes.size()) {
+            if (transition.destinationVariant >= model_.enums[owner->second].payloadTypes.size()) {
                 diagnostics_.error("FDN2198", "state transition destination is invalid",
                                    function.span);
                 return;
@@ -2218,8 +2319,7 @@ class Analyzer {
             if (payload.has_value()) {
                 if (!transition.destinationParameter.has_value() ||
                     *transition.destinationParameter >= semantic.parameterTypes.size()) {
-                    diagnostics_.error("FDN2198",
-                                       "state transition destination payload is missing",
+                    diagnostics_.error("FDN2198", "state transition destination payload is missing",
                                        function.span);
                 } else {
                     const auto parameter = *transition.destinationParameter;
@@ -2228,14 +2328,12 @@ class Analyzer {
                                 "state transition destination payload");
                 }
             } else if (transition.destinationParameter.has_value()) {
-                diagnostics_.error("FDN2198",
-                                   "unit state transition cannot store a payload",
+                diagnostics_.error("FDN2198", "unit state transition cannot store a payload",
                                    function.span);
             }
             if (!isResult(semantic.returnType) || semantic.returnType.arguments.size() != 2 ||
                 semantic.returnType.arguments.front() != voidType) {
-                diagnostics_.error("FDN2199",
-                                   "state transition must return Result<void, E>",
+                diagnostics_.error("FDN2199", "state transition must return Result<void, E>",
                                    function.returnType.span);
             }
             return;
@@ -2249,10 +2347,13 @@ class Analyzer {
                                    function.span);
                 return;
             }
-            const auto machine = Type{TypeKind::Enum, owner->second};
-            const auto readableMachine = isCopyParameterType(machine)
-                                             ? machine
-                                             : Type{TypeKind::View, 0, {machine}};
+            Type machine{TypeKind::Enum, owner->second};
+            for (std::size_t parameter = 0; parameter < function.typeParameters.size();
+                 ++parameter) {
+                machine.arguments.push_back(Type{TypeKind::Parameter, parameter});
+            }
+            const auto readableMachine =
+                isCopyParameterType(machine) ? machine : Type{TypeKind::View, 0, {machine}};
             if (semantic.parameterTypes.size() != 1) {
                 diagnostics_.error("FDN2231", "state timeout accessor requires one state",
                                    function.span);
@@ -2260,16 +2361,14 @@ class Analyzer {
                 requireSame(readableMachine, semantic.parameterTypes.front(), function.span,
                             "state timeout accessor state");
             }
-            if (!isOption(semantic.returnType) ||
-                semantic.returnType.arguments.size() != 1 ||
+            if (!isOption(semantic.returnType) || semantic.returnType.arguments.size() != 1 ||
                 semantic.returnType.arguments.front() != u64Type) {
                 diagnostics_.error("FDN2232", "state timeout accessor must return Option<u64>",
                                    function.returnType.span);
             }
             const auto &timeout = *function.stateTimeout;
             if (timeout.sourceVariants.empty() || timeout.nanoseconds == 0) {
-                diagnostics_.error("FDN2233", "state timeout metadata is invalid",
-                                   function.span);
+                diagnostics_.error("FDN2233", "state timeout metadata is invalid", function.span);
             }
             return;
         }
@@ -2551,6 +2650,46 @@ class Analyzer {
             return false;
         }
         if (const auto *assignment = std::get_if<AssignmentStatement>(&statement.value)) {
+            if (assignment->operation != AssignmentOperator::Assign) {
+                auto target =
+                    analyzeExpression(assignment->target, std::nullopt, ExpressionUse::Inspect);
+                const auto editable = editablePlace(assignment->target);
+                const auto root = placeRootLocal(assignment->target);
+                const auto loansBeforeValue = loanStates_;
+                if (editable && root.has_value()) {
+                    if (loanStates_[*root] != LoanState::None) {
+                        diagnostics_.error(
+                            "FDN2075",
+                            "cannot edit borrowed binding " +
+                                model_.functions[currentFunction_].locals[*root].name,
+                            statement.span);
+                    } else {
+                        loanStates_[*root] = LoanState::Edit;
+                    }
+                }
+                if (target.kind == TypeKind::Edit && target.arguments.size() == 1) {
+                    target = target.arguments.front();
+                    model_.expressionTypes[assignment->target] = target;
+                    model_.expressionReads[assignment->target] = true;
+                }
+                const auto expected =
+                    isNumeric(target) ? std::optional<Type>{target}
+                    : (target.kind == TypeKind::Raw || target.kind == TypeKind::RawConst)
+                        ? std::optional<Type>{usizeType}
+                    : target == stringType ? std::optional<Type>{stringType}
+                                           : std::nullopt;
+                const auto value =
+                    analyzeExpression(assignment->value, expected, ExpressionUse::Inspect);
+                restoreLoans(loansBeforeValue);
+                if (!editable) {
+                    diagnostics_.error(
+                        "FDN2077", "compound assignment requires a mutable binding or edit borrow",
+                        statement.span);
+                }
+                static_cast<void>(validateArithmetic(assignmentBinary(assignment->operation),
+                                                     target, value, statement.span));
+                return false;
+            }
             const auto &targetExpression = program_.expressions[assignment->target];
             if (const auto *name = std::get_if<NameExpression>(&targetExpression.value)) {
                 const auto local = findLocal(name->name, statement.span);
@@ -2559,7 +2698,7 @@ class Analyzer {
                     const auto &declaration =
                         model_.functions[currentFunction_].locals[*local];
                     expected = declaration.type;
-                    if (declaration.readBinding &&
+                    if ((declaration.readBinding || declaration.type.kind == TypeKind::Edit) &&
                         (expected->kind == TypeKind::View ||
                          expected->kind == TypeKind::Edit) &&
                         expected->arguments.size() == 1) {
@@ -2572,11 +2711,14 @@ class Analyzer {
                 }
                 model_.expressionLocals[assignment->target] = *local;
                 model_.expressionTypes[assignment->target] = *expected;
+                const auto &declaration =
+                    model_.functions[currentFunction_].locals[*local];
+                const auto directEdit = declaration.type.kind == TypeKind::Edit &&
+                                        declaration.type.arguments.size() == 1;
                 model_.expressionReads[assignment->target] =
-                    model_.functions[currentFunction_].locals[*local].readBinding;
+                    declaration.readBinding || directEdit;
                 model_.statementLocals[id] = *local;
-                const auto &declaration = model_.functions[currentFunction_].locals[*local];
-                if (!declaration.mutableBinding) {
+                if (!declaration.mutableBinding && !directEdit) {
                     diagnostics_.error("FDN2013", "cannot assign to immutable binding " +
                                                         name->name,
                                        statement.span);
@@ -3309,14 +3451,14 @@ class Analyzer {
                 }
                 if (expected.has_value() && expected->kind == TypeKind::Function &&
                     expected->arguments.size() == signature.parameters.size() + 1) {
-                    inferType(signature.returnType, expected->arguments.front(), inferred,
+                    inferFunctionValueType(signature.returnType, expected->arguments.front(), inferred,
                               expression.span, "function value return");
                     for (std::size_t index = 0; index < signature.parameters.size(); ++index) {
                         const auto mode =
                             index < program_.functions[functionId].parameters.size()
                                 ? program_.functions[functionId].parameters[index].mode
                                 : ParameterMode::Bootstrap;
-                        inferType(functionValueParameterType(signature.parameters[index], mode),
+                        inferFunctionValueType(functionValueParameterType(signature.parameters[index], mode),
                                   expected->arguments[index + 1], inferred, expression.span,
                                   "function value parameter");
                     }
@@ -3325,6 +3467,7 @@ class Analyzer {
                     inferred, program_.functions[functionId].typeParameters, expression.span,
                     name->name);
                 verifyTransferableTypeArguments(functionId, typeArguments, expression.span);
+                verifyContractTypeArguments(functionId, typeArguments, expression.span);
                 std::vector<Type> parts;
                 parts.push_back(substitute(signature.returnType, typeArguments));
                 for (std::size_t index = 0; index < signature.parameters.size(); ++index) {
@@ -3416,8 +3559,11 @@ class Analyzer {
                 model_.taskWaitTargets[id] = TaskWaitTarget{*member->base};
                 return task.arguments.front();
             }
+            const auto previousTransferRoot = transferRoot_;
+            transferRoot_ = ownership.operand;
             const auto value = analyzeExpression(ownership.operand, expected,
                                                  ExpressionUse::Consume);
+            transferRoot_ = previousTransferRoot;
             if (value.kind == TypeKind::View || value.kind == TypeKind::Edit) {
                 diagnostics_.error("FDN2068", "cannot transfer a borrowed value", span);
                 return invalidType;
@@ -3607,6 +3753,18 @@ class Analyzer {
                 model_.contracts[base.declaration].methods.end(),
                 [](const SemanticContractMethod &method) { return method.name == "IsEmpty"; });
         }
+        if (base.kind == TypeKind::Parameter && currentFunction_ < model_.functions.size() &&
+            base.declaration < model_.functions[currentFunction_].typeParameterConstraints.size()) {
+            const auto& constraint =
+                model_.functions[currentFunction_].typeParameterConstraints[base.declaration];
+            hasEmptyMethod =
+                constraint.has_value() && constraint->kind == TypeKind::Contract &&
+                constraint->declaration < model_.contracts.size() &&
+                std::any_of(
+                    model_.contracts[constraint->declaration].methods.begin(),
+                    model_.contracts[constraint->declaration].methods.end(),
+                    [](const SemanticContractMethod& method) { return method.name == "IsEmpty"; });
+        }
         if (hasEmptyMethod) {
             const MemberExpression method{unary.operand, "IsEmpty", {}, true, {}, {}, {}};
             const auto result = analyzeMethod(id, method, operand, base, span);
@@ -3615,7 +3773,9 @@ class Analyzer {
             if (target.has_value() && target->kind == CallTargetKind::Method &&
                 target->function < program_.functions.size()) {
                 readOnly = program_.functions[target->function].receiver == ReceiverKind::View;
-            } else if (target.has_value() && target->kind == CallTargetKind::ContractMethod &&
+            } else if (target.has_value() &&
+                       ( target->kind == CallTargetKind::ContractMethod ||
+                        target->kind == CallTargetKind::ConstrainedMethod) &&
                        target->contract < model_.contracts.size() &&
                        target->method < model_.contracts[target->contract].methods.size()) {
                 readOnly = model_.contracts[target->contract].methods[target->method].receiver ==
@@ -4045,21 +4205,70 @@ class Analyzer {
         return element;
     }
 
+    Type validateArithmetic(BinaryOperator operation, const Type &left, const Type &right,
+                            SourceSpan span) {
+        if (operation == BinaryOperator::Add) {
+            if (left.kind == TypeKind::Raw || left.kind == TypeKind::RawConst) {
+                if (unsafeDepth_ == 0) {
+                    diagnostics_.error("FDN2213", "raw pointer arithmetic requires an unsafe block",
+                                       span);
+                }
+                if (left.arguments.size() != 1 || left.arguments.front() == voidType) {
+                    diagnostics_.error("FDN2214", "void raw pointer does not support arithmetic",
+                                       span);
+                    return invalidType;
+                }
+                requireSame(usizeType, right, span, "raw pointer offset");
+                return left;
+            }
+            if (left == stringType || right == stringType) {
+                requireSame(stringType, left, span, "string concatenation operand");
+                requireSame(stringType, right, span, "string concatenation operand");
+                return stringType;
+            }
+        } else if (operation == BinaryOperator::Subtract &&
+                   (left.kind == TypeKind::Raw || left.kind == TypeKind::RawConst)) {
+            if (unsafeDepth_ == 0) {
+                diagnostics_.error("FDN2213", "raw pointer arithmetic requires an unsafe block",
+                                   span);
+            }
+            if (left.arguments.size() != 1 || left.arguments.front() == voidType) {
+                diagnostics_.error("FDN2214", "void raw pointer does not support arithmetic", span);
+                return invalidType;
+            }
+            requireSame(usizeType, right, span, "raw pointer offset");
+            return left;
+        }
+
+        if (operation == BinaryOperator::ShiftLeft || operation == BinaryOperator::ShiftRight) {
+            if (!isInteger(left)) {
+                diagnostics_.error("FDN2011", "shift operand requires an integer type", span);
+                return invalidType;
+            }
+        } else if (operation == BinaryOperator::Remainder) {
+            if (!isInteger(left)) {
+                diagnostics_.error("FDN2011", "remainder operand requires an integer type", span);
+                return invalidType;
+            }
+        } else if (!isNumeric(left)) {
+            diagnostics_.error("FDN2011", "arithmetic operand requires a numeric type", span);
+            return invalidType;
+        }
+        requireSame(left, right, span, "arithmetic operand");
+        return left;
+    }
+
     Type analyzeBinary(const BinaryExpression &binary, std::optional<Type> expected,
                        SourceSpan span) {
-        const auto numericExpected = expected.has_value() && isNumeric(*expected)
-                                         ? expected
-                                         : std::nullopt;
-        const auto left = analyzeExpression(binary.left, numericExpected,
-                                            ExpressionUse::Inspect);
+        const auto numericExpected =
+            expected.has_value() && isNumeric(*expected) ? expected : std::nullopt;
+        const auto left = analyzeExpression(binary.left, numericExpected, ExpressionUse::Inspect);
         const auto movesBeforeRight = moveStates_;
         const auto rightExpected = isNumeric(left) ? std::optional<Type>{left}
-                                   : (left.kind == TypeKind::Raw ||
-                                      left.kind == TypeKind::RawConst)
+                                   : (left.kind == TypeKind::Raw || left.kind == TypeKind::RawConst)
                                        ? std::optional<Type>{usizeType}
                                        : std::nullopt;
-        const auto right = analyzeExpression(binary.right, rightExpected,
-                                             ExpressionUse::Inspect);
+        const auto right = analyzeExpression(binary.right, rightExpected, ExpressionUse::Inspect);
         if (binary.operation == BinaryOperator::And || binary.operation == BinaryOperator::Or) {
             std::vector<MoveState> merged(movesBeforeRight.size());
             for (std::size_t local = 0; local < merged.size(); ++local) {
@@ -4071,60 +4280,13 @@ class Analyzer {
         }
         switch (binary.operation) {
         case BinaryOperator::Add:
-            if (left.kind == TypeKind::Raw || left.kind == TypeKind::RawConst) {
-                if (unsafeDepth_ == 0) {
-                    diagnostics_.error("FDN2213",
-                                       "raw pointer arithmetic requires an unsafe block", span);
-                }
-                if (left.arguments.size() != 1 || left.arguments.front() == voidType) {
-                    diagnostics_.error("FDN2214",
-                                       "void raw pointer does not support arithmetic", span);
-                    return invalidType;
-                }
-                requireSame(usizeType, right, span, "raw pointer offset");
-                return left;
-            }
-            if (left == stringType || right == stringType) {
-                requireSame(stringType, left, span, "string concatenation operand");
-                requireSame(stringType, right, span, "string concatenation operand");
-                return stringType;
-            }
-            if (!isNumeric(left)) {
-                diagnostics_.error("FDN2011", "arithmetic operand requires a numeric type", span);
-                return invalidType;
-            }
-            requireSame(left, right, span, "arithmetic operand");
-            return left;
         case BinaryOperator::Subtract:
-            if (left.kind == TypeKind::Raw || left.kind == TypeKind::RawConst) {
-                if (unsafeDepth_ == 0) {
-                    diagnostics_.error("FDN2213",
-                                       "raw pointer arithmetic requires an unsafe block", span);
-                }
-                if (left.arguments.size() != 1 || left.arguments.front() == voidType) {
-                    diagnostics_.error("FDN2214",
-                                       "void raw pointer does not support arithmetic", span);
-                    return invalidType;
-                }
-                requireSame(usizeType, right, span, "raw pointer offset");
-                return left;
-            }
-            [[fallthrough]];
         case BinaryOperator::Multiply:
         case BinaryOperator::Divide:
-            if (!isNumeric(left)) {
-                diagnostics_.error("FDN2011", "arithmetic operand requires a numeric type", span);
-                return invalidType;
-            }
-            requireSame(left, right, span, "arithmetic operand");
-            return left;
         case BinaryOperator::Remainder:
-            if (!isInteger(left)) {
-                diagnostics_.error("FDN2011", "remainder operand requires an integer type", span);
-                return invalidType;
-            }
-            requireSame(left, right, span, "arithmetic operand");
-            return left;
+        case BinaryOperator::ShiftLeft:
+        case BinaryOperator::ShiftRight:
+            return validateArithmetic(binary.operation, left, right, span);
         case BinaryOperator::Less:
         case BinaryOperator::LessEqual:
         case BinaryOperator::Greater:
@@ -4512,7 +4674,9 @@ class Analyzer {
                 requireSame(u64Type, arguments.front(), span, "channel capacity");
             }
             const auto payload = explicitTypes.size() == 1 ? explicitTypes.front() : invalidType;
-            if (containsBorrow(payload)) {
+            if (payload == neverType) {
+                diagnostics_.error("FDN2047", "channel payload cannot be never", span);
+            } else if (containsBorrow(payload)) {
                 diagnostics_.error("FDN2165", "channel payload cannot contain a borrow", span);
             }
             CallTarget target;
@@ -4679,6 +4843,7 @@ class Analyzer {
         const auto typeArguments = completeInference(
             inferred, program_.functions[function].typeParameters, span, call.callee);
         verifyTransferableTypeArguments(function, typeArguments, span);
+        verifyContractTypeArguments(function, typeArguments, span);
         std::vector<std::optional<CallTarget::ContractConversion>> conversions(arguments.size());
         for (std::size_t source = 0; source < count; ++source) {
             const auto parameter = argumentParameters[source];
@@ -5490,6 +5655,14 @@ class Analyzer {
         if (base.kind == TypeKind::Contract) {
             return analyzeContractMethod(id, member, sourceType, base, span);
         }
+        if (base.kind == TypeKind::Parameter &&
+            base.declaration < model_.functions[currentFunction_].typeParameterConstraints.size()) {
+            const auto& constraint =
+                model_.functions[currentFunction_].typeParameterConstraints[base.declaration];
+            if (constraint.has_value() && constraint->kind == TypeKind::Contract) {
+                return analyzeContractMethod(id, member, sourceType, *constraint, span, true, base);
+            }
+        }
         const auto methodOwner = base.kind == TypeKind::Struct
                                      ? base.declaration
                                  : base.kind == TypeKind::Enum
@@ -5630,7 +5803,8 @@ class Analyzer {
     }
 
     Type analyzeContractMethod(AstExpressionId id, const MemberExpression &member,
-                               const Type &sourceType, const Type &base, SourceSpan span) {
+                               const Type &sourceType, const Type &base, SourceSpan span,
+                               bool constrained = false, Type constrainedType = invalidType) {
         if (base.declaration >= program_.contracts.size()) {
             return invalidType;
         }
@@ -5662,12 +5836,20 @@ class Analyzer {
             diagnostics_.error("FDN2101", "edit method requires an editable receiver", span);
         }
         if (method.receiver == ReceiverKind::Own) {
-            if (sourceType.kind != TypeKind::Own ||
+            const auto transferredParameter =
+                constrained && transferRoot_ == id &&
+                std::holds_alternative<NameExpression>(program_.expressions[*member.base].value) &&
+                model_.expressionLocals[*member.base].has_value() &&
+                std::find(model_.functions[currentFunction_].parameters.begin(),
+                          model_.functions[currentFunction_].parameters.end(),
+                          *model_.expressionLocals[*member.base]) !=
+                    model_.functions[currentFunction_].parameters.end();
+            if (!transferredParameter && (sourceType.kind != TypeKind::Own ||
                 !std::holds_alternative<NameExpression>(
-                    program_.expressions[*member.base].value)) {
+                    program_.expressions[*member.base].value))) {
                 diagnostics_.error("FDN2103", "own method requires an owned contract binding",
                                    span);
-            } else if (const auto local = model_.expressionLocals[*member.base];
+            } else { if (const auto local = model_.expressionLocals[*member.base];
                        local.has_value()) {
                 if (loanStates_[*local] != LoanState::None) {
                     diagnostics_.error("FDN2067", "cannot move borrowed binding " +
@@ -5679,6 +5861,7 @@ class Analyzer {
                 moveStates_[*local] = MoveState::Moved;
                 model_.expressionMoves[*member.base] = true;
             }
+        }
         }
 
         const auto loansBefore = loanStates_;
@@ -5730,9 +5913,18 @@ class Analyzer {
         }
 
         CallTarget target;
-        target.kind = CallTargetKind::ContractMethod;
+        target.kind =
+            constrained ? CallTargetKind::ConstrainedMethod : CallTargetKind::ContractMethod;
         target.receiver = *member.base;
+        if (constrained && method.receiver == ReceiverKind::View &&
+            sourceType.kind != TypeKind::View) {
+            target.receiverType = Type{TypeKind::View, 0, {constrainedType}};
+        } else if (constrained && method.receiver == ReceiverKind::Own) {
+            target.receiverType = Type{TypeKind::Own, 0, {constrainedType}};
+        } else {
         target.receiverType = sourceType;
+        }
+        target.constrainedType = constrainedType;
         target.contract = base.declaration;
         target.method = *methodIndex;
         target.typeArguments = base.arguments;
@@ -6575,6 +6767,33 @@ class Analyzer {
         return *base;
     }
 
+    bool containsTypeParameter(const Type& type) const {
+        if (type.kind == TypeKind::Parameter) {
+            return true;
+        }
+        return std::any_of(
+            type.arguments.begin(), type.arguments.end(),
+            [this](const Type& argument) { return containsTypeParameter(argument); });
+    }
+
+    void inferFunctionValueType(const Type& pattern, const Type& actual,
+                                std::vector<std::optional<Type>>& inferred, SourceSpan span,
+                                std::string_view context) {
+        if (pattern.kind == TypeKind::Parameter || !containsTypeParameter(actual)) {
+            inferType(pattern, actual, inferred, span, context);
+            return;
+        }
+        if (actual.kind == TypeKind::Parameter || pattern.kind != actual.kind ||
+            (pattern.kind != TypeKind::Function && pattern.declaration != actual.declaration) ||
+            pattern.arguments.size() != actual.arguments.size()) {
+            return;
+        }
+        for (std::size_t index = 0; index < pattern.arguments.size(); ++index) {
+            inferFunctionValueType(pattern.arguments[index], actual.arguments[index], inferred,
+                                   span, context);
+        }
+    }
+
     Type substitute(const Type &type, const std::vector<Type> &arguments) const {
         if (type.kind == TypeKind::Parameter) {
             return type.declaration < arguments.size() ? arguments[type.declaration] : invalidType;
@@ -7289,6 +7508,7 @@ class Analyzer {
     std::string_view currentPackageOverride_;
     bool transientBorrowsAllowed_{};
     std::optional<AstExpressionId> spawnCall_;
+    std::optional<AstExpressionId> transferRoot_;
     std::optional<AstExpressionId> taskWaitRoot_;
     bool taskWaitVoidStatement_{};
     std::size_t channelStorage_{};

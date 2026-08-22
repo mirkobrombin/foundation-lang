@@ -1,0 +1,10 @@
+format foundation.package/v1
+name fcs.violations
+version 1.0.0
+sdk ^0.1.0
+fcs strict
+fcs_rule FCS7001 warning
+fcs_rule FCS7002 warning
+fcs_rule FCS7003 warning
+fcs_rule FCS7004 warning
+source src

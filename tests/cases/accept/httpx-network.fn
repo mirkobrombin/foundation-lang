@@ -300,6 +300,9 @@ fn failureName(
             }
             InvalidURL: "invalid-url"
             TLSUnavailable: "tls-unavailable"
+            Cancelled: "transport-cancelled"
+            Timeout: "transport-timeout"
+            PoolUnavailable: "pool-unavailable"
             InvalidResponse: "invalid-response"
             UnsupportedFraming: "unsupported-framing"
             ResponseTooLarge: "response-too-large"
@@ -504,7 +507,7 @@ task serveBinary(
     const requestMatched =
         first == "POST /binary HTTP/1.1" &&
         text.StartsWith(second, "Host: 127.0.0.1:") &&
-        third == "Connection: close" &&
+        third == "Connection: keep-alive" &&
         fourth == "Content-Length: 4" && separator == "" &&
         binaryReadMatches($bodyValue)
     discard first
@@ -773,7 +776,7 @@ task streamingRoundTrip() bool {
         InvalidLimit && Complete && Written &&
         RequestLine == "GET /stream HTTP/1.1" &&
         text.StartsWith(Host, "Host: 127.0.0.1:") &&
-        Connection == "Connection: close" &&
+        Connection == "Connection: keep-alive" &&
         ContentLength == "Content-Length: 0" && Separator == "" &&
         RequestBody == ""
     discard Listener
@@ -834,7 +837,7 @@ fn main() i32 {
     } = first
     if firstLine != "POST /echo?q=1 HTTP/1.1" ||
         firstHost != "Host: 127.0.0.1:" + format.U64(firstPort) ||
-        firstConnection != "Connection: close" ||
+        firstConnection != "Connection: keep-alive" ||
         firstLength != "Content-Length: 4" || firstSeparator != "" ||
         firstRequestBody != "ping" || !firstWritten || firstStatus != 201 ||
         firstHeader != "first" || firstBody != "hello" || firstFailure != "" {
@@ -876,7 +879,7 @@ fn main() i32 {
     } = second
     if secondLine != "POST /chunked HTTP/1.1" ||
         secondHost != "Host: 127.0.0.1:" + format.U64(secondPort) ||
-        secondConnection != "Connection: close" ||
+        secondConnection != "Connection: keep-alive" ||
         secondLength != "Content-Length: 4" || secondSeparator != "" ||
         secondRequestBody != "pong" || !secondWritten || secondStatus != 200 ||
         secondHeader != "second" || secondBody != "hello world" ||
@@ -1094,8 +1097,7 @@ fn main() i32 {
         }
         Err(error): failureName($error)
     }
-    const timeoutListener = $stalling.wait()
-    discard timeoutListener
+    discard stalling
     if timeoutFailure != "network-timeout" {
         discard timeoutClient
         return 9

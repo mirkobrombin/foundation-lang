@@ -1,0 +1,7 @@
+format foundation.package/v1
+name fcs.rules
+version 1.0.0
+sdk ^0.1.0
+fcs strict
+fcs_rule FCS1001 error
+source src

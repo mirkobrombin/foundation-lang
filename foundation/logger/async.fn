@@ -1,0 +1,138 @@
+package foundation.logger
+
+import std.collections
+
+// Reports invalid asynchronous logger construction.
+enum AsyncError {
+    // Reports a zero-capacity queue request.
+    InvalidCapacity
+}
+
+// Owns a producer endpoint for one bounded asynchronous sink.
+struct Publisher {
+    sender Sender<own Entry>
+
+    // Creates another producer for the same bounded queue.
+    fn Clone(self) Publisher {
+        Publisher { sender = self.sender.clone() }
+    }
+}
+
+// Owns one bounded queue and its sink worker.
+struct Async<E> {
+    publisher Publisher
+    worker Task<own collections.List<E>>
+}
+
+// Starts one sink worker with bounded backpressure and no silent drops.
+fn NewAsync<E>(
+    $sink own Sink<E>,
+    capacity u64
+) Result<own Async<E>, AsyncError> {
+    if capacity == 0 {
+        discard sink
+        return .Err(.InvalidCapacity)
+    }
+    const Channel { sender receiver } = channel<own Entry>(capacity)
+    const publisher = Publisher { sender = sender }
+    const worker = spawn pump<E>($sink, $receiver)
+    .Ok(own Async<E> {
+        publisher = publisher
+        worker = worker
+    })
+}
+
+// Creates another producer for the same bounded queue.
+fn NewPublisher<E>(async Async<E>) Publisher {
+    async.publisher.Clone()
+}
+
+// Waits for queue capacity and transfers one entry to the sink worker.
+task Publish(
+    $publisher Publisher,
+    $entry own Entry
+) Result<void, ChannelError> {
+    const Publisher { sender } = publisher
+    const delivered = sender.send($entry)
+    delivered
+}
+
+// Closes the internal producer, drains queued entries, and returns sink errors.
+fn Shutdown<E>(
+    $async own Async<E>
+) own collections.List<E> {
+    const Async { publisher worker } = async
+    discard publisher
+    $worker.wait()
+}
+
+// Closes the internal producer and requests structured worker cancellation.
+fn Cancel<E>($async own Async<E>) void {
+    const Async { publisher worker } = async
+    discard publisher
+    discard worker
+}
+
+task pump<E>(
+    $sink own Sink<E>,
+    $receiver Receiver<own Entry>
+) own collections.List<E> {
+    var target = sink
+    var inbox = receiver
+    var failures = collections.NewList<E>()
+    while true {
+        const received = inbox.receive()
+        const keepRunning = match received {
+            Ok(entry): recordWrite<E>(&target, $entry, &failures)
+            Err(error): stopPump(error)
+        }
+        if !keepRunning {
+            discard target
+            discard inbox
+            return reverseErrors<E>($failures)
+        }
+    }
+    reverseErrors<E>($failures)
+}
+
+fn recordWrite<E>(
+    &sink Sink<E>,
+    $entry own Entry,
+    &failures collections.List<E>
+) bool {
+    match sink.Write($entry) {
+        Ok: true
+        Err(error): storeError<E>(&failures, $error)
+    }
+}
+
+fn storeError<E>(
+    &failures collections.List<E>,
+    $error E
+) bool {
+    failures.PushFront($error)
+    true
+}
+
+fn stopPump(error ChannelError) bool {
+    discard error
+    false
+}
+
+fn reverseErrors<E>(
+    $failures own collections.List<E>
+) own collections.List<E> {
+    var pending = failures
+    var ordered = collections.NewList<E>()
+    while !pending.IsEmpty() {
+        ordered.PushFront(errorValue<E>(pending.PopFront()))
+    }
+    ordered
+}
+
+fn errorValue<E>($value Option<E>) E {
+    match value {
+        None: panic("logger error invariant failed")
+        Some(error): error
+    }
+}

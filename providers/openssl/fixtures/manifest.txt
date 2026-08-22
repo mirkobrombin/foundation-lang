@@ -1,0 +1,11 @@
+The OpenSSL provider test fixture creates a local CA and two leaf certificates at runtime.
+
+Hosts:
+- one.foundation.test
+- two.foundation.test
+
+The fixture binds only loopback and validates the CA bundle, both SNI selections,
+an unknown SNI rejection, a hostname mismatch, and plaintext rejection by the TLS listener.
+The native framing fixture also rejects malformed status lines, more than eight informational
+responses, conflicting Content-Length and Transfer-Encoding fields, duplicate Content-Length,
+malformed chunks, forbidden trailer framing fields, and headers above 64 KiB.

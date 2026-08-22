@@ -1,6 +1,7 @@
 package std.net
 
 import std.bytes
+import std.concurrent
 import std.time
 
 // Classifies portable DNS, TCP, deadline, and stream failures.
@@ -224,6 +225,14 @@ struct TcpListener {
     // Reports the actual local port, including an OS-selected port.
     Port u64
 
+    // Closes a pending accept explicitly so an owning server lifecycle can stop promptly.
+    fn Close(&self) bool {
+        const handle = replace self.handle with 0
+        if handle == 0 return false
+        closeListenerNative(handle)
+        true
+    }
+
     fn drop(&self) void {
         const handle = replace self.handle with 0
         if handle != 0 {
@@ -267,6 +276,7 @@ struct TcpConnection {
 }
 
 // Owns the readable half of one TCP connection.
+@concurrent.Transferable()
 struct TcpReader {
     handle u64
 
@@ -279,6 +289,7 @@ struct TcpReader {
 }
 
 // Owns the writable half of one TCP connection.
+@concurrent.Transferable()
 struct TcpWriter {
     handle u64
 
@@ -291,6 +302,7 @@ struct TcpWriter {
 }
 
 // Returns independent read and write owners for one connection.
+@concurrent.Transferable()
 struct StreamPair {
     // Owns all future reads from the connection.
     Reader own TcpReader

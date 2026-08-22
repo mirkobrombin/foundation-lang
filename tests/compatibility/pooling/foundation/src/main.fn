@@ -1,0 +1,62 @@
+package test.compatibility.pooling
+
+import foundation.pooling
+import std.concurrent
+import std.format
+
+@concurrent.Transferable()
+struct Item {
+    Value i32
+}
+
+fn fresh() Item {
+    Item { Value = 1 }
+}
+
+fn reset(&value Item) void {
+    value.Value = 9
+}
+
+fn requireItem($value Result<Item, pooling.Error>) Item {
+    match value {
+        Ok(item): item
+        Err(error): fail(error)
+    }
+}
+
+fn requireVoid($value Result<void, pooling.Error>) void {
+    match value {
+        Ok: done()
+        Err(error): fail(error)
+    }
+}
+
+fn done() void {
+    return
+}
+
+fn fail(error pooling.Error) never {
+    discard error
+    panic("pool compatibility operation failed")
+}
+
+fn main() i32 {
+    const pool = pooling.NewWith<Item>(
+        $fresh,
+        pooling.Policy<Item> {
+        MaximumRetained = 1
+        Finalize = .Some($reset)
+    }
+    ) else error {
+        discard error
+        return 1
+    }
+
+    requireVoid($pool.Put(Item { Value = 10 }).wait())
+    requireVoid($pool.Put(Item { Value = 20 }).wait())
+    const reused = requireItem($pool.Get().wait())
+    const created = requireItem($pool.Get().wait())
+    print("reused=" + format.I32(reused.Value))
+    print("created=" + format.I32(created.Value))
+    0
+}

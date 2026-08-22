@@ -1,6 +1,8 @@
 package foundation.logger
 
 import std.collections
+import std.text
+import std.time
 
 // Orders log severities from diagnostic messages to fatal failures.
 enum Level {
@@ -24,10 +26,20 @@ struct Field {
     Value String
 }
 
-// Writes threshold-filtered structured text with persistent bound fields.
+// Carries explicit distributed trace identity without ambient context values.
+struct Trace {
+    // Identifies the distributed trace attached to an entry.
+    TraceID String
+    // Identifies the current span within that trace.
+    SpanID String
+}
+
+// Applies severity, persistent fields, and trace identity before delivery.
 struct Logger {
     fields own collections.List<Field>
     minimum Level
+    traceID String
+    spanID String
 
     // Changes the minimum severity emitted by later calls.
     fn SetLevel(&self, level Level) void {
@@ -36,18 +48,66 @@ struct Logger {
 
     // Retains one owned field on the logger for later entries.
     fn Bind(&self, $field Field) void {
-        self.fields.PushFront($field)
+        const active = replace self.fields with collections.NewList<Field>()
+        self.fields = withField($active, $field)
     }
 
-    // Emits one entry when its severity reaches the configured threshold.
+    // Replaces the trace and span attached to later entries.
+    fn BindTrace(&self, $trace Trace) void {
+        const Trace { TraceID SpanID } = trace
+        const previousTrace = replace self.traceID with TraceID
+        const previousSpan = replace self.spanID with SpanID
+        discard previousTrace
+        discard previousSpan
+    }
+
+    // Removes trace identity from later entries.
+    fn ClearTrace(&self) void {
+        const previousTrace = replace self.traceID with ""
+        const previousSpan = replace self.spanID with ""
+        discard previousTrace
+        discard previousSpan
+    }
+
+    // Builds one owned entry when its severity reaches the threshold.
+    fn Prepare(
+        &self,
+        level Level,
+        message String,
+        $fields own collections.List<Field>
+    ) Option<own Entry> {
+        self.PrepareAt(level, time.Now(), message, $fields)
+    }
+
+    // Builds one entry with a caller-supplied timestamp.
+    fn PrepareAt(
+        &self,
+        level Level,
+        timestamp time.Instant,
+        message String,
+        $fields own collections.List<Field>
+    ) Option<own Entry> {
+        if levelRank(level) < levelRank(self.minimum) {
+            discard fields
+            return .None
+        }
+        .Some(newEntry(&self, level, timestamp, message, $fields))
+    }
+
+    // Emits one compact text entry when its severity reaches the threshold.
     fn Log(
         &self,
         level Level,
         message String,
         $fields own collections.List<Field>
     ) void {
-        if levelRank(level) < levelRank(self.minimum) return
-        print(render(&self, level, message, $fields))
+        const prepared = self.Prepare(level, message, $fields)
+        match prepared {
+            None: {
+                return
+            }
+            Some(entry): print(RenderText($entry))
+        }
     }
 
     // Emits one debug entry when debug logging is enabled.
@@ -78,7 +138,12 @@ fn New() own Logger {
 
 // Creates a standard-output logger with an explicit minimum severity.
 fn NewWith(minimum Level) own Logger {
-    own Logger { fields = collections.NewList<Field>() minimum = minimum }
+    own Logger {
+        fields = collections.NewList<Field>()
+        minimum = minimum
+        traceID = ""
+        spanID = ""
+    }
 }
 
 // Creates an empty owned per-call field list.
@@ -86,15 +151,13 @@ fn Fields() own collections.List<Field> {
     collections.NewList<Field>()
 }
 
-// Appends one field to an owned field list and returns its owner.
+// Replaces one field in an owned field list and returns its owner.
 fn WithField(
     $fields own collections.List<Field>,
     $key String,
     $value String
 ) own collections.List<Field> {
-    var result = fields
-    result.PushFront(Field { Key = key Value = value })
-    result
+    withField($fields, $Field { Key = key Value = value })
 }
 
 // Returns the canonical lowercase text for one severity.
@@ -118,31 +181,84 @@ fn levelRank(level Level) i32 {
     }
 }
 
-fn render(
+fn newEntry(
     &logger Logger,
     level Level,
+    timestamp time.Instant,
     message String,
     $fields own collections.List<Field>
-) String {
-    var result = LevelText(level) + " " + message
+) own Entry {
+    own Entry {
+        Level = level
+        Time = timestamp
+        Message = text.Copy(message)
+        Fields = mergeFields(&logger, $fields)
+        TraceID = text.Copy(logger.traceID)
+        SpanID = text.Copy(logger.spanID)
+    }
+}
+
+fn mergeFields(
+    &logger Logger,
+    $fields own collections.List<Field>
+) own collections.List<Field> {
     var bound = replace logger.fields with collections.NewList<Field>()
     var restored = collections.NewList<Field>()
+    var merged = collections.NewList<Field>()
     while !bound.IsEmpty() {
         const field = fieldValue(bound.PopFront())
-        result = appendField(result, field)
+        const copied = Field {
+            Key = text.Copy(field.Key)
+            Value = text.Copy(field.Value)
+        }
         restored.PushFront($field)
+        merged.PushFront($copied)
     }
     logger.fields = reverseFields($restored)
+    merged = reverseFields($merged)
 
-    var active = fields
+    var active = reverseFields($fields)
     while !active.IsEmpty() {
-        result = appendField(result, fieldValue(active.PopFront()))
+        merged = withFieldLast($merged, $fieldValue(active.PopFront()))
     }
+    merged
+}
+
+fn withField(
+    $fields own collections.List<Field>,
+    $field Field
+) own collections.List<Field> {
+    var pending = fields
+    var kept = collections.NewList<Field>()
+    while !pending.IsEmpty() {
+        const current = fieldValue(pending.PopFront())
+        if current.Key == field.Key {
+            discard current
+        } else {
+            kept.PushFront($current)
+        }
+    }
+    var result = reverseFields($kept)
+    result.PushFront($field)
     result
 }
 
-fn appendField(prefix String, field Field) String {
-    prefix + " " + field.Key + "=" + field.Value
+fn withFieldLast(
+    $fields own collections.List<Field>,
+    $field Field
+) own collections.List<Field> {
+    var pending = fields
+    var kept = collections.NewList<Field>()
+    while !pending.IsEmpty() {
+        const current = fieldValue(pending.PopFront())
+        if current.Key == field.Key {
+            discard current
+        } else {
+            kept.PushFront($current)
+        }
+    }
+    kept.PushFront($field)
+    reverseFields($kept)
 }
 
 fn fieldValue($value Option<Field>) Field {

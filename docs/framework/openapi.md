@@ -43,5 +43,5 @@ add a typed handler parameter when the request accepts a value.
 
 Body and form request schemas, response bodies, reusable components, authentication schemes, and
 server declarations are future additions to the OpenAPI surface. Their absence does not weaken
-the implemented contract, which models path, query, and header parameters plus
+the implemented v2 `core/openapi` contract, which models path, query, and header parameters plus
 response descriptions.

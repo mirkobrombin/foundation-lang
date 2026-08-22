@@ -604,6 +604,7 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
     auto versionSeen = false;
     auto sdkSeen = false;
     auto codeStandardSeen = false;
+    std::set<std::string> codeStandardRules;
     auto sourceSeen = false;
     auto testSourceSeen = false;
     auto nativeLibrarySeen = false;
@@ -657,6 +658,18 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
                 manifest.codeStandardExplicit = true;
             }
             codeStandardSeen = true;
+        } else if (directive == "fcs_rule") {
+            const auto severity = tokens.size() == 3
+                                      ? parseCodeStandardSeverity(tokens[2])
+                                      : std::nullopt;
+            if (!severity.has_value() || !configurableCodeStandardRule(tokens[1]) ||
+                !codeStandardRules.insert(tokens[1]).second ||
+                manifest.codeStandardRules.size() == maxPackageEntries) {
+                addError(result.errors, path, line, 1, "FDN4014",
+                         "fcs_rule requires one unique configurable FCS code and severity: off, warning, or error");
+            } else {
+                manifest.codeStandardRules.push_back({tokens[1], *severity});
+            }
         } else if (directive == "source") {
             if (tokens.size() != 2 || !relativeSource(tokens[1]) || sourceSeen) {
                 addError(result.errors, path, line, 1, "FDN4008",
@@ -874,6 +887,13 @@ std::string renderPackageManifest(const PackageManifest &manifest) {
            << "sdk " << manifest.sdk.string() << '\n';
     if (manifest.codeStandardExplicit) {
         output << "fcs " << codeStandardProfileName(manifest.codeStandard) << '\n';
+    }
+    auto codeStandardRules = manifest.codeStandardRules;
+    std::sort(codeStandardRules.begin(), codeStandardRules.end(),
+              [](const auto &left, const auto &right) { return left.code < right.code; });
+    for (const auto &rule : codeStandardRules) {
+        output << "fcs_rule " << rule.code << ' '
+               << codeStandardSeverityName(rule.severity) << '\n';
     }
     output << "source " << quote(manifest.source.generic_string()) << '\n';
     if (manifest.testSource.has_value()) {

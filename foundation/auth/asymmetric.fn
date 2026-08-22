@@ -1,0 +1,126 @@
+package foundation.auth
+
+import std.bytes
+import std.text
+
+// Selects a named asymmetric JWT algorithm. Algorithm selection is never inferred from key bytes.
+enum AsymmetricAlgorithm {
+    RS256
+    ES256
+    EdDSA
+}
+
+// Separates malformed input from an unavailable or rejecting crypto provider.
+enum AsymmetricProviderError {
+    Unsupported
+    InvalidPrivateKey
+    InvalidPublicKey
+    InvalidSignature
+    Failed
+}
+
+// Carries opaque DER, PEM, or provider-native key material under explicit ownership.
+struct AsymmetricKey {
+    Algorithm AsymmetricAlgorithm
+    KeyID String
+    Material own bytes.Bytes
+}
+
+// Defines the only boundary allowed to perform asymmetric signing and verification.
+// Providers must use constant-time verification and may not silently downgrade algorithms.
+contract AsymmetricProvider {
+    fn Sign(
+        &self,
+        algorithm AsymmetricAlgorithm,
+        privateKey bytes.Bytes,
+        signingInput bytes.Bytes
+    ) Result<own bytes.Bytes, AsymmetricProviderError>
+
+    fn Verify(
+        &self,
+        algorithm AsymmetricAlgorithm,
+        publicKey bytes.Bytes,
+        signingInput bytes.Bytes,
+        signature bytes.Bytes
+    ) Result<void, AsymmetricProviderError>
+}
+
+// Validates and owns a provider key. The concrete provider decides accepted encoding.
+fn NewAsymmetricKey(
+    algorithm AsymmetricAlgorithm,
+    $keyID String,
+    $material own bytes.Bytes
+) Result<own AsymmetricKey, Error> {
+    if keyID == "" {
+        discard material
+        return .Err(.EmptyKeyID)
+    }
+    if asymmetricMaterialEmpty(material) {
+        discard material
+        return .Err(.InvalidKey)
+    }
+    .Ok(own AsymmetricKey {
+        Algorithm = algorithm
+        KeyID = keyID
+        Material = material
+    })
+}
+
+// Signs exact caller-owned bytes through the selected algorithm and provider.
+// JWT framing is intentionally separate so callers cannot sign a different byte sequence by accident.
+fn SignAsymmetric(
+    &provider AsymmetricProvider,
+    key AsymmetricKey,
+    $signingInput own bytes.Bytes
+) Result<own bytes.Bytes, Error> {
+    const signature = provider.Sign(key.Algorithm, key.Material, signingInput) else error {
+        return .Err(MapAsymmetricProviderError(error))
+    }
+    .Ok(signature)
+}
+
+// Verifies exact caller-owned bytes through the named algorithm without downgrade fallback.
+fn VerifyAsymmetric(
+    &provider AsymmetricProvider,
+    key AsymmetricKey,
+    signingInput bytes.Bytes,
+    signature bytes.Bytes
+) Result<void, Error> {
+    provider.Verify(
+        key.Algorithm,
+        key.Material,
+        signingInput,
+        signature
+    ) else error {
+        return .Err(MapAsymmetricProviderError(error))
+    }
+    .Ok
+}
+
+fn asymmetricMaterialEmpty(material bytes.Bytes) bool {
+    const length = material.Len() else error {
+        discard error
+        return true
+    }
+    length == 0
+}
+
+// Maps a provider status without replacing a failed verification with another algorithm.
+fn MapAsymmetricProviderError(error AsymmetricProviderError) Error {
+    match error {
+        Unsupported: .UnsupportedAlgorithm
+        InvalidPrivateKey: .InvalidKey
+        InvalidPublicKey: .InvalidKey
+        InvalidSignature: .InvalidSignature
+        Failed: .ProviderFailure
+    }
+}
+
+// Returns the canonical JOSE algorithm spelling used by adapters and diagnostics.
+fn AsymmetricAlgorithmName(algorithm AsymmetricAlgorithm) String {
+    match algorithm {
+        RS256: "RS256"
+        ES256: "ES256"
+        EdDSA: "EdDSA"
+    }
+}

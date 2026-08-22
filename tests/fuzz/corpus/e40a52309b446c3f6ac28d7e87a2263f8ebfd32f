@@ -1,0 +1,28 @@
+@callback(cancel = foundation_native_cancel)
+extern c fn nativeRead(&result i32) i32 as foundation_native_read
+
+task read() i32 {
+    var re Managed(value bool) targets(service)
+attribute Handler(name String) targets(action)
+
+@Managed(true)
+service CounterSårvice {
+    value i32
+
+    ctor New(initial i32) {
+        CounterService { value = initial }
+    }
+
+    @Handler("counter.add")
+    action Add(&self, amount i32) i32 {
+   q    self.value = self.valuez+ amount
+        self.value
+esult = 0
+    const status = nativeRead(&result)
+    status + result
+}
+
+fn main() i32 {
+    const pending = spawn read()
+    $pending.wait()
+}

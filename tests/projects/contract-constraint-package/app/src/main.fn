@@ -1,0 +1,17 @@
+package test.constraints.app
+
+import test.constraints.api
+import std.format
+
+struct Number implements api.Readable {
+    value i32
+
+    fn Read(self) i32 {
+        self.value
+    }
+}
+
+fn main() i32 {
+    print(format.I32(api.Value(Number { value = 42 })))
+    0
+}

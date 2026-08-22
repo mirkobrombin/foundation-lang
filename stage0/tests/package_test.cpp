@@ -70,6 +70,8 @@ name sample.app
 version 1.0.0
 sdk ^0.1.0
 fcs strict
+fcs_rule FCS1001 error
+fcs_rule FCS3001 off
 source src
 test_source tests
 dependency sample.local 2.0.0 path "../local package"
@@ -94,6 +96,10 @@ dependency sample.platform ~3.1.0 registry default scope test target linux
     expect(rendered.find("fcs strict") != std::string::npos &&
                parsed.value->codeStandard == foundation::CodeStandardProfile::Strict,
            "FCS profile renders canonically");
+    expect(rendered.find("fcs_rule FCS1001 error") != std::string::npos &&
+               rendered.find("fcs_rule FCS3001 off") != std::string::npos &&
+               parsed.value->codeStandardRules.size() == 2,
+           "FCS rule severities render canonically");
 
     constexpr std::string_view legacy = R"(format foundation.package/v1
 name sample.legacy
@@ -128,6 +134,47 @@ test_source src/tests
     expect(hasCode(foundation::parsePackageManifest("foundation.package", overlapping).errors,
                    "FDN4013"),
            "production and test source roots cannot overlap");
+}
+
+void manifestsRejectInvalidCodeStandardRules() {
+    constexpr std::string_view duplicate = R"(format foundation.package/v1
+name sample.fcs
+version 1.0.0
+sdk ^0.1.0
+fcs_rule FCS1001 warning
+fcs_rule FCS1001 error
+source src
+)";
+    constexpr std::string_view invalid = R"(format foundation.package/v1
+name sample.fcs
+version 1.0.0
+sdk ^0.1.0
+fcs_rule FDN1001 warning
+source src
+)";
+    constexpr std::string_view unknown = R"(format foundation.package/v1
+name sample.fcs
+version 1.0.0
+sdk ^0.1.0
+fcs_rule FCS9999 warning
+source src
+)";
+    constexpr std::string_view internal = R"(format foundation.package/v1
+name sample.fcs
+version 1.0.0
+sdk ^0.1.0
+fcs_rule FCS9001 off
+source src
+)";
+    expect(hasCode(foundation::parsePackageManifest("foundation.package", duplicate).errors,
+                   "FDN4014") &&
+               hasCode(foundation::parsePackageManifest("foundation.package", invalid).errors,
+                   "FDN4014") &&
+               hasCode(foundation::parsePackageManifest("foundation.package", unknown).errors,
+                       "FDN4014") &&
+               hasCode(foundation::parsePackageManifest("foundation.package", internal).errors,
+                       "FDN4014"),
+           "FCS rule settings reject duplicate, unknown, and internal codes");
 }
 
 void nativeManifestsRoundTripAndValidatePaths() {
@@ -365,6 +412,7 @@ int main() {
     manifestsRoundTripCanonically();
     manifestsRejectAmbiguousInput();
     manifestsRequireSeparatedTestSources();
+    manifestsRejectInvalidCodeStandardRules();
     nativeManifestsRoundTripAndValidatePaths();
     locksRoundTripCanonically();
     packageInterfacesRenderCanonically();

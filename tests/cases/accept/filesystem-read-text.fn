@@ -24,6 +24,9 @@ fn isTooLarge($value Result<String, fs.Error>) bool {
             InvalidUtf8: false
             LineTooLong: false
             TooLarge: true
+            InvalidInterval: false
+            ResourceLimit: false
+            Cancelled: false
             Closed: false
             Io: false
         }

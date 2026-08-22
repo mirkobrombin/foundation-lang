@@ -1,0 +1,94 @@
+package foundation.app
+
+import std.collections
+import foundation.hosting
+
+// Declares one explicit application composition unit.
+// Modules receive the host they configure; no reflection or global service registry is involved.
+contract Module<E> {
+    fn Configure(&self, &host hosting.Host<E>) Result<void, E>
+}
+
+// Owns the lifecycle host used as the root of an assembled Foundation application.
+struct App<E> {
+    host own hosting.Host<E>
+}
+
+// Creates an empty composition root. Web, health, telemetry, workers, and plugins are modules.
+fn New<E>() own App<E> {
+    own App<E> { host = hosting.NewHost<E>() }
+}
+
+// Configures one module before lifecycle startup and preserves typed module errors.
+fn Configure<E>(
+    &app App<E>,
+    &module Module<E>
+) Result<void, E> {
+    module.Configure(&app.host)
+}
+
+// Transfers a hosted service into the application lifecycle before startup.
+fn AddService<E>(
+    &app App<E>,
+    $hostedService own hosting.HostedService<E>
+) Result<void, hosting.RegistrationError> {
+    app.host.Add($hostedService)
+}
+
+// Transfers a background service into the application lifecycle before startup.
+fn AddBackground<E>(
+    &app App<E>,
+    $backgroundService own hosting.BackgroundService<E>
+) Result<void, hosting.RegistrationError> {
+    app.host.AddBackground($backgroundService)
+}
+
+// Registers one startup hook before the application starts.
+fn OnStart<E>(
+    &app App<E>,
+    $hook fn() void
+) Result<void, hosting.RegistrationError> {
+    app.host.OnStart($hook)
+}
+
+// Registers one shutdown hook before the application starts.
+fn OnStop<E>(
+    &app App<E>,
+    $hook fn() void
+) Result<void, hosting.RegistrationError> {
+    app.host.OnStop($hook)
+}
+
+// Starts the assembled application once all modules and services are registered.
+fn Start<E>(&app App<E>) Result<void, hosting.StartError<E>> {
+    app.host.Start()
+}
+
+// Stops the assembled application and returns every reverse-order cleanup failure.
+fn Shutdown<E>(&app App<E>) own collections.List<E> {
+    app.host.Shutdown()
+}
+
+// Transfers the application into its structured run loop.
+fn Run<E>(
+    $app own App<E>,
+    $stop Receiver<void>
+) Task<Result<own hosting.RunReport<E>, hosting.StartError<E>>> {
+    const App { host } = app
+    hosting.Run($host, $stop)
+}
+
+// Returns the current one-shot lifecycle state.
+fn State<E>(app App<E>) hosting.State {
+    app.host.State()
+}
+
+// Reports whether the application host is running.
+fn IsRunning<E>(app App<E>) bool {
+    app.host.IsRunning()
+}
+
+// Reports whether the application host has stopped.
+fn IsStopped<E>(app App<E>) bool {
+    app.host.IsStopped()
+}

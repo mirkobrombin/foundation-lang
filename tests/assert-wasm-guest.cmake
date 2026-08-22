@@ -3,6 +3,13 @@ if(NOT DEFINED CLANG OR NOT DEFINED SOURCE OR NOT DEFINED INCLUDE_DIR OR
     message(FATAL_ERROR "WebAssembly guest test requires CLANG, SOURCE, INCLUDE_DIR, and OUTPUT")
 endif()
 
+set(link_options -Wl,--no-entry)
+if(NOT DEFINED EXPORT_MEMORY OR EXPORT_MEMORY)
+    list(APPEND link_options -Wl,--export-memory)
+else()
+    list(APPEND link_options -Wl,--import-memory)
+endif()
+
 execute_process(
     COMMAND "${CLANG}"
         --target=wasm32-unknown-unknown
@@ -12,9 +19,9 @@ execute_process(
         -Wextra
         -Wpedantic
         -Werror
+        ${DEFINITIONS}
         -I "${INCLUDE_DIR}"
-        -Wl,--no-entry
-        -Wl,--export-memory
+        ${link_options}
         "${SOURCE}"
         -o "${OUTPUT}"
     RESULT_VARIABLE compile_status

@@ -1,0 +1,21 @@
+import std.format
+
+extern c fn SetNative(
+    &value i32,
+    next i32
+) i32 as foundation_edit_scalar_set {
+    value = next
+    0
+}
+
+fn Set(&value i32, next i32) void {
+    value = next
+}
+
+fn main() i32 {
+    var value = 1
+    Set(&value, 7)
+    if SetNative(&value, 9) != 0 return 1
+    print(format.I32(value))
+    0
+}

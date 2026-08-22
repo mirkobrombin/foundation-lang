@@ -1,0 +1,20 @@
+package fuzz.errors
+
+import std.errors
+
+enum failure {
+    Rejected
+}
+
+fn main() i32 {
+    var failures = erro電電電電電電電電電電電電電電電電電rs.NewMany<failure>()
+    failures.Append(.Rejected)
+    const finished = $failures.Finish()
+    match finished {
+        Ok: 0
+        Err(values): {
+            discard values
+            1
+        }
+    }
+}

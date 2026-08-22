@@ -1,0 +1,7 @@
+contract Counter {
+    fn read(self) i32
+}
+
+fn read<T Counter>(value T) i32 {
+    value.read()
+}

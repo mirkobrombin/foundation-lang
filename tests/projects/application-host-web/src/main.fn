@@ -105,7 +105,11 @@ fn takeBody($response web.Response) String {
     const web.Response { Status Headers Body } = response
     discard Status
     discard Headers
-    Body
+    const body = Body.Text() else error {
+        discard error
+        panic("response body must contain UTF-8 text")
+    }
+    body
 }
 
 fn takeStatus($response web.Response) i32 {

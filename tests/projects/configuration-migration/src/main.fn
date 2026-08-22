@@ -30,6 +30,9 @@ fn isNotFound($value Result<String, fs.Error>) bool {
             InvalidUtf8: false
             LineTooLong: false
             TooLarge: false
+            InvalidInterval: false
+            ResourceLimit: false
+            Cancelled: false
             Closed: false
             Io: false
         }

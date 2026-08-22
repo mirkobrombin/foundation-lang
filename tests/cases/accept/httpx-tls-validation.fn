@@ -1,0 +1,123 @@
+package test.httpx_tls_validation
+
+import foundation.httpx
+import std.concurrent
+
+struct unreachableProvider implements httpx.TLSProvider {
+    fn Send(
+        &self,
+        $request httpx.Request
+    ) Task<Result<httpx.Response, httpx.TLSError>> {
+        discard request
+        spawn providerReached()
+    }
+
+    fn SendWithCancellation(
+        &self,
+        $request httpx.Request,
+        $cancellation concurrent.Cancellation
+    ) Task<Result<httpx.Response, httpx.TLSError>> {
+        discard request
+        if cancellation.IsRequested() {
+            discard cancellation
+            return spawn providerCancelled()
+        }
+        discard cancellation
+        spawn providerReached()
+    }
+}
+
+task providerReached() Result<httpx.Response, httpx.TLSError> {
+    panic("invalid server name reached TLS provider")
+}
+
+task providerCancelled() Result<httpx.Response, httpx.TLSError> {
+    .Err(.Cancelled)
+}
+
+fn request() httpx.Request {
+    const created = httpx.NewRequest(
+        "GET",
+        "https://-invalid.example/",
+        ""
+    ) else error {
+        discard error
+        panic("TLS validation fixture request failed")
+    }
+    created
+}
+
+fn validRequest() httpx.Request {
+    const created = httpx.NewRequest(
+        "GET",
+        "https://example.com/",
+        ""
+    ) else error {
+        discard error
+        panic("TLS cancellation fixture request failed")
+    }
+    created
+}
+
+fn rejected(error httpx.NetworkError) bool {
+    match error {
+        InvalidRequest(error): {
+            discard error
+            false
+        }
+        Network(error): {
+            discard error
+            false
+        }
+        InvalidURL: false
+        TLSUnavailable: true
+        Cancelled: false
+        Timeout: false
+        PoolUnavailable: false
+        InvalidResponse: false
+        UnsupportedFraming: false
+        ResponseTooLarge: false
+    }
+}
+
+fn main() i32 {
+    var transport = httpx.TLSNetwork(own unreachableProvider {})
+    const pending = transport.Send(request())
+    const result = $pending.wait()
+    discard transport
+    match result {
+        Ok(response): {
+            discard response
+            return 1
+        }
+        Err(error): {
+            if !rejected(error) return 2
+        }
+    }
+    const source = concurrent.NewCancellationSource()
+    const cancellation = source.Token()
+    source.Cancel()
+    var provider = unreachableProvider {}
+    const cancelled = provider.SendWithCancellation(validRequest(), $cancellation)
+    const cancelledResult = $cancelled.wait()
+    discard provider
+    match cancelledResult {
+        Ok(response): {
+            discard response
+            return 3
+        }
+        Err(error): match error {
+            Cancelled: {}
+            InvalidServerName: { return 4 }
+            CertificateNotFound: { return 5 }
+            CertificateRejected: { return 6 }
+            HandshakeFailed: { return 7 }
+            PeerVerificationFailed: { return 8 }
+            Timeout: { return 9 }
+            ProtocolFailed: { return 10 }
+            Unavailable: { return 11 }
+        }
+    }
+    print("httpx TLS validation ok")
+    0
+}

@@ -1,0 +1,9 @@
+package test.constraints.api
+
+contract Readable {
+    fn Read(self) i32
+}
+
+fn Value<T Readable>(value T) i32 {
+    value.Read()
+}

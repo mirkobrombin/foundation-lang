@@ -18,6 +18,7 @@ enum class CallTargetKind {
     FunctionValue,
     Method,
     ContractMethod,
+    ConstrainedMethod,
     Print,
     Panic,
     Len,
@@ -34,6 +35,7 @@ struct CallTarget {
     std::vector<bool> argumentDrops;
     std::optional<AstExpressionId> receiver;
     Type receiverType{invalidType};
+    Type constrainedType{invalidType};
     std::size_t contract{};
     std::size_t method{};
     FirLocalId local{};
@@ -100,6 +102,7 @@ struct SemanticWorkflowFunction {
 
 struct SemanticFunction {
     std::size_t typeParameterCount{};
+    std::vector<std::optional<Type>> typeParameterConstraints;
     Type returnType{invalidType};
     std::vector<Type> parameterTypes;
     std::vector<FirLocalId> parameters;

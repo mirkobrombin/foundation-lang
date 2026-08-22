@@ -61,7 +61,11 @@ fn takeBody($response web.Response) String {
     const web.Response { Status Headers Body } = response
     discard Status
     discard Headers
-    Body
+    const bodyText = Body.Text() else error {
+        discard error
+        return ""
+    }
+    bodyText
 }
 
 fn tokenErrorCode(error auth.Error) i32 {
@@ -75,6 +79,9 @@ fn tokenErrorCode(error auth.Error) i32 {
         EmptyKeyID: 7
         DuplicateKeyID: 8
         UnknownKeyID: 9
+        UnsupportedAlgorithm: 10
+        InvalidKey: 11
+        ProviderFailure: 12
     }
 }
 

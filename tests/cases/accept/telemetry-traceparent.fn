@@ -1,0 +1,80 @@
+package test.telemetry.traceparent
+
+import foundation.telemetry
+
+fn traceparentErrorCode(error telemetry.TraceparentError) i32 {
+    match error {
+        InvalidLength: 1
+        InvalidSeparator: 2
+        UnsupportedVersion: 3
+        InvalidTraceID: 4
+        InvalidParentID: 5
+        InvalidFlags: 6
+        ZeroTraceID: 7
+        ZeroParentID: 8
+    }
+}
+
+fn rejected(value String, expected i32) bool {
+    match telemetry.ParseTraceparent(value) {
+        Ok(context): {
+            discard context
+            false
+        }
+        Err(error): traceparentErrorCode(error) == expected
+    }
+}
+
+fn main() i32 {
+    const encoded = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+    const context = telemetry.ParseTraceparent(encoded) else error {
+        discard error
+        return 1
+    }
+    if context.TraceID != "0af7651916cd43dd8448eb211c80319c" return 2
+    if context.ParentID != "b7ad6b7169203331" return 3
+    if context.TraceFlags != "01" return 4
+    if telemetry.EncodeTraceparent(context) != encoded return 5
+
+    if !rejected("invalid", 1) return 6
+    if !rejected(
+        "00_0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+        2
+    ) {
+        return 7
+    }
+    if !rejected(
+        "01-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+        3
+    ) {
+        return 8
+    }
+    if !rejected(
+        "00-0AF7651916CD43DD8448EB211C80319C-b7ad6b7169203331-01",
+        4
+    ) {
+        return 9
+    }
+    if !rejected(
+        "00-00000000000000000000000000000000-b7ad6b7169203331-01",
+        7
+    ) {
+        return 10
+    }
+    if !rejected(
+        "00-0af7651916cd43dd8448eb211c80319c-0000000000000000-01",
+        8
+    ) {
+        return 11
+    }
+    if !rejected(
+        "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-zz",
+        6
+    ) {
+        return 12
+    }
+
+    print(encoded)
+    print("traceparent errors ok")
+    0
+}

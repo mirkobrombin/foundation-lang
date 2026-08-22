@@ -1,0 +1,5 @@
+package sample.task
+
+task Echo(value i32) i32 {
+    value
+}

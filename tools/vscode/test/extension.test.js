@@ -182,6 +182,9 @@ test("recognizes package and lock directives with dedicated scopes", () => {
     const fcs = new RegExp(packageGrammar.repository.fcs.patterns[0].match)
         .exec("fcs strict");
     assert.deepEqual(fcs?.slice(1), ["fcs", "strict"]);
+    const fcsRule = new RegExp(packageGrammar.repository.fcsRule.patterns[0].match)
+        .exec("fcs_rule FCS1001 error");
+    assert.deepEqual(fcsRule?.slice(1), ["fcs_rule", "FCS1001", "error"]);
     const nativeLibrary = new RegExp(packageGrammar.repository.nativeLibrary.patterns[0].match)
         .exec("native_library c");
     assert.deepEqual(nativeLibrary?.slice(1), ["native_library", "c"]);
@@ -1301,9 +1304,9 @@ test("grammar and completions track compiler keywords", () => {
         "std.parse", "parse.Bool", "parse.F32", "parse.F64", "parse.I8", "parse.I16", "parse.I32", "parse.I64",
         "parse.Isize", "parse.U8", "parse.U16", "parse.U32", "parse.U64",
         "parse.Usize",
-        "std.fs", "fs.OpenLines", "fs.ReadText", "fs.ReadTextLimited", "fs.OpenDir", "fs.Size", "fs.Modified",
+        "std.fs", "fs.OpenLines", "fs.ReadText", "fs.ReadTextLimited", "fs.WatchNext", "fs.OpenDir", "fs.Size", "fs.Modified",
         "fs.LineReader.Next", "fs.LineReader.NextLimited", "fs.OpenTree", "fs.OpenRoot",
-        "fs.TreeKind", "fs.TreeEntry", "fs.TreeReader", "fs.RootWriter",
+        "fs.TreeKind", "fs.TreeEntry", "fs.TreeReader", "fs.RootWriter", "fs.EventKind", "fs.Event",
         "fs.TreeReader.Next", "fs.TreeReader.ReadFile", "fs.TreeReader.Close",
         "fs.RootWriter.CreateDirectory", "fs.RootWriter.WriteFile", "fs.RootWriter.Close",
         "std.net", "net.Deadline", "net.DeadlineAfter", "net.Listen", "net.Accept",
@@ -1391,20 +1394,31 @@ test("grammar and completions track compiler keywords", () => {
         "validation.Errors", "validation.NewErrors", "validation.IsEmail",
         "validation.Errors.IsEmpty", "validation.Errors.Len", "validation.Errors.TakeFirst",
         "foundation.web", "web.Server", "web.Router", "web.RouteTable", "web.RouteMatch",
-        "web.Handler", "web.Middleware", "web.Application", "web.Request", "web.Response", "web.Method",
+        "web.Handler", "web.Middleware", "web.Application", "web.Request", "web.Response", "web.Compressor", "web.CompressionMiddleware", "web.CompressionError", "web.Method",
         "web.MatchError", "web.DispatchError", "web.MiddlewareRegistrationError",
         "web.ServeOutcome", "web.NewServer",
-        "web.NewRouter", "web.NewRouteTable", "web.Empty", "web.Text", "web.Json", "web.Router.Map",
+        "web.NewRouter", "web.NewRouteTable", "web.Empty", "web.Text", "web.Json", "web.Binary", "web.NewCompressionMiddleware", "web.Router.Map",
         "web.Router.Use", "web.Router.UseStateful", "web.Router.UseGroup",
         "web.Router.UseGroupStateful", "web.Router.UseRoute", "web.Router.UseRouteStateful",
         "web.RouteTable.Add", "web.RouteTable.Match", "web.Request.Param", "web.Request.Query",
         "web.Request.Header", "web.Request.Form", "web.Request.IsJSON",
-        "web.Response.Header", "web.Response.SetHeader", "web.Response.AddHeader",
+        "web.Response.Header", "web.Response.TextBody", "web.Response.SetHeader", "web.Response.AddHeader",
         "web.Application.ErrorResponse", "web.Server.ConfigureCORS", "web.Server.ServeOne",
-        "foundation.logger", "logger.Level", "logger.Field", "logger.Logger",
+        "foundation.logger", "logger.Level", "logger.Field", "logger.Trace", "logger.Entry",
+        "logger.RenderError", "logger.Sink", "logger.ConsoleSink", "logger.CLEFSink", "logger.Logger",
+        "logger.Pipeline", "logger.AsyncError", "logger.Publisher", "logger.Async",
         "logger.New", "logger.NewWith", "logger.Fields", "logger.WithField", "logger.LevelText",
-        "logger.Logger.SetLevel", "logger.Logger.Bind", "logger.Logger.Log",
-        "logger.Logger.Debug", "logger.Logger.Info", "logger.Logger.Warn", "logger.Logger.Error",
+        "logger.NewEntry", "logger.RenderText", "logger.RenderJSON", "logger.RenderCLEF",
+        "logger.NewConsoleSink", "logger.NewCLEFSink", "logger.NewPipeline", "logger.NewAsync",
+        "logger.NewPublisher", "logger.Publish", "logger.Shutdown", "logger.Cancel",
+        "logger.Logger.SetLevel", "logger.Logger.Bind", "logger.Logger.BindTrace",
+        "logger.Logger.ClearTrace", "logger.Logger.Prepare", "logger.Logger.PrepareAt",
+        "logger.Logger.Log", "logger.Logger.Debug", "logger.Logger.Info", "logger.Logger.Warn",
+        "logger.Logger.Error", "logger.ConsoleSink.Write", "logger.CLEFSink.Write",
+        "logger.Pipeline.SetLevel", "logger.Pipeline.Bind", "logger.Pipeline.BindTrace",
+        "logger.Pipeline.ClearTrace", "logger.Pipeline.Log", "logger.Pipeline.Debug",
+        "logger.Pipeline.Info", "logger.Pipeline.Warn", "logger.Pipeline.Error",
+        "logger.Publisher.Clone",
         "foundation.metrics", "metrics.Counter", "metrics.Gauge", "metrics.Bucket",
         "metrics.HistogramSnapshot", "metrics.Histogram", "metrics.Timing",
         "metrics.TimerError", "metrics.Timer", "metrics.NewCounter", "metrics.NewGauge",
@@ -1511,6 +1525,22 @@ test("grammar and completions track compiler keywords", () => {
         detail: "fn Empty(status i32) web.Response",
         insertText: "web.Empty(${1:204})"
     });
+    const webBinary = staticCompletions.find((completion) =>
+        completion.label === "web.Binary");
+    assert.deepEqual(webBinary, {
+        label: "web.Binary",
+        kind: "Function",
+        detail: "fn Binary(status i32, $body own bytes.Bytes, contentType String) web.Response",
+        insertText: "web.Binary(${1:200}, \\$${2:body}, ${3:contentType})"
+    });
+    const webCompression = staticCompletions.find((completion) =>
+        completion.label === "web.NewCompressionMiddleware");
+    assert.deepEqual(webCompression, {
+        label: "web.NewCompressionMiddleware",
+        kind: "Function",
+        detail: "fn NewCompressionMiddleware<E>($compressor own web.Compressor, minimumBytes u64) own web.Middleware<E>",
+        insertText: "web.NewCompressionMiddleware<${1:Error}>(\\$${2:compressor}, ${3:minimumBytes})"
+    });
     const webResponseHeader = staticCompletions.find((completion) =>
         completion.label === "web.Response.Header");
     assert.deepEqual(webResponseHeader, {
@@ -1518,6 +1548,14 @@ test("grammar and completions track compiler keywords", () => {
         kind: "Method",
         detail: "fn Header(&self, name String) Option<String>",
         insertText: "Header(${1:name})"
+    });
+    const webResponseTextBody = staticCompletions.find((completion) =>
+        completion.label === "web.Response.TextBody");
+    assert.deepEqual(webResponseTextBody, {
+        label: "web.Response.TextBody",
+        kind: "Method",
+        detail: "fn TextBody(self) Result<String, bytes.Error>",
+        insertText: "TextBody()"
     });
     const webResponseSetHeader = staticCompletions.find((completion) =>
         completion.label === "web.Response.SetHeader");
@@ -1866,7 +1904,7 @@ test("collects generic declarations and type parameters", () => {
 
 test("tracks generic syntax used by the language tour", () => {
     const source = fs.readFileSync(
-        path.join(repositoryRoot, "examples/language-tour/main.fn"),
+        path.join(repositoryRoot, "examples/language-tour/src/main.fn"),
         "utf8"
     );
     const labels = new Set(collectCompletions(source).map((entry) => entry.label));
@@ -1888,6 +1926,27 @@ test("tracks generic syntax used by the language tour", () => {
     );
     assert.match("identity<i32>", specialization);
     assert.doesNotMatch("x < y\nlet b = p > (c)", specialization);
+
+    const assignment = new RegExp(
+        parsedGrammar.repository.operators.patterns[0].match
+    );
+    for (const operator of ["+=", "-=", "*=", "/=", "%=", "<<=", ">>="]) {
+        assert.match(operator, assignment);
+    }
+
+    const operator = new RegExp(
+        parsedGrammar.repository.operators.patterns[1].match
+    );
+    for (const shift of ["<<", ">>"]) {
+        assert.match(shift, operator);
+    }
+
+    const snippets = readJson("snippets/foundation.json");
+    assert.match(snippets["Contract-constrained generic function"].body.join("\n"),
+        /fn \$\{1:bump\}<\$\{2:T\} \$\{3:Counter\}>/);
+    assert.match(snippets["Compound assignment"].body, /\+=,-=,\*=,\/=,%=,<<=,>>=/);
+    assert.match(snippets["Watch next filesystem event"].body.join("\n"),
+        /spawn fs\.WatchNext/);
 });
 
 test("tracks ownership declarations and borrowed parameters", () => {

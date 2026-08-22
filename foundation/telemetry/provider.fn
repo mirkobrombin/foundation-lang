@@ -1,0 +1,97 @@
+package foundation.telemetry
+
+import std.collections
+import foundation.tracing
+
+// Combines explicit tracing and metric providers without nullable defaults.
+struct Provider<E> {
+    Tracer own tracing.Tracer<E>
+    Meter own Meter
+}
+
+// Creates a telemetry provider from explicitly owned implementations.
+fn NewProvider<E>(
+    $tracer own tracing.Tracer<E>,
+    $meter own Meter
+) own Provider<E> {
+    own Provider<E> { Tracer = tracer Meter = meter }
+}
+
+// Creates a provider whose tracing and metric operations are explicit no-ops.
+fn NewNoopProvider<E>() own Provider<E> {
+    own Provider<E> {
+        Tracer = tracing.Noop<E>()
+        Meter = own noopMeter {}
+    }
+}
+
+struct noopCounter implements Counter {
+    fn Add(self, delta i64) Task<Result<void, Error>> {
+        discard delta
+        spawn noopDone()
+    }
+}
+
+struct noopGauge implements Gauge {
+    fn Set(self, value f64) Task<Result<void, Error>> {
+        discard value
+        spawn noopDone()
+    }
+}
+
+struct noopHistogram implements Histogram {
+    fn Observe(self, value f64) Task<Result<void, Error>> {
+        discard value
+        spawn noopDone()
+    }
+}
+
+struct noopMeter implements Meter {
+    fn Counter(
+        self,
+        $name String,
+        $attributes own collections.List<tracing.Attribute>
+    ) Task<Result<own Counter, Error>> {
+        discard name
+        discard attributes
+        spawn noopCounterResult()
+    }
+
+    fn Gauge(
+        self,
+        $name String,
+        $attributes own collections.List<tracing.Attribute>
+    ) Task<Result<own Gauge, Error>> {
+        discard name
+        discard attributes
+        spawn noopGaugeResult()
+    }
+
+    fn Histogram(
+        self,
+        $name String,
+        $attributes own collections.List<tracing.Attribute>,
+        $boundaries own collections.List<f64>
+    ) Task<Result<own Histogram, Error>> {
+        discard name
+        discard attributes
+        discard boundaries
+        spawn noopHistogramResult()
+    }
+}
+
+task noopDone() Result<void, Error> {
+    .Ok
+}
+
+task noopCounterResult() Result<own Counter, Error> {
+    .Ok(own noopCounter {})
+}
+
+task noopGaugeResult() Result<own Gauge, Error> {
+    .Ok(own noopGauge {})
+}
+
+task noopHistogramResult() Result<own Histogram, Error> {
+    .Ok(own noopHistogram {})
+}

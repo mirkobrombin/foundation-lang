@@ -1,0 +1,16 @@
+traceparent=00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01
+invalid=true
+# TYPE requests_total counter
+requests_total 5
+
+# TYPE active_workers gauge
+active_workers 3.5
+
+# TYPE duration histogram
+duration_bucket{le="1"} 1
+duration_bucket{le="5"} 1
+duration_bucket{le="10"} 2
+duration_bucket{le="+Inf"} 3
+duration_sum 27.5
+duration_count 3
+

@@ -10,6 +10,7 @@
         { "include": "#version" },
         { "include": "#sdk" },
         { "include": "#fcs" },
+        { "include": "#fcsRule" },
         { "include": "#source" },
         { "include": "#testSource" },
         { "include": "#nativeLibrary" },
@@ -80,6 +81,18 @@
                     "captures": {
                         "1": { "name": "keyword.declaration.fcs.foundation.package" },
                         "2": { "name": "constant.language.profile.foundation.package" }
+                    }
+                }
+            ]
+        },
+        "fcsRule": {
+            "patterns": [
+                {
+                    "match": "^\\s*(fcs_rule)\\s+(FCS[0-9]{4})\\s+(off|warning|error)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.fcs-rule.foundation.package" },
+                        "2": { "name": "constant.numeric.rule.foundation.package" },
+                        "3": { "name": "constant.language.severity.foundation.package" }
                     }
                 }
             ]

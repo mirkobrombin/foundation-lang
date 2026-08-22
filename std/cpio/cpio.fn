@@ -419,7 +419,7 @@ struct Writer {
     }
 }
 
-// Returns the default reader safety limits.
+// Returns the Go Foundation v2-compatible reader safety limits.
 fn DefaultReaderLimits() ReaderLimits {
     ReaderLimits {
         MaxNameSize = 4096
@@ -450,7 +450,7 @@ fn DefaultWriterOptions() WriterOptions {
     }
 }
 
-// Creates a reader with default safety limits.
+// Creates a reader with Go Foundation v2-compatible safety limits.
 fn NewReader($archive own bytes.Bytes) Result<own Reader, Error> {
     NewReaderWithLimits($archive, DefaultReaderLimits())
 }

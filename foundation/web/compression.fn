@@ -1,0 +1,218 @@
+package foundation.web
+
+import std.text
+import std.bytes
+
+// Classifies explicit response compression failures.
+enum CompressionError {
+    UnsupportedEncoding
+    PayloadTooLarge
+    Failed
+}
+
+// Compresses one response body under an application-selected content encoding.
+// Implementations are provider adapters and never alter a response unless middleware is installed.
+contract Compressor {
+    fn Encoding(self) String
+    fn Compress(&self, $body own bytes.Bytes) Result<own bytes.Bytes, CompressionError>
+}
+
+// Applies an explicit compression provider after the rest of the middleware chain succeeds.
+struct CompressionMiddleware<E> implements Middleware<E> {
+    compressor own Compressor
+    minimumBytes u64
+
+    fn Handle(
+        &self,
+        $request Request,
+        next fn($Request) Result<Response, DispatchError<E>>
+    ) Result<Response, DispatchError<E>> {
+        const encoding = self.compressor.Encoding()
+        const minimumBytes = self.minimumBytes
+        var activeRequest = request
+        const accepted = activeRequest.Header("Accept-Encoding")
+        const enabled = match accepted {
+            None: false
+            Some(value): acceptsContentEncoding($value, encoding)
+        }
+        const delivered = next($activeRequest) else error {
+            return .Err(error)
+        }
+        if enabled {
+            compressResponse<E>(
+                &self.compressor,
+                encoding,
+                minimumBytes,
+                $delivered
+            )
+        } else {
+            .Ok(delivered)
+        }
+    }
+}
+
+fn compressResponse<E>(
+    &compressor Compressor,
+    encoding String,
+    minimumBytes u64,
+    $response Response
+) Result<Response, DispatchError<E>> {
+    var active = response
+    const eligible = responseLength(active.Body) >= minimumBytes
+    if eligible {
+            const existingEncoding = active.Header("Content-Encoding")
+            match existingEncoding {
+                Some(existing): {
+                    discard existing
+                    .Ok(active)
+                }
+                None: compressResponseBody<E>(&compressor, encoding, $active)
+            }
+    } else {
+        .Ok(active)
+    }
+}
+
+fn compressResponseBody<E>(
+    &compressor Compressor,
+    encoding String,
+    $response Response
+) Result<Response, DispatchError<E>> {
+    var active = response
+    const copied = active.Body.Copy()
+    match copied {
+        Err(error): {
+            discard error
+            .Ok(active)
+        }
+        Ok(source): {
+            const compressed = compressor.Compress($source)
+            match compressed {
+                Err(error): {
+                    discard error
+                    .Ok(active)
+                }
+                Ok(body): {
+                    active.Body = body
+                    active.SetHeader("Content-Encoding", encoding)
+                    addCompressionVary(&active)
+                    .Ok(active)
+                }
+            }
+        }
+    }
+}
+
+fn responseLength(value bytes.Bytes) u64 {
+    const length = value.Len() else error {
+        discard error
+        return 0
+    }
+    length
+}
+
+// Transfers a compressor into middleware. Zero permits every non-empty response.
+fn NewCompressionMiddleware<E>(
+    $compressor own Compressor,
+    minimumBytes u64
+) own Middleware<E> {
+    own CompressionMiddleware<E> {
+        compressor = compressor
+        minimumBytes = minimumBytes
+    }
+}
+
+fn acceptsContentEncoding($header String, encoding String) bool {
+    const length = text.ByteLen(header)
+    var cursor u64 = 0
+    var explicit = false
+    var explicitlyAccepted = false
+    var wildcardAccepted = false
+    while cursor < length {
+        cursor = skipAsciiWhitespace(header, cursor)
+        if cursor < length && byteAt(header, cursor) == 44 {
+            cursor = cursor + 1
+            continue
+        }
+        const tokenStart = cursor
+        while cursor < length && byteAt(header, cursor) != 44 &&
+            byteAt(header, cursor) != 59 {
+            cursor = cursor + 1
+        }
+        var tokenEnd = cursor
+        while tokenEnd > tokenStart && asciiWhitespace(byteAt(header, tokenEnd - 1)) {
+            tokenEnd = tokenEnd - 1
+        }
+        const token = slice(header, tokenStart, tokenEnd)
+        const selected = equalFoldAscii(token, encoding)
+        const wildcard = token == "*"
+        var disabled = false
+        while cursor < length && byteAt(header, cursor) != 44 {
+            if byteAt(header, cursor) != 59 {
+                cursor = cursor + 1
+                continue
+            }
+            cursor = skipAsciiWhitespace(header, cursor + 1)
+            const nameStart = cursor
+            while cursor < length && byteAt(header, cursor) != 61 &&
+                byteAt(header, cursor) != 44 && byteAt(header, cursor) != 59 {
+                cursor = cursor + 1
+            }
+            var nameEnd = cursor
+            while nameEnd > nameStart && asciiWhitespace(byteAt(header, nameEnd - 1)) {
+                nameEnd = nameEnd - 1
+            }
+            if cursor >= length || byteAt(header, cursor) != 61 continue
+            cursor = skipAsciiWhitespace(header, cursor + 1)
+            const valueStart = cursor
+            while cursor < length && byteAt(header, cursor) != 44 &&
+                byteAt(header, cursor) != 59 {
+                cursor = cursor + 1
+            }
+            var valueEnd = cursor
+            while valueEnd > valueStart && asciiWhitespace(byteAt(header, valueEnd - 1)) {
+                valueEnd = valueEnd - 1
+            }
+            if equalFoldAscii(slice(header, nameStart, nameEnd), "q") &&
+                zeroCompressionQuality(slice(header, valueStart, valueEnd)) {
+                disabled = true
+            }
+        }
+        if selected {
+            explicit = true
+            explicitlyAccepted = !disabled
+        }
+        if wildcard && !disabled {
+            wildcardAccepted = true
+        }
+    }
+    if explicit return explicitlyAccepted
+    wildcardAccepted
+}
+
+fn zeroCompressionQuality(value String) bool {
+    const length = text.ByteLen(value)
+    if length == 0 || byteAt(value, 0) != 48 return false
+    if length == 1 return true
+    if byteAt(value, 1) != 46 return false
+    var cursor u64 = 2
+    while cursor < length {
+        if byteAt(value, cursor) != 48 return false
+        cursor = cursor + 1
+    }
+    true
+}
+
+fn addCompressionVary(&response Response) void {
+    const current = response.Header("Vary")
+    match current {
+        None: response.SetHeader("Vary", "Accept-Encoding")
+        Some(value): {
+            if acceptsContentEncoding(text.Copy(value), "Accept-Encoding") {
+                discard value
+                return
+            }
+            response.SetHeader("Vary", value + ", Accept-Encoding")
+        }
+    }
+}

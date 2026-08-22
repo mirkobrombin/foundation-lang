@@ -1,0 +1,11 @@
+package fuzz.tracing
+
+import foundation.tracing
+
+enum Failure {
+    Failed
+}
+
+fn create() own tracing.Tracÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿer<Failure> {
+    tracing.Noop<Failure>()
+}

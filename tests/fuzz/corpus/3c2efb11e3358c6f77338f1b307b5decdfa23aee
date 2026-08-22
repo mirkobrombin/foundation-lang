@@ -1,0 +1,18 @@
+enum Method {
+    Gm Method {
+    GET
+}
+
+attribute Route(method Method, path String) targets(fn) repeatable
+
+@Route(.GET, path = "/health")
+fn main() i32 {
+ET
+}
+
+attribute Route(method Method, path String) targets(fn) repeatable
+
+@Route(.GET, path = "/health")
+fn main() i32 {
+    0
+}

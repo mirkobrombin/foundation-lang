@@ -1,0 +1,88 @@
+package test.web_compression
+
+import foundation.web
+import std.bytes
+import std.collections
+
+enum AppError {
+    Failed
+}
+
+struct BinaryCompressor implements web.Compressor {
+    fn Encoding(self) String {
+        "test"
+    }
+
+    fn Compress(
+        &self,
+        $body own bytes.Bytes
+    ) Result<own bytes.Bytes, web.CompressionError> {
+        discard self
+        discard body
+        const compressed = bytes.DecodeBase64("/wA=") else error {
+            discard error
+            return .Err(.Failed)
+        }
+        .Ok(compressed)
+    }
+}
+
+fn request() web.Request {
+    var headers = collections.NewList<web.HeaderValue>()
+    headers.PushFront(web.HeaderValue {
+        Name = "Accept-Encoding"
+        Value = "test"
+    })
+    web.Request {
+        Method = .GET
+        Target = "/payload"
+        Path = "/payload"
+        Version = "HTTP/1.1"
+        Headers = headers
+        Params = collections.NewList<web.Parameter>()
+    }
+}
+
+fn respond(
+    $request web.Request
+) Result<web.Response, web.DispatchError<AppError>> {
+    discard request
+    .Ok(web.Binary(200, bytes.FromText("source"), "application/octet-stream"))
+}
+
+fn compressed(
+    $value Result<web.Response, web.DispatchError<AppError>>
+) bool {
+    const delivered = value else error {
+        discard error
+        return false
+    }
+    var response = delivered
+    const encoding = response.Header("Content-Encoding")
+    const selectedEncoding = match encoding {
+        None: false
+        Some(value): value == "test"
+    }
+    const web.Response { Status Headers Body } = response
+    discard Headers
+    if Status != 200 || !selectedEncoding return false
+    const first = Body.At(0) else error {
+        discard error
+        return false
+    }
+    const second = Body.At(1) else error {
+        discard error
+        return false
+    }
+    first == 255 && second == 0
+}
+
+fn main() i32 {
+    var middleware = web.NewCompressionMiddleware<AppError>(
+        own BinaryCompressor {},
+        0
+    )
+    if !compressed(middleware.Handle(request(), respond)) return 1
+    print("web compression binary ok")
+    0
+}

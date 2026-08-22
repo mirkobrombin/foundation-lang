@@ -23,18 +23,18 @@ bool closes(TokenKind kind) {
 
 bool endsExpression(TokenKind kind) {
     return kind == TokenKind::Identifier || kind == TokenKind::Integer ||
-           kind == TokenKind::Floating ||
-           kind == TokenKind::String || kind == TokenKind::True ||
+           kind == TokenKind::Floating || kind == TokenKind::String || kind == TokenKind::True ||
            kind == TokenKind::False || closes(kind);
 }
 
 bool binary(TokenKind kind) {
     return kind == TokenKind::Equal || kind == TokenKind::EqualEqual ||
            kind == TokenKind::BangEqual || kind == TokenKind::Plus ||
-           kind == TokenKind::Star || kind == TokenKind::Slash ||
-           kind == TokenKind::Percent || kind == TokenKind::LessEqual ||
-           kind == TokenKind::GreaterEqual || kind == TokenKind::AndAnd ||
-           kind == TokenKind::OrOr;
+           kind == TokenKind::PlusEqual || kind == TokenKind::MinusEqual ||
+           kind == TokenKind::Star || kind == TokenKind::StarEqual || kind == TokenKind::Slash ||
+           kind == TokenKind::SlashEqual || kind == TokenKind::Percent ||
+           kind == TokenKind::PercentEqual || kind == TokenKind::LessEqual ||
+           kind == TokenKind::GreaterEqual || kind == TokenKind::AndAnd || kind == TokenKind::OrOr;
 }
 
 bool unaryMinus(const std::vector<Token> &tokens, std::size_t index) {
@@ -159,11 +159,25 @@ std::vector<bool> typeOpeningBrackets(const std::vector<Token> &tokens,
 }
 
 bool spaceBetween(const std::vector<Token> &tokens, std::size_t index,
-                  const std::vector<bool> &genericDelimiters,
-                  const std::vector<bool> &typeBrackets,
+                  const std::vector<bool> &genericDelimiters, const std::vector<bool> &typeBrackets,
                   const std::unordered_set<std::size_t> &typeStarts) {
     const auto previous = tokens[index - 1].kind;
     const auto current = tokens[index].kind;
+    const auto adjacent =
+        tokens[index - 1].span.offset + tokens[index - 1].span.length == tokens[index].span.offset;
+    if (adjacent && !genericDelimiters[index - 1] && !genericDelimiters[index] &&
+        ((previous == TokenKind::Less && current == TokenKind::Less) ||
+         (previous == TokenKind::Greater && current == TokenKind::Greater))) {
+        return false;
+    }
+    if (index >= 2 && current == TokenKind::Equal && adjacent && !genericDelimiters[index - 2] &&
+        !genericDelimiters[index - 1] &&
+        tokens[index - 2].span.offset + tokens[index - 2].span.length ==
+            tokens[index - 1].span.offset &&
+        ((tokens[index - 2].kind == TokenKind::Less && previous == TokenKind::Less) ||
+         (tokens[index - 2].kind == TokenKind::Greater && previous == TokenKind::Greater))) {
+        return false;
+    }
     if (current == TokenKind::RightParen || current == TokenKind::RightBracket ||
         current == TokenKind::Comma || current == TokenKind::Colon) {
         return false;
@@ -177,9 +191,8 @@ bool spaceBetween(const std::vector<Token> &tokens, std::size_t index,
                previous != TokenKind::At && previous != TokenKind::Dot;
     }
     if (previous == TokenKind::LeftParen || previous == TokenKind::LeftBracket ||
-        previous == TokenKind::At || previous == TokenKind::Dot ||
-        previous == TokenKind::Bang || previous == TokenKind::Ampersand ||
-        previous == TokenKind::Dollar ||
+        previous == TokenKind::At || previous == TokenKind::Dot || previous == TokenKind::Bang ||
+        previous == TokenKind::Ampersand || previous == TokenKind::Dollar ||
         unaryMinus(tokens, index - 1) || unaryStar(tokens, index - 1, typeStarts)) {
         return false;
     }
@@ -238,12 +251,21 @@ std::vector<bool> genericDelimiters(const std::vector<Token> &tokens) {
                                          tokens[index - 2].kind == TokenKind::Ctor ||
                                          tokens[index - 2].kind == TokenKind::Task);
         if (functionParameters) {
+            std::size_t depth = 1;
             for (auto current = index + 1; current < tokens.size(); ++current) {
+                if (tokens[current].kind == TokenKind::Less) {
+                    ++depth;
+                    continue;
+                }
                 if (tokens[current].kind == TokenKind::Greater) {
+                    --depth;
+                    if (depth == 0) {
                     closing = current;
                     break;
                 }
-                if (tokens[current].kind != TokenKind::Identifier &&
+                    continue;
+                }
+                if (depth == 1 &&tokens[current].kind != TokenKind::Identifier &&
                     tokens[current].kind != TokenKind::Comma) {
                     break;
                 }

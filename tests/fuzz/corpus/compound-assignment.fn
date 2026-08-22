@@ -1,0 +1,4 @@
+fn update(&value i32) void {
+    value += 2
+    value *= 3
+}

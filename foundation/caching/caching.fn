@@ -206,7 +206,7 @@ struct InMemory<T> implements Cache<T, Error> {
     }
 }
 
-// Creates an in-memory cache with the default limits.
+// Creates an in-memory cache with the v2 defaults.
 fn New<T>($cloneValue fn(T) T) own InMemory<T> {
     newCache<T>($cloneValue, 0, 10000)
 }
@@ -692,7 +692,7 @@ struct DistributedInMemory implements DistributedCache<Error> {
     }
 }
 
-// Creates an in-memory byte backend with the default limits.
+// Creates an in-memory byte backend with the v2 defaults.
 fn NewDistributed() own DistributedInMemory {
     newDistributedCache(0, 10000)
 }

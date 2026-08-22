@@ -1,0 +1,39 @@
+package test.compound_assignment
+
+import std.format
+
+struct Box {
+    value i32
+    values [2]i32
+}
+
+fn selectIndex(&calls i32) usize {
+    calls += 1
+    1
+}
+
+fn main() i32 {
+    var value = 10
+    value += 5
+    value -= 3
+    value *= 2
+    value /= 4
+    value %= 4
+    value <<= 3
+    value >>= 1
+
+    var text = "Hello"
+    text += ", Foundation"
+
+    var box = Box { value = 5 values = [1, 2] }
+    box.value += 2
+    var calls = 0
+    box.values[selectIndex(&calls)] += 4
+
+    print(format.I32(value))
+    print(text)
+    print(format.I32(box.value))
+    print(format.I32(box.values[1]))
+    print(format.I32(calls))
+    0
+}

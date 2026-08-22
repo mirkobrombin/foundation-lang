@@ -1,0 +1,408 @@
+package foundation.saga
+
+import std.collections
+import std.text
+
+// Classifies persistence, duplicate, and dead-letter outcomes.
+enum Error {
+    Closed
+    DuplicateKey
+    MissingKey
+    StoreFailure
+}
+
+// Describes the atomic state returned by an idempotency store reservation.
+enum Reservation {
+    Acquired
+    Completed
+    InProgress
+}
+
+// Preserves infrastructure failures without duplicating owned application values.
+enum RunError<T, E> {
+    Duplicate
+    Store(failure StoreAccessFailure<T>)
+    OperationQueued
+    Record(failure StoreWriteFailure)
+    Complete(failure StoreWriteFailure)
+    Release(failure ReleaseFailure<T, E>)
+    DeadLetter(failure DeadLetterPushFailure<T, E>)
+}
+
+// Preserves work that could not reach an idempotency decision.
+struct StoreAccessFailure<T> {
+    Key String
+    Input T
+    Error Error
+}
+
+// Returns the idempotency key when durable state cannot be recorded.
+struct StoreWriteFailure {
+    Key String
+    Error Error
+}
+
+// Keeps the input and typed failure of work that cannot complete.
+struct DeadLetter<T, E> {
+    Key String
+    Input T
+    Error E
+}
+
+// Returns an unqueued letter to its owner when durable enqueueing fails.
+struct DeadLetterPushFailure<T, E> {
+    Error Error
+    Letter DeadLetter<T, E>
+}
+
+// Preserves failed work when an acquired reservation cannot be released.
+struct ReleaseFailure<T, E> {
+    Error Error
+    Letter DeadLetter<T, E>
+}
+
+// Groups independently typed operations under one explicit join boundary.
+struct Group<T, E> {
+    pending own collections.List<Task<Result<T, E>>>
+
+    // Transfers a child task into the group before its result can be observed.
+    fn Add(&self, $pendingTask Task<Result<T, E>>) void {
+        self.pending.PushFront($pendingTask)
+    }
+}
+
+// Creates a group whose tasks are joined in registration order.
+fn NewGroup<T, E>() own Group<T, E> {
+    own Group<T, E> { pending = collections.NewList<Task<Result<T, E>>>() }
+}
+
+// Joins every registered task in registration order and stops at the first typed failure.
+task Join<T, E>($group own Group<T, E>) Result<own collections.List<T>, E> {
+    const Group { pending } = group
+    var tasks = reverseTasks<T, E>($pending)
+    var values = collections.NewList<T>()
+    while !tasks.IsEmpty() {
+        const pendingTask = requireTask<T, E>(tasks.PopFront())
+        const completed = $pendingTask.wait()
+        const value = completed else error {
+            return .Err(error)
+        }
+        values.PushFront($value)
+    }
+    .Ok(reverseValues<T>($values))
+}
+
+// Stores completed idempotency keys behind an explicit persistence boundary.
+contract Store {
+    fn Contains(&self, key String) Result<bool, Error>
+    fn Record(&self, key String) Result<void, Error>
+}
+
+// Accepts failed work for explicit operator handling.
+contract DeadLetterQueue<T, E> {
+    fn Push(
+        &self,
+        $value DeadLetter<T, E>
+    ) Result<void, DeadLetterPushFailure<T, E>>
+    fn Drain($self) own collections.List<DeadLetter<T, E>>
+}
+
+// Runs an operation once, records only success, and retains failed input in the DLQ.
+fn RunOnce<T, E>(
+    &store Store,
+    &letters DeadLetterQueue<T, E>,
+    $key String,
+    $input T,
+    operation fn(T) Result<void, E>
+) Result<void, RunError<T, E>> {
+    const seen = store.Contains(key) else error {
+        return .Err(.Store(failure = StoreAccessFailure {
+            Key = key
+            Input = input
+            Error = error
+        }))
+    }
+    if seen { discard input return .Err(.Duplicate) }
+    const result = operation(input)
+    match result {
+        Ok: {
+            const recorded = store.Record(key)
+            match recorded {
+                Ok: .Ok
+                Err(error): .Err(.Record(failure = StoreWriteFailure {
+                    Key = key
+                    Error = error
+                }))
+            }
+        }
+        Err(error): {
+            const pushed = letters.Push(DeadLetter {
+                Key = key
+                Input = input
+                Error = error
+            })
+            match pushed {
+                Ok: .Err(.OperationQueued)
+                Err(failure): .Err(.DeadLetter(failure))
+            }
+        }
+    }
+}
+
+// Adds atomic reservation to Store implementations shared by concurrent callers.
+// A successful operation must be completed; a failed operation is released so a later
+// explicit retry can acquire the same key without treating the failure as success.
+contract IdempotencyStore extends Store {
+    fn Reserve(&self, key String) Result<Reservation, Error>
+    fn Complete(&self, key String) Result<void, Error>
+    fn Release(&self, key String) Result<void, Error>
+}
+
+// Runs work behind an atomic reservation. This is the concurrent form of RunOnce.
+fn RunOnceReserved<T, E>(
+    &store IdempotencyStore,
+    &letters DeadLetterQueue<T, E>,
+    $key String,
+    $input T,
+    operation fn(T) Result<void, E>
+) Result<void, RunError<T, E>> {
+    const reservation = store.Reserve(key) else error {
+        return .Err(.Store(failure = StoreAccessFailure {
+            Key = key
+            Input = input
+            Error = error
+        }))
+    }
+    match reservation {
+        Completed: {
+            discard input
+            .Err(.Duplicate)
+        }
+        InProgress: {
+            discard input
+            .Err(.Duplicate)
+        }
+        Acquired: runReserved<T, E>(&store, &letters, $key, $input, operation)
+    }
+}
+
+fn runReserved<T, E>(
+    &store IdempotencyStore,
+    &letters DeadLetterQueue<T, E>,
+    $key String,
+    $input T,
+    operation fn(T) Result<void, E>
+) Result<void, RunError<T, E>> {
+    const result = operation(input)
+    match result {
+        Ok: {
+            const completed = store.Complete(key)
+            match completed {
+                Ok: .Ok
+                Err(error): .Err(.Complete(failure = StoreWriteFailure {
+                    Key = key
+                    Error = error
+                }))
+            }
+        }
+        Err(error): {
+            const released = store.Release(key)
+            match released {
+                Err(storeError): {
+                    .Err(.Release(failure = ReleaseFailure {
+                        Error = storeError
+                        Letter = DeadLetter {
+                            Key = key
+                            Input = input
+                            Error = error
+                        }
+                    }))
+                }
+                Ok: {
+                    const pushed = letters.Push(DeadLetter {
+                        Key = key
+                        Input = input
+                        Error = error
+                    })
+                    match pushed {
+                        Ok: .Err(.OperationQueued)
+                        Err(failure): .Err(.DeadLetter(failure))
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct memoryStore implements IdempotencyStore {
+    keys own collections.List<String>
+    reservations own collections.List<String>
+
+    fn HasKey(&self, key String) bool {
+        var values = replace self.keys with collections.NewList<String>()
+        var restored = collections.NewList<String>()
+        var found = false
+        while !values.IsEmpty() {
+            const value = requireString(values.PopFront())
+            if value == key { found = true }
+            restored.PushFront($value)
+        }
+        self.keys = reverseStrings($restored)
+        found
+    }
+
+    fn HasReservation(&self, key String) bool {
+        var values = replace self.reservations with collections.NewList<String>()
+        var restored = collections.NewList<String>()
+        var found = false
+        while !values.IsEmpty() {
+            const value = requireString(values.PopFront())
+            if value == key { found = true }
+            restored.PushFront($value)
+        }
+        self.reservations = reverseStrings($restored)
+        found
+    }
+
+    fn RemoveReservation(&self, key String) bool {
+        var values = replace self.reservations with collections.NewList<String>()
+        var restored = collections.NewList<String>()
+        var removed = false
+        while !values.IsEmpty() {
+            const value = requireString(values.PopFront())
+            if !removed && value == key {
+                discard value
+                removed = true
+            } else {
+                restored.PushFront($value)
+            }
+        }
+        self.reservations = reverseStrings($restored)
+        removed
+    }
+
+    fn Contains(&self, key String) Result<bool, Error> {
+        .Ok(self.HasKey(key))
+    }
+
+    fn Record(&self, key String) Result<void, Error> {
+        if self.HasKey(key) return .Err(.DuplicateKey)
+        self.keys.PushFront(text.Copy(key))
+        .Ok
+    }
+
+    fn Reserve(&self, key String) Result<Reservation, Error> {
+        if self.HasKey(key) {
+            return .Ok(.Completed)
+        }
+        if self.HasReservation(key) {
+            return .Ok(.InProgress)
+        }
+        self.reservations.PushFront(text.Copy(key))
+        .Ok(.Acquired)
+    }
+
+    fn Complete(&self, key String) Result<void, Error> {
+        if !self.RemoveReservation(key) {
+            return .Err(.MissingKey)
+        }
+        if self.HasKey(key) {
+            return .Err(.DuplicateKey)
+        }
+        self.keys.PushFront(text.Copy(key))
+        .Ok
+    }
+
+    fn Release(&self, key String) Result<void, Error> {
+        if !self.RemoveReservation(key) {
+            return .Err(.MissingKey)
+        }
+        .Ok
+    }
+}
+
+// Creates a deterministic in-memory idempotency store for tests and local applications.
+fn NewMemoryStore() own IdempotencyStore {
+    own memoryStore {
+        keys = collections.NewList<String>()
+        reservations = collections.NewList<String>()
+    }
+}
+
+struct memoryDeadLetters<T, E> implements DeadLetterQueue<T, E> {
+    values own collections.List<DeadLetter<T, E>>
+
+    fn Push(
+        &self,
+        $value DeadLetter<T, E>
+    ) Result<void, DeadLetterPushFailure<T, E>> {
+        self.values.PushFront($value)
+        .Ok
+    }
+
+    fn Drain($self) own collections.List<DeadLetter<T, E>> {
+        const memoryDeadLetters { values } = self
+        reverseLetters<T, E>($values)
+    }
+}
+
+// Creates an owned deterministic dead-letter queue.
+fn NewMemoryDeadLetters<T, E>() own DeadLetterQueue<T, E> {
+    own memoryDeadLetters<T, E> { values = collections.NewList<DeadLetter<T, E>>() }
+}
+
+fn requireString($value Option<String>) String {
+    match value { Some(value): value None: panic("saga list invariant failed") }
+}
+
+fn reverseStrings($values own collections.List<String>) own collections.List<String> {
+    var source = values
+    var result = collections.NewList<String>()
+    while !source.IsEmpty() { result.PushFront(requireString(source.PopFront())) }
+    result
+}
+
+fn requireLetter<T, E>($value Option<DeadLetter<T, E>>) DeadLetter<T, E> {
+    match value { Some(value): value None: panic("saga list invariant failed") }
+}
+
+fn reverseLetters<T, E>(
+    $values own collections.List<DeadLetter<T, E>>
+) own collections.List<DeadLetter<T, E>> {
+    var source = values
+    var result = collections.NewList<DeadLetter<T, E>>()
+    while !source.IsEmpty() { result.PushFront(requireLetter<T, E>(source.PopFront())) }
+    result
+}
+
+fn requireTask<T, E>(
+    $value Option<Task<Result<T, E>>>
+) Task<Result<T, E>> {
+    match value { Some(value): value None: panic("saga task invariant failed") }
+}
+
+fn reverseTasks<T, E>(
+    $values own collections.List<Task<Result<T, E>>>
+) own collections.List<Task<Result<T, E>>> {
+    var source = values
+    var result = collections.NewList<Task<Result<T, E>>>()
+    while !source.IsEmpty() {
+        result.PushFront(requireTask<T, E>(source.PopFront()))
+    }
+    result
+}
+
+fn requireValue<T>($value Option<T>) T {
+    match value { Some(value): value None: panic("saga value invariant failed") }
+}
+
+fn reverseValues<T>(
+    $values own collections.List<T>
+) own collections.List<T> {
+    var source = values
+    var result = collections.NewList<T>()
+    while !source.IsEmpty() {
+        result.PushFront(requireValue<T>(source.PopFront()))
+    }
+    result
+}

@@ -1,0 +1,20 @@
+import foundation.actions
+import foundation.di
+
+@di.Scope(.Singleton)
+service Greeter {
+    prefix String
+
+    ctor New($prefix String) {
+        Greeter { prefix = prefix }
+    }
+
+    @actions.Name("greet")
+    action Greet(self,"name String) String {
+        self.prefix + name
+    }
+}
+
+fn main() i32 {
+    0
+}

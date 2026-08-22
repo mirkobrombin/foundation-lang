@@ -951,6 +951,11 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
         function.sourcePath = sourcePath;
         const std::unordered_set<std::string> parameters(function.typeParameters.begin(),
                                                          function.typeParameters.end());
+        for (auto &constraint : function.typeParameterConstraints) {
+            if (constraint.has_value()) {
+                linkType(*constraint, packageName, aliases, symbols, parameters, diagnostics);
+            }
+        }
         for (auto &parameter : function.parameters) {
             linkType(parameter.type, packageName, aliases, symbols, parameters, diagnostics);
             linkAttributes(file.program, parameter.attributes, packageName, aliases, symbols,

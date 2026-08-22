@@ -102,6 +102,10 @@ FirBinaryOperator lowerBinary(BinaryOperator operation) {
         return FirBinaryOperator::Divide;
     case BinaryOperator::Remainder:
         return FirBinaryOperator::Remainder;
+    case BinaryOperator::ShiftLeft:
+        return FirBinaryOperator::ShiftLeft;
+    case BinaryOperator::ShiftRight:
+        return FirBinaryOperator::ShiftRight;
     case BinaryOperator::Equal:
         return FirBinaryOperator::Equal;
     case BinaryOperator::NotEqual:
@@ -118,6 +122,28 @@ FirBinaryOperator lowerBinary(BinaryOperator operation) {
         return FirBinaryOperator::And;
     case BinaryOperator::Or:
         return FirBinaryOperator::Or;
+    }
+    std::terminate();
+}
+
+FirAssignmentOperator lowerAssignment(AssignmentOperator operation) {
+    switch (operation) {
+    case AssignmentOperator::Assign:
+        return FirAssignmentOperator::Assign;
+    case AssignmentOperator::Add:
+        return FirAssignmentOperator::Add;
+    case AssignmentOperator::Subtract:
+        return FirAssignmentOperator::Subtract;
+    case AssignmentOperator::Multiply:
+        return FirAssignmentOperator::Multiply;
+    case AssignmentOperator::Divide:
+        return FirAssignmentOperator::Divide;
+    case AssignmentOperator::Remainder:
+        return FirAssignmentOperator::Remainder;
+    case AssignmentOperator::ShiftLeft:
+        return FirAssignmentOperator::ShiftLeft;
+    case AssignmentOperator::ShiftRight:
+        return FirAssignmentOperator::ShiftRight;
     }
     std::terminate();
 }
@@ -142,6 +168,7 @@ class Lowerer {
             type.service = program_.structs[index].kind == StructKind::Service;
             type.attributes = model_.structs[index].attributes;
             type.implementations = model_.structs[index].implementations;
+            type.implementationDelegates = model_.structs[index].implementationDelegates;
             type.fields.reserve(program_.structs[index].fields.size());
             for (std::size_t field = 0; field < program_.structs[index].fields.size(); ++field) {
                 type.fields.push_back({program_.structs[index].fields[field].name,
@@ -179,20 +206,29 @@ class Lowerer {
             type.typeParameterCount = program_.contracts[index].typeParameters.size();
             type.exported = program_.contracts[index].exported;
             type.attributes = model_.contracts[index].attributes;
+            type.parents = model_.contracts[index].parents;
             for (const auto &semantic : model_.contracts[index].methods) {
-                type.methods.push_back({lowerReceiver(semantic.receiver), semantic.name,
-                                        semantic.returnType, semantic.parameterTypes,
-                                        [&semantic] {
-                                            std::vector<bool> reads;
-                                            reads.reserve(semantic.parameterModes.size());
+                FirContractMethod method;
+                method.receiver =lowerReceiver(semantic.receiver);
+                method.name = semantic.name;
+                method.returnType =
+                                        semantic.returnType;
+                method.parameters = semantic.parameterTypes;
+                method.readParameters.reserve(semantic.parameterModes.size());
                                             for (const auto mode : semantic.parameterModes) {
-                                                reads.push_back(mode == ParameterMode::Read);
+                    method.readParameters.push_back(mode == ParameterMode::Read);
                                             }
-                                            return reads;
-                                        }(),
-                                        semantic.parameterNames,
-                                        semantic.exported, semantic.attributes,
-                                        semantic.parameterAttributes});
+                method.parameterNames =
+                                        semantic.parameterNames;
+                method.exported =
+                                        semantic.exported;
+                method.attributes = semantic.attributes;
+                method.parameterAttributes =
+                                        semantic.parameterAttributes;
+                method.originContract = semantic.originContract;
+                method.originArguments = semantic.originArguments;
+                method.defaultFunction = semantic.defaultFunction;
+                type.methods.push_back(std::move(method));
             }
             result.contracts.push_back(std::move(type));
         }
@@ -237,6 +273,7 @@ class Lowerer {
         function.sourceSpan = source.span;
         function.generic = !source.typeParameters.empty();
         function.typeParameterCount = source.typeParameters.size();
+        function.typeParameterConstraints = semantic.typeParameterConstraints;
         function.exported = source.exported;
         function.cSymbol = source.cSymbol;
         function.hasBody = source.hasBody;
@@ -366,6 +403,7 @@ class Lowerer {
                                                   std::move(bindings)};
         } else if (const auto *assignment = std::get_if<AssignmentStatement>(&source.value)) {
             value = FirAssignmentStatement{lowerExpression(assignment->target),
+                                           lowerAssignment(assignment->operation),
                                            lowerExpression(assignment->value)};
         } else if (const auto *expression = std::get_if<ExpressionStatement>(&source.value)) {
             value = FirExpressionStatement{lowerExpression(expression->expression)};
@@ -549,7 +587,8 @@ class Lowerer {
                                                lowerExpression(unary->operand)};
                 } else {
                     auto receiver = lowerExpression(unary->operand);
-                    if (target.kind == CallTargetKind::Method &&
+                    if ((target.kind == CallTargetKind::Method ||
+                         target.kind == CallTargetKind::ConstrainedMethod) &&
                         target.receiverType.kind == TypeKind::View) {
                         const auto borrowed = current_->expressions.size();
                         current_->expressions.push_back(
@@ -559,10 +598,14 @@ class Lowerer {
                     }
                     const auto kind = target.kind == CallTargetKind::ContractMethod
                                           ? FirCallKind::Contract
+                                          : target.kind == CallTargetKind::ConstrainedMethod
+                                          ? FirCallKind::Constrained
                                           : FirCallKind::Function;
-                    value = FirCallExpression{kind, target.function,
+                    auto lowered = FirCallExpression{kind, target.function,
                                               target.typeArguments, {receiver}, {},
                                               target.contract, target.method, 0, {0}};
+                    lowered.constrainedType = target.constrainedType;
+                    value = std::move(lowered);
                 }
             } else {
                 value = FirUnaryExpression{lowerUnary(unary->operation),
@@ -630,6 +673,7 @@ class Lowerer {
                     kind = FirCallKind::FunctionValue;
                     break;
                 case CallTargetKind::ContractMethod:
+                case CallTargetKind::ConstrainedMethod:
                 case CallTargetKind::Channel:
                     std::terminate();
                 case CallTargetKind::Print:
@@ -745,13 +789,18 @@ class Lowerer {
                              lowerContractMethods(conversion.methods)},
                          conversion.targetType, source.span});
                     receiver = converted;
-                } else if (target.kind == CallTargetKind::Method &&
+                } else if (((target.kind == CallTargetKind::Method ||
+                             target.kind == CallTargetKind::ConstrainedMethod) &&
                     (target.receiverType.kind == TypeKind::View ||
-                     target.receiverType.kind == TypeKind::Edit)) {
+                     target.receiverType.kind == TypeKind::Edit)) ||
+                           (target.kind == CallTargetKind::ConstrainedMethod &&
+                            target.receiverType.kind == TypeKind::Own &&
+                            current_->expressions[receiver].type.kind != TypeKind::Own)) {
                     const auto lowered = current_->expressions.size();
                     const auto operation = target.receiverType.kind == TypeKind::View
                                                ? FirOwnershipOperator::View
-                                               : FirOwnershipOperator::Edit;
+                                               : target.receiverType.kind == TypeKind::Edit ? FirOwnershipOperator::Edit
+                                                                     : FirOwnershipOperator::Own;
                     current_->expressions.push_back(
                         {FirOwnershipExpression{operation, receiver}, target.receiverType,
                          source.span});
@@ -766,16 +815,19 @@ class Lowerer {
                 }
                 const auto kind = target.kind == CallTargetKind::ContractMethod
                                       ? FirCallKind::Contract
-                                      : FirCallKind::Function;
+                                      : target.kind == CallTargetKind::ConstrainedMethod ? FirCallKind::Constrained
+                                                                       : FirCallKind::Function;
                 std::vector<std::size_t> argumentParameters;
                 argumentParameters.reserve(target.argumentParameters.size() + 1);
                 argumentParameters.push_back(0);
                 for (const auto parameter : target.argumentParameters) {
                     argumentParameters.push_back(parameter + 1);
                 }
-                value = FirCallExpression{kind, target.function, target.typeArguments,
+                auto lowered = FirCallExpression{kind, target.function, target.typeArguments,
                                           std::move(arguments), {}, target.contract,
                                           target.method, 0, std::move(argumentParameters)};
+                lowered.constrainedType = target.constrainedType;
+                value = std::move(lowered);
             } else {
                 value = FirFieldExpression{lowerExpression(required(member->base)),
                                            required(model_.expressionFields[id])};

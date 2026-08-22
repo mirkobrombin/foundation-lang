@@ -1,0 +1,75 @@
+package test.compatibility.app
+
+import foundation.app
+import foundation.hosting
+import std.concurrent
+
+enum AppError {
+    Failed
+}
+
+struct Service implements hosting.HostedService<AppError> {
+    fn Start(&self) Result<void, AppError> {
+        .Ok
+    }
+
+    fn Stop(&self) Result<void, AppError> {
+        .Ok
+    }
+}
+
+struct RootModule implements app.Module<AppError> {
+    fn Configure(
+        &self,
+        &host hosting.Host<AppError>
+    ) Result<void, AppError> {
+        const added = host.Add(own Service {})
+        match added {
+            Ok: .Ok
+            Err(error): {
+                discard error
+                .Err(.Failed)
+            }
+        }
+    }
+}
+
+task stop($sender Sender<void>) void {
+    discard sender.send()
+}
+
+fn completed($result Result<own hosting.RunReport<AppError>, hosting.StartError<AppError>>) bool {
+    match result {
+        Ok(report): {
+            discard report
+            true
+        }
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn configured($result Result<void, AppError>) bool {
+    match result {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn main() i32 {
+    const Channel { sender receiver } = channel<void>(1)
+    var application = app.New<AppError>()
+    var root = RootModule {}
+    if !configured(app.Configure<AppError>(&application, &root)) return 1
+    const running = app.Run<AppError>($application, $receiver)
+    const stopping = spawn stop($sender)
+    $stopping.wait()
+    if !completed($running.wait()) return 2
+    print("app composition ok")
+    0
+}

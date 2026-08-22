@@ -4,11 +4,17 @@ Foundation currently uses one C++20 compiler implementation.
 
 ## Stage 0
 
-Stage 0 is written in C++20 and builds with GCC, Clang, or MSVC. It has no third-party library
-dependency. It is the product compiler, package tool, and compiler service shared with the
-language server. The name records its bootstrap origin; it does not imply a required later stage.
-`foundationc build`, `run`, and `test` resolve the configured native C compiler by executable name
-through `PATH`; the execution environment must provide the compatible toolchain.
+Stage 0 is written in C++20 and builds with GCC, Clang, or MSVC against LLVM 21.1. It is the product
+compiler, package tool, and compiler service shared with the language server. The name records its
+bootstrap origin; it does not imply a required later stage. LLVM emits the default native object;
+the platform compiler driver links it with the C11 runtime and any declared native inputs.
+`--backend c` and `emit-c` keep the portable, inspectable C11 path explicit.
+
+OpenSSL 3.5.6 and WAMR 2.4.5 are optional provider builds. OpenSSL supplies explicit asymmetric
+authentication plus client and server TLS. WAMR supplies WebAssembly guest execution behind the
+engine-neutral plugin ABI. Neither provider changes FIR, the default LLVM backend, the C backend,
+or the base runtime dependency set. The WAMR provider requires revision
+`25bd7eb63e828e4bd242cc9b38d260b4b31c6605` and a position-independent `libiwasm` archive.
 
 The current executable subset includes typed and generic functions, local bindings, calls,
 primitive expressions, generic nominal value structs and enums, exhaustive match expressions,
@@ -28,8 +34,9 @@ automatic field cleanup. The first dynamic collection, `std.collections.List<T>`
 source and drains long owner chains iteratively. Stage 0 also supports checked C ABI imports and
 exports, deterministic public headers, and native C or object inputs. Each added construct must
 serve the stage-1 compiler or an accepted language invariant.
-Bootstrap compatibility still accepts the word ownership forms `view`, `edit`, and `own` while
-the source corpus migrates. Executables may receive a borrowed command-line String slice through
+The retired word parameter, receiver, call, and capture forms are rejected with migration
+diagnostics. `own T`, `view T`, and `edit T` remain internal type constructors behind plain read,
+`&` edit, and `$` transfer source spelling. Executables may receive a borrowed command-line String slice through
 `fn main(args [String]) i32`; the generated C adapter owns and releases the temporary slice storage.
 Package-scope `@target(linux)`, `@target(macos)`, and `@target(windows)` declarations are selected
 before linking. The Foundation-source `std.platform` package exposes that choice through a typed
@@ -73,7 +80,8 @@ The Foundation-source `std.env` package returns explicit absence and error value
 runtime copies and validates process text. Its result never borrows native environment storage.
 `std.text` exposes checked byte inspection and UTF-8-boundary slicing. `std.path` builds owned
 platform paths in Foundation source using those operations.
-`std.fs` adds read-only file size, directory iteration, and line streaming. Foundation reader
+`std.fs` adds read-only file size, directory iteration, line streaming, and one-shot watch events.
+Foundation reader
 structs own opaque runtime handles and close them through custom drop. Line reads accept explicit
 limits, consume oversized lines without retaining them, and distinguish invalid UTF-8 from an
 oversized input.
@@ -98,10 +106,9 @@ Stage 0 bounds parser nesting and expression complexity before semantic analysis
 most 100 specific errors, followed by FDN0000 when more input errors are suppressed. These limits
 keep malformed input deterministic under the sanitizer and fuzzing configurations.
 
-`print` is a stage-0 bootstrap intrinsic, not a permanent language primitive. Once streams and
-console output can be implemented through the runtime ABI, ordinary programs will use the
-standard-library `io.println` operation. Interactive tools may provide a short `print` convenience.
-Fatal `panic` remains a language operation because it defines control flow and trace semantics.
+`print(value String) void` is a stable prelude builtin backed by `fdn_println`. It writes one UTF-8
+line and is exposed by hover, completion, signature help, and builtin navigation. Fatal `panic`
+remains a language operation because it defines control flow and trace semantics.
 
 ## Future implementation work
 
@@ -111,16 +118,16 @@ and preserve compiler behavior, diagnostics, package metadata, and generated C c
 
 ## Package boundary
 
-Official packages are not implemented in stage 0. The first usable subset may contain compiler
-builtins for operations that cannot yet be expressed, but every builtin must have:
+Official standard-library and Foundation packages are Foundation source. The bootstrap compiler
+loads their source tree from its configured SDK root. A temporary intrinsic remains acceptable only
+when its operation cannot yet be expressed in Foundation, and every intrinsic must have:
 
 - a specification entry;
 - a stable runtime ABI operation when runtime support is needed;
 - a tracked removal or permanent-intrinsic decision;
 - conformance tests shared by every supported compiler implementation.
 
-The bootstrap binary currently receives the standard-library source root at its own build time and
-adds every sorted `.fn` file to a project. This makes official packages available without copying
-them into examples while preserving their Foundation implementation. It is temporary: the product
-toolchain must locate its installed standard library and resolve external packages through versioned
-manifests and a lock file.
+Development builds receive fallback standard-library and framework roots at build time. An
+installed compiler locates its relocated SDK beside the executable, or uses an explicit
+`FOUNDATION_SDK_ROOT`, and resolves external packages through versioned manifests and the exact
+target lock. Official examples use that manifest-and-lock project model.

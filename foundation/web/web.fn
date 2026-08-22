@@ -1,6 +1,8 @@
 package foundation.web
 
 import std.collections
+import std.bytes
+import std.concurrent
 import std.format
 import std.net
 import std.parse
@@ -125,7 +127,13 @@ struct Request {
 struct Response {
     Status i32
     Headers own collections.List<HeaderValue>
-    Body String
+    // Owns arbitrary response bytes. Text and JSON helpers convert UTF-8 text at the boundary.
+    Body own bytes.Bytes
+
+    // Copies the response body into UTF-8 text when the selected representation permits it.
+    fn TextBody(self) Result<String, bytes.Error> {
+        self.Body.Text()
+    }
 
     // Returns the first response header using ASCII case-insensitive matching.
     fn Header(&self, name String) Option<String> {
@@ -765,13 +773,205 @@ struct corsPolicy {
     origins String
 }
 
-struct Server<E> {
+// Owns the transport listener used by Server. TLS listeners implement this
+// boundary without duplicating HTTP parsing or dispatch.
+contract ServerListener {
+    fn Port(self) u64
+    fn Close(&self) bool
+    fn Accept($self) Task<own ServerAcceptOutcome>
+}
+
+// Owns one accepted transport connection before HTTP parsing splits it.
+contract ServerConnection {
+    fn PeerAddress(self) Result<String, net.Error>
+    fn Split($self) Result<own ServerStreamPair, net.Error>
+}
+
+// Owns a request stream without exposing a concrete TCP reader to Server.
+contract ServerReader {
+    fn ReadLine($self, limit u64) Task<own ServerReadLineOutcome>
+    fn ReadExact($self, length u64) Task<own ServerReadOutcome>
+}
+
+// Owns a response stream without exposing a concrete TCP writer to Server.
+contract ServerWriter {
+    fn WriteText($self, $value String) Task<own ServerWriteOutcome>
+    fn WriteBytes($self, $value own bytes.Bytes) Task<own ServerWriteOutcome>
+}
+
+// Keeps the reader and writer sides of one transport connection independent.
+struct ServerStreamPair {
+    Reader own ServerReader
+    Writer own ServerWriter
+}
+
+// Restores a reader beside one bounded line result.
+struct ServerReadLineOutcome {
+    Reader own ServerReader
+    Value Result<Option<String>, net.Error>
+}
+
+// Restores a reader beside one exact text body result.
+struct ServerReadOutcome {
+    Reader own ServerReader
+    Value Result<String, net.Error>
+}
+
+// Restores a writer beside one complete write result.
+struct ServerWriteOutcome {
+    Writer own ServerWriter
+    Value Result<void, net.Error>
+}
+
+// Implements the default Server transport using the standard TCP listener.
+struct tcpServerListener implements ServerListener {
     listener own net.TcpListener
+
+    fn Port(self) u64 {
+        self.listener.Port
+    }
+
+    fn Close(&self) bool {
+        self.listener.Close()
+    }
+
+    fn Accept($self) Task<own ServerAcceptOutcome> {
+        spawn acceptTcpServerListener($self)
+    }
+}
+
+// Implements the default Server connection using the standard TCP connection.
+struct tcpServerConnection implements ServerConnection {
+    connection own net.TcpConnection
+
+    fn PeerAddress(self) Result<String, net.Error> {
+        self.connection.PeerAddress()
+    }
+
+    fn Split($self) Result<own ServerStreamPair, net.Error> {
+        const tcpServerConnection { connection } = self
+        const pair = connection.Split() else error {
+            return .Err(error)
+        }
+        const net.StreamPair { Reader Writer } = pair
+        .Ok(own ServerStreamPair {
+            Reader = own tcpServerReader { reader = Reader }
+            Writer = own tcpServerWriter { writer = Writer }
+        })
+    }
+}
+
+// Adapts the standard TCP reader to the owned Server reader contract.
+struct tcpServerReader implements ServerReader {
+    reader own net.TcpReader
+
+    fn ReadLine($self, limit u64) Task<own ServerReadLineOutcome> {
+        spawn readTcpServerLine($self, limit)
+    }
+
+    fn ReadExact($self, length u64) Task<own ServerReadOutcome> {
+        spawn readTcpServerExact($self, length)
+    }
+}
+
+// Adapts the standard TCP writer to the owned Server writer contract.
+struct tcpServerWriter implements ServerWriter {
+    writer own net.TcpWriter
+
+    fn WriteText($self, $value String) Task<own ServerWriteOutcome> {
+        spawn writeTcpServerText($self, $value)
+    }
+
+    fn WriteBytes($self, $value own bytes.Bytes) Task<own ServerWriteOutcome> {
+        spawn writeTcpServerBytes($self, $value)
+    }
+}
+
+struct ServerAcceptOutcome {
+    Listener own ServerListener
+    Value Result<own ServerConnection, net.Error>
+}
+
+task acceptTcpServerListener($listener own tcpServerListener) own ServerAcceptOutcome {
+    const tcpServerListener { listener as tcpListener } = listener
+    const accepting = spawn net.Accept($tcpListener)
+    const accepted = $accepting.wait()
+    const net.AcceptOutcome { Listener Value } = accepted
+    const connection = Value else error {
+        return own ServerAcceptOutcome {
+            Listener = own tcpServerListener { listener = Listener }
+            Value = .Err(error)
+        }
+    }
+    own ServerAcceptOutcome {
+        Listener = own tcpServerListener { listener = Listener }
+        Value = .Ok(own tcpServerConnection { connection = connection })
+    }
+}
+
+task readTcpServerLine(
+    $reader own tcpServerReader,
+    limit u64
+) own ServerReadLineOutcome {
+    const tcpServerReader { reader as tcpReader } = reader
+    const reading = spawn net.ReadLineLimited($tcpReader, limit)
+    const outcome = $reading.wait()
+    const net.ReadLineOutcome { Reader Value } = outcome
+    own ServerReadLineOutcome {
+        Reader = own tcpServerReader { reader = Reader }
+        Value = Value
+    }
+}
+
+task readTcpServerExact(
+    $reader own tcpServerReader,
+    length u64
+) own ServerReadOutcome {
+    const tcpServerReader { reader as tcpReader } = reader
+    const reading = spawn net.ReadExact($tcpReader, length)
+    const outcome = $reading.wait()
+    const net.ReadOutcome { Reader Value } = outcome
+    own ServerReadOutcome {
+        Reader = own tcpServerReader { reader = Reader }
+        Value = Value
+    }
+}
+
+task writeTcpServerText(
+    $writer own tcpServerWriter,
+    $value String
+) own ServerWriteOutcome {
+    const tcpServerWriter { writer as tcpWriter } = writer
+    const writing = spawn net.WriteAll($tcpWriter, $value)
+    const outcome = $writing.wait()
+    const net.WriteOutcome { Writer Value } = outcome
+    own ServerWriteOutcome {
+        Writer = own tcpServerWriter { writer = Writer }
+        Value = Value
+    }
+}
+
+task writeTcpServerBytes(
+    $writer own tcpServerWriter,
+    $value own bytes.Bytes
+) own ServerWriteOutcome {
+    const tcpServerWriter { writer as tcpWriter } = writer
+    const writing = spawn net.WriteAllBytes($tcpWriter, $value)
+    const outcome = $writing.wait()
+    const net.WriteOutcome { Writer Value } = outcome
+    own ServerWriteOutcome {
+        Writer = own tcpServerWriter { writer = Writer }
+        Value = Value
+    }
+}
+
+struct Server<E> {
+    listener own ServerListener
     router own Application<E>
     cors corsPolicy
 
     fn Port(self) u64 {
-        self.listener.Port
+        self.listener.Port()
     }
 
     // Enables transport-level CORS for the configured origin set.
@@ -779,9 +979,22 @@ struct Server<E> {
         self.cors = corsPolicyFrom(allowOrigins)
     }
 
+    // Closes the listening socket. A pending ServeOne then returns a typed network failure.
+    fn Close(&self) bool {
+        self.listener.Close()
+    }
+
     // Accepts and serves one HTTP/1.1 request, then returns the reusable server.
     fn ServeOne($self) Task<own ServeOutcome<E>> {
         spawn serveOne<E>($self)
+    }
+
+    // Serves sequential requests until cancellation is observed between accepted requests.
+    fn ServeUntil(
+        $self,
+        $cancellation concurrent.Cancellation
+    ) Task<Result<own Server<E>, ServeError<E>>> {
+        spawn serveUntil<E>($self, $cancellation)
     }
 }
 
@@ -791,7 +1004,7 @@ struct ServeOutcome<E> {
 }
 
 struct ReadOutcome {
-    Reader own net.TcpReader
+    Reader own ServerReader
     Value Result<Request, ReadError>
 }
 
@@ -825,17 +1038,34 @@ fn NewServer<E>(
         return .Err(error)
     }
     .Ok(own Server<E> {
-        listener = listener
+        listener = own tcpServerListener { listener = listener }
         router = application
         cors = disabledCORS()
     })
+}
+
+task serveUntil<E>(
+    $server own Server<E>,
+    $cancellation concurrent.Cancellation
+) Result<own Server<E>, ServeError<E>> {
+    var active = server
+    while !cancellation.IsRequested() {
+        const serving = active.ServeOne()
+        const outcome = $serving.wait()
+        const ServeOutcome { Server Value } = outcome
+        active = Server
+        Value else error {
+            return .Err(error)
+        }
+    }
+    .Ok(active)
 }
 
 fn Empty(status i32) Response {
     Response {
         Status = status
         Headers = collections.NewList<HeaderValue>()
-        Body = ""
+        Body = bytes.FromText("")
     }
 }
 
@@ -845,7 +1075,7 @@ fn Text(status i32, $body String) Response {
         Name = "Content-Type"
         Value = "text/plain; charset=utf-8"
     })
-    Response { Status = status Headers = headers Body = body }
+    Response { Status = status Headers = headers Body = bytes.FromText(body) }
 }
 
 fn Json(status i32, $body String) Response {
@@ -854,14 +1084,24 @@ fn Json(status i32, $body String) Response {
         Name = "Content-Type"
         Value = "application/json; charset=utf-8"
     })
+    Response { Status = status Headers = headers Body = bytes.FromText(body) }
+}
+
+// Builds an HTTP response from arbitrary owned bytes without requiring UTF-8.
+fn Binary(status i32, $body own bytes.Bytes, contentType String) Response {
+    var headers = collections.NewList<HeaderValue>()
+    headers.PushFront(HeaderValue {
+        Name = "Content-Type"
+        Value = text.Copy(contentType)
+    })
     Response { Status = status Headers = headers Body = body }
 }
 
 task serveOne<E>($server own Server<E>) own ServeOutcome<E> {
     const Server { listener router cors } = server
-    const accepting = spawn net.Accept($listener)
+    const accepting = listener.Accept()
     const accepted = $accepting.wait()
-    const net.AcceptOutcome { Listener Value } = accepted
+    const ServerAcceptOutcome { Listener Value } = accepted
     const connection = Value else error {
         return own ServeOutcome<E> {
             Server = own Server<E> {
@@ -878,10 +1118,10 @@ task serveOne<E>($server own Server<E>) own ServeOutcome<E> {
 }
 
 task finishAccepted<E>(
-    $listener own net.TcpListener,
+    $listener own ServerListener,
     $router own Application<E>,
     $cors corsPolicy,
-    $connection own net.TcpConnection
+    $connection own ServerConnection
 ) own ServeOutcome<E> {
     const handling = spawn handleConnection<E>($router, $cors, $connection)
     const handled = $handling.wait()
@@ -899,7 +1139,7 @@ task finishAccepted<E>(
 task handleConnection<E>(
     $router own Application<E>,
     $cors corsPolicy,
-    $connection own net.TcpConnection
+    $connection own ServerConnection
 ) own ConnectionOutcome<E> {
     const remoteAddress = connection.PeerAddress() else error {
         return own ConnectionOutcome<E> {
@@ -915,7 +1155,7 @@ task handleConnection<E>(
             Value = .Err(.Network(error = error))
         }
     }
-    const net.StreamPair { Reader Writer } = pair
+    const ServerStreamPair { Reader Writer } = pair
     const reading = spawn readRequest($Reader)
     const readOutcome = $reading.wait()
     const ReadOutcome { Reader as readerAfter Value as read } = readOutcome
@@ -938,7 +1178,7 @@ task handleConnection<E>(
 fn finishReadError<E>(
     $router own Application<E>,
     $cors corsPolicy,
-    $writer own net.TcpWriter,
+    $writer own ServerWriter,
     $error ReadError
 ) own ConnectionOutcome<E> {
     discard writer
@@ -956,7 +1196,7 @@ fn finishReadError<E>(
 task dispatchRequest<E>(
     $router own Application<E>,
     $cors corsPolicy,
-    $writer own net.TcpWriter,
+    $writer own ServerWriter,
     $request Request
 ) own ConnectionOutcome<E> {
     var activeRouter = router
@@ -1061,7 +1301,7 @@ fn disabledCORS() corsPolicy {
 fn finishHandlerError<E>(
     $router own Application<E>,
     $cors corsPolicy,
-    $writer own net.TcpWriter,
+    $writer own ServerWriter,
     $error E
 ) own ConnectionOutcome<E> {
     discard writer
@@ -1089,13 +1329,24 @@ fn responseForDispatch<E>(
 task writeResponse<E>(
     $router own Application<E>,
     $cors corsPolicy,
-    $writer own net.TcpWriter,
+    $writer own ServerWriter,
     $response Response
 ) own ConnectionOutcome<E> {
-    const serialized = serializeResponse($response)
-    const writing = spawn net.WriteAll($writer, $serialized)
-    const written = $writing.wait()
-    const net.WriteOutcome { Writer Value } = written
+    const Response { Status Headers Body } = response
+    const serialized = serializeResponseHead(Status, $Headers, Body)
+    const writing = writer.WriteText($serialized)
+    const headerWritten = $writing.wait()
+    const ServerWriteOutcome { Writer as activeWriter Value as headerValue } = headerWritten
+    headerValue else error {
+        return own ConnectionOutcome<E> {
+            Router = router
+            cors = cors
+            Value = .Err(.Network(error = error))
+        }
+    }
+    const bodyWriting = activeWriter.WriteBytes($Body)
+    const bodyWritten = $bodyWriting.wait()
+    const ServerWriteOutcome { Writer Value } = bodyWritten
     discard Writer
     const result Result<void, ServeError<E>> = match Value {
         Ok: .Ok
@@ -1108,13 +1359,13 @@ task writeResponse<E>(
     }
 }
 
-task readRequest($reader own net.TcpReader) ReadOutcome {
+task readRequest($reader own ServerReader) ReadOutcome {
     const requestLineLimit u64 = 8192
     const headerLineLimit u64 = 8192
     const headerLimit i32 = 100
-    const firstReading = spawn net.ReadLineLimited($reader, requestLineLimit)
+    const firstReading = reader.ReadLine(requestLineLimit)
     const firstOutcome = $firstReading.wait()
-    const net.ReadLineOutcome { Reader as currentReader Value as first } = firstOutcome
+    const ServerReadLineOutcome { Reader as currentReader Value as first } = firstOutcome
     const firstLine = first else error {
         return ReadOutcome {
             Reader = currentReader
@@ -1148,15 +1399,15 @@ task readRequest($reader own net.TcpReader) ReadOutcome {
 }
 
 task readHeaders(
-    $reader own net.TcpReader,
+    $reader own ServerReader,
     $request Request,
     $headers own collections.List<HeaderValue>,
     remaining i32,
     lineLimit u64
 ) ReadOutcome {
-    const reading = spawn net.ReadLineLimited($reader, lineLimit)
+    const reading = reader.ReadLine(lineLimit)
     const outcome = $reading.wait()
-    const net.ReadLineOutcome { Reader Value } = outcome
+    const ServerReadLineOutcome { Reader Value } = outcome
     const optional = Value else error {
         return ReadOutcome {
             Reader = Reader
@@ -1182,7 +1433,7 @@ task readHeaders(
 }
 
 task acceptHeaderLine(
-    $reader own net.TcpReader,
+    $reader own ServerReader,
     $request Request,
     $headers own collections.List<HeaderValue>,
     remaining i32,
@@ -1195,9 +1446,9 @@ task acceptHeaderLine(
         if complete.ContentLength == 0 {
             return ReadOutcome { Reader = reader Value = .Ok(complete) }
         }
-        const reading = spawn net.ReadExact($reader, complete.ContentLength)
+        const reading = reader.ReadExact(complete.ContentLength)
         const outcome = $reading.wait()
-        const net.ReadOutcome { Reader Value } = outcome
+        const ServerReadOutcome { Reader Value } = outcome
         const body = Value else error {
             return bodyReadFailure($Reader, error)
         }
@@ -1236,7 +1487,7 @@ task acceptHeaderLine(
     result
 }
 
-fn bodyReadFailure($reader own net.TcpReader, error net.Error) ReadOutcome {
+fn bodyReadFailure($reader own ServerReader, error net.Error) ReadOutcome {
     if netErrorIsClosed(error) {
         return ReadOutcome {
             Reader = reader
@@ -1498,32 +1749,42 @@ fn acceptBodyLength(
     .Ok(header)
 }
 
-fn serializeResponse($response Response) String {
-    const Response { Status Headers Body } = response
+fn serializeResponseHead(
+    status i32,
+    $headers own collections.List<HeaderValue>,
+    body bytes.Bytes
+) String {
     var builder = text.NewBuilder()
     writeText(&builder, "HTTP/1.1 ")
-    writeText(&builder, format.I32(Status))
+    writeText(&builder, format.I32(status))
     writeText(&builder, " ")
-    writeText(&builder, statusText(Status))
+    writeText(&builder, statusText(status))
     writeText(&builder, "\r\n")
 
-    var headers = Headers
-    while !headers.IsEmpty() {
-        const header = headerValue(headers.PopFront())
+    var activeHeaders = headers
+    while !activeHeaders.IsEmpty() {
+        const header = headerValue(activeHeaders.PopFront())
         writeText(&builder, header.Name)
         writeText(&builder, ": ")
         writeText(&builder, header.Value)
         writeText(&builder, "\r\n")
     }
     writeText(&builder, "Content-Length: ")
-    writeText(&builder, format.U64(text.ByteLen(Body)))
+    writeText(&builder, format.U64(byteLength(body)))
     writeText(&builder, "\r\nConnection: close\r\n\r\n")
-    writeText(&builder, Body)
     const result = builder.Finish() else error {
         discard error
         panic("HTTP response builder invariant failed")
     }
     result
+}
+
+fn byteLength(value bytes.Bytes) u64 {
+    const length = value.Len() else error {
+        discard error
+        panic("HTTP response body is closed")
+    }
+    length
 }
 
 fn statusText(status i32) String {

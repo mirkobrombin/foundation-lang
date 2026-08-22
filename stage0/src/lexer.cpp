@@ -208,14 +208,24 @@ const char *tokenName(TokenKind kind) {
         return "!=";
     case TokenKind::Plus:
         return "+";
+    case TokenKind::PlusEqual:
+        return "+=";
     case TokenKind::Minus:
         return "-";
+    case TokenKind::MinusEqual:
+        return "-=";
     case TokenKind::Star:
         return "*";
+    case TokenKind::StarEqual:
+        return "*=";
     case TokenKind::Slash:
         return "/";
+    case TokenKind::SlashEqual:
+        return "/=";
     case TokenKind::Percent:
         return "%";
+    case TokenKind::PercentEqual:
+        return "%=";
     case TokenKind::Less:
         return "<";
     case TokenKind::LessEqual:
@@ -371,18 +381,38 @@ Token Lexer::next() {
         case '.':
             return simple(TokenKind::Dot, ".");
         case '+':
+            if (peek() == '=') {
+                advance();
+                return simple(TokenKind::PlusEqual, "+=");
+            }
             return simple(TokenKind::Plus, "+");
         case '*':
+            if (peek() == '=') {
+                advance();
+                return simple(TokenKind::StarEqual, "*=");
+            }
             return simple(TokenKind::Star, "*");
         case '/':
+            if (peek() == '=') {
+                advance();
+                return simple(TokenKind::SlashEqual, "/=");
+            }
             return simple(TokenKind::Slash, "/");
         case '%':
+            if (peek() == '=') {
+                advance();
+                return simple(TokenKind::PercentEqual, "%=");
+            }
             return simple(TokenKind::Percent, "%");
         case '@':
             return simple(TokenKind::At, "@");
         case '$':
             return simple(TokenKind::Dollar, "$");
         case '-':
+            if (peek() == '=') {
+                advance();
+                return simple(TokenKind::MinusEqual, "-=");
+            }
             return simple(TokenKind::Minus, "-");
         case '=':
             if (peek() == '=') {
@@ -397,13 +427,13 @@ Token Lexer::next() {
             }
             return simple(TokenKind::Bang, "!");
         case '<':
-            if (peek() == '=') {
+            if (peek() == '=' && (start == 0 || source_[start - 1] != '<')) {
                 advance();
                 return simple(TokenKind::LessEqual, "<=");
             }
             return simple(TokenKind::Less, "<");
         case '>':
-            if (peek() == '=') {
+            if (peek() == '=' && (start == 0 || source_[start - 1] != '>')) {
                 advance();
                 return simple(TokenKind::GreaterEqual, ">=");
             }
@@ -420,12 +450,11 @@ Token Lexer::next() {
                 return simple(TokenKind::OrOr, "||");
             }
             break;
-        case '"':
-            {
-                auto token = string();
-                token.leadingSafetyProof = leadingSafetyProof;
-                return token;
-            }
+        case '"': {
+            auto token = string();
+            token.leadingSafetyProof = leadingSafetyProof;
+            return token;
+        }
         default:
             break;
         }

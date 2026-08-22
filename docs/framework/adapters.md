@@ -39,7 +39,7 @@ const found = $reading.wait()
 ```
 
 `Names` is sorted by UTF-8 byte order. This makes generated output, tests, and inspection stable.
-Removing a missing name succeeds and fires the current remove callbacks.
+Removing a missing name succeeds and fires the current remove callbacks, matching Foundation v2.
 Removing the selected name also clears the default.
 
 ## Callbacks

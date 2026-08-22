@@ -116,6 +116,8 @@ enum class FirBinaryOperator {
     Multiply,
     Divide,
     Remainder,
+    ShiftLeft,
+    ShiftRight,
     Equal,
     NotEqual,
     Less,
@@ -130,6 +132,7 @@ enum class FirCallKind {
     Function,
     FunctionValue,
     Contract,
+    Constrained,
     Print,
     Panic,
     Len,
@@ -213,6 +216,7 @@ struct FirCallExpression {
     std::size_t method{};
     FirLocalId local{};
     std::vector<std::size_t> argumentParameters;
+    Type constrainedType{invalidType};
 };
 
 struct FirContractMethodTarget {
@@ -390,8 +394,20 @@ struct FirResultElseStatement {
     FirBlockId elseBlock{};
 };
 
+enum class FirAssignmentOperator {
+    Assign,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
+    ShiftLeft,
+    ShiftRight,
+};
+
 struct FirAssignmentStatement {
     FirExpressionId target{};
+    FirAssignmentOperator operation{FirAssignmentOperator::Assign};
     FirExpressionId value{};
 };
 
@@ -564,6 +580,7 @@ struct FirFunction {
     std::optional<FirWorkflowFunction> workflow;
     std::optional<FirStateTimeoutFunction> stateTimeout;
     bool constructor{};
+    std::vector<std::optional<Type>> typeParameterConstraints;
 };
 
 struct FirStructField {
@@ -585,6 +602,7 @@ struct FirStruct {
     std::optional<FirFunctionId> dropFunction;
     std::vector<FirAttributeUse> attributes;
     bool service{};
+    std::vector<std::optional<FirFieldId>> implementationDelegates;
 };
 
 struct FirEnumVariant {
@@ -614,6 +632,9 @@ struct FirContractMethod {
     bool exported{};
     std::vector<FirAttributeUse> attributes;
     std::vector<std::vector<FirAttributeUse>> parameterAttributes;
+    FirContractId originContract{};
+    std::vector<Type> originArguments;
+    std::optional<FirFunctionId> defaultFunction;
 };
 
 struct FirContract {
@@ -622,6 +643,7 @@ struct FirContract {
     std::vector<FirContractMethod> methods;
     bool exported{};
     std::vector<FirAttributeUse> attributes;
+    std::vector<Type> parents;
 };
 
 struct FirProgram {

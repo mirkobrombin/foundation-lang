@@ -1,0 +1,229 @@
+package example.desktop_notes
+
+import std.collections
+import std.text
+
+extern c fn desktopIsHeadless() bool as foundation_desktop_is_headless
+
+extern c fn desktopShow(
+    title String,
+    message String
+) i32 as foundation_desktop_show
+
+enum NoteError {
+    EmptyTitle
+    EmptyBody
+    MissingNote
+    HostFailed
+}
+
+enum NotebookEvent {
+    Added
+    Edited
+    Deleted
+    Searched
+}
+
+struct Note {
+    id i32
+    title String
+    body String
+}
+
+struct Notebook {
+    notes own collections.List<Note>
+    events own collections.List<NotebookEvent>
+    nextID i32
+}
+
+fn NewNotebook() Notebook {
+    Notebook {
+        notes = collections.NewList<Note>()
+        events = collections.NewList<NotebookEvent>()
+        nextID = 1
+    }
+}
+
+fn Add(
+    &notebook Notebook,
+    $title String,
+    $body String
+) Result<i32, NoteError> {
+    if !title return .Err(.EmptyTitle)
+    if !body return .Err(.EmptyBody)
+    const id = notebook.nextID
+    notebook.nextID = notebook.nextID + 1
+    notebook.notes.PushFront(Note { id = id title = title body = body })
+    notebook.events.PushFront(.Added)
+    .Ok(id)
+}
+
+fn Edit(
+    &notebook Notebook,
+    id i32,
+    $title String,
+    $body String
+) Result<void, NoteError> {
+    if !title return .Err(.EmptyTitle)
+    if !body return .Err(.EmptyBody)
+
+    var source = replace notebook.notes with collections.NewList<Note>()
+    var restored = collections.NewList<Note>()
+    var replacement Option<Note> = .Some(Note { id = id title = title body = body })
+    var updated = false
+    while !source.IsEmpty() {
+        const note = requiredNote(source.PopFront())
+        if !updated && note.id == id {
+            discard note
+            const next = requiredNote(replace replacement with .None)
+            restored.PushFront($next)
+            updated = true
+        } else {
+            restored.PushFront($note)
+        }
+    }
+    notebook.notes = restored
+    if !updated {
+        discard replacement
+        return .Err(.MissingNote)
+    }
+    notebook.events.PushFront(.Edited)
+    .Ok
+}
+
+fn Delete(&notebook Notebook, id i32) Result<void, NoteError> {
+    var source = replace notebook.notes with collections.NewList<Note>()
+    var restored = collections.NewList<Note>()
+    var deleted = false
+    while !source.IsEmpty() {
+        const note = requiredNote(source.PopFront())
+        if !deleted && note.id == id {
+            discard note
+            deleted = true
+        } else {
+            restored.PushFront($note)
+        }
+    }
+    notebook.notes = restored
+    if !deleted return .Err(.MissingNote)
+    notebook.events.PushFront(.Deleted)
+    .Ok
+}
+
+fn Search(&notebook Notebook, query String) i32 {
+    var source = replace notebook.notes with collections.NewList<Note>()
+    var restored = collections.NewList<Note>()
+    var matches = 0
+    while !source.IsEmpty() {
+        const note = requiredNote(source.PopFront())
+        if text.Contains(note.title, query) || text.Contains(note.body, query) {
+            matches = matches + 1
+        }
+        restored.PushFront($note)
+    }
+    notebook.notes = restored
+    notebook.events.PushFront(.Searched)
+    matches
+}
+
+fn Present(title String, message String) Result<void, NoteError> {
+    if desktopIsHeadless() {
+        print(title + ": " + message)
+        return .Ok
+    }
+    if desktopShow(title, message) != 0 return .Err(.HostFailed)
+    .Ok
+}
+
+fn requiredNote($value Option<Note>) Note {
+    match value {
+        Some(note): note
+        None: panic("notebook list invariant failed")
+    }
+}
+
+fn rejectedEmptyTitle($value Result<i32, NoteError>) bool {
+    match value {
+        Ok(id): {
+            discard id
+            false
+        }
+        Err(error): {
+            match error {
+                EmptyTitle: true
+                _: false
+            }
+        }
+    }
+}
+
+fn main() i32 {
+    var notebook = NewNotebook()
+    if !rejectedEmptyTitle(Add(&notebook, "", "Ignored")) return 1
+    Present("Validation", "Title is required") else error {
+        discard error
+        return 1
+    }
+
+    const foundationID = Add(
+        &notebook,
+        "Foundation Notes",
+        "Ownership stays visible."
+    ) else error {
+        discard error
+        return 1
+    }
+    Present("Added", "Foundation Notes") else error {
+        discard error
+        return 1
+    }
+
+    const compilerID = Add(
+        &notebook,
+        "Compiler Notes",
+        "Check diagnostics before shipping."
+    ) else error {
+        discard error
+        return 1
+    }
+    Present("Added", "Compiler Notes") else error {
+        discard error
+        return 1
+    }
+
+    Edit(
+        &notebook,
+        foundationID,
+        "Foundation Notes",
+        "Ownership and failures stay visible."
+    ) else error {
+        discard error
+        return 1
+    }
+    Present("Edited", "Foundation Notes") else error {
+        discard error
+        return 1
+    }
+
+    if Search(&notebook, "Ownership") != 1 return 1
+    Present("Search", "1 matching note") else error {
+        discard error
+        return 1
+    }
+
+    Delete(&notebook, compilerID) else error {
+        discard error
+        return 1
+    }
+    Present("Deleted", "Compiler Notes") else error {
+        discard error
+        return 1
+    }
+
+    if notebook.notes.Len() != 1 || notebook.events.Len() != 5 return 1
+    Present("Notebook", "1 note remains") else error {
+        discard error
+        return 1
+    }
+    0
+}

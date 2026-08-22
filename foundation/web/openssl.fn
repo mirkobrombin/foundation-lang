@@ -1,0 +1,370 @@
+package foundation.web
+
+import std.bytes
+import std.collections
+import std.concurrent
+import std.net
+
+extern c fn openServerNative(
+    address String,
+    port u64,
+    serverName String,
+    certificate u64,
+    privateKey u64,
+    &server u64,
+    &boundPort u64
+) i32 as foundation_openssl_server_open
+
+extern c fn addCertificateNative(
+    server u64,
+    serverName String,
+    certificate u64,
+    privateKey u64
+) i32 as foundation_openssl_server_add_certificate
+
+extern c fn closeServerNative(&server u64) void as foundation_openssl_server_close
+
+@blocking
+extern c fn acceptServerNative(server u64, &connection u64) i32 as foundation_openssl_server_accept
+
+extern c fn peerServerNative(connection u64, &address String) i32 as foundation_openssl_server_connection_peer
+
+extern c fn closeConnectionNative(&connection u64) void as foundation_openssl_server_connection_close
+
+extern c fn splitServerNative(
+    &connection u64,
+    &reader u64,
+    &writer u64
+) i32 as foundation_openssl_server_connection_split
+
+extern c fn closeStreamNative(&stream u64) void as foundation_openssl_server_stream_close
+
+@blocking
+extern c fn readLineNative(stream u64, limit u64, &line String) i32 as foundation_openssl_server_read_line
+
+@blocking
+extern c fn readExactNative(stream u64, length u64, &value String) i32 as foundation_openssl_server_read_exact
+
+@blocking
+extern c fn writeTextNative(stream u64, value String) i32 as foundation_openssl_server_write_text
+
+@blocking
+extern c fn writeBytesNative(stream u64, value u64) i32 as foundation_openssl_server_write_bytes
+
+// Owns one PEM certificate and key selected by an exact SNI name.
+struct OpenSSLCertificate {
+    ServerName String
+    CertificatePEM own bytes.Bytes
+    PrivateKeyPEM own bytes.Bytes
+}
+
+// Owns an HTTPS server while preserving the ordinary Server dispatch lifecycle.
+struct OpenSSLServer<E> {
+    server own Server<E>
+
+    fn Port(self) u64 {
+        self.server.Port()
+    }
+
+    fn Close(&self) bool {
+        self.server.Close()
+    }
+
+    fn ConfigureCORS(&self, allowOrigins [String]) void {
+        self.server.ConfigureCORS(allowOrigins)
+    }
+
+    fn ServeOne($self) Task<own OpenSSLServeOutcome<E>> {
+        spawn serveOneOpenSSL<E>($self)
+    }
+
+    fn ServeUntil(
+        $self,
+        $cancellation concurrent.Cancellation
+    ) Task<Result<own OpenSSLServer<E>, ServeError<E>>> {
+        spawn serveUntilOpenSSL<E>($self, $cancellation)
+    }
+}
+
+// Restores the selected HTTPS server after one request completes.
+struct OpenSSLServeOutcome<E> {
+    Server own OpenSSLServer<E>
+    Value Result<void, ServeError<E>>
+}
+
+// Implements one native OpenSSL listener with an explicit certificate store.
+struct openSSLServerListener implements ServerListener {
+    handle u64
+    port u64
+
+    fn Port(self) u64 { self.port }
+
+    fn Close(&self) bool {
+        if self.handle == 0 return false
+        closeServerNative(&self.handle)
+        true
+    }
+
+    fn PortValue(&self) u64 { self.port }
+
+    fn Take(&self) u64 {
+        const handle = self.handle
+        self.handle = 0
+        handle
+    }
+
+    fn Accept($self) Task<own ServerAcceptOutcome> {
+        spawn acceptOpenSSLServer($self)
+    }
+
+    fn drop(&self) void {
+        closeServerNative(&self.handle)
+    }
+}
+
+// Owns one TLS connection before its decrypted stream halves are split.
+struct openSSLServerConnection implements ServerConnection {
+    handle u64
+
+    fn PeerAddress(self) Result<String, net.Error> {
+        var address = ""
+        if peerServerNative(self.handle, &address) != 0 return .Err(.Io)
+        .Ok(address)
+    }
+
+    fn Take(&self) u64 {
+        const handle = self.handle
+        self.handle = 0
+        handle
+    }
+
+    fn Split($self) Result<own ServerStreamPair, net.Error> {
+        var reader u64 = 0
+        var writer u64 = 0
+        var active = self
+        var handle = active.Take()
+        if splitServerNative(&handle, &reader, &writer) != 0 {
+            closeConnectionNative(&handle)
+            return .Err(.Io)
+        }
+        .Ok(own ServerStreamPair {
+            Reader = own openSSLServerReader { handle = reader }
+            Writer = own openSSLServerWriter { handle = writer }
+        })
+    }
+
+    fn drop(&self) void {
+        closeConnectionNative(&self.handle)
+    }
+}
+
+// Reads decrypted TLS request bytes through the ordinary Server parser.
+struct openSSLServerReader implements ServerReader {
+    handle u64
+
+    fn ReadLine($self, limit u64) Task<own ServerReadLineOutcome> {
+        spawn readOpenSSLServerLine($self, limit)
+    }
+
+    fn ReadExact($self, length u64) Task<own ServerReadOutcome> {
+        spawn readOpenSSLServerExact($self, length)
+    }
+
+    fn drop(&self) void {
+        closeStreamNative(&self.handle)
+    }
+
+    fn Take(&self) u64 {
+        const handle = self.handle
+        self.handle = 0
+        handle
+    }
+}
+
+// Writes encrypted TLS response bytes through the ordinary Server dispatcher.
+struct openSSLServerWriter implements ServerWriter {
+    handle u64
+
+    fn WriteText($self, $value String) Task<own ServerWriteOutcome> {
+        spawn writeOpenSSLServerText($self, $value)
+    }
+
+    fn WriteBytes($self, $value own bytes.Bytes) Task<own ServerWriteOutcome> {
+        spawn writeOpenSSLServerBytes($self, $value)
+    }
+
+    fn drop(&self) void {
+        closeStreamNative(&self.handle)
+    }
+
+    fn Take(&self) u64 {
+        const handle = self.handle
+        self.handle = 0
+        handle
+    }
+}
+
+// Binds HTTPS to one or more PEM certificate/key pairs. The first certificate
+// is the default when a TLS client does not send SNI.
+fn NewOpenSSLServer<E>(
+    $address String,
+    port u64,
+    $certificates own collections.List<own OpenSSLCertificate>,
+    $application own Application<E>
+) Result<own OpenSSLServer<E>, net.Error> {
+    if certificates.IsEmpty() {
+        discard certificates
+        discard application
+        return .Err(.InvalidAddress)
+    }
+    var activeCertificates = certificates
+    const first = requiredOpenSSLCertificate(activeCertificates.PopFront())
+    const OpenSSLCertificate { ServerName CertificatePEM PrivateKeyPEM } = first
+    var handle u64 = 0
+    var boundPort u64 = 0
+    if openServerNative(
+        address,
+        port,
+        ServerName,
+        bytes.RuntimeHandle(CertificatePEM),
+        bytes.RuntimeHandle(PrivateKeyPEM),
+        &handle,
+        &boundPort
+    ) != 0 {
+        discard CertificatePEM
+        discard PrivateKeyPEM
+        discard activeCertificates
+        discard application
+        return .Err(.Io)
+    }
+    discard CertificatePEM
+    discard PrivateKeyPEM
+    var remaining = activeCertificates
+    while !remaining.IsEmpty() {
+        const certificate = requiredOpenSSLCertificate(remaining.PopFront())
+        const OpenSSLCertificate { ServerName CertificatePEM PrivateKeyPEM } = certificate
+        const status = addCertificateNative(
+            handle,
+            ServerName,
+            bytes.RuntimeHandle(CertificatePEM),
+            bytes.RuntimeHandle(PrivateKeyPEM)
+        )
+        discard CertificatePEM
+        discard PrivateKeyPEM
+        if status != 0 {
+            closeServerNative(&handle)
+            discard remaining
+            discard application
+            return .Err(.Io)
+        }
+    }
+    .Ok(own OpenSSLServer<E> {
+        server = own Server<E> {
+            listener = own openSSLServerListener { handle = handle port = boundPort }
+            router = application
+            cors = disabledCORS()
+        }
+    })
+}
+
+fn requiredOpenSSLCertificate(
+    $value Option<own OpenSSLCertificate>
+) own OpenSSLCertificate {
+    match value {
+        Some(certificate): certificate
+        None: panic("OpenSSL certificate list invariant failed")
+    }
+}
+
+task acceptOpenSSLServer(
+    $listener own openSSLServerListener
+) own ServerAcceptOutcome {
+    var activeListener = listener
+    const port = activeListener.PortValue()
+    var handle = activeListener.Take()
+    var connection u64 = 0
+    const status = acceptServerNative(handle, &connection)
+    const restored = own openSSLServerListener { handle = handle port = port }
+    if status != 0 {
+        return own ServerAcceptOutcome { Listener = restored Value = .Err(.Io) }
+    }
+    own ServerAcceptOutcome {
+        Listener = restored
+        Value = .Ok(own openSSLServerConnection { handle = connection })
+    }
+}
+
+task readOpenSSLServerLine(
+    $reader own openSSLServerReader,
+    limit u64
+) own ServerReadLineOutcome {
+    var activeReader = reader
+    var handle = activeReader.Take()
+    var line = ""
+    const status = readLineNative(handle, limit, &line)
+    const restored = own openSSLServerReader { handle = handle }
+    if status != 0 return own ServerReadLineOutcome { Reader = restored Value = .Err(.Io) }
+    own ServerReadLineOutcome { Reader = restored Value = .Ok(.Some(line)) }
+}
+
+task readOpenSSLServerExact(
+    $reader own openSSLServerReader,
+    length u64
+) own ServerReadOutcome {
+    var activeReader = reader
+    var handle = activeReader.Take()
+    var value = ""
+    const status = readExactNative(handle, length, &value)
+    const restored = own openSSLServerReader { handle = handle }
+    if status != 0 return own ServerReadOutcome { Reader = restored Value = .Err(.Io) }
+    own ServerReadOutcome { Reader = restored Value = .Ok(value) }
+}
+
+task writeOpenSSLServerText(
+    $writer own openSSLServerWriter,
+    $value String
+) own ServerWriteOutcome {
+    var activeWriter = writer
+    var handle = activeWriter.Take()
+    const status = writeTextNative(handle, value)
+    discard value
+    const restored = own openSSLServerWriter { handle = handle }
+    if status != 0 return own ServerWriteOutcome { Writer = restored Value = .Err(.Io) }
+    own ServerWriteOutcome { Writer = restored Value = .Ok }
+}
+
+task writeOpenSSLServerBytes(
+    $writer own openSSLServerWriter,
+    $value own bytes.Bytes
+) own ServerWriteOutcome {
+    var activeWriter = writer
+    var handle = activeWriter.Take()
+    const status = writeBytesNative(handle, bytes.RuntimeHandle(value))
+    discard value
+    const restored = own openSSLServerWriter { handle = handle }
+    if status != 0 return own ServerWriteOutcome { Writer = restored Value = .Err(.Io) }
+    own ServerWriteOutcome { Writer = restored Value = .Ok }
+}
+
+task serveOneOpenSSL<E>(
+    $server own OpenSSLServer<E>
+) own OpenSSLServeOutcome<E> {
+    const OpenSSLServer { server as base } = server
+    const serving = base.ServeOne()
+    const outcome = $serving.wait()
+    const ServeOutcome { Server Value } = outcome
+    own OpenSSLServeOutcome<E> { Server = own OpenSSLServer<E> { server = Server } Value = Value }
+}
+
+task serveUntilOpenSSL<E>(
+    $server own OpenSSLServer<E>,
+    $cancellation concurrent.Cancellation
+) Result<own OpenSSLServer<E>, ServeError<E>> {
+    const OpenSSLServer { server as base } = server
+    const serving = base.ServeUntil($cancellation)
+    const result = $serving.wait()
+    const active = result else error {
+        return .Err(error)
+    }
+    .Ok(own OpenSSLServer<E> { server = active })
+}

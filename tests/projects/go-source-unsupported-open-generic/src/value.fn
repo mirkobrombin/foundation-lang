@@ -1,0 +1,5 @@
+package sample.open_generic
+
+fn Identity<T>($value T) T {
+    value
+}

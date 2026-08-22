@@ -1,0 +1,131 @@
+package test.telemetry.prometheus
+
+import std.collections
+import foundation.telemetry
+import foundation.tracing
+
+fn requireCounter(
+    $value Result<own telemetry.Counter, telemetry.Error>
+) own telemetry.Counter {
+    match value {
+        Ok(counter): counter
+        Err(error): failed<telemetry.Error>($error)
+    }
+}
+
+fn requireGauge(
+    $value Result<own telemetry.Gauge, telemetry.Error>
+) own telemetry.Gauge {
+    match value {
+        Ok(gauge): gauge
+        Err(error): failed<telemetry.Error>($error)
+    }
+}
+
+fn requireHistogram(
+    $value Result<own telemetry.Histogram, telemetry.Error>
+) own telemetry.Histogram {
+    match value {
+        Ok(histogram): histogram
+        Err(error): failed<telemetry.Error>($error)
+    }
+}
+
+fn requireDone($value Result<void, telemetry.Error>) void {
+    match value {
+        Ok: {}
+        Err(error): failed<telemetry.Error>($error)
+    }
+}
+
+fn requireText($value Result<String, telemetry.Error>) String {
+    match value {
+        Ok(contents): contents
+        Err(error): failed<telemetry.Error>($error)
+    }
+}
+
+fn failed<E>($error E) never {
+    discard error
+    panic("telemetry prometheus operation failed")
+}
+
+fn labels() own collections.List<tracing.Attribute> {
+    var values = tracing.Attributes()
+    values = tracing.WithAttribute($values, tracing.Attribute {
+        Key = "path"
+        Value = .Text(value = "/v1")
+    })
+    tracing.WithAttribute($values, tracing.Attribute {
+        Key = "method"
+        Value = .Text(value = "GET")
+    })
+}
+
+fn boundaries() own collections.List<f64> {
+    var values = collections.NewList<f64>()
+    values.PushFront(5.0)
+    values.PushFront(10.0)
+    values.PushFront(1.0)
+    values
+}
+
+fn negativeDelta($value Result<void, telemetry.Error>) bool {
+    match value {
+        Ok: false
+        Err(error): match error {
+            Closed: false
+            Cancelled: false
+            InvalidMetricName: false
+            InvalidLabelName: false
+            DuplicateLabel: false
+            InvalidBoundary: false
+            DuplicateBoundary: false
+            NegativeCounterDelta: true
+            KindConflict: false
+            BoundaryConflict: false
+            UnknownInstrument: false
+        }
+    }
+}
+
+fn main() i32 {
+    var exporter = telemetry.NewPrometheusExporter()
+
+    const firstCounterTask = exporter.Counter("http_requests_total", $labels())
+    const firstCounter = requireCounter($firstCounterTask.wait())
+    const secondCounterTask = exporter.Counter("http_requests_total", $labels())
+    const secondCounter = requireCounter($secondCounterTask.wait())
+    const firstAdd = firstCounter.Add(2)
+    const secondAdd = secondCounter.Add(3)
+    requireDone($firstAdd.wait())
+    requireDone($secondAdd.wait())
+
+    const rejected = firstCounter.Add(-1)
+    if !negativeDelta($rejected.wait()) return 1
+
+    const gaugeTask = exporter.Gauge(
+        "active_workers",
+        tracing.Attributes()
+    )
+    const gauge = requireGauge($gaugeTask.wait())
+    const set = gauge.Set(3.5)
+    requireDone($set.wait())
+
+    const histogramTask = exporter.Histogram(
+        "http_request_duration_ms",
+        $labels(),
+        $boundaries()
+    )
+    const histogram = requireHistogram($histogramTask.wait())
+    const firstObservation = histogram.Observe(0.5)
+    const secondObservation = histogram.Observe(7.0)
+    const thirdObservation = histogram.Observe(20.0)
+    requireDone($firstObservation.wait())
+    requireDone($secondObservation.wait())
+    requireDone($thirdObservation.wait())
+
+    const rendered = exporter.Render()
+    print(requireText($rendered.wait()))
+    0
+}

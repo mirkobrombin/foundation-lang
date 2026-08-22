@@ -14,7 +14,7 @@ if(NOT install_status EQUAL 0)
 endif()
 
 set(compiler "${SDK_DIR}/bin/foundationc${EXECUTABLE_SUFFIX}")
-set(example "${SDK_DIR}/examples/hello/main.fn")
+set(example "${SDK_DIR}/examples/hello/src/main.fn")
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env --unset=FOUNDATION_SDK_ROOT
             "${compiler}" run "${example}"

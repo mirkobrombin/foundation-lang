@@ -1,0 +1,12 @@
+# TYPE active_workers gauge
+active_workers 3.5
+# TYPE http_request_duration_ms histogram
+http_request_duration_ms_bucket{method="GET",path="/v1",le="1"} 1
+http_request_duration_ms_bucket{method="GET",path="/v1",le="5"} 1
+http_request_duration_ms_bucket{method="GET",path="/v1",le="10"} 2
+http_request_duration_ms_bucket{method="GET",path="/v1",le="+Inf"} 3
+http_request_duration_ms_sum{method="GET",path="/v1"} 27.5
+http_request_duration_ms_count{method="GET",path="/v1"} 3
+# TYPE http_requests_total counter
+http_requests_total{method="GET",path="/v1"} 5
+

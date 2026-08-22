@@ -1,0 +1,66 @@
+package foundation.web
+
+import std.collections
+import std.concurrent
+import foundation.health
+
+// Renders a typed health registry as a small deterministic HTTP response.
+// Applications register this function explicitly rather than receiving a hidden endpoint.
+fn HealthResponse(&registry health.Registry<String>) Response {
+    const source = concurrent.NewCancellationSource()
+    const reports = registry.CheckAll(source.Token()) else error {
+        discard error
+        return Text(503, "{\"status\":\"unhealthy\"}")
+    }
+    const renderedHealth { Status Body } = renderHealthReports($reports)
+    Json(Status, $Body)
+}
+
+struct renderedHealth {
+    Status i32
+    Body String
+}
+
+fn renderHealthReports(
+    $reports own collections.List<health.NamedReport<String>>
+) renderedHealth {
+    var source = reports
+    var overall health.Status = health.Status.Healthy
+    while !source.IsEmpty() {
+        const report = healthReportValue(source.PopFront())
+        const health.NamedReport { Name Report } = report
+        discard Name
+        const health.Report { Status Duration Details } = Report
+        discard Duration
+        discard Details
+        match Status {
+            Healthy: {}
+            Degraded: {
+                match overall {
+                    Healthy: { overall = health.Status.Degraded }
+                    Degraded: {}
+                    Unhealthy: {}
+                }
+            }
+            Unhealthy: { overall = health.Status.Unhealthy }
+        }
+    }
+    const status = match overall {
+        Healthy: 200
+        Degraded: 200
+        Unhealthy: 503
+    }
+    renderedHealth {
+        Status = status
+        Body = "{\"status\":\"" + health.StatusText(overall) + "\"}"
+    }
+}
+
+fn healthReportValue(
+    $value Option<health.NamedReport<String>>
+) health.NamedReport<String> {
+    match value {
+        Some(report): report
+        None: panic("health endpoint invariant failed")
+    }
+}

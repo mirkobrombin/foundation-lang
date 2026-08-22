@@ -1,0 +1,15 @@
+task wait($receiver Receiver<i32>, delay u64) bool {
+    select {
+        const value = receiver.receive(): {
+            discard value
+            return true
+        }
+        timeout delay: return false
+        else error: {
+            discard error
+            return false
+        }
+    discard value
+ i32 {
+    0
+}

@@ -13,7 +13,8 @@ struct ProjectAnalysis;
 
 [[nodiscard]] Diagnostics lintProject(
     const ProjectAnalysis &analysis, CodeStandardProfile profile,
-    const std::vector<std::size_t> &projectSources = {});
+    const std::vector<std::size_t> &projectSources = {},
+    const std::vector<CodeStandardRuleSetting> &settings = {});
 
 } // namespace foundation
 

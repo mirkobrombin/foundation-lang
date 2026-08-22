@@ -1,0 +1,9 @@
+package sample.own_receiver
+
+struct Token {
+    Value i32
+
+    fn Consume($self) i32 {
+        self.Value
+    }
+}

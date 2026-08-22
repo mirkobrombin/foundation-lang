@@ -1,0 +1,95 @@
+package test.pooling
+
+import foundation.pooling
+import std.concurrent
+import std.format
+
+@concurrent.Transferable()
+struct Item {
+    Value i32
+}
+
+fn fresh() Item {
+    Item { Value = 1 }
+}
+
+fn reset(&value Item) void {
+    value.Value = 9
+}
+
+fn requireItem($value Result<Item, pooling.Error>) Item {
+    match value {
+        Ok(item): item
+        Err(error): fail(error)
+    }
+}
+
+fn requireVoid($value Result<void, pooling.Error>) void {
+    match value {
+        Ok: {
+            return
+        }
+        Err(error): fail(error)
+    }
+}
+
+fn requireLength($value Result<i32, pooling.Error>) i32 {
+    match value {
+        Ok(length): length
+        Err(error): fail(error)
+    }
+}
+
+fn fail(error pooling.Error) never {
+    match error {
+        Closed: panic("pool closed")
+        Cancelled: panic("pool operation cancelled")
+    }
+}
+
+fn invalidMaximum(
+    $value Result<own pooling.Pool<Item>, pooling.ConfigurationError>
+) bool {
+    match value {
+        Ok(pool): {
+            discard pool
+            false
+        }
+        Err(error): match error {
+            InvalidMaximumRetained: true
+        }
+    }
+}
+
+fn main() i32 {
+    const invalid = pooling.NewWith<Item>(
+        $fresh,
+        pooling.Policy<Item> { MaximumRetained = -1 }
+    )
+    if !invalidMaximum($invalid) return 1
+
+    const pool = pooling.NewWith<Item>(
+        $fresh,
+        pooling.Policy<Item> {
+        MaximumRetained = 1
+        Finalize = .Some($reset)
+    }
+    ) else error {
+        discard error
+        return 2
+    }
+
+    requireVoid($pool.Put(Item { Value = 10 }).wait())
+    requireVoid($pool.Put(Item { Value = 20 }).wait())
+    if requireLength($pool.Len().wait()) != 1 return 3
+
+    const reused = requireItem($pool.Get().wait())
+    const created = requireItem($pool.Get().wait())
+    if reused.Value != 9 return 4
+    if created.Value != 1 return 5
+
+    print("reused=" + format.I32(reused.Value))
+    print("created=" + format.I32(created.Value))
+    print("retained=" + format.I32(requireLength($pool.Len().wait())))
+    0
+}

@@ -76,6 +76,7 @@ struct PackageManifest {
     PackageRequirement sdk;
     CodeStandardProfile codeStandard{CodeStandardProfile::Standard};
     bool codeStandardExplicit{};
+    std::vector<CodeStandardRuleSetting> codeStandardRules;
     std::filesystem::path source;
     std::optional<std::filesystem::path> testSource;
     std::vector<PackageDependency> dependencies;

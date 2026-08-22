@@ -1,17 +1,207 @@
 import foundation.logger
+import std.collections
+import std.format
+import std.time
+
+enum SinkError {
+    Rejected
+}
+
+struct TextSink implements logger.Sink<SinkError> {
+    fn Write(
+        &self,
+        $entry own logger.Entry
+    ) Result<void, SinkError> {
+        print("pipeline " + logger.RenderText($entry))
+        .Ok
+    }
+}
+
+struct RejectingSink implements logger.Sink<SinkError> {
+    fn Write(
+        &self,
+        $entry own logger.Entry
+    ) Result<void, SinkError> {
+        discard entry
+        .Err(.Rejected)
+    }
+}
+
+fn rendered($value Result<String, logger.RenderError>) String {
+    match value {
+        Ok(text): text
+        Err(error): {
+            discard error
+            panic("logger renderer fixture failed")
+        }
+    }
+}
+
+fn accepted($value Result<bool, SinkError>) bool {
+    match value {
+        Ok(state): state
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn requireAsync(
+    $value Result<own logger.Async<logger.RenderError>, logger.AsyncError>
+) own logger.Async<logger.RenderError> {
+    match value {
+        Ok(async): async
+        Err(error): {
+            discard error
+            panic("logger async fixture failed")
+        }
+    }
+}
+
+fn requireFailingAsync(
+    $value Result<own logger.Async<SinkError>, logger.AsyncError>
+) own logger.Async<SinkError> {
+    match value {
+        Ok(async): async
+        Err(error): {
+            discard error
+            panic("logger async fixture failed")
+        }
+    }
+}
+
+fn requirePublished($value Result<void, ChannelError>) void {
+    match value {
+        Ok: {
+            return
+        }
+        Err(error): {
+            discard error
+            panic("logger publish fixture failed")
+        }
+    }
+}
+
+fn fields() own collections.List<logger.Field> {
+    const bound = logger.WithField(
+        logger.Fields(),
+        "service",
+        "catalog"
+    )
+    logger.WithField($bound, "request", "r-42")
+}
+
+fn entry(level logger.Level, $message String) own logger.Entry {
+    logger.NewEntry(
+        level,
+        time.FromUnix(0),
+        $message,
+        fields(),
+        logger.Trace { TraceID = "t-1" SpanID = "s-1" }
+    )
+}
+
+fn reservedFieldRejected() bool {
+    const selected = logger.WithField(logger.Fields(), "@t", "shadow")
+    const result = logger.RenderCLEF(logger.NewEntry(
+            .Info,
+            time.FromUnix(0),
+            "reserved",
+            $selected,
+            logger.Trace { TraceID = "" SpanID = "" }
+        ))
+    match result {
+        Ok(value): {
+            discard value
+            false
+        }
+        Err(error): match error {
+            ReservedField: true
+            Time: false
+            DuplicateField: false
+            JSON: false
+        }
+    }
+}
+
+fn invalidCapacityRejected() bool {
+    const result = logger.NewAsync<logger.RenderError>(
+        logger.NewConsoleSink(),
+        0
+    )
+    match result {
+        Ok(async): {
+            discard async
+            false
+        }
+        Err(error): match error {
+            InvalidCapacity: true
+        }
+    }
+}
 
 fn main() i32 {
     var log = logger.NewWith(.Info)
     log.Bind(logger.Field { Key = "service" Value = "catalog" })
     log.Debug("hidden", logger.Fields())
-    const fields = logger.WithField(
+    const request = logger.WithField(
         logger.Fields(),
         "request",
         "r-42"
     )
-    log.Info("served", $fields)
+    log.Info("served", $request)
     log.SetLevel(.Error)
     log.Warn("hidden warning", logger.Fields())
     log.Error("failed", logger.Fields())
+
+    print(rendered(logger.RenderJSON(entry(.Info, "served"))))
+    print(rendered(logger.RenderCLEF(entry(.Info, "served"))))
+    if !reservedFieldRejected() return 1
+
+    var output = logger.NewPipeline<SinkError>(
+        own TextSink {},
+        .Info
+    )
+    output.Bind(logger.Field { Key = "service" Value = "catalog" })
+    output.BindTrace(logger.Trace { TraceID = "t-2" SpanID = "s-2" })
+    const pipelineFields = logger.WithField(
+        logger.WithField(logger.Fields(), "service", "checkout"),
+        "request",
+        "r-43"
+    )
+    if !accepted($output.Info("piped", $pipelineFields)) return 2
+
+    var async = requireAsync(logger.NewAsync<logger.RenderError>(
+            logger.NewConsoleSink(),
+            1
+        ))
+    const publisher = logger.NewPublisher(async)
+    const first = spawn logger.Publish($publisher.Clone(), entry(.Info, "first"))
+    const second = spawn logger.Publish($publisher.Clone(), entry(.Warn, "second"))
+    requirePublished($first.wait())
+    requirePublished($second.wait())
+    discard publisher
+    const asyncErrors = logger.Shutdown<logger.RenderError>($async)
+    print("async-errors:" + format.I32(asyncErrors.Len()))
+    discard asyncErrors
+
+    var failing = requireFailingAsync(logger.NewAsync<SinkError>(
+            own RejectingSink {},
+            1
+        ))
+    const failingPublisher = logger.NewPublisher(failing)
+    const rejected = spawn logger.Publish(
+        $failingPublisher.Clone(),
+        entry(.Error, "rejected")
+    )
+    requirePublished($rejected.wait())
+    discard failingPublisher
+    const sinkErrors = logger.Shutdown<SinkError>($failing)
+    print("sink-errors:" + format.I32(sinkErrors.Len()))
+    discard sinkErrors
+
+    if !invalidCapacityRejected() return 3
+    print("invalid-capacity")
     0
 }

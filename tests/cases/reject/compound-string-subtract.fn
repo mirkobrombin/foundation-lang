@@ -1,0 +1,6 @@
+fn main() i32 {
+    var value = "Foundation"
+    value -= "Lang"
+    discard value
+    0
+}

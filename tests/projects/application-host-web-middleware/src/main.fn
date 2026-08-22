@@ -81,7 +81,11 @@ fn surroundResponse<E>(
 ) Result<web.Response, web.DispatchError<E>> {
     const web.Response { Status Headers Body } = response
     discard Headers
-    .Ok(web.Text(Status, prefix + Body + suffix))
+    const body = Body.Text() else error {
+        discard error
+        return .Ok(web.Text(500, "middleware requires a text response"))
+    }
+    .Ok(web.Text(Status, prefix + body + suffix))
 }
 
 @web.Route(.GET, "/api/v1/value")
@@ -111,7 +115,11 @@ fn takeBody($response web.Response) String {
     const web.Response { Status Headers Body } = response
     discard Status
     discard Headers
-    Body
+    const body = Body.Text() else error {
+        discard error
+        panic("response body must contain UTF-8 text")
+    }
+    body
 }
 
 fn failureBody<E>($error web.DispatchError<E>) String {

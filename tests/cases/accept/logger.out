@@ -1,2 +1,10 @@
 info served service=catalog request=r-42
 error failed service=catalog
+{"fields":{"request":"r-42","service":"catalog"},"level":"info","msg":"served","span_id":"s-1","time":"1970-01-01T00:00:00Z","trace_id":"t-1"}
+{"@m":"served","@t":"1970-01-01T00:00:00Z","SpanId":"s-1","TraceId":"t-1","request":"r-42","service":"catalog"}
+pipeline info piped service=checkout request=r-43 trace_id=t-2 span_id=s-2
+{"fields":{"request":"r-42","service":"catalog"},"level":"info","msg":"first","span_id":"s-1","time":"1970-01-01T00:00:00Z","trace_id":"t-1"}
+{"fields":{"request":"r-42","service":"catalog"},"level":"warn","msg":"second","span_id":"s-1","time":"1970-01-01T00:00:00Z","trace_id":"t-1"}
+async-errors:0
+sink-errors:1
+invalid-capacity

@@ -1,0 +1,355 @@
+package test.httpx_transport_policy
+
+import foundation.httpx
+import std.format
+import std.net
+import std.text
+
+struct directRequest {
+    reader own net.TcpReader
+    valid bool
+}
+
+struct proxyRequest {
+    valid bool
+}
+
+struct persistentServer {
+    listener own net.TcpListener
+    valid bool
+}
+
+struct proxyServer {
+    listener own net.TcpListener
+    valid bool
+}
+
+struct clientResult {
+    client own httpx.Client<httpx.NetworkError>
+    status i32
+    body String
+}
+
+fn listenerOr($value Result<own net.TcpListener, net.Error>) own net.TcpListener {
+    match value {
+        Ok(listener): listener
+        Err(error): failNet(error)
+    }
+}
+
+fn connectionOr($value Result<own net.TcpConnection, net.Error>) own net.TcpConnection {
+    match value {
+        Ok(connection): connection
+        Err(error): failNet(error)
+    }
+}
+
+fn pairOr($value Result<net.StreamPair, net.Error>) net.StreamPair {
+    match value {
+        Ok(pair): pair
+        Err(error): failNet(error)
+    }
+}
+
+fn lineOr($value Result<Option<String>, net.Error>) String {
+    match value {
+        Err(error): failNet(error)
+        Ok(optional): match optional {
+            None: panic("unexpected network EOF")
+            Some(line): line
+        }
+    }
+}
+
+fn written($value Result<void, net.Error>) bool {
+    match value {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn failNet(error net.Error) never {
+    discard error
+    panic("transport policy network operation failed")
+}
+
+fn requestOr(
+    $value Result<httpx.Request, httpx.RequestError>
+) httpx.Request {
+    match value {
+        Ok(request): request
+        Err(error): {
+            discard error
+            panic("transport policy request failed")
+        }
+    }
+}
+
+fn bodyText($value httpx.Response) String {
+    const httpx.Response { Status Headers Body } = value
+    discard Status
+    discard Headers
+    const result = Body.Text() else error {
+        discard error
+        panic("transport policy response was not text")
+    }
+    result
+}
+
+fn invalidIdleLimit(
+    $value Result<
+    own httpx.Transport<httpx.NetworkError>,
+    httpx.NetworkConfigurationError
+    >
+) bool {
+    match value {
+        Ok(transport): {
+            discard transport
+            false
+        }
+        Err(error): match error {
+            InvalidMaximumIdleConnections: true
+            InvalidProxy: false
+            InvalidProxyAuthorization: false
+        }
+    }
+}
+
+task readDirect($reader own net.TcpReader) own directRequest {
+    const line1Pending = spawn net.ReadLine($reader)
+    const line1Outcome = $line1Pending.wait()
+    const net.ReadLineOutcome { Reader as reader1 Value as value1 } = line1Outcome
+    const line1 = lineOr($value1)
+    const line2Pending = spawn net.ReadLine($reader1)
+    const line2Outcome = $line2Pending.wait()
+    const net.ReadLineOutcome { Reader as reader2 Value as value2 } = line2Outcome
+    const line2 = lineOr($value2)
+    const line3Pending = spawn net.ReadLine($reader2)
+    const line3Outcome = $line3Pending.wait()
+    const net.ReadLineOutcome { Reader as reader3 Value as value3 } = line3Outcome
+    const line3 = lineOr($value3)
+    const line4Pending = spawn net.ReadLine($reader3)
+    const line4Outcome = $line4Pending.wait()
+    const net.ReadLineOutcome { Reader as reader4 Value as value4 } = line4Outcome
+    const line4 = lineOr($value4)
+    const line5Pending = spawn net.ReadLine($reader4)
+    const line5Outcome = $line5Pending.wait()
+    const net.ReadLineOutcome { Reader Value as value5 } = line5Outcome
+    const line5 = lineOr($value5)
+    const valid = text.StartsWith(line1, "GET /reuse") &&
+        text.StartsWith(line2, "Host: 127.0.0.1:") &&
+        line3 == "Connection: keep-alive" &&
+        line4 == "Content-Length: 0" && line5 == ""
+    discard line1
+    discard line2
+    discard line3
+    discard line4
+    discard line5
+    own directRequest { reader = Reader valid = valid }
+}
+
+task servePersistent(
+    $listener own net.TcpListener
+) own persistentServer {
+    const accepting = spawn net.Accept($listener)
+    const accepted = $accepting.wait()
+    const net.AcceptOutcome { Listener Value } = accepted
+    const connection = connectionOr($Value)
+    const pair = pairOr(connection.Split())
+    const net.StreamPair { Reader Writer } = pair
+
+    const firstPending = spawn readDirect($Reader)
+    const first = $firstPending.wait()
+    const directRequest { reader as afterFirst valid as firstValid } = first
+    const firstWrite = spawn net.WriteAll(
+        $Writer,
+        "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: keep-alive\r\n\r\nA"
+    )
+    const firstWritten = $firstWrite.wait()
+    const net.WriteOutcome { Writer as writer2 Value as value1 } = firstWritten
+
+    const secondPending = spawn readDirect($afterFirst)
+    const second = $secondPending.wait()
+    const directRequest { reader as afterSecond valid as secondValid } = second
+    const secondWrite = spawn net.WriteAll(
+        $writer2,
+        "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\nB"
+    )
+    const secondWritten = $secondWrite.wait()
+    const net.WriteOutcome { Writer as finalWriter Value as value2 } = secondWritten
+    const valid = firstValid && secondValid && written($value1) && written($value2)
+    discard afterSecond
+    discard finalWriter
+    own persistentServer { listener = Listener valid = valid }
+}
+
+task readProxy($reader own net.TcpReader) own proxyRequest {
+    const line1Pending = spawn net.ReadLine($reader)
+    const line1Outcome = $line1Pending.wait()
+    const net.ReadLineOutcome { Reader as reader1 Value as value1 } = line1Outcome
+    const line1 = lineOr($value1)
+    const line2Pending = spawn net.ReadLine($reader1)
+    const line2Outcome = $line2Pending.wait()
+    const net.ReadLineOutcome { Reader as reader2 Value as value2 } = line2Outcome
+    const line2 = lineOr($value2)
+    const line3Pending = spawn net.ReadLine($reader2)
+    const line3Outcome = $line3Pending.wait()
+    const net.ReadLineOutcome { Reader as reader3 Value as value3 } = line3Outcome
+    const line3 = lineOr($value3)
+    const line4Pending = spawn net.ReadLine($reader3)
+    const line4Outcome = $line4Pending.wait()
+    const net.ReadLineOutcome { Reader as reader4 Value as value4 } = line4Outcome
+    const line4 = lineOr($value4)
+    const line5Pending = spawn net.ReadLine($reader4)
+    const line5Outcome = $line5Pending.wait()
+    const net.ReadLineOutcome { Reader as reader5 Value as value5 } = line5Outcome
+    const line5 = lineOr($value5)
+    const line6Pending = spawn net.ReadLine($reader5)
+    const line6Outcome = $line6Pending.wait()
+    const net.ReadLineOutcome { Reader Value as value6 } = line6Outcome
+    const line6 = lineOr($value6)
+    const valid = line1 == "GET http://origin.example/resource?q=1 HTTP/1.1" &&
+        line2 == "Host: origin.example" &&
+        line3 == "Connection: keep-alive" &&
+        line4 == "Proxy-Authorization: Basic dGVzdA==" &&
+        line5 == "Content-Length: 0" && line6 == ""
+    discard line1
+    discard line2
+    discard line3
+    discard line4
+    discard line5
+    discard line6
+    discard Reader
+    own proxyRequest { valid = valid }
+}
+
+task serveProxy($listener own net.TcpListener) own proxyServer {
+    const accepting = spawn net.Accept($listener)
+    const accepted = $accepting.wait()
+    const net.AcceptOutcome { Listener Value } = accepted
+    const connection = connectionOr($Value)
+    const pair = pairOr(connection.Split())
+    const net.StreamPair { Reader Writer } = pair
+    const reading = spawn readProxy($Reader)
+    const readValue = $reading.wait()
+    const proxyRequest { valid as requestValid } = readValue
+    const writing = spawn net.WriteAll(
+        $Writer,
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
+    )
+    const writtenValue = $writing.wait()
+    const net.WriteOutcome {
+        Writer as finalWriter
+        Value as writeValue
+    } = writtenValue
+    const valid = requestValid && written($writeValue)
+    discard finalWriter
+    own proxyServer { listener = Listener valid = valid }
+}
+
+fn complete(
+    $value own httpx.DoOutcome<httpx.NetworkError>
+) own clientResult {
+    const httpx.DoOutcome { Client Value } = value
+    match Value {
+        Ok(response): {
+            const status = response.Status
+            own clientResult {
+                client = Client
+                status = status
+                body = bodyText($response)
+            }
+        }
+        Err(error): {
+            discard Client
+            discard error
+            panic("transport policy client request failed")
+        }
+    }
+}
+
+fn main() i32 {
+    const invalid = httpx.NetworkWith(httpx.NetworkPolicy {
+        MaximumIdleConnections = -1
+    })
+    if !invalidIdleLimit($invalid) return 1
+
+    const listener = listenerOr(net.Listen("127.0.0.1", 0))
+    const port = listener.Port
+    const server = spawn servePersistent($listener)
+    var builder = httpx.New<httpx.NetworkError>(httpx.Network())
+    var client = builder.Build()
+    const firstRequest = requestOr(httpx.NewRequest(
+            "GET",
+            "http://127.0.0.1:" + format.U64(port) + "/reuse/first",
+            ""
+        ))
+    const firstPending = client.Do($firstRequest)
+    const first = complete($firstPending.wait())
+    const clientResult {
+        client as secondClient
+        status as firstStatus
+        body as firstBody
+    } = first
+    if firstStatus != 200 || firstBody != "A" {
+        discard secondClient
+        return 2
+    }
+    discard firstBody
+
+    const secondRequest = requestOr(httpx.NewRequest(
+            "GET",
+            "http://127.0.0.1:" + format.U64(port) + "/reuse/second",
+            ""
+        ))
+    const secondPending = secondClient.Do($secondRequest)
+    const second = complete($secondPending.wait())
+    const clientResult {
+        client as finalClient
+        status as secondStatus
+        body as secondBody
+    } = second
+    const persistent = $server.wait()
+    const persistentServer { listener as finalListener valid as reuseValid } = persistent
+    discard finalListener
+    if secondStatus != 200 || secondBody != "B" || !reuseValid {
+        discard finalClient
+        return 3
+    }
+    discard secondBody
+    discard finalClient
+
+    const proxyListener = listenerOr(net.Listen("127.0.0.1", 0))
+    const proxyPort = proxyListener.Port
+    const proxyServing = spawn serveProxy($proxyListener)
+    const transport = httpx.NetworkWith(httpx.NetworkPolicy {
+        MaximumIdleConnections = 1
+        Proxy = .Some(httpx.Proxy {
+            URL = "http://127.0.0.1:" + format.U64(proxyPort)
+            Authorization = .Some("Basic dGVzdA==")
+        })
+    }) else error {
+        discard error
+        return 4
+    }
+    var proxyBuilder = httpx.New<httpx.NetworkError>($transport)
+    const proxyClient = proxyBuilder.Build()
+    const proxyRequest = requestOr(httpx.NewRequest(
+            "GET",
+            "http://origin.example/resource?q=1#fragment",
+            ""
+        ))
+    const proxyPending = proxyClient.Do($proxyRequest)
+    const proxyResult = complete($proxyPending.wait())
+    const clientResult { client as completedClient status body } = proxyResult
+    const proxyCompleted = $proxyServing.wait()
+    const proxyServer { listener as completedListener valid as proxyValid } = proxyCompleted
+    discard completedClient
+    discard completedListener
+    if status != 200 || body != "OK" || !proxyValid return 5
+    print("httpx transport policy ok")
+    0
+}

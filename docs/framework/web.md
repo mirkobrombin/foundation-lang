@@ -45,11 +45,16 @@ Every transport request has a typed `Request.RequestID UUID`. A canonical non-ni
 `X-Request-ID` supplied by the client is preserved. A missing, nil, or malformed value is replaced
 with a UUIDv7. The final HTTP response receives the same canonical value through
 `X-Request-ID`, including router 404/405 responses and application errors mapped by
-`Application.ErrorResponse`. This replaces optional string-valued middleware with a default
+`Application.ErrorResponse`. This replaces the optional string-valued v2 middleware with a default
 typed transport invariant. `Response.Header` and `Response.SetHeader` provide case-insensitive
 lookup and replacement without exposing list surgery to response middleware. `Response.AddHeader`
 preserves repeated fields when the protocol requires them, while `web.Empty` constructs a response
 without a body.
+
+`Response.Body` owns `std.bytes.Bytes`, so an application can return arbitrary payloads without
+forcing compressed data, media, or downloads through UTF-8. `web.Text` and `web.Json` convert text
+at the boundary. `web.Binary` transfers an owned byte sequence and records its content type. Use
+`Response.TextBody` only when a caller explicitly expects valid UTF-8.
 
 `Server.ConfigureCORS` installs an HTTP transport policy instead of route middleware. An exact
 origin allowlist emits the matching origin plus `Vary: Origin`; `"*"` or an empty typed slice allows
@@ -243,4 +248,8 @@ selection, and registration failures.
 
 `foundationc emit-openapi` now consumes this same validated route graph; see
 `docs/framework/openapi.md`. This is not the completed `app/web` compatibility boundary.
-Compression, continuous serving, graceful shutdown, TLS, and the health adapter remain pending.
+`CompressionMiddleware` applies an explicitly installed `Compressor`, `Server.ServeUntil` owns
+continuous serving and graceful close, and `HealthResponse` renders an explicitly registered
+health registry. `NewOpenSSLServer` installs an optional OpenSSL 3.5.6 listener with explicit PEM
+certificate owners, exact SNI selection, and the same typed application dispatch. The web package
+never falls back to plaintext for an HTTPS boundary.

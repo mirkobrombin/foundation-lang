@@ -2,13 +2,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstdint>
 #include <iomanip>
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -26,6 +27,28 @@ namespace {
     std::fputs(message, stderr);
     std::fputc('\n', stderr);
     std::abort();
+}
+
+FirBinaryOperator assignmentBinary(FirAssignmentOperator operation) {
+    switch (operation) {
+    case FirAssignmentOperator::Add:
+        return FirBinaryOperator::Add;
+    case FirAssignmentOperator::Subtract:
+        return FirBinaryOperator::Subtract;
+    case FirAssignmentOperator::Multiply:
+        return FirBinaryOperator::Multiply;
+    case FirAssignmentOperator::Divide:
+        return FirBinaryOperator::Divide;
+    case FirAssignmentOperator::Remainder:
+        return FirBinaryOperator::Remainder;
+    case FirAssignmentOperator::ShiftLeft:
+        return FirBinaryOperator::ShiftLeft;
+    case FirAssignmentOperator::ShiftRight:
+        return FirBinaryOperator::ShiftRight;
+    case FirAssignmentOperator::Assign:
+        break;
+    }
+    internalError("plain assignment has no binary operation");
 }
 
 std::string cString(std::string_view value) {
@@ -591,7 +614,100 @@ class Monomorphizer {
         return std::move(result_);
     }
 
+    FirProgram runSourcePackage(std::string_view packageName) {
+        preserveSourceTypes_ = true;
+        result_.structs = source_.structs;
+        result_.enums = source_.enums;
+        result_.contracts = source_.contracts;
+        result_.attributeDeclarations = source_.attributeDeclarations;
+        for (std::size_t index = 0; index < source_.functions.size(); ++index) {
+            const auto &function = source_.functions[index];
+            if (function.exported && function.hasBody && function.packageName == packageName &&
+                function.typeParameterCount == 0) {
+                static_cast<void>(instantiateFunction(index, {}));
+            }
+        }
+        instantiateReachableSourceMembers(packageName);
+        for (auto &function : result_.functions) {
+            if (function.generic && !function.method) {
+                function.exported = false;
+            }
+        }
+        return std::move(result_);
+    }
+
   private:
+    void collectSourceStructs(const Type &type, std::map<std::string, Type> &types) const {
+        for (const auto &argument : type.arguments) {
+            collectSourceStructs(argument, types);
+        }
+        if (type.kind == TypeKind::Struct && type.declaration < source_.structs.size()) {
+            const auto key = sourceTypeKey(type);
+            if (!types.emplace(key, type).second) {
+                return;
+            }
+            const auto &declaration = source_.structs[type.declaration];
+            if (type.arguments.size() != declaration.typeParameterCount) {
+                return;
+            }
+            for (const auto &field : declaration.fields) {
+                collectSourceStructs(substitute(field.type, type.arguments), types);
+            }
+            return;
+        }
+        if (type.kind != TypeKind::Enum || type.declaration >= source_.enums.size()) {
+            return;
+        }
+        const auto &declaration = source_.enums[type.declaration];
+        if (type.arguments.size() != declaration.typeParameterCount) {
+            return;
+        }
+        for (const auto &variant : declaration.variants) {
+            if (variant.payload.has_value()) {
+                collectSourceStructs(substitute(*variant.payload, type.arguments), types);
+            }
+        }
+    }
+
+    void instantiateReachableSourceMembers(std::string_view packageName) {
+        std::set<std::string> handled;
+        while (true) {
+            std::map<std::string, Type> types;
+            for (const auto &function : result_.functions) {
+                collectSourceStructs(function.returnType, types);
+                for (const auto &local : function.locals) {
+                    collectSourceStructs(local.type, types);
+                }
+                for (const auto &expression : function.expressions) {
+                    collectSourceStructs(expression.type, types);
+                }
+            }
+
+            auto instantiated = false;
+            for (const auto &[key, type] : types) {
+                if (!handled.insert(key).second || type.declaration >= source_.structs.size()) {
+                    continue;
+                }
+                const auto &owner = source_.structs[type.declaration].name;
+                for (FirFunctionId id{}; id < source_.functions.size(); ++id) {
+                    const auto &function = source_.functions[id];
+                    const auto separator = function.name.rfind('.');
+                    if (!function.method || !function.exported || !function.hasBody ||
+                        function.packageName != packageName ||
+                        function.typeParameterCount != type.arguments.size() ||
+                        separator == std::string::npos ||
+                        function.name.substr(0, separator) != owner) {
+                        continue;
+                    }
+                    static_cast<void>(instantiateFunction(id, type.arguments));
+                    instantiated = true;
+                }
+            }
+            if (!instantiated) {
+                return;
+            }
+        }
+    }
     bool isCopySourceParameterType(const Type &type,
                                    std::unordered_set<std::string> &active) const {
         if (isMachineScalar(type) && type != voidType && type != neverType) {
@@ -657,6 +773,11 @@ class Monomorphizer {
         return isCopySourceParameterType(type, active);
     }
 
+    bool copyParameterType(const Type &type) const {
+        return preserveSourceTypes_ ? isCopySourceParameterType(type)
+                                    : isCopyParameterType(result_, type);
+    }
+
     std::string sourceTypeKey(const Type &type) const {
         if (type.kind == TypeKind::View && type.declaration == 1 &&
             type.arguments.size() == 1 &&
@@ -696,6 +817,142 @@ class Monomorphizer {
         return result;
     }
 
+    struct ImplementationMatch {
+        Type contract{invalidType};
+        std::optional<FirFieldId> delegate;
+        bool ambiguous{};
+    };
+
+    struct StaticContractTarget {
+        FirFunctionId function{};
+        std::vector<Type> typeArguments;
+        bool contractDefault{};
+        Type defaultContract{invalidType};
+        std::vector<FirFieldId> delegatePath;
+    };
+
+    std::optional<ImplementationMatch> implementedContract(const Type &concrete,
+                                                           FirContractId contract) const {
+        if (concrete.kind != TypeKind::Struct || concrete.declaration >= source_.structs.size()) {
+            return std::nullopt;
+        }
+        struct Pending {
+            Type contract{invalidType};
+            std::optional<FirFieldId> delegate;
+        };
+        std::vector<Pending> pending;
+        const auto &declaration = source_.structs[concrete.declaration];
+        for (std::size_t index = 0; index < declaration.implementations.size(); ++index) {
+            const auto &implementation = declaration.implementations[index];
+            if (implementation.kind != TypeKind::Contract) {
+                continue;
+            }
+            const auto delegate = index < declaration.implementationDelegates.size()
+                                      ? declaration.implementationDelegates[index]
+                                      : std::nullopt;
+            pending.push_back({substitute(implementation, concrete.arguments), delegate});
+        }
+        std::unordered_set<std::string> visited;
+        std::optional<ImplementationMatch> result;
+        while (!pending.empty()) {
+            auto current = std::move(pending.back());
+            pending.pop_back();
+            const auto key = sourceTypeKey(current.contract) + ':' +
+                             (current.delegate.has_value() ? std::to_string(*current.delegate)
+                                                           : std::string{"local"});
+            if (!visited.emplace(key).second) {
+                continue;
+            }
+            if (current.contract.declaration == contract) {
+                if (!result.has_value()) {
+                    result = ImplementationMatch{current.contract, current.delegate, false};
+                } else if (result->contract != current.contract ||
+                           result->delegate != current.delegate) {
+                    result->ambiguous = true;
+                }
+                continue;
+            }
+            if (current.contract.declaration >= source_.contracts.size()) {
+                continue;
+            }
+            for (const auto &parent : source_.contracts[current.contract.declaration].parents) {
+                pending.push_back(
+                    {substitute(parent, current.contract.arguments), current.delegate});
+            }
+        }
+        return result;
+    }
+
+    std::optional<FirFunctionId> concreteMethod(const Type &concrete,
+                                                std::string_view method) const {
+        if (concrete.kind != TypeKind::Struct || concrete.declaration >= source_.structs.size()) {
+            return std::nullopt;
+        }
+        const auto name = source_.structs[concrete.declaration].name + '.' + std::string(method);
+        for (FirFunctionId function{}; function < source_.functions.size(); ++function) {
+            const auto &candidate = source_.functions[function];
+            if (candidate.method && candidate.name == name &&
+                candidate.typeParameterCount == concrete.arguments.size()) {
+                return function;
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::optional<StaticContractTarget>
+    staticContractTarget(const Type &concrete, const Type &contract, std::size_t method,
+                         std::unordered_set<std::string> &active) const {
+        if (concrete.kind != TypeKind::Struct || concrete.declaration >= source_.structs.size() ||
+            contract.kind != TypeKind::Contract ||
+            contract.declaration >= source_.contracts.size() ||
+            method >= source_.contracts[contract.declaration].methods.size()) {
+            return std::nullopt;
+        }
+        const auto &required = source_.contracts[contract.declaration].methods[method];
+        if (const auto function = concreteMethod(concrete, required.name); function.has_value()) {
+            return StaticContractTarget{*function, concrete.arguments, false, invalidType, {}};
+        }
+
+        const auto key =
+            sourceTypeKey(concrete) + ':' + sourceTypeKey(contract) + ':' + std::to_string(method);
+        if (!active.emplace(key).second) {
+            return std::nullopt;
+        }
+        const auto implementation = implementedContract(concrete, contract.declaration);
+        if (implementation.has_value() && !implementation->ambiguous &&
+            implementation->contract == contract && implementation->delegate.has_value()) {
+            const auto field = *implementation->delegate;
+            const auto &declaration = source_.structs[concrete.declaration];
+            if (field < declaration.fields.size()) {
+                const auto delegated =
+                    substitute(declaration.fields[field].type, concrete.arguments);
+                if (auto target = staticContractTarget(delegated, contract, method, active);
+                    target.has_value()) {
+                    if (!target->contractDefault) {
+                        target->delegatePath.insert(target->delegatePath.begin(), field);
+                    }
+                    active.erase(key);
+                    return target;
+                }
+            }
+        }
+        active.erase(key);
+        if (!required.defaultFunction.has_value()) {
+            return std::nullopt;
+        }
+        std::vector<Type> typeArguments;
+        typeArguments.reserve(required.originArguments.size());
+        for (const auto &argument : required.originArguments) {
+            typeArguments.push_back(substitute(argument, contract.arguments));
+        }
+        return StaticContractTarget{
+            *required.defaultFunction,
+            typeArguments,
+            true,
+            Type{TypeKind::Contract, required.originContract, typeArguments},
+            {}};
+    }
+
     Type instantiateType(const Type &source) {
         if (source.kind == TypeKind::Parameter || source.kind == TypeKind::Invalid) {
             internalError("unresolved type reached monomorphization");
@@ -703,6 +960,16 @@ class Monomorphizer {
         if (source.kind == TypeKind::Function) {
             Type result{TypeKind::Function,
                         isCFunction(source) ? cFunctionQualifier : 0};
+            result.arguments.reserve(source.arguments.size());
+            for (const auto &argument : source.arguments) {
+                result.arguments.push_back(instantiateType(argument));
+            }
+            return result;
+        }
+        if (preserveSourceTypes_ &&
+            (source.kind == TypeKind::Struct || source.kind == TypeKind::Enum ||
+             source.kind == TypeKind::Contract)) {
+            Type result{source.kind, source.declaration};
             result.arguments.reserve(source.arguments.size());
             for (const auto &argument : source.arguments) {
                 result.arguments.push_back(instantiateType(argument));
@@ -720,7 +987,7 @@ class Monomorphizer {
             }
             auto target = instantiateType(source.arguments.front());
             if (source.kind == TypeKind::View && source.declaration == 1 &&
-                isCopyParameterType(result_, target)) {
+                copyParameterType( target)) {
                 return target;
             }
             return Type{source.kind, source.declaration, {std::move(target)}};
@@ -746,17 +1013,23 @@ class Monomorphizer {
                 target.parameterNames = method.parameterNames;
                 target.readParameters = method.readParameters;
                 target.exported = method.exported;
+                target.originContract = method.originContract;
+                target.originArguments = method.originArguments;
+                target.defaultFunction = method.defaultFunction;
                 for (std::size_t index = 0; index < method.parameters.size(); ++index) {
                     auto parameter =
                         instantiateType(substitute(method.parameters[index], source.arguments));
                     if (index < method.readParameters.size() && method.readParameters[index] &&
                         parameter.kind == TypeKind::View && parameter.arguments.size() == 1 &&
-                        isCopyParameterType(result_, parameter.arguments.front())) {
+                        copyParameterType( parameter.arguments.front())) {
                         parameter = parameter.arguments.front();
                     }
                     target.parameters.push_back(parameter);
                 }
                 instance.methods.push_back(std::move(target));
+            }
+            for (const auto &parent : declaration.parents) {
+                instance.parents.push_back(instantiateType(substitute(parent, source.arguments)));
             }
             result_.contracts[id] = std::move(instance);
             return Type{TypeKind::Contract, id, {}};
@@ -777,6 +1050,11 @@ class Monomorphizer {
             FirStruct instance;
             instance.name = declaration.name;
             instance.exported = declaration.exported;
+            instance.implementationDelegates = declaration.implementationDelegates;
+            for (const auto &implementation : declaration.implementations) {
+                instance.implementations.push_back(
+                    instantiateType(substitute(implementation, source.arguments)));
+            }
             for (const auto &field : declaration.fields) {
                 instance.fields.push_back({field.name,
                                            instantiateType(
@@ -817,9 +1095,108 @@ class Monomorphizer {
         return Type{TypeKind::Enum, id, {}};
     }
 
+    struct DefaultReceiverSpecialization {
+        Type concrete{invalidType};
+        Type contract{invalidType};
+    };
+
+    std::optional<FirLocalId> expressionRootLocal(const FirFunction &function,
+                                                  FirExpressionId id) const {
+        if (id >= function.expressions.size()) {
+            return std::nullopt;
+        }
+        const auto &expression = function.expressions[id].value;
+        if (const auto *local = std::get_if<FirLocalExpression>(&expression)) {
+            return local->local;
+        }
+        if (const auto *read = std::get_if<FirReadExpression>(&expression)) {
+            return read->local;
+        }
+        if (const auto *ownership = std::get_if<FirOwnershipExpression>(&expression)) {
+            return expressionRootLocal(function, ownership->operand);
+        }
+        return std::nullopt;
+    }
+
+    Type specializeDefaultReceiverType(Type type,
+                                       const DefaultReceiverSpecialization &receiver) const {
+        if (type == receiver.contract) {
+            return receiver.concrete;
+        }
+        for (auto &argument : type.arguments) {
+            argument = specializeDefaultReceiverType(argument, receiver);
+        }
+        return type;
+    }
+
+    void rewriteStaticContractCall(FirFunction &function, FirCallExpression &call,
+                                   const Type &concrete, const StaticContractTarget &target,
+                                   SourceSpan span) {
+        if (call.arguments.empty()) {
+            internalError("constrained call has no receiver");
+        }
+        auto receiver = call.arguments.front();
+        auto delegated = concrete;
+        std::vector<FirExpression> receiverExpressions;
+        for (const auto field : target.delegatePath) {
+            if (delegated.kind != TypeKind::Struct ||
+                delegated.declaration >= source_.structs.size() ||
+                field >= source_.structs[delegated.declaration].fields.size()) {
+                internalError("constrained call has an invalid delegate path");
+            }
+            const auto fieldType = substitute(
+                source_.structs[delegated.declaration].fields[field].type, delegated.arguments);
+            const auto base = receiver;
+            receiver = function.expressions.size() + receiverExpressions.size();
+            receiverExpressions.push_back(
+                {FirFieldExpression{base, field}, instantiateType(fieldType), span});
+            delegated = fieldType;
+        }
+        if (!target.delegatePath.empty()) {
+            const auto &method = source_.functions[target.function];
+            if (method.parameters.empty() || method.parameters.front() >= method.locals.size()) {
+                internalError("delegated constrained method has no receiver");
+            }
+            const auto receiverType =
+                substitute(method.locals[method.parameters.front()].type, target.typeArguments);
+            if ((receiverType.kind == TypeKind::View || receiverType.kind == TypeKind::Edit) &&
+                receiverType.arguments.size() == 1) {
+                const auto operation = receiverType.kind == TypeKind::Edit
+                                           ? FirOwnershipOperator::Edit
+                                           : FirOwnershipOperator::View;
+                const auto base = receiver;
+                receiver = function.expressions.size() + receiverExpressions.size();
+                receiverExpressions.push_back(
+                    {FirOwnershipExpression{operation, base}, instantiateType(receiverType), span});
+            }
+        }
+        call.arguments.front() = receiver;
+        call.function = target.contractDefault
+                            ? instantiateFunction(
+                                  target.function, target.typeArguments,
+                                  DefaultReceiverSpecialization{concrete, target.defaultContract})
+                            : instantiateFunction(target.function, target.typeArguments);
+        call.kind = FirCallKind::Function;
+        call.typeArguments.clear();
+        call.constrainedType = invalidType;
+        function.expressions.insert(function.expressions.end(),
+                                    std::make_move_iterator(receiverExpressions.begin()),
+                                    std::make_move_iterator(receiverExpressions.end()));
+    }
+
     FirFunctionId instantiateFunction(FirFunctionId sourceId,
                                       const std::vector<Type> &arguments) {
-        const auto key = sourceFunctionKey(sourceId, arguments);
+        return instantiateFunction(sourceId, arguments, std::nullopt);
+    }
+
+    FirFunctionId
+    instantiateFunction(FirFunctionId sourceId,
+        const std::vector<Type> &arguments,
+                        std::optional<DefaultReceiverSpecialization> defaultReceiver) { auto key = sourceFunctionKey(sourceId, arguments);
+        if (defaultReceiver.has_value()) {
+            key += "#default:" + sourceTypeKey(defaultReceiver->concrete) + ':' +
+                   sourceTypeKey(defaultReceiver->contract);
+        }
         if (const auto found = functions_.find(key); found != functions_.end()) {
             return found->second;
         }
@@ -831,10 +1208,20 @@ class Monomorphizer {
         functions_.emplace(key, id);
         result_.functions.emplace_back();
         auto function = source_.functions[sourceId];
+        function.generic = function.generic || defaultReceiver.has_value();
         function.typeParameterCount = 0;
+        function.typeParameterConstraints.clear();
         function.returnType = instantiateType(substitute(function.returnType, arguments));
-        for (auto &local : function.locals) {
-            local.type = instantiateType(substitute(local.type, arguments));
+        const auto defaultReceiverLocal =
+            defaultReceiver.has_value() && !function.parameters.empty()
+                ? std::optional<FirLocalId>{function.parameters.front()}
+                : std::nullopt;
+        for (std::size_t localIndex = 0; localIndex < function.locals.size(); ++localIndex) {
+            auto type = substitute(function.locals[localIndex].type, arguments);
+            if (defaultReceiver.has_value() && defaultReceiverLocal == localIndex) {
+                type = specializeDefaultReceiverType(type, *defaultReceiver);
+            }
+            function.locals[localIndex].type = instantiateType(type);
         }
         std::vector<bool> unwrappedReads(function.locals.size());
         for (std::size_t index = 0;
@@ -846,34 +1233,34 @@ class Monomorphizer {
             }
             auto &type = function.locals[local].type;
             if (type.kind == TypeKind::View && type.arguments.size() == 1 &&
-                isCopyParameterType(result_, type.arguments.front())) {
+                copyParameterType(type.arguments.front())) {
                 type = type.arguments.front();
                 unwrappedReads[local] = true;
             }
         }
         std::vector<bool> contractOperands(function.expressions.size());
         for (const auto &expression : function.expressions) {
-            if (const auto *contract =
-                    std::get_if<FirContractExpression>(&expression.value);
+            if (const auto *contract = std::get_if<FirContractExpression>(&expression.value);
                 contract != nullptr && contract->value < contractOperands.size()) {
                 contractOperands[contract->value] = true;
             }
         }
-        for (std::size_t expressionIndex = 0;
-             expressionIndex < function.expressions.size(); ++expressionIndex) {
+        const auto sourceExpressionCount = function.expressions.size();
+        for (std::size_t expressionIndex = 0; expressionIndex < sourceExpressionCount;
+             ++expressionIndex) {
             auto &expression = function.expressions[expressionIndex];
             const auto sourceType = expression.type;
-            const auto substitutedType = substitute(sourceType, arguments);
-            if (const auto *ownership =
-                    std::get_if<FirOwnershipExpression>(&expression.value);
+            auto substitutedType = substitute(sourceType, arguments);
+            if (defaultReceiver.has_value() && defaultReceiverLocal.has_value() &&
+                expressionRootLocal(function, expressionIndex) == defaultReceiverLocal) {
+                substitutedType = specializeDefaultReceiverType(substitutedType, *defaultReceiver);
+            }
+            if (const auto *ownership = std::get_if<FirOwnershipExpression>(&expression.value);
                 ownership != nullptr && ownership->implicitRead &&
-                !contractOperands[expressionIndex] &&
-                substitutedType.kind == TypeKind::View &&
+                !contractOperands[expressionIndex] && substitutedType.kind == TypeKind::View &&
                 substitutedType.arguments.size() == 1 &&
-                isCopyParameterType(result_,
-                                    instantiateType(substitutedType.arguments.front()))) {
-                expression.type =
-                    instantiateType(substitutedType.arguments.front());
+                copyParameterType(instantiateType(substitutedType.arguments.front()))) {
+                expression.type = instantiateType(substitutedType.arguments.front());
                 if (ownership->operand < function.expressions.size()) {
                     auto &operand = function.expressions[ownership->operand].value;
                     if (const auto *read = std::get_if<FirReadExpression>(&operand)) {
@@ -884,14 +1271,13 @@ class Monomorphizer {
                 expression.type = instantiateType(substitutedType);
             }
             if (auto *channel = std::get_if<FirChannelExpression>(&expression.value)) {
-                channel->payload =
-                    instantiateType(substitute(channel->payload, arguments));
+                channel->payload = instantiateType(substitute(channel->payload, arguments));
             } else if (const auto *read = std::get_if<FirReadExpression>(&expression.value);
-                read != nullptr && read->local < unwrappedReads.size() &&
-                unwrappedReads[read->local]) {
+                       read != nullptr && read->local < unwrappedReads.size() &&
+                       unwrappedReads[read->local]) {
                 expression.value = FirLocalExpression{read->local};
             } else if (auto *functionValue =
-                    std::get_if<FirFunctionValueExpression>(&expression.value)) {
+                           std::get_if<FirFunctionValueExpression>(&expression.value)) {
                 std::vector<Type> valueArguments;
                 valueArguments.reserve(functionValue->typeArguments.size());
                 for (const auto &argument : functionValue->typeArguments) {
@@ -903,34 +1289,65 @@ class Monomorphizer {
             } else if (auto *closure = std::get_if<FirClosureExpression>(&expression.value)) {
                 closure->function = instantiateFunction(closure->function, arguments);
             } else if (auto *functionCall = std::get_if<FirCallExpression>(&expression.value);
-                functionCall != nullptr && functionCall->kind == FirCallKind::Function) {
+                       functionCall != nullptr && functionCall->kind == FirCallKind::Function) {
                 std::vector<Type> callArguments;
                 callArguments.reserve(functionCall->typeArguments.size());
                 for (const auto &argument : functionCall->typeArguments) {
                     callArguments.push_back(substitute(argument, arguments));
                 }
-                functionCall->function =
-                    instantiateFunction(functionCall->function, callArguments);
+                functionCall->function = instantiateFunction(functionCall->function, callArguments);
                 functionCall->typeArguments.clear();
-            } else if (auto *blocking =
-                           std::get_if<FirBlockingCallExpression>(&expression.value)) {
+            } else if (auto *blocking = std::get_if<FirBlockingCallExpression>(&expression.value)) {
                 blocking->function = instantiateFunction(blocking->function, {});
-            } else if (auto *callback =
-                           std::get_if<FirCallbackCallExpression>(&expression.value)) {
+            } else if (auto *callback = std::get_if<FirCallbackCallExpression>(&expression.value)) {
                 callback->function = instantiateFunction(callback->function, {});
-            } else if (auto *contractCall =
-                           std::get_if<FirCallExpression>(&expression.value);
-                       contractCall != nullptr &&
-                       contractCall->kind == FirCallKind::Contract) {
+            } else if (auto *constrainedCall = std::get_if<FirCallExpression>(&expression.value);
+                       constrainedCall != nullptr &&
+                       constrainedCall->kind == FirCallKind::Constrained) {
+                const auto concrete = substitute(constrainedCall->constrainedType, arguments);
+                std::vector<Type> contractArguments;
+                contractArguments.reserve(constrainedCall->typeArguments.size());
+                for (const auto &argument : constrainedCall->typeArguments) {
+                    contractArguments.push_back(substitute(argument, arguments));
+                }
+                const Type contract{TypeKind::Contract, constrainedCall->contract,
+                                    std::move(contractArguments)};
+                std::unordered_set<std::string> active;
+                const auto target =
+                    staticContractTarget(concrete, contract, constrainedCall->method, active);
+                if (!target.has_value()) {
+                    internalError("constrained call has no static target");
+                }
+                rewriteStaticContractCall(function, *constrainedCall, concrete, *target,
+                                          expression.span);
+            } else if (auto *contractCall = std::get_if<FirCallExpression>(&expression.value);
+                       contractCall != nullptr && contractCall->kind == FirCallKind::Contract) {
                 std::vector<Type> contractArguments;
                 contractArguments.reserve(contractCall->typeArguments.size());
                 for (const auto &argument : contractCall->typeArguments) {
                     contractArguments.push_back(substitute(argument, arguments));
                 }
-                const auto contractType = instantiateType(Type{
-                    TypeKind::Contract, contractCall->contract, std::move(contractArguments)});
-                contractCall->contract = contractType.declaration;
-                contractCall->typeArguments.clear();
+                const Type sourceContract{TypeKind::Contract, contractCall->contract,
+                                          contractArguments};
+                const auto receiverRoot =
+                    contractCall->arguments.empty()
+                        ? std::optional<FirLocalId>{}
+                        : expressionRootLocal(function, contractCall->arguments.front());
+                if (defaultReceiver.has_value() && defaultReceiverLocal.has_value() &&
+                    receiverRoot == defaultReceiverLocal) {
+                    std::unordered_set<std::string> active;
+                    const auto target = staticContractTarget(
+                        defaultReceiver->concrete, sourceContract, contractCall->method, active);
+                    if (!target.has_value()) {
+                        internalError("default method call has no static target");
+                    }
+                    rewriteStaticContractCall(function, *contractCall, defaultReceiver->concrete,
+                                              *target, expression.span);
+                } else {
+                    const auto contractType = instantiateType(sourceContract);
+                    contractCall->contract = contractType.declaration;
+                    contractCall->typeArguments.clear();
+                }
             } else if (auto *contractValue =
                            std::get_if<FirContractExpression>(&expression.value)) {
                 const auto concrete = substitute(contractValue->concreteType, arguments);
@@ -1007,6 +1424,7 @@ class Monomorphizer {
     std::unordered_map<std::string, FirEnumId> enums_;
     std::unordered_map<std::string, FirContractId> contracts_;
     std::unordered_map<std::string, FirFunctionId> functions_;
+    bool preserveSourceTypes_{};
 };
 
 enum class ControlFlow {
@@ -1871,6 +2289,7 @@ class FunctionEmitter {
         if (operand.diverges) {
             return operand;
         }
+        const auto operandType = function_.expressions[ownership.operand].type;
         if (ownership.operation == FirOwnershipOperator::Own) {
             const auto temporary = nextTemporary();
             emitLocation(span, depth);
@@ -1882,10 +2301,13 @@ class FunctionEmitter {
 
         if (ownership.operation == FirOwnershipOperator::View &&
             type.kind != TypeKind::View) {
+            if (!isPlaceExpression(ownership.operand) &&
+                typeRequiresDrop(program_, operandType)) {
+                operand.cleanups.push_back({operandType, operand.value});
+            }
             return operand;
         }
 
-        const auto operandType = function_.expressions[ownership.operand].type;
         if (ownership.operation == FirOwnershipOperator::View &&
             !isPlaceExpression(ownership.operand) &&
             typeRequiresDrop(program_, operandType)) {
@@ -1971,13 +2393,12 @@ class FunctionEmitter {
         } else {
             access += ".fdn_data";
         }
-        const auto length = sequence.kind == TypeKind::Array
-                                ? std::to_string(sequence.declaration)
-                                : base.value + ".fdn_length";
+        const auto length = sequence.kind == TypeKind::Array ? std::to_string(sequence.declaration)
+                                                             : base.value + ".fdn_length";
         emitLocation(span, depth);
         const auto checked = nextTemporary();
-        out_ << indentation(depth) << "size_t " << checked << " = fdn_bounds_check("
-             << value.value << ", " << length << ");\n";
+        out_ << indentation(depth) << "size_t " << checked << " = fdn_bounds_check(" << value.value
+             << ", " << length << ");\n";
         return {access + '[' + checked + ']', false};
     }
 
@@ -1998,6 +2419,61 @@ class FunctionEmitter {
         return {previous, false};
     }
 
+    std::string emitArithmetic(FirBinaryOperator operation, const Type &type, std::string_view left,
+                               std::string_view right, SourceSpan span, unsigned int depth) {
+        if (type.kind != TypeKind::Raw && type.kind != TypeKind::RawConst) {
+            emitLocation(span, depth);
+        }
+        const auto temporary = nextTemporary();
+        out_ << indentation(depth) << cType(type) << ' ' << temporary << " = ";
+        switch (operation) {
+        case FirBinaryOperator::Add:
+            if (type == stringType) {
+                out_ << "fdn_string_concat(" << left << ", " << right << ')';
+            } else if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst ||
+                       isFloating(type)) {
+                out_ << left << " + " << right;
+            } else {
+                out_ << "fdn_" << cTypeTag(type) << "_add(" << left << ", " << right << ')';
+            }
+            break;
+        case FirBinaryOperator::Subtract:
+            if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst || isFloating(type)) {
+                out_ << left << " - " << right;
+            } else {
+                out_ << "fdn_" << cTypeTag(type) << "_subtract(" << left << ", " << right << ')';
+            }
+            break;
+        case FirBinaryOperator::Multiply:
+            if (isFloating(type)) {
+                out_ << left << " * " << right;
+            } else {
+                out_ << "fdn_" << cTypeTag(type) << "_multiply(" << left << ", " << right << ')';
+            }
+            break;
+        case FirBinaryOperator::Divide:
+            if (isFloating(type)) {
+                out_ << left << " / " << right;
+            } else {
+                out_ << "fdn_" << cTypeTag(type) << "_divide(" << left << ", " << right << ')';
+            }
+            break;
+        case FirBinaryOperator::Remainder:
+            out_ << "fdn_" << cTypeTag(type) << "_remainder(" << left << ", " << right << ')';
+            break;
+        case FirBinaryOperator::ShiftLeft:
+            out_ << "fdn_" << cTypeTag(type) << "_shift_left(" << left << ", " << right << ')';
+            break;
+        case FirBinaryOperator::ShiftRight:
+            out_ << "fdn_" << cTypeTag(type) << "_shift_right(" << left << ", " << right << ')';
+            break;
+        default:
+            internalError("non-arithmetic operation reached arithmetic code generation");
+        }
+        out_ << ";\n";
+        return temporary;
+    }
+
     EmittedExpression emitBinary(const FirBinaryExpression &binary, const Type &type,
                                  SourceSpan span, unsigned int depth) {
         const auto left = emitExpression(binary.left, depth);
@@ -2013,7 +2489,8 @@ class FunctionEmitter {
             out_ << indentation(depth) << "if (" << condition << ") {\n";
             const auto right = emitExpression(binary.right, depth + 1);
             if (!right.diverges) {
-                out_ << indentation(depth + 1) << temporary << " = " << right.value << ";\n";
+                out_ << indentation(depth + 1) << temporary << " = "
+                 << right.value << ";\n";
             }
             out_ << indentation(depth) << "}\n";
             return {temporary, false};
@@ -2027,60 +2504,30 @@ class FunctionEmitter {
         if (right.diverges) {
             return right;
         }
-        const auto temporary = nextTemporary();
         if (binary.operation == FirBinaryOperator::Add ||
             binary.operation == FirBinaryOperator::Subtract ||
             binary.operation == FirBinaryOperator::Multiply ||
             binary.operation == FirBinaryOperator::Divide ||
-            binary.operation == FirBinaryOperator::Remainder) {
-            if (type.kind != TypeKind::Raw && type.kind != TypeKind::RawConst) {
-                emitLocation(span, depth);
-            }
+            binary.operation == FirBinaryOperator::Remainder ||
+            binary.operation == FirBinaryOperator::ShiftLeft ||
+            binary.operation == FirBinaryOperator::ShiftRight) {
+            const auto temporary =
+                emitArithmetic(binary.operation, type, left.value, right.value, span, depth);
+            dropInspectedTemporary(binary.left, left, depth);
+            dropInspectedTemporary(binary.right, right, depth);
+            return {temporary, false};
         }
+        const auto temporary = nextTemporary();
         out_ << indentation(depth) << cType(type) << ' ' << temporary << " = ";
         switch (binary.operation) {
         case FirBinaryOperator::Add:
-            if (type == stringType) {
-                out_ << "fdn_string_concat(" << left.value << ", " << right.value << ')';
-            } else if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) {
-                out_ << left.value << " + " << right.value;
-            } else if (isFloating(type)) {
-                out_ << left.value << " + " << right.value;
-            } else {
-                out_ << "fdn_" << cTypeTag(type) << "_add(" << left.value << ", "
-                     << right.value << ')';
-            }
-            break;
         case FirBinaryOperator::Subtract:
-            if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) {
-                out_ << left.value << " - " << right.value;
-            } else if (isFloating(type)) {
-                out_ << left.value << " - " << right.value;
-            } else {
-                out_ << "fdn_" << cTypeTag(type) << "_subtract(" << left.value << ", "
-                     << right.value << ')';
-            }
-            break;
         case FirBinaryOperator::Multiply:
-            if (isFloating(type)) {
-                out_ << left.value << " * " << right.value;
-            } else {
-                out_ << "fdn_" << cTypeTag(type) << "_multiply(" << left.value << ", "
-                     << right.value << ')';
-            }
-            break;
         case FirBinaryOperator::Divide:
-            if (isFloating(type)) {
-                out_ << left.value << " / " << right.value;
-            } else {
-                out_ << "fdn_" << cTypeTag(type) << "_divide(" << left.value << ", "
-                     << right.value << ')';
-            }
-            break;
         case FirBinaryOperator::Remainder:
-            out_ << "fdn_" << cTypeTag(type) << "_remainder(" << left.value << ", "
-                 << right.value << ')';
-            break;
+        case FirBinaryOperator::ShiftLeft:
+        case FirBinaryOperator::ShiftRight:
+            internalError("arithmetic operation bypassed arithmetic code generation");
         case FirBinaryOperator::Equal:
             if (function_.expressions[binary.left].type == stringType) {
                 out_ << "fdn_string_equal(" << left.value << ", " << right.value << ')';
@@ -2266,6 +2713,19 @@ class FunctionEmitter {
             emittedArguments.push_back(std::move(emitted));
         }
         const auto orderedArguments = orderArguments(arguments, call.argumentParameters);
+
+        if (call.kind == FirCallKind::Contract && !contractCallConsumesReceiver(call) &&
+            !call.arguments.empty() && !isPlaceExpression(call.arguments.front())) {
+            const auto &receiverType = function_.expressions[call.arguments.front()].type;
+            if (receiverType.kind == TypeKind::Own) {
+                emittedArguments.front().cleanups.push_back(
+                    {receiverType, arguments.front()});
+            }
+        }
+
+        if (call.kind == FirCallKind::Constrained) {
+            internalError("C backend received an unresolved constrained call");
+        }
 
         if (call.kind == FirCallKind::Null) {
             if (!orderedArguments.empty()) {
@@ -3257,6 +3717,29 @@ class FunctionEmitter {
             return false;
         }
         if (const auto *assignment = std::get_if<FirAssignmentStatement>(&statement.value)) {
+            if (assignment->operation != FirAssignmentOperator::Assign) {
+                const auto target = emitExpression(assignment->target, depth);
+                if (target.diverges) {
+                    return true;
+                }
+                const auto type = function_.expressions[assignment->target].type;
+                const auto address = nextTemporary();
+                out_ << indentation(depth) << cType(type) << " *" << address << " = &("
+                     << target.value << ");\n";
+                const auto value = emitExpression(assignment->value, depth);
+                if (value.diverges) {
+                    return true;
+                }
+                const auto result =
+                    emitArithmetic(assignmentBinary(assignment->operation), type, "*" + address,
+                                   value.value, statement.span, depth);
+                if (type == stringType) {
+                    emitDropValue(out_, program_, type, "*" + address, depth);
+                }
+                out_ << indentation(depth) << '*' << address << " = " << result << ";\n";
+                dropInspectedTemporary(assignment->value, value, depth);
+                return false;
+            }
             const auto value = emitExpression(assignment->value, depth);
             if (value.diverges) {
                 return true;
@@ -5828,6 +6311,11 @@ FirProgram specializePackageInterface(const FirProgram &source,
                                       std::string_view packageName) {
     Monomorphizer monomorphizer(source);
     return monomorphizer.runPackageInterface(packageName);
+}
+
+FirProgram specializeSourcePackage(const FirProgram &source, std::string_view packageName) {
+    Monomorphizer monomorphizer(source);
+    return monomorphizer.runSourcePackage(packageName);
 }
 
 } // namespace foundation

@@ -1,0 +1,120 @@
+import std.format
+
+contract Readable {
+    fn read(self) i32
+}
+
+contract Counter extends Readable {
+    fn increment(&self) void
+
+    fn incrementTwice(&self) void {
+        self.increment()
+        self.increment()
+    }
+}
+
+contract ValueOf<T> {
+    fn current(self) T
+}
+
+contract EmptyValue {
+    fn IsEmpty(self) bool
+}
+
+contract Consumable {
+    fn Consume($self) i32
+}
+
+contract Named {
+    fn Length(self) usize
+}
+
+struct State implements Counter {
+    value i32
+
+    fn read(self) i32 { self.value }
+
+    fn increment(&self) void {
+        self.value += 1
+    }
+}
+
+struct Wrapper implements Counter {
+    inner State
+
+    delegate inner as Counter
+}
+
+struct Integer implements ValueOf<i32> {
+    value i32
+
+    fn current(self) i32 { self.value }
+}
+
+struct Marker implements EmptyValue {
+    empty bool
+
+    fn IsEmpty(self) bool { self.empty }
+}
+
+struct OwnedValue implements Consumable {
+    value i32
+
+    fn Consume($self) i32 {
+        const OwnedValue { value } = self
+        value
+    }
+}
+
+struct Label implements Named {
+    value String
+
+    fn Length(self) usize { len(self.value) }
+}
+
+fn bump<T Counter>(&counter T) i32 {
+    counter.incrementTwice()
+    counter.read()
+}
+
+fn forward<T Counter>(&counter T) i32 {
+    bump(&counter)
+}
+
+fn readGeneric<T, V ValueOf<T>>(value V, fallback T) T {
+    discard fallback
+    value.current()
+}
+
+fn genericEmpty<T EmptyValue>(value T) bool {
+    !value
+}
+
+fn consume<T Consumable>($value T) i32 {
+    $value.Consume()
+}
+
+fn length<T Named>(value T) usize {
+    value.Length()
+}
+
+fn transferableRead<T transferable Readable>(value T) i32 {
+    value.read()
+}
+
+fn main() i32 {
+    var direct = State { value = 1 }
+    print(format.I32(bump(&direct)))
+
+    var wrapped = Wrapper { inner = State { value = 10 } }
+    print(format.I32(bump(&wrapped)))
+
+    print(format.I32(bump<State>(&direct)))
+    print(format.I32(forward(&direct)))
+    print(format.I32(readGeneric(Integer { value = 42 }, 0)))
+    print(format.Bool(genericEmpty(Marker { empty = true })))
+    print(format.I32(consume(OwnedValue { value = 9 })))
+    print(format.Usize(length(Label { value = "four" })))
+    print(format.I32(transferableRead(State { value = 11 })))
+    0
+}

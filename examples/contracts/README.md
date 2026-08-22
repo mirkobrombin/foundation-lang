@@ -1,9 +1,9 @@
 # Contracts example
 
-This project defines an exported contract and implementation in one package, then borrows the
-implementation through the contract from another package. The generated C uses static dispatch
-for direct method calls and a vtable for borrowed contract values.
+The owning package defines an exported contract and its implementation. The application then uses
+the same value directly and through a borrowed contract, which lets you compare static dispatch
+with the vtable used by an existential contract value.
 
 ```sh
-foundationc run examples/contracts
+foundationc run examples/contracts/app
 ```

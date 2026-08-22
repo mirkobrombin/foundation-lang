@@ -1,0 +1,10 @@
+if(NOT DEFINED ROOT)
+    message(FATAL_ERROR "no-zz source assertion is missing ROOT")
+endif()
+
+file(GLOB_RECURSE entries LIST_DIRECTORIES false "${ROOT}/*")
+list(FILTER entries INCLUDE REGEX "/zz[^/]*$")
+if(entries)
+    list(JOIN entries "\n" listed_entries)
+    message(FATAL_ERROR "Foundation sources or build outputs must not use names beginning with zz:\n${listed_entries}")
+endif()

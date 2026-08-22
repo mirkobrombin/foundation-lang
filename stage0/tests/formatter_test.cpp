@@ -85,6 +85,12 @@ void preservesLineSensitiveSyntax() {
         "fn portable < T transferable > ($value T) T {\n"
         "value\n"
         "}\n"
+                                        "contract ValueOf < T > {\n"
+                                        "fn current(self)T\n"
+                                        "}\n"
+                                        "fn read < T, V ValueOf < T > > (value V) T {\n"
+                                        "value.current()\n"
+                                        "}\n"
         "fn main() i32 {\n"
         "const typed fn(i32) i32 = identity < i32 >\n"
         "const low = 1\n"
@@ -109,6 +115,8 @@ void preservesLineSensitiveSyntax() {
     expect(formatted.contents.find("portable<T transferable>($value T)") !=
                std::string::npos,
            "transferable generic constraints stay compact");
+    expect(formatted.contents.find("read<T, V ValueOf<T>>(value V) T") != std::string::npos,
+           "nominal generic constraints stay compact");
     expect(formatted.contents.find("low < high") != std::string::npos,
            "comparison operators receive canonical spaces");
     expect(formatted.contents.find("low < high > low") != std::string::npos,
@@ -121,6 +129,28 @@ void preservesLineSensitiveSyntax() {
            "fixed array types stay separated from binding names");
     expect(foundation::formatSource(formatted.contents).contents == formatted.contents,
            "line-sensitive source remains idempotent");
+}
+
+void formatsShiftOperatorsWithoutBreakingNestedGenerics() {
+    constexpr std::string_view source = "enum Box<T>{Value(T)}\n"
+                                        "fn main()i32{\n"
+                                        "const nested Box<Box<i32>>=.Value(.Value(42))\n"
+                                        "var value=8\n"
+                                        "value>>=1\n"
+                                        "value=value<<2\n"
+                                        "discard nested\n"
+                                        "value\n"
+                                        "}\n";
+    const auto formatted = foundation::formatSource(source);
+    expect(!formatted.diagnostics.hasErrors(), "shift source formats without diagnostics");
+    expect(formatted.contents.find("Box<Box<i32>>") != std::string::npos,
+           "nested generic closers stay compact");
+    expect(formatted.contents.find("value >>= 1") != std::string::npos,
+           "compound right shift receives canonical spaces");
+    expect(formatted.contents.find("value = value << 2") != std::string::npos,
+           "binary left shift keeps its operator pair compact");
+    expect(foundation::formatSource(formatted.contents).contents == formatted.contents,
+           "shift formatting is idempotent");
 }
 
 void preservesLineAndNestedBlockComments() {
@@ -299,7 +329,7 @@ void rejectsInvalidSourceWithoutChangingIt() {
 void preservesEstablishedFoundationStyle() {
     const auto root = std::filesystem::path(FOUNDATION_TEST_SOURCE_DIR);
     const std::vector<std::filesystem::path> sources{
-        root / "examples/language-tour/main.fn",
+        root / "examples/language-tour/src/main.fn",
         root / "std/json/json.fn",
         root / "tests/cases/accept/primitive-values.fn",
         root / "tests/cases/accept/sequences.fn",
@@ -363,6 +393,7 @@ void formatsRepositorySources() {
 int main() {
     formatsFoundationSource();
     preservesLineSensitiveSyntax();
+    formatsShiftOperatorsWithoutBreakingNestedGenerics();
     preservesLineAndNestedBlockComments();
     keepsTaskOwnershipCompact();
     formatsNestedCallableSignatures();

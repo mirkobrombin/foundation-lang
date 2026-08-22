@@ -1,0 +1,126 @@
+package test.compatibility.telemetry
+
+import std.collections
+import std.format
+import foundation.telemetry
+import foundation.tracing
+
+fn invalid(
+    $value Result<telemetry.TraceContext, telemetry.TraceparentError>
+) bool {
+    match value {
+        Ok(context): {
+            discard context
+            false
+        }
+        Err(error): {
+            discard error
+            true
+        }
+    }
+}
+
+fn counter(
+    $value Result<own telemetry.Counter, telemetry.Error>
+) own telemetry.Counter {
+    match value {
+        Ok(instrument): instrument
+        Err(error): failed<telemetry.Error>($error)
+    }
+}
+
+fn gauge(
+    $value Result<own telemetry.Gauge, telemetry.Error>
+) own telemetry.Gauge {
+    match value {
+        Ok(instrument): instrument
+        Err(error): failed<telemetry.Error>($error)
+    }
+}
+
+fn histogram(
+    $value Result<own telemetry.Histogram, telemetry.Error>
+) own telemetry.Histogram {
+    match value {
+        Ok(instrument): instrument
+        Err(error): failed<telemetry.Error>($error)
+    }
+}
+
+fn done($value Result<void, telemetry.Error>) void {
+    match value {
+        Ok: {}
+        Err(error): failed<telemetry.Error>($error)
+    }
+}
+
+fn rendered($value Result<String, telemetry.Error>) String {
+    match value {
+        Ok(contents): contents
+        Err(error): failed<telemetry.Error>($error)
+    }
+}
+
+fn failed<E>($error E) never {
+    discard error
+    panic("telemetry compatibility operation failed")
+}
+
+fn main() i32 {
+    const encoded = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+    const context = telemetry.ParseTraceparent(encoded) else error {
+        discard error
+        return 1
+    }
+    print("traceparent=" + telemetry.EncodeTraceparent(context))
+    const invalidUpper = invalid(telemetry.ParseTraceparent(
+        "00-0AF7651916CD43DD8448EB211C80319C-b7ad6b7169203331-01"
+    ))
+    const invalidZero = invalid(telemetry.ParseTraceparent(
+        "00-00000000000000000000000000000000-b7ad6b7169203331-01"
+    ))
+    print("invalid=" + format.Bool(invalidUpper && invalidZero))
+
+    var counterExporter = telemetry.NewPrometheusExporter()
+    const counterTask = counterExporter.Counter(
+        "requests_total",
+        tracing.Attributes()
+    )
+    const requests = counter($counterTask.wait())
+    const added = requests.Add(5)
+    done($added.wait())
+    const counterText = counterExporter.Render()
+    print(rendered($counterText.wait()))
+
+    var gaugeExporter = telemetry.NewPrometheusExporter()
+    const gaugeTask = gaugeExporter.Gauge(
+        "active_workers",
+        tracing.Attributes()
+    )
+    const workers = gauge($gaugeTask.wait())
+    const set = workers.Set(3.5)
+    done($set.wait())
+    const gaugeText = gaugeExporter.Render()
+    print(rendered($gaugeText.wait()))
+
+    var boundaries = collections.NewList<f64>()
+    boundaries.PushFront(5.0)
+    boundaries.PushFront(10.0)
+    boundaries.PushFront(1.0)
+    var histogramExporter = telemetry.NewPrometheusExporter()
+    const histogramTask = histogramExporter.Histogram(
+        "duration",
+        tracing.Attributes(),
+        $boundaries
+    )
+    const duration = histogram($histogramTask.wait())
+    const first = duration.Observe(0.5)
+    const second = duration.Observe(7.0)
+    const third = duration.Observe(20.0)
+    done($first.wait())
+    done($second.wait())
+    done($third.wait())
+    const histogramText = histogramExporter.Render()
+    print(rendered($histogramText.wait()))
+    0
+}

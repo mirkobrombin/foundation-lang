@@ -1,0 +1,11 @@
+package test.telemetry.web
+
+import foundation.telemetry
+
+fn main() i32 {
+    const provider = telemetry.NewNoopProvider<String>()
+    const middleware = telemetry.NewWebMiddleware($provider)
+    discard middleware
+    print("telemetry web ok")
+    0
+}

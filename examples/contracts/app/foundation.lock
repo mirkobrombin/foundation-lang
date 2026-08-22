@@ -1,0 +1,5 @@
+format foundation.lock/v1
+root example.contracts 1.0.0
+target linux
+package example.counter 1.0.0 sha256:9c6ca66473849666a423a36f286a4ef8a35b3a8033ca9dace7637ee6255128f0 path ../lib
+edge example.contracts example.counter

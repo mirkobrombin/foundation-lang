@@ -17,6 +17,10 @@ struct Cancellation {
         requestedNative(self.handle)
     }
 
+    fn RuntimeHandle(self) u64 {
+        self.handle
+    }
+
     fn drop(&self) void {
         releaseNative(self.handle)
         self.handle = 0

@@ -118,6 +118,25 @@ std::optional<std::string> readSourceFile(const std::filesystem::path &path) {
     return contents.str();
 }
 
+std::vector<std::string> llvmSourcePaths(const std::vector<DiagnosticSource> &sources) {
+    std::vector<std::string> paths;
+    paths.reserve(sources.size());
+    for (const auto &source : sources) {
+        paths.push_back(source.identity.empty() ? source.path : source.identity);
+    }
+    return paths;
+}
+
+std::vector<std::string> llvmReproducibleSourcePaths(
+    const std::vector<DiagnosticSource> &sources) {
+    std::vector<std::string> paths;
+    paths.reserve(sources.size());
+    for (const auto &source : sources) {
+        paths.push_back(source.path.empty() ? source.identity : source.path);
+    }
+    return paths;
+}
+
 std::filesystem::path sourceIdentity(const std::filesystem::path &path) {
     std::error_code error;
     auto result = std::filesystem::absolute(path, error);
@@ -447,6 +466,7 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
                                            const std::filesystem::path &output,
                                            const std::filesystem::path &nativeInclude,
                                            const std::vector<std::filesystem::path> &nativeInputs,
+                                           const std::vector<std::string> &nativeLinks,
                                            bool verifyAllocations = false) {
     const auto runtimeInclude =
         sdkAsset("runtime/include", std::filesystem::path{FOUNDATION_RUNTIME_INCLUDE});
@@ -461,6 +481,7 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
         sdkAsset("runtime/src/blocking.c", std::filesystem::path{FOUNDATION_RUNTIME_BLOCKING_SOURCE}),
         sdkAsset("runtime/src/pool.c", std::filesystem::path{FOUNDATION_RUNTIME_POOL_SOURCE}),
         sdkAsset("runtime/src/reactor.c", std::filesystem::path{FOUNDATION_RUNTIME_REACTOR_SOURCE}),
+        sdkAsset("runtime/src/watch.c", std::filesystem::path{FOUNDATION_RUNTIME_WATCH_SOURCE}),
         sdkAsset("runtime/src/resiliency.c",
                  std::filesystem::path{FOUNDATION_RUNTIME_RESILIENCY_SOURCE}),
         sdkAsset("runtime/src/net.c", std::filesystem::path{FOUNDATION_RUNTIME_NET_SOURCE}),
@@ -484,6 +505,9 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
         for (const auto &input : nativeInputs) {
             arguments.push_back(input.string());
         }
+        for (const auto &link : nativeLinks) {
+            arguments.push_back(link + ".lib");
+        }
         arguments.push_back("bcrypt.lib");
         arguments.push_back("ws2_32.lib");
         arguments.push_back("/Fe:" + output.string());
@@ -492,6 +516,11 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
 
     arguments.insert(arguments.end(), {"-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
                                        generated.string()});
+#if defined(FOUNDATION_GENERATED_ADDRESS_UNDEFINED_SANITIZER)
+    arguments.push_back("-fsanitize=address,undefined");
+#elif defined(FOUNDATION_GENERATED_THREAD_SANITIZER)
+    arguments.push_back("-fsanitize=thread");
+#endif
     for (const auto &source : runtimeSources) {
         arguments.push_back(source.string());
     }
@@ -508,6 +537,9 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
 #endif
     for (const auto &input : nativeInputs) {
         arguments.push_back(input.string());
+    }
+    for (const auto &link : nativeLinks) {
+        arguments.push_back("-l" + link);
     }
 #ifdef _WIN32
     arguments.push_back("-lbcrypt");
@@ -533,6 +565,7 @@ std::vector<std::filesystem::path> runtimeSourceFiles() {
         sdkAsset("runtime/src/blocking.c", std::filesystem::path{FOUNDATION_RUNTIME_BLOCKING_SOURCE}),
         sdkAsset("runtime/src/pool.c", std::filesystem::path{FOUNDATION_RUNTIME_POOL_SOURCE}),
         sdkAsset("runtime/src/reactor.c", std::filesystem::path{FOUNDATION_RUNTIME_REACTOR_SOURCE}),
+        sdkAsset("runtime/src/watch.c", std::filesystem::path{FOUNDATION_RUNTIME_WATCH_SOURCE}),
         sdkAsset("runtime/src/resiliency.c",
                  std::filesystem::path{FOUNDATION_RUNTIME_RESILIENCY_SOURCE}),
         sdkAsset("runtime/src/net.c", std::filesystem::path{FOUNDATION_RUNTIME_NET_SOURCE}),
@@ -721,6 +754,7 @@ int buildCompilation(const std::filesystem::path &source, const std::filesystem:
                      const std::filesystem::path &temporarySource,
                      const std::filesystem::path &temporaryHeader,
                      const std::vector<std::filesystem::path> &nativeInputs,
+                     const std::vector<std::string> &nativeLinks,
                      BackendKind backend) {
     auto compilation = compile(source);
     if (const auto status = report(source, compilation); status != 0) {
@@ -738,6 +772,7 @@ int buildCompilation(const std::filesystem::path &source, const std::filesystem:
                                 .targetTriple = defaultLlvmTargetTriple(),
                                 .optimize = true,
                                 .verifyAllocations = false,
+                                .sourcePaths = llvmSourcePaths(compilation.sources),
                                 .entry = std::nullopt,
                                 .libraryPackage = std::nullopt,
                             },
@@ -748,11 +783,16 @@ int buildCompilation(const std::filesystem::path &source, const std::filesystem:
         return 1;
     }
     return runProcess(compilerArguments(temporarySource, output, temporaryHeader.parent_path(),
-                                        nativeInputs),
+                                        nativeInputs, nativeLinks),
                       ProcessOutput::StdoutToStderr);
 }
 
 } // namespace
+
+std::vector<std::size_t> rootProjectSourceIds(const std::filesystem::path &path,
+                                              const ProjectAnalysis &analysis) {
+    return rootProjectSources(path, analysis);
+}
 
 namespace {
 
@@ -996,6 +1036,7 @@ int emitLlvmIrFile(const std::filesystem::path &source,
             .targetTriple = defaultLlvmTargetTriple(),
             .optimize = true,
             .verifyAllocations = false,
+            .sourcePaths = llvmSourcePaths(compilation.sources),
             .entry = std::nullopt,
             .libraryPackage = std::nullopt,
         },
@@ -1098,13 +1139,14 @@ int emitDocumentationFile(const std::filesystem::path &source,
     if (const auto status = report(source, result); status != 0) {
         return status;
     }
-    return writeFile(output, emitDocumentation(analysis, rootProjectSources(source, analysis)))
+    return writeFile(output, emitDocumentation(analysis, rootProjectSourceIds(source, analysis)))
                ? 0
                : 1;
 }
 
 int lintFile(const std::filesystem::path &source,
-             std::optional<CodeStandardProfile> profile) {
+             std::optional<CodeStandardProfile> profile,
+             const std::vector<CodeStandardRuleSetting> &settings) {
     auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false},
                                    ProjectMode::Test);
     Compilation result;
@@ -1113,8 +1155,20 @@ int lintFile(const std::filesystem::path &source,
     if (const auto status = report(source, result); status != 0) {
         return status;
     }
-    const auto selected = profile.value_or(projectCodeStandard(source));
-    auto findings = lintProject(analysis, selected, rootProjectSources(source, analysis));
+    auto selected = profile.value_or(projectCodeStandard(source));
+    std::vector<CodeStandardRuleSetting> effectiveSettings;
+    if (const auto manifestPath = discoverPackageManifest(source); manifestPath.has_value()) {
+        const auto manifest = readPackageManifest(*manifestPath);
+        if (manifest.value.has_value()) {
+            if (!profile.has_value()) {
+                selected = manifest.value->codeStandard;
+            }
+            effectiveSettings = manifest.value->codeStandardRules;
+        }
+    }
+    effectiveSettings.insert(effectiveSettings.end(), settings.begin(), settings.end());
+    auto findings = lintProject(analysis, selected, rootProjectSourceIds(source, analysis),
+                                effectiveSettings);
     if (findings.empty()) {
         return 0;
     }
@@ -1286,6 +1340,7 @@ int emitApplicationHostFile(const std::filesystem::path &source,
 
 int buildFile(const std::filesystem::path &source, const std::filesystem::path &output,
               const std::vector<std::filesystem::path> &nativeInputs,
+              const std::vector<std::string> &nativeLinks,
               BackendKind backend) {
     auto temporary = createTempDirectory();
     if (!temporary.has_value()) {
@@ -1294,7 +1349,7 @@ int buildFile(const std::filesystem::path &source, const std::filesystem::path &
     const auto generated = temporary->path() /
                            (backend == BackendKind::Llvm ? "program.o" : "program.c");
     return buildCompilation(source, output, generated,
-                            temporary->path() / "foundation_abi.h", nativeInputs,
+                            temporary->path() / "foundation_abi.h", nativeInputs, nativeLinks,
                             backend);
 }
 
@@ -1394,6 +1449,7 @@ int buildLibrary(const std::filesystem::path &source,
                     .targetTriple = defaultLlvmTargetTriple(),
                     .optimize = true,
                     .verifyAllocations = false,
+                    .sourcePaths = llvmReproducibleSourcePaths(analysis.sources),
                     .entry = std::nullopt,
                     .libraryPackage = manifest.value->name,
                 },
@@ -1548,8 +1604,124 @@ int buildLibrary(const std::filesystem::path &source,
     return 0;
 }
 
+int exportPackage(const std::filesystem::path &source,
+                  const std::filesystem::path &outputDirectory,
+                  PackageExportFormat format,
+                  const std::vector<std::filesystem::path> &nativeInputs,
+                  BackendKind backend) {
+    const auto manifestPath = discoverPackageManifest(source);
+    if (!manifestPath.has_value()) {
+        std::cerr << "foundationc: package export requires a package project\n";
+        return 2;
+    }
+    const auto manifest = readPackageManifest(*manifestPath);
+    if (!manifest.value.has_value()) {
+        for (const auto &error : manifest.errors) {
+            std::cerr << renderPackageError(error);
+        }
+        return 1;
+    }
+    if (format != PackageExportFormat::GoSource &&
+        (!manifest.value->nativeLibrary || !manifest.value->nativeName.has_value())) {
+        std::cerr << "foundationc: package export requires native_library c and native_name\n";
+        return 2;
+    }
+    const auto lock = readPackageLock(manifestPath->parent_path() / "foundation.lock");
+    if (!lock.value.has_value()) {
+        for (const auto &error : lock.errors) {
+            std::cerr << renderPackageError(error);
+        }
+        return 1;
+    }
+    if (lock.value->target != hostTargetPlatform()) {
+        std::cerr << "foundationc: package export requires a lock for the host target\n";
+        return 2;
+    }
+
+    auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false},
+                                   ProjectMode::Production, lock.value->target);
+    std::optional<FirProgram> fir;
+    std::optional<PackageInterface> packageInterface;
+    std::optional<PackageExport> generated;
+    if (analysis.semantic.has_value()) {
+        fir = lower(analysis.program, *analysis.semantic);
+        packageInterface = buildPackageInterface(*fir, *manifest.value, *lock.value,
+                                                 analysis.diagnostics);
+        if (format != PackageExportFormat::GoSource && packageInterface.has_value() &&
+            packageInterface->exports.empty()) {
+            analysis.diagnostics.error("FDN2122", "native library exports no C ABI functions",
+                                       {0, 0, 1, 1});
+            packageInterface.reset();
+        }
+        if (packageInterface.has_value()) {
+            generated = generatePackageExport(*fir, *packageInterface, format,
+                                              analysis.diagnostics);
+        }
+    }
+    Compilation result;
+    result.sources = analysis.sources;
+    result.diagnostics = analysis.diagnostics;
+    if (const auto status = report(source, result); status != 0) {
+        return status;
+    }
+    if (!fir.has_value() || !packageInterface.has_value() || !generated.has_value()) {
+        return 1;
+    }
+
+    std::error_code error;
+    const auto outputStatus = std::filesystem::symlink_status(outputDirectory, error);
+    if (!error && std::filesystem::is_symlink(outputStatus)) {
+        std::cerr << "foundationc: refusing symbolic-link package output directory\n";
+        return 1;
+    }
+    if (error != std::errc::no_such_file_or_directory && error) {
+        std::cerr << "foundationc: cannot inspect package output directory: "
+                  << error.message() << '\n';
+        return 1;
+    }
+
+    if (generated->artifact != PackageExportArtifact::None) {
+        const auto libraryKind = generated->artifact == PackageExportArtifact::Static
+                                     ? LibraryKind::Static
+                                     : LibraryKind::Shared;
+        const auto status = buildLibrary(source, outputDirectory / "native", libraryKind,
+                                         nativeInputs, backend);
+        if (status != 0) {
+            return status;
+        }
+    }
+
+    for (const auto &file : generated->files) {
+        const auto destination = outputDirectory / file.path;
+        error.clear();
+        const auto destinationStatus = std::filesystem::symlink_status(destination, error);
+        if (!error && std::filesystem::is_symlink(destinationStatus)) {
+            std::cerr << "foundationc: refusing symbolic-link package output file\n";
+            return 1;
+        }
+        if (error != std::errc::no_such_file_or_directory && error) {
+            std::cerr << "foundationc: cannot inspect package output file: " << error.message()
+                      << '\n';
+            return 1;
+        }
+        error.clear();
+        std::filesystem::create_directories(destination.parent_path(), error);
+        if (error) {
+            std::cerr << "foundationc: cannot create package output directories: "
+                      << error.message() << '\n';
+            return 1;
+        }
+        if (!writeFile(destination, file.contents)) {
+            return 1;
+        }
+        std::cout << "package " << destination.generic_string() << '\n';
+    }
+    return 0;
+}
+
 int runFile(const std::filesystem::path &source,
             const std::vector<std::filesystem::path> &nativeInputs,
+            const std::vector<std::string> &nativeLinks,
             const std::vector<std::string> &arguments,
             BackendKind backend) {
     auto temporary = createTempDirectory();
@@ -1564,7 +1736,7 @@ int runFile(const std::filesystem::path &source,
     const auto generated = temporary->path() /
                            (backend == BackendKind::Llvm ? "program.o" : "program.c");
     const auto status = buildCompilation(source, executable, generated,
-                                         temporary->path() / "foundation_abi.h", nativeInputs,
+                                         temporary->path() / "foundation_abi.h", nativeInputs, nativeLinks,
                                          backend);
     if (status != 0) {
         return status;
@@ -1576,6 +1748,7 @@ int runFile(const std::filesystem::path &source,
 
 int runTests(const std::filesystem::path &source,
              const std::vector<std::filesystem::path> &nativeInputs,
+             const std::vector<std::string> &nativeLinks,
              BackendKind backend) {
     auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false},
                                    ProjectMode::Test);
@@ -1626,6 +1799,7 @@ int runTests(const std::filesystem::path &source,
                     LlvmCodegenOptions{.targetTriple = defaultLlvmTargetTriple(),
                                        .optimize = true,
                                        .verifyAllocations = true,
+                                       .sourcePaths = llvmSourcePaths(analysis.sources),
                                        .entry = function,
                                        .libraryPackage = std::nullopt},
                     diagnostics)) {
@@ -1637,7 +1811,8 @@ int runTests(const std::filesystem::path &source,
             return 1;
         }
         const auto compiled = runProcess(
-            compilerArguments(generated, executable, temporary->path(), nativeInputs, true),
+            compilerArguments(generated, executable, temporary->path(), nativeInputs,
+                              nativeLinks, true),
             ProcessOutput::StdoutToStderr);
         if (compiled != 0) {
             return compiled;

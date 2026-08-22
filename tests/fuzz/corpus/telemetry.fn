@@ -1,0 +1,7 @@
+package fuzz.telemetry
+
+import foundation.telemetry
+
+fn parse(value String) Result<telemetry.TraceContext, telemetry.TraceparentError> {
+    telemetry.ParseTraceparent(value)
+}

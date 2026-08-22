@@ -1,5 +1,6 @@
 #include "foundation/package_cli.hpp"
 
+#include "foundation/driver.hpp"
 #include "foundation/package.hpp"
 
 #include <algorithm>
@@ -29,6 +30,14 @@ struct PackageOptions {
     std::vector<PackageRegistryRoot> registries;
 };
 
+struct PackageExportOptions {
+    std::filesystem::path project;
+    std::filesystem::path output;
+    std::optional<PackageExportFormat> format;
+    std::vector<std::filesystem::path> nativeInputs;
+    BackendKind backend{defaultBackendKind()};
+};
+
 void usage(std::ostream &output) {
     output << "usage:\n"
            << "  foundationc package init <project> <package-name>\n"
@@ -38,7 +47,10 @@ void usage(std::ostream &output) {
               "[--registry <identity>=<path>]...\n"
            << "  foundationc package verify <project> [--cache <path>]\n"
            << "  foundationc package inspect <project>\n"
-           << "  foundationc package prune <project> [--cache <path>]\n";
+           << "  foundationc package prune <project> [--cache <path>]\n"
+           << "  foundationc package export <project> -o <directory>"
+              " --format <zig|rust|go-cgo|go-dynamic|go-source>"
+              " [--backend <llvm|c>] [--native <input>]...\n";
 }
 
 void addError(std::vector<PackageError> &errors, const std::filesystem::path &path,
@@ -108,6 +120,40 @@ bool parseOptions(int argc, char **argv, int start, PackageOptions &options) {
         }
     }
     return true;
+}
+
+bool parseExportOptions(int argc, char **argv, int start,
+                        PackageExportOptions &options) {
+    auto outputSeen = false;
+    auto backendSeen = false;
+    for (auto index = start; index < argc; index += 2) {
+        if (index + 1 >= argc) {
+            return false;
+        }
+        const std::string_view option = argv[index];
+        const std::string_view value = argv[index + 1];
+        if (option == "-o" && !outputSeen) {
+            options.output = value;
+            outputSeen = true;
+        } else if (option == "--format" && !options.format.has_value()) {
+            options.format = parsePackageExportFormat(value);
+            if (!options.format.has_value()) {
+                return false;
+            }
+        } else if (option == "--native") {
+            options.nativeInputs.emplace_back(value);
+        } else if (option == "--backend" && !backendSeen) {
+            const auto backend = parseBackendKind(value);
+            if (!backend.has_value()) {
+                return false;
+            }
+            options.backend = *backend;
+            backendSeen = true;
+        } else {
+            return false;
+        }
+    }
+    return outputSeen && options.format.has_value();
 }
 
 std::filesystem::path manifestPath(const std::filesystem::path &project) {
@@ -454,6 +500,16 @@ int runPackageCommand(int argc, char **argv) {
     if (argc < 4) {
         usage(std::cerr);
         return 2;
+    }
+    if (std::string_view(argv[2]) == "export") {
+        PackageExportOptions options;
+        options.project = std::filesystem::path{argv[3]};
+        if (!parseExportOptions(argc, argv, 4, options)) {
+            usage(std::cerr);
+            return 2;
+        }
+        return exportPackage(options.project, options.output, *options.format,
+                             options.nativeInputs, options.backend);
     }
     PackageOptions options;
     options.project = std::filesystem::path{argv[3]};

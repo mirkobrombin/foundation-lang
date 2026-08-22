@@ -362,6 +362,12 @@ fn RuntimeHandle(value Bytes) u64 {
     value.handle
 }
 
+// Transfers the opaque SDK handle out of an owned byte sequence.
+fn TakeRuntimeHandle($value own Bytes) u64 {
+    var active = value
+    replace active.handle with 0
+}
+
 // Claims exclusive ownership of an opaque handle returned by the SDK runtime.
 fn ClaimRuntimeHandle(handle u64) Result<own Bytes, Error> {
     if handle == 0 return .Err(.Closed)

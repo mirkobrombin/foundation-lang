@@ -24,6 +24,17 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(FOUNDATION_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(FOUNDATION_BUILD_FUZZERS "Build Clang libFuzzer targets" OFF)
+option(FOUNDATION_BUILD_OPENSSL_PROVIDER "Build the optional OpenSSL 3.5.6 provider" OFF)
+option(FOUNDATION_OPENSSL_TSAN "Build the OpenSSL provider native test with ThreadSanitizer" OFF)
+option(FOUNDATION_BUILD_WAMR_PROVIDER "Build the optional WAMR 2.4.5 provider" OFF)
+option(FOUNDATION_WAMR_SANITIZERS "Instrument the WAMR provider path with ASan and UBSan" OFF)
+option(FOUNDATION_WAMR_TSAN "Instrument the WAMR provider path with ThreadSanitizer" OFF)
+option(FOUNDATION_ENABLE_WINDOWS_WINE_MATRIX
+    "Register the local MinGW and Wine platform matrix" OFF)
+set(FOUNDATION_WAMR_SOURCE "" CACHE PATH "Path to the pinned WAMR 2.4.5 source")
+set(FOUNDATION_WAMR_LIBRARY "" CACHE FILEPATH "Path to the pinned WAMR 2.4.5 iwasm library")
+set(FOUNDATION_V2_SOURCE "" CACHE PATH
+    "Path to the pinned go-foundation v2 source used by compatibility tests")
 
 add_library(foundation_runtime STATIC
     runtime/src/runtime.c
@@ -35,6 +46,7 @@ add_library(foundation_runtime STATIC
     runtime/src/blocking.c
     runtime/src/pool.c
     runtime/src/reactor.c
+    runtime/src/watch.c
     runtime/src/resiliency.c
     runtime/src/net.c
     runtime/src/plugin.c
@@ -44,6 +56,115 @@ target_include_directories(foundation_runtime PUBLIC runtime/include)
 target_link_libraries(foundation_runtime PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 if(WIN32)
     target_link_libraries(foundation_runtime PUBLIC bcrypt ws2_32)
+endif()
+
+if(FOUNDATION_WAMR_SANITIZERS AND FOUNDATION_WAMR_TSAN)
+    message(FATAL_ERROR "FOUNDATION_WAMR_SANITIZERS and FOUNDATION_WAMR_TSAN are separate runs")
+endif()
+if((FOUNDATION_WAMR_SANITIZERS OR FOUNDATION_WAMR_TSAN) AND
+   NOT FOUNDATION_BUILD_WAMR_PROVIDER)
+    message(FATAL_ERROR "WAMR sanitizer runs require FOUNDATION_BUILD_WAMR_PROVIDER=ON")
+endif()
+if(FOUNDATION_WAMR_SANITIZERS OR FOUNDATION_WAMR_TSAN)
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        message(FATAL_ERROR "WAMR sanitizer runs require Clang or GCC")
+    endif()
+    if(FOUNDATION_WAMR_SANITIZERS)
+        target_compile_options(foundation_runtime PRIVATE -fsanitize=address,undefined)
+        target_link_options(foundation_runtime PUBLIC -fsanitize=address,undefined)
+    else()
+        target_compile_options(foundation_runtime PRIVATE -fsanitize=thread)
+        target_link_options(foundation_runtime PUBLIC -fsanitize=thread)
+    endif()
+endif()
+
+if(FOUNDATION_BUILD_WAMR_PROVIDER)
+    if(NOT EXISTS "${FOUNDATION_WAMR_SOURCE}/core/version.h" OR
+       NOT EXISTS "${FOUNDATION_WAMR_SOURCE}/core/iwasm/include/wasm_export.h")
+        message(FATAL_ERROR
+            "FOUNDATION_WAMR_SOURCE must point to the pinned WAMR 2.4.5 source"
+        )
+    endif()
+    if(NOT EXISTS "${FOUNDATION_WAMR_LIBRARY}")
+        message(FATAL_ERROR
+            "FOUNDATION_WAMR_LIBRARY must point to the pinned WAMR 2.4.5 iwasm library"
+        )
+    endif()
+    file(READ "${FOUNDATION_WAMR_SOURCE}/core/version.h" FOUNDATION_WAMR_VERSION_HEADER)
+    if(NOT FOUNDATION_WAMR_VERSION_HEADER MATCHES "#define WAMR_VERSION_MAJOR 2" OR
+       NOT FOUNDATION_WAMR_VERSION_HEADER MATCHES "#define WAMR_VERSION_MINOR 4" OR
+       NOT FOUNDATION_WAMR_VERSION_HEADER MATCHES "#define WAMR_VERSION_PATCH 5")
+        message(FATAL_ERROR "FOUNDATION_WAMR_SOURCE must be WAMR 2.4.5")
+    endif()
+    add_library(foundation_wamr_provider SHARED
+        runtime/providers/wamr/wamr_provider.c
+    )
+    target_include_directories(foundation_wamr_provider PRIVATE
+        runtime/include
+        "${FOUNDATION_WAMR_SOURCE}/core"
+        "${FOUNDATION_WAMR_SOURCE}/core/iwasm/include"
+    )
+    target_compile_definitions(foundation_wamr_provider PRIVATE FOUNDATION_WAMR_PROVIDER_BUILD=1)
+    target_link_libraries(foundation_wamr_provider PRIVATE
+        "${FOUNDATION_WAMR_LIBRARY}"
+        Threads::Threads
+        ${CMAKE_DL_LIBS}
+    )
+    if(NOT WIN32)
+        target_link_libraries(foundation_wamr_provider PRIVATE m)
+    endif()
+    if(MSVC)
+        target_compile_options(foundation_wamr_provider PRIVATE /W4)
+        if(FOUNDATION_WARNINGS_AS_ERRORS)
+            target_compile_options(foundation_wamr_provider PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(foundation_wamr_provider PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+        if(FOUNDATION_WARNINGS_AS_ERRORS)
+            target_compile_options(foundation_wamr_provider PRIVATE -Werror)
+        endif()
+    endif()
+    if(FOUNDATION_WAMR_SANITIZERS)
+        target_compile_options(foundation_wamr_provider PRIVATE -fsanitize=address,undefined)
+        target_link_options(foundation_wamr_provider PRIVATE -fsanitize=address,undefined)
+    elseif(FOUNDATION_WAMR_TSAN)
+        target_compile_options(foundation_wamr_provider PRIVATE -fsanitize=thread)
+        target_link_options(foundation_wamr_provider PRIVATE -fsanitize=thread)
+    endif()
+endif()
+
+if(FOUNDATION_BUILD_OPENSSL_PROVIDER)
+    find_package(OpenSSL 3.5.6 EXACT REQUIRED COMPONENTS SSL Crypto)
+    add_library(foundation_openssl_provider STATIC
+        providers/openssl/foundation_openssl.c
+    )
+    target_include_directories(foundation_openssl_provider
+        PUBLIC providers/openssl
+        PRIVATE runtime/include
+    )
+    target_link_libraries(foundation_openssl_provider
+        PUBLIC foundation_runtime OpenSSL::SSL OpenSSL::Crypto
+    )
+    if(MSVC)
+        target_compile_options(foundation_openssl_provider PRIVATE /W4)
+        if(FOUNDATION_WARNINGS_AS_ERRORS)
+            target_compile_options(foundation_openssl_provider PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(foundation_openssl_provider PRIVATE -Wall -Wextra -Wpedantic)
+        if(FOUNDATION_WARNINGS_AS_ERRORS)
+            target_compile_options(foundation_openssl_provider PRIVATE -Werror)
+        endif()
+    endif()
+    if(FOUNDATION_BUILD_FUZZERS)
+        target_compile_options(foundation_openssl_provider PRIVATE -fsanitize=address,undefined)
+        target_link_options(foundation_openssl_provider PRIVATE -fsanitize=address,undefined)
+    elseif(FOUNDATION_OPENSSL_TSAN)
+        target_compile_options(foundation_openssl_provider PRIVATE -fsanitize=thread)
+        target_link_options(foundation_openssl_provider PRIVATE -fsanitize=thread)
+    endif()
 endif()
 
 add_library(foundation_compiler STATIC
@@ -68,6 +189,7 @@ add_library(foundation_compiler STATIC
     stage0/src/package_catalog.cpp
     stage0/src/package_cli.cpp
     stage0/src/package_environment.cpp
+    stage0/src/package_export.cpp
     stage0/src/package_interface.cpp
     stage0/src/package_lock.cpp
     stage0/src/package_project.cpp
@@ -109,6 +231,7 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_RUNTIME_BLOCKING_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c"
     FOUNDATION_RUNTIME_POOL_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c"
     FOUNDATION_RUNTIME_REACTOR_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c"
+    FOUNDATION_RUNTIME_WATCH_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/watch.c"
     FOUNDATION_RUNTIME_RESILIENCY_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/resiliency.c"
     FOUNDATION_RUNTIME_NET_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c"
     FOUNDATION_RUNTIME_PLUGIN_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/plugin.c"
@@ -116,6 +239,15 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_STANDARD_LIBRARY="${CMAKE_CURRENT_SOURCE_DIR}/std"
     FOUNDATION_FRAMEWORK_LIBRARY="${CMAKE_CURRENT_SOURCE_DIR}/foundation"
 )
+if(FOUNDATION_WAMR_SANITIZERS)
+    target_compile_definitions(foundation_compiler PRIVATE
+        FOUNDATION_GENERATED_ADDRESS_UNDEFINED_SANITIZER=1
+    )
+elseif(FOUNDATION_WAMR_TSAN OR FOUNDATION_OPENSSL_TSAN)
+    target_compile_definitions(foundation_compiler PRIVATE
+        FOUNDATION_GENERATED_THREAD_SANITIZER=1
+    )
+endif()
 
 add_executable(foundationc stage0/src/main.cpp)
 target_link_libraries(foundationc PRIVATE foundation_compiler)
@@ -125,6 +257,16 @@ target_link_libraries(foundation-ls PRIVATE foundation_compiler)
 
 include(GNUInstallDirs)
 install(TARGETS foundationc foundation-ls RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(TARGET foundation_openssl_provider)
+    install(TARGETS foundation_openssl_provider ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    install(FILES providers/openssl/foundation_openssl.h DESTINATION include/foundation)
+endif()
+if(TARGET foundation_wamr_provider)
+    install(TARGETS foundation_wamr_provider
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+endif()
 install(DIRECTORY runtime/include/ DESTINATION runtime/include FILES_MATCHING PATTERN "*.h")
 install(DIRECTORY runtime/src/ DESTINATION runtime/src
         FILES_MATCHING PATTERN "*.c" PATTERN "*.h")
@@ -176,6 +318,10 @@ if(FOUNDATION_BUILD_FUZZERS)
         -fsanitize=fuzzer-no-link,address,undefined
     )
     target_compile_options(foundation_runtime PRIVATE -fsanitize=address,undefined)
+    target_link_options(foundation_runtime PUBLIC -fsanitize=address,undefined)
+    target_compile_definitions(foundation_compiler PRIVATE
+        FOUNDATION_GENERATED_ADDRESS_UNDEFINED_SANITIZER=1
+    )
     target_link_options(foundationc PRIVATE -fsanitize=address,undefined)
     target_link_options(foundation-ls PRIVATE -fsanitize=address,undefined)
     add_executable(foundation_parser_fuzz stage0/fuzz/parser_fuzz.cpp)
@@ -211,6 +357,21 @@ if(FOUNDATION_BUILD_FUZZERS)
     configure_file(
         tests/fuzz/corpus/caching.fn
         "${FOUNDATION_FUZZ_CORPUS_DIR}/caching.fn"
+        COPYONLY
+    )
+    configure_file(
+        tests/fuzz/corpus/pooling.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/pooling.fn"
+        COPYONLY
+    )
+    configure_file(
+        tests/fuzz/corpus/tracing.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/tracing.fn"
+        COPYONLY
+    )
+    configure_file(
+        tests/fuzz/corpus/telemetry.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/telemetry.fn"
         COPYONLY
     )
     configure_file(
@@ -279,6 +440,16 @@ if(FOUNDATION_BUILD_FUZZERS)
         COPYONLY
     )
     configure_file(
+        tests/fuzz/corpus/contract-constraints.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/contract-constraints.fn"
+        COPYONLY
+    )
+    configure_file(
+        tests/fuzz/corpus/compound-assignment.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/compound-assignment.fn"
+        COPYONLY
+    )
+    configure_file(
         tests/fuzz/corpus/raw-pointers.fn
         "${FOUNDATION_FUZZ_CORPUS_DIR}/raw-pointers.fn"
         COPYONLY
@@ -324,6 +495,16 @@ if(FOUNDATION_BUILD_FUZZERS)
         COPYONLY
     )
     configure_file(
+        tests/cases/accept/httpx-transport-policy.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/httpx-transport-policy.fn"
+        COPYONLY
+    )
+    configure_file(
+        tests/cases/accept/httpx-upload.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/httpx-upload.fn"
+        COPYONLY
+    )
+    configure_file(
         tests/fuzz/corpus/select-timeout.fn
         "${FOUNDATION_FUZZ_CORPUS_DIR}/select-timeout.fn"
         COPYONLY
@@ -338,16 +519,119 @@ if(FOUNDATION_BUILD_FUZZERS)
         "${FOUNDATION_FUZZ_CORPUS_DIR}/state-machine-timeout.fn"
         COPYONLY
     )
+    configure_file(
+        tests/cases/accept/generic-state-machine.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/generic-state-machine.fn"
+        COPYONLY
+    )
+    configure_file(
+        tests/cases/accept/shift-operators.fn
+        "${FOUNDATION_FUZZ_CORPUS_DIR}/shift-operators.fn"
+        COPYONLY
+    )
 endif()
 
 include(CTest)
 if(BUILD_TESTING)
+    set(FOUNDATION_SHORT_COMPILE_RUN_TIMEOUT 15)
+    set(FOUNDATION_COMPILE_RUN_TIMEOUT 30)
+    if(FOUNDATION_BUILD_FUZZERS OR FOUNDATION_WAMR_SANITIZERS OR
+       FOUNDATION_WAMR_TSAN OR FOUNDATION_OPENSSL_TSAN)
+        set(FOUNDATION_SHORT_COMPILE_RUN_TIMEOUT 180)
+        set(FOUNDATION_COMPILE_RUN_TIMEOUT 180)
+    endif()
+    if(TARGET foundation_openssl_provider)
+        find_package(Threads REQUIRED)
+        target_compile_definitions(foundation_openssl_provider PRIVATE FOUNDATION_OPENSSL_TESTING=1)
+        add_executable(foundation_openssl_provider_test
+            providers/openssl/foundation_openssl_test.c
+        )
+        target_link_libraries(foundation_openssl_provider_test PRIVATE foundation_openssl_provider Threads::Threads)
+        if(FOUNDATION_BUILD_FUZZERS)
+            target_compile_options(foundation_openssl_provider_test PRIVATE -fsanitize=address,undefined)
+            target_link_options(foundation_openssl_provider_test PRIVATE -fsanitize=address,undefined)
+        elseif(FOUNDATION_OPENSSL_TSAN)
+            target_compile_options(foundation_openssl_provider_test PRIVATE -fsanitize=thread)
+            target_link_options(foundation_openssl_provider_test PRIVATE -fsanitize=thread)
+        endif()
+        add_test(
+            NAME providers.openssl.native
+            COMMAND foundation_openssl_provider_test
+        )
+        set_tests_properties(providers.openssl.native PROPERTIES TIMEOUT 30)
+        add_test(
+            NAME providers.openssl.foundation
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/providers-openssl.fn
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/providers-openssl.out
+                "-DNATIVE_INPUTS=$<TARGET_FILE:foundation_openssl_provider>;$<TARGET_FILE:OpenSSL::SSL>;$<TARGET_FILE:OpenSSL::Crypto>"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+        )
+        set_tests_properties(providers.openssl.foundation PROPERTIES
+            TIMEOUT ${FOUNDATION_COMPILE_RUN_TIMEOUT}
+        )
+    endif()
+    if(TARGET foundation_wamr_provider)
+        target_compile_definitions(foundation_wamr_provider PRIVATE FOUNDATION_WAMR_TESTING=1)
+        add_executable(foundation_wamr_provider_test
+            runtime/providers/wamr/wamr_provider_test.c
+        )
+        target_include_directories(foundation_wamr_provider_test PRIVATE runtime/include)
+        target_link_libraries(foundation_wamr_provider_test PRIVATE
+            foundation_wamr_provider
+            Threads::Threads
+        )
+        if(MSVC)
+            target_compile_options(foundation_wamr_provider_test PRIVATE /W4)
+            if(FOUNDATION_WARNINGS_AS_ERRORS)
+                target_compile_options(foundation_wamr_provider_test PRIVATE /WX)
+            endif()
+        else()
+            target_compile_options(foundation_wamr_provider_test PRIVATE
+                -Wall -Wextra -Wpedantic
+            )
+            if(FOUNDATION_WARNINGS_AS_ERRORS)
+                target_compile_options(foundation_wamr_provider_test PRIVATE -Werror)
+            endif()
+        endif()
+        if(FOUNDATION_WAMR_SANITIZERS)
+            target_compile_options(foundation_wamr_provider_test PRIVATE
+                -fsanitize=address,undefined
+            )
+            target_link_options(foundation_wamr_provider_test PRIVATE
+                -fsanitize=address,undefined
+            )
+        elseif(FOUNDATION_WAMR_TSAN)
+            target_compile_options(foundation_wamr_provider_test PRIVATE -fsanitize=thread)
+            target_link_options(foundation_wamr_provider_test PRIVATE -fsanitize=thread)
+        endif()
+    endif()
+    add_test(
+        NAME repository.no-zz-sources
+        COMMAND ${CMAKE_COMMAND}
+            -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-no-zz-sources.cmake
+    )
     add_test(
         NAME repository.source-extension
         COMMAND ${CMAKE_COMMAND}
             -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-source-extension.cmake
-    )
+    )    if(FOUNDATION_ENABLE_WINDOWS_WINE_MATRIX)
+        find_program(FOUNDATION_MINGW_C_COMPILER NAMES x86_64-w64-mingw32-gcc REQUIRED)
+        find_program(FOUNDATION_WINE NAMES wine wine64 REQUIRED)
+        add_test(
+            NAME platform.windows-wine
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DMINGW_C_COMPILER=${FOUNDATION_MINGW_C_COMPILER}
+                -DWINE=${FOUNDATION_WINE}
+                -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/platform-windows-wine
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-windows-wine.cmake
+        )
+    endif()
     add_test(
         NAME stage0.check.retired-source-extension
         COMMAND ${CMAKE_COMMAND}
@@ -356,6 +640,395 @@ if(BUILD_TESTING)
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/retired-source-extension
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-retired-source-extension.cmake
     )
+    if(FOUNDATION_V2_SOURCE)
+        if(NOT EXISTS "${FOUNDATION_V2_SOURCE}/go.mod")
+            message(FATAL_ERROR "FOUNDATION_V2_SOURCE does not contain go.mod")
+        endif()
+        find_package(Git REQUIRED)
+        find_program(FOUNDATION_GO_EXECUTABLE NAMES go REQUIRED)
+        add_test(
+            NAME compatibility.validation.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/validation/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/validation/go
+                -DCASES=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/validation/cases.tsv
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/validation/expected.out
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-validation-v2
+                -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-validation-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.guard.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/guard/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/guard/go
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/guard/expected.out
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-guard-v2
+                -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-guard-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.logger.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/logger/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/logger/go
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/logger/expected.out
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-logger-v2
+                -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-logger-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.tracing.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/tracing/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/tracing/go
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/tracing/expected.out
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-tracing-v2
+                -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-tracing-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.telemetry.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/telemetry/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/telemetry/go
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/telemetry/expected.out
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-telemetry-v2
+                -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-telemetry-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.hooks.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/hooks/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/hooks/go
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/hooks/expected.out
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-hooks-v2
+                -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-hooks-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.serializer.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/serializer/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/serializer/go
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/serializer/expected.out
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-serializer-v2
+                -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-serializer-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.configuration.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/configuration-migration
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/configuration/go
+                -DCONFIG=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/configuration-migration/config.json
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/configuration/expected.out
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-configuration-v2
+                -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-configuration-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.configuration.directory.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/configuration-directory/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/configuration-directory/go
+                -DDIRECTORY=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/configuration-directory/input
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/configuration-directory/expected.out
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-configuration-directory-v2
+                -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-configuration-directory-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.openapi.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/openapi/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/openapi/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-openapi-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-openapi-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.auth.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/auth/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/auth/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-auth-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-auth-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.resiliency.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/resiliency/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/resiliency/go
+                -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/resiliency_native.c
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-resiliency-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-resiliency-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.httpx.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/httpx/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/httpx/go
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/httpx/expected.out
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-httpx-v2
+                -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-httpx-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.ring.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/ring/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/ring/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-ring-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-ring-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.pipeline.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/pipeline/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/pipeline/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-pipeline-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-pipeline-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.caching.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/caching/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/caching/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-caching-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-caching-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.pooling.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/pooling/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/pooling/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-pooling-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-pooling-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.align.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/align/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/align/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-align-v2
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-align-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.cpio.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/cpio/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/cpio/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-cpio-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-cpio-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.errutil.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/errutil/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/errutil/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-errutil-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-errutil-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.adapters.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/adapters/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/adapters/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-adapters-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-adapters-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.fsm.machine.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/fsm-machine/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/fsm-machine/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-fsm-machine-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-fsm-machine-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.safemap.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/safemap/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/safemap/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-safemap-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-safemap-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.lock.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/lock/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/lock/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-lock-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-lock-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.worker.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/worker/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/worker/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-worker-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-worker-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.scheduler.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/scheduler/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/scheduler/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-scheduler-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-scheduler-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.secrets.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/secrets/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/secrets/go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-secrets-v2
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-secrets-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.app.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/app/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/app/go
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/app/expected.out
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-app-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-app-v2-compatibility.cmake
+        )
+        add_test(
+            NAME compatibility.saga.v2
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXECUTABLE}
+                -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                -DV2_SOURCE=${FOUNDATION_V2_SOURCE}
+                -DFOUNDATION_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/saga/foundation
+                -DGO_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/saga/go
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility/saga/expected.out
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compatibility-saga-v2
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-saga-v2-compatibility.cmake
+        )
+        set_tests_properties(
+            compatibility.configuration.v2
+            PROPERTIES ENVIRONMENT "FOUNDATION_CONFIGURATION_HOST=environment.example"
+        )
+        set_tests_properties(
+            compatibility.secrets.v2
+            PROPERTIES ENVIRONMENT "FOUNDATION_SECRET_TEST=environment-value"
+        )
+    endif()
     add_test(
         NAME tooling.sdk.relocated
         COMMAND ${CMAKE_COMMAND}
@@ -482,6 +1155,28 @@ if(BUILD_TESTING)
         FDN_PLUGIN_FIXTURE_CREATE_FAIL=1
     )
     add_library(foundation_plugin_missing_query SHARED tests/fixtures/plugin_missing_query.c)
+    add_library(foundation_wamr_provider_fake SHARED
+        tests/fixtures/wamr_provider_fake.c
+    )
+    target_compile_definitions(foundation_runtime PRIVATE
+        FOUNDATION_WAMR_BRIDGE_TESTING=1
+    )
+    target_include_directories(foundation_wamr_provider_fake PRIVATE runtime/include)
+    target_compile_definitions(foundation_wamr_provider_fake PRIVATE FOUNDATION_WAMR_PROVIDER_BUILD=1)
+    target_link_libraries(foundation_wamr_provider_fake PRIVATE Threads::Threads)
+    add_executable(foundation_wamr_bridge_test
+        runtime/tests/wamr_bridge_test.c
+    )
+    target_link_libraries(foundation_wamr_bridge_test PRIVATE
+        foundation_runtime
+        foundation_wamr_provider_fake
+        Threads::Threads
+    )
+    add_test(
+        NAME runtime.wamr-bridge
+        COMMAND foundation_wamr_bridge_test $<TARGET_FILE:foundation_wamr_provider_fake>
+    )
+    set_tests_properties(runtime.wamr-bridge PROPERTIES TIMEOUT 30)
     add_library(foundation_example_native_plugin SHARED
         examples/native-plugin/native/plugin.c
     )
@@ -497,6 +1192,7 @@ if(BUILD_TESTING)
         foundation_plugin_descriptor_failure
         foundation_plugin_create_failure
         foundation_plugin_missing_query
+        foundation_wamr_provider_fake
         foundation_example_native_plugin
     )
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
@@ -504,6 +1200,17 @@ if(BUILD_TESTING)
             target_compile_options(${plugin_target} PRIVATE -fno-sanitize=all)
             target_link_options(${plugin_target} PRIVATE -fno-sanitize=all)
         endforeach()
+    endif()
+    if(FOUNDATION_WAMR_SANITIZERS)
+        target_compile_options(foundation_wamr_provider_fake PRIVATE -fsanitize=address,undefined)
+        target_link_options(foundation_wamr_provider_fake PRIVATE -fsanitize=address,undefined)
+        target_compile_options(foundation_wamr_bridge_test PRIVATE -fsanitize=address,undefined)
+        target_link_options(foundation_wamr_bridge_test PRIVATE -fsanitize=address,undefined)
+    elseif(FOUNDATION_WAMR_TSAN)
+        target_compile_options(foundation_wamr_provider_fake PRIVATE -fsanitize=thread)
+        target_link_options(foundation_wamr_provider_fake PRIVATE -fsanitize=thread)
+        target_compile_options(foundation_wamr_bridge_test PRIVATE -fsanitize=thread)
+        target_link_options(foundation_wamr_bridge_test PRIVATE -fsanitize=thread)
     endif()
     add_executable(foundation_example_process_plugin
         examples/process-plugin/worker/main.c
@@ -521,6 +1228,8 @@ if(BUILD_TESTING)
         foundation_plugin_descriptor_failure
         foundation_plugin_create_failure
         foundation_plugin_missing_query
+        foundation_wamr_provider_fake
+        foundation_wamr_bridge_test
         foundation_example_native_plugin
         foundation_example_process_plugin
     )
@@ -706,6 +1415,9 @@ if(BUILD_TESTING)
     add_test(NAME stage0.unit COMMAND foundation_stage0_tests)
     add_test(NAME tooling.lsp.unit COMMAND foundation_lsp_tests)
     add_test(NAME tooling.formatter.unit COMMAND foundation_formatter_tests)
+    if(FOUNDATION_BUILD_FUZZERS)
+        set_tests_properties(tooling.lsp.unit PROPERTIES TIMEOUT 3600)
+    endif()
     add_test(
         NAME tooling.test.cli
         COMMAND ${CMAKE_COMMAND}
@@ -763,6 +1475,8 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/lint-profile
+            -DRULE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/fcs-rules
+            -DVIOLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/fcs-violations
             -DINVALID=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/unknown-associated-function.fn
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/lint-project
             -DTARGET=${CMAKE_SYSTEM_NAME}
@@ -843,6 +1557,19 @@ if(BUILD_TESTING)
     )
     add_test(NAME runtime.plugin-sandbox COMMAND foundation_runtime_plugin_sandbox_test)
     add_test(NAME runtime.wasm-plugin-abi COMMAND foundation_wasm_plugin_abi_test)
+    add_test(
+        NAME stage0.run.plugin-wamr-provider-fake
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wamr-provider.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wamr-provider.out
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_wamr_provider_fake>;fixture.wasm"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    set_tests_properties(
+        stage0.run.plugin-wamr-provider-fake
+        PROPERTIES TIMEOUT ${FOUNDATION_SHORT_COMPILE_RUN_TIMEOUT}
+    )
     find_program(FOUNDATION_WASM_CLANG NAMES clang)
     if(FOUNDATION_WASM_CLANG)
         add_test(
@@ -854,6 +1581,71 @@ if(BUILD_TESTING)
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/wasm-plugin-fixture.wasm
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-wasm-guest.cmake
         )
+        add_test(
+            NAME abi.wasm-plugin-guest-bad-signature
+            COMMAND ${CMAKE_COMMAND}
+                -DCLANG=${FOUNDATION_WASM_CLANG}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/wasm_plugin_fixture.c
+                -DINCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -DDEFINITIONS=-DFDN_WASM_FIXTURE_BAD_SIGNATURE=1
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/wasm-plugin-bad-signature.wasm
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-wasm-guest.cmake
+        )
+        add_test(
+            NAME abi.wasm-plugin-guest-invalid-metadata
+            COMMAND ${CMAKE_COMMAND}
+                -DCLANG=${FOUNDATION_WASM_CLANG}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/wasm_plugin_fixture.c
+                -DINCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -DDEFINITIONS=-DFDN_WASM_FIXTURE_INVALID_METADATA=1
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/wasm-plugin-invalid-metadata.wasm
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-wasm-guest.cmake
+        )
+        add_test(
+            NAME abi.wasm-plugin-guest-missing-memory-export
+            COMMAND ${CMAKE_COMMAND}
+                -DCLANG=${FOUNDATION_WASM_CLANG}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/wasm_plugin_fixture.c
+                -DINCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -DEXPORT_MEMORY=OFF
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/wasm-plugin-missing-memory.wasm
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-wasm-guest.cmake
+        )
+        set_tests_properties(
+            abi.wasm-plugin-guest
+            abi.wasm-plugin-guest-bad-signature
+            abi.wasm-plugin-guest-invalid-metadata
+            abi.wasm-plugin-guest-missing-memory-export
+            PROPERTIES FIXTURES_SETUP foundation_wamr_guests
+        )
+        if(TARGET foundation_wamr_provider)
+            add_test(
+                NAME providers.wamr.native
+                COMMAND foundation_wamr_provider_test
+                    ${CMAKE_CURRENT_BINARY_DIR}/wasm-plugin-fixture.wasm
+            )
+            add_test(
+                NAME stage0.run.plugin-wamr-provider-real
+                COMMAND ${CMAKE_COMMAND}
+                    -DCOMPILER=$<TARGET_FILE:foundationc>
+                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wamr-provider.fn
+                    -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wamr-provider.out
+                    "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_wamr_provider>;${CMAKE_CURRENT_BINARY_DIR}/wasm-plugin-fixture.wasm;${CMAKE_CURRENT_BINARY_DIR}/wasm-plugin-bad-signature.wasm;${CMAKE_CURRENT_BINARY_DIR}/wasm-plugin-invalid-metadata.wasm;${CMAKE_CURRENT_BINARY_DIR}/wasm-plugin-missing-memory.wasm"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+            )
+            set_tests_properties(
+                providers.wamr.native
+                PROPERTIES
+                    FIXTURES_REQUIRED foundation_wamr_guests
+                    TIMEOUT 30
+            )
+            set_tests_properties(
+                stage0.run.plugin-wamr-provider-real
+                PROPERTIES
+                    FIXTURES_REQUIRED foundation_wamr_guests
+                    TIMEOUT ${FOUNDATION_COMPILE_RUN_TIMEOUT}
+            )
+        endif()
     endif()
     add_test(
         NAME stage0.check.plugins
@@ -884,6 +1676,7 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugin-wasm-policy-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-wasm-policy.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
@@ -936,6 +1729,8 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugins-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugins.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_PLUGIN_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/plugin.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_plugin_fixture>;$<TARGET_FILE:foundation_plugin_start_fail>"
@@ -979,6 +1774,8 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/plugin-duplicate-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/plugin-duplicate.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_PLUGIN_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/plugin.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_plugin_fixture>"
@@ -1171,6 +1968,44 @@ if(BUILD_TESTING)
             -DREADELF=${CMAKE_READELF}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-library-artifacts.cmake
     )
+    find_program(FOUNDATION_ZIG_EXECUTABLE NAMES zig
+                 HINTS "$ENV{HOME}/.local/zig-0.16.0")
+    find_program(FOUNDATION_CARGO_EXECUTABLE NAMES cargo)
+    find_program(FOUNDATION_GO_EXPORT_EXECUTABLE NAMES go go.exe)
+    if(UNIX AND FOUNDATION_ZIG_EXECUTABLE AND FOUNDATION_CARGO_EXECUTABLE AND
+       FOUNDATION_GO_EXPORT_EXECUTABLE)
+        add_test(
+            NAME stage0.package.export-native
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/native-interface
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/package-export-test
+                -DZIG_EXECUTABLE=${FOUNDATION_ZIG_EXECUTABLE}
+                -DCARGO_EXECUTABLE=${FOUNDATION_CARGO_EXECUTABLE}
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXPORT_EXECUTABLE}
+                -DSYSTEM_NAME=${CMAKE_SYSTEM_NAME}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-package-export.cmake
+        )
+    endif()
+    if(FOUNDATION_GO_EXPORT_EXECUTABLE)
+        add_test(
+            NAME stage0.package.export-go-source
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-interface
+                -DUNSUPPORTED_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/native-interface
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-task
+                -DOWN_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-own-receiver
+                -DESCAPE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-conditional-escape
+                -DOWNER_DESTRUCTURE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-owner-destructure
+                -DOPEN_GENERIC_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-open-generic
+                -DGENERIC_STRUCT_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-generic-struct
+                -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/package-export/go-source/source_test.go
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/go-source-export-test
+                -DGO_EXECUTABLE=${FOUNDATION_GO_EXPORT_EXECUTABLE}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-go-source-export.cmake
+        )
+    endif()
     add_test(
         NAME stage0.run.accept
         COMMAND foundationc run ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fn
@@ -1190,6 +2025,15 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/llvm-aggregates.fn
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/llvm-debug-info.ll
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-llvm-debug-info.cmake
+    )
+    add_test(
+        NAME stage0.emit.llvm.project-debug-info
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/services
+            -DEXPECTED_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/services/src/main.fn
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/llvm-project-debug-info.ll
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-llvm-debug-info.cmake
     )
     add_test(
@@ -1418,6 +2262,15 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.llvm.generic-state-machine
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-state-machine.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-state-machine.out
+            -DBACKEND=llvm
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
         NAME stage0.run.llvm.workflows
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -1485,6 +2338,34 @@ if(BUILD_TESTING)
             -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/state-machine-timeout.c
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/state-machine-timeout-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/state-machine-timeout.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.generic-state-machine
+        COMMAND foundationc check
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-state-machine.fn
+    )
+    add_test(
+        NAME stage0.run.c.generic-state-machine
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-state-machine.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-state-machine.out
+            -DBACKEND=c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.generic-state-machine-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-state-machine.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/generic-state-machine.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/generic-state-machine-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/generic-state-machine.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
@@ -2230,6 +3111,23 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.saga-runtime
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/saga-runtime.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/saga-runtime.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.saga-runtime-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/saga-runtime.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/saga-runtime.out
+            -DASSERT_ALLOCATIONS=1
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
         NAME stage0.run.errors
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -2692,6 +3590,7 @@ if(BUILD_TESTING)
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.out
             -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/blocking_native.c
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
             -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
             -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
@@ -2747,6 +3646,45 @@ if(BUILD_TESTING)
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
             -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
             -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.run.fs-watch
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fs-watch.fn
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/watch_native.c
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fs-watch.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
+    )
+    add_test(
+        NAME stage0.run.fs-watch-c
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fs-watch.fn
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/watch_native.c
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fs-watch.out
+            -DBACKEND=c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
+    )
+    add_test(
+        NAME stage0.run.fs-watch-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fs-watch.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/fs-watch.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/fs-watch-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fs-watch.out
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/watch_native.c
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+            -DRUNTIME_WATCH_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/watch.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
@@ -2858,6 +3796,7 @@ if(BUILD_TESTING)
             "channel-borrow-payload;FDN2165"
             "channel-missing-endpoint;FDN2133"
             "channel-wrong-capacity;FDN2011"
+            "channel-never-payload;FDN2047"
             "channel-operation-outside-task;FDN2168"
             "channel-operation-nested;FDN2168")
         list(GET task_case 0 task_name)
@@ -3612,6 +4551,7 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-server
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
             -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
             -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
@@ -3639,6 +4579,7 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-cors
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
             -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
             -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
@@ -3666,6 +4607,7 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-routing
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
             -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
             -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
@@ -3683,6 +4625,14 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.web-compression
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-compression.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-compression.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
         NAME stage0.run.web-middleware-allocations
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -3693,6 +4643,7 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-middleware
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-middleware.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
             -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
             -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
@@ -3712,6 +4663,7 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-activation-allocations
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-activation/expected.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
             -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
             -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
@@ -3739,6 +4691,7 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-protocol-errors
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
             -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
             -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
@@ -3815,7 +4768,7 @@ if(BUILD_TESTING)
         NAME stage0.run.language-tour
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/language-tour/main.fn
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/language-tour/src/main.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/language-tour/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -4371,6 +5324,240 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
+        NAME stage0.run.contract-constraints
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-constraints.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-constraints.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.contract-constraints-c
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-constraints.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-constraints.out
+            -DBACKEND=c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.contract-constraints-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-constraints.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/contract-constraints.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/contract-constraints-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-constraints.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.contract-constraints-static
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/contract-constraints.fn
+            -DC_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/contract-constraints-static.c
+            -DLLVM_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/contract-constraints-static.ll
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-contract-constraints.cmake
+    )
+    add_test(
+        NAME stage0.run.contract-constraint-package
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/contract-constraint-package
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/contract-constraint-package
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-contract-constraint-project.cmake
+    )
+    add_test(
+        NAME stage0.check.contract-constraint-missing
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/contract-constraint-missing.fn
+            -DCODE=FDN2251
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.contract-constraint-non-contract
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/contract-constraint-non-contract.fn
+            -DCODE=FDN2250
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.contract-constraint-existential
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/contract-constraint-existential.fn
+            -DCODE=FDN2251
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.contract-constraint-own-bare
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/contract-constraint-own-bare.fn
+            -DCODE=FDN2103
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.contract-constraint-own-use-after-transfer
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/contract-constraint-own-use-after-transfer.fn
+            -DCODE=FDN2065
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.run.compound-assignment
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/compound-assignment.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/compound-assignment.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.compound-assignment-c
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/compound-assignment.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/compound-assignment.out
+            -DBACKEND=c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.compound-assignment-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/compound-assignment.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/compound-assignment.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/compound-assignment-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/compound-assignment.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.compound-immutable
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/compound-immutable.fn
+            -DCODE=FDN2077
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.compound-string-subtract
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/compound-string-subtract.fn
+            -DCODE=FDN2011
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME stage0.check.compound-conflicting-access
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/compound-conflicting-access.fn
+            -DCODE=FDN2073
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    foreach(compound_failure IN ITEMS compound-overflow:overflow compound-divide-zero:division.by.zero)
+        string(REPLACE ":" ";" compound_failure_parts ${compound_failure})
+        list(GET compound_failure_parts 0 compound_failure_name)
+        list(GET compound_failure_parts 1 compound_failure_pattern)
+        add_test(
+            NAME stage0.run.${compound_failure_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${compound_failure_name}.fn
+                -DPATTERN=${compound_failure_pattern}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+        )
+        add_test(
+            NAME stage0.run.${compound_failure_name}-c
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${compound_failure_name}.fn
+                -DPATTERN=${compound_failure_pattern}
+                -DBACKEND=c
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+        )
+    endforeach()
+    add_test(
+        NAME stage0.check.shift-operators
+        COMMAND foundationc check
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/shift-operators.fn
+    )
+    add_test(
+        NAME stage0.run.shift-operators
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/shift-operators.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/shift-operators.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.shift-operators-c
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/shift-operators.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/shift-operators.out
+            -DBACKEND=c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.shift-operators-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/shift-operators.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/shift-operators.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/shift-operators-allocations
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/shift-operators.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.check.shift-noninteger
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/shift-noninteger.fn
+            -DCODE=FDN2011
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    foreach(shift_failure IN ITEMS
+            shift-negative-count:shift.count.out.of.range
+            shift-wide-count:shift.count.out.of.range
+            shift-overflow:i32.overflow)
+        string(REPLACE ":" ";" shift_failure_parts ${shift_failure})
+        list(GET shift_failure_parts 0 shift_failure_name)
+        list(GET shift_failure_parts 1 shift_failure_pattern)
+        add_test(
+            NAME stage0.run.${shift_failure_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${shift_failure_name}.fn
+                -DPATTERN=${shift_failure_pattern}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+        )
+        add_test(
+            NAME stage0.run.${shift_failure_name}-c
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/${shift_failure_name}.fn
+                -DPATTERN=${shift_failure_pattern}
+                -DBACKEND=c
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-fail.cmake
+        )
+    endforeach()
+    add_test(
         NAME stage0.run.primitive-values
         COMMAND foundationc run
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/primitive-values.fn
@@ -4464,6 +5651,21 @@ if(BUILD_TESTING)
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/ownership.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
+    foreach(edit_scalar_backend IN ITEMS llvm c)
+        set(edit_scalar_backend_argument)
+        if(edit_scalar_backend STREQUAL "c")
+            set(edit_scalar_backend_argument -DBACKEND=c)
+        endif()
+        add_test(
+            NAME stage0.run.edit-scalar-parameter-${edit_scalar_backend}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/edit-scalar-parameter.fn
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/edit-scalar-parameter.out
+                ${edit_scalar_backend_argument}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+        )
+    endforeach()
     add_test(
         NAME stage0.run.owned-places
         COMMAND ${CMAKE_COMMAND}
@@ -4471,6 +5673,35 @@ if(BUILD_TESTING)
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/owned-places.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/owned-places.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    foreach(owned_temporary_backend IN ITEMS llvm c)
+        set(owned_temporary_backend_argument)
+        if(owned_temporary_backend STREQUAL "c")
+            set(owned_temporary_backend_argument -DBACKEND=c)
+        endif()
+        add_test(
+            NAME stage0.run.owned-temporary-borrows-${owned_temporary_backend}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/owned-temporary-borrows.fn
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/owned-temporary-borrows.out
+                ${owned_temporary_backend_argument}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+        )
+    endforeach()
+    add_test(
+        NAME stage0.run.owned-temporary-borrows-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/owned-temporary-borrows.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/owned-temporary-borrows.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/owned-temporary-borrows
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/owned-temporary-borrows.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
     add_test(
         NAME stage0.run.collections
@@ -4762,6 +5993,40 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
     )
     add_test(
+        NAME stage0.run.pooling
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pooling.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pooling.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.pooling-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pooling.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/pooling.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/pooling
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pooling.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.pooling-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pooling.fn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/pooling-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/pooling-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
         NAME stage0.run.caching-example
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -5005,6 +6270,9 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/logger
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/logger.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
@@ -5016,6 +6284,118 @@ if(BUILD_TESTING)
             -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/logger-first.c
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/logger-second.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.run.tracing
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tracing.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tracing.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.tracing-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tracing.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/tracing.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/tracing
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tracing.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.tracing-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tracing.fn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/tracing-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/tracing-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.run.telemetry-traceparent
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-traceparent.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-traceparent.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.telemetry-traceparent-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-traceparent.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/telemetry-traceparent.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/telemetry-traceparent
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-traceparent.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.telemetry-traceparent-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-traceparent.fn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/telemetry-traceparent-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/telemetry-traceparent-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.run.telemetry-prometheus
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-prometheus.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-prometheus.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.telemetry-prometheus-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-prometheus.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/telemetry-prometheus.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/telemetry-prometheus
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-prometheus.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+            -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME stage0.emit.telemetry-prometheus-deterministic
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-prometheus.fn
+            -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/telemetry-prometheus-first.c
+            -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/telemetry-prometheus-second.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+    )
+    add_test(
+        NAME stage0.run.telemetry-provider
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-provider.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-provider.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME stage0.run.telemetry-web
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-web.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-web.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
         NAME stage0.run.metrics
@@ -5067,6 +6447,7 @@ if(BUILD_TESTING)
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/httpx-vhost
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-vhost.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
             -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
             -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
@@ -5161,6 +6542,48 @@ if(BUILD_TESTING)
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/httpx-network-second.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
     )
+    foreach(httpx_policy_case IN ITEMS httpx-transport-policy httpx-upload httpx-tls-validation)
+        add_test(
+            NAME stage0.run.${httpx_policy_case}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${httpx_policy_case}.fn
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${httpx_policy_case}.out
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+        )
+        add_test(
+            NAME stage0.run.${httpx_policy_case}-allocations
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${httpx_policy_case}.fn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/${httpx_policy_case}.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${httpx_policy_case}
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${httpx_policy_case}.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+                -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                -DRUNTIME_RESILIENCY_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/resiliency.c
+                -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+        )
+        add_test(
+            NAME stage0.emit.${httpx_policy_case}-deterministic
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${httpx_policy_case}.fn
+                -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/${httpx_policy_case}-first.c
+                -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/${httpx_policy_case}-second.c
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
+        )
+    endforeach()
     add_test(
         NAME stage0.check.httpx-use-after-do
         COMMAND ${CMAKE_COMMAND}
@@ -5388,7 +6811,7 @@ if(BUILD_TESTING)
         NAME stage0.run.contract-project
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/contracts
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/contracts/app
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/contracts/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
@@ -5396,7 +6819,7 @@ if(BUILD_TESTING)
         NAME stage0.emit.contract-project-deterministic
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/contracts
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/contracts/app
             -DFIRST=${CMAKE_CURRENT_BINARY_DIR}/contracts-first.c
             -DSECOND=${CMAKE_CURRENT_BINARY_DIR}/contracts-second.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-deterministic.cmake
@@ -5440,6 +6863,19 @@ if(BUILD_TESTING)
             -DOBJECT=${CMAKE_CURRENT_BINARY_DIR}/c-abi-support${CMAKE_C_OUTPUT_EXTENSION}
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/c-abi/expected.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-object.cmake
+    )
+    add_test(
+        NAME stage0.run.desktop-notes
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/desktop-notes
+            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/examples/desktop-notes/native/desktop_host.c
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/desktop-notes/expected.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
+    )
+    set_tests_properties(stage0.run.desktop-notes PROPERTIES
+        ENVIRONMENT "FOUNDATION_DESKTOP_HEADLESS=1"
+        TIMEOUT ${FOUNDATION_COMPILE_RUN_TIMEOUT}
     )
     add_test(
         NAME stage0.emit.c-abi-header-cpp
@@ -5846,6 +7282,22 @@ if(BUILD_TESTING)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )
         add_test(
+            NAME stage0.run.pooling-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pooling.fn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/pooling-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/pooling-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pooling.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
             NAME stage0.run.adapters-sanitized
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
@@ -5876,6 +7328,23 @@ if(BUILD_TESTING)
                     -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                     -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
                     -DRUNTIME_PARSE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c
+                    -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                    -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                    -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+                    -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+            )
+            add_test(
+                NAME stage0.run.pooling-thread-sanitized
+                COMMAND ${CMAKE_COMMAND}
+                    -DCOMPILER=$<TARGET_FILE:foundationc>
+                    -DC_COMPILER=${CMAKE_C_COMPILER}
+                    -DTHREAD_SANITIZER=ON
+                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pooling.fn
+                    -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/pooling-thread-sanitized.c
+                    -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/pooling-thread-sanitized
+                    -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/pooling.out
+                    -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                     -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                     -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
                     -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
@@ -6038,6 +7507,70 @@ if(BUILD_TESTING)
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/logger-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/logger.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            add_test(
+                NAME stage0.run.logger-thread-sanitized
+                COMMAND ${CMAKE_COMMAND}
+                    -DCOMPILER=$<TARGET_FILE:foundationc>
+                    -DC_COMPILER=${CMAKE_C_COMPILER}
+                    -DTHREAD_SANITIZER=ON
+                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/logger.fn
+                    -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/logger-thread-sanitized.c
+                    -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/logger-thread-sanitized
+                    -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/logger.out
+                    -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                    -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                    -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                    -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                    -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+            )
+        endif()
+        add_test(
+            NAME stage0.run.tracing-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tracing.fn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/tracing-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/tracing-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/tracing.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.telemetry-traceparent-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-traceparent.fn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/telemetry-traceparent-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/telemetry-traceparent-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-traceparent.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.telemetry-prometheus-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-prometheus.fn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/telemetry-prometheus-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/telemetry-prometheus-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/telemetry-prometheus.out
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )
@@ -6094,6 +7627,7 @@ if(BUILD_TESTING)
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/httpx-vhost-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/httpx-vhost.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
                 -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
                 -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
@@ -6143,7 +7677,76 @@ if(BUILD_TESTING)
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )
+        foreach(httpx_policy_case IN ITEMS httpx-transport-policy httpx-upload httpx-tls-validation)
+            add_test(
+                NAME stage0.run.${httpx_policy_case}-sanitized
+                COMMAND ${CMAKE_COMMAND}
+                    -DCOMPILER=$<TARGET_FILE:foundationc>
+                    -DC_COMPILER=${CMAKE_C_COMPILER}
+                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${httpx_policy_case}.fn
+                    -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/${httpx_policy_case}-sanitized.c
+                    -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${httpx_policy_case}-sanitized
+                    -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${httpx_policy_case}.out
+                    -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                    -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+                    -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                    -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                    -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                    -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                    -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+                    -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                    -DRUNTIME_RESILIENCY_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/resiliency.c
+                    -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+                    -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+            )
+        endforeach()
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            foreach(httpx_policy_case IN ITEMS httpx-transport-policy httpx-upload httpx-tls-validation)
+                add_test(
+                    NAME stage0.run.${httpx_policy_case}-thread-sanitized
+                    COMMAND ${CMAKE_COMMAND}
+                        -DCOMPILER=$<TARGET_FILE:foundationc>
+                        -DC_COMPILER=${CMAKE_C_COMPILER}
+                        -DTHREAD_SANITIZER=ON
+                        -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${httpx_policy_case}.fn
+                        -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/${httpx_policy_case}-thread-sanitized.c
+                        -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${httpx_policy_case}-thread-sanitized
+                        -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/${httpx_policy_case}.out
+                        -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                        -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+                        -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                        -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                        -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                        -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
+                        -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
+                        -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                        -DRUNTIME_RESILIENCY_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/resiliency.c
+                        -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
+                        -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+                )
+            endforeach()
+            add_test(
+                NAME stage0.run.fs-watch-thread-sanitized
+                COMMAND ${CMAKE_COMMAND}
+                    -DCOMPILER=$<TARGET_FILE:foundationc>
+                    -DC_COMPILER=${CMAKE_C_COMPILER}
+                    -DTHREAD_SANITIZER=ON
+                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fs-watch.fn
+                    -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/fs-watch-thread-sanitized.c
+                    -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/fs-watch-thread-sanitized
+                    -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fs-watch.out
+                    -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/watch_native.c
+                    -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                    -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                    -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                    -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                    -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                    -DRUNTIME_WATCH_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/watch.c
+                    -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+            )
             add_test(
                 NAME stage0.run.hooks-thread-sanitized
                 COMMAND ${CMAKE_COMMAND}
@@ -6184,7 +7787,7 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND}
                 -DCOMPILER=$<TARGET_FILE:foundationc>
                 -DC_COMPILER=${CMAKE_C_COMPILER}
-                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/contracts
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/contracts/app
                 -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/contract-project-sanitized.c
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/contract-project-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/examples/contracts/expected.out
@@ -6267,6 +7870,7 @@ if(BUILD_TESTING)
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-rate-limit.out
                 -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/blocking_native.c
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
                 -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
                 -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
@@ -6311,6 +7915,25 @@ if(BUILD_TESTING)
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
                 -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
                 -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
+        )
+        add_test(
+            NAME stage0.run.fs-watch-sanitized
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DC_COMPILER=${CMAKE_C_COMPILER}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fs-watch.fn
+                -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/fs-watch-sanitized.c
+                -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/fs-watch-sanitized
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/fs-watch.out
+                -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/watch_native.c
+                -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
+                -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
+                -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
+                -DRUNTIME_WATCH_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/watch.c
                 -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-sanitized.cmake
         )
@@ -6361,6 +7984,7 @@ if(BUILD_TESTING)
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-server-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-server.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
                 -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
                 -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
@@ -6379,6 +8003,7 @@ if(BUILD_TESTING)
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-cors-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-cors.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
                 -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
                 -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
@@ -6397,6 +8022,7 @@ if(BUILD_TESTING)
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-routing-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-routing.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
                 -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
                 -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
@@ -6415,6 +8041,7 @@ if(BUILD_TESTING)
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-middleware-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-middleware.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
                 -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
                 -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
@@ -6433,6 +8060,7 @@ if(BUILD_TESTING)
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-activation-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-activation/expected.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
                 -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
                 -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
@@ -6451,6 +8079,7 @@ if(BUILD_TESTING)
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/application-host-web-middleware-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/application-host-web-middleware/expected.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
                 -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
                 -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
@@ -6469,6 +8098,7 @@ if(BUILD_TESTING)
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/web-protocol-errors-sanitized
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/web-protocol-errors.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+                -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
                 -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
                 -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
@@ -6923,7 +8553,6 @@ if(BUILD_TESTING)
             -DCODE=FDN3008
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
-
     find_program(FOUNDATION_NODE_EXECUTABLE NAMES node node.exe)
     if(FOUNDATION_NODE_EXECUTABLE)
         add_test(

@@ -1,0 +1,176 @@
+package foundation.httpx
+
+import std.bytes
+import std.collections
+import std.concurrent
+import std.text
+
+// Classifies TLS provider, peer, and SNI certificate failures without plaintext fallback.
+enum TLSError {
+    InvalidServerName
+    CertificateNotFound
+    CertificateRejected
+    HandshakeFailed
+    PeerVerificationFailed
+    Cancelled
+    Timeout
+    ProtocolFailed
+    Unavailable
+}
+
+// Owns certificate and private-key bytes selected for one server name.
+struct Certificate {
+    Names own collections.List<String>
+    CertificateChain own bytes.Bytes
+    PrivateKey own bytes.Bytes
+}
+
+// Resolves an SNI name from an explicit certificate store.
+contract CertificateResolver {
+    fn Resolve(&self, serverName String) Result<own Certificate, TLSError>
+}
+
+// Owns the native TLS connection policy behind a named provider boundary.
+// Implementations must validate the peer name and must never retry as plaintext.
+contract TLSProvider {
+    fn Send(
+        &self,
+        $request Request
+    ) Task<Result<Response, TLSError>>
+
+    // Sends with an explicit cooperative cancellation token owned by the caller.
+    fn SendWithCancellation(
+        &self,
+        $request Request,
+        $cancellation concurrent.Cancellation
+    ) Task<Result<Response, TLSError>>
+}
+
+struct tlsTransport implements Transport<NetworkError> {
+    provider own TLSProvider
+
+    fn Send(&self, $request Request) Task<Result<Response, NetworkError>> {
+        sendTLS(&self.provider, $request)
+    }
+}
+
+// Adapts an explicitly installed TLS provider to the ordinary HTTP client transport contract.
+fn TLSNetwork($provider own TLSProvider) own Transport<NetworkError> {
+    own tlsTransport { provider = provider }
+}
+
+fn sendTLS(
+    &provider TLSProvider,
+    $request Request
+) Task<Result<Response, NetworkError>> {
+    const source = concurrent.NewCancellationSource()
+    const cancellation = source.Token()
+    discard source
+    sendTLSWithCancellation(&provider, $request, $cancellation)
+}
+
+// Sends one TLS request with caller-controlled cooperative cancellation.
+fn SendTLSWithCancellation(
+    &provider TLSProvider,
+    $request Request,
+    $cancellation concurrent.Cancellation
+) Task<Result<Response, NetworkError>> {
+    sendTLSWithCancellation(&provider, $request, $cancellation)
+}
+
+fn sendTLSWithCancellation(
+    &provider TLSProvider,
+    $request Request,
+    $cancellation concurrent.Cancellation
+) Task<Result<Response, NetworkError>> {
+    const target = networkTargetFor(request.URL) else error {
+        discard error
+        discard request
+        discard cancellation
+        return spawn tlsNetworkFailure(.InvalidURL)
+    }
+    const networkTarget { host authority path port secure } = target
+    discard authority
+    discard path
+    discard port
+    if !secure {
+        discard host
+        discard request
+        discard cancellation
+        return spawn tlsNetworkFailure(.InvalidURL)
+    }
+    ValidateServerName(host) else error {
+        discard host
+        discard request
+        discard cancellation
+        return spawn tlsNetworkFailure(mapTLSError(error))
+    }
+    discard host
+    const sending = provider.SendWithCancellation($request, $cancellation)
+    spawn mapTLSResult($sending)
+}
+
+task mapTLSResult(
+    $sending Task<Result<Response, TLSError>>
+) Result<Response, NetworkError> {
+    const completed = $sending.wait()
+    const response = completed else error {
+        return .Err(mapTLSError(error))
+    }
+    .Ok(response)
+}
+
+task tlsNetworkFailure(error NetworkError) Result<Response, NetworkError> {
+    .Err(error)
+}
+
+// Rejects invalid SNI names before a provider sees them.
+fn ValidateServerName(serverName String) Result<void, TLSError> {
+    const length = text.ByteLen(serverName)
+    if length == 0 || length > 253 return .Err(.InvalidServerName)
+    var labelStart u64 = 0
+    var cursor u64 = 0
+    while cursor < length {
+        const current = byteAt(serverName, cursor)
+        if current == 46 {
+            if !validServerNameLabel(serverName, labelStart, cursor) {
+                return .Err(.InvalidServerName)
+            }
+            labelStart = cursor + 1
+        }
+        if current != 46 && !serverNameByte(current) {
+            return .Err(.InvalidServerName)
+        }
+        cursor = cursor + 1
+    }
+    if !validServerNameLabel(serverName, labelStart, length) {
+        return .Err(.InvalidServerName)
+    }
+    .Ok
+}
+
+fn validServerNameLabel(value String, start u64, end u64) bool {
+    if end <= start || end - start > 63 return false
+    byteAt(value, start) != 45 && byteAt(value, end - 1) != 45
+}
+
+fn serverNameByte(value u64) bool {
+    (value >= 48 && value <= 57) ||
+        (value >= 65 && value <= 90) ||
+        (value >= 97 && value <= 122) ||
+        value == 45
+}
+
+fn mapTLSError(error TLSError) NetworkError {
+    match error {
+        InvalidServerName: .TLSUnavailable
+        CertificateNotFound: .TLSUnavailable
+        CertificateRejected: .TLSUnavailable
+        HandshakeFailed: .TLSUnavailable
+        PeerVerificationFailed: .TLSUnavailable
+        Cancelled: .Cancelled
+        Timeout: .Timeout
+        ProtocolFailed: .TLSUnavailable
+        Unavailable: .TLSUnavailable
+    }
+}

@@ -1,0 +1,10 @@
+package test.telemetry.provider
+
+import foundation.telemetry
+
+fn main() i32 {
+    const provider = telemetry.NewNoopProvider<String>()
+    discard provider
+    print("telemetry provider ok")
+    0
+}

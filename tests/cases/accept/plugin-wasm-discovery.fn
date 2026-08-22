@@ -72,6 +72,9 @@ fn expectedOpenError(error plugin.WasmDiscoveryError, expected String) bool {
         InvalidUtf8: false
         LineTooLong: false
         TooLarge: false
+        InvalidInterval: false
+        ResourceLimit: false
+        Cancelled: false
         Closed: false
         Io: false
     }

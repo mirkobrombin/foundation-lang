@@ -1,0 +1,123 @@
+package test.tracing
+
+import foundation.tracing
+import std.collections
+import std.format
+
+enum TraceError {
+    Failed
+}
+
+struct RecordingSpan implements tracing.Span<TraceError> {
+    fn SetAttributes(
+        &self,
+        $attributes own collections.List<tracing.Attribute>
+    ) void {
+        print("attributes=" + format.I32(attributes.Len()))
+        discard attributes
+    }
+
+    fn RecordError(&self, $error TraceError) void {
+        match error {
+            Failed: print("error=failed")
+        }
+    }
+
+    fn End(&self) void {
+        print("ended=true")
+    }
+}
+
+struct RecordingTracer implements tracing.Tracer<TraceError> {
+    fn Start(
+        &self,
+        $parent tracing.Context,
+        $name String,
+        $attributes own collections.List<tracing.Attribute>
+    ) own tracing.Started<TraceError> {
+        const tracing.Context { TraceID SpanID } = parent
+        print("name=" + name)
+        print("parent=" + TraceID + "/" + SpanID)
+        print("initial=" + format.I32(attributes.Len()))
+        discard attributes
+        own tracing.Started<TraceError> {
+            Context = tracing.Context {
+                TraceID = TraceID
+                SpanID = "child"
+            }
+            Span = own RecordingSpan {}
+        }
+    }
+}
+
+fn initialAttributes() own collections.List<tracing.Attribute> {
+    const first = tracing.WithAttribute(
+        tracing.Attributes(),
+        tracing.Attribute {
+        Key = "component"
+        Value = .Text("checkout")
+    }
+    )
+    const second = tracing.WithAttribute(
+        $first,
+        tracing.Attribute {
+        Key = "attempt"
+        Value = .Signed(2)
+    }
+    )
+    const third = tracing.WithAttribute(
+        $second,
+        tracing.Attribute {
+        Key = "bytes"
+        Value = .Unsigned(64)
+    }
+    )
+    tracing.WithAttribute(
+        $third,
+        tracing.Attribute {
+        Key = "ratio"
+        Value = .Float(0.5)
+    }
+    )
+}
+
+fn spanAttributes() own collections.List<tracing.Attribute> {
+    tracing.WithAttribute(
+        tracing.Attributes(),
+        tracing.Attribute {
+        Key = "cached"
+        Value = .Bool(false)
+    }
+    )
+}
+
+fn main() i32 {
+    var tracer = RecordingTracer {}
+    var started = tracing.Start<TraceError>(
+        &tracer,
+        tracing.Context { TraceID = "trace" SpanID = "parent" },
+        "checkout",
+        initialAttributes()
+    )
+    if started.Context.TraceID != "trace" return 1
+    if started.Context.SpanID != "child" return 2
+    started.Span.SetAttributes(spanAttributes())
+    const failure = TraceError.Failed
+    started.Span.RecordError($failure)
+    started.Span.End()
+
+    var noop = tracing.Noop<TraceError>()
+    var silent = tracing.Start<TraceError>(
+        &noop,
+        tracing.Root(),
+        "ignored",
+        tracing.Attributes()
+    )
+    silent.Span.SetAttributes(tracing.Attributes())
+    const ignored = TraceError.Failed
+    silent.Span.RecordError($ignored)
+    silent.Span.End()
+    if silent.Context.TraceID != "" || silent.Context.SpanID != "" return 3
+    print("noop=ok")
+    0
+}

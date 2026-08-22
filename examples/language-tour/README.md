@@ -1,28 +1,24 @@
 # Foundation Language Tour
 
-`main.fn` is the executable reference for the current language subset. It is part of the compiler
-test suite and must change with the language. Its unused C import and callable C export keep ABI
-syntax in the tour without requiring a native object to run it.
-Target-selected declarations and `std.platform` keep platform branching in the same executable
-reference without C preprocessor conditions. The tour also exercises read-only environment access,
-checked text inspection, portable path joining, JSON parsing, UTC time formatting, and typed
-package-defined attributes with metadata-safe aggregate values. It also verifies prelude UUID
-parsing, canonical formatting, Nil, and process-monotonic version 7 generation.
-Typed pipeline chaining, bounded retry, and reverse saga compensation are exercised by the same
-executable. The worker section includes an owned closure environment qualified with
-`transferable fn` and a generic function constrained by `<T transferable>`.
+`main.fn` is both a runnable tour and a compiler fixture, so it changes whenever the accepted
+language surface changes. Follow it in source order to see declarations, ownership, contracts,
+generic constraints, tasks, workers, pipelines, sagas, standard packages, and native interop used
+in one program.
 
-The complete accepted 1.0 syntax and its implementation table live in
-`../../docs/language.md`. The 24-chapter newcomer tour remains in
-`../../docs/foundation-syntax-newcomer-review.md`; it includes accepted target forms that stage 0
-does not compile yet.
+The C import and export keep ABI syntax in the tour without requiring a native object at runtime.
+Platform-specific declarations use `std.platform` rather than preprocessor conditions, while the
+remaining sections use ordinary standard packages for files, paths, JSON, time, UUIDs, and process
+environment access.
+
+The complete Foundation 1.0 syntax and implementation table live in
+[`docs/language.md`](../../docs/language.md).
 
 Build the compiler, then run the tour:
 
 ```sh
 cmake --preset dev
 cmake --build --preset dev
-./build/dev/foundationc run examples/language-tour/main.fn
+./build/dev/foundationc run examples/language-tour
 ./build/dev/foundationc emit-metadata examples/language-tour -o tour.metadata.json
 ```
 

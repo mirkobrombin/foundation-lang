@@ -52,10 +52,10 @@ forward the collection.
 
 `Required` accepts `String` and `List<T>` fields because those types have an unambiguous empty state.
 It is rejected on numeric and boolean fields. This deliberately avoids pretending that zero means
-"missing", which is ambiguous. `Min` and `Max` accept
+"missing", the ambiguity that makes the v2 numeric `required` rule a no-op. `Min` and `Max` accept
 every integer and floating-point field. Integer limits must be integral and fit the field type;
 floating-point limits retain their source literal. A minimum above the maximum is a compile-time
-error. `Email` accepts `String` and follows a bounded ASCII shape.
+error. `Email` accepts `String` and follows the ASCII shape used by the v2 built-in rule.
 
 `Pattern` accepts `String` fields and uses the same portable bounded syntax as `std.pattern`:
 start and end anchors, `.`, escaped literals, character classes and ranges, negated classes, and
@@ -76,3 +76,7 @@ binding and before its route function runs. Direct dispatch preserves
 consumes that error and returns status 422 with a generic body. Binding syntax and type failures
 remain 400, while an unsupported media type remains 415.
 
+The shared compatibility fixture executes the common rule set against Foundation Lang and
+Foundation v2 revision `06679f06495151fbd0d491e76121ba98b939a291`. The migration guide is
+`docs/migrations/validation-v2.md`. The Lang surface intentionally replaces reflection tags and the
+mutable custom-rule registry with typed compile-time declarations.

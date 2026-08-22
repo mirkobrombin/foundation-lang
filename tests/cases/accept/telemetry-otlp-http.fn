@@ -1,0 +1,283 @@
+import foundation.httpx
+import foundation.telemetry
+import std.bytes
+import std.collections
+import std.text
+
+struct scriptedTransport implements httpx.Transport<httpx.NetworkError> {
+    status i32
+    encoding telemetry.OtlpEncoding
+    body String
+
+    fn Send(
+        &self,
+        $request httpx.Request
+    ) Task<Result<httpx.Response, httpx.NetworkError>> {
+        spawn scriptedResponse(
+            $request,
+            self.status,
+            self.encoding,
+            text.Copy(self.body)
+        )
+    }
+}
+
+struct incorrectContentTransport implements httpx.Transport<httpx.NetworkError> {
+    fn Send(
+        &self,
+        $request httpx.Request
+    ) Task<Result<httpx.Response, httpx.NetworkError>> {
+        spawn incorrectContentResponse($request)
+    }
+}
+
+fn main() i32 {
+    if !exported(200, .JSON, .None) return 1
+    if !exported(200, .Protobuf, .None) return 2
+    if !exported(201, .JSON, .Some(.Rejected)) return 3
+    if !exported(408, .JSON, .Some(.Rejected)) return 4
+    if !exported(429, .JSON, .Some(.Unavailable)) return 4
+    if !exported(404, .JSON, .Some(.Rejected)) return 5
+    if !exported(500, .JSON, .Some(.Rejected)) return 6
+    if !exported(502, .JSON, .Some(.Unavailable)) return 7
+    if !exported(503, .JSON, .Some(.Unavailable)) return 8
+    if !exported(504, .JSON, .Some(.Unavailable)) return 9
+    if !limited() return 10
+    if !responseLimited() return 11
+    if !incorrectContentRejected() return 12
+    print("ok")
+    0
+}
+
+fn incorrectContentRejected() bool {
+    const transport = telemetry.NewHttpOtlpTransportWith(
+        own incorrectContentTransport {},
+        64,
+        64
+    ) else error {
+        discard error
+        return false
+    }
+    const exporterCreated = telemetry.NewOtlpExporter(
+        "http://collector.test/v1/traces",
+        .JSON,
+        $transport
+    ) else error {
+        discard error
+        return false
+    }
+    var exporter = exporterCreated
+    const pending = exporter.Export(bytes.FromText("payload"))
+    const result = $pending.wait()
+    expectedResult(result, .Some(.Rejected))
+}
+
+fn exported(
+    status i32,
+    encoding telemetry.OtlpEncoding,
+    expected Option<telemetry.OtlpError>
+) bool {
+    const transport = telemetry.NewHttpOtlpTransportWith(
+        own scriptedTransport { status = status encoding = encoding body = "" },
+        64,
+        64
+    ) else error {
+        discard error
+        return false
+    }
+    const exporterCreated = telemetry.NewOtlpExporter(
+        "http://collector.test/v1/traces",
+        encoding,
+        $transport
+    ) else error {
+        discard error
+        return false
+    }
+    var exporter = exporterCreated
+    const pending = exporter.Export(bytes.FromText("payload"))
+    const result = $pending.wait()
+    expectedResult(result, expected)
+}
+
+fn limited() bool {
+    const transport = telemetry.NewHttpOtlpTransportWith(
+        own scriptedTransport { status = 200 encoding = .JSON body = "" },
+        1,
+        64
+    ) else error {
+        discard error
+        return false
+    }
+    const exporterCreated = telemetry.NewOtlpExporter(
+        "http://collector.test/v1/logs",
+        .JSON,
+        $transport
+    ) else error {
+        discard error
+        return false
+    }
+    var exporter = exporterCreated
+    const pending = exporter.Export(bytes.FromText("too large"))
+    const result = $pending.wait()
+    expectedResult(result, .Some(.PayloadTooLarge))
+}
+
+fn responseLimited() bool {
+    const transport = telemetry.NewHttpOtlpTransportWith(
+        own scriptedTransport { status = 200 encoding = .JSON body = "body" },
+        64,
+        1
+    ) else error {
+        discard error
+        return false
+    }
+    const exporterCreated = telemetry.NewOtlpExporter(
+        "http://collector.test/v1/metrics",
+        .JSON,
+        $transport
+    ) else error {
+        discard error
+        return false
+    }
+    var exporter = exporterCreated
+    const pending = exporter.Export(bytes.FromText("payload"))
+    const result = $pending.wait()
+    expectedResult(result, .Some(.Rejected))
+}
+
+task scriptedResponse(
+    $request httpx.Request,
+    status i32,
+    encoding telemetry.OtlpEncoding,
+    $body String
+) Result<httpx.Response, httpx.NetworkError> {
+    var active = request
+    const valid = active.Method == "POST" && active.FollowRedirects == false &&
+        expectedContentType(active.Header("Content-Type"), encoding) &&
+        expectedContentType(active.Header("Accept"), encoding) &&
+        requestPayload(active.Body)
+    discard active
+    if !valid return .Ok(response(400, encoding, body))
+    .Ok(response(status, encoding, body))
+}
+
+task incorrectContentResponse(
+    $request httpx.Request
+) Result<httpx.Response, httpx.NetworkError> {
+    discard request
+    .Ok(response(200, .Protobuf, ""))
+}
+
+fn expectedContentType(
+    value Option<String>,
+    encoding telemetry.OtlpEncoding
+) bool {
+    const expected = match encoding {
+        JSON: "application/json"
+        Protobuf: "application/x-protobuf"
+    }
+    match value {
+        Some(actual): actual == expected
+        None: false
+    }
+}
+
+fn requestPayload(value bytes.Bytes) bool {
+    const rendered = value.Text() else error {
+        discard error
+        return false
+    }
+    rendered == "payload"
+}
+
+fn response(status i32, encoding telemetry.OtlpEncoding, body String) httpx.Response {
+    var value = httpx.Response {
+        Status = status
+        Headers = collections.NewList<httpx.Header>()
+        Body = bytes.FromText(body)
+    }
+    value.SetHeader("Content-Type", expectedEncoding(encoding)) else error {
+        discard error
+        panic("scripted OTLP response header failed")
+    }
+    value
+}
+
+fn expectedEncoding(encoding telemetry.OtlpEncoding) String {
+    match encoding {
+        JSON: "application/json"
+        Protobuf: "application/x-protobuf"
+    }
+}
+
+fn expectedResult(
+    value Result<void, telemetry.OtlpError>,
+    expected Option<telemetry.OtlpError>
+) bool {
+    match value {
+        Ok: match expected {
+            None: true
+            Some(error): {
+                discard error
+                false
+            }
+        }
+        Err(error): match expected {
+            None: false
+            Some(expected): errorMatches(error, expected)
+        }
+    }
+}
+
+fn errorMatches(left telemetry.OtlpError, right telemetry.OtlpError) bool {
+    match left {
+        EmptyEndpoint: match right {
+            EmptyEndpoint: true
+            InvalidEndpoint: false
+            PayloadTooLarge: false
+            Unavailable: false
+            Rejected: false
+            Failed: false
+        }
+        InvalidEndpoint: match right {
+            EmptyEndpoint: false
+            InvalidEndpoint: true
+            PayloadTooLarge: false
+            Unavailable: false
+            Rejected: false
+            Failed: false
+        }
+        PayloadTooLarge: match right {
+            EmptyEndpoint: false
+            InvalidEndpoint: false
+            PayloadTooLarge: true
+            Unavailable: false
+            Rejected: false
+            Failed: false
+        }
+        Unavailable: match right {
+            EmptyEndpoint: false
+            InvalidEndpoint: false
+            PayloadTooLarge: false
+            Unavailable: true
+            Rejected: false
+            Failed: false
+        }
+        Rejected: match right {
+            EmptyEndpoint: false
+            InvalidEndpoint: false
+            PayloadTooLarge: false
+            Unavailable: false
+            Rejected: true
+            Failed: false
+        }
+        Failed: match right {
+            EmptyEndpoint: false
+            InvalidEndpoint: false
+            PayloadTooLarge: false
+            Unavailable: false
+            Rejected: false
+            Failed: true
+        }
+    }
+}

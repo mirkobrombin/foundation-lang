@@ -505,6 +505,9 @@ fn mapStoreFileError(error fs.Error) StoreError {
         InvalidUtf8: .InvalidData
         LineTooLong: .TooLarge
         TooLarge: .TooLarge
+        InvalidInterval: .Io
+        ResourceLimit: .Io
+        Cancelled: .Io
         Closed: .Closed
         Io: .Io
     }

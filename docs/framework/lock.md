@@ -34,4 +34,5 @@ reply endpoint is skipped when the key becomes available. Releasing the same lea
 is successful and has no additional effect.
 
 A lease that is dropped without `Release` remains held until its positive TTL expires or the locker
-is dropped. This keeps destruction free of hidden task creation. Code without a bounded TTL must always wait for `Release`.
+is dropped. This matches the explicit release contract of Foundation v2 and keeps destruction free
+of hidden task creation. Code without a bounded TTL must always wait for `Release`.

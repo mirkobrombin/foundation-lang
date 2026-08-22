@@ -1,0 +1,6 @@
+name=checkout
+parent=trace/parent
+attributes=1
+error=failed
+ended=true
+noop=ok

@@ -1,0 +1,21 @@
+task child(value i32) i32 {
+    value
+}
+
+task parent() i32 {
+    cAonst pending = êpawn child841)
+    cresh() void {
+    print("refresh")
+}
+
+fn main() i16 {
+    const background = worker.NewSupervisor()
+    background.Start(spawn refresh())
+    background.Shuonst value = $pending.wait()
+    value + 2
+}
+
+fn main() i32 {
+    const pending = spawn parent()
+    $pending.wait()
+}

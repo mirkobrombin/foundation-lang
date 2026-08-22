@@ -261,9 +261,8 @@ Program Parser::parse() {
                 restoreProgram(expressions, statements, blocks, functions);
                 program_.structs.resize(structs);
                 program_.enums.resize(enums);
-            } else if (!parsedAttributes.applications.empty()) {
-                diagnostics_.error("FDN1148", "workflow attributes are not supported yet",
-                                   parsedAttributes.applications.front().span);
+            } else if (program_.functions.size() > functions) {
+                program_.functions[functions].attributes = std::move(parsedAttributes.applications);
             }
             continue;
         }
@@ -621,7 +620,8 @@ const Token &Parser::expect(TokenKind kind, const char *code, const char *messag
     return current();
 }
 
-std::vector<std::string> Parser::typeParameters(std::vector<bool> *transferable) {
+std::vector<std::string> Parser::typeParameters(std::vector<bool> *transferable,
+                       std::vector<std::optional<TypeSyntax>>* constraints) {
     std::vector<std::string> parameters;
     if (!match(TokenKind::Less)) {
         return parameters;
@@ -634,6 +634,12 @@ std::vector<std::string> Parser::typeParameters(std::vector<bool> *transferable)
             if (check(TokenKind::Identifier) && current().text == "transferable") {
                 advance();
                 transferable->back() = true;
+            }
+        }
+        if (constraints != nullptr) {
+            constraints->push_back(std::nullopt);
+            if (check(TokenKind::Identifier)) {
+                constraints->back() = typeSyntax("FDN1250", "expected contract type constraint");
             }
         }
     } while (match(TokenKind::Comma));
@@ -954,11 +960,7 @@ void Parser::stateMachineDeclaration() {
     const auto start = expect(TokenKind::StateMachine, "FDN1190", "expected state_machine");
     const auto name =
         expect(TokenKind::Identifier, "FDN1191", "expected state machine name");
-    if (check(TokenKind::Less)) {
-        diagnostics_.error("FDN1192", "generic state machines are not supported yet",
-                           current().span);
-        static_cast<void>(typeParameters());
-    }
+    const auto typeParameters = this->typeParameters();
     expect(TokenKind::LeftBrace, "FDN1193", "expected { after state machine name");
 
     std::vector<EnumVariant> states;
@@ -1104,15 +1106,30 @@ void Parser::stateMachineDeclaration() {
     }
 
     const auto machineExported = isExported(name.text);
-    EnumDeclaration machine{name.text, {}, states, machineExported, BuiltinEnumKind::None,
-                            start.span, {}, {}, true};
+    EnumDeclaration machine{name.text,
+                            typeParameters,
+                            states,
+                            machineExported,
+                            BuiltinEnumKind::None,
+                            start.span,
+                            {},
+                            {},
+                            true};
     program_.enums.push_back(std::move(machine));
 
     const auto errorName = name.text + "TransitionError";
     EnumVariant invalidState{"InvalidState", std::nullopt, true, start.span, {},
-                             std::nullopt, std::nullopt};
-    program_.enums.push_back({errorName, {}, {std::move(invalidState)}, machineExported,
-                              BuiltinEnumKind::None, start.span, {}, {}, false, true});
+                             std::nullopt,   std::nullopt};
+    program_.enums.push_back({errorName,
+                              {},
+                              {std::move(invalidState)},
+                              machineExported,
+                              BuiltinEnumKind::None,
+                              start.span,
+                              {},
+                              {},
+                              false,
+                              true});
 
     const auto findState = [&](const Token &token) -> std::optional<std::size_t> {
         const auto found = std::find_if(states.begin(), states.end(), [&](const auto &state) {
@@ -1155,19 +1172,18 @@ void Parser::stateMachineDeclaration() {
             metadata.destinationVariant = *destination;
             const auto expectsPayload = states[*destination].payloadType.has_value();
             if (expectsPayload != transition.destinationArgument.has_value()) {
-                diagnostics_.error(
-                    "FDN1212",
-                    expectsPayload ? "destination state requires a payload binding"
-                                   : "destination state does not accept a payload",
-                    transition.destination.span);
+                diagnostics_.error("FDN1212",
+                                   expectsPayload ? "destination state requires a payload binding"
+                                                  : "destination state does not accept a payload",
+                                   transition.destination.span);
             }
         }
         if (transition.destinationArgument.has_value()) {
-            const auto found = std::find_if(
-                transition.parameters.begin(), transition.parameters.end(),
-                [&](const auto &parameter) {
-                    return parameter.name == transition.destinationArgument->text;
-                });
+            const auto found =
+                std::find_if(transition.parameters.begin(), transition.parameters.end(),
+                             [&](const auto &parameter) {
+                                 return parameter.name == transition.destinationArgument->text;
+                             });
             if (found == transition.parameters.end()) {
                 diagnostics_.error("FDN1213",
                                    "unknown transition parameter " +
@@ -1175,29 +1191,35 @@ void Parser::stateMachineDeclaration() {
                                    transition.destinationArgument->span);
             } else {
                 metadata.destinationParameter =
-                    1 + static_cast<std::size_t>(
-                            std::distance(transition.parameters.begin(), found));
+                    1 +
+                    static_cast<std::size_t>(std::distance(transition.parameters.begin(), found));
             }
         }
         metadata.timeoutNanoseconds = transition.timeoutNanoseconds;
 
         TypeSyntax machineType{name.text, {}, name.span};
-        Parameter receiver{"self", TypeSyntax{"edit", {machineType}, name.span}, name.span, {},
+        for (const auto &parameter : typeParameters) {
+            machineType.arguments.push_back(TypeSyntax{parameter, {}, name.span});
+        }
+        Parameter receiver{"self",
+                           TypeSyntax{"edit", {machineType}, name.span},
+                           name.span,
+                           {},
                            ParameterMode::Bootstrap};
         std::vector<Parameter> parameters;
         parameters.reserve(transition.parameters.size() + 1);
         parameters.push_back(std::move(receiver));
         parameters.insert(parameters.end(), transition.parameters.begin(),
                           transition.parameters.end());
-        TypeSyntax returnType{
-            "Result",
-            {TypeSyntax{"void", {}, transition.event.span},
-             TypeSyntax{errorName, {}, transition.event.span}},
-            transition.event.span};
+        TypeSyntax returnType{"Result",
+                              {TypeSyntax{"void", {}, transition.event.span},
+                               TypeSyntax{errorName, {}, transition.event.span}},
+                              transition.event.span};
         program_.blocks.push_back({{}, transition.event.span});
 
         Function function;
         function.name = transition.event.text;
+        function.typeParameters = typeParameters;
         function.parameters = std::move(parameters);
         function.returnType = std::move(returnType);
         function.body = program_.blocks.size() - 1;
@@ -1210,26 +1232,28 @@ void Parser::stateMachineDeclaration() {
 
         if (transition.timeoutNanoseconds.has_value()) {
             TypeSyntax timeoutMachineType{name.text, {}, name.span};
-            Parameter state{"state", timeoutMachineType, name.span, {},
-                            ParameterMode::Read};
+            for (const auto &parameter : typeParameters) {
+                timeoutMachineType.arguments.push_back(TypeSyntax{parameter, {}, name.span});
+            }
+            Parameter state{"state", timeoutMachineType, name.span, {}, ParameterMode::Read};
             TypeSyntax timeoutReturn{
-                "Option", {TypeSyntax{"u64", {}, transition.event.span}},
-                transition.event.span};
+                "Option", {TypeSyntax{"u64", {}, transition.event.span}}, transition.event.span};
             program_.blocks.push_back({{}, transition.event.span});
 
             Function accessor;
-            accessor.name = std::string(isExported(transition.event.text) ? "TimeoutFor"
-                                                                          : "timeoutFor") +
-                            transition.event.text;
+            accessor.name =
+                std::string(isExported(transition.event.text) ? "TimeoutFor" : "timeoutFor") +
+                transition.event.text;
+            accessor.typeParameters = typeParameters;
             accessor.parameters.push_back(std::move(state));
             accessor.returnType = std::move(timeoutReturn);
             accessor.body = program_.blocks.size() - 1;
             accessor.exported = isExported(transition.event.text);
             accessor.span = transition.event.span;
             accessor.ownerType = name.text;
-            accessor.stateTimeout = StateTimeoutFunction{
-                program_.functions.back().stateTransition->sourceVariants,
-                *transition.timeoutNanoseconds};
+            accessor.stateTimeout =
+                StateTimeoutFunction{program_.functions.back().stateTransition->sourceVariants,
+                                     *transition.timeoutNanoseconds};
             program_.functions.push_back(std::move(accessor));
         }
     }
@@ -1493,7 +1517,9 @@ Function Parser::function(bool external, bool task) {
            task ? "expected task" : "expected fn");
     const auto name = expect(TokenKind::Identifier, "FDN1003", "expected function name");
     std::vector<bool> transferableTypeParameters;
-    auto typeParameters = this->typeParameters(&transferableTypeParameters);
+    std::vector<std::optional<TypeSyntax>> typeParameterConstraints;
+    auto typeParameters =
+        this->typeParameters(&transferableTypeParameters, &typeParameterConstraints);
     expect(TokenKind::LeftParen, "FDN1004", "expected ( after function name");
 
     std::vector<Parameter> parameters;
@@ -1517,12 +1543,15 @@ Function Parser::function(bool external, bool task) {
         auto previousTypeParameters = std::move(activeTypeParameters_);
         auto previousTransferableTypeParameters =
             std::move(activeTransferableTypeParameters_);
+        auto previousTypeParameterConstraints = std::move(activeTypeParameterConstraints_);
         activeTypeParameters_ = typeParameters;
         activeTransferableTypeParameters_ = transferableTypeParameters;
+        activeTypeParameterConstraints_ = typeParameterConstraints;
         body = block(tailResult);
         activeTypeParameters_ = std::move(previousTypeParameters);
         activeTransferableTypeParameters_ =
             std::move(previousTransferableTypeParameters);
+        activeTypeParameterConstraints_ = std::move(previousTypeParameterConstraints);
     } else {
         program_.blocks.push_back({{}, start.span});
         body = program_.blocks.size() - 1;
@@ -1531,11 +1560,14 @@ Function Parser::function(bool external, bool task) {
                     std::move(returnType), body, isExported(name.text), start.span, {}, {},
                     std::nullopt, {}, std::nullopt, true, false, {}, {}, false, false, false,
                     std::nullopt, std::nullopt, false, std::nullopt, std::nullopt, false, {},
-                    std::nullopt};
+                    std::nullopt,
+                    {},
+                    {}};
     result.cSymbol = std::move(cSymbol);
     result.hasBody = hasBody;
     result.task = task;
     result.transferableTypeParameters = std::move(transferableTypeParameters);
+    result.typeParameterConstraints = std::move(typeParameterConstraints);
     return result;
 }
 
@@ -1551,7 +1583,9 @@ Function Parser::testDeclaration() {
                     TypeSyntax{"void", {}, start.span}, body, false, start.span, {}, {},
                     std::nullopt, {}, std::nullopt, true, false, {}, {}, false, false, false,
                     name.text, std::nullopt, false, std::nullopt, std::nullopt, false, {},
-                    std::nullopt};
+                    std::nullopt,
+                    {},
+                    {}};
     result.testNameSpan = name.span;
     return result;
 }
@@ -1638,7 +1672,9 @@ Function Parser::method(const std::string &owner,
     Function result{name.text, typeParameters, std::move(parameters), std::move(returnType), body,
                     isExported(name.text), start.span, {}, {}, access, owner, std::nullopt, true,
                     false, {}, {}, false, false, false, std::nullopt, std::nullopt, action,
-                    std::nullopt, std::nullopt, false, {}, std::nullopt};
+                    std::nullopt, std::nullopt, false, {}, std::nullopt,
+                    {},
+                    {}};
     result.action = action;
     result.constructor = constructor;
     return result;
@@ -1695,7 +1731,9 @@ ContractMethod Parser::contractMethod(const std::string &owner,
             {name.text, typeParameters, std::move(functionParameters), returnType, body,
              isExported(name.text), start.span, {}, {}, access, owner, std::nullopt, true, false,
              {}, {}, false, false, false, std::nullopt, std::nullopt, false, std::nullopt,
-             std::nullopt, false, {}, std::nullopt});
+             std::nullopt, false, {}, std::nullopt,
+                                      {},
+                                      {}});
     }
     return {name.text, access, std::move(parameters), std::move(returnType),
             isExported(name.text), start.span, defaultFunction, {}};
@@ -2155,16 +2193,45 @@ AstStatementId Parser::selectStatement(const Token &start) {
 AstStatementId Parser::expressionStatement() {
     const auto start = current().span;
     const auto value = expression();
+    std::optional<AssignmentOperator> assignment;
     if (match(TokenKind::Equal)) {
-        return addStatement(AssignmentStatement{value, expression()}, start);
+        assignment = AssignmentOperator::Assign;
+    } else if (match(TokenKind::PlusEqual)) {
+        assignment = AssignmentOperator::Add;
+    } else if (match(TokenKind::MinusEqual)) {
+        assignment = AssignmentOperator::Subtract;
+    } else if (match(TokenKind::StarEqual)) {
+        assignment = AssignmentOperator::Multiply;
+    } else if (match(TokenKind::SlashEqual)) {
+        assignment = AssignmentOperator::Divide;
+    } else if (match(TokenKind::PercentEqual)) {
+        assignment = AssignmentOperator::Remainder;
+    } else if (check(TokenKind::Less) && peek(1).kind == TokenKind::Less &&
+               peek(2).kind == TokenKind::Equal &&
+               current().span.offset + current().span.length == peek(1).span.offset &&
+               peek(1).span.offset + peek(1).span.length == peek(2).span.offset) {
+        advance();
+        advance();
+        advance();
+        assignment = AssignmentOperator::ShiftLeft;
+    } else if (check(TokenKind::Greater) && peek(1).kind == TokenKind::Greater &&
+               peek(2).kind == TokenKind::Equal &&
+               current().span.offset + current().span.length == peek(1).span.offset &&
+               peek(1).span.offset + peek(1).span.length == peek(2).span.offset) {
+        advance();
+        advance();
+        advance();
+        assignment = AssignmentOperator::ShiftRight;
+    }
+    if (assignment.has_value()) {
+        return addStatement(AssignmentStatement{value, *assignment, expression()}, start);
     }
     if (match(TokenKind::Else)) {
         std::optional<std::string> binding;
         if (check(TokenKind::Identifier)) {
             binding = advance().text;
         } else if (!check(TokenKind::LeftBrace)) {
-            diagnostics_.error("FDN1214", "expected error binding or { after else",
-                               current().span);
+            diagnostics_.error("FDN1214", "expected error binding or { after else", current().span);
         }
         return addStatement(ResultElseStatement{value, std::move(binding), block()}, start);
     }
@@ -2198,7 +2265,7 @@ AstExpressionId Parser::conditional() {
     program_.blocks.push_back({{}, start.span});
     const auto elseBlock = program_.blocks.size() - 1;
     return addExpression(
-        ConditionalExpression{condition, thenBlock, value, elseBlock, fallback}, start.span);
+        ConditionalExpression{condition, thenBlock, value, elseBlock, fallback, true}, start.span);
 }
 
 AstExpressionId Parser::logicalOr() {
@@ -2236,10 +2303,20 @@ AstExpressionId Parser::equality() {
 }
 
 AstExpressionId Parser::comparison() {
-    auto value = term();
-    while (continuesLine() &&
-           (check(TokenKind::Less) || check(TokenKind::LessEqual) ||
-            check(TokenKind::Greater) || check(TokenKind::GreaterEqual))) {
+    auto value = shift();
+    const auto shiftAssignment = [&]() {
+        const auto first = current();
+        const auto second = peek(1);
+        const auto third = peek(2);
+        return first.span.offset + first.span.length == second.span.offset &&
+               second.span.offset + second.span.length == third.span.offset &&
+               third.kind == TokenKind::Equal &&
+               ((first.kind == TokenKind::Less && second.kind == TokenKind::Less) ||
+                (first.kind == TokenKind::Greater && second.kind == TokenKind::Greater));
+    };
+    while (continuesLine() && !shiftAssignment() &&
+           (check(TokenKind::Less) || check(TokenKind::LessEqual) || check(TokenKind::Greater) ||
+            check(TokenKind::GreaterEqual))) {
         BinaryOperator operation{};
         switch (advance().kind) {
         case TokenKind::Less:
@@ -2257,9 +2334,34 @@ AstExpressionId Parser::comparison() {
         default:
             break;
         }
-        const auto right = term();
+        const auto right = shift();
         value = addExpression(BinaryExpression{value, operation, right},
                               program_.expressions[value].span);
+    }
+    return value;
+}
+
+AstExpressionId Parser::shift() {
+    auto value = term();
+    while (continuesLine()) {
+        const auto first = current();
+        const auto second = peek(1);
+        const auto third = peek(2);
+        const auto adjacent = first.span.offset + first.span.length == second.span.offset;
+        const auto assignment = second.span.offset + second.span.length == third.span.offset &&
+                                third.kind == TokenKind::Equal;
+        const auto left = first.kind == TokenKind::Less && second.kind == TokenKind::Less;
+        const auto right = first.kind == TokenKind::Greater && second.kind == TokenKind::Greater;
+        if (!adjacent || assignment || (!left && !right)) {
+            break;
+        }
+        advance();
+        advance();
+        const auto operand = term();
+        value = addExpression(
+            BinaryExpression{value, left ? BinaryOperator::ShiftLeft : BinaryOperator::ShiftRight,
+                             operand},
+            program_.expressions[value].span);
     }
     return value;
 }
@@ -2757,6 +2859,7 @@ AstExpressionId Parser::functionExpression(const Token &start) {
     function.name = "$closure_" + std::to_string(program_.functions.size());
     function.typeParameters = activeTypeParameters_;
     function.transferableTypeParameters = activeTransferableTypeParameters_;
+    function.typeParameterConstraints = activeTypeParameterConstraints_;
     function.parameters = std::move(parameters);
     function.returnType = std::move(returnType);
     function.body = body;

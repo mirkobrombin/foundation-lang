@@ -1,0 +1,33 @@
+package foundation.telemetry
+
+import foundation.tracing
+import foundation.web
+
+// Creates one trace span around each typed web dispatch.
+struct WebMiddleware<E> implements web.Middleware<E> {
+    provider own Provider<E>
+
+    fn Handle(
+        &self,
+        $request web.Request,
+        next fn($web.Request) Result<web.Response, web.DispatchError<E>>
+    ) Result<web.Response, web.DispatchError<E>> {
+        const started = tracing.Start(
+            &self.provider.Tracer,
+            tracing.Root(),
+            "http.request",
+            tracing.Attributes()
+        )
+        const tracing.Started { Context Span } = started
+        discard Context
+        var span = Span
+        const result = next($request)
+        span.End()
+        result
+    }
+}
+
+// Transfers one telemetry provider into a reusable typed web middleware owner.
+fn NewWebMiddleware<E>($provider own Provider<E>) own web.Middleware<E> {
+    own WebMiddleware<E> { provider = provider }
+}

@@ -1,0 +1,13 @@
+package fuzz.pooling
+
+import foundation.pooling
+
+fn fresh() i32 {
+    1
+}
+
+fn main() i32 {
+    const pool = pooling.New<i32>($fresh)
+    discard pool
+    0
+}

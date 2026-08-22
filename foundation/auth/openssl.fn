@@ -1,0 +1,78 @@
+package foundation.auth
+
+import std.bytes
+
+extern c fn signNative(
+    algorithm u64,
+    privateKey u64,
+    signingInput u64,
+    &signature u64
+) i32 as foundation_openssl_sign
+extern c fn verifyNative(
+    algorithm u64,
+    publicKey u64,
+    signingInput u64,
+    signature u64
+) i32 as foundation_openssl_verify
+
+// Provides RS256, ES256, and Ed25519 signing through an explicitly linked OpenSSL adapter.
+struct OpenSSLAsymmetricProvider implements AsymmetricProvider {
+    fn Sign(
+        &self,
+        algorithm AsymmetricAlgorithm,
+        privateKey bytes.Bytes,
+        signingInput bytes.Bytes
+    ) Result<own bytes.Bytes, AsymmetricProviderError> {
+        var signature u64 = 0
+        const status = signNative(
+            openSSLAlgorithm(algorithm),
+            bytes.RuntimeHandle(privateKey),
+            bytes.RuntimeHandle(signingInput),
+            &signature
+        )
+        if status != 0 return .Err(openSSLAsymmetricError(status))
+        const claimed = bytes.ClaimRuntimeHandle(signature) else error {
+            discard error
+            return .Err(.Failed)
+        }
+        .Ok(claimed)
+    }
+
+    fn Verify(
+        &self,
+        algorithm AsymmetricAlgorithm,
+        publicKey bytes.Bytes,
+        signingInput bytes.Bytes,
+        signature bytes.Bytes
+    ) Result<void, AsymmetricProviderError> {
+        const status = verifyNative(
+            openSSLAlgorithm(algorithm),
+            bytes.RuntimeHandle(publicKey),
+            bytes.RuntimeHandle(signingInput),
+            bytes.RuntimeHandle(signature)
+        )
+        if status != 0 return .Err(openSSLAsymmetricError(status))
+        .Ok
+    }
+}
+
+// Creates the provider only when the application explicitly links providers/openssl.
+fn OpenSSLAsymmetric() own AsymmetricProvider {
+    own OpenSSLAsymmetricProvider {}
+}
+
+fn openSSLAlgorithm(algorithm AsymmetricAlgorithm) u64 {
+    match algorithm {
+        RS256: 0
+        ES256: 1
+        EdDSA: 2
+    }
+}
+
+fn openSSLAsymmetricError(status i32) AsymmetricProviderError {
+    if status == 2 return .InvalidPrivateKey
+    if status == 3 return .InvalidPublicKey
+    if status == 4 return .InvalidSignature
+    if status == 1 return .Failed
+    .Failed
+}

@@ -1,0 +1,92 @@
+package foundation.telemetry
+
+import std.bytes
+import std.text
+
+// Classifies configuration and delivery failures at the explicit OTLP provider boundary.
+enum OtlpError {
+    EmptyEndpoint
+    InvalidEndpoint
+    PayloadTooLarge
+    Unavailable
+    Rejected
+    Failed
+}
+
+// Names the wire format selected by the application, never by a hidden exporter default.
+enum OtlpEncoding {
+    Protobuf
+    JSON
+}
+
+// Declares the bounded payload delivered to an OTLP endpoint.
+struct OtlpRequest {
+    Endpoint String
+    Encoding OtlpEncoding
+    Payload own bytes.Bytes
+}
+
+// Isolates HTTP, TLS, authentication, retries, and provider-specific protocol code.
+// The framework owns no ambient collector endpoint and has no implicit network fallback.
+contract OtlpTransport {
+    fn Export(&self, $request own OtlpRequest) Task<Result<void, OtlpError>>
+}
+
+// Owns an explicitly configured telemetry export provider.
+struct OtlpExporter {
+    endpoint String
+    encoding OtlpEncoding
+    transport own OtlpTransport
+
+    fn Endpoint(self) String {
+        text.Copy(self.endpoint)
+    }
+
+    fn Encoding(self) OtlpEncoding {
+        self.encoding
+    }
+
+    // Transfers one already encoded telemetry payload to the configured provider.
+    fn Export(
+        &self,
+        $payload own bytes.Bytes
+    ) Task<Result<void, OtlpError>> {
+        const request = own OtlpRequest {
+            Endpoint = text.Copy(self.endpoint)
+            Encoding = self.encoding
+            Payload = payload
+        }
+        self.transport.Export($request)
+    }
+}
+
+// Creates an OTLP boundary. Serialization remains typed and caller-owned above this transport.
+fn NewOtlpExporter(
+    $endpoint String,
+    encoding OtlpEncoding,
+    $transport own OtlpTransport
+) Result<own OtlpExporter, OtlpError> {
+    if endpoint == "" {
+        discard transport
+        return .Err(.EmptyEndpoint)
+    }
+    if !validOtlpEndpoint(endpoint) {
+        discard transport
+        return .Err(.InvalidEndpoint)
+    }
+    .Ok(own OtlpExporter {
+        endpoint = endpoint
+        encoding = encoding
+        transport = transport
+    })
+}
+
+fn validOtlpEndpoint(value String) bool {
+    if text.StartsWith(value, "https://") {
+        return text.ByteLen(value) > 8 && !text.Contains(value, " ")
+    }
+    if text.StartsWith(value, "http://") {
+        return text.ByteLen(value) > 7 && !text.Contains(value, " ")
+    }
+    false
+}

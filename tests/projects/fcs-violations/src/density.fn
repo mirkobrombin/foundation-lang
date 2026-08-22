@@ -1,0 +1,16 @@
+package fcs.violations
+
+// One focused comment.
+// Two focused comments.
+// Three focused comments.
+// Four focused comments.
+// Five focused comments.
+// Six focused comments.
+// Seven focused comments.
+// Eight focused comments.
+// Nine focused comments.
+// Ten focused comments.
+// Eleven focused comments.
+// Twelve focused comments.
+// Thirteen focused comments.
+fn density() i32 { 0 }

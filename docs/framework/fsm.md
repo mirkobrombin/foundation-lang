@@ -171,7 +171,7 @@ structural transfer rules.
 
 ## Migrating wildcard hooks
 
-A wildcard such as `*->cancelled` becomes one transition over the complete closed source set:
+A v2 wildcard such as `*->cancelled` becomes one transition over the complete closed source set:
 
 ```foundation
 on Cancel from Draft, Submitted, Paid, Cancelled to Cancelled
@@ -179,9 +179,9 @@ on Cancel from Draft, Submitted, Paid, Cancelled to Cancelled
 
 Foundation does not preserve an open-ended wildcard. Adding a new state must make the compiler ask
 whether cancellation applies to it instead of silently widening the graph. Include the destination
-itself when the rule allowed a wildcard self-transition.
+itself when the v2 rule allowed a wildcard self-transition.
 
 Reflection-discovered `OnExit<State>` and `OnEnter<State>` methods become explicit typed effects.
 One effect may match the source or destination exhaustively, or separate callbacks may be
 registered with stable priorities. The compatibility fixture expands the wildcard, runs four state
-hooks including the self-transition hooks.
+hooks including the self-transition hooks, and produces the same transcript as Foundation v2.

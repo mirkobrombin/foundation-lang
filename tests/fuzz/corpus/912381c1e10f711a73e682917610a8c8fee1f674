@@ -1,0 +1,9 @@
+attribute Managed(value bool) targets(service)
+attribute Handler(name e i32
+
+    ctor New(initial i32) {
+        CounterService { value = initial }
+  e.New(40)
+    if counter.Add(2) != 42 { return 1 }
+    0
+}

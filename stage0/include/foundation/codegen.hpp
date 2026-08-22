@@ -27,6 +27,8 @@ namespace foundation {
                                            std::string_view typeName);
 [[nodiscard]] FirProgram specializePackageInterface(const FirProgram &program,
                                                     std::string_view packageName);
+[[nodiscard]] FirProgram specializeSourcePackage(const FirProgram &program,
+                                                  std::string_view packageName);
 
 } // namespace foundation
 

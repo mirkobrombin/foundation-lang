@@ -55,7 +55,11 @@ fn main() i32 {
     }
     const web.Response { Status Headers Body } = accepted
     discard Headers
-    if Status != 200 || Body != "readme.txt" return 2
+    const body = Body.Text() else error {
+        discard error
+        return 2
+    }
+    if Status != 200 || body != "readme.txt" return 2
 
     if !rejected($application.Dispatch(request("/files/README.TXT"))) return 3
 

@@ -134,6 +134,14 @@ fn response(
     }
 }
 
+fn responseText($value web.Response) String {
+    const bodyText = value.TextBody() else error {
+        discard error
+        panic("virtual host response was not text")
+    }
+    bodyText
+}
+
 fn hostValue(
     $value Option<own httpx.VirtualHost<Failure>>
 ) own httpx.VirtualHost<Failure> {
@@ -192,10 +200,10 @@ fn main() i32 {
     discard mux.SetFallback(own site { label = "fallback" })
 
     const direct = response(mux.Dispatch(request("EXAMPLE.com:8443")))
-    print(direct.Body)
+    print(responseText($direct))
 
     const ordinary = response(mux.Dispatch(request("api.example")))
-    print(ordinary.Body)
+    print(responseText($ordinary))
 
     const previous = replacedHost(mux.AddVirtualHost(virtualHost(
                 "API.EXAMPLE:443",
@@ -205,16 +213,16 @@ fn main() i32 {
     discard previous
 
     const replacement = response(mux.Dispatch(request("api.example")))
-    print(replacement.Body)
+    print(responseText($replacement))
 
     const converted = response(mux.Dispatch(request("mapped.example")))
-    print(converted.Body)
+    print(responseText($converted))
 
     const missing = response(mux.Dispatch(request("missing.example")))
-    print(missing.Body)
+    print(responseText($missing))
 
     const numeric = response(mux.Dispatch(request("[::1]:9443")))
-    print(numeric.Body)
+    print(responseText($numeric))
 
     var names = mux.Hosts()
     if names.Len() != 4 return 1

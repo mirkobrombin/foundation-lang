@@ -25,9 +25,9 @@ _Static_assert(sizeof(uintptr_t) <= sizeof(uint64_t), "runtime handles require a
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <share.h>
+#include <wchar.h>
 #include <windows.h>
 #include <bcrypt.h>
-#include <wchar.h>
 static SRWLOCK fdn_stdout_lock = SRWLOCK_INIT;
 static SRWLOCK fdn_uuid_lock = SRWLOCK_INIT;
 #else
@@ -453,7 +453,7 @@ _Noreturn void fdn_invalid_enum_tag(void) {
     fdn_panic_cstr("invalid enum tag");
 }
 
-#define FDN_DEFINE_SIGNED_ARITHMETIC(TYPE, NAME, MINIMUM, MAXIMUM) \
+#define FDN_DEFINE_SIGNED_ARITHMETIC(TYPE, UNSIGNED, NAME, MINIMUM, MAXIMUM) \
     TYPE fdn_##NAME##_add(TYPE left, TYPE right) { \
         if ((right > 0 && left > (TYPE)((MAXIMUM) - right)) || \
             (right < 0 && left < (TYPE)((MINIMUM) - right))) { \
@@ -502,6 +502,45 @@ _Noreturn void fdn_invalid_enum_tag(void) {
         } \
         return (TYPE)(left % right); \
     } \
+    TYPE fdn_##NAME##_shift_left(TYPE left, TYPE right) { \
+        const unsigned int width = (unsigned int)(sizeof(TYPE) * CHAR_BIT); \
+        UNSIGNED factor; \
+        if (right < 0 || (uintmax_t)right >= (uintmax_t)width) { \
+            fdn_arithmetic_panic("shift count out of range"); \
+        } \
+        if (right == 0) { \
+            return left; \
+        } \
+        if ((unsigned int)right == width - 1) { \
+            if (left == 0) { \
+                return 0; \
+            } \
+            if (left == (TYPE)-1) { \
+                return (MINIMUM); \
+            } \
+            fdn_arithmetic_panic(#NAME " overflow"); \
+        } \
+        factor = (UNSIGNED)1 << (unsigned int)right; \
+        if ((left > 0 && left > (TYPE)((MAXIMUM) / (TYPE)factor)) || \
+            (left < 0 && left < (TYPE)((MINIMUM) / (TYPE)factor))) { \
+            fdn_arithmetic_panic(#NAME " overflow"); \
+        } \
+        return (TYPE)(left * (TYPE)factor); \
+    } \
+    TYPE fdn_##NAME##_shift_right(TYPE left, TYPE right) { \
+        const unsigned int width = (unsigned int)(sizeof(TYPE) * CHAR_BIT); \
+        if (right < 0 || (uintmax_t)right >= (uintmax_t)width) { \
+            fdn_arithmetic_panic("shift count out of range"); \
+        } \
+        if (left >= 0) { \
+            return (TYPE)((UNSIGNED)left >> (unsigned int)right); \
+        } \
+        { \
+            const UNSIGNED magnitude = (UNSIGNED)(-(left + 1)); \
+            const TYPE shifted = (TYPE)(magnitude >> (unsigned int)right); \
+            return (TYPE)(-shifted - 1); \
+        } \
+    } \
     TYPE fdn_##NAME##_negate(TYPE value) { \
         if (value == (MINIMUM)) { \
             fdn_arithmetic_panic(#NAME " overflow"); \
@@ -539,13 +578,30 @@ _Noreturn void fdn_invalid_enum_tag(void) {
             fdn_arithmetic_panic("remainder by zero"); \
         } \
         return (TYPE)(left % right); \
+    } \
+    TYPE fdn_##NAME##_shift_left(TYPE left, TYPE right) { \
+        const unsigned int width = (unsigned int)(sizeof(TYPE) * CHAR_BIT); \
+        if ((uintmax_t)right >= (uintmax_t)width) { \
+            fdn_arithmetic_panic("shift count out of range"); \
+        } \
+        if (right != 0 && left > (TYPE)((MAXIMUM) >> (unsigned int)right)) { \
+            fdn_arithmetic_panic(#NAME " overflow"); \
+        } \
+        return (TYPE)(left << (unsigned int)right); \
+    } \
+    TYPE fdn_##NAME##_shift_right(TYPE left, TYPE right) { \
+        const unsigned int width = (unsigned int)(sizeof(TYPE) * CHAR_BIT); \
+        if ((uintmax_t)right >= (uintmax_t)width) { \
+            fdn_arithmetic_panic("shift count out of range"); \
+        } \
+        return (TYPE)(left >> (unsigned int)right); \
     }
 
-FDN_DEFINE_SIGNED_ARITHMETIC(int8_t, i8, INT8_MIN, INT8_MAX)
-FDN_DEFINE_SIGNED_ARITHMETIC(int16_t, i16, INT16_MIN, INT16_MAX)
-FDN_DEFINE_SIGNED_ARITHMETIC(int32_t, i32, INT32_MIN, INT32_MAX)
-FDN_DEFINE_SIGNED_ARITHMETIC(int64_t, i64, INT64_MIN, INT64_MAX)
-FDN_DEFINE_SIGNED_ARITHMETIC(intptr_t, isize, INTPTR_MIN, INTPTR_MAX)
+FDN_DEFINE_SIGNED_ARITHMETIC(int8_t, uint8_t, i8, INT8_MIN, INT8_MAX)
+FDN_DEFINE_SIGNED_ARITHMETIC(int16_t, uint16_t, i16, INT16_MIN, INT16_MAX)
+FDN_DEFINE_SIGNED_ARITHMETIC(int32_t, uint32_t, i32, INT32_MIN, INT32_MAX)
+FDN_DEFINE_SIGNED_ARITHMETIC(int64_t, uint64_t, i64, INT64_MIN, INT64_MAX)
+FDN_DEFINE_SIGNED_ARITHMETIC(intptr_t, uintptr_t, isize, INTPTR_MIN, INTPTR_MAX)
 FDN_DEFINE_UNSIGNED_ARITHMETIC(uint8_t, u8, UINT8_MAX)
 FDN_DEFINE_UNSIGNED_ARITHMETIC(uint16_t, u16, UINT16_MAX)
 FDN_DEFINE_UNSIGNED_ARITHMETIC(uint32_t, u32, UINT32_MAX)

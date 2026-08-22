@@ -1,0 +1,122 @@
+package test.providers_openssl
+
+import foundation.auth
+import foundation.httpx
+import foundation.web
+import std.bytes
+import std.collections
+import std.concurrent
+
+enum WebFailure {
+    Rejected
+}
+
+struct rejectingApplication implements web.Application<WebFailure> {
+    fn Dispatch(
+        &self,
+        $request web.Request
+    ) Result<web.Response, web.DispatchError<WebFailure>> {
+        discard request
+        .Err(.Handler(error = .Rejected))
+    }
+}
+
+fn invalidPrivateKey(
+    $result Result<own bytes.Bytes, auth.AsymmetricProviderError>
+) bool {
+    match result {
+        Ok(signature): {
+            discard signature
+            false
+        }
+        Err(error): match error {
+            InvalidPrivateKey: true
+            Unsupported: false
+            InvalidPublicKey: false
+            InvalidSignature: false
+            Failed: false
+        }
+    }
+}
+
+fn cancelledTLS(
+    $result Result<httpx.Response, httpx.TLSError>
+) bool {
+    match result {
+        Ok(response): {
+            discard response
+            false
+        }
+        Err(error): match error {
+            Cancelled: true
+            InvalidServerName: false
+            CertificateNotFound: false
+            CertificateRejected: false
+            HandshakeFailed: false
+            PeerVerificationFailed: false
+            Timeout: false
+            ProtocolFailed: false
+            Unavailable: false
+        }
+    }
+}
+
+fn request() httpx.Request {
+    const created = httpx.NewRequest(
+        "GET",
+        "https://example.com/",
+        ""
+    ) else error {
+        discard error
+        panic("OpenSSL provider request fixture failed")
+    }
+    created
+}
+
+fn invalidServerCertificate() bool {
+    var certificates = collections.NewList<own web.OpenSSLCertificate>()
+    certificates.PushFront(own web.OpenSSLCertificate {
+        ServerName = "example.com"
+        CertificatePEM = bytes.FromText("not a certificate")
+        PrivateKeyPEM = bytes.FromText("not a private key")
+    })
+    const opened = web.NewOpenSSLServer<WebFailure>(
+        "127.0.0.1",
+        0,
+        $certificates,
+        own rejectingApplication {}
+    )
+    match opened {
+        Ok(server): {
+            discard server
+            false
+        }
+        Err(error): {
+            discard error
+            true
+        }
+    }
+}
+
+fn main() i32 {
+    var asymmetric = auth.OpenSSLAsymmetricProvider {}
+    const privateKey = bytes.FromText("not a private key")
+    const signingInput = bytes.FromText("header.payload")
+    if !invalidPrivateKey(asymmetric.Sign(.RS256, privateKey, signingInput)) {
+        return 1
+    }
+    discard asymmetric
+
+    const source = concurrent.NewCancellationSource()
+    const cancellation = source.Token()
+    source.Cancel()
+    var tls = httpx.OpenSSLTLSProvider {}
+    const pending = tls.SendWithCancellation(request(), $cancellation)
+    const completed = $pending.wait()
+    discard tls
+    if !cancelledTLS($completed) return 2
+    if !invalidServerCertificate() return 3
+
+    print("OpenSSL providers ok")
+    0
+}

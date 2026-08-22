@@ -115,7 +115,7 @@ wrong property types, and unknown properties return typed `bind.Error` values. S
 the underlying `json.ErrorKind` and parser offset. Unknown-field errors retain the first
 unconsumed property name.
 
-To preserve the request body-field boundary, mark one local bindable field with `@bind.JSON()`:
+To preserve the v2 body-field boundary, mark one local bindable field with `@bind.JSON()`:
 
 ```foundation
 @bind.Bindable()

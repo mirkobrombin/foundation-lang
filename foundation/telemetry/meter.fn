@@ -1,0 +1,1129 @@
+package foundation.telemetry
+
+import std.collections
+import std.format
+import std.text
+import foundation.tracing
+
+// Reports a rejected metric definition or an unavailable meter owner.
+enum Error {
+    // The meter owner no longer accepts requests.
+    Closed
+
+    // The operation was cancelled before its response arrived.
+    Cancelled
+
+    // The metric name cannot be represented by Prometheus text format.
+    InvalidMetricName
+
+    // A label name cannot be represented by Prometheus text format.
+    InvalidLabelName
+
+    // A metric definition repeats one label name.
+    DuplicateLabel
+
+    // A histogram boundary is not finite.
+    InvalidBoundary
+
+    // A histogram definition repeats one boundary.
+    DuplicateBoundary
+
+    // A counter update would violate monotonicity.
+    NegativeCounterDelta
+
+    // One metric name was registered with more than one instrument kind.
+    KindConflict
+
+    // One histogram series was registered with a different boundary set.
+    BoundaryConflict
+
+    // An instrument handle does not belong to a live series.
+    UnknownInstrument
+}
+
+// Adds signed deltas to one monotonic series.
+contract Counter {
+    // Adds one signed delta to the counter.
+    fn Add(self, delta i64) Task<Result<void, Error>>
+}
+
+// Replaces the current value of one gauge series.
+contract Gauge {
+    // Stores the current gauge value.
+    fn Set(self, value f64) Task<Result<void, Error>>
+}
+
+// Records values into one fixed-boundary histogram series.
+contract Histogram {
+    // Records one observation.
+    fn Observe(self, value f64) Task<Result<void, Error>>
+}
+
+// Creates typed metric instruments from owned definitions.
+contract Meter {
+    // Returns a counter for one name and canonical label set.
+    fn Counter(
+        self,
+        $name String,
+        $attributes own collections.List<tracing.Attribute>
+    ) Task<Result<own Counter, Error>>
+
+    // Returns a gauge for one name and canonical label set.
+    fn Gauge(
+        self,
+        $name String,
+        $attributes own collections.List<tracing.Attribute>
+    ) Task<Result<own Gauge, Error>>
+
+    // Returns a histogram with fixed sorted boundaries.
+    fn Histogram(
+        self,
+        $name String,
+        $attributes own collections.List<tracing.Attribute>,
+        $boundaries own collections.List<f64>
+    ) Task<Result<own Histogram, Error>>
+}
+
+enum instrumentKind {
+    Counter
+    Gauge
+    Histogram
+}
+
+struct histogramBucket {
+    upperBound f64
+    count i64
+}
+
+struct series {
+    id u64
+    name String
+    labels String
+    kind instrumentKind
+    counter i64
+    gauge f64
+    buckets own collections.List<histogramBucket>
+    boundaryKey String
+    count i64
+    sum f64
+}
+
+struct registration {
+    name String
+    labels String
+    kind instrumentKind
+    buckets own collections.List<histogramBucket>
+    boundaryKey String
+}
+
+struct counterUpdate {
+    id u64
+    delta i64
+}
+
+struct gaugeUpdate {
+    id u64
+    value f64
+}
+
+struct histogramUpdate {
+    id u64
+    value f64
+}
+
+enum operation {
+    Register(value registration)
+    Add(value counterUpdate)
+    Set(value gaugeUpdate)
+    Observe(value histogramUpdate)
+    Render
+}
+
+enum response {
+    Registered(id u64)
+    Done
+    Text(value String)
+}
+
+enum answer {
+    Success(value response)
+    Failure(error Error)
+}
+
+struct request {
+    operation operation
+    reply Sender<answer>
+}
+
+struct state {
+    values own collections.List<series>
+    nextID u64
+}
+
+// Sends metric operations to one Prometheus exporter owner task.
+struct PrometheusHandle implements Meter {
+    sender Sender<request>
+
+    // Creates another independently owned handle to the same exporter.
+    fn Clone(self) PrometheusHandle {
+        PrometheusHandle { sender = self.sender.clone() }
+    }
+
+    // Returns a counter for one validated metric definition.
+    fn Counter(
+        self,
+        $name String,
+        $attributes own collections.List<tracing.Attribute>
+    ) Task<Result<own Counter, Error>> {
+        spawn registerCounter(self.sender.clone(), $name, $attributes)
+    }
+
+    // Returns a gauge for one validated metric definition.
+    fn Gauge(
+        self,
+        $name String,
+        $attributes own collections.List<tracing.Attribute>
+    ) Task<Result<own Gauge, Error>> {
+        spawn registerGauge(self.sender.clone(), $name, $attributes)
+    }
+
+    // Returns a histogram for one validated metric definition.
+    fn Histogram(
+        self,
+        $name String,
+        $attributes own collections.List<tracing.Attribute>,
+        $boundaries own collections.List<f64>
+    ) Task<Result<own Histogram, Error>> {
+        spawn registerHistogram(
+            self.sender.clone(),
+            $name,
+            $attributes,
+            $boundaries
+        )
+    }
+
+    // Renders a deterministic Prometheus text exposition snapshot.
+    fn Render(self) Task<Result<String, Error>> {
+        spawn render(self.sender.clone())
+    }
+}
+
+// Owns every metric series and serializes concurrent updates.
+struct PrometheusExporter implements Meter {
+    actor Task<void>
+    handle PrometheusHandle
+
+    // Creates another independently owned handle to this exporter.
+    fn Handle(self) PrometheusHandle {
+        self.handle.Clone()
+    }
+
+    // Returns a counter for one validated metric definition.
+    fn Counter(
+        self,
+        $name String,
+        $attributes own collections.List<tracing.Attribute>
+    ) Task<Result<own Counter, Error>> {
+        self.handle.Counter($name, $attributes)
+    }
+
+    // Returns a gauge for one validated metric definition.
+    fn Gauge(
+        self,
+        $name String,
+        $attributes own collections.List<tracing.Attribute>
+    ) Task<Result<own Gauge, Error>> {
+        self.handle.Gauge($name, $attributes)
+    }
+
+    // Returns a histogram for one validated metric definition.
+    fn Histogram(
+        self,
+        $name String,
+        $attributes own collections.List<tracing.Attribute>,
+        $boundaries own collections.List<f64>
+    ) Task<Result<own Histogram, Error>> {
+        self.handle.Histogram($name, $attributes, $boundaries)
+    }
+
+    // Renders a deterministic Prometheus text exposition snapshot.
+    fn Render(self) Task<Result<String, Error>> {
+        self.handle.Render()
+    }
+}
+
+struct counterHandle implements Counter {
+    sender Sender<request>
+    id u64
+
+    fn Add(self, delta i64) Task<Result<void, Error>> {
+        spawn update(
+            self.sender.clone(),
+            .Add(value = counterUpdate {
+            id = self.id
+            delta = delta
+        })
+        )
+    }
+}
+
+struct gaugeHandle implements Gauge {
+    sender Sender<request>
+    id u64
+
+    fn Set(self, value f64) Task<Result<void, Error>> {
+        spawn update(
+            self.sender.clone(),
+            .Set(value = gaugeUpdate {
+            id = self.id
+            value = value
+        })
+        )
+    }
+}
+
+struct histogramHandle implements Histogram {
+    sender Sender<request>
+    id u64
+
+    fn Observe(self, value f64) Task<Result<void, Error>> {
+        spawn update(
+            self.sender.clone(),
+            .Observe(value = histogramUpdate {
+            id = self.id
+            value = value
+        })
+        )
+    }
+}
+
+// Creates an empty concurrent Prometheus exporter.
+fn NewPrometheusExporter() own PrometheusExporter {
+    const Channel { sender receiver } = channel<request>(64)
+    const initial = own state {
+        values = collections.NewList<series>()
+        nextID = 1
+    }
+    const actor = spawn serveMetrics($receiver, $initial)
+    own PrometheusExporter {
+        actor = actor
+        handle = PrometheusHandle { sender = sender }
+    }
+}
+
+task serveMetrics(
+    $receiver Receiver<request>,
+    $initial own state
+) void {
+    var inbox = receiver
+    var current = initial
+    while true {
+        select {
+            const incoming = inbox.receive(): {
+                const request { operation reply } = incoming
+                const result = applyOperation(&current, $operation)
+                const payload = match result {
+                    Ok(value): answer.Success(value = value)
+                    Err(error): answer.Failure(error = error)
+                }
+                discard reply.send($payload)
+            }
+            else error: {
+                discard error
+                return
+            }
+        }
+    }
+}
+
+fn applyOperation(
+    &current state,
+    $operation operation
+) Result<response, Error> {
+    match operation {
+        Register(value): registerSeries(&current, $value)
+        Add(value): addCounter(&current, value.id, value.delta)
+        Set(value): setGauge(&current, value.id, value.value)
+        Observe(value): observeHistogram(&current, value.id, value.value)
+        Render: .Ok(.Text(value = renderState(&current)))
+    }
+}
+
+task registerCounter(
+    $requests Sender<request>,
+    $name String,
+    $attributes own collections.List<tracing.Attribute>
+) Result<own Counter, Error> {
+    const prepared = prepareRegistration(
+        $name,
+        $attributes,
+        .Counter,
+        collections.NewList<f64>()
+    ) else error {
+        discard requests
+        return .Err(error)
+    }
+    const instrumentRequests = requests.clone()
+    const registered = spawn sendRequest(
+        $requests,
+        .Register(value = prepared)
+    )
+    const result = $registered.wait()
+    match result {
+        Err(error): .Err(error)
+        Ok(value): counterResponse($instrumentRequests, $value)
+    }
+}
+
+task registerGauge(
+    $requests Sender<request>,
+    $name String,
+    $attributes own collections.List<tracing.Attribute>
+) Result<own Gauge, Error> {
+    const prepared = prepareRegistration(
+        $name,
+        $attributes,
+        .Gauge,
+        collections.NewList<f64>()
+    ) else error {
+        discard requests
+        return .Err(error)
+    }
+    const instrumentRequests = requests.clone()
+    const registered = spawn sendRequest(
+        $requests,
+        .Register(value = prepared)
+    )
+    const result = $registered.wait()
+    match result {
+        Err(error): .Err(error)
+        Ok(value): gaugeResponse($instrumentRequests, $value)
+    }
+}
+
+task registerHistogram(
+    $requests Sender<request>,
+    $name String,
+    $attributes own collections.List<tracing.Attribute>,
+    $boundaries own collections.List<f64>
+) Result<own Histogram, Error> {
+    const prepared = prepareRegistration(
+        $name,
+        $attributes,
+        .Histogram,
+        $boundaries
+    ) else error {
+        discard requests
+        return .Err(error)
+    }
+    const instrumentRequests = requests.clone()
+    const registered = spawn sendRequest(
+        $requests,
+        .Register(value = prepared)
+    )
+    const result = $registered.wait()
+    match result {
+        Err(error): .Err(error)
+        Ok(value): histogramResponse($instrumentRequests, $value)
+    }
+}
+
+fn prepareRegistration(
+    $name String,
+    $attributes own collections.List<tracing.Attribute>,
+    kind instrumentKind,
+    $boundaries own collections.List<f64>
+) Result<registration, Error> {
+    if !validMetricName(name) {
+        discard attributes
+        discard boundaries
+        return .Err(.InvalidMetricName)
+    }
+    const labels = renderLabels($attributes) else error {
+        discard name
+        discard boundaries
+        return .Err(error)
+    }
+    const prepared = prepareBuckets($boundaries) else error {
+        discard name
+        discard labels
+        return .Err(error)
+    }
+    const bucketPreparation { buckets key } = prepared
+    .Ok(registration {
+        name = name
+        labels = labels
+        kind = kind
+        buckets = buckets
+        boundaryKey = key
+    })
+}
+
+struct bucketPreparation {
+    buckets own collections.List<histogramBucket>
+    key String
+}
+
+fn prepareBuckets(
+    $boundaries own collections.List<f64>
+) Result<bucketPreparation, Error> {
+    var sorted = collections.Sort<f64>($boundaries, compareF64)
+    var buckets = collections.NewList<histogramBucket>()
+    var builder = text.NewBuilder()
+    var first = true
+    var previous = 0.0
+    while !sorted.IsEmpty() {
+        const boundary = requireF64(sorted.PopFront())
+        if !finite(boundary) {
+            discard sorted
+            discard buckets
+            discard builder
+            return .Err(.InvalidBoundary)
+        }
+        if !first && boundary == previous {
+            discard sorted
+            discard buckets
+            discard builder
+            return .Err(.DuplicateBoundary)
+        }
+        if !first {
+            writeBuilder(&builder, ",")
+        }
+        writeBuilder(&builder, format.F64(boundary))
+        buckets.PushFront(histogramBucket {
+            upperBound = boundary
+            count = 0
+        })
+        previous = boundary
+        first = false
+    }
+    const key = finishBuilder(&builder)
+    .Ok(bucketPreparation {
+        buckets = reverseBuckets($buckets)
+        key = key
+    })
+}
+
+fn renderLabels(
+    $attributes own collections.List<tracing.Attribute>
+) Result<String, Error> {
+    var sorted = collections.Sort<tracing.Attribute>(
+        $attributes,
+        compareAttributes
+    )
+    var builder = text.NewBuilder()
+    var first = true
+    var previous = ""
+    while !sorted.IsEmpty() {
+        const item = requireAttribute(sorted.PopFront())
+        const tracing.Attribute { Key Value } = item
+        if !validLabelName(Key) {
+            discard sorted
+            discard builder
+            discard Key
+            discard Value
+            return .Err(.InvalidLabelName)
+        }
+        if !first && Key == previous {
+            discard sorted
+            discard builder
+            discard Key
+            discard Value
+            return .Err(.DuplicateLabel)
+        }
+        if !first {
+            writeBuilder(&builder, ",")
+        }
+        writeBuilder(&builder, Key)
+        writeBuilder(&builder, "=\"")
+        writeLabelValue(&builder, $Value)
+        writeBuilder(&builder, "\"")
+        previous = text.Copy(Key)
+        discard Key
+        first = false
+    }
+    .Ok(finishBuilder(&builder))
+}
+
+fn compareAttributes(
+    left tracing.Attribute,
+    right tracing.Attribute
+) i32 {
+    text.Compare(left.Key, right.Key)
+}
+
+fn compareF64(left f64, right f64) i32 {
+    if left < right return -1
+    if left > right return 1
+    0
+}
+
+fn finite(value f64) bool {
+    const encoded = format.F64(value)
+    encoded != "NaN" && encoded != "Infinity" && encoded != "-Infinity"
+}
+
+fn registerSeries(
+    &current state,
+    $value registration
+) Result<response, Error> {
+    const registration { name labels kind buckets boundaryKey } = value
+    var pending = replace current.values with collections.NewList<series>()
+    var restored = collections.NewList<series>()
+    var existing u64 = 0
+    var conflict Option<Error> = .None
+    while !pending.IsEmpty() {
+        const item = requireSeries(pending.PopFront())
+        if item.name == name {
+            if !sameKind(item.kind, kind) {
+                conflict = .Some(.KindConflict)
+            } else {
+                if item.labels == labels {
+                    if item.boundaryKey != boundaryKey {
+                        conflict = .Some(.BoundaryConflict)
+                    } else {
+                        existing = item.id
+                    }
+                }
+            }
+        }
+        restored.PushFront($item)
+    }
+    current.values = reverseSeries($restored)
+    match conflict {
+        Some(error): {
+            return .Err(error)
+        }
+        None: {}
+    }
+    if existing != 0 {
+        return .Ok(.Registered(id = existing))
+    }
+    const id = current.nextID
+    current.nextID = current.nextID + 1
+    current.values.PushFront(series {
+        id = id
+        name = name
+        labels = labels
+        kind = kind
+        counter = 0
+        gauge = 0.0
+        buckets = buckets
+        boundaryKey = boundaryKey
+        count = 0
+        sum = 0.0
+    })
+    .Ok(.Registered(id = id))
+}
+
+fn addCounter(
+    &current state,
+    id u64,
+    delta i64
+) Result<response, Error> {
+    if delta < 0 return .Err(.NegativeCounterDelta)
+    var pending = replace current.values with collections.NewList<series>()
+    var restored = collections.NewList<series>()
+    var found = false
+    while !pending.IsEmpty() {
+        var item = requireSeries(pending.PopFront())
+        if item.id == id && sameKind(item.kind, .Counter) {
+            item.counter = item.counter + delta
+            found = true
+        }
+        restored.PushFront($item)
+    }
+    current.values = reverseSeries($restored)
+    .Ok(.Done) if found else .Err(.UnknownInstrument)
+}
+
+fn setGauge(
+    &current state,
+    id u64,
+    value f64
+) Result<response, Error> {
+    var pending = replace current.values with collections.NewList<series>()
+    var restored = collections.NewList<series>()
+    var found = false
+    while !pending.IsEmpty() {
+        var item = requireSeries(pending.PopFront())
+        if item.id == id && sameKind(item.kind, .Gauge) {
+            item.gauge = value
+            found = true
+        }
+        restored.PushFront($item)
+    }
+    current.values = reverseSeries($restored)
+    .Ok(.Done) if found else .Err(.UnknownInstrument)
+}
+
+fn observeHistogram(
+    &current state,
+    id u64,
+    value f64
+) Result<response, Error> {
+    var pending = replace current.values with collections.NewList<series>()
+    var restored = collections.NewList<series>()
+    var found = false
+    while !pending.IsEmpty() {
+        var item = requireSeries(pending.PopFront())
+        if item.id == id && sameKind(item.kind, .Histogram) {
+            observeBuckets(&item, value)
+            found = true
+        }
+        restored.PushFront($item)
+    }
+    current.values = reverseSeries($restored)
+    .Ok(.Done) if found else .Err(.UnknownInstrument)
+}
+
+fn observeBuckets(&item series, value f64) void {
+    const empty = collections.NewList<histogramBucket>()
+    var pending = replace item.buckets with empty
+    var restored = collections.NewList<histogramBucket>()
+    while !pending.IsEmpty() {
+        var bucket = requireBucket(pending.PopFront())
+        if value <= bucket.upperBound {
+            bucket.count = bucket.count + 1
+        }
+        restored.PushFront($bucket)
+    }
+    item.buckets = reverseBuckets($restored)
+    item.count = item.count + 1
+    item.sum = item.sum + value
+}
+
+fn sameKind(left instrumentKind, right instrumentKind) bool {
+    match left {
+        Counter: match right {
+            Counter: true
+            Gauge: false
+            Histogram: false
+        }
+        Gauge: match right {
+            Counter: false
+            Gauge: true
+            Histogram: false
+        }
+        Histogram: match right {
+            Counter: false
+            Gauge: false
+            Histogram: true
+        }
+    }
+}
+
+task update(
+    $requests Sender<request>,
+    $operation operation
+) Result<void, Error> {
+    const pending = spawn sendRequest($requests, $operation)
+    const result = $pending.wait()
+    match result {
+        Err(error): .Err(error)
+        Ok(value): doneResponse($value)
+    }
+}
+
+task render($requests Sender<request>) Result<String, Error> {
+    const pending = spawn sendRequest($requests, .Render)
+    const result = $pending.wait()
+    match result {
+        Err(error): .Err(error)
+        Ok(value): textResponse($value)
+    }
+}
+
+task sendRequest(
+    $requests Sender<request>,
+    $operation operation
+) Result<response, Error> {
+    const Channel { sender receiver } = channel<answer>(1)
+    select {
+        requests.send(request {
+            operation = operation
+            reply = sender
+        }): {
+            const received = receiver.receive()
+            return match received {
+                Ok(value): match value {
+                    Success(response): .Ok(response)
+                    Failure(error): .Err(error)
+                }
+                Err(error): .Err(mapChannelError(error))
+            }
+        }
+        else error: return .Err(mapChannelError(error))
+    }
+}
+
+fn mapChannelError(error ChannelError) Error {
+    match error {
+        Closed: .Closed
+        Cancelled: .Cancelled
+        Timeout: .Cancelled
+    }
+}
+
+fn counterResponse(
+    $requests Sender<request>,
+    $value response
+) Result<own Counter, Error> {
+    match value {
+        Registered(id): .Ok(own counterHandle {
+            sender = requests
+            id = id
+        })
+        Done: unexpectedResponse<Sender<request>>($requests)
+        Text(contents): unexpectedResponse<String>($contents)
+    }
+}
+
+fn gaugeResponse(
+    $requests Sender<request>,
+    $value response
+) Result<own Gauge, Error> {
+    match value {
+        Registered(id): .Ok(own gaugeHandle {
+            sender = requests
+            id = id
+        })
+        Done: unexpectedResponse<Sender<request>>($requests)
+        Text(contents): unexpectedResponse<String>($contents)
+    }
+}
+
+fn histogramResponse(
+    $requests Sender<request>,
+    $value response
+) Result<own Histogram, Error> {
+    match value {
+        Registered(id): .Ok(own histogramHandle {
+            sender = requests
+            id = id
+        })
+        Done: unexpectedResponse<Sender<request>>($requests)
+        Text(contents): unexpectedResponse<String>($contents)
+    }
+}
+
+fn doneResponse($value response) Result<void, Error> {
+    match value {
+        Done: .Ok
+        Registered(id): unexpectedResponse<u64>(id)
+        Text(contents): unexpectedResponse<String>($contents)
+    }
+}
+
+fn textResponse($value response) Result<String, Error> {
+    match value {
+        Text(contents): .Ok(contents)
+        Registered(id): unexpectedResponse<u64>(id)
+        Done: unexpectedDone()
+    }
+}
+
+fn renderState(&current state) String {
+    const unsorted = replace current.values with collections.NewList<series>()
+    var pending = collections.Sort<series>($unsorted, compareSeries)
+    var restored = collections.NewList<series>()
+    var builder = text.NewBuilder()
+    var previous = ""
+    var first = true
+    while !pending.IsEmpty() {
+        var item = requireSeries(pending.PopFront())
+        if first || item.name != previous {
+            writeBuilder(&builder, "# TYPE ")
+            writeBuilder(&builder, item.name)
+            writeBuilder(&builder, " ")
+            writeBuilder(&builder, kindName(item.kind))
+            writeBuilder(&builder, "\n")
+            previous = text.Copy(item.name)
+            first = false
+        }
+        renderSeries(&builder, &item)
+        restored.PushFront($item)
+    }
+    current.values = reverseSeries($restored)
+    finishBuilder(&builder)
+}
+
+fn compareSeries(left series, right series) i32 {
+    const byName = text.Compare(left.name, right.name)
+    if byName != 0 return byName
+    text.Compare(left.labels, right.labels)
+}
+
+fn kindName(kind instrumentKind) String {
+    match kind {
+        Counter: "counter"
+        Gauge: "gauge"
+        Histogram: "histogram"
+    }
+}
+
+fn renderSeries(&builder text.Builder, &item series) void {
+    match item.kind {
+        Counter: writeSample(
+            &builder,
+            item.name,
+            item.labels,
+            format.I64(item.counter)
+        )
+        Gauge: writeSample(
+            &builder,
+            item.name,
+            item.labels,
+            format.F64(item.gauge)
+        )
+        Histogram: renderHistogram(&builder, &item)
+    }
+}
+
+fn writeSample(
+    &builder text.Builder,
+    name String,
+    labels String,
+    value String
+) void {
+    writeBuilder(&builder, name)
+    writeLabels(&builder, labels)
+    writeBuilder(&builder, " ")
+    writeBuilder(&builder, value)
+    writeBuilder(&builder, "\n")
+}
+
+fn renderHistogram(&builder text.Builder, &item series) void {
+    const empty = collections.NewList<histogramBucket>()
+    var pending = replace item.buckets with empty
+    var restored = collections.NewList<histogramBucket>()
+    while !pending.IsEmpty() {
+        const bucket = requireBucket(pending.PopFront())
+        writeBuilder(&builder, item.name)
+        writeBuilder(&builder, "_bucket")
+        writeBucketLabels(&builder, item.labels, format.F64(bucket.upperBound))
+        writeBuilder(&builder, " ")
+        writeBuilder(&builder, format.I64(bucket.count))
+        writeBuilder(&builder, "\n")
+        restored.PushFront(bucket)
+    }
+    item.buckets = reverseBuckets($restored)
+    writeBuilder(&builder, item.name)
+    writeBuilder(&builder, "_bucket")
+    writeBucketLabels(&builder, item.labels, "+Inf")
+    writeBuilder(&builder, " ")
+    writeBuilder(&builder, format.I64(item.count))
+    writeBuilder(&builder, "\n")
+    writeSample(
+        &builder,
+        item.name + "_sum",
+        item.labels,
+        format.F64(item.sum)
+    )
+    writeSample(
+        &builder,
+        item.name + "_count",
+        item.labels,
+        format.I64(item.count)
+    )
+}
+
+fn writeLabels(&builder text.Builder, labels String) void {
+    if !labels return
+    writeBuilder(&builder, "{")
+    writeBuilder(&builder, labels)
+    writeBuilder(&builder, "}")
+}
+
+fn writeBucketLabels(
+    &builder text.Builder,
+    labels String,
+    boundary String
+) void {
+    writeBuilder(&builder, "{")
+    if text.ByteLen(labels) > 0 {
+        writeBuilder(&builder, labels)
+        writeBuilder(&builder, ",")
+    }
+    writeBuilder(&builder, "le=\"")
+    writeBuilder(&builder, boundary)
+    writeBuilder(&builder, "\"}")
+}
+
+fn writeLabelValue(
+    &builder text.Builder,
+    $value tracing.AttributeValue
+) void {
+    match value {
+        Text(contents): writeEscapedLabel(&builder, contents)
+        Bool(value): writeBuilder(&builder, format.Bool(value))
+        Signed(value): writeBuilder(&builder, format.I64(value))
+        Unsigned(value): writeBuilder(&builder, format.U64(value))
+        Float(value): writeBuilder(&builder, format.F64(value))
+    }
+}
+
+fn writeEscapedLabel(&builder text.Builder, value String) void {
+    var offset u64 = 0
+    const length = text.ByteLen(value)
+    while offset < length {
+        const byte = byteAt(value, offset)
+        if byte == 92 {
+            writeBuilder(&builder, "\\\\")
+        } else {
+            if byte == 34 {
+                writeBuilder(&builder, "\\\"")
+            } else {
+                if byte == 10 {
+                    writeBuilder(&builder, "\\n")
+                } else {
+                    writeCodePoint(&builder, byte)
+                }
+            }
+        }
+        offset = offset + 1
+    }
+}
+
+fn validMetricName(value String) bool {
+    if !value return false
+    const first = byteAt(value, 0)
+    if !metricInitial(first) return false
+    var offset u64 = 1
+    const length = text.ByteLen(value)
+    while offset < length {
+        if !metricRest(byteAt(value, offset)) return false
+        offset = offset + 1
+    }
+    true
+}
+
+fn validLabelName(value String) bool {
+    if !value return false
+    const first = byteAt(value, 0)
+    if !identifierInitial(first) return false
+    var offset u64 = 1
+    const length = text.ByteLen(value)
+    while offset < length {
+        if !identifierRest(byteAt(value, offset)) return false
+        offset = offset + 1
+    }
+    true
+}
+
+fn metricInitial(value u64) bool {
+    identifierInitial(value) || value == 58
+}
+
+fn metricRest(value u64) bool {
+    identifierRest(value) || value == 58
+}
+
+fn identifierInitial(value u64) bool {
+    value == 95 || value >= 65 && value <= 90 || value >= 97 && value <= 122
+}
+
+fn identifierRest(value u64) bool {
+    identifierInitial(value) || value >= 48 && value <= 57
+}
+
+fn reverseSeries(
+    $values own collections.List<series>
+) own collections.List<series> {
+    var pending = values
+    var reversed = collections.NewList<series>()
+    while !pending.IsEmpty() {
+        reversed.PushFront(requireSeries(pending.PopFront()))
+    }
+    reversed
+}
+
+fn reverseBuckets(
+    $values own collections.List<histogramBucket>
+) own collections.List<histogramBucket> {
+    var pending = values
+    var reversed = collections.NewList<histogramBucket>()
+    while !pending.IsEmpty() {
+        reversed.PushFront(requireBucket(pending.PopFront()))
+    }
+    reversed
+}
+
+fn requireSeries($value Option<series>) series {
+    match value {
+        None: missingSeries()
+        Some(item): item
+    }
+}
+
+fn requireBucket($value Option<histogramBucket>) histogramBucket {
+    match value {
+        None: missingBucket()
+        Some(item): item
+    }
+}
+
+fn requireAttribute(
+    $value Option<tracing.Attribute>
+) tracing.Attribute {
+    match value {
+        None: missingAttribute()
+        Some(item): item
+    }
+}
+
+fn requireF64($value Option<f64>) f64 {
+    match value {
+        None: missingF64()
+        Some(item): item
+    }
+}
+
+fn writeBuilder(&builder text.Builder, value String) void {
+    const result = builder.Write(value) else error {
+        discard error
+        panic("telemetry builder invariant failed")
+    }
+    discard result
+}
+
+fn writeCodePoint(&builder text.Builder, value u64) void {
+    const result = builder.WriteCodePoint(value) else error {
+        discard error
+        panic("telemetry builder invariant failed")
+    }
+    discard result
+}
+
+fn finishBuilder(&builder text.Builder) String {
+    const result = builder.Finish() else error {
+        discard error
+        panic("telemetry builder invariant failed")
+    }
+    result
+}
+
+fn unexpectedResponse<T>($value T) never {
+    discard value
+    panic("telemetry response invariant failed")
+}
+
+fn unexpectedDone() never {
+    panic("telemetry response invariant failed")
+}
+
+fn missingSeries() never {
+    panic("telemetry series invariant failed")
+}
+
+fn missingBucket() never {
+    panic("telemetry bucket invariant failed")
+}
+
+fn missingAttribute() never {
+    panic("telemetry attribute invariant failed")
+}
+
+fn missingF64() never {
+    panic("telemetry boundary invariant failed")
+}

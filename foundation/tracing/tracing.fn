@@ -1,0 +1,133 @@
+package foundation.tracing
+
+import std.collections
+
+// Stores one typed tracing attribute value without runtime type erasure.
+enum AttributeValue {
+    // Stores owned text.
+    Text(value String)
+    // Stores a boolean value.
+    Bool(value bool)
+    // Stores a signed integer value.
+    Signed(value i64)
+    // Stores an unsigned integer value.
+    Unsigned(value u64)
+    // Stores a floating-point value.
+    Float(value f64)
+}
+
+// Associates one owned key with a typed tracing value.
+struct Attribute {
+    // Identifies the attribute.
+    Key String
+    // Preserves the attribute type and value.
+    Value AttributeValue
+}
+
+// Carries trace identity explicitly between operations.
+struct Context {
+    // Identifies the distributed trace.
+    TraceID String
+    // Identifies the current parent span.
+    SpanID String
+}
+
+// Receives annotations and completion for one active span.
+contract Span<E> {
+    // Adds owned typed attributes to the active span.
+    fn SetAttributes(
+        &self,
+        $attributes own collections.List<Attribute>
+    ) void
+
+    // Records one recoverable typed failure on the active span.
+    fn RecordError(&self, $error E) void
+
+    // Completes the active span.
+    fn End(&self) void
+}
+
+// Returns the child context together with its owned active span.
+struct Started<E> {
+    // Carries the child trace identity into downstream work.
+    Context Context
+    // Owns the active span lifecycle.
+    Span own Span<E>
+}
+
+// Creates active spans from explicit parent context.
+contract Tracer<E> {
+    // Starts one named span and consumes its initial attributes.
+    fn Start(
+        &self,
+        $parent Context,
+        $name String,
+        $attributes own collections.List<Attribute>
+    ) own Started<E>
+}
+
+struct noopSpan<E> implements Span<E> {
+    fn SetAttributes(
+        &self,
+        $attributes own collections.List<Attribute>
+    ) void {
+        discard attributes
+    }
+
+    fn RecordError(&self, $error E) void {
+        discard error
+    }
+
+    fn End(&self) void {}
+}
+
+struct noopTracer<E> implements Tracer<E> {
+    fn Start(
+        &self,
+        $parent Context,
+        $name String,
+        $attributes own collections.List<Attribute>
+    ) own Started<E> {
+        discard name
+        discard attributes
+        own Started<E> {
+            Context = parent
+            Span = own noopSpan<E> {}
+        }
+    }
+}
+
+// Creates an empty explicit root context.
+fn Root() Context {
+    Context { TraceID = "" SpanID = "" }
+}
+
+// Creates an empty owned attribute list.
+fn Attributes() own collections.List<Attribute> {
+    collections.NewList<Attribute>()
+}
+
+// Appends one owned attribute and returns the list owner.
+fn WithAttribute(
+    $attributes own collections.List<Attribute>,
+    $item Attribute
+) own collections.List<Attribute> {
+    var result = attributes
+    result.PushFront($item)
+    result
+}
+
+// Creates a tracer that preserves context and ignores span events.
+fn Noop<E>() own Tracer<E> {
+    own noopTracer<E> {}
+}
+
+// Starts a span through an explicit tracer with no nullable fallback.
+fn Start<E>(
+    &tracer Tracer<E>,
+    $parent Context,
+    $name String,
+    $attributes own collections.List<Attribute>
+) own Started<E> {
+    tracer.Start($parent, $name, $attributes)
+}

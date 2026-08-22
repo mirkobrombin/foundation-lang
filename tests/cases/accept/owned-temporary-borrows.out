@@ -1,0 +1,11 @@
+drop argument temporary
+7
+drop receiver temporary
+9
+drop argument owned temporary
+11
+drop receiver owned temporary
+13
+drop receiver dynamic temporary
+15
+6

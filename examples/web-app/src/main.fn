@@ -188,7 +188,11 @@ fn bodyOf($response web.Response) String {
     const web.Response { Status Headers Body } = response
     discard Status
     discard Headers
-    Body
+    const bodyText = Body.Text() else error {
+        discard error
+        panic("web example expected a text response")
+    }
+    bodyText
 }
 
 fn serverOr(
@@ -258,7 +262,11 @@ fn selfTest() i32 {
     const unauthorizedResponse = responseOr($application.Dispatch($unauthorized))
     const web.Response { Status Headers Body } = unauthorizedResponse
     discard Headers
-    if Status != 401 || Body != "missing api key" return 2
+    const unauthorizedBody = Body.Text() else error {
+        discard error
+        return 2
+    }
+    if Status != 401 || unauthorizedBody != "missing api key" return 2
 
     var create = newRequest(.POST, "/users/Ada", "/users/Ada")
     create.Body = "profile body"

@@ -1,0 +1,18 @@
+contract Consumable {
+    fn Consume($self) i32
+}
+
+struct Value implements Consumable {
+    value i32
+
+    fn Consume($self) i32 { self.value }
+}
+
+fn consume<T Consumable>($value T) i32 {
+    const first = $value.Consume()
+    $value.Consume()
+}
+
+fn main() i32 {
+    consume(Value { value = 1 })
+}

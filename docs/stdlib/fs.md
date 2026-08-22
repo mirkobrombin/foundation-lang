@@ -22,6 +22,7 @@ task ReadPrivateTextLimited($path String, limit u64) Result<String, Error>
 task CreatePrivateDirectory($path String) Result<void, Error>
 task WritePrivateTextAtomic($path String, $value String, limit u64) Result<void, Error>
 task DeletePrivateFile($path String) Result<void, Error>
+task WatchNext($path String, intervalMilliseconds u64) Result<Event, Error>
 ```
 
 `LineReader.Next` returns one owned line at a time as
@@ -35,6 +36,13 @@ executor. It validates UTF-8 and caps input at 16 MiB. `ReadTextLimited` uses a 
 byte cap and returns `TooLarge` before the file can grow the result beyond that cap. Regular files
 use the bounded blocking executor because portable readiness APIs do not make their reads
 non-blocking. Socket and watcher packages use callback reactor adapters instead.
+
+`WatchNext` waits for one observed change at the supplied path through the callback reactor.
+It returns an `Event` with `Created`, `Modified`, or `Removed` and the observed path. The interval
+must be greater than zero; zero returns `InvalidInterval`. A watch observes one next change, does
+not promise recursive coverage or event coalescing, and must be called again for a later event.
+The portable polling provider accepts at most 64 simultaneous watches and returns `ResourceLimit`
+instead of creating an unbounded number of native threads.
 
 `DirReader.Next` returns one owned entry name at a time, omits `.` and `..`, and does not promise
 native enumeration order. Callers that need deterministic output sort collected paths before
@@ -74,4 +82,5 @@ and custom drop closes any live handle during normal scope cleanup. The bootstra
 representation is an internal `u64`; it is private to `std.fs` and is not a public FFI contract.
 
 The error enum distinguishes `NotFound`, `Permission`, `InvalidPath`, `InvalidUtf8`,
-`LineTooLong`, `TooLarge`, `Closed`, and `Io`. Allocation failure remains a fatal panic.
+`LineTooLong`, `TooLarge`, `InvalidInterval`, `ResourceLimit`, `Cancelled`, `Closed`, and `Io`. Allocation
+failure remains a fatal panic.

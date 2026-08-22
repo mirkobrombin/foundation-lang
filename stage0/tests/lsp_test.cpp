@@ -801,6 +801,7 @@ void completionsRespectScopesAndMemberAccess() {
         sourceUri + "\",\"version\":2},\"contentChanges\":[{\"text\":\"" +
         jsonEscape(incomplete) + "\"}]}}";
     const auto incompleteMembers = completion(78, 3, 18);
+    const auto incompleteMembersRepeat = completion(83, 3, 18);
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
@@ -809,7 +810,8 @@ void completionsRespectScopesAndMemberAccess() {
                              frame(packageMembers) + frame(valueMembers) + frame(enumMembers) +
                              frame(finalLocal) + frame(senderMembers) +
                              frame(receiverMembers) + frame(change) +
-                             frame(incompleteMembers) + frame(shutdown) + frame(exit));
+                             frame(incompleteMembers) + frame(incompleteMembersRepeat) +
+                             frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
@@ -822,6 +824,7 @@ void completionsRespectScopesAndMemberAccess() {
     const auto senderResponse = responseFor(transcript, 81);
     const auto receiverResponse = responseFor(transcript, 82);
     const auto incompleteResponse = responseFor(transcript, 78);
+    const auto incompleteRepeatResponse = responseFor(transcript, 83);
 
     expect(status == 0, "completion transcript exits cleanly");
     expect(errors.str().empty(), "completion requests write no server errors");
@@ -859,6 +862,9 @@ void completionsRespectScopesAndMemberAccess() {
     expect(incompleteResponse.find("\"label\":\"Visible\"") != std::string::npos &&
                incompleteResponse.find("\"label\":\"Read\"") != std::string::npos,
            "member completions survive an unfinished dot expression");
+    expect(incompleteRepeatResponse.find("\"label\":\"Visible\"") != std::string::npos &&
+               incompleteRepeatResponse.find("\"label\":\"Read\"") != std::string::npos,
+           "repeated incomplete completion requests preserve their result");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);
@@ -2408,11 +2414,13 @@ void functionValuesExposeTargetOwnershipModes() {
     const auto source = root / "main.fn";
     const std::string contents =
         "package sample\n"
-        "struct Value { count i32 }\n"
+        "contract Measurable { fn measure(self) i32 }\n"
+        "struct Value implements Measurable { count i32 fn measure(self) i32 { self.count } }\n"
         "fn inspect(value String) bool { value == \"ready\" }\n"
         "fn mutate(&value Value) void { value.count = value.count + 1 }\n"
         "fn take($value String) i32 { if value == \"owned\" { return 1 } 0 }\n"
         "fn hold<T transferable>($value T) T { value }\n"
+        "fn constrained<T Measurable>(value T) i32 { value.measure() }\n"
         "fn main() i32 {\n"
         "    const check = inspect\n"
         "    const editor = mutate\n"
@@ -2450,11 +2458,11 @@ void functionValuesExposeTargetOwnershipModes() {
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
-    std::istringstream input(frame(initialize) + frame(open) + frame(request(141, 13, 20)) +
-                             frame(request(142, 14, 6)) + frame(request(143, 15, 19)) +
-                             frame(request(144, 16, 34)) + frame(request(145, 17, 21)) +
-                             frame(request(146, 18, 12)) + frame(request(147, 5, 4)) +
-                             frame(request(148, 19, 12)) +
+    std::istringstream input(frame(initialize) + frame(open) + frame(request(141, 15, 20)) +
+                             frame(request(142, 16, 6)) + frame(request(143, 17, 19)) +
+                             frame(request(144, 18, 34)) + frame(request(145, 19, 21)) +
+                             frame(request(146, 20, 12)) + frame(request(147, 6, 4)) +
+                             frame(request(148, 21, 12)) + frame(request(149, 7, 5)) +
                              frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
@@ -2468,6 +2476,7 @@ void functionValuesExposeTargetOwnershipModes() {
     const auto transferableFunctionHover = responseFor(transcript, 146);
     const auto transferableConstraintHover = responseFor(transcript, 147);
     const auto cFunctionHover = responseFor(transcript, 148);
+    const auto nominalConstraintHover = responseFor(transcript, 149);
 
     expect(status == 0, "function value hover transcript exits cleanly");
     expect(errors.str().empty(), "function value hover requests write no server errors");
@@ -2487,6 +2496,9 @@ void functionValuesExposeTargetOwnershipModes() {
     expect(transferableConstraintHover.find("fn hold<T transferable>($value T) T") !=
                std::string::npos,
            "generic function hover preserves transferable type constraints");
+    expect(nominalConstraintHover.find("fn constrained<T Measurable>(value T) i32") !=
+               std::string::npos,
+           "generic function hover preserves nominal contract constraints");
     expect(cFunctionHover.find("callback extern c fn(i32) i32") != std::string::npos,
            "C function pointer values expose their direct ABI type");
 
@@ -2940,7 +2952,7 @@ void cachingPackageExposesEditorDetails() {
     expect(packageHover.find("foundation.caching") != std::string::npos,
            "caching package import receives hover");
     expect(constructorHover.find("fn New<T>") != std::string::npos &&
-               constructorHover.find("default limits") != std::string::npos,
+               constructorHover.find("v2 defaults") != std::string::npos,
            "cache construction receives typed hover and documentation");
     expect(constructorSignature.find("fn New<T>") != std::string::npos &&
                constructorSignature.find("cloneValue fn(T) T") != std::string::npos,
@@ -4980,7 +4992,8 @@ void codeStandardWarningsFollowTheManifestProfile() {
               "name sample\n"
               "version 1.0.0\n"
               "sdk ^0.1.0\n"
-              "fcs strict\n"
+              "fcs standard\n"
+              "fcs_rule FCS2001 error\n"
               "source src\n");
     writeFile(root / "foundation.lock",
               "format foundation.lock/v1\n"
@@ -5009,9 +5022,9 @@ void codeStandardWarningsFollowTheManifestProfile() {
 
     expect(status == 0, "FCS language server transcript exits cleanly");
     expect(errors.str().empty(), "FCS diagnostics write no server errors");
-    expect(transcript.find("\"severity\":2") != std::string::npos &&
+    expect(transcript.find("\"severity\":1") != std::string::npos &&
                transcript.find("FCS2001") != std::string::npos,
-           "strict manifest profile publishes compiler-backed warnings");
+           "Standard manifest rule override enables and publishes compiler-backed errors");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);

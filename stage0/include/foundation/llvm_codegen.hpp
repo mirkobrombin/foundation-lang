@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace foundation {
 
@@ -16,6 +17,7 @@ struct LlvmCodegenOptions {
     bool optimize{true};
     bool verifyAllocations{};
     bool debugInfo{true};
+    std::vector<std::string> sourcePaths;
     std::optional<FirFunctionId> entry;
     std::optional<std::string> libraryPackage;
 };

@@ -1,0 +1,5 @@
+fn main() i32 {
+    const shifted = 1.0 << 1.0
+    discard shifted
+    0
+}

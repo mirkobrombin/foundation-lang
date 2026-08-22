@@ -1,0 +1,48 @@
+enum Wrap<T> {
+    Value(T)
+}
+
+fn nestedValue(value Wrap<Wrap<i32>>) i32 {
+    match value {
+        Value(inner): match inner {
+            Value(number): number
+        }
+    }
+}
+
+fn main() i32 {
+    const small i8 = 3
+    if small << 2 != 12 return 1
+    const negative i8 = -1
+    if negative << 7 != -128 return 2
+
+    const signed i16 = -16
+    if signed >> 2 != -4 return 3
+    if 1 + 2 << 3 != 24 return 4
+
+    const wide i64 = 21
+    if wide << 1 != 42 return 5
+    const native isize = 84
+    if native >> 1 != 42 return 6
+
+    const byte u8 = 128
+    if byte >> 7 != 1 return 7
+    const short u16 = 3
+    if short << 4 != 48 return 8
+    const word u32 = 84
+    if word >> 1 != 42 return 9
+    const large u64 = 21
+    if large << 1 != 42 return 10
+    const size usize = 84
+    if size >> 1 != 42 return 11
+
+    var compound = 3
+    compound <<= 4
+    compound >>= 1
+    if compound != 24 return 12
+
+    const nested Wrap<Wrap<i32>> = .Value(.Value(42))
+    if nestedValue(nested) != 42 return 13
+    print("shift operators ok")
+    0
+}
