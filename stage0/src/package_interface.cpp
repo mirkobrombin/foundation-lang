@@ -587,31 +587,40 @@ std::optional<PackageInterface> buildPackageInterface(const FirProgram& source,
     result.target = lock.target;
     for (const auto& link : manifest.nativeLinks)
         result.links.push_back({link.library, link.target});
-    std::vector<unsigned char> layoutStates(program.structs.size());
+    std::vector<unsigned char> publicLayoutStates(program.structs.size());
+    std::vector<unsigned char> privateLayoutStates(program.structs.size());
+    std::vector<PiiStructLayout> privateLayouts;
     const auto collectBoundaryLayouts = [&](const auto& self, const Type& type,
+                                            std::vector<PiiStructLayout>& layouts,
+                                            std::vector<unsigned char>& layoutStates,
                                             SourceSpan span) -> void {
         if (type.kind == TypeKind::Struct) {
-            collectStructLayout(program, type, result.library, result.layouts,
-                                layoutStates, diagnostics, span);
+            collectStructLayout(program, type, result.library, layouts, layoutStates,
+                                diagnostics, span);
             return;
         }
         if ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst ||
              isCFunction(type)) &&
             !type.arguments.empty()) {
             for (const auto& argument : type.arguments)
-                self(self, argument, span);
+                self(self, argument, layouts, layoutStates, span);
         }
     };
     for (const auto& function : program.functions) {
         if (!function.cSymbol.has_value())
             continue;
-        collectBoundaryLayouts(collectBoundaryLayouts, function.returnType,
-                               function.sourceSpan);
+        const auto publicBoundary = !function.hasBody ||
+                                    (function.exported &&
+                                     function.packageName == manifest.name);
+        auto& layouts = publicBoundary ? result.layouts : privateLayouts;
+        auto& layoutStates = publicBoundary ? publicLayoutStates : privateLayoutStates;
+        collectBoundaryLayouts(collectBoundaryLayouts, function.returnType, layouts,
+                               layoutStates, function.sourceSpan);
         for (const auto local : function.parameters) {
             if (local < function.locals.size())
                 collectBoundaryLayouts(collectBoundaryLayouts,
                                        function.locals[local].type,
-                                       function.sourceSpan);
+                                       layouts, layoutStates, function.sourceSpan);
         }
         auto lowered = piiFunction(program, function);
         const auto sourcePath = std::filesystem::path(lowered.source->path);
@@ -640,7 +649,8 @@ std::optional<PackageInterface> buildPackageInterface(const FirProgram& source,
                                   reason,
                               function.sourceSpan);
         }
-        if (function.hasBody && function.packageName == manifest.name) {
+        if (function.hasBody && function.exported &&
+            function.packageName == manifest.name) {
             result.exports.push_back(std::move(lowered));
         } else if (!function.hasBody) {
             result.imports.push_back(std::move(lowered));

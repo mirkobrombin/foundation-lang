@@ -16,6 +16,8 @@ endif()
 set(native "${project}/native/libfuse/increment.c")
 set(shared_dist "${WORK}/shared")
 set(static_dist "${WORK}/static")
+set(pic_static_llvm_dist "${WORK}/static-pic-llvm")
+set(pic_static_c_dist "${WORK}/static-pic-c")
 execute_process(
     COMMAND "${COMPILER}" build-library "${project}" -o "${shared_dist}"
             --kind shared --backend llvm --native "${native}"
@@ -36,6 +38,39 @@ execute_process(
 if(NOT static_result EQUAL 0)
     message(FATAL_ERROR "cannot build C static library:\n${static_output}${static_error}")
 endif()
+execute_process(
+    COMMAND "${COMPILER}" build-library "${project}" -o "${pic_static_llvm_dist}"
+            --kind static --pic --backend llvm --native "${native}"
+    RESULT_VARIABLE pic_static_llvm_result
+    OUTPUT_VARIABLE pic_static_llvm_output
+    ERROR_VARIABLE pic_static_llvm_error
+)
+if(NOT pic_static_llvm_result EQUAL 0)
+    message(FATAL_ERROR
+            "cannot build position-independent LLVM static library:\n${pic_static_llvm_output}${pic_static_llvm_error}")
+endif()
+execute_process(
+    COMMAND "${COMPILER}" build-library "${project}" -o "${pic_static_c_dist}"
+            --kind static --pic --backend c --native "${native}"
+    RESULT_VARIABLE pic_static_c_result
+    OUTPUT_VARIABLE pic_static_c_output
+    ERROR_VARIABLE pic_static_c_error
+)
+if(NOT pic_static_c_result EQUAL 0)
+    message(FATAL_ERROR
+            "cannot build position-independent C static library:\n${pic_static_c_output}${pic_static_c_error}")
+endif()
+execute_process(
+    COMMAND "${COMPILER}" build-library "${project}" -o "${WORK}/redundant-pic"
+            --kind shared --pic
+    RESULT_VARIABLE redundant_pic_result
+    OUTPUT_QUIET
+    ERROR_VARIABLE redundant_pic_error
+)
+if(NOT redundant_pic_result EQUAL 2 OR
+   NOT redundant_pic_error MATCHES "usage:")
+    message(FATAL_ERROR "shared library accepted redundant --pic:\n${redundant_pic_error}")
+endif()
 file(WRITE "${project}/native/not-an-object.txt" "invalid native input\n")
 execute_process(
     COMMAND "${COMPILER}" build-library "${project}" -o "${WORK}/invalid"
@@ -53,14 +88,47 @@ if(SYSTEM_NAME STREQUAL "Windows")
     set(shared "${shared_dist}/lib/sample_native.dll")
     set(import_library "${shared_dist}/lib/sample_native.lib")
     set(static "${static_dist}/lib/sample_native.lib")
+    set(pic_static_llvm "${pic_static_llvm_dist}/lib/sample_native.lib")
+    set(pic_static_c "${pic_static_c_dist}/lib/sample_native.lib")
 elseif(SYSTEM_NAME STREQUAL "Darwin")
     set(shared "${shared_dist}/lib/libsample_native.2.dylib")
     set(shared_link_artifact "${shared_dist}/lib/libsample_native.dylib")
     set(static "${static_dist}/lib/libsample_native.a")
+    set(pic_static_llvm "${pic_static_llvm_dist}/lib/libsample_native.a")
+    set(pic_static_c "${pic_static_c_dist}/lib/libsample_native.a")
 else()
     set(shared "${shared_dist}/lib/libsample_native.so.2")
     set(shared_link_artifact "${shared_dist}/lib/libsample_native.so")
     set(static "${static_dist}/lib/libsample_native.a")
+    set(pic_static_llvm "${pic_static_llvm_dist}/lib/libsample_native.a")
+    set(pic_static_c "${pic_static_c_dist}/lib/libsample_native.a")
+endif()
+
+if(SYSTEM_NAME STREQUAL "Linux")
+    execute_process(
+        COMMAND "${C_COMPILER}" -shared -Wl,--whole-archive "${pic_static_llvm}"
+                -Wl,--no-whole-archive -lm -ldl -pthread
+                -o "${WORK}/libsample_llvm_embedded.so"
+        RESULT_VARIABLE pic_llvm_link_result
+        OUTPUT_VARIABLE pic_llvm_link_output
+        ERROR_VARIABLE pic_llvm_link_error
+    )
+    if(NOT pic_llvm_link_result EQUAL 0)
+        message(FATAL_ERROR
+                "cannot embed position-independent LLVM archive in a shared library:\n${pic_llvm_link_output}${pic_llvm_link_error}")
+    endif()
+    execute_process(
+        COMMAND "${C_COMPILER}" -shared -Wl,--whole-archive "${pic_static_c}"
+                -Wl,--no-whole-archive -lm -ldl -pthread
+                -o "${WORK}/libsample_c_embedded.so"
+        RESULT_VARIABLE pic_c_link_result
+        OUTPUT_VARIABLE pic_c_link_output
+        ERROR_VARIABLE pic_c_link_error
+    )
+    if(NOT pic_c_link_result EQUAL 0)
+        message(FATAL_ERROR
+                "cannot embed position-independent C archive in a shared library:\n${pic_c_link_output}${pic_c_link_error}")
+    endif()
 endif()
 
 set(repeat_project "${WORK}/repeat-project")
@@ -102,6 +170,8 @@ endif()
 foreach(path IN ITEMS
         "${shared}"
         "${static}"
+        "${pic_static_llvm}"
+        "${pic_static_c}"
         "${shared_dist}/include/sample_native.h"
         "${shared_dist}/include/foundation/library.h"
         "${shared_dist}/share/foundation/sample_native.pii.json"
@@ -134,6 +204,7 @@ foreach(expected IN ITEMS
         "sample_apply"
         "sample_increment"
         "sample_invoke"
+        "sample_round_trip"
         "sample_sine"
         "foundation/library.h")
     string(FIND "${header}" "${expected}" found)
@@ -141,6 +212,10 @@ foreach(expected IN ITEMS
         message(FATAL_ERROR "native library header is missing ${expected}")
     endif()
 endforeach()
+string(FIND "${header}" "sample_private_identity" private_header_entry)
+if(NOT private_header_entry EQUAL -1)
+    message(FATAL_ERROR "native library header exposes a private native entry")
+endif()
 file(READ "${shared_dist}/share/foundation/sample_native.pii.json" shared_pii)
 file(READ "${static_dist}/share/foundation/sample_native.pii.json" static_pii)
 if(NOT shared_pii STREQUAL static_pii)
@@ -254,10 +329,12 @@ if(SYSTEM_NAME STREQUAL "Linux")
        NOT symbols MATCHES "sample_apply" OR
        NOT symbols MATCHES "sample_callback" OR
        NOT symbols MATCHES "sample_invoke" OR
+       NOT symbols MATCHES "sample_round_trip" OR
        NOT symbols MATCHES "sample_sine" OR
        NOT symbols MATCHES "sample_shift" OR
        NOT symbols MATCHES "fdn_string_drop" OR
        symbols MATCHES "fdn_fn_" OR
+       symbols MATCHES "sample_private_identity" OR
        symbols MATCHES "sample_native_double_(start|cancel)" OR
        symbols MATCHES "[ \\t]main(@|$)")
         message(FATAL_ERROR "shared library export surface is invalid:\n${symbols}")

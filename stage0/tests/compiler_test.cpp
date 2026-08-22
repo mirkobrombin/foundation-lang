@@ -1980,6 +1980,10 @@ extern c fn FoundationDouble(value i32) i32 as foundation_double {
     value * 2
 }
 
+extern c fn foundationIdentity(value i32) i32 as foundation_private_identity {
+    value
+}
+
 fn main() i32 {
     var text = nativeText()
     discard nativeEdit(&text)
@@ -1991,8 +1995,8 @@ fn main() i32 {
     auto second = check(source);
     expect(!first.diagnostics.hasErrors(), "C ABI program has no diagnostics");
     expect(!second.diagnostics.hasErrors(), "repeated C ABI program has no diagnostics");
-    expect(first.program.functions.size() == 5, "C ABI declarations remain functions in AST");
-    if (first.program.functions.size() == 5) {
+    expect(first.program.functions.size() == 6, "C ABI declarations remain functions in AST");
+    if (first.program.functions.size() == 6) {
         expect(first.program.functions[0].cSymbol == "foundation_native_add" &&
                    !first.program.functions[0].hasBody,
                "bodyless C ABI declaration is an import");
@@ -2021,6 +2025,10 @@ fn main() i32 {
            "C import can mutate a String through an exclusive borrow");
     expect(firstHeader.find("foundation_double(int32_t fdn_arg_0);") != std::string::npos,
            "C export appears in the public header");
+    expect(firstC.find("foundation_private_identity(") != std::string::npos,
+           "private C entry remains available to bundled native code");
+    expect(firstHeader.find("foundation_private_identity") == std::string::npos,
+           "private C entry does not leak into the public header");
     expect(firstHeader.find("foundation_native_add") == std::string::npos,
            "C import does not leak into the public header");
 }

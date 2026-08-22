@@ -20,6 +20,7 @@ struct NativePoint {
 
 extern c fn nativeIncrement(value i32) i32 as sample_native_increment
 extern c fn nativeSine(value f64) f64 as sample_native_sine
+extern c fn nativeRoundTrip(value i32) i32 as sample_native_round_trip
 extern c fn nativeApply(
     callback extern c fn(i32) i32,
     value i32
@@ -45,6 +46,14 @@ extern c fn FoundationCallback(value i32) i32 as sample_callback {
 
 extern c fn FoundationSine(value f64) f64 as sample_sine {
     nativeSine(value)
+}
+
+extern c fn foundationIdentity(value i32) i32 as sample_private_identity {
+    value
+}
+
+extern c fn FoundationRoundTrip(value i32) i32 as sample_round_trip {
+    nativeRoundTrip(value)
 }
 
 extern c fn FoundationApply(value i32) i32 as sample_apply {

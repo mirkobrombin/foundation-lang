@@ -94,7 +94,8 @@ enum class LibraryKind {
     const std::filesystem::path &outputDirectory,
     LibraryKind kind,
     const std::vector<std::filesystem::path> &nativeInputs = {},
-    BackendKind backend = defaultBackendKind());
+    BackendKind backend = defaultBackendKind(),
+    bool positionIndependent = false);
 [[nodiscard]] int runFile(const std::filesystem::path &source,
                           const std::vector<std::filesystem::path> &nativeInputs = {},
                           const std::vector<std::string> &arguments = {},

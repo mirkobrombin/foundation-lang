@@ -3,12 +3,18 @@
 
 #include "foundation/runtime.h"
 
+extern int32_t sample_private_identity(int32_t value);
+
 int32_t sample_native_increment(int32_t value) {
     return value + 1;
 }
 
 double sample_native_sine(double value) {
     return sin(value);
+}
+
+int32_t sample_native_round_trip(int32_t value) {
+    return sample_private_identity(value);
 }
 
 int32_t sample_native_apply(int32_t (*callback)(int32_t), int32_t value) {

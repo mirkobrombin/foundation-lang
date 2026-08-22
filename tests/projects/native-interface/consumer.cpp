@@ -26,7 +26,8 @@ int main() {
                    sample_sine(0.0) == 0.0 &&
                    sample_apply(80) == 81 &&
                    sample_invoke(sample_increment, 100) == 101 &&
-                   sample_increment(9) == 10 && sample_callback(5) == 17
+                   sample_increment(9) == 10 && sample_callback(5) == 17 &&
+                   sample_round_trip(97) == 97
                ? 0
                : 1;
 }

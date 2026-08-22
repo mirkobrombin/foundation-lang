@@ -1302,7 +1302,8 @@ int buildLibrary(const std::filesystem::path &source,
                  const std::filesystem::path &outputDirectory,
                  LibraryKind kind,
                  const std::vector<std::filesystem::path> &nativeInputs,
-                 BackendKind backend) {
+                 BackendKind backend,
+                 bool positionIndependent) {
     const auto manifestPath = discoverPackageManifest(source);
     if (!manifestPath.has_value()) {
         std::cerr << "foundationc: build-library requires a package project\n";
@@ -1381,6 +1382,8 @@ int buildLibrary(const std::filesystem::path &source,
     constexpr std::string_view objectExtension = ".o";
 #endif
     std::vector<std::filesystem::path> objects;
+    const auto compilePositionIndependent =
+        kind == LibraryKind::Shared || positionIndependent;
     const auto generatedObject = temporary->path() / ("foundation" + std::string(objectExtension));
     const auto librarySourceIdentity = manifestPath->filename().generic_string();
     if (backend == BackendKind::Llvm) {
@@ -1403,7 +1406,7 @@ int buildLibrary(const std::filesystem::path &source,
         if (!writeFile(generatedSource,
                        emitPackageC(*fir, manifest.value->name, librarySourceIdentity)) ||
             !compileLibraryObject(generatedSource, generatedObject, temporary->path(),
-                                  kind == LibraryKind::Shared)) {
+                                  compilePositionIndependent)) {
             return 1;
         }
     }
@@ -1414,7 +1417,7 @@ int buildLibrary(const std::filesystem::path &source,
         const auto object = temporary->path() /
                             ("runtime-" + std::to_string(index) + std::string(objectExtension));
         if (!compileLibraryObject(runtimeSources[index], object, temporary->path(),
-                                  kind == LibraryKind::Shared)) {
+                                  compilePositionIndependent)) {
             return 1;
         }
         objects.push_back(object);
@@ -1426,7 +1429,7 @@ int buildLibrary(const std::filesystem::path &source,
                                 ("native-" + std::to_string(index) +
                                  std::string(objectExtension));
             if (!compileLibraryObject(input, object, temporary->path(),
-                                      kind == LibraryKind::Shared)) {
+                                      compilePositionIndependent)) {
                 return 1;
             }
             objects.push_back(object);

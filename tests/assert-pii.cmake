@@ -62,6 +62,7 @@ foreach(expected IN ITEMS
         "\"c_symbol\":\"sample_apply\""
         "\"c_symbol\":\"sample_callback\""
         "\"c_symbol\":\"sample_invoke\""
+        "\"c_symbol\":\"sample_round_trip\""
         "\"c_symbol\":\"sample_sine\""
         "\"c_symbol\":\"sample_shift\""
         "\"foundation_name\":\"sample.native.NativePoint\""
@@ -86,6 +87,10 @@ foreach(expected IN ITEMS
         message(FATAL_ERROR "PII output is missing ${expected}")
     endif()
 endforeach()
+string(FIND "${interface}" "\"c_symbol\":\"sample_private_identity\"" private_export)
+if(NOT private_export EQUAL -1)
+    message(FATAL_ERROR "PII output exposes a private native entry")
+endif()
 
 set(reserved_manifest "${second_project}/foundation.package")
 file(READ "${reserved_manifest}" reserved_source)

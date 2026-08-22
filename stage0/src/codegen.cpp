@@ -5612,7 +5612,7 @@ std::string emitCHeader(const FirProgram &source) {
     const auto program = prepareFirForBackend(source);
     std::vector<const FirFunction *> exports;
     for (const auto &function : program.functions) {
-        if (function.cSymbol.has_value() && function.hasBody) {
+        if (function.cSymbol.has_value() && function.hasBody && function.exported) {
             exports.push_back(&function);
         }
     }
@@ -5648,7 +5648,7 @@ std::string emitPackageCHeader(const FirProgram &source, std::string_view packag
     const auto program = specializePackageInterface(source, packageName);
     std::vector<const FirFunction *> exports;
     for (const auto &function : program.functions) {
-        if (function.cSymbol.has_value() && function.hasBody) {
+        if (function.cSymbol.has_value() && function.hasBody && function.exported) {
             exports.push_back(&function);
         }
     }

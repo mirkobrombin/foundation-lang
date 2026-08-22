@@ -35,7 +35,8 @@ void printUsage(std::ostream &output) {
            << "  foundationc build <source-or-project> -o <executable>"
               " [--backend <llvm|c>] [--native <input>]...\n"
            << "  foundationc build-library <project> -o <directory>"
-              " --kind <static|shared> [--backend <llvm|c>] [--native <input>]...\n"
+              " --kind <static|shared> [--pic] [--backend <llvm|c>]"
+              " [--native <input>]...\n"
            << "  foundationc run <source-or-project> [--backend <llvm|c>]"
               " [--native <input>]... [-- <argument>...]\n"
            << "  foundationc test <source-or-project> [--backend <llvm|c>]"
@@ -177,15 +178,23 @@ bool parseLibraryArguments(int argc, char **argv, int start,
                            std::filesystem::path &output,
                            foundation::LibraryKind &kind,
                            std::vector<std::filesystem::path> &nativeInputs,
-                           foundation::BackendKind &backend) {
+                           foundation::BackendKind &backend,
+                           bool &positionIndependent) {
     auto outputSeen = false;
     auto kindSeen = false;
     auto backendSeen = false;
-    for (auto index = start; index < argc; index += 2) {
+    auto picSeen = false;
+    for (auto index = start; index < argc;) {
+        const std::string_view option = argv[index];
+        if (option == "--pic" && !picSeen) {
+            positionIndependent = true;
+            picSeen = true;
+            ++index;
+            continue;
+        }
         if (index + 1 >= argc) {
             return false;
         }
-        const std::string_view option = argv[index];
         const std::string_view value = argv[index + 1];
         if (option == "-o" && !outputSeen) {
             output = value;
@@ -211,8 +220,10 @@ bool parseLibraryArguments(int argc, char **argv, int start,
         } else {
             return false;
         }
+        index += 2;
     }
-    return outputSeen && kindSeen;
+    return outputSeen && kindSeen &&
+           !(positionIndependent && kind == foundation::LibraryKind::Shared);
 }
 
 bool parseRunArguments(int argc, char **argv, int start,
@@ -390,12 +401,14 @@ int main(int argc, char **argv) {
             auto kind = foundation::LibraryKind::Static;
             std::vector<std::filesystem::path> nativeInputs;
             auto backend = foundation::defaultBackendKind();
-            if (!parseLibraryArguments(argc, argv, 3, output, kind, nativeInputs, backend)) {
+            auto positionIndependent = false;
+            if (!parseLibraryArguments(argc, argv, 3, output, kind, nativeInputs, backend,
+                                       positionIndependent)) {
                 printUsage(std::cerr);
                 return 2;
             }
             return foundation::buildLibrary(std::filesystem::path(argv[2]), output, kind,
-                                            nativeInputs, backend);
+                                            nativeInputs, backend, positionIndependent);
         }
         if (command == "run" && argc >= 3) {
             std::vector<std::filesystem::path> nativeInputs;
