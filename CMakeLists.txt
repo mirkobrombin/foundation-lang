@@ -618,7 +618,8 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_COMMAND}
             -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-source-extension.cmake
-    )    if(FOUNDATION_ENABLE_WINDOWS_WINE_MATRIX)
+    )
+    if(FOUNDATION_ENABLE_WINDOWS_WINE_MATRIX)
         find_program(FOUNDATION_MINGW_C_COMPILER NAMES x86_64-w64-mingw32-gcc REQUIRED)
         find_program(FOUNDATION_WINE NAMES wine wine64 REQUIRED)
         add_test(

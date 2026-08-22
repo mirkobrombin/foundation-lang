@@ -218,7 +218,7 @@ A typed body marked `@validation.Validatable()` runs its generated `Validate` me
 binding and before route execution. Direct dispatch adds a typed `Validation(errors)` variant and
 preserves every structured error. The generated HTTP policy consumes the collection and returns
 422 without exposing field values in the response body. See `docs/framework/validation.md` for the
-rule set and its remaining compatibility gaps.
+rule set and error shapes.
 
 The compiler rejects invalid paths, exact duplicate routes, ambiguous parameter branches,
 unmatched path parameters, repeated sources, unsupported binding types, missing or ambiguous DI
