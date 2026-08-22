@@ -1205,7 +1205,7 @@ void Parser::stateMachineDeclaration() {
                            TypeSyntax{"edit", {machineType}, name.span},
                            name.span,
                            {},
-                           ParameterMode::Bootstrap};
+                           ParameterMode::TypeEncoded};
         std::vector<Parameter> parameters;
         parameters.reserve(transition.parameters.size() + 1);
         parameters.push_back(std::move(receiver));
@@ -1628,7 +1628,7 @@ Function Parser::method(const std::string &owner,
                                                               : "own";
         parameters.push_back(
             {"self", TypeSyntax{qualifier, {std::move(ownerType)}, receiverStart.span},
-             receiverStart.span, {}, ParameterMode::Bootstrap});
+             receiverStart.span, {}, ParameterMode::TypeEncoded});
         parseParameters = match(TokenKind::Comma);
     }
     if (parseParameters && !check(TokenKind::RightParen)) {
@@ -1719,7 +1719,7 @@ ContractMethod Parser::contractMethod(const std::string &owner,
         functionParameters.reserve(parameters.size() + 1);
         functionParameters.push_back(
             {"self", TypeSyntax{qualifier, {std::move(ownerType)}, start.span}, start.span, {},
-             ParameterMode::Bootstrap});
+             ParameterMode::TypeEncoded});
         functionParameters.insert(functionParameters.end(), parameters.begin(), parameters.end());
         const auto tailResult = returnType.name != "void" || !returnType.arguments.empty();
         auto previousTypeParameters = std::move(activeTypeParameters_);
@@ -1799,7 +1799,7 @@ Parameter Parser::parameter(bool allowInferredType) {
         diagnostics_.error("FDN1186",
                            "parameter mode after the name was removed; use " + replacement,
                            type.span);
-        mode = ParameterMode::Bootstrap;
+        mode = ParameterMode::TypeEncoded;
     }
     auto span = name.span;
     if (start.offset < name.span.offset) {

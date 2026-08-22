@@ -1,6 +1,6 @@
 # `std.fs`
 
-`std.fs` is the bounded bootstrap filesystem surface. Paths are UTF-8 Foundation Strings; the
+`std.fs` is the bounded filesystem surface. Paths are UTF-8 Foundation Strings; the
 runtime converts them to the native representation and never exposes native path pointers.
 
 ```foundation
@@ -78,7 +78,7 @@ points and returns `NotFound` when the path does not exist. Higher-level stores 
 that condition to idempotent deletion.
 
 All readers and roots own opaque runtime handles. `Close` is idempotent at the Foundation layer,
-and custom drop closes any live handle during normal scope cleanup. The bootstrap handle
+and custom drop closes any live handle during normal scope cleanup. The native handle
 representation is an internal `u64`; it is private to `std.fs` and is not a public FFI contract.
 
 The error enum distinguishes `NotFound`, `Permission`, `InvalidPath`, `InvalidUtf8`,

@@ -1,7 +1,7 @@
 # `std.env`
 
 `std.env` reads the process environment through the portable runtime boundary. It does not expose
-mutation in the bootstrap surface.
+mutation in the current surface.
 
 ```foundation
 import std.env

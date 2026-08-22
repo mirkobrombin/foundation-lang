@@ -1,4 +1,4 @@
-package fuzz.bootstrap
+package fuzz.baseline
 
 import fuzz.support as support
 

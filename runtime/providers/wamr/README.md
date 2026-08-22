@@ -1,24 +1,24 @@
 # WAMR provider
 
-The optional WAMR provider executes Foundation WebAssembly plugins without adding an engine
-dependency to the base compiler or runtime. The provider ABI is version 2.0 and the implementation
-pins WAMR 2.4.5 at revision `25bd7eb63e828e4bd242cc9b38d260b4b31c6605`.
+The optional WAMR provider runs Foundation WebAssembly plugins without adding an engine dependency
+to the base compiler or runtime. It implements provider ABI 2.0 against WAMR 2.4.5 at revision
+`25bd7eb63e828e4bd242cc9b38d260b4b31c6605`.
 
-The application selects the provider library explicitly. Engine and module references include a
-generation, so a stale reference cannot reach a newly allocated object. Engine close revokes the
-public reference before waiting for active module opens. Module close revokes its reference before
-waiting for calls, metadata reads, or configuration operations. Provider close consumes the native
-handle after its dependants have quiesced.
+## Lifetime and concurrency
 
-Module files are read without the global registry lock. WAMR load and unload operations are
-serialized per engine. Calls on one module are serialized because a WAMR execution environment is
-not shared concurrently. Different modules may execute concurrently. Metadata evaluation has no
-host capabilities, and runtime calls can reach only capabilities declared by verified metadata and
-granted by the application.
+The application selects the provider library explicitly. Engine and module references carry a
+generation, which prevents an old reference from reaching a new object that reused the same slot.
+Closing first revokes the public reference, then waits for active work before releasing native
+state.
 
-Read-only WASI preopens are rejected because the selected WAMR interface cannot enforce distinct
-read and write rights. Writable preopens, environment entries, and arguments must be supplied
-explicitly. Process environment, arguments, and directories are never inherited.
+File reads do not hold the global registry lock. WAMR load and unload operations are serialized per
+engine, while calls share no execution environment and therefore serialize per module. Separate
+modules can still run concurrently.
+
+Metadata evaluation receives no host capabilities. Runtime calls can use only capabilities that
+appear in verified metadata and are granted by the application. Process arguments, environment,
+and directories are never inherited. Read-only WASI preopens are rejected because this WAMR API
+cannot enforce distinct read and write rights; any writable preopen must be supplied explicitly.
 
 ## Build and verify
 
@@ -30,15 +30,14 @@ cmake -S . -B build/wamr -G Ninja \
     -DFOUNDATION_WAMR_LIBRARY=/path/to/libiwasm.a
 cmake --build build/wamr
 ctest --test-dir build/wamr --output-on-failure \
-    -R '^(runtime\.wamr-bridge|providers\.wamr\.native|stage0\.run\.plugin-wamr-provider-(fake|real))$'
+    -R '^(runtime\.wamr-bridge|providers\.wamr\.native|compiler\.run\.plugin-wamr-provider-(fake|real))$'
 ```
 
-`FOUNDATION_WAMR_SANITIZERS=ON` instruments the Foundation runtime, provider, fake provider, and
-native concurrency tests with AddressSanitizer and UndefinedBehaviorSanitizer.
-`FOUNDATION_WAMR_TSAN=ON` is a separate ThreadSanitizer build. The two options cannot be combined.
+`FOUNDATION_WAMR_SANITIZERS=ON` instruments the runtime and provider fixtures with AddressSanitizer
+and UndefinedBehaviorSanitizer. Use `FOUNDATION_WAMR_TSAN=ON` in a separate build for
+ThreadSanitizer; the options cannot be combined.
 
-`runtime.wamr-bridge` forces close during an active open through the public runtime bridge and
-checks deferred engine destruction with a live module. `providers.wamr.native` forces the same race
-inside the real provider. The Foundation fixtures cover the fake provider, the pinned real engine,
-valid metadata, bad signatures, invalid metadata, missing memory, capability denial, cancellation,
-stale handles, and bounded payloads.
+The bridge and native tests both force a close while an open is active, checking that engine
+destruction waits for the live module. Other fixtures exercise the fake and pinned engines against
+invalid metadata, signature and memory failures, denied capabilities, cancellation, stale handles,
+and bounded payloads.

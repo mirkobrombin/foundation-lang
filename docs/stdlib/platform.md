@@ -10,7 +10,7 @@ const current = platform.Current()
 print(platform.Name(current))
 ```
 
-The bootstrap surface contains:
+The current surface contains:
 
 ```foundation
 enum Kind {

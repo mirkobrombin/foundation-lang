@@ -66,7 +66,7 @@ enum class OwnershipOperator {
 };
 
 enum class ParameterMode {
-    Bootstrap,
+    TypeEncoded,
     Read,
     Edit,
     Transfer,
@@ -358,7 +358,7 @@ struct Parameter {
     TypeSyntax type;
     SourceSpan span;
     std::vector<AttributeApplication> attributes;
-    ParameterMode mode{ParameterMode::Bootstrap};
+    ParameterMode mode{ParameterMode::TypeEncoded};
     bool inferredType{};
 };
 

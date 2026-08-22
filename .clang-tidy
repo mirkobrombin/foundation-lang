@@ -8,4 +8,4 @@ Checks: >
   readability-container-size-empty,
   readability-redundant-*
 WarningsAsErrors: '*'
-HeaderFilterRegex: 'stage0/.*'
+HeaderFilterRegex: 'compiler/.*'

@@ -3049,6 +3049,6 @@ int main() {
         std::cerr << failures << " test assertions failed\n";
         return 1;
     }
-    std::cout << "stage0 compiler tests passed\n";
+    std::cout << "compiler tests passed\n";
     return 0;
 }

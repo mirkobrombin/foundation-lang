@@ -1173,7 +1173,7 @@ test("maps compiler call hierarchy edges to VS Code calls", async () => {
 });
 
 test("grammar and completions track compiler keywords", () => {
-    const lexer = fs.readFileSync(path.join(repositoryRoot, "stage0/src/lexer.cpp"), "utf8");
+    const lexer = fs.readFileSync(path.join(repositoryRoot, "compiler/src/lexer.cpp"), "utf8");
     const grammar = fs.readFileSync(
         path.join(extensionRoot, "syntaxes/foundation.tmLanguage.json"),
         "utf8"

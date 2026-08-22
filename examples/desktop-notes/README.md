@@ -1,10 +1,11 @@
 # Desktop notes
 
-This is a stateful Foundation desktop application with one real native host boundary. The package
-keeps a collection of notes, rejects an empty title, records notebook events, adds two notes, edits
-one, searches it, and deletes the other. Each completed action is presented through the same
-Foundation workflow. The C host is limited to platform UI: Win32 on Windows, AppleScript on macOS,
-and Zenity on Linux. No GUI toolkit is part of the Foundation runtime or required by CI.
+This stateful desktop application keeps its notebook and action workflow in Foundation while a
+small C host presents native dialogs. The host uses Win32 on Windows, AppleScript on macOS, and
+Zenity on Linux; it does not bring a GUI toolkit into the Foundation runtime.
+
+The sample workflow adds two notes, edits and searches one, then deletes the other. Empty titles are
+rejected before the native boundary, and every completed action is recorded as a notebook event.
 
 ## Run
 
@@ -15,23 +16,21 @@ FOUNDATION_DESKTOP_HEADLESS=1 ./build/dev/foundationc run examples/desktop-notes
   --native examples/desktop-notes/native/desktop_host.c
 ```
 
-On Windows build from a Developer Command Prompt. Without `FOUNDATION_DESKTOP_HEADLESS=1`, the host
-opens a native dialog after each add, edit, search, delete, and final notebook action. Linux
-requires Zenity at runtime. The host fails closed when no supported desktop UI is available.
+Without `FOUNDATION_DESKTOP_HEADLESS=1`, the host opens a native dialog after each step. Build on
+Windows from a Developer Command Prompt; Linux needs Zenity at runtime. The host fails closed when
+the current system has no supported UI.
 
 ## Build, test, debug, and distribute
 
-`foundationc build examples/desktop-notes --native ...` emits the host executable. The registered
-`stage0.run.desktop-notes` CTest uses the same native input, replays the workflow headlessly, and
-checks its seven output lines. Debug Foundation diagnostics with `foundationc check
-examples/desktop-notes`; native failures retain the C compiler diagnostic and the source location
-of the FFI call.
+`foundationc build examples/desktop-notes --native ...` emits the executable. The
+`compiler.run.desktop-notes` CTest replays the same workflow headlessly and checks its seven output
+lines. Use `foundationc check examples/desktop-notes` for Foundation diagnostics; a native build
+failure keeps both the C compiler message and the Foundation location of the FFI call.
 
-Distribute the executable with its host source, `foundation.package`, and `foundation.lock`. Linux
-packages must state Zenity as a runtime dependency. macOS distribution uses the system
-`/usr/bin/osascript`; Windows links User32 through the platform toolchain. The native boundary is
-two imports only: `foundation_desktop_is_headless` and `foundation_desktop_show`.
+Distribution includes the executable, host source, `foundation.package`, and `foundation.lock`.
+Linux packages must declare Zenity as a runtime dependency. macOS uses the system
+`/usr/bin/osascript`, while the Windows build links User32 through its platform toolchain. Only
+`foundation_desktop_is_headless` and `foundation_desktop_show` cross the native boundary.
 
-To inspect an intentional FFI failure, omit `desktop_host.c` from a build. The native linker reports
-the missing `foundation_desktop_*` symbols. Keep the host shim separate from Foundation business
-logic so that diagnostic identifies the integration boundary directly.
+To inspect an intentional FFI failure, omit `desktop_host.c` from a build. The linker will report
+the missing `foundation_desktop_*` symbols at the integration boundary.

@@ -559,7 +559,7 @@ class Analyzer {
             return base;
         }
         switch (parameter.mode) {
-        case ParameterMode::Bootstrap:
+        case ParameterMode::TypeEncoded:
         case ParameterMode::Transfer:
             return base;
         case ParameterMode::Edit:
@@ -3457,7 +3457,7 @@ class Analyzer {
                         const auto mode =
                             index < program_.functions[functionId].parameters.size()
                                 ? program_.functions[functionId].parameters[index].mode
-                                : ParameterMode::Bootstrap;
+                                : ParameterMode::TypeEncoded;
                         inferFunctionValueType(functionValueParameterType(signature.parameters[index], mode),
                                   expected->arguments[index + 1], inferred, expression.span,
                                   "function value parameter");
@@ -3473,7 +3473,7 @@ class Analyzer {
                 for (std::size_t index = 0; index < signature.parameters.size(); ++index) {
                     const auto mode = index < program_.functions[functionId].parameters.size()
                                           ? program_.functions[functionId].parameters[index].mode
-                                          : ParameterMode::Bootstrap;
+                                          : ParameterMode::TypeEncoded;
                     parts.push_back(functionValueParameterType(
                         substitute(signature.parameters[index], typeArguments), mode));
                 }
@@ -3954,7 +3954,7 @@ class Analyzer {
         for (std::size_t index = 0; index < signature.parameters.size(); ++index) {
             const auto mode = index < closure.parameters.size()
                                   ? closure.parameters[index].mode
-                                  : ParameterMode::Bootstrap;
+                                  : ParameterMode::TypeEncoded;
             parts.push_back(functionValueParameterType(signature.parameters[index], mode));
         }
         const auto qualifier = contextual.has_value() && isTransferableFunction(*contextual)
@@ -4511,7 +4511,7 @@ class Analyzer {
         }
         std::vector<std::optional<Type>> argumentExpectations(call.arguments.size());
         std::vector<ParameterMode> parameterModes(call.arguments.size(),
-                                                  ParameterMode::Bootstrap);
+                                                  ParameterMode::TypeEncoded);
         if (const auto local = lookupLocal(call.callee); local.has_value()) {
             rejectNamedArguments(call.argumentNames, "function value call", span);
             auto functionType = model_.functions[currentFunction_].locals[*local].type;
@@ -5585,7 +5585,7 @@ class Analyzer {
             const auto parameter = argumentParameters[source];
             const auto mode = parameter < method.parameterModes.size()
                                   ? method.parameterModes[parameter]
-                                  : ParameterMode::Bootstrap;
+                                  : ParameterMode::TypeEncoded;
             const auto expected = parameter < method.parameterTypes.size()
                                       ? std::optional<Type>{specializeReadParameter(
                                             substitute(method.parameterTypes[parameter],
@@ -5610,7 +5610,7 @@ class Analyzer {
             }
             const auto mode = parameter < method.parameterModes.size()
                                   ? method.parameterModes[parameter]
-                                  : ParameterMode::Bootstrap;
+                                  : ParameterMode::TypeEncoded;
             const auto expected = specializeReadParameter(
                 substitute(method.parameterTypes[parameter], candidate.contract.arguments),
                 mode);
@@ -5746,7 +5746,7 @@ class Analyzer {
             const auto parameter = argumentParameters[source] + 1;
             const auto mode = parameter < declaration.parameters.size()
                                   ? declaration.parameters[parameter].mode
-                                  : ParameterMode::Bootstrap;
+                                  : ParameterMode::TypeEncoded;
             const auto expected = parameter < signature.parameters.size()
                                       ? std::optional<Type>{specializeReadParameter(
                                             substitute(signature.parameters[parameter],
@@ -5775,7 +5775,7 @@ class Analyzer {
             }
             const auto mode = parameter < declaration.parameters.size()
                                   ? declaration.parameters[parameter].mode
-                                  : ParameterMode::Bootstrap;
+                                  : ParameterMode::TypeEncoded;
             const auto expected = specializeReadParameter(
                 substitute(signature.parameters[parameter], base.arguments), mode);
             if (const auto conversion = contractConversion(expected, arguments[source]);
@@ -5876,7 +5876,7 @@ class Analyzer {
             const auto parameter = argumentParameters[source];
             const auto mode = parameter < semantic.parameterModes.size()
                                   ? semantic.parameterModes[parameter]
-                                  : ParameterMode::Bootstrap;
+                                  : ParameterMode::TypeEncoded;
             const auto expected = parameter < semantic.parameterTypes.size()
                                       ? std::optional<Type>{specializeReadParameter(
                                             substitute(semantic.parameterTypes[parameter],
@@ -5901,7 +5901,7 @@ class Analyzer {
             }
             const auto mode = parameter < semantic.parameterModes.size()
                                   ? semantic.parameterModes[parameter]
-                                  : ParameterMode::Bootstrap;
+                                  : ParameterMode::TypeEncoded;
             const auto expected = specializeReadParameter(
                 substitute(semantic.parameterTypes[parameter], base.arguments), mode);
             if (const auto conversion = contractConversion(expected, arguments[source]);

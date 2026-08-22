@@ -26,7 +26,7 @@ one following line with `// fcs:ignore FCSCODE reason`; an empty reason or dangl
 Strict-only rule under Standard. Valid still disables every style rule, and `FCS9001` cannot be
 configured or suppressed.
 
-Stage 0 enforces these rules:
+The compiler enforces these rules:
 
 - `FCS1001`: Standard source stays within 100 columns and Strict source stays within 80 columns.
 - `FCS1002`: multiline signatures place the opening parenthesis last and one parameter per line.
@@ -50,5 +50,5 @@ The language server runs the same engine after successful semantic analysis and 
 findings with their configured warning or error severity. Changing `foundation.package` invalidates
 workspace analysis, so an FCS profile or rule override is reflected without restarting the server.
 
-The complete accepted policy and the stage 0 enforcement table are in
+The complete accepted policy and the compiler enforcement table are in
 [foundation-code-standard.md](foundation-code-standard.md).

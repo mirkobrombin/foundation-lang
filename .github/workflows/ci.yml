@@ -327,7 +327,7 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=0
         run: >-
           ctest --test-dir build/wamr-asan --output-on-failure
-          -R '^(runtime\.wamr-bridge|providers\.wamr\.native|stage0\.run\.plugin-wamr-provider-(fake|real))$'
+          -R '^(runtime\.wamr-bridge|providers\.wamr\.native|compiler\.run\.plugin-wamr-provider-(fake|real))$'
 
       - name: Configure WAMR TSan
         env:
@@ -356,7 +356,7 @@ jobs:
           TSAN_OPTIONS: halt_on_error=1
         run: >-
           ctest --test-dir build/wamr-tsan --output-on-failure
-          -R '^(runtime\.wamr-bridge|providers\.wamr\.native|stage0\.run\.plugin-wamr-provider-(fake|real))$'
+          -R '^(runtime\.wamr-bridge|providers\.wamr\.native|compiler\.run\.plugin-wamr-provider-(fake|real))$'
 
   macos-providers:
     name: macOS optional providers
