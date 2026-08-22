@@ -516,6 +516,11 @@
         "body": "transferable fn(${1:i32}) ${2:i32}",
         "description": "Declare a function value type safe to move between executors"
     },
+    "C function pointer type": {
+        "prefix": "cfn",
+        "body": "extern c fn(${1:i32}) ${2:i32}",
+        "description": "Declare a direct C ABI function pointer type"
+    },
     "Closure": {
         "prefix": "closure",
         "body": [

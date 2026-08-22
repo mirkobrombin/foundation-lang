@@ -139,6 +139,7 @@ bool isReservedCSymbol(std::string_view value) {
 bool isCParameterType(const Type &type, std::string_view symbol,
                       std::string_view packageName) {
     return (isMachineScalar(type) && type != voidType && type != neverType) ||
+           isCFunction(type) ||
            ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) &&
             type.arguments.size() == 1) ||
            (type.kind == TypeKind::View && type.arguments.size() == 1 &&
@@ -156,6 +157,7 @@ bool isCParameterType(const Type &type, std::string_view symbol,
 
 bool isCReturnType(const Type &type) {
     return (isMachineScalar(type) && type != neverType) || type == stringType ||
+           isCFunction(type) ||
            ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) &&
             type.arguments.size() == 1);
 }
@@ -440,6 +442,9 @@ class Analyzer {
         if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) {
             return type.arguments.size() == 1;
         }
+        if (isCFunction(type)) {
+            return true;
+        }
         if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
             return isCopyParameterType(type.arguments.front(), active);
         }
@@ -486,6 +491,44 @@ class Analyzer {
     bool isCopyParameterType(const Type &type) const {
         std::unordered_set<std::string> active;
         return isCopyParameterType(type, active);
+    }
+
+    bool isCRecordType(const Type &type, std::unordered_set<std::string> &active) const {
+        if (type.kind != TypeKind::Struct || type.declaration >= program_.structs.size() ||
+            type.declaration >= model_.structs.size() || !type.arguments.empty()) {
+            return false;
+        }
+        const auto key = semanticTypeKey(type);
+        if (!active.insert(key).second) {
+            return false;
+        }
+        const auto &declaration = program_.structs[type.declaration];
+        const auto &semantic = model_.structs[type.declaration];
+        auto valid = declaration.exported && declaration.kind == StructKind::Struct &&
+                     declaration.typeParameters.empty() &&
+                     declaration.fields.size() == semantic.fieldTypes.size();
+        for (const auto &function : program_.functions) {
+            if (function.ownerType == declaration.name && function.name.ends_with(".drop")) {
+                valid = false;
+                break;
+            }
+        }
+        for (std::size_t index{}; valid && index < declaration.fields.size(); ++index) {
+            const auto &field = semantic.fieldTypes[index];
+            valid = declaration.fields[index].exported &&
+                    ((isMachineScalar(field) && field != voidType && field != neverType) ||
+                     ((field.kind == TypeKind::Raw || field.kind == TypeKind::RawConst) &&
+                      field.arguments.size() == 1) ||
+                     isCFunction(field) ||
+                     (field.kind == TypeKind::Struct && isCRecordType(field, active)));
+        }
+        active.erase(key);
+        return valid;
+    }
+
+    bool isCRecordType(const Type &type) const {
+        std::unordered_set<std::string> active;
+        return isCRecordType(type, active);
     }
 
     Type resolveParameterType(const Parameter &parameter) {
@@ -748,7 +791,7 @@ class Analyzer {
             return type.declaration < constraints.size() && constraints[type.declaration];
         }
         if (type.kind == TypeKind::Function) {
-            return isTransferableFunction(type);
+            return isCFunction(type) || isTransferableFunction(type);
         }
         if ((type.kind == TypeKind::Channel || type.kind == TypeKind::Sender ||
              type.kind == TypeKind::Receiver) &&
@@ -3245,6 +3288,13 @@ class Analyzer {
                                        "callback function cannot be used as a function value",
                                        expression.span);
                 }
+                if (expected.has_value() && isCFunction(*expected) &&
+                    !program_.functions[functionId].cSymbol.has_value()) {
+                    diagnostics_.error(
+                        "FDN2215",
+                        "C function pointer requires a function declared with extern c",
+                        expression.span);
+                }
                 const auto &signature = signatures_[functionId];
                 std::vector<std::optional<Type>> inferred(
                     program_.functions[functionId].typeParameters.size());
@@ -3284,8 +3334,10 @@ class Analyzer {
                     parts.push_back(functionValueParameterType(
                         substitute(signature.parameters[index], typeArguments), mode));
                 }
-                const auto qualifier = expected.has_value() &&
-                                               isTransferableFunction(*expected)
+                const auto qualifier = expected.has_value() && isCFunction(*expected)
+                                           ? cFunctionQualifier
+                                       : expected.has_value() &&
+                                                 isTransferableFunction(*expected)
                                            ? transferableFunctionQualifier
                                            : 0;
                 type = Type{TypeKind::Function, qualifier, std::move(parts)};
@@ -3647,6 +3699,11 @@ class Analyzer {
             (contextual->kind == TypeKind::View || contextual->kind == TypeKind::Edit) &&
             contextual->arguments.size() == 1) {
             contextual = contextual->arguments.front();
+        }
+        if (contextual.has_value() && isCFunction(*contextual)) {
+            diagnostics_.error("FDN2215",
+                               "anonymous function cannot become a C function pointer", span);
+            return invalidType;
         }
         const auto needsInference = closure.inferredReturn ||
                                     std::any_of(closure.parameters.begin(),
@@ -4403,6 +4460,13 @@ class Analyzer {
             if (functionType.kind != TypeKind::Function || functionType.arguments.empty()) {
                 diagnostics_.error("FDN2128", call.callee + " is not callable", span);
                 return invalidType;
+            }
+            if (isCFunction(functionType) && containsRawPointer(functionType) &&
+                unsafeDepth_ == 0) {
+                diagnostics_.error(
+                    "FDN2213",
+                    "C function pointer call with a raw pointer requires an unsafe block",
+                    span);
             }
             if (!explicitTypes.empty()) {
                 diagnostics_.error("FDN2043", "function value call does not accept type arguments",
@@ -6385,6 +6449,8 @@ class Analyzer {
             base = Type{TypeKind::Function};
         } else if (syntax.name == "[transferable-function]") {
             base = Type{TypeKind::Function, transferableFunctionQualifier};
+        } else if (syntax.name == "[c-function]") {
+            base = Type{TypeKind::Function, cFunctionQualifier};
         } else if (syntax.name == "Task") {
             base = Type{TypeKind::Task};
         } else if (syntax.name == "Channel") {
@@ -6436,6 +6502,21 @@ class Analyzer {
                                        syntax.span);
                 }
             }
+            if (isCFunction(*base) && !arguments.empty()) {
+                if (!isCReturnType(arguments.front())) {
+                    diagnostics_.error("FDN2215",
+                                       "C function pointer has an unsupported result type",
+                                       syntax.span);
+                }
+                for (std::size_t index = 1; index < arguments.size(); ++index) {
+                    if (!isCParameterType(arguments[index], {}, {})) {
+                        diagnostics_.error(
+                            "FDN2215",
+                            "C function pointer has an unsupported parameter type",
+                            syntax.span);
+                    }
+                }
+            }
         } else if (base->kind == TypeKind::Own || base->kind == TypeKind::View ||
                    base->kind == TypeKind::Edit || base->kind == TypeKind::Array ||
                    base->kind == TypeKind::Slice || base->kind == TypeKind::Raw ||
@@ -6473,6 +6554,7 @@ class Analyzer {
             const auto &pointee = base->arguments.front();
             const auto supported = pointee == voidType ||
                                    (isMachineScalar(pointee) && pointee != neverType) ||
+                                   isCRecordType(pointee) ||
                                    ((pointee.kind == TypeKind::Raw ||
                                      pointee.kind == TypeKind::RawConst) &&
                                     pointee.arguments.size() == 1);
@@ -6829,7 +6911,7 @@ class Analyzer {
         if (type.kind == TypeKind::String || type.kind == TypeKind::Own ||
             type.kind == TypeKind::Task || type.kind == TypeKind::Channel ||
             type.kind == TypeKind::Sender || type.kind == TypeKind::Receiver ||
-            type.kind == TypeKind::Function ||
+            (type.kind == TypeKind::Function && !isCFunction(type)) ||
             type.kind == TypeKind::Parameter) {
             return true;
         }
@@ -7090,7 +7172,10 @@ class Analyzer {
             return '[' + displayType(type.arguments.front()) + ']';
         }
         if (type.kind == TypeKind::Function && !type.arguments.empty()) {
-            std::string name = isTransferableFunction(type) ? "transferable fn(" : "fn(";
+            std::string name = isCFunction(type)
+                                   ? "extern c fn("
+                               : isTransferableFunction(type) ? "transferable fn("
+                                                              : "fn(";
             for (std::size_t index = 1; index < type.arguments.size(); ++index) {
                 if (index != 1) {
                     name += ", ";

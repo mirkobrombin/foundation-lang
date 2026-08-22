@@ -139,6 +139,9 @@ source src
 native_library c
 native_name sample_native
 native_soversion 2
+native_link dl target linux
+native_link dl target macos
+native_link fuse
 foreign c libfuse 2.9.9 path native/libfuse abi c/v1
 )";
     const auto parsed = foundation::parsePackageManifest("foundation.package", source);
@@ -166,6 +169,54 @@ foreign c system-lib 1.0.0 system local abi c/v1
 )";
     expect(foundation::parsePackageManifest("foundation.package", reserved).value.has_value(),
            "reserved registry and system provenance remains parseable");
+
+    constexpr std::string_view duplicateLink = R"(format foundation.package/v1
+name sample.native
+version 1.0.0
+sdk ^0.1.0
+source src
+native_library c
+native_name sample_native
+native_link m target linux
+native_link m target linux
+)";
+    constexpr std::string_view overlappingLink = R"(format foundation.package/v1
+name sample.native
+version 1.0.0
+sdk ^0.1.0
+source src
+native_library c
+native_name sample_native
+native_link m
+native_link m target linux
+)";
+    constexpr std::string_view invalidLink = R"(format foundation.package/v1
+name sample.native
+version 1.0.0
+sdk ^0.1.0
+source src
+native_library c
+native_name sample_native
+native_link -lm
+)";
+    constexpr std::string_view orphanLink = R"(format foundation.package/v1
+name sample.native
+version 1.0.0
+sdk ^0.1.0
+source src
+native_link m
+)";
+    expect(hasCode(foundation::parsePackageManifest("foundation.package", duplicateLink).errors,
+                   "FDN4015") &&
+               hasCode(foundation::parsePackageManifest("foundation.package",
+                                                        overlappingLink)
+                           .errors,
+                       "FDN4015") &&
+               hasCode(foundation::parsePackageManifest("foundation.package", invalidLink).errors,
+                       "FDN4015") &&
+               hasCode(foundation::parsePackageManifest("foundation.package", orphanLink).errors,
+                       "FDN4015"),
+           "native links reject overlapping duplicates, raw linker flags, and non-native packages");
 }
 
 void manifestsRejectAmbiguousInput() {
@@ -241,15 +292,31 @@ void packageInterfacesRenderCanonically() {
     packageInterface.sdk = *foundation::parsePackageRequirement("^0.1.0");
     packageInterface.library = "sample_native";
     packageInterface.target = foundation::TargetPlatform::Linux;
+    packageInterface.links.push_back({"m", foundation::TargetPlatform::Linux});
     packageInterface.foreign.push_back(
         {foundation::PiiEcosystem::C, "libfuse", "2.9.9", "path", "native/libfuse",
          "sha256:test", foundation::TargetPlatform::Linux, foundation::PiiAbi::C11});
     const auto first = foundation::renderPackageInterfaceJson(packageInterface);
     const auto second = foundation::renderPackageInterfaceJson(packageInterface);
-    expect(first == second && first.find("\"abi_minor\":1") != std::string::npos &&
+    expect(first == second && first.find("\"abi_minor\":2") != std::string::npos &&
+               first.find("\"links\":[{\"name\":\"m\",\"target\":\"linux\"}]") !=
+                   std::string::npos &&
                first.find("\"kind\":\"path\"") != std::string::npos &&
                first.find("\"canonical_sha256\":\"sha256:") != std::string::npos,
            "package interface JSON is canonical and preserves resolver provenance");
+
+    foundation::PiiType invalidFunction;
+    invalidFunction.kind = foundation::PiiTypeKind::Function;
+    invalidFunction.abi = "c11";
+    foundation::PiiType functionResult;
+    functionResult.kind = foundation::PiiTypeKind::I32;
+    foundation::PiiType functionParameter;
+    functionParameter.kind = foundation::PiiTypeKind::Struct;
+    invalidFunction.arguments = {functionResult, functionParameter};
+    std::string reason;
+    expect(!foundation::validateCAbiV1(invalidFunction, foundation::PiiOwnership::Value,
+                                       false, reason),
+           "C function pointer validation rejects unsupported nested parameters");
 }
 
 void locksRejectIncoherentGraphs() {

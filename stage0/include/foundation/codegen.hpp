@@ -23,6 +23,8 @@ namespace foundation {
 [[nodiscard]] std::string emitPackageCHeader(const FirProgram &program,
                                              std::string_view packageName,
                                              std::string_view libraryName);
+[[nodiscard]] std::string packageCTypeName(std::string_view libraryName,
+                                           std::string_view typeName);
 [[nodiscard]] FirProgram specializePackageInterface(const FirProgram &program,
                                                     std::string_view packageName);
 

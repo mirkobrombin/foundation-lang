@@ -502,7 +502,7 @@
                         { "include": "#functionTypeParameters" },
                         {
                             "name": "variable.parameter.foundation",
-                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+(?:(?:own|view|edit)\\s+)?(?:transferable\\s+fn\\s*\\(|fn\\s*\\(|\\[[^,()\\n]+\\](?:[A-Za-z_][A-Za-z0-9_]*)?|[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?)\\s*(?:,|\\)))"
+                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+(?:(?:own|view|edit)\\s+)?(?:(?:extern\\s+c\\s+|transferable\\s+)?fn\\s*\\(|\\[[^,()\\n]+\\](?:[A-Za-z_][A-Za-z0-9_]*)?|[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?)\\s*(?:,|\\)))"
                         },
                         { "include": "#genericTypeApplications" },
                         { "include": "#ownership" },
@@ -531,7 +531,7 @@
                         { "include": "#comments" },
                         {
                             "name": "variable.parameter.foundation",
-                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+(?:(?:own|view|edit)\\s+)?(?:transferable\\s+fn\\s*\\(|fn\\s*\\(|\\[[^,()\\n]+\\]|[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?)\\s*(?:,|\\)))"
+                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+(?:(?:own|view|edit)\\s+)?(?:(?:extern\\s+c\\s+|transferable\\s+)?fn\\s*\\(|\\[[^,()\\n]+\\]|[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?)\\s*(?:,|\\)))"
                         },
                         { "include": "#ownership" },
                         { "include": "#types" },
@@ -550,11 +550,13 @@
             "patterns": [
                 {
                     "name": "meta.type.function.foundation",
-                    "begin": "\\b(?:(transferable)\\s+)?(fn)\\s*(\\()",
+                    "begin": "\\b(?:(extern)\\s+(c)\\s+|(transferable)\\s+)?(fn)\\s*(\\()",
                     "beginCaptures": {
-                        "1": { "name": "storage.modifier.concurrency.foundation" },
-                        "2": { "name": "keyword.declaration.function.foundation" },
-                        "3": { "name": "punctuation.section.parens.begin.foundation" }
+                        "1": { "name": "storage.modifier.extern.foundation" },
+                        "2": { "name": "constant.language.abi.foundation" },
+                        "3": { "name": "storage.modifier.concurrency.foundation" },
+                        "4": { "name": "keyword.declaration.function.foundation" },
+                        "5": { "name": "punctuation.section.parens.begin.foundation" }
                     },
                     "end": "\\)",
                     "endCaptures": {
@@ -564,7 +566,7 @@
                         { "include": "#comments" },
                         {
                             "name": "variable.parameter.foundation",
-                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+(?:(?:own|view|edit)\\s+)?(?:(?:transferable\\s+)?fn\\s*\\(|\\[[^,()\\n]+\\]|[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?)\\s*(?:,|\\)))"
+                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s+(?:(?:own|view|edit)\\s+)?(?:(?:extern\\s+c\\s+|transferable\\s+)?fn\\s*\\(|\\[[^,()\\n]+\\]|[A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^(){}\\n]+>)?)\\s*(?:,|\\)))"
                         },
                         { "include": "#functionTypes" },
                         { "include": "#genericTypeApplications" },

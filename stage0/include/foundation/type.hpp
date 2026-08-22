@@ -56,10 +56,15 @@ struct Type {
 };
 
 inline constexpr std::size_t transferableFunctionQualifier = 1;
+inline constexpr std::size_t cFunctionQualifier = 2;
 
 [[nodiscard]] inline bool isTransferableFunction(const Type &type) {
     return type.kind == TypeKind::Function &&
            type.declaration == transferableFunctionQualifier;
+}
+
+[[nodiscard]] inline bool isCFunction(const Type &type) {
+    return type.kind == TypeKind::Function && type.declaration == cFunctionQualifier;
 }
 
 inline const Type invalidType{TypeKind::Invalid, 0, {}};

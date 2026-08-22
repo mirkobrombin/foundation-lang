@@ -127,8 +127,14 @@ file(READ "${shared_dist}/include/sample_native.h" header)
 foreach(expected IN ITEMS
         "FOUNDATION_LIBRARY_API"
         "FOUNDATION_SAMPLE_NATIVE_C_ABI_H"
+        "sample_native_NativeScale"
+        "sample_native_NativePoint"
+        "fdn_c_function_i32_i32"
         "sample_callback"
+        "sample_apply"
         "sample_increment"
+        "sample_invoke"
+        "sample_sine"
         "foundation/library.h")
     string(FIND "${header}" "${expected}" found)
     if(found EQUAL -1)
@@ -180,7 +186,7 @@ else()
         set(platform_libraries "-pthread")
     else()
         set(shared_rpath "-Wl,-rpath,$ORIGIN")
-        set(platform_libraries "-pthread;-ldl")
+        set(platform_libraries "-pthread;-ldl;-lm")
     endif()
     execute_process(
         COMMAND "${C_COMPILER}" -std=c11 -Wall -Wextra -Wpedantic -Werror
@@ -233,8 +239,10 @@ if(SYSTEM_NAME STREQUAL "Linux")
         RESULT_VARIABLE readelf_result
         OUTPUT_VARIABLE dynamic
     )
-    if(NOT readelf_result EQUAL 0 OR NOT dynamic MATCHES "SONAME.*libsample_native.so.2")
-        message(FATAL_ERROR "shared library has no expected SONAME:\n${dynamic}")
+    if(NOT readelf_result EQUAL 0 OR
+       NOT dynamic MATCHES "SONAME.*libsample_native.so.2" OR
+       NOT dynamic MATCHES "NEEDED.*libm\\.so")
+        message(FATAL_ERROR "shared library dynamic contract is invalid:\n${dynamic}")
     endif()
     execute_process(
         COMMAND "${NM}" -D --defined-only "${shared}"
@@ -243,7 +251,11 @@ if(SYSTEM_NAME STREQUAL "Linux")
     )
     if(NOT nm_result EQUAL 0 OR
        NOT symbols MATCHES "sample_increment" OR
+       NOT symbols MATCHES "sample_apply" OR
        NOT symbols MATCHES "sample_callback" OR
+       NOT symbols MATCHES "sample_invoke" OR
+       NOT symbols MATCHES "sample_sine" OR
+       NOT symbols MATCHES "sample_shift" OR
        NOT symbols MATCHES "fdn_string_drop" OR
        symbols MATCHES "fdn_fn_" OR
        symbols MATCHES "sample_native_double_(start|cancel)" OR

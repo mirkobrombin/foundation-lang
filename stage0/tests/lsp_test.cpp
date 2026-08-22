@@ -2426,9 +2426,11 @@ void functionValuesExposeTargetOwnershipModes() {
         "    const plus fn(i32) i32 = fn(number) { number + 1 }\n"
         "    const answer = plus(41)\n"
         "    const portable transferable fn() void = fn() void {}\n"
+        "    const callback extern c fn(i32) i32 = nativeApply\n"
         "    if ready { return size }\n"
         "    value.count\n"
-        "}\n";
+        "}\n"
+        "extern c fn nativeApply(value i32) i32 as native_apply\n";
     writeFile(source, contents);
     const auto sourceUri = fileUri(source);
     const auto initialize =
@@ -2452,6 +2454,7 @@ void functionValuesExposeTargetOwnershipModes() {
                              frame(request(142, 14, 6)) + frame(request(143, 15, 19)) +
                              frame(request(144, 16, 34)) + frame(request(145, 17, 21)) +
                              frame(request(146, 18, 12)) + frame(request(147, 5, 4)) +
+                             frame(request(148, 19, 12)) +
                              frame(shutdown) + frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
@@ -2464,6 +2467,7 @@ void functionValuesExposeTargetOwnershipModes() {
     const auto inferredFunctionHover = responseFor(transcript, 145);
     const auto transferableFunctionHover = responseFor(transcript, 146);
     const auto transferableConstraintHover = responseFor(transcript, 147);
+    const auto cFunctionHover = responseFor(transcript, 148);
 
     expect(status == 0, "function value hover transcript exits cleanly");
     expect(errors.str().empty(), "function value hover requests write no server errors");
@@ -2483,6 +2487,8 @@ void functionValuesExposeTargetOwnershipModes() {
     expect(transferableConstraintHover.find("fn hold<T transferable>($value T) T") !=
                std::string::npos,
            "generic function hover preserves transferable type constraints");
+    expect(cFunctionHover.find("callback extern c fn(i32) i32") != std::string::npos,
+           "C function pointer values expose their direct ABI type");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);

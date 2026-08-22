@@ -667,16 +667,23 @@ TypeSyntax Parser::typeSyntax(const char *code, const char *message) {
         --typeDepth_;
         return type;
     }
+    const auto cFunction = check(TokenKind::Extern) && peek(1).kind == TokenKind::Identifier &&
+                           peek(1).text == "c" && peek(2).kind == TokenKind::Fn;
     const auto transferableFunction =
         check(TokenKind::Identifier) && current().text == "transferable" &&
         peek(1).kind == TokenKind::Fn;
-    if (transferableFunction || match(TokenKind::Fn)) {
-        const auto start = transferableFunction ? advance() : previous();
-        if (transferableFunction) {
+    if (cFunction || transferableFunction || match(TokenKind::Fn)) {
+        const auto start = cFunction || transferableFunction ? advance() : previous();
+        if (cFunction) {
+            advance();
+            advance();
+        } else if (transferableFunction) {
             advance();
         }
-        TypeSyntax type{transferableFunction ? "[transferable-function]" : "[function]", {},
-                        start.span};
+        TypeSyntax type{cFunction               ? "[c-function]"
+                        : transferableFunction ? "[transferable-function]"
+                                               : "[function]",
+                        {}, start.span};
         expect(TokenKind::LeftParen, "FDN1120", "expected ( in function type");
         if (!check(TokenKind::RightParen)) {
             do {

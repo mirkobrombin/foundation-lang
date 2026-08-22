@@ -76,6 +76,8 @@ void typeJson(std::ostream& out, const PiiType& type) {
     out << "{\"kind\":" << quote(typeName(type.kind));
     if (!type.name.empty())
         out << ",\"name\":" << quote(type.name);
+    if (!type.abi.empty())
+        out << ",\"abi\":" << quote(type.abi);
     if (type.nullable)
         out << ",\"nullable\":true";
     if (!type.arguments.empty()) {
@@ -158,6 +160,27 @@ void foreignJson(std::ostream& out, const ForeignProvenance& foreign) {
         << ",\"version\":" << quote(foreign.version) << ",\"kind\":" << quote(foreign.kind)
         << ",\"resolver\":" << quote(foreign.resolver) << ",\"digest\":" << quote(foreign.digest)
         << ",\"target\":" << quote(targetPlatformName(foreign.target)) << ",\"abi\":\"c11\"}";
+}
+void linkJson(std::ostream& out, const PiiLinkLibrary& link) {
+    out << "{\"name\":" << quote(link.name);
+    if (link.target.has_value())
+        out << ",\"target\":" << quote(targetPlatformName(*link.target));
+    out << '}';
+}
+void layoutJson(std::ostream& out, const PiiStructLayout& layout) {
+    out << "{\"kind\":\"struct\",\"foundation_name\":"
+        << quote(layout.foundationName) << ",\"c_name\":" << quote(layout.cName)
+        << ",\"fields\":[";
+    for (std::size_t index{}; index < layout.fields.size(); ++index) {
+        if (index)
+            out << ',';
+        const auto& field = layout.fields[index];
+        out << "{\"foundation_name\":" << quote(field.foundationName)
+            << ",\"c_name\":" << quote(field.cName) << ",\"type\":";
+        typeJson(out, field.type);
+        out << '}';
+    }
+    out << "]}";
 }
 
 PiiEcosystem ecosystem(std::string_view value) {
@@ -256,6 +279,8 @@ PiiType piiType(const FirProgram& program, const Type& type) {
         break;
     case TypeKind::Function:
         result.kind = PiiTypeKind::Function;
+        if (isCFunction(type))
+            result.abi = "c11";
         break;
     case TypeKind::Task:
         result.kind = PiiTypeKind::Task;
@@ -340,6 +365,79 @@ PiiFunction piiFunction(const FirProgram& program, const FirFunction& function) 
                       function.sourceSpan.line, function.sourceSpan.column};
     return result;
 }
+
+bool collectStructLayout(const FirProgram& program, const Type& type,
+                         std::string_view libraryName,
+                         std::vector<PiiStructLayout>& layouts,
+                         std::vector<unsigned char>& states,
+                         Diagnostics& diagnostics, SourceSpan span) {
+    if (type.kind != TypeKind::Struct) {
+        if (type.kind != TypeKind::Raw && type.kind != TypeKind::RawConst &&
+            !isCFunction(type))
+            return true;
+        auto valid = true;
+        for (const auto& argument : type.arguments) {
+            if (!collectStructLayout(program, argument, libraryName, layouts, states,
+                                     diagnostics, span))
+                valid = false;
+        }
+        return valid;
+    }
+    if (type.declaration >= program.structs.size()) {
+        diagnostics.error("FDN2120", "C ABI v1 struct declaration is invalid", span);
+        return false;
+    }
+    if (states[type.declaration] != 0)
+        return true;
+    states[type.declaration] = 1;
+    const auto& declaration = program.structs[type.declaration];
+    auto valid = true;
+    if (!declaration.exported || declaration.service || declaration.typeParameterCount != 0 ||
+        !type.arguments.empty() || declaration.dropFunction.has_value()) {
+        diagnostics.error(
+            "FDN2120",
+            "C ABI v1 struct " + declaration.name +
+                " must be exported, concrete, non-service, and have no custom drop",
+            declaration.sourceSpan);
+        valid = false;
+    }
+    PiiStructLayout layout;
+    layout.foundationName = declaration.name;
+    layout.cName = packageCTypeName(libraryName, declaration.name);
+    for (const auto& field : declaration.fields) {
+        if (!field.exported) {
+            diagnostics.error("FDN2120",
+                              "C ABI v1 struct field " + declaration.name + '.' + field.name +
+                                  " must be exported",
+                              declaration.sourceSpan);
+            valid = false;
+            continue;
+        }
+        const auto fieldSafe = (isMachineScalar(field.type) &&
+                                field.type != voidType && field.type != neverType) ||
+                               field.type.kind == TypeKind::Raw ||
+                               field.type.kind == TypeKind::RawConst ||
+                               isCFunction(field.type) ||
+                               field.type.kind == TypeKind::Struct;
+        if (!fieldSafe) {
+            diagnostics.error("FDN2120",
+                              "C ABI v1 struct field " + declaration.name + '.' + field.name +
+                                  " has an unsupported layout type",
+                              declaration.sourceSpan);
+            valid = false;
+            continue;
+        }
+        if (!collectStructLayout(program, field.type, libraryName, layouts, states,
+                                 diagnostics, declaration.sourceSpan)) {
+            valid = false;
+        }
+        layout.fields.push_back({field.name, field.name, piiType(program, field.type)});
+    }
+    states[type.declaration] = 2;
+    if (valid)
+        layouts.push_back(std::move(layout));
+    return valid;
+}
 } // namespace
 
 bool validateCAbiV1(const PiiType& type, PiiOwnership ownership, bool result, std::string& reason) {
@@ -374,6 +472,43 @@ bool validateCAbiV1(const PiiType& type, PiiOwnership ownership, bool result, st
         reason = "C ABI v1 raw pointers require raw_unmanaged ownership";
         return false;
     }
+    if (type.kind == PiiTypeKind::Struct) {
+        reason = "C ABI v1 structs cross the boundary through raw pointers";
+        return false;
+    }
+    if (type.kind == PiiTypeKind::Function) {
+        if (ownership != PiiOwnership::Value || type.abi != "c11" ||
+            type.arguments.empty()) {
+            reason = "C ABI v1 function pointers require abi c11 and value ownership";
+            return false;
+        }
+        const auto validatePart = [&](const PiiType& part, bool partResult) {
+            auto boundary = part;
+            auto partOwnership = PiiOwnership::Value;
+            if (!partResult &&
+                (part.kind == PiiTypeKind::View || part.kind == PiiTypeKind::Edit) &&
+                part.arguments.size() == 1) {
+                boundary = part.arguments.front();
+                partOwnership = part.kind == PiiTypeKind::View
+                                    ? PiiOwnership::Borrowed
+                                    : PiiOwnership::ExclusiveBorrow;
+            } else if (part.kind == PiiTypeKind::String) {
+                partOwnership = partResult ? PiiOwnership::CallerOwnedResult
+                                           : PiiOwnership::Borrowed;
+            } else if (part.kind == PiiTypeKind::Raw ||
+                       part.kind == PiiTypeKind::RawConst) {
+                partOwnership = PiiOwnership::RawUnmanaged;
+            }
+            return validateCAbiV1(boundary, partOwnership, partResult, reason);
+        };
+        if (!validatePart(type.arguments.front(), true))
+            return false;
+        for (std::size_t index = 1; index < type.arguments.size(); ++index) {
+            if (!validatePart(type.arguments[index], false))
+                return false;
+        }
+        return true;
+    }
     reason = "type is not supported by C ABI v1";
     return false;
 }
@@ -390,13 +525,31 @@ std::string renderPackageInterfaceJson(PackageInterface value) {
                         a.target) < std::tie(b.ecosystem, b.identifier, b.version, b.kind,
                                              b.resolver, b.digest, b.target);
     });
+    std::sort(value.links.begin(), value.links.end(), [](const auto& a, const auto& b) {
+        return std::tie(a.name, a.target) < std::tie(b.name, b.target);
+    });
+    std::sort(value.layouts.begin(), value.layouts.end(), [](const auto& a, const auto& b) {
+        return std::tie(a.foundationName, a.cName) < std::tie(b.foundationName, b.cName);
+    });
     std::ostringstream out;
     out << "{\"format\":" << value.format << ",\"abi_major\":" << value.abiMajor
         << ",\"abi_minor\":" << value.abiMinor << ",\"package\":" << quote(value.package)
         << ",\"version\":" << quote(value.version.string())
         << ",\"sdk\":" << quote(value.sdk.string()) << ",\"library\":" << quote(value.library)
         << ",\"soversion\":" << value.soVersion
-        << ",\"target\":" << quote(targetPlatformName(value.target)) << ",\"imports\":[";
+        << ",\"target\":" << quote(targetPlatformName(value.target)) << ",\"links\":[";
+    for (std::size_t index{}; index < value.links.size(); ++index) {
+        if (index)
+            out << ',';
+        linkJson(out, value.links[index]);
+    }
+    out << "],\"layouts\":[";
+    for (std::size_t index{}; index < value.layouts.size(); ++index) {
+        if (index)
+            out << ',';
+        layoutJson(out, value.layouts[index]);
+    }
+    out << "],\"imports\":[";
     for (std::size_t index{}; index < value.imports.size(); ++index) {
         if (index)
             out << ',';
@@ -432,9 +585,34 @@ std::optional<PackageInterface> buildPackageInterface(const FirProgram& source,
     result.library = manifest.nativeName.value_or(manifest.name);
     result.soVersion = manifest.nativeSOVersion.value_or(0);
     result.target = lock.target;
+    for (const auto& link : manifest.nativeLinks)
+        result.links.push_back({link.library, link.target});
+    std::vector<unsigned char> layoutStates(program.structs.size());
+    const auto collectBoundaryLayouts = [&](const auto& self, const Type& type,
+                                            SourceSpan span) -> void {
+        if (type.kind == TypeKind::Struct) {
+            collectStructLayout(program, type, result.library, result.layouts,
+                                layoutStates, diagnostics, span);
+            return;
+        }
+        if ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst ||
+             isCFunction(type)) &&
+            !type.arguments.empty()) {
+            for (const auto& argument : type.arguments)
+                self(self, argument, span);
+        }
+    };
     for (const auto& function : program.functions) {
         if (!function.cSymbol.has_value())
             continue;
+        collectBoundaryLayouts(collectBoundaryLayouts, function.returnType,
+                               function.sourceSpan);
+        for (const auto local : function.parameters) {
+            if (local < function.locals.size())
+                collectBoundaryLayouts(collectBoundaryLayouts,
+                                       function.locals[local].type,
+                                       function.sourceSpan);
+        }
         auto lowered = piiFunction(program, function);
         const auto sourcePath = std::filesystem::path(lowered.source->path);
         const auto parent = std::find(sourcePath.begin(), sourcePath.end(), "..");

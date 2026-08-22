@@ -205,10 +205,13 @@ std::string displayTypeSyntax(const TypeSyntax &type) {
         return std::string(type.name == "[raw]" ? "*" : "*const ") +
                displayTypeSyntax(type.arguments[0]);
     }
-    if ((type.name == "[function]" || type.name == "[transferable-function]") &&
+    if ((type.name == "[function]" || type.name == "[transferable-function]" ||
+         type.name == "[c-function]") &&
         !type.arguments.empty()) {
-        std::string result =
-            type.name == "[transferable-function]" ? "transferable fn(" : "fn(";
+        std::string result = type.name == "[transferable-function]"
+                                 ? "transferable fn("
+                             : type.name == "[c-function]" ? "extern c fn("
+                                                            : "fn(";
         for (std::size_t index = 1; index < type.arguments.size(); ++index) {
             if (index != 1) {
                 result += ", ";
@@ -863,8 +866,10 @@ class IndexBuilder {
             return '[' + displayType(type.arguments[0], function) + ']';
         }
         if (type.kind == TypeKind::Function && !type.arguments.empty()) {
-            std::string result =
-                isTransferableFunction(type) ? "transferable fn(" : "fn(";
+            std::string result = isCFunction(type)
+                                     ? "extern c fn("
+                                     : isTransferableFunction(type) ? "transferable fn("
+                                                                    : "fn(";
             for (std::size_t index = 1; index < type.arguments.size(); ++index) {
                 if (index != 1) {
                     result += ", ";

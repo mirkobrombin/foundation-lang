@@ -12,6 +12,11 @@
         { "include": "#fcs" },
         { "include": "#source" },
         { "include": "#testSource" },
+        { "include": "#nativeLibrary" },
+        { "include": "#nativeName" },
+        { "include": "#nativeSOVersion" },
+        { "include": "#nativeLink" },
+        { "include": "#foreign" },
         { "include": "#strings" }
     ],
     "repository": {
@@ -38,7 +43,7 @@
         "name": {
             "patterns": [
                 {
-                    "match": "^\\s*(name)\\s+([A-Za-z][A-Za-z0-9_.-]*)\\s*(?=#|$)",
+                    "match": "^\\s*(name)\\s+([A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z][A-Za-z0-9_-]*)*)\\s*(?=#|$)",
                     "captures": {
                         "1": { "name": "keyword.declaration.name.foundation.package" },
                         "2": { "name": "entity.name.namespace.foundation.package" }
@@ -101,10 +106,73 @@
                 }
             ]
         },
+        "nativeLibrary": {
+            "patterns": [
+                {
+                    "match": "^\\s*(native_library)\\s+(c)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.native-library.foundation.package" },
+                        "2": { "name": "constant.language.abi.foundation.package" }
+                    }
+                }
+            ]
+        },
+        "nativeName": {
+            "patterns": [
+                {
+                    "match": "^\\s*(native_name)\\s+([A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z][A-Za-z0-9_-]*)*)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.native-name.foundation.package" },
+                        "2": { "name": "entity.name.namespace.native.foundation.package" }
+                    }
+                }
+            ]
+        },
+        "nativeSOVersion": {
+            "patterns": [
+                {
+                    "match": "^\\s*(native_soversion)\\s+([0-9]+)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.native-soversion.foundation.package" },
+                        "2": { "name": "constant.numeric.soversion.foundation.package" }
+                    }
+                }
+            ]
+        },
+        "nativeLink": {
+            "patterns": [
+                {
+                    "match": "^\\s*(native_link)\\s+([A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z][A-Za-z0-9_-]*)*)(?:\\s+(target)\\s+(linux|macos|windows))?\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.native-link.foundation.package" },
+                        "2": { "name": "entity.name.library.native.foundation.package" },
+                        "3": { "name": "keyword.other.target.foundation.package" },
+                        "4": { "name": "constant.language.target.foundation.package" }
+                    }
+                }
+            ]
+        },
+        "foreign": {
+            "patterns": [
+                {
+                    "match": "^\\s*(foreign)\\s+(c|zig|rust|go)\\s+([^\\s#]+)\\s+([^\\s#]+)\\s+(path|registry|system)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)\\s+(abi)\\s+(c/v1)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.foreign.foundation.package" },
+                        "2": { "name": "constant.language.ecosystem.foundation.package" },
+                        "3": { "name": "entity.name.namespace.foreign.foundation.package" },
+                        "4": { "name": "constant.numeric.version.foundation.package" },
+                        "5": { "name": "storage.modifier.location.foundation.package" },
+                        "6": { "name": "string.unquoted.location.foundation.package" },
+                        "7": { "name": "keyword.other.abi.foundation.package" },
+                        "8": { "name": "constant.language.abi.foundation.package" }
+                    }
+                }
+            ]
+        },
         "dependency": {
             "patterns": [
                 {
-                    "match": "^\\s*(dependency)\\s+([A-Za-z][A-Za-z0-9_.-]*)\\s+([*]|[~^]?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s+(path|registry)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)(?:\\s+(target)\\s+(linux|macos|windows))?(?:\\s+(scope)\\s+(test))?\\s*(?=#|$)",
+                    "match": "^\\s*(dependency)\\s+([A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z][A-Za-z0-9_-]*)*)\\s+([*]|[~^]?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s+(path|registry)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)(?:\\s+(target)\\s+(linux|macos|windows))?(?:\\s+(scope)\\s+(test))?\\s*(?=#|$)",
                     "captures": {
                         "1": { "name": "keyword.declaration.dependency.foundation.package" },
                         "2": { "name": "entity.name.namespace.dependency.foundation.package" },
@@ -118,7 +186,7 @@
                     }
                 },
                 {
-                    "match": "^\\s*(dependency)\\s+([A-Za-z][A-Za-z0-9_.-]*)\\s+([*]|[~^]?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s+(path|registry)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)\\s+(scope)\\s+(test)\\s+(target)\\s+(linux|macos|windows)\\s*(?=#|$)",
+                    "match": "^\\s*(dependency)\\s+([A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z][A-Za-z0-9_-]*)*)\\s+([*]|[~^]?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s+(path|registry)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)\\s+(scope)\\s+(test)\\s+(target)\\s+(linux|macos|windows)\\s*(?=#|$)",
                     "captures": {
                         "1": { "name": "keyword.declaration.dependency.foundation.package" },
                         "2": { "name": "entity.name.namespace.dependency.foundation.package" },

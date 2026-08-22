@@ -62,6 +62,7 @@ enum class PiiCallbackProtocol { Direct, FoundationReactorV1 };
 struct PiiType {
     PiiTypeKind kind{PiiTypeKind::Void};
     std::string name;
+    std::string abi;
     bool nullable{};
     std::vector<PiiType> arguments;
 };
@@ -70,6 +71,18 @@ struct PiiParameter {
     std::string name;
     PiiType type;
     PiiOwnership ownership{PiiOwnership::Value};
+};
+
+struct PiiLayoutField {
+    std::string foundationName;
+    std::string cName;
+    PiiType type;
+};
+
+struct PiiStructLayout {
+    std::string foundationName;
+    std::string cName;
+    std::vector<PiiLayoutField> fields;
 };
 
 struct PiiSourceSpan {
@@ -125,16 +138,23 @@ struct ForeignProvenance {
     PiiAbi abi{PiiAbi::C11};
 };
 
+struct PiiLinkLibrary {
+    std::string name;
+    std::optional<TargetPlatform> target;
+};
+
 struct PackageInterface {
     unsigned int format{1};
     unsigned int abiMajor{1};
-    unsigned int abiMinor{1};
+    unsigned int abiMinor{2};
     std::string package;
     PackageVersion version;
     PackageRequirement sdk;
     std::string library;
     unsigned int soVersion{};
     TargetPlatform target{TargetPlatform::Linux};
+    std::vector<PiiLinkLibrary> links;
+    std::vector<PiiStructLayout> layouts;
     std::vector<PiiFunction> imports;
     std::vector<PiiFunction> exports;
     std::vector<ForeignProvenance> foreign;

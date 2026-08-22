@@ -654,6 +654,8 @@ class LlvmEmitter {
             return type.declaration < contractTypes_.size() ? contractTypes_[type.declaration]
                                                             : nullptr;
         case TypeKind::Function:
+            if (isCFunction(type))
+                return pointerType();
             return functionValueType_;
         }
         return nullptr;
@@ -685,7 +687,10 @@ class LlvmEmitter {
         if (result == nullptr) {
             return nullptr;
         }
-        std::vector<llvm::Type *> parameters{pointerType()};
+        std::vector<llvm::Type *> parameters;
+        if (!isCFunction(type)) {
+            parameters.push_back(pointerType());
+        }
         for (std::size_t index = 1; index < type.arguments.size(); ++index) {
             auto *parameter = typeOf(type.arguments[index]);
             if (parameter == nullptr || parameter->isVoidTy()) {
@@ -704,6 +709,7 @@ class LlvmEmitter {
                 if (const auto *value =
                         std::get_if<FirFunctionValueExpression>(&expression.value)) {
                     if (value->function >= program_.functions.size() ||
+                        isCFunction(expression.type) ||
                         functionAdapters_[value->function] != nullptr) {
                         continue;
                     }
@@ -3751,8 +3757,16 @@ class LlvmEmitter {
         return {builder_.CreateLoad(arrayType, storage), false};
     }
 
-    EmittedValue emitFunctionValue(const FirFunctionValueExpression &function, const Type &,
+    EmittedValue emitFunctionValue(const FirFunctionValueExpression &function, const Type &type,
                                    SourceSpan span) {
+        if (isCFunction(type)) {
+            if (function.function >= nativeFunctions_.size() ||
+                nativeFunctions_[function.function] == nullptr) {
+                fail(span, "LLVM backend received a C function value without a C symbol");
+                return {};
+            }
+            return {nativeFunctions_[function.function], false};
+        }
         if (function.function >= functionAdapters_.size() ||
             functionAdapters_[function.function] == nullptr) {
             fail(span, "LLVM backend received an invalid function value");
@@ -4796,17 +4810,21 @@ class LlvmEmitter {
                  callableTypeValue.kind == TypeKind::Edit) &&
                 callableTypeValue.arguments.size() == 1) {
                 callableTypeValue = callableTypeValue.arguments.front();
-                callable = builder_.CreateLoad(functionValueType_, callable);
+                callable = builder_.CreateLoad(typeOf(callableTypeValue), callable);
             }
             auto *signature = callableType(callableTypeValue);
             if (signature == nullptr) {
                 fail(span, "LLVM backend cannot lower this callable signature");
                 return {};
             }
-            auto *environment = builder_.CreateExtractValue(callable, 0);
-            auto *target = builder_.CreateExtractValue(callable, 1);
-            values.insert(values.begin(), environment);
-            result = builder_.CreateCall(signature, target, values);
+            if (isCFunction(callableTypeValue)) {
+                result = builder_.CreateCall(signature, callable, values);
+            } else {
+                auto *environment = builder_.CreateExtractValue(callable, 0);
+                auto *target = builder_.CreateExtractValue(callable, 1);
+                values.insert(values.begin(), environment);
+                result = builder_.CreateCall(signature, target, values);
+            }
             break;
         }
         case FirCallKind::Contract: {
@@ -5405,7 +5423,8 @@ class LlvmEmitter {
         if (type.kind == TypeKind::String || type.kind == TypeKind::Own ||
             type.kind == TypeKind::Task || type.kind == TypeKind::Channel ||
             type.kind == TypeKind::Sender || type.kind == TypeKind::Receiver ||
-            type.kind == TypeKind::Function || type.kind == TypeKind::Parameter) {
+            (type.kind == TypeKind::Function && !isCFunction(type)) ||
+            type.kind == TypeKind::Parameter) {
             return true;
         }
         if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
@@ -5763,7 +5782,7 @@ class LlvmEmitter {
                                 {address});
             return;
         }
-        if (type.kind == TypeKind::Function) {
+        if (type.kind == TypeKind::Function && !isCFunction(type)) {
             auto *value = builder_.CreateLoad(functionValueType_, address, "drop.function");
             auto *environment = builder_.CreateExtractValue(value, 0);
             auto *dropFunction = builder_.CreateExtractValue(value, 2);

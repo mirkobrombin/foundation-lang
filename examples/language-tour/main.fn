@@ -327,6 +327,8 @@ fn main(args [String]) i32 {
     const decimal64 f64 = f64.From(decimal32)
     var current = first
     const typedIdentity fn(i32) i32 = identity<i32>
+    const cCallback extern c fn(i32) i32 = FoundationProbe
+    const cCallbackMatches = cCallback(42) == 42
     const copied = 2
     const copyCallback fn(i32) i32 = fn(value) capture(copied) {
         value + copied
@@ -515,6 +517,7 @@ fn main(args [String]) i32 {
     if (inRange(current, 5, 5) || false) && nextByteCount == 11925602364 &&
         platformMatches && pathMatches && jsonMatches && timeMatches && argumentCount == 0 &&
         uuidMatches &&
+        cCallbackMatches &&
         proxyCounterValue == 2 && dynamicCounterValue == 1 && backgroundValue == 42 &&
         nestedBackgroundValue == 42 && iteratedValue == 3 && editedSequence &&
         !beforeCancellation && afterCancellation && channelMatches && postfixValue == 42 &&

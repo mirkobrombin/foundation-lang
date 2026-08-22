@@ -150,7 +150,7 @@ std::string cTypeTag(const Type &type) {
     case TypeKind::Contract:
         return "contract_" + std::to_string(type.declaration);
     case TypeKind::Function: {
-        std::string result = "function";
+        std::string result = isCFunction(type) ? "c_function" : "function";
         for (const auto &argument : type.arguments) {
             result += '_' + cTypeTag(argument);
         }
@@ -540,6 +540,9 @@ bool isCopyParameterType(const FirProgram &program, const Type &type) {
     if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) {
         return type.arguments.size() == 1;
     }
+    if (isCFunction(type)) {
+        return true;
+    }
     if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
         return isCopyParameterType(program, type.arguments.front());
     }
@@ -596,6 +599,9 @@ class Monomorphizer {
         }
         if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) {
             return type.arguments.size() == 1;
+        }
+        if (isCFunction(type)) {
+            return true;
         }
         if (type.kind == TypeKind::Array && type.arguments.size() == 1) {
             return isCopySourceParameterType(type.arguments.front(), active);
@@ -695,7 +701,8 @@ class Monomorphizer {
             internalError("unresolved type reached monomorphization");
         }
         if (source.kind == TypeKind::Function) {
-            Type result{TypeKind::Function};
+            Type result{TypeKind::Function,
+                        isCFunction(source) ? cFunctionQualifier : 0};
             result.arguments.reserve(source.arguments.size());
             for (const auto &argument : source.arguments) {
                 result.arguments.push_back(instantiateType(argument));
@@ -704,7 +711,10 @@ class Monomorphizer {
         }
         if (source.kind == TypeKind::Own || source.kind == TypeKind::View ||
             source.kind == TypeKind::Edit || source.kind == TypeKind::Array ||
-            source.kind == TypeKind::Slice || source.kind == TypeKind::Task) {
+            source.kind == TypeKind::Slice || source.kind == TypeKind::Raw ||
+            source.kind == TypeKind::RawConst || source.kind == TypeKind::Task ||
+            source.kind == TypeKind::Channel || source.kind == TypeKind::Sender ||
+            source.kind == TypeKind::Receiver) {
             if (source.arguments.size() != 1) {
                 internalError("invalid wrapper type reached monomorphization");
             }
@@ -1311,7 +1321,7 @@ bool typeRequiresDrop(const FirProgram &program, const Type &type) {
     if (type.kind == TypeKind::String || type.kind == TypeKind::Own ||
         type.kind == TypeKind::Task || type.kind == TypeKind::Channel ||
         type.kind == TypeKind::Sender || type.kind == TypeKind::Receiver ||
-        type.kind == TypeKind::Function ||
+        (type.kind == TypeKind::Function && !isCFunction(type)) ||
         type.kind == TypeKind::Parameter) {
         return true;
     }
@@ -1340,7 +1350,7 @@ bool typeRequiresDrop(const FirProgram &program, const Type &type) {
 }
 
 std::string dropName(const Type &type) {
-    if (type.kind == TypeKind::Function) {
+    if (type.kind == TypeKind::Function && !isCFunction(type)) {
         return "fdn_drop_" + cTypeTag(type);
     }
     if (type.kind == TypeKind::Array) {
@@ -1353,7 +1363,7 @@ std::string dropName(const Type &type) {
 }
 
 std::string moveName(const Type &type) {
-    if (type.kind == TypeKind::Function) {
+    if (type.kind == TypeKind::Function && !isCFunction(type)) {
         return "fdn_move_" + cTypeTag(type);
     }
     if (type.kind == TypeKind::Array) {
@@ -1412,7 +1422,7 @@ void emitDropValue(std::ostringstream &out, const FirProgram &program, const Typ
         out << indentation(depth) << "fdn_channel_drop_receiver(&" << value << ");\n";
         return;
     }
-    if (type.kind == TypeKind::Function) {
+    if (type.kind == TypeKind::Function && !isCFunction(type)) {
         out << indentation(depth) << "if (" << value << ".fdn_drop != NULL) {\n";
         out << indentation(depth + 1) << value << ".fdn_drop(" << value
             << ".fdn_env);\n";
@@ -1447,7 +1457,7 @@ void emitMoveAssignment(std::ostringstream &out, const FirProgram &program, cons
         out << indentation(depth) << target << " = fdn_string_move(&" << source << ");\n";
         return;
     }
-    if (type.kind == TypeKind::Function) {
+    if (type.kind == TypeKind::Function && !isCFunction(type)) {
         out << indentation(depth) << target << " = " << source << ";\n";
         out << indentation(depth) << source << ".fdn_env = NULL;\n";
         out << indentation(depth) << source << ".fdn_call = NULL;\n";
@@ -1552,7 +1562,7 @@ class FunctionEmitter {
                 return operand;
             }
             if (unary->operation == FirUnaryOperator::Dereference) {
-                return {"*(" + operand.value + ')', false};
+                return {"(*(" + operand.value + "))", false};
             }
             const auto temporary = nextTemporary();
             if (unary->operation == FirUnaryOperator::Negate) {
@@ -1785,6 +1795,13 @@ class FunctionEmitter {
 
     EmittedExpression emitFunctionValue(const FirFunctionValueExpression &function,
                                         const Type &type, unsigned int depth) {
+        if (isCFunction(type)) {
+            if (function.function >= program_.functions.size() ||
+                !program_.functions[function.function].cSymbol.has_value()) {
+                internalError("C function value has no C symbol");
+            }
+            return {*program_.functions[function.function].cSymbol, false};
+        }
         const auto temporary = nextTemporary();
         out_ << indentation(depth) << cType(type) << ' ' << temporary << ";\n";
         out_ << indentation(depth) << temporary << ".fdn_env = NULL;\n";
@@ -2292,16 +2309,29 @@ class FunctionEmitter {
             invocation << ')';
         } else if (call.kind == FirCallKind::FunctionValue) {
             const auto callable = localValue(call.local);
-            const auto &localType = function_.locals[call.local].type;
+            auto localType = function_.locals[call.local].type;
             const auto pointer = localType.kind == TypeKind::View ||
                                  localType.kind == TypeKind::Edit;
-            const auto member = pointer ? "->" : ".";
-            invocation << callable << member << "fdn_call(" << callable << member
-                       << "fdn_env";
-            for (const auto &argument : orderedArguments) {
-                invocation << ", " << argument;
+            if (pointer && localType.arguments.size() == 1) {
+                localType = localType.arguments.front();
             }
-            invocation << ')';
+            if (isCFunction(localType)) {
+                invocation << (pointer ? "(*" + callable + ')' : callable) << '(';
+                for (std::size_t index{}; index < orderedArguments.size(); ++index) {
+                    if (index)
+                        invocation << ", ";
+                    invocation << orderedArguments[index];
+                }
+                invocation << ')';
+            } else {
+                const auto member = pointer ? "->" : ".";
+                invocation << callable << member << "fdn_call(" << callable << member
+                           << "fdn_env";
+                for (const auto &argument : orderedArguments) {
+                    invocation << ", " << argument;
+                }
+                invocation << ')';
+            }
         } else if (call.kind == FirCallKind::Print) {
             invocation << "fdn_println";
         } else if (call.kind == FirCallKind::Panic) {
@@ -3552,8 +3582,15 @@ void emitStructDefinition(std::ostringstream &out, const FirProgram &program, Fi
         out << "    uint8_t fdn_unit;\n";
     }
     for (std::size_t field = 0; field < program.structs[id].fields.size(); ++field) {
-        out << "    " << cType(program.structs[id].fields[field].type) << ' ' << fieldName(field)
-            << ";\n";
+        const auto &declaration = program.structs[id].fields[field];
+        if (declaration.exported && declaration.name != fieldName(field)) {
+            out << "    union {\n";
+            out << "        " << cType(declaration.type) << ' ' << fieldName(field) << ";\n";
+            out << "        " << cType(declaration.type) << ' ' << declaration.name << ";\n";
+            out << "    };\n";
+        } else {
+            out << "    " << cType(declaration.type) << ' ' << fieldName(field) << ";\n";
+        }
     }
     out << "};\n\n";
 }
@@ -3651,6 +3688,20 @@ std::vector<Type> collectFunctionTypes(const FirProgram &program) {
 void emitFunctionTypeDefinition(std::ostringstream &out, const Type &type) {
     if (type.arguments.empty()) {
         internalError("function type has no result");
+    }
+    if (isCFunction(type)) {
+        out << "typedef " << cType(type.arguments.front()) << " (*" << cType(type) << ")(";
+        if (type.arguments.size() == 1) {
+            out << "void";
+        } else {
+            for (std::size_t index = 1; index < type.arguments.size(); ++index) {
+                if (index != 1)
+                    out << ", ";
+                out << cType(type.arguments[index]);
+            }
+        }
+        out << ");\n\n";
+        return;
     }
     out << "struct " << cType(type) << " {\n";
     out << "    void *fdn_env;\n";
@@ -4705,7 +4756,7 @@ std::vector<FirFunctionId> collectFunctionValueUses(const FirProgram &program) {
     for (const auto &function : program.functions) {
         for (const auto &expression : function.expressions) {
             const auto *value = std::get_if<FirFunctionValueExpression>(&expression.value);
-            if (value != nullptr) {
+            if (value != nullptr && !isCFunction(expression.type)) {
                 result.push_back(value->function);
             }
         }
@@ -5252,7 +5303,9 @@ std::string emitCImpl(const FirProgram &source, std::string_view sourcePath,
         out << "typedef struct " << arrayName(type) << ' ' << arrayName(type) << ";\n";
     }
     for (const auto &type : functionTypes) {
-        out << "typedef struct " << cType(type) << ' ' << cType(type) << ";\n";
+        if (!isCFunction(type)) {
+            out << "typedef struct " << cType(type) << ' ' << cType(type) << ";\n";
+        }
     }
     if (!program.structs.empty() || !program.enums.empty() || !program.contracts.empty() ||
         !arrays.empty() || !functionTypes.empty()) {
@@ -5608,6 +5661,7 @@ std::string emitPackageCHeader(const FirProgram &source, std::string_view packag
     out << "#ifndef " << guard << "\n";
     out << "#define " << guard << "\n\n";
     out << "#include <stdbool.h>\n";
+    out << "#include <stddef.h>\n";
     out << "#include <stdint.h>\n";
     out << "#include \"foundation/library.h\"\n\n";
     out << "#if defined(FOUNDATION_LIBRARY_STATIC)\n";
@@ -5619,12 +5673,128 @@ std::string emitPackageCHeader(const FirProgram &source, std::string_view packag
     out << "#else\n";
     out << "#define FOUNDATION_LIBRARY_API\n";
     out << "#endif\n\n";
+
+    std::unordered_set<FirStructId> layouts;
+    const auto collectLayout = [&](const auto &self, const Type &type) -> void {
+        if (type.kind == TypeKind::Struct && type.declaration < program.structs.size()) {
+            if (!layouts.insert(type.declaration).second) {
+                return;
+            }
+            for (const auto &field : program.structs[type.declaration].fields) {
+                self(self, field.type);
+            }
+            return;
+        }
+        for (const auto &argument : type.arguments) {
+            self(self, argument);
+        }
+    };
+    for (const auto *function : exports) {
+        collectLayout(collectLayout, function->returnType);
+        for (const auto parameter : function->parameters) {
+            collectLayout(collectLayout, function->locals[parameter].type);
+        }
+    }
+    std::vector<FirStructId> orderedLayouts(layouts.begin(), layouts.end());
+    std::sort(orderedLayouts.begin(), orderedLayouts.end());
+    for (const auto id : orderedLayouts) {
+        out << "typedef struct fdn_struct_" << id << " fdn_struct_" << id << ";\n";
+        out << "typedef fdn_struct_" << id << ' '
+            << packageCTypeName(libraryName, program.structs[id].name) << ";\n";
+    }
+    if (!orderedLayouts.empty()) {
+        out << '\n';
+    }
+
+    std::unordered_map<std::string, Type> foundFunctionTypes;
+    for (const auto *function : exports) {
+        collectFunctionType(function->returnType, foundFunctionTypes);
+        for (const auto parameter : function->parameters) {
+            collectFunctionType(function->locals[parameter].type, foundFunctionTypes);
+        }
+    }
+    for (const auto id : orderedLayouts) {
+        for (const auto &field : program.structs[id].fields) {
+            collectFunctionType(field.type, foundFunctionTypes);
+        }
+    }
+    std::vector<Type> functionTypes;
+    functionTypes.reserve(foundFunctionTypes.size());
+    for (auto &[key, type] : foundFunctionTypes) {
+        static_cast<void>(key);
+        functionTypes.push_back(std::move(type));
+    }
+    std::sort(functionTypes.begin(), functionTypes.end(),
+              [](const Type &left, const Type &right) {
+                  return typeKey(left) < typeKey(right);
+              });
+    for (const auto &type : functionTypes) {
+        if (isCFunction(type)) {
+            emitFunctionTypeDefinition(out, type);
+        }
+    }
+
+    std::vector<std::size_t> dependencies(program.structs.size());
+    std::vector<std::vector<FirStructId>> dependents(program.structs.size());
+    for (const auto id : orderedLayouts) {
+        for (const auto &field : program.structs[id].fields) {
+            if (field.type.kind == TypeKind::Struct && layouts.contains(field.type.declaration)) {
+                ++dependencies[id];
+                dependents[field.type.declaration].push_back(id);
+            }
+        }
+    }
+    std::vector<FirStructId> ready;
+    for (const auto id : orderedLayouts) {
+        if (dependencies[id] == 0) {
+            ready.push_back(id);
+        }
+    }
+    for (std::size_t index{}; index < ready.size(); ++index) {
+        const auto id = ready[index];
+        emitStructDefinition(out, program, id);
+        for (const auto dependent : dependents[id]) {
+            if (--dependencies[dependent] == 0) {
+                ready.push_back(dependent);
+            }
+        }
+    }
+    if (ready.size() != orderedLayouts.size()) {
+        internalError("recursive inline type reached package header emission");
+    }
+
     out << "#ifdef __cplusplus\n";
     out << "extern \"C\" {\n";
     out << "#endif\n\n";
     for (const auto *function : exports) {
         out << "FOUNDATION_LIBRARY_API ";
-        emitCAbiSignature(out, *function, true);
+        const auto publicType = [&](const auto &self, const Type &type) -> std::string {
+            if (type.kind == TypeKind::Struct && type.declaration < program.structs.size()) {
+                return packageCTypeName(libraryName, program.structs[type.declaration].name);
+            }
+            if ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst ||
+                 type.kind == TypeKind::View || type.kind == TypeKind::Edit) &&
+                type.arguments.size() == 1) {
+                const auto target = self(self, type.arguments.front());
+                if (type.kind == TypeKind::RawConst || type.kind == TypeKind::View) {
+                    return "const " + target + " *";
+                }
+                return target + " *";
+            }
+            return cType(type);
+        };
+        out << publicType(publicType, function->returnType) << ' ' << *function->cSymbol << '(';
+        if (function->parameters.empty()) {
+            out << "void";
+        } else {
+            for (std::size_t index{}; index < function->parameters.size(); ++index) {
+                if (index)
+                    out << ", ";
+                const auto local = function->parameters[index];
+                out << publicType(publicType, function->locals[local].type) << " fdn_arg_" << index;
+            }
+        }
+        out << ')';
         out << ";\n";
     }
     if (!exports.empty()) {
@@ -5636,6 +5806,22 @@ std::string emitPackageCHeader(const FirProgram &source, std::string_view packag
     out << "#undef FOUNDATION_LIBRARY_API\n\n";
     out << "#endif\n";
     return out.str();
+}
+
+std::string packageCTypeName(std::string_view libraryName, std::string_view typeName) {
+    std::string result;
+    result.reserve(libraryName.size() + typeName.size() + 1);
+    const auto append = [&](std::string_view value) {
+        for (const auto raw : value) {
+            const auto byte = static_cast<unsigned char>(raw);
+            result.push_back(std::isalnum(byte) != 0 || raw == '_' ? raw : '_');
+        }
+    };
+    append(libraryName);
+    result.push_back('_');
+    const auto separator = typeName.rfind('.');
+    append(separator == std::string_view::npos ? typeName : typeName.substr(separator + 1));
+    return result;
 }
 
 FirProgram specializePackageInterface(const FirProgram &source,

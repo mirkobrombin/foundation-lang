@@ -676,6 +676,11 @@ bool linkSharedLibrary(const std::filesystem::path &output,
         for (const auto &object : objects) {
             arguments.push_back(object.string());
         }
+        for (const auto &link : interface.links) {
+            if (!link.target.has_value() || *link.target == interface.target) {
+                arguments.push_back(link.name + ".lib");
+            }
+        }
         arguments.insert(arguments.end(), {"bcrypt.lib", "ws2_32.lib", "/link",
                                            "/Brepro",
                                            "/DEF:" + controlFile.string(),
@@ -703,6 +708,11 @@ bool linkSharedLibrary(const std::filesystem::path &output,
                                        "-Wl,--version-script," + controlFile.string(),
                                        "-pthread", "-ldl"});
 #endif
+    for (const auto &link : interface.links) {
+        if (!link.target.has_value() || *link.target == interface.target) {
+            arguments.push_back("-l" + link.name);
+        }
+    }
     arguments.insert(arguments.end(), {"-o", output.string()});
     return runProcess(arguments, ProcessOutput::StdoutToStderr) == 0;
 }

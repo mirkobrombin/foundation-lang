@@ -2025,6 +2025,52 @@ fn main() i32 {
            "C import does not leak into the public header");
 }
 
+void cFunctionPointersRejectManagedCallablesAndOpaqueRecords() {
+    const auto named = check(R"(
+fn increment(value i32) i32 { value + 1 }
+fn main() i32 {
+    const callback extern c fn(i32) i32 = increment
+    callback(1)
+}
+)");
+    expect(hasCode(named.diagnostics, "FDN2215"),
+           "managed named functions cannot become C function pointers");
+
+    const auto anonymous = check(R"(
+fn main() i32 {
+    const callback extern c fn(i32) i32 = fn(value i32) i32 { value + 1 }
+    callback(1)
+}
+)");
+    expect(hasCode(anonymous.diagnostics, "FDN2215"),
+           "anonymous functions cannot become C function pointers");
+
+    const auto privateRecord = check(R"(
+struct privatePoint {
+    X i32
+}
+
+extern c fn nativeRead(point *const privatePoint) i32 as sample_native_read
+
+fn main() i32 { 0 }
+)");
+    expect(hasCode(privateRecord.diagnostics, "FDN2214"),
+           "raw C pointers reject records without an exported layout");
+
+    const auto rawCall = check(R"(
+fn invoke(
+    callback extern c fn(*const i32) i32,
+    value *const i32
+) i32 {
+    callback(value)
+}
+
+fn main() i32 { 0 }
+)");
+    expect(hasCode(rawCall.diagnostics, "FDN2213"),
+           "C function pointer calls keep raw pointer use inside unsafe blocks");
+}
+
 void packageInterfacesUseReachableMonomorphizedCBoundaries() {
     constexpr std::string_view source = R"(
 extern c fn nativeLabel(label String) bool as sample_native_label
@@ -2975,6 +3021,7 @@ int main() {
     diagnosticsBoundLongSourceExcerpts();
     packageHeadersAndSourceDiagnosticsStayStable();
     cAbiFunctionsLowerToDeterministicBoundaries();
+    cFunctionPointersRejectManagedCallablesAndOpaqueRecords();
     packageInterfacesUseReachableMonomorphizedCBoundaries();
     rawPointersLowerToExplicitCBoundaries();
     blockingImportsLowerToTaskSuspension();

@@ -104,6 +104,7 @@ bool intrinsicType(std::string_view name) {
            name == "Task" || name == "Channel" || name == "Sender" ||
            name == "Receiver" || name == "[array]" || name == "[slice]" ||
            name == "[function]" || name == "[transferable-function]" ||
+           name == "[c-function]" ||
            name == "[raw]" || name == "[raw-const]" ||
            name == "own" || name == "view" || name == "edit";
 }

@@ -119,7 +119,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.139.0");
+    assert.equal(manifest.version, "0.140.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -182,6 +182,24 @@ test("recognizes package and lock directives with dedicated scopes", () => {
     const fcs = new RegExp(packageGrammar.repository.fcs.patterns[0].match)
         .exec("fcs strict");
     assert.deepEqual(fcs?.slice(1), ["fcs", "strict"]);
+    const nativeLibrary = new RegExp(packageGrammar.repository.nativeLibrary.patterns[0].match)
+        .exec("native_library c");
+    assert.deepEqual(nativeLibrary?.slice(1), ["native_library", "c"]);
+    const nativeLink = new RegExp(packageGrammar.repository.nativeLink.patterns[0].match)
+        .exec("native_link m target linux");
+    assert.deepEqual(nativeLink?.slice(1), ["native_link", "m", "target", "linux"]);
+    const hyphenatedLink = new RegExp(packageGrammar.repository.nativeLink.patterns[0].match)
+        .exec("native_link fuse-compat");
+    assert.deepEqual(hyphenatedLink?.slice(1), ["native_link", "fuse-compat", undefined, undefined]);
+    const foreign = new RegExp(packageGrammar.repository.foreign.patterns[0].match)
+        .exec("foreign c libfuse 2.9.9 path native/libfuse abi c/v1");
+    assert.deepEqual(foreign?.slice(1), [
+        "foreign", "c", "libfuse", "2.9.9", "path", "native/libfuse", "abi", "c/v1"
+    ]);
+    assert.equal(
+        packageGrammar.repository.nativeLink.patterns[0].captures[4].name,
+        "constant.language.target.foundation.package"
+    );
     assert.equal(lockGrammar.scopeName, "source.foundation.lock");
     assert.match(lockGrammar.repository.format.patterns[0].match,
         /foundation\\\.lock/);
@@ -1572,6 +1590,7 @@ test("grammar and completions track compiler keywords", () => {
     assert.ok(completionLabels.has("fn(...) R"));
     assert.ok(completionLabels.has("transferable"));
     assert.ok(completionLabels.has("transferable fn(...) R"));
+    assert.ok(completionLabels.has("extern c fn(...) R"));
     const snippets = readJson("snippets/foundation.json");
     assert.equal(snippets["Validated model"].prefix, "validmodel");
     assert.match(snippets["Validated model"].body.join("\n"),
@@ -1716,8 +1735,18 @@ test("tracks function values and explicit closure captures", () => {
     assert.equal(byLabel.get("Callback").insertText, "Callback { call = ${1:call} }");
     assert.match(grammar.repository.functionTypes.patterns[0].begin, /fn/);
     assert.match(grammar.repository.functionTypes.patterns[0].begin, /transferable/);
+    assert.match(grammar.repository.functionTypes.patterns[0].begin, /extern/);
     assert.match(grammar.repository.functionTypes.patterns[0].beginCaptures[1].name,
+        /extern/);
+    assert.match(grammar.repository.functionTypes.patterns[0].beginCaptures[2].name,
+        /abi/);
+    assert.match(grammar.repository.functionTypes.patterns[0].beginCaptures[3].name,
         /concurrency/);
+    const cFunctionType = new RegExp(grammar.repository.functionTypes.patterns[0].begin)
+        .exec("extern c fn(i32) i32");
+    assert.equal(cFunctionType?.[1], "extern");
+    assert.equal(cFunctionType?.[2], "c");
+    assert.equal(cFunctionType?.[4], "fn");
     const constrainedParameters = grammar.repository.functionTypeParameters.patterns[0];
     assert.match(constrainedParameters.patterns.find((pattern) =>
         pattern.match === "\\btransferable\\b"
@@ -1739,6 +1768,7 @@ test("tracks function values and explicit closure captures", () => {
     ).name, /capture/);
     assert.equal(snippets["Function value type"].prefix, "fntype");
     assert.equal(snippets["Transferable function value type"].prefix, "transferfn");
+    assert.equal(snippets["C function pointer type"].prefix, "cfn");
     assert.equal(snippets.Closure.prefix, "closure");
     assert.equal(snippets["Contextually inferred closure"].prefix, "closureinfer");
     assert.equal(snippets["Owning closure"].prefix, "closureown");

@@ -82,6 +82,13 @@ struct PackageManifest {
     bool nativeLibrary{};
     std::optional<std::string> nativeName;
     std::optional<std::uint32_t> nativeSOVersion;
+    struct NativeLink {
+        std::string library;
+        std::optional<TargetPlatform> target;
+
+        bool operator==(const NativeLink &) const = default;
+    };
+    std::vector<NativeLink> nativeLinks;
     struct Foreign {
         std::string ecosystem;
         std::string identifier;

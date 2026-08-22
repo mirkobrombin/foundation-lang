@@ -1692,6 +1692,12 @@ const staticCompletions = [
         insertText: "transferable fn(${1:parameters}) ${2:R}"
     },
     {
+        label: "extern c fn(...) R",
+        kind: "TypeParameter",
+        detail: "direct C ABI function pointer type",
+        insertText: "extern c fn(${1:parameters}) ${2:R}"
+    },
+    {
         label: "[N]T",
         kind: "TypeParameter",
         detail: "fixed array type",

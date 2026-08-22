@@ -700,6 +700,28 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
                 manifest.nativeSOVersion = static_cast<std::uint32_t>(*parsed);
             }
             nativeSOVersionSeen = true;
+        } else if (directive == "native_link") {
+            const auto linkTarget = tokens.size() == 4 && tokens[2] == "target"
+                                        ? target(tokens[3])
+                                        : std::optional<TargetPlatform>{};
+            const auto valid = (tokens.size() == 2 || tokens.size() == 4) &&
+                               identifier(tokens[1]) &&
+                               (tokens.size() == 2 || linkTarget.has_value());
+            const auto duplicate = valid &&
+                                   std::find_if(manifest.nativeLinks.begin(),
+                                                manifest.nativeLinks.end(),
+                                                [&](const auto &entry) {
+                                                    return entry.library == tokens[1] &&
+                                                           (!entry.target.has_value() ||
+                                                            !linkTarget.has_value() ||
+                                                            entry.target == linkTarget);
+                                                }) != manifest.nativeLinks.end();
+            if (!valid || duplicate) {
+                addError(result.errors, path, line, 1, "FDN4015",
+                         "native_link requires one unique library and optional target");
+            } else {
+                manifest.nativeLinks.push_back({tokens[1], linkTarget});
+            }
         } else if (directive == "foreign") {
             const auto ecosystem =
                 tokens.size() == 8 &&
@@ -809,7 +831,7 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
                  "test dependencies require a test_source directory");
     }
     if ((manifest.nativeName.has_value() || manifest.nativeSOVersion.has_value() ||
-         !manifest.foreign.empty()) &&
+         !manifest.nativeLinks.empty() || !manifest.foreign.empty()) &&
         !manifest.nativeLibrary) {
         addError(result.errors, path, 1, 1, "FDN4015",
                  "native directives require native_library c");
@@ -819,6 +841,11 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
                  "native_library c requires native_name");
     }
     if (result.errors.empty()) {
+        std::sort(manifest.nativeLinks.begin(), manifest.nativeLinks.end(),
+                  [](const auto &left, const auto &right) {
+                      return std::tie(left.library, left.target) <
+                             std::tie(right.library, right.target);
+                  });
         std::sort(manifest.dependencies.begin(), manifest.dependencies.end(),
                   [](const auto &left, const auto &right) {
                       return std::tie(left.name, left.target) <
@@ -860,6 +887,17 @@ std::string renderPackageManifest(const PackageManifest &manifest) {
     }
     if (manifest.nativeSOVersion.has_value()) {
         output << "native_soversion " << *manifest.nativeSOVersion << '\n';
+    }
+    auto nativeLinks = manifest.nativeLinks;
+    std::sort(nativeLinks.begin(), nativeLinks.end(), [](const auto &left, const auto &right) {
+        return std::tie(left.library, left.target) < std::tie(right.library, right.target);
+    });
+    for (const auto &link : nativeLinks) {
+        output << "native_link " << quote(link.library);
+        if (link.target.has_value()) {
+            output << " target " << targetPlatformName(*link.target);
+        }
+        output << '\n';
     }
     auto foreign = manifest.foreign;
     std::sort(foreign.begin(), foreign.end(), [](const auto &left, const auto &right) {

@@ -1,6 +1,29 @@
 package sample.native
 
+struct NativeContext {
+    Value i32
+}
+
+struct NativeScale {
+    Factor i32
+}
+
+struct NativePoint {
+    Context NativeContext
+    X i32
+    Y i32
+    Ready bool
+    Transform extern c fn(i32) i32
+    Measure extern c fn(*const NativeContext) i32
+    Scale extern c fn(*const NativeScale) i32
+}
+
 extern c fn nativeIncrement(value i32) i32 as sample_native_increment
+extern c fn nativeSine(value f64) f64 as sample_native_sine
+extern c fn nativeApply(
+    callback extern c fn(i32) i32,
+    value i32
+) i32 as sample_native_apply
 
 @callback(cancel = sample_native_double_cancel)
 extern c fn nativeDouble(value i32, &result i32) i32 as sample_native_double_start
@@ -18,4 +41,35 @@ extern c fn FoundationIncrement(value i32) i32 as sample_increment {
 extern c fn FoundationCallback(value i32) i32 as sample_callback {
     const pending = spawn doubleValue(value)
     $pending.wait()
+}
+
+extern c fn FoundationSine(value f64) f64 as sample_sine {
+    nativeSine(value)
+}
+
+extern c fn FoundationApply(value i32) i32 as sample_apply {
+    const callback extern c fn(i32) i32 = FoundationIncrement
+    nativeApply(callback, value)
+}
+
+extern c fn FoundationInvoke(
+    callback extern c fn(i32) i32,
+    value i32
+) i32 as sample_invoke {
+    callback(value)
+}
+
+extern c fn FoundationShift(
+    point *const NativePoint,
+    shifted *NativePoint,
+    delta i32
+) void as sample_shift {
+    // SAFETY: C supplies live, aligned pointers for this synchronous call.
+    unsafe {
+        const transform = (*point).Transform
+        const amount = transform(delta) + (*point).Context.Value
+        discard replace (*shifted).X with (*point).X + amount
+        discard replace (*shifted).Y with (*point).Y - delta
+        discard replace (*shifted).Ready with !(*point).Ready
+    }
 }
