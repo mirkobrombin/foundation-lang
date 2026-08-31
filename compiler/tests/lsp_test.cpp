@@ -1170,9 +1170,10 @@ void formatsUnsavedDocumentsAndRanges() {
         "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
         "\"textDocument\":{\"uri\":\"" +
         sourceUri +
-        "\",\"version\":1,\"text\":\"package   sample\\nstruct Value<T>{\\nitem   T\\n}\\n"
-        "fn main()i32{\\nconst value=Value<i32>{item=2}\\nprint(  \\\"h\\u00e9\\\"  )\\n"
-        "return value.item\\n}\\n\"}}}";
+        "\",\"version\":1,\"text\":\"package   sample\\n\\nimport std.text\\n"
+        "import std.collections\\n\\nstruct Value<T>{\\nitem   T\\n}\\nfn main()i32{\\n"
+        "const value=Value<i32>{item=2}\\nconst label=text.Copy(  \\\"h\\u00e9\\\"  )\\n"
+        "const count=format.I32(value.item)\\nprint(label+count)\\nreturn value.item\\n}\\n\"}}}";
     const auto formatting =
         "{\"jsonrpc\":\"2.0\",\"id\":27,\"method\":\"textDocument/formatting\","
         "\"params\":{\"textDocument\":{\"uri\":\"" +
@@ -1181,23 +1182,34 @@ void formatsUnsavedDocumentsAndRanges() {
         "{\"jsonrpc\":\"2.0\",\"id\":28,\"method\":\"textDocument/rangeFormatting\","
         "\"params\":{\"textDocument\":{\"uri\":\"" +
         sourceUri +
-        "\"},\"range\":{\"start\":{\"line\":2,\"character\":0},"
-        "\"end\":{\"line\":3,\"character\":0}},"
+        "\"},\"range\":{\"start\":{\"line\":6,\"character\":0},"
+        "\"end\":{\"line\":7,\"character\":0}},"
         "\"options\":{\"tabSize\":4,\"insertSpaces\":true}}}";
     const auto unicodeRangeFormatting =
         "{\"jsonrpc\":\"2.0\",\"id\":29,\"method\":\"textDocument/rangeFormatting\","
         "\"params\":{\"textDocument\":{\"uri\":\"" +
         sourceUri +
-        "\"},\"range\":{\"start\":{\"line\":6,\"character\":0},"
-        "\"end\":{\"line\":7,\"character\":0}},"
+        "\"},\"range\":{\"start\":{\"line\":10,\"character\":0},"
+        "\"end\":{\"line\":11,\"character\":0}},"
         "\"options\":{\"tabSize\":4,\"insertSpaces\":true}}}";
+    const auto willSave =
+        "{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"textDocument/willSaveWaitUntil\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri + "\"},\"reason\":1}}";
+    const auto codeAction =
+        "{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"textDocument/codeAction\","
+        "\"params\":{\"textDocument\":{\"uri\":\"" +
+        sourceUri +
+        "\"},\"range\":{\"start\":{\"line\":0,\"character\":0},"
+        "\"end\":{\"line\":0,\"character\":0}},\"context\":{\"diagnostics\":[]}}}";
     const auto shutdown =
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}";
     const auto exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
 
     std::istringstream input(frame(initialize) + frame(open) + frame(formatting) +
                              frame(rangeFormatting) + frame(unicodeRangeFormatting) +
-                             frame(shutdown) + frame(exit));
+                             frame(willSave) + frame(codeAction) + frame(shutdown) +
+                             frame(exit));
     std::ostringstream output;
     std::ostringstream errors;
     const auto status = foundation::runLanguageServer(input, output, errors);
@@ -1206,23 +1218,38 @@ void formatsUnsavedDocumentsAndRanges() {
     const auto documentEdit = responseFor(transcript, 27);
     const auto rangeEdit = responseFor(transcript, 28);
     const auto unicodeRangeEdit = responseFor(transcript, 29);
+    const auto saveEdit = responseFor(transcript, 30);
+    const auto sourceAction = responseFor(transcript, 31);
 
     expect(status == 0, "formatting transcript exits cleanly");
     expect(errors.str().empty(), "formatting writes no server errors");
     expect(initialized.find("\"documentFormattingProvider\":true") != std::string::npos &&
                initialized.find("\"documentRangeFormattingProvider\":true") !=
-                   std::string::npos,
-           "server advertises document and range formatting");
-    expect(documentEdit.find("package sample\\nstruct Value<T> {\\n    item T") !=
+                   std::string::npos &&
+               initialized.find("\"willSaveWaitUntil\":true") != std::string::npos &&
+               initialized.find("source.organizeImports") != std::string::npos,
+           "server advertises document, range, save, and import organization support");
+    expect(documentEdit.find(
+               "package sample\\n\\nimport std.format\\nimport std.text\\n\\nstruct Value<T> {\\n"
+               "    item T") !=
                std::string::npos &&
-               documentEdit.find("const value = Value<i32> { item = 2 }") != std::string::npos,
-           "document formatting uses the shared formatter on an unsaved overlay");
+               documentEdit.find("const value = Value<i32> { item = 2 }") !=
+                   std::string::npos &&
+               documentEdit.find("std.collections") == std::string::npos,
+           "document formatting organizes imports and formats an unsaved overlay");
     expect(rangeEdit.find("\"newText\":\"    item T\"") != std::string::npos &&
                rangeEdit.find("package sample") == std::string::npos,
            "range formatting edits only selected lines with full-document indentation context");
-    expect(unicodeRangeEdit.find("\"end\":{\"character\":15,\"line\":6}") !=
+    expect(unicodeRangeEdit.find("\"end\":{\"character\":31,\"line\":10}") !=
                std::string::npos,
            "range formatting reports UTF-16 line endings");
+    expect(saveEdit.find("import std.format\\nimport std.text") != std::string::npos &&
+               saveEdit.find("std.collections") == std::string::npos,
+           "will-save formatting uses the same import and formatting pipeline");
+    expect(sourceAction.find("Organize imports") != std::string::npos &&
+               sourceAction.find("source.organizeImports") != std::string::npos &&
+               sourceAction.find("import std.format\\nimport std.text") != std::string::npos,
+           "source action exposes compiler-backed import organization");
 
     std::error_code error;
     std::filesystem::remove_all(root, error);
@@ -1279,7 +1306,9 @@ void offersCompilerBackedDiscardQuickFixes() {
 
     expect(status == 0, "code action transcript exits cleanly");
     expect(errors.str().empty(), "code action writes no server errors");
-    expect(initialized.find("\"codeActionKinds\":[\"quickfix\"]") != std::string::npos,
+    expect(initialized.find(
+               "\"codeActionKinds\":[\"quickfix\",\"source.organizeImports\"]") !=
+               std::string::npos,
            "server advertises quick fixes");
     expect(action.find("Handle explicitly with discard") != std::string::npos &&
                action.find("\"newText\":\"discard \"") != std::string::npos &&

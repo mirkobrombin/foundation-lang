@@ -29,6 +29,23 @@ failure returns status 1 and prints a diagnostic.
 
 ## Editor
 
-`foundation-ls` exposes document and range formatting. Document formatting returns one complete
-edit. Range formatting computes indentation from the complete unsaved buffer, then returns edits
-only for selected lines. Editor tab settings do not change canonical Foundation output.
+`foundation-ls` exposes document and range formatting. Document formatting organizes imports,
+formats the complete unsaved buffer, and returns one edit. The server also implements
+`textDocument/willSaveWaitUntil`, so any LSP client can apply the same operation before saving.
+Range formatting computes indentation from the complete buffer and returns edits only for selected
+lines. It does not change imports. Editor tab settings do not change canonical Foundation output.
+
+## Imports
+
+`foundationc imports <source>` writes one source file with canonical imports to stdout.
+`foundationc imports --check <source-or-project>` reports files that need changes, and
+`foundationc imports --write <source-or-project>` updates them.
+
+Import organization sorts imports by package and alias, removes aliases unused by the file, and
+adds a missing import when one package provides an exact alias and exported member match. Candidate
+packages come from the SDK and the dependency graph already recorded for the project. An ambiguous
+match remains a diagnostic.
+
+The command and language server do not fetch packages or edit `foundation.package` and
+`foundation.lock`. Adding a dependency remains an explicit package operation. No background daemon
+is required: the CLI and each LSP client call the compiler-owned operation directly.

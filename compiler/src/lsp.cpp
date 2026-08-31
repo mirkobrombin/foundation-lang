@@ -2,6 +2,7 @@
 
 #include "foundation/driver.hpp"
 #include "foundation/formatter.hpp"
+#include "foundation/imports.hpp"
 #include "foundation/language_service.hpp"
 #include "foundation/lexer.hpp"
 #include "foundation/lint.hpp"
@@ -1896,6 +1897,8 @@ class LanguageServer {
             sendMessage(output_, response(*id, provideSelectionRanges(message.find("params"))));
         } else if (*method == "textDocument/formatting" && id != nullptr) {
             sendMessage(output_, response(*id, provideFormatting(message.find("params"))));
+        } else if (*method == "textDocument/willSaveWaitUntil" && id != nullptr) {
+            sendMessage(output_, response(*id, provideFormatting(message.find("params"))));
         } else if (*method == "textDocument/rangeFormatting" && id != nullptr) {
             sendMessage(output_, response(*id, provideRangeFormatting(message.find("params"))));
         } else if (*method == "$/cancelRequest" || *method == "initialized" ||
@@ -1931,7 +1934,11 @@ class LanguageServer {
         return Json::object(
             {{"capabilities",
               Json::object({{"positionEncoding", "utf-16"},
-                            {"textDocumentSync", 1},
+                            {"textDocumentSync",
+                             Json::object({{"openClose", true},
+                                           {"change", 1},
+                                           {"willSaveWaitUntil", true},
+                                           {"save", Json::object({{"includeText", false}})}})},
                             {"hoverProvider", true},
                             {"declarationProvider", true},
                             {"definitionProvider", true},
@@ -1961,7 +1968,8 @@ class LanguageServer {
                                   {"full", true}})},
                             {"inlayHintProvider", true},
                             {"codeActionProvider",
-                             Json::object({{"codeActionKinds", Json::array({"quickfix"})}})},
+                             Json::object({{"codeActionKinds",
+                                           Json::array({"quickfix", "source.organizeImports"})}})},
                             {"foldingRangeProvider", true},
                             {"selectionRangeProvider", true},
                             {"documentFormattingProvider", true},
@@ -5128,6 +5136,19 @@ class LanguageServer {
                  {"isPreferred", true},
                  {"edit", Json::object({{"changes", Json(std::move(changes))}})}}));
         }
+        const auto organized = organizeImports(*analysis, *sourceId);
+        if (!organized.diagnostics.hasErrors() && organized.contents != source) {
+            Json::Object changes;
+            changes.emplace(
+                *uri,
+                Json::array({Json::object(
+                    {{"range", lspRange(Position{}, positionAt(source, source.size()))},
+                     {"newText", organized.contents}})}));
+            result.push_back(Json::object(
+                {{"title", "Organize imports"},
+                 {"kind", "source.organizeImports"},
+                 {"edit", Json::object({{"changes", Json(std::move(changes))}})}}));
+        }
         return Json(std::move(result));
     }
 
@@ -5253,7 +5274,17 @@ class LanguageServer {
         if (document == nullptr) {
             return Json(Json::Array{});
         }
-        const auto formatted = formatSource(document->contents);
+        auto contents = document->contents;
+        const auto *analysis = analyzeUri(document->uri);
+        const auto sourceId = analysis == nullptr ? std::nullopt
+                                                  : sourceIdForUri(*analysis, document->uri);
+        if (analysis != nullptr && sourceId.has_value()) {
+            auto organized = organizeImports(*analysis, *sourceId);
+            if (!organized.diagnostics.hasErrors()) {
+                contents = std::move(organized.contents);
+            }
+        }
+        const auto formatted = formatSource(contents);
         if (formatted.diagnostics.hasErrors() || formatted.contents == document->contents) {
             return Json(Json::Array{});
         }

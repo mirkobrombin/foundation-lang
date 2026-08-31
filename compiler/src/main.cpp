@@ -18,6 +18,9 @@ void printUsage(std::ostream &output) {
            << "  foundationc format <source>\n"
            << "  foundationc format --check <source-or-project>\n"
            << "  foundationc format --write <source-or-project>\n"
+           << "  foundationc imports <source>\n"
+           << "  foundationc imports --check <source-or-project>\n"
+           << "  foundationc imports --write <source-or-project>\n"
            << "  foundationc emit-c <source-or-project> -o <output.c>"
               " [--target <platform>]\n"
            << "  foundationc emit-c-header <source-or-project> -o <output.h>"
@@ -367,6 +370,21 @@ int main(int argc, char **argv) {
             if (mode == "--write") {
                 return foundation::formatPath(std::filesystem::path(argv[3]),
                                               foundation::FormatMode::Write);
+            }
+        }
+        if (command == "imports" && argc == 3) {
+            return foundation::organizeImportsPath(std::filesystem::path(argv[2]),
+                                                   foundation::FormatMode::Stdout);
+        }
+        if (command == "imports" && argc == 4) {
+            const std::string_view mode = argv[2];
+            if (mode == "--check") {
+                return foundation::organizeImportsPath(std::filesystem::path(argv[3]),
+                                                       foundation::FormatMode::Check);
+            }
+            if (mode == "--write") {
+                return foundation::organizeImportsPath(std::filesystem::path(argv[3]),
+                                                       foundation::FormatMode::Write);
             }
         }
         if (command == "emit-c") {

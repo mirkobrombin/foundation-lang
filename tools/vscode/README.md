@@ -12,8 +12,10 @@ compiler-derived application members, so editor features do not depend on genera
   standard packages shipped with the compiler.
 - Go to Definition, Find References, Rename, Call Hierarchy, Type Hierarchy, and Go to
   Implementations use resolved symbols rather than matching names as text.
-- Formatting, semantic highlighting, parameter hints, and quick fixes follow the compiler's view
-  of the open document.
+- Saving a Foundation file formats it, sorts and removes imports, and adds a missing import when the
+  SDK or locked dependency graph contains one exact match.
+- Semantic highlighting, parameter hints, and quick fixes follow the compiler's view of the open
+  document.
 - Composite Type Peek collects a struct and its distributed methods by source file while keeping
   every entry editable in its original file.
 - `foundation.package` and `foundation.lock` have their own syntax, completion, hover, diagnostics,
@@ -32,6 +34,10 @@ VS Code also looks for the server in workspace build directories and on `PATH`. 
 The Foundation status item reports when IntelliSense is starting, ready, stopped, or failed.
 Selecting it opens the language server output, which is the first place to check when a project is
 not being indexed.
+
+Save handling is implemented by `foundation-ls`, not by a VS Code-only formatter. Other editors can
+use the standard `textDocument/willSaveWaitUntil` request, and command-line workflows can run
+`foundationc imports --write` and `foundationc format --write`.
 
 The setting `foundation.inlayHints.emptyTests` controls the `is empty` hint shown for typed
 `!value` checks without disabling parameter-name hints.

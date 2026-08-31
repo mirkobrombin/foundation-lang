@@ -181,7 +181,10 @@ class FoundationLanguageClient {
             rootUri,
             capabilities: {
                 general: { positionEncodings: ["utf-16"] },
-                textDocument: { publishDiagnostics: { relatedInformation: true } }
+                textDocument: {
+                    publishDiagnostics: { relatedInformation: true },
+                    synchronization: { willSaveWaitUntil: true }
+                }
             },
             workspaceFolders: (this.vscode.workspace.workspaceFolders || []).map((item) => ({
                 uri: item.uri.toString(),
@@ -224,6 +227,15 @@ class FoundationLanguageClient {
             }),
             this.vscode.workspace.onDidChangeTextDocument((event) => {
                 this.change(event.document);
+            }),
+            this.vscode.workspace.onWillSaveTextDocument((event) => {
+                if (!this.ready || event.document.languageId !== "foundation") {
+                    return;
+                }
+                event.waitUntil(this.willSave(event.document, event.reason).catch((error) => {
+                    this.output.appendLine(`Save formatting failed: ${error.message}`);
+                    return [];
+                }));
             }),
             this.vscode.workspace.onDidCloseTextDocument((document) => this.close(document)),
             this.vscode.workspace.onDidChangeWorkspaceFolders((event) => {
@@ -313,7 +325,10 @@ class FoundationLanguageClient {
                 provideCodeActions: (document, range, context, token) =>
                     this.codeActions(document, range, context, token)
             }, {
-                providedCodeActionKinds: [this.vscode.CodeActionKind.QuickFix]
+                providedCodeActionKinds: [
+                    this.vscode.CodeActionKind.QuickFix,
+                    this.vscode.CodeActionKind.SourceOrganizeImports
+                ]
             }),
             this.vscode.languages.registerFoldingRangeProvider("foundation", {
                 provideFoldingRanges: (document, context, token) =>
@@ -920,9 +935,12 @@ class FoundationLanguageClient {
             }
         }, token);
         return (result || []).map((value) => {
+            const kind = value.kind === "source.organizeImports"
+                ? this.vscode.CodeActionKind.SourceOrganizeImports
+                : this.vscode.CodeActionKind.QuickFix;
             const action = new this.vscode.CodeAction(
                 value.title,
-                this.vscode.CodeActionKind.QuickFix
+                kind
             );
             action.isPreferred = value.isPreferred || false;
             action.edit = this.workspaceEdit(value.edit?.changes);
@@ -970,6 +988,14 @@ class FoundationLanguageClient {
             textDocument: { uri: document.uri.toString() },
             options
         }, token);
+        return this.formattingEdits(result);
+    }
+
+    async willSave(document, reason) {
+        const result = await this.request("textDocument/willSaveWaitUntil", {
+            textDocument: { uri: document.uri.toString() },
+            reason
+        });
         return this.formattingEdits(result);
     }
 

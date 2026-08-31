@@ -177,6 +177,7 @@ add_library(foundation_compiler STATIC
     compiler/src/driver.cpp
     compiler/src/formatter.cpp
     compiler/src/fsm.cpp
+    compiler/src/imports.cpp
     compiler/src/language_service.cpp
     compiler/src/lexer.cpp
     compiler/src/lint.cpp
@@ -1461,6 +1462,15 @@ if(BUILD_TESTING)
             -DINVALID=${CMAKE_CURRENT_SOURCE_DIR}/tests/formatter/invalid.fn
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/formatter-project
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-format.cmake
+    )
+    add_test(
+        NAME tooling.imports.cli
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/imports/messy.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/imports/expected.fn
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/imports-project
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-imports.cmake
     )
     add_test(
         NAME tooling.documentation.cli

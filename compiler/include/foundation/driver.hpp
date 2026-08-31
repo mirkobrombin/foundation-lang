@@ -65,6 +65,7 @@ enum class LibraryKind {
     std::optional<CodeStandardProfile> profile = std::nullopt,
     const std::vector<CodeStandardRuleSetting> &settings = {});
 [[nodiscard]] int formatPath(const std::filesystem::path &path, FormatMode mode);
+[[nodiscard]] int organizeImportsPath(const std::filesystem::path &path, FormatMode mode);
 [[nodiscard]] int emitCFile(const std::filesystem::path &source,
                             const std::filesystem::path &output,
                             TargetPlatform target = hostTargetPlatform());

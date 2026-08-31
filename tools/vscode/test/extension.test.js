@@ -108,6 +108,9 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /registerInlayHintsProvider/);
     assert.match(languageClient, /registerCodeActionsProvider/);
     assert.match(languageClient, /textDocument\/codeAction/);
+    assert.match(languageClient, /source\.organizeImports/);
+    assert.match(languageClient, /onWillSaveTextDocument/);
+    assert.match(languageClient, /textDocument\/willSaveWaitUntil/);
     assert.match(languageClient, /registerFoldingRangeProvider/);
     assert.match(languageClient, /textDocument\/foldingRange/);
     assert.match(languageClient, /registerSelectionRangeProvider/);
@@ -119,7 +122,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.140.0");
+    assert.equal(manifest.version, "0.141.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,
@@ -784,6 +787,7 @@ test("maps language server formatting edits", async () => {
     const document = { uri: { toString: () => "file:///tmp/main.fn" } };
     const range = new Range(1, 0, 2, 0);
     const edits = await client.rangeFormatting(document, range, { tabSize: 4 }, null);
+    const saveEdits = await client.willSave(document, 1);
 
     assert.equal(requests[0].method, "textDocument/rangeFormatting");
     assert.deepEqual(requests[0].params.range, {
@@ -792,6 +796,9 @@ test("maps language server formatting edits", async () => {
     });
     assert.equal(edits[0].newText, "    value");
     assert.equal(edits[0].range.start.line, 1);
+    assert.equal(requests[1].method, "textDocument/willSaveWaitUntil");
+    assert.equal(requests[1].params.reason, 1);
+    assert.equal(saveEdits[0].newText, "    value");
 });
 
 test("maps compiler quick fixes to workspace edits", async () => {
@@ -829,7 +836,10 @@ test("maps compiler quick fixes to workspace edits", async () => {
         Range,
         CodeAction,
         WorkspaceEdit,
-        CodeActionKind: { QuickFix: "quickfix" },
+        CodeActionKind: {
+            QuickFix: "quickfix",
+            SourceOrganizeImports: "source.organizeImports"
+        },
         Uri: { parse: (value) => ({ value }) }
     };
     client.request = async (method, params) => {

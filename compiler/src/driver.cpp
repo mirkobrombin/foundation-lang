@@ -4,6 +4,7 @@
 #include "foundation/codegen.hpp"
 #include "foundation/documentation.hpp"
 #include "foundation/formatter.hpp"
+#include "foundation/imports.hpp"
 #include "foundation/lint.hpp"
 #include "foundation/lower.hpp"
 #include "foundation/llvm_codegen.hpp"
@@ -989,6 +990,83 @@ int formatPath(const std::filesystem::path &path, FormatMode mode) {
         }
         if (!std::cout) {
             std::cerr << "foundationc: failed while writing formatter check output\n";
+            return 1;
+        }
+        return changed.empty() ? 0 : 1;
+    }
+    if (mode == FormatMode::Write) {
+        for (const auto &file : changed) {
+            if (!replaceFile(file.path, file.contents)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+int organizeImportsPath(const std::filesystem::path &path, FormatMode mode) {
+    const auto sources = formatterSources(path);
+    if (!sources.has_value()) {
+        return 2;
+    }
+    if (mode == FormatMode::Stdout && sources->size() != 1) {
+        std::cerr << "foundationc: stdout import organization requires one source file\n";
+        return 2;
+    }
+    if (mode == FormatMode::Write) {
+        for (const auto &source : *sources) {
+            if (!replaceableFile(source)) {
+                return 1;
+            }
+        }
+    }
+
+    const auto analysis = analyzeProject(
+        path, {}, AnalyzeOptions{.requireMain = false, .retainInvalidModel = true},
+        ProjectMode::Test);
+    if (analysis.sources.empty()) {
+        std::cerr << renderDiagnostics(analysis.sources, analysis.diagnostics);
+        return 1;
+    }
+
+    struct OrganizedFile {
+        std::filesystem::path path;
+        std::string contents;
+    };
+    std::vector<OrganizedFile> changed;
+    for (const auto &source : *sources) {
+        const auto identity = sourceIdentity(source).generic_string();
+        const auto found = std::find_if(
+            analysis.sources.begin(), analysis.sources.end(), [&](const DiagnosticSource &input) {
+                return input.identity == identity;
+            });
+        if (found == analysis.sources.end()) {
+            std::cerr << "foundationc: source is outside the analyzed project: "
+                      << source.generic_string() << '\n';
+            return 1;
+        }
+        const auto sourceId = static_cast<std::size_t>(found - analysis.sources.begin());
+        auto organized = organizeImports(analysis, sourceId);
+        if (organized.diagnostics.hasErrors()) {
+            std::cerr << renderDiagnostics(analysis.sources, organized.diagnostics);
+            return 1;
+        }
+        if (mode == FormatMode::Stdout) {
+            std::cout << organized.contents;
+            if (!std::cout) {
+                std::cerr << "foundationc: failed while writing organized source\n";
+                return 1;
+            }
+        } else if (organized.contents != found->contents) {
+            changed.push_back({source, std::move(organized.contents)});
+        }
+    }
+    if (mode == FormatMode::Check) {
+        for (const auto &file : changed) {
+            std::cout << file.path.generic_string() << '\n';
+        }
+        if (!std::cout) {
+            std::cerr << "foundationc: failed while writing import check output\n";
             return 1;
         }
         return changed.empty() ? 0 : 1;

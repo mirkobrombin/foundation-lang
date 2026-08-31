@@ -1,0 +1,13 @@
+package sample
+
+import std.text
+import std.collections
+// This note is not part of the unused import.
+import std.path
+
+fn main() i32 {
+    const greeting = text.Copy("Hello, ")
+    const count = format.I32(1)
+    print(greeting + count)
+    0
+}
