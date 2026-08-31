@@ -120,8 +120,17 @@ jobs:
       - name: Install LLVM 21
         shell: pwsh
         run: |
-          choco upgrade llvm --version=21.1.8 --allow-downgrade --no-progress -y
-          "LLVM_DIR=C:\Program Files\LLVM\lib\cmake\llvm" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $archive = Join-Path $env:RUNNER_TEMP "llvm-21.1.8-windows.tar.xz"
+          $root = Join-Path $env:RUNNER_TEMP "llvm-21.1.8"
+          Invoke-WebRequest -Uri https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang%2Bllvm-21.1.8-x86_64-pc-windows-msvc.tar.xz -OutFile $archive
+          $digest = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne "749d22f565fcd5718dbed06512572d0e5353b502c03fe1f7f17ee8b8aca21a47") {
+            throw "LLVM archive checksum mismatch"
+          }
+          New-Item -ItemType Directory -Force $root | Out-Null
+          tar -xJf $archive -C $root --strip-components=1
+          "LLVM_DIR=$root\lib\cmake\llvm" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Configure
         shell: pwsh
@@ -249,7 +258,7 @@ jobs:
         run: |
           mkdir -p build/deps
           cd build/deps
-          curl --fail --location --remote-name https://openssl-library.org/source/old/3.5/openssl-3.5.6.tar.gz
+          curl --fail --location --remote-name https://github.com/openssl/openssl/releases/download/openssl-3.5.6/openssl-3.5.6.tar.gz
           echo "deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736  openssl-3.5.6.tar.gz" | sha256sum --check --strict
           tar -xzf openssl-3.5.6.tar.gz
           cd openssl-3.5.6
@@ -393,7 +402,7 @@ jobs:
         run: |
           mkdir -p build/deps
           cd build/deps
-          curl --fail --location --remote-name https://openssl-library.org/source/old/3.5/openssl-3.5.6.tar.gz
+          curl --fail --location --remote-name https://github.com/openssl/openssl/releases/download/openssl-3.5.6/openssl-3.5.6.tar.gz
           echo "deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736  openssl-3.5.6.tar.gz" | shasum -a 256 --check
           tar -xzf openssl-3.5.6.tar.gz
           cd openssl-3.5.6
@@ -470,14 +479,23 @@ jobs:
       - name: Install LLVM 21
         shell: pwsh
         run: |
-          choco upgrade llvm --version=21.1.8 --allow-downgrade --no-progress -y
-          "LLVM_DIR=C:\Program Files\LLVM\lib\cmake\llvm" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $archive = Join-Path $env:RUNNER_TEMP "llvm-21.1.8-windows.tar.xz"
+          $root = Join-Path $env:RUNNER_TEMP "llvm-21.1.8"
+          Invoke-WebRequest -Uri https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang%2Bllvm-21.1.8-x86_64-pc-windows-msvc.tar.xz -OutFile $archive
+          $digest = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne "749d22f565fcd5718dbed06512572d0e5353b502c03fe1f7f17ee8b8aca21a47") {
+            throw "LLVM archive checksum mismatch"
+          }
+          New-Item -ItemType Directory -Force $root | Out-Null
+          tar -xJf $archive -C $root --strip-components=1
+          "LLVM_DIR=$root\lib\cmake\llvm" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Build pinned OpenSSL
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force build/deps | Out-Null
-          Invoke-WebRequest -Uri https://openssl-library.org/source/old/3.5/openssl-3.5.6.tar.gz -OutFile build/deps/openssl-3.5.6.tar.gz
+          Invoke-WebRequest -Uri https://github.com/openssl/openssl/releases/download/openssl-3.5.6/openssl-3.5.6.tar.gz -OutFile build/deps/openssl-3.5.6.tar.gz
           $digest = (Get-FileHash build/deps/openssl-3.5.6.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($digest -ne "deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736") {
             throw "OpenSSL source checksum mismatch"
