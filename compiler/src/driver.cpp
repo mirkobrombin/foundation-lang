@@ -740,7 +740,7 @@ bool linkSharedLibrary(const std::filesystem::path &output,
                                                                  packageInterface.soVersion);
     arguments.insert(arguments.end(), {"-Wl,-undefined,error", "-Wl,-install_name," + installName,
                                        "-Wl,-exported_symbols_list," + controlFile.string(),
-                                       "-pthread"});
+                                       "-Wl,-no_uuid", "-pthread"});
 #else
     arguments.insert(arguments.end(), {"-Wl,--no-undefined",
                                        "-Wl,-soname," + output.filename().string(),

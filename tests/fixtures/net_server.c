@@ -19,6 +19,7 @@ typedef SOCKET test_socket;
 #else
 #include <arpa/inet.h>
 #include <errno.h>
+#include <netinet/in.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/time.h>

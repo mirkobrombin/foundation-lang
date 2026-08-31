@@ -15,6 +15,49 @@ if(NOT LLVM_FOUND)
     find_package(LLVM 21.1 REQUIRED CONFIG PATHS ${FOUNDATION_LLVM_CMAKE_DIR} NO_DEFAULT_PATH)
 endif()
 
+# Official Windows LLVM archives can embed the build machine's DIA SDK path.
+if(MSVC AND TARGET LLVMDebugInfoPDB)
+    get_target_property(FOUNDATION_LLVM_PDB_LINKS
+        LLVMDebugInfoPDB INTERFACE_LINK_LIBRARIES)
+    set(FOUNDATION_LLVM_PDB_NEEDS_DIA_REPAIR OFF)
+    foreach(FOUNDATION_LLVM_PDB_LINK IN LISTS FOUNDATION_LLVM_PDB_LINKS)
+        if(FOUNDATION_LLVM_PDB_LINK MATCHES "[/\\\\]diaguids\\.lib$" AND
+           NOT EXISTS "${FOUNDATION_LLVM_PDB_LINK}")
+            set(FOUNDATION_LLVM_PDB_NEEDS_DIA_REPAIR ON)
+        endif()
+    endforeach()
+    if(FOUNDATION_LLVM_PDB_NEEDS_DIA_REPAIR)
+        set(FOUNDATION_DIA_LIBRARY_SUFFIX "DIA SDK/lib")
+        if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64")
+            string(APPEND FOUNDATION_DIA_LIBRARY_SUFFIX "/arm64")
+        elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            string(APPEND FOUNDATION_DIA_LIBRARY_SUFFIX "/amd64")
+        endif()
+        find_library(FOUNDATION_DIAGUIDS_LIBRARY
+            NAMES diaguids
+            HINTS "${CMAKE_GENERATOR_INSTANCE}" "$ENV{VSINSTALLDIR}"
+            PATH_SUFFIXES "${FOUNDATION_DIA_LIBRARY_SUFFIX}"
+            NO_CACHE
+        )
+        if(NOT FOUNDATION_DIAGUIDS_LIBRARY)
+            message(FATAL_ERROR "LLVM requires the Visual Studio DIA SDK diaguids library")
+        endif()
+        set(FOUNDATION_LLVM_PDB_REPAIRED_LINKS)
+        foreach(FOUNDATION_LLVM_PDB_LINK IN LISTS FOUNDATION_LLVM_PDB_LINKS)
+            if(FOUNDATION_LLVM_PDB_LINK MATCHES "[/\\\\]diaguids\\.lib$" AND
+               NOT EXISTS "${FOUNDATION_LLVM_PDB_LINK}")
+                list(APPEND FOUNDATION_LLVM_PDB_REPAIRED_LINKS
+                    "${FOUNDATION_DIAGUIDS_LIBRARY}")
+            else()
+                list(APPEND FOUNDATION_LLVM_PDB_REPAIRED_LINKS
+                    "${FOUNDATION_LLVM_PDB_LINK}")
+            endif()
+        endforeach()
+        set_property(TARGET LLVMDebugInfoPDB PROPERTY INTERFACE_LINK_LIBRARIES
+            "${FOUNDATION_LLVM_PDB_REPAIRED_LINKS}")
+    endif()
+endif()
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
@@ -1600,11 +1643,16 @@ if(BUILD_TESTING)
         NAMES clang clang-21
         HINTS ${LLVM_TOOLS_BINARY_DIR}
     )
-    if(FOUNDATION_WASM_CLANG)
+    find_program(FOUNDATION_WASM_LINKER
+        NAMES wasm-ld wasm-ld-21
+        HINTS ${LLVM_TOOLS_BINARY_DIR}
+    )
+    if(FOUNDATION_WASM_CLANG AND FOUNDATION_WASM_LINKER)
         add_test(
             NAME abi.wasm-plugin-guest
             COMMAND ${CMAKE_COMMAND}
                 -DCLANG=${FOUNDATION_WASM_CLANG}
+                -DLINKER=${FOUNDATION_WASM_LINKER}
                 -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/wasm_plugin_fixture.c
                 -DINCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/wasm-plugin-fixture.wasm
@@ -1614,6 +1662,7 @@ if(BUILD_TESTING)
             NAME abi.wasm-plugin-guest-bad-signature
             COMMAND ${CMAKE_COMMAND}
                 -DCLANG=${FOUNDATION_WASM_CLANG}
+                -DLINKER=${FOUNDATION_WASM_LINKER}
                 -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/wasm_plugin_fixture.c
                 -DINCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -DDEFINITIONS=-DFDN_WASM_FIXTURE_BAD_SIGNATURE=1
@@ -1624,6 +1673,7 @@ if(BUILD_TESTING)
             NAME abi.wasm-plugin-guest-invalid-metadata
             COMMAND ${CMAKE_COMMAND}
                 -DCLANG=${FOUNDATION_WASM_CLANG}
+                -DLINKER=${FOUNDATION_WASM_LINKER}
                 -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/wasm_plugin_fixture.c
                 -DINCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -DDEFINITIONS=-DFDN_WASM_FIXTURE_INVALID_METADATA=1
@@ -1634,6 +1684,7 @@ if(BUILD_TESTING)
             NAME abi.wasm-plugin-guest-missing-memory-export
             COMMAND ${CMAKE_COMMAND}
                 -DCLANG=${FOUNDATION_WASM_CLANG}
+                -DLINKER=${FOUNDATION_WASM_LINKER}
                 -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/wasm_plugin_fixture.c
                 -DINCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
                 -DEXPORT_MEMORY=OFF

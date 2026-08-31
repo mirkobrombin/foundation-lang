@@ -54,7 +54,13 @@ std::string jsonEscape(std::string_view value) {
 }
 
 std::string fileUri(const std::filesystem::path &path) {
-    auto value = std::filesystem::absolute(path).lexically_normal().generic_string();
+    std::error_code error;
+    auto absolute = std::filesystem::absolute(path, error);
+    if (error) {
+        absolute = path;
+    }
+    const auto canonical = std::filesystem::weakly_canonical(absolute, error);
+    auto value = (error ? absolute.lexically_normal() : canonical).generic_string();
 #ifdef _WIN32
     if (!value.empty() && value.front() != '/') {
         value.insert(value.begin(), '/');

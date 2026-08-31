@@ -1,9 +1,11 @@
-if(NOT DEFINED CLANG OR NOT DEFINED SOURCE OR NOT DEFINED INCLUDE_DIR OR
-   NOT DEFINED OUTPUT)
-    message(FATAL_ERROR "WebAssembly guest test requires CLANG, SOURCE, INCLUDE_DIR, and OUTPUT")
+if(NOT DEFINED CLANG OR NOT DEFINED LINKER OR NOT DEFINED SOURCE OR
+   NOT DEFINED INCLUDE_DIR OR NOT DEFINED OUTPUT)
+    message(FATAL_ERROR
+            "WebAssembly guest test requires CLANG, LINKER, SOURCE, INCLUDE_DIR, and OUTPUT")
 endif()
 
 set(link_options -Wl,--no-entry)
+get_filename_component(linker_directory "${LINKER}" DIRECTORY)
 if(NOT DEFINED EXPORT_MEMORY OR EXPORT_MEMORY)
     list(APPEND link_options -Wl,--export-memory)
 else()
@@ -13,6 +15,7 @@ endif()
 execute_process(
     COMMAND "${CLANG}"
         --target=wasm32-unknown-unknown
+        "-B${linker_directory}"
         -std=c11
         -nostdlib
         -Wall

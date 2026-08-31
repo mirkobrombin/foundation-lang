@@ -1669,6 +1669,9 @@ int32_t foundation_runtime_fs_next_line_limited(uint64_t handle, uint64_t max_le
     }
     fdn_string_drop(line);
     *line = fdn_string_static("", 0);
+    if (feof(file) != 0) {
+        clearerr(file);
+    }
     while ((byte = fgetc(file)) != EOF) {
         char *grown;
         size_t next_capacity;
