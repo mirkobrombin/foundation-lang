@@ -989,7 +989,7 @@ parsePackageLock(const std::filesystem::path &path, std::string_view source) {
         } else if (directive == "native") {
             const auto soVersion = tokens.size() == 5 && tokens[3] != "-"
                                        ? number(tokens[3])
-                                       : std::optional<std::uint64_t>{};
+                                       : std::optional<std::size_t>{};
             const auto validSO = tokens.size() == 5 &&
                                  (tokens[3] == "-" ||
                                   (soVersion.has_value() &&
