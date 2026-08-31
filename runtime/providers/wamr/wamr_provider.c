@@ -966,7 +966,11 @@ static int32_t fdn_wamr_module_open(uint64_t engine_value, const fdn_string *pat
         fdn_wamr_engine_release(engine);
         return FDN_WAMR_HANDLER_ERROR;
     }
+#if defined(_MSC_VER)
+    (void)fopen_s(&file, native_path, "rb");
+#else
     file = fopen(native_path, "rb");
+#endif
     free(native_path);
     if (file == NULL || fseek(file, 0, SEEK_END) != 0 ||
         (size = ftell(file)) < 0 || fseek(file, 0, SEEK_SET) != 0) {

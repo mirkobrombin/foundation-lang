@@ -3038,7 +3038,11 @@ static int32_t fdn_posix_write_root_file(fdn_fs_root *root,
     }
     file = -1;
     if (renameat(directory, temporary, directory, name) != 0 ||
-        fsync(directory) != 0) {
+        (fsync(directory) != 0
+#if defined(__APPLE__)
+         && errno != EINVAL && errno != ENOTSUP
+#endif
+         )) {
         status = fdn_fs_status(errno);
         goto cleanup;
     }

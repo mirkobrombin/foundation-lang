@@ -32,7 +32,11 @@ if(DEFINED EXPECTED_EXIT)
     set(expected_exit "${EXPECTED_EXIT}")
 endif()
 if(NOT result EQUAL expected_exit)
-    message(FATAL_ERROR "program exited with ${result}, expected ${expected_exit}:\n${error}")
+    message(FATAL_ERROR
+        "program exited with ${result}, expected ${expected_exit}:\n"
+        "stdout:\n${output}"
+        "stderr:\n${error}"
+    )
 endif()
 
 file(READ "${EXPECTED}" expected)

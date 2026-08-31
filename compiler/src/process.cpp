@@ -101,7 +101,7 @@ int runProcess(const std::vector<std::string> &arguments, ProcessOutput output) 
         }
     }
 
-    const auto status = _spawnv(_P_WAIT, arguments.front().c_str(), argv.data());
+    const auto status = _spawnvp(_P_WAIT, arguments.front().c_str(), argv.data());
     const auto spawnError = errno;
     if (savedStdout != -1) {
         std::fflush(stdout);

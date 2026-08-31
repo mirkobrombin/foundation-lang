@@ -313,6 +313,10 @@ target_link_libraries(foundationc PRIVATE foundation_compiler)
 
 add_executable(foundation-ls compiler/src/lsp_main.cpp)
 target_link_libraries(foundation-ls PRIVATE foundation_compiler)
+if(MSVC)
+    target_link_options(foundationc PRIVATE /STACK:8388608)
+    target_link_options(foundation-ls PRIVATE /STACK:8388608)
+endif()
 
 include(GNUInstallDirs)
 install(TARGETS foundationc foundation-ls RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
@@ -1095,6 +1099,7 @@ if(BUILD_TESTING)
             -DBUILD_DIR=${CMAKE_BINARY_DIR}
             -DSDK_DIR=${CMAKE_BINARY_DIR}/sdk-test
             -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+            -DCONFIG=$<CONFIG>
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-sdk-bundle.cmake
     )
     add_executable(foundation_runtime_panic_test runtime/tests/panic_trace_test.c)
@@ -1456,6 +1461,9 @@ if(BUILD_TESTING)
         target_compile_options(foundation_compiler_tests PRIVATE /W4 /permissive- /EHsc)
         target_compile_options(foundation_lsp_tests PRIVATE /W4 /permissive- /EHsc)
         target_compile_options(foundation_formatter_tests PRIVATE /W4 /permissive- /EHsc)
+        target_link_options(foundation_compiler_tests PRIVATE /STACK:8388608)
+        target_link_options(foundation_lsp_tests PRIVATE /STACK:8388608)
+        target_link_options(foundation_formatter_tests PRIVATE /STACK:8388608)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_compiler_tests PRIVATE /WX)
             target_compile_options(foundation_lsp_tests PRIVATE /WX)
@@ -1568,6 +1576,7 @@ if(BUILD_TESTING)
     endif()
     if(MSVC)
         target_compile_options(foundation_package_tests PRIVATE /W4 /permissive- /EHsc)
+        target_link_options(foundation_package_tests PRIVATE /STACK:8388608)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_package_tests PRIVATE /WX)
         endif()

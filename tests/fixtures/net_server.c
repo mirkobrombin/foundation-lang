@@ -180,7 +180,7 @@ uint64_t foundation_test_net_server_start(uint64_t *port) {
     }
     (void)memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_addr.s_addr = htonl(UINT32_C(0x7f000001));
     address.sin_port = 0;
     if (bind(server->listener, (const struct sockaddr *)&address,
              (int)sizeof(address)) != 0 ||

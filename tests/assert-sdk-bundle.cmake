@@ -2,9 +2,14 @@ if(NOT DEFINED BUILD_DIR OR NOT DEFINED SDK_DIR OR NOT DEFINED EXECUTABLE_SUFFIX
     message(FATAL_ERROR "BUILD_DIR, SDK_DIR, and EXECUTABLE_SUFFIX are required")
 endif()
 
+set(install_command "${CMAKE_COMMAND}" --install "${BUILD_DIR}" --prefix "${SDK_DIR}")
+if(DEFINED CONFIG AND NOT CONFIG STREQUAL "")
+    list(APPEND install_command --config "${CONFIG}")
+endif()
+
 file(REMOVE_RECURSE "${SDK_DIR}")
 execute_process(
-    COMMAND "${CMAKE_COMMAND}" --install "${BUILD_DIR}" --prefix "${SDK_DIR}"
+    COMMAND ${install_command}
     RESULT_VARIABLE install_status
     OUTPUT_VARIABLE install_output
     ERROR_VARIABLE install_error

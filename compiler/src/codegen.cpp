@@ -5047,7 +5047,14 @@ void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunc
         }
         out << ");\n";
         if (function.diverges) {
+            out << "#if defined(_MSC_VER)\n"
+                   "#pragma warning(push)\n"
+                   "#pragma warning(disable : 4702)\n"
+                   "#endif\n";
             out << "    fdn_panic_cstr(\"unreachable task poll\");\n";
+            out << "#if defined(_MSC_VER)\n"
+                   "#pragma warning(pop)\n"
+                   "#endif\n";
         } else {
             out << "    fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
             if (function.returnType != voidType) {
@@ -5085,15 +5092,24 @@ void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunc
         out << "    default:\n";
         out << "        fdn_panic_cstr(\"invalid task state\");\n";
         out << "    }\n";
+        out << "#if defined(_MSC_VER)\n"
+               "#pragma warning(push)\n"
+               "#pragma warning(disable : 4702)\n"
+               "#endif\n";
         FunctionEmitter emitter(out, program, id, true);
         const auto exits = emitter.emitBlock(function.body, 1);
-        if (!exits && function.returnType == voidType) {
-            out << "    fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
-            out << "    fdn_frame_leave(&fdn_frame_current);\n";
-            out << "    return FDN_TASK_READY;\n";
-        } else if (!exits) {
-            out << "    fdn_panic_cstr(\"task completed without a result\");\n";
+        if (!exits) {
+            if (function.returnType == voidType) {
+                out << "    fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
+                out << "    fdn_frame_leave(&fdn_frame_current);\n";
+                out << "    return FDN_TASK_READY;\n";
+            } else {
+                out << "    fdn_panic_cstr(\"task completed without a result\");\n";
+            }
         }
+        out << "#if defined(_MSC_VER)\n"
+               "#pragma warning(pop)\n"
+               "#endif\n";
     }
     out << "}\n\n";
 
@@ -5275,7 +5291,14 @@ void emitFunctionValueAdapter(std::ostringstream &out, const FirProgram &program
     }
     out << ");\n";
     if (function.diverges) {
+        out << "#if defined(_MSC_VER)\n"
+               "#pragma warning(push)\n"
+               "#pragma warning(disable : 4702)\n"
+               "#endif\n";
         out << "    fdn_panic_cstr(\"unreachable function value adapter\");\n";
+        out << "#if defined(_MSC_VER)\n"
+               "#pragma warning(pop)\n"
+               "#endif\n";
     }
     out << "}\n\n";
 }
@@ -5869,11 +5892,18 @@ std::string emitCImpl(const FirProgram &source, std::string_view sourcePath,
         emitContractDefinition(out, program, index);
     }
 
-    for (const auto &use : contractUses) {
-        out << "static const struct fdn_contract_" << use.contract.declaration
-            << "_vtable " << vtableName(use.contract, use.concrete) << ";\n";
-    }
     if (!contractUses.empty()) {
+        out << "#if defined(_MSC_VER)\n"
+               "#pragma warning(push)\n"
+               "#pragma warning(disable : 4132)\n"
+               "#endif\n";
+        for (const auto &use : contractUses) {
+            out << "static const struct fdn_contract_" << use.contract.declaration
+                << "_vtable " << vtableName(use.contract, use.concrete) << ";\n";
+        }
+        out << "#if defined(_MSC_VER)\n"
+               "#pragma warning(pop)\n"
+               "#endif\n";
         out << '\n';
     }
 
