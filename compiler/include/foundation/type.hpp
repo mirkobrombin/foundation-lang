@@ -52,6 +52,19 @@ struct Type {
     Type(TypeKind kind, std::size_t declaration = 0, std::vector<Type> arguments = {})
         : kind(kind), declaration(declaration), arguments(std::move(arguments)) {}
 
+    Type(const Type &) = default;
+    Type(Type &&) noexcept = default;
+
+    Type &operator=(const Type &other) {
+        Type copy(other);
+        kind = copy.kind;
+        declaration = copy.declaration;
+        arguments = std::move(copy.arguments);
+        return *this;
+    }
+
+    Type &operator=(Type &&) noexcept = default;
+
     bool operator==(const Type &) const = default;
 };
 

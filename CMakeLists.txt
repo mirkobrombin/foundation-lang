@@ -221,7 +221,14 @@ target_compile_options(foundation_compiler PRIVATE ${FOUNDATION_LLVM_DEFINITIONS
 if(LLVM_LINK_LLVM_DYLIB AND TARGET LLVM)
     target_link_libraries(foundation_compiler PRIVATE LLVM)
 else()
-    llvm_map_components_to_libnames(FOUNDATION_LLVM_LIBRARIES all)
+    llvm_map_components_to_libnames(FOUNDATION_LLVM_LIBRARIES
+        Core
+        Passes
+        Support
+        Target
+        TargetParser
+        ${LLVM_TARGETS_TO_BUILD}
+    )
     target_link_libraries(foundation_compiler PRIVATE ${FOUNDATION_LLVM_LIBRARIES})
 endif()
 get_filename_component(FOUNDATION_C_COMPILER_NAME "${CMAKE_C_COMPILER}" NAME)
@@ -1589,7 +1596,10 @@ if(BUILD_TESTING)
         compiler.run.plugin-wamr-provider-fake
         PROPERTIES TIMEOUT ${FOUNDATION_SHORT_COMPILE_RUN_TIMEOUT}
     )
-    find_program(FOUNDATION_WASM_CLANG NAMES clang)
+    find_program(FOUNDATION_WASM_CLANG
+        NAMES clang clang-21
+        HINTS ${LLVM_TOOLS_BINARY_DIR}
+    )
     if(FOUNDATION_WASM_CLANG)
         add_test(
             NAME abi.wasm-plugin-guest

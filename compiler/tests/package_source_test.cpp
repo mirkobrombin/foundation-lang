@@ -81,9 +81,17 @@ void snapshotsRejectSymlinksAndCaseCollisions() {
     fixture.write("src/name.fn", "module sample.name\n");
     fixture.write("src/Name.fn", "module sample.other\n");
     const auto collision = foundation::inspectPackageSource(fixture.root, manifest());
-    expect(hasCode(collision.errors, "FDN4036"), "case-folded source collisions are rejected");
+    std::error_code equivalentError;
+    const auto sameFile = std::filesystem::equivalent(fixture.root / "src" / "name.fn",
+                                                      fixture.root / "src" / "Name.fn",
+                                                      equivalentError);
+    if (!equivalentError && !sameFile) {
+        expect(hasCode(collision.errors, "FDN4036"),
+               "case-folded source collisions are rejected");
+    }
 
     std::filesystem::remove(fixture.root / "src" / "Name.fn");
+    fixture.write("src/name.fn", "module sample.name\n");
     std::error_code error;
     std::filesystem::create_symlink(fixture.root / "src" / "name.fn",
                                     fixture.root / "src" / "alias.fn", error);

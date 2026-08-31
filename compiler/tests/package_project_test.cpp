@@ -182,10 +182,12 @@ void testSourcesStayOutOfProductionProjects() {
 
     foundation::Diagnostics productionDiagnostics;
     const auto production = foundation::loadProject(
-        fixture.app, productionDiagnostics, {}, foundation::ProjectMode::Production);
+        fixture.app, productionDiagnostics, {}, foundation::ProjectMode::Production,
+        foundation::TargetPlatform::Linux);
     foundation::Diagnostics testDiagnostics;
     const auto test = foundation::loadProject(fixture.app, testDiagnostics, {},
-                                              foundation::ProjectMode::Test);
+                                              foundation::ProjectMode::Test,
+                                              foundation::TargetPlatform::Linux);
     const auto contains = [](const auto &project, std::string_view suffix) {
         return project.has_value() &&
                std::any_of(project->sources.begin(), project->sources.end(),
@@ -201,7 +203,8 @@ void testSourcesStayOutOfProductionProjects() {
     std::filesystem::remove_all(fixture.dependency);
     foundation::Diagnostics isolatedDiagnostics;
     const auto isolated = foundation::loadProject(
-        fixture.app, isolatedDiagnostics, {}, foundation::ProjectMode::Production);
+        fixture.app, isolatedDiagnostics, {}, foundation::ProjectMode::Production,
+        foundation::TargetPlatform::Linux);
     expect(isolated.has_value() && !isolatedDiagnostics.hasErrors(),
            "production analysis does not require test-only package content");
 }
