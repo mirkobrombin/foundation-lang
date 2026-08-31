@@ -201,12 +201,12 @@ void remapStatement(Statement &statement, std::size_t expressionOffset,
         if (branch->elseBlock.has_value()) {
             *branch->elseBlock += blockOffset;
         }
-    } else if (auto *loop = std::get_if<WhileStatement>(&statement.value)) {
-        loop->condition += expressionOffset;
-        loop->body += blockOffset;
-    } else if (auto *loop = std::get_if<ForStatement>(&statement.value)) {
-        loop->sequence += expressionOffset;
-        loop->body += blockOffset;
+    } else if (auto *whileLoop = std::get_if<WhileStatement>(&statement.value)) {
+        whileLoop->condition += expressionOffset;
+        whileLoop->body += blockOffset;
+    } else if (auto *forLoop = std::get_if<ForStatement>(&statement.value)) {
+        forLoop->sequence += expressionOffset;
+        forLoop->body += blockOffset;
     } else if (auto *selection = std::get_if<SelectStatement>(&statement.value)) {
         for (auto &operation : selection->operations) {
             operation.operation += expressionOffset;
@@ -337,12 +337,13 @@ void linkType(TypeSyntax &type, const std::string &currentPackage, const ImportA
     }
     const auto separator = type.name.find('.');
     if (separator == std::string::npos) {
-        if (const auto *declaration = findDeclaration(symbols, currentPackage, type.name, false)) {
-            type.name = declaration->internalName;
-        } else if (const auto *declaration =
+        if (const auto *localDeclaration =
+                findDeclaration(symbols, currentPackage, type.name, false)) {
+            type.name = localDeclaration->internalName;
+        } else if (const auto *preludeDeclaration =
                        findDeclaration(symbols, "std.prelude", type.name, false);
-                   declaration != nullptr && declaration->exported) {
-            type.name = declaration->internalName;
+                   preludeDeclaration != nullptr && preludeDeclaration->exported) {
+            type.name = preludeDeclaration->internalName;
         }
         return;
     }
@@ -564,13 +565,13 @@ void linkWorkflowFunction(std::string &name, SourceSpan span,
                           Diagnostics &diagnostics) {
     const auto separator = name.find('.');
     if (separator == std::string::npos) {
-        if (const auto *declaration =
+        if (const auto *localDeclaration =
                 findDeclaration(symbols, currentPackage, name, true)) {
-            name = declaration->internalName;
-        } else if (const auto *declaration =
+            name = localDeclaration->internalName;
+        } else if (const auto *preludeDeclaration =
                        findDeclaration(symbols, "std.prelude", name, true);
-                   declaration != nullptr && declaration->exported) {
-            name = declaration->internalName;
+                   preludeDeclaration != nullptr && preludeDeclaration->exported) {
+            name = preludeDeclaration->internalName;
         } else {
             diagnostics.error("FDN3009", "unknown workflow function " + name, span);
         }
@@ -650,15 +651,15 @@ void linkBlock(Program &program, AstBlockId id, const std::string &currentPackag
                 linkBlock(program, *branch->elseBlock, currentPackage, imports, symbols,
                           typeParameters, diagnostics);
             }
-        } else if (auto *loop = std::get_if<WhileStatement>(&statement.value)) {
-            linkExpression(program, loop->condition, currentPackage, imports, symbols,
+        } else if (auto *whileLoop = std::get_if<WhileStatement>(&statement.value)) {
+            linkExpression(program, whileLoop->condition, currentPackage, imports, symbols,
                            typeParameters, diagnostics);
-            linkBlock(program, loop->body, currentPackage, imports, symbols, typeParameters,
+            linkBlock(program, whileLoop->body, currentPackage, imports, symbols, typeParameters,
                       diagnostics);
-        } else if (auto *loop = std::get_if<ForStatement>(&statement.value)) {
-            linkExpression(program, loop->sequence, currentPackage, imports, symbols,
+        } else if (auto *forLoop = std::get_if<ForStatement>(&statement.value)) {
+            linkExpression(program, forLoop->sequence, currentPackage, imports, symbols,
                            typeParameters, diagnostics);
-            linkBlock(program, loop->body, currentPackage, imports, symbols, typeParameters,
+            linkBlock(program, forLoop->body, currentPackage, imports, symbols, typeParameters,
                       diagnostics);
         } else if (auto *selection = std::get_if<SelectStatement>(&statement.value)) {
             for (const auto &operation : selection->operations) {

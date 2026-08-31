@@ -507,8 +507,9 @@ class Lowerer {
         } else if (const auto *unsafe = std::get_if<UnsafeStatement>(&source.value)) {
             value = FirUnsafeStatement{lowerBlock(unsafe->body)};
         } else {
-            const auto &loop = std::get<WhileStatement>(source.value);
-            value = FirWhileStatement{lowerExpression(loop.condition), lowerBlock(loop.body)};
+            const auto &whileLoop = std::get<WhileStatement>(source.value);
+            value = FirWhileStatement{lowerExpression(whileLoop.condition),
+                                      lowerBlock(whileLoop.body)};
         }
 
         const auto lowered = current_->statements.size();

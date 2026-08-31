@@ -1,5 +1,7 @@
 #include "foundation/sema.hpp"
 
+#include "foundation/numeric.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <climits>
@@ -3326,10 +3328,7 @@ class Analyzer {
             type = expected == f32Type ? f32Type : f64Type;
             if (type == f32Type) {
                 float value{};
-                const auto conversion = std::from_chars(
-                    floating->text.data(), floating->text.data() + floating->text.size(), value);
-                if (conversion.ec != std::errc{} ||
-                    conversion.ptr != floating->text.data() + floating->text.size()) {
+                if (!parseFloating(floating->text, value)) {
                     diagnostics_.error("FDN2005", "floating-point literal does not fit f32",
                                        expression.span);
                 }

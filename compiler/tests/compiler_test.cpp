@@ -1024,6 +1024,17 @@ fn main() i32 {
            "an explicit never function lowers to a C noreturn function");
 }
 
+void floatingLiteralsRejectOverflow() {
+    const auto f64Overflow = check("fn main() i32 { const value = 1e9999 discard value 0 }");
+    expect(hasCode(f64Overflow.diagnostics, "FDN1016"),
+           "f64 overflow reports FDN1016");
+
+    const auto f32Overflow =
+        check("fn main() i32 { const value f32 = 1e39 discard value 0 }");
+    expect(hasCode(f32Overflow.diagnostics, "FDN2005"),
+           "f32 overflow reports FDN2005");
+}
+
 void methodsAndContractsLowerToDeterministicC() {
     constexpr std::string_view source = R"(
 contract Readable {
@@ -3017,6 +3028,7 @@ int main() {
     sequenceLengthsLowerToU64();
     u64ValuesLowerToCheckedC();
     machineScalarsAndNeverLowerToPortableC();
+    floatingLiteralsRejectOverflow();
     methodsAndContractsLowerToDeterministicC();
     taskContractConversionsReceiveEarlyVtableDeclarations();
     contractInheritanceFlattensDeterministically();

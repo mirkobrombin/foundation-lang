@@ -6,6 +6,7 @@
 #include "foundation/language_service.hpp"
 #include "foundation/lexer.hpp"
 #include "foundation/lint.hpp"
+#include "foundation/numeric.hpp"
 #include "foundation/package.hpp"
 #include "foundation/sema.hpp"
 
@@ -443,9 +444,7 @@ class JsonParser {
         }
         double value{};
         const auto number = source_.substr(start, offset_ - start);
-        const auto conversion = std::from_chars(number.data(), number.data() + number.size(), value);
-        if (conversion.ec != std::errc{} || conversion.ptr != number.data() + number.size() ||
-            !std::isfinite(value)) {
+        if (!parseFloating(number, value)) {
             return std::nullopt;
         }
         return Json(value);
@@ -4850,10 +4849,10 @@ class LanguageServer {
             const auto &variant =
                 analysis->program.enums[symbol->id.owner].variants[symbol->id.member];
             if (variant.payloadType.has_value()) {
-                const auto name = variant.payloadName.value_or("value");
+                const auto payloadName = variant.payloadName.value_or("value");
                 parameters.push_back(Json::object(
-                    {{"label", name + ' ' + displayTypeSyntax(*variant.payloadType)}}));
-                parameterNames.push_back(name);
+                    {{"label", payloadName + ' ' + displayTypeSyntax(*variant.payloadType)}}));
+                parameterNames.push_back(payloadName);
             }
         }
         if (!parameters.empty()) {
@@ -4875,8 +4874,10 @@ class LanguageServer {
         }
         if (argumentNameEnd != argumentStart && equals < *requested && source[equals] == '=' &&
             (equals + 1 >= source.size() || source[equals + 1] != '=')) {
-            const auto name = source.substr(argumentStart, argumentNameEnd - argumentStart);
-            const auto found = std::find(parameterNames.begin(), parameterNames.end(), name);
+            const auto argumentName =
+                source.substr(argumentStart, argumentNameEnd - argumentStart);
+            const auto found =
+                std::find(parameterNames.begin(), parameterNames.end(), argumentName);
             if (found != parameterNames.end()) {
                 activeParameter = static_cast<std::size_t>(found - parameterNames.begin());
             }

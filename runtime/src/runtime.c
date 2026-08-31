@@ -2558,11 +2558,11 @@ static int32_t fdn_windows_write_root_file(fdn_fs_root *root,
         const size_t parent_length = (size_t)(last_separator - target);
         int written;
         (void)memcpy(temporary, target, parent_length * sizeof(*temporary));
-        written = _snwprintf(temporary + parent_length,
-                             sizeof(temporary) / sizeof(*temporary) - parent_length,
-                             L"\\.foundation-%lu-%lld.tmp",
-                             (unsigned long)GetCurrentProcessId(),
-                             (long long)current);
+        written = _snwprintf_s(temporary + parent_length,
+                               sizeof(temporary) / sizeof(*temporary) - parent_length,
+                               _TRUNCATE, L"\\.foundation-%lu-%lld.tmp",
+                               (unsigned long)GetCurrentProcessId(),
+                               (long long)current);
         if (written < 0) {
             status = 4;
             goto cleanup;

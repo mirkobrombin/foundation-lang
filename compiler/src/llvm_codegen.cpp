@@ -33,6 +33,7 @@
 #include <cmath>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -104,6 +105,13 @@ std::string safeName(std::string_view name) {
 std::string_view unqualifiedName(std::string_view name) {
     const auto separator = name.rfind('.');
     return name.substr(separator == std::string_view::npos ? 0 : separator + 1);
+}
+
+unsigned int llvmIndex(std::size_t value) {
+    if (value > std::numeric_limits<unsigned int>::max()) {
+        std::terminate();
+    }
+    return static_cast<unsigned int>(value);
 }
 
 std::string traceFunctionName(const FirFunction &function) {
@@ -937,8 +945,8 @@ class LlvmEmitter {
             if (!capture.capture) {
                 continue;
             }
-            auto *field =
-                builder_.CreateStructGEP(closureEnvironmentTypes_[id], environment, captureIndex++);
+            auto *field = builder_.CreateStructGEP(closureEnvironmentTypes_[id], environment,
+                                                   llvmIndex(captureIndex++));
             if (capture.captureMode != FirCaptureMode::View &&
                 capture.captureMode != FirCaptureMode::Edit) {
                 dropAddress(field, capture.type);
@@ -1031,7 +1039,7 @@ class LlvmEmitter {
             }
             std::vector<llvm::Value *> arguments{receiver};
             for (std::size_t index = 1; index < adapter->arg_size(); ++index) {
-                arguments.push_back(adapter->getArg(index));
+                arguments.push_back(adapter->getArg(llvmIndex(index)));
             }
             auto *call = builder.CreateCall(functions_[target], arguments);
             if (program_.functions[target].diverges) {
@@ -1318,7 +1326,7 @@ class LlvmEmitter {
     llvm::Value *frameField(llvm::StructType *frame, llvm::Value *value, std::size_t field,
                             std::string_view name = {}) {
         return builder_.CreateStructGEP(
-            frame, value, field,
+            frame, value, llvmIndex(field),
             name.empty() ? llvm::Twine{} : llvm::Twine(llvm::StringRef(name.data(), name.size())));
     }
 
@@ -1696,7 +1704,7 @@ class LlvmEmitter {
         auto *state = builder_.CreateLoad(
             llvm::Type::getInt32Ty(context_),
             frameField(adapter.frame, taskFrame_, adapter.stateField, "task.state"));
-        auto *dispatch = builder_.CreateSwitch(state, invalid, states + 1);
+        auto *dispatch = builder_.CreateSwitch(state, invalid, llvmIndex(states + 1));
         dispatch->addCase(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), 0), initial);
         for (std::size_t index = 1; index <= states; ++index) {
             taskStateBlocks_[index] = llvm::BasicBlock::Create(
@@ -2520,8 +2528,8 @@ class LlvmEmitter {
                 if (!capture.capture) {
                     continue;
                 }
-                auto *field =
-                    builder_.CreateStructGEP(environmentType, environment, captureIndex++);
+                auto *field = builder_.CreateStructGEP(environmentType, environment,
+                                                       llvmIndex(captureIndex++));
                 if (capture.captureMode == FirCaptureMode::View ||
                     capture.captureMode == FirCaptureMode::Edit) {
                     captureAddresses_[local] =
@@ -3088,7 +3096,8 @@ class LlvmEmitter {
         builder_.SetInsertPoint(ready);
         auto *invalid = llvm::BasicBlock::Create(context_, "select.invalid", llvmFunction_);
         auto *selectedValue = builder_.CreateLoad(sizeType(), selected, "select.index");
-        auto *branches = builder_.CreateSwitch(selectedValue, invalid, selection.operations.size());
+        auto *branches =
+            builder_.CreateSwitch(selectedValue, invalid, llvmIndex(selection.operations.size()));
         for (std::size_t index = 0; index < selection.operations.size(); ++index) {
             const auto &arm = selection.operations[index];
             auto *branch = llvm::BasicBlock::Create(
@@ -3138,10 +3147,12 @@ class LlvmEmitter {
         if (const auto *variable = std::get_if<FirVariableStatement>(&statement.value)) {
             expression = variable->initializer;
             resultLocal = variable->local;
-        } else if (const auto *value = std::get_if<FirExpressionStatement>(&statement.value)) {
-            expression = value->expression;
-        } else if (const auto *value = std::get_if<FirDiscardStatement>(&statement.value)) {
-            expression = value->expression;
+        } else if (const auto *expressionStatement =
+                       std::get_if<FirExpressionStatement>(&statement.value)) {
+            expression = expressionStatement->expression;
+        } else if (const auto *discardStatement =
+                       std::get_if<FirDiscardStatement>(&statement.value)) {
+            expression = discardStatement->expression;
             discarded = true;
         } else {
             return false;
@@ -3188,10 +3199,11 @@ class LlvmEmitter {
             }
             builder_.CreateStore(value.value, locals_[variable->local]);
             activateLocal(variable->local);
-        } else if (const auto *binding = std::get_if<FirLetElseStatement>(&statement.value)) {
-            return emitLetElse(*binding, statement.span);
-        } else if (const auto *binding = std::get_if<FirResultElseStatement>(&statement.value)) {
-            return emitResultElse(*binding, statement.span);
+        } else if (const auto *letElse = std::get_if<FirLetElseStatement>(&statement.value)) {
+            return emitLetElse(*letElse, statement.span);
+        } else if (const auto *resultElse =
+                       std::get_if<FirResultElseStatement>(&statement.value)) {
+            return emitResultElse(*resultElse, statement.span);
         } else if (const auto *destructure =
                        std::get_if<FirStructDestructureStatement>(&statement.value)) {
             emitStructDestructure(*destructure, statement.span);
@@ -3270,10 +3282,10 @@ class LlvmEmitter {
             }
         } else if (const auto *branch = std::get_if<FirIfStatement>(&statement.value)) {
             return emitIf(*branch);
-        } else if (const auto *loop = std::get_if<FirWhileStatement>(&statement.value)) {
-            emitWhile(*loop);
-        } else if (const auto *loop = std::get_if<FirForStatement>(&statement.value)) {
-            emitFor(*loop, statement.span);
+        } else if (const auto *whileLoop = std::get_if<FirWhileStatement>(&statement.value)) {
+            emitWhile(*whileLoop);
+        } else if (const auto *forLoop = std::get_if<FirForStatement>(&statement.value)) {
+            emitFor(*forLoop, statement.span);
         } else if (const auto *broken = std::get_if<FirBreakStatement>(&statement.value)) {
             dropLocals(broken->drops);
             if (loops_.empty()) {
@@ -3402,8 +3414,8 @@ class LlvmEmitter {
                     fail(span, "LLVM backend received an invalid channel destructure binding");
                     return;
                 }
-                auto *field = builder_.CreateStructGEP(channelType_, source, binding.field,
-                                                       "channel.field.address");
+                auto *field = builder_.CreateStructGEP(
+                    channelType_, source, llvmIndex(binding.field), "channel.field.address");
                 builder_.CreateStore(moveFromAddress(field, function_->locals[binding.local].type),
                                      locals_[binding.local]);
                 activateLocal(binding.local);
@@ -3859,8 +3871,8 @@ class LlvmEmitter {
                     fail(span, "LLVM backend received an invalid closure capture");
                     return {};
                 }
-                auto *field =
-                    builder_.CreateStructGEP(environmentType, environment, captureIndex++);
+                auto *field = builder_.CreateStructGEP(environmentType, environment,
+                                                       llvmIndex(captureIndex++));
                 if (capture.mode == FirCaptureMode::View || capture.mode == FirCaptureMode::Edit) {
                     auto *address = localAddress(capture.local);
                     if (address == nullptr) {
@@ -4354,7 +4366,8 @@ class LlvmEmitter {
             if (payload.diverges) {
                 return payload;
             }
-            value = builder_.CreateInsertValue(value, payload.value, constructor.variant + 1);
+            value = builder_.CreateInsertValue(value, payload.value,
+                                               llvmIndex(constructor.variant + 1));
         }
         return {value, false};
     }
@@ -4957,8 +4970,8 @@ class LlvmEmitter {
             }
             auto *data = builder_.CreateExtractValue(receiver, 0);
             auto *vtable = builder_.CreateExtractValue(receiver, 1);
-            auto *methodAddress = builder_.CreateStructGEP(contractVtableTypes_[call.contract],
-                                                           vtable, call.method + 1);
+            auto *methodAddress = builder_.CreateStructGEP(
+                contractVtableTypes_[call.contract], vtable, llvmIndex(call.method + 1));
             auto *target = builder_.CreateLoad(pointerType(), methodAddress);
             const auto &method = program_.contracts[call.contract].methods[call.method];
             std::vector<llvm::Type *> parameterTypes{pointerType()};
@@ -5429,11 +5442,12 @@ class LlvmEmitter {
         return storage;
     }
 
-    std::size_t structFieldIndex(FirStructId type, FirFieldId field) const {
-        return field +
-               (type < program_.structs.size() && program_.structs[type].dropFunction.has_value()
-                    ? 1
-                    : 0);
+    unsigned int structFieldIndex(FirStructId type, FirFieldId field) const {
+        return llvmIndex(field +
+                         (type < program_.structs.size() &&
+                                  program_.structs[type].dropFunction.has_value()
+                              ? 1
+                              : 0));
     }
 
     llvm::Value *structFieldAddress(llvm::Value *address, const Type &type, FirFieldId field,
@@ -5465,8 +5479,8 @@ class LlvmEmitter {
             fail(span, "LLVM backend received an invalid enum payload");
             return nullptr;
         }
-        return builder_.CreateStructGEP(enumTypes_[type.declaration], address, variant + 1,
-                                        "enum.payload.address");
+        return builder_.CreateStructGEP(enumTypes_[type.declaration], address,
+                                        llvmIndex(variant + 1), "enum.payload.address");
     }
 
     bool bindEnumPayload(llvm::Value *address, const Type &type, FirVariantId variant,
@@ -5574,12 +5588,13 @@ class LlvmEmitter {
         dropAddress(storage, type);
     }
 
-    std::size_t structFieldIndex(const Type &type, FirFieldId field) const {
-        return field + (type.kind == TypeKind::Struct &&
-                                type.declaration < program_.structs.size() &&
-                                program_.structs[type.declaration].dropFunction.has_value()
-                            ? 1
-                            : 0);
+    unsigned int structFieldIndex(const Type &type, FirFieldId field) const {
+        return llvmIndex(field +
+                         (type.kind == TypeKind::Struct &&
+                                  type.declaration < program_.structs.size() &&
+                                  program_.structs[type.declaration].dropFunction.has_value()
+                              ? 1
+                              : 0));
     }
 
     llvm::Value *emitFieldAddress(const FirFieldExpression &field) {
@@ -5861,7 +5876,8 @@ class LlvmEmitter {
             auto *owner = builder_.GetInsertBlock()->getParent();
             auto *done = llvm::BasicBlock::Create(context_, "drop.enum.end", owner);
             auto *invalid = llvm::BasicBlock::Create(context_, "drop.enum.invalid", owner);
-            auto *selection = builder_.CreateSwitch(tag, invalid, declaration.variants.size());
+            auto *selection =
+                builder_.CreateSwitch(tag, invalid, llvmIndex(declaration.variants.size()));
             for (std::size_t variant = 0; variant < declaration.variants.size(); ++variant) {
                 auto *branch = llvm::BasicBlock::Create(context_, "drop.enum", owner);
                 selection->addCase(
@@ -6034,7 +6050,8 @@ class LlvmEmitter {
             arguments.reserve(function.parameters.size());
             for (std::size_t index = 0; index < function.parameters.size(); ++index) {
                 const auto local = function.parameters[index];
-                auto *value = wrapper->getArg(index + (indirectResult ? 1 : 0));
+                auto *value =
+                    wrapper->getArg(llvmIndex(index + (indirectResult ? 1 : 0)));
                 arguments.push_back(function.hasBody
                                         ? fromAbi(builder, value, function.locals[local].type)
                                         : toAbi(builder, value, function.locals[local].type));

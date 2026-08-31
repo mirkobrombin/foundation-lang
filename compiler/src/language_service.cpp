@@ -567,12 +567,12 @@ class IndexBuilder {
             if (branch->elseBlock.has_value()) {
                 visitBlock(*branch->elseBlock, function);
             }
-        } else if (const auto *loop = std::get_if<WhileStatement>(&value)) {
-            visitExpression(loop->condition, function);
-            visitBlock(loop->body, function);
-        } else if (const auto *loop = std::get_if<ForStatement>(&value)) {
-            visitExpression(loop->sequence, function);
-            visitBlock(loop->body, function);
+        } else if (const auto *whileLoop = std::get_if<WhileStatement>(&value)) {
+            visitExpression(whileLoop->condition, function);
+            visitBlock(whileLoop->body, function);
+        } else if (const auto *forLoop = std::get_if<ForStatement>(&value)) {
+            visitExpression(forLoop->sequence, function);
+            visitBlock(forLoop->body, function);
         } else if (const auto *selection = std::get_if<SelectStatement>(&value)) {
             for (const auto &operation : selection->operations) {
                 visitExpression(operation.operation, function);

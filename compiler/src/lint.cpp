@@ -468,10 +468,10 @@ std::size_t blockComplexity(const Program &program, AstBlockId block, std::size_
             if (branch->elseBlock.has_value()) {
                 result += blockComplexity(program, *branch->elseBlock, depth + 1, maximumDepth);
             }
-        } else if (const auto *loop = std::get_if<WhileStatement>(&statement)) {
-            result += 1 + blockComplexity(program, loop->body, depth + 1, maximumDepth);
-        } else if (const auto *loop = std::get_if<ForStatement>(&statement)) {
-            result += 1 + blockComplexity(program, loop->body, depth + 1, maximumDepth);
+        } else if (const auto *whileLoop = std::get_if<WhileStatement>(&statement)) {
+            result += 1 + blockComplexity(program, whileLoop->body, depth + 1, maximumDepth);
+        } else if (const auto *forLoop = std::get_if<ForStatement>(&statement)) {
+            result += 1 + blockComplexity(program, forLoop->body, depth + 1, maximumDepth);
         } else if (const auto *resultElse = std::get_if<ResultElseStatement>(&statement)) {
             result += 1 + blockComplexity(program, resultElse->elseBlock, depth + 1, maximumDepth);
         } else if (const auto *unsafe = std::get_if<UnsafeStatement>(&statement)) {

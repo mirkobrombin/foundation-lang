@@ -3204,10 +3204,12 @@ class FunctionEmitter {
         if (const auto *variable = std::get_if<FirVariableStatement>(&statement.value)) {
             expression = variable->initializer;
             resultLocal = variable->local;
-        } else if (const auto *value = std::get_if<FirExpressionStatement>(&statement.value)) {
-            expression = value->expression;
-        } else if (const auto *value = std::get_if<FirDiscardStatement>(&statement.value)) {
-            expression = value->expression;
+        } else if (const auto *expressionStatement =
+                       std::get_if<FirExpressionStatement>(&statement.value)) {
+            expression = expressionStatement->expression;
+        } else if (const auto *discardStatement =
+                       std::get_if<FirDiscardStatement>(&statement.value)) {
+            expression = discardStatement->expression;
             discarded = true;
         } else {
             return false;

@@ -1,5 +1,7 @@
 #include "foundation/parser.hpp"
 
+#include "foundation/numeric.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <cstdint>
@@ -2487,10 +2489,7 @@ AstExpressionId Parser::primary() {
     } else if (match(TokenKind::Floating)) {
         const auto token = previous();
         double value{};
-        const auto conversion = std::from_chars(token.text.data(),
-                                                token.text.data() + token.text.size(), value);
-        if (conversion.ec != std::errc{} ||
-            conversion.ptr != token.text.data() + token.text.size()) {
+        if (!parseFloating(token.text, value)) {
             diagnostics_.error("FDN1016", "floating-point literal is outside the supported range",
                                token.span);
         }

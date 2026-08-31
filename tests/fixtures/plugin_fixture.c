@@ -13,6 +13,7 @@ static fdn_plugin_text_v1 fixture_text(const char *value) {
     return result;
 }
 
+#if !defined(FDN_PLUGIN_FIXTURE_QUERY_FAIL)
 static int32_t FDN_PLUGIN_CALL fixture_create(
     const fdn_plugin_host_v1 *host,
     void **context,
@@ -67,6 +68,7 @@ static void FDN_PLUGIN_CALL fixture_destroy(void *context) {
     }
     state->deallocate(state);
 }
+#endif
 
 FDN_PLUGIN_EXPORT int32_t FDN_PLUGIN_CALL foundation_plugin_query_v1(
     const fdn_plugin_host_v1 *host,
@@ -80,7 +82,7 @@ FDN_PLUGIN_EXPORT int32_t FDN_PLUGIN_CALL foundation_plugin_query_v1(
 #if defined(FDN_PLUGIN_FIXTURE_QUERY_FAIL)
     *error = fixture_text("fixture query rejected");
     return 1;
-#endif
+#else
     (void)memset(descriptor, 0, sizeof(*descriptor));
     descriptor->struct_size = (uint32_t)sizeof(*descriptor);
 #if defined(FDN_PLUGIN_FIXTURE_ABI_MISMATCH)
@@ -118,4 +120,5 @@ FDN_PLUGIN_EXPORT int32_t FDN_PLUGIN_CALL foundation_plugin_query_v1(
     descriptor->destroy = fixture_destroy;
     *error = fixture_text("");
     return 0;
+#endif
 }

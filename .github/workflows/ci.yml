@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   unix:
@@ -90,9 +90,9 @@ jobs:
 
       - name: Test three times
         run: |
-          ctest --preset dev
-          ctest --preset dev
-          ctest --preset dev
+          ctest --preset dev --parallel 4
+          ctest --preset dev --parallel 4
+          ctest --preset dev --parallel 4
 
   windows:
     name: Windows MSVC
@@ -157,13 +157,14 @@ jobs:
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set VS_PATH=%%i
           call "%VS_PATH%\Common7\Tools\VsDevCmd.bat" -arch=x64
-          ctest --test-dir build/windows -C Debug --output-on-failure
-          ctest --test-dir build/windows -C Debug --output-on-failure
-          ctest --test-dir build/windows -C Debug --output-on-failure
+          ctest --test-dir build/windows -C Debug --output-on-failure --parallel 4
+          ctest --test-dir build/windows -C Debug --output-on-failure --parallel 4
+          ctest --test-dir build/windows -C Debug --output-on-failure --parallel 4
 
   fuzz:
     name: Parser fuzz and sanitizers
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -211,7 +212,7 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:symbolize=0
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=0
-        run: ctest --test-dir build/fuzz --output-on-failure
+        run: ctest --test-dir build/fuzz --output-on-failure --parallel 4
 
       - name: Fuzz parser
         env:

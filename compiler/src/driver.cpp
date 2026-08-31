@@ -31,6 +31,9 @@
 #include <vector>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <process.h>
 #include <windows.h>
 #else
@@ -632,10 +635,11 @@ std::string staticLibraryFilename(std::string_view name) {
 #endif
 }
 
-std::string renderElfVersionScript(const PackageInterface &interface) {
+#if !defined(_WIN32) && !defined(__APPLE__)
+std::string renderElfVersionScript(const PackageInterface &packageInterface) {
     std::ostringstream output;
-    output << "FOUNDATION_" << interface.abiMajor << " {\n    global:\n";
-    for (const auto &function : interface.exports) {
+    output << "FOUNDATION_" << packageInterface.abiMajor << " {\n    global:\n";
+    for (const auto &function : packageInterface.exports) {
         output << "        " << function.cSymbol << ";\n";
     }
     output << "        fdn_alloc;\n"
@@ -648,12 +652,13 @@ std::string renderElfVersionScript(const PackageInterface &interface) {
               "};\n";
     return output.str();
 }
+#endif
 
 #if defined(__APPLE__)
-std::string renderExportList(const PackageInterface &interface, bool leadingUnderscore) {
+std::string renderExportList(const PackageInterface &packageInterface, bool leadingUnderscore) {
     std::ostringstream output;
     const auto prefix = leadingUnderscore ? "_" : "";
-    for (const auto &function : interface.exports) {
+    for (const auto &function : packageInterface.exports) {
         output << prefix << function.cSymbol << '\n';
     }
     output << prefix << "fdn_alloc\n"
@@ -666,10 +671,10 @@ std::string renderExportList(const PackageInterface &interface, bool leadingUnde
 #endif
 
 #ifdef _WIN32
-std::string renderWindowsDefinition(const PackageInterface &interface) {
+std::string renderWindowsDefinition(const PackageInterface &packageInterface) {
     std::ostringstream output;
-    output << "LIBRARY " << interface.library << "\nEXPORTS\n";
-    for (const auto &function : interface.exports) {
+    output << "LIBRARY " << packageInterface.library << "\nEXPORTS\n";
+    for (const auto &function : packageInterface.exports) {
         output << "    " << function.cSymbol << '\n';
     }
     output << "    fdn_alloc\n"
@@ -698,10 +703,10 @@ bool archiveLibrary(const std::filesystem::path &output,
 
 bool linkSharedLibrary(const std::filesystem::path &output,
                        const std::vector<std::filesystem::path> &objects,
-                       const PackageInterface &interface,
+                       const PackageInterface &packageInterface,
                        const std::filesystem::path &controlFile,
                        const std::filesystem::path &importLibrary) {
-    static_cast<void>(interface);
+    static_cast<void>(packageInterface);
     static_cast<void>(importLibrary);
     std::vector<std::string> arguments{FOUNDATION_C_COMPILER};
     const std::string compilerId = FOUNDATION_C_COMPILER_ID;
@@ -710,8 +715,8 @@ bool linkSharedLibrary(const std::filesystem::path &output,
         for (const auto &object : objects) {
             arguments.push_back(object.string());
         }
-        for (const auto &link : interface.links) {
-            if (!link.target.has_value() || *link.target == interface.target) {
+        for (const auto &link : packageInterface.links) {
+            if (!link.target.has_value() || *link.target == packageInterface.target) {
                 arguments.push_back(link.name + ".lib");
             }
         }
@@ -731,8 +736,8 @@ bool linkSharedLibrary(const std::filesystem::path &output,
                                        "-Wl,--out-implib," + importLibrary.string(),
                                        "-lbcrypt", "-lws2_32"});
 #elif defined(__APPLE__)
-    const auto installName = "@rpath/" + sharedLibraryFilename(interface.library,
-                                                                 interface.soVersion);
+    const auto installName = "@rpath/" + sharedLibraryFilename(packageInterface.library,
+                                                                 packageInterface.soVersion);
     arguments.insert(arguments.end(), {"-Wl,-undefined,error", "-Wl,-install_name," + installName,
                                        "-Wl,-exported_symbols_list," + controlFile.string(),
                                        "-pthread"});
@@ -742,8 +747,8 @@ bool linkSharedLibrary(const std::filesystem::path &output,
                                        "-Wl,--version-script," + controlFile.string(),
                                        "-pthread", "-ldl"});
 #endif
-    for (const auto &link : interface.links) {
-        if (!link.target.has_value() || *link.target == interface.target) {
+    for (const auto &link : packageInterface.links) {
+        if (!link.target.has_value() || *link.target == packageInterface.target) {
             arguments.push_back("-l" + link.name);
         }
     }

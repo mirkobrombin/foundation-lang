@@ -1,5 +1,7 @@
 #include "foundation/application.hpp"
 
+#include "foundation/numeric.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -694,10 +696,7 @@ std::optional<NumericAttributeArgument> numericArgument(const FirAttributeUse *u
         return std::nullopt;
     }
     double numeric{};
-    const auto conversion = std::from_chars(value.text.data(),
-                                            value.text.data() + value.text.size(), numeric);
-    if (conversion.ec != std::errc{} ||
-        conversion.ptr != value.text.data() + value.text.size() || !std::isfinite(numeric)) {
+    if (!parseFloating(value.text, numeric)) {
         return std::nullopt;
     }
     return NumericAttributeArgument{value.text, static_cast<long double>(numeric), false, 0,

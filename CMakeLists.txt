@@ -22,6 +22,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(MSVC)
+    add_compile_options(
+        "$<$<COMPILE_LANGUAGE:C>:/std:c11>"
+        "$<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>"
+    )
+endif()
+
 option(FOUNDATION_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(FOUNDATION_BUILD_FUZZERS "Build Clang libFuzzer targets" OFF)
 option(FOUNDATION_BUILD_OPENSSL_PROVIDER "Build the optional OpenSSL 3.5.6 provider" OFF)
@@ -185,6 +192,7 @@ add_library(foundation_compiler STATIC
     compiler/src/lower.cpp
     compiler/src/llvm_codegen.cpp
     compiler/src/metadata.cpp
+    compiler/src/numeric.cpp
     compiler/src/package.cpp
     compiler/src/package_cache.cpp
     compiler/src/package_catalog.cpp
