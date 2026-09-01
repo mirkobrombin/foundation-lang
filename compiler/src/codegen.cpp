@@ -5022,6 +5022,12 @@ void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunc
     }
     const auto frame = taskFrameName(program, id);
     const auto suspensions = taskSuspensionCount(function);
+    if (function.diverges || suspensions != 0) {
+        out << "#if defined(_MSC_VER)\n"
+               "#pragma warning(push)\n"
+               "#pragma warning(disable : 4702)\n"
+               "#endif\n";
+    }
     out << "static fdn_task_poll " << taskPollName(program, id)
         << "(void *fdn_raw, bool fdn_cancellation_requested) {\n";
     out << "    struct " << frame << " *fdn_frame = (struct " << frame
@@ -5047,10 +5053,6 @@ void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunc
         }
         out << ");\n";
         if (function.diverges) {
-            out << "#if defined(_MSC_VER)\n"
-                   "#pragma warning(push)\n"
-                   "#pragma warning(disable : 4702)\n"
-                   "#endif\n";
             out << "    fdn_panic_cstr(\"unreachable task poll\");\n";
         } else {
             out << "    fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
@@ -5089,10 +5091,6 @@ void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunc
         out << "    default:\n";
         out << "        fdn_panic_cstr(\"invalid task state\");\n";
         out << "    }\n";
-        out << "#if defined(_MSC_VER)\n"
-               "#pragma warning(push)\n"
-               "#pragma warning(disable : 4702)\n"
-               "#endif\n";
         FunctionEmitter emitter(out, program, id, true);
         const auto exits = emitter.emitBlock(function.body, 1);
         if (!exits) {
@@ -5270,6 +5268,12 @@ std::vector<FirFunctionId> collectFunctionValueUses(const FirProgram &program) {
 void emitFunctionValueAdapter(std::ostringstream &out, const FirProgram &program,
                               FirFunctionId id) {
     const auto &function = program.functions[id];
+    if (function.diverges) {
+        out << "#if defined(_MSC_VER)\n"
+               "#pragma warning(push)\n"
+               "#pragma warning(disable : 4702)\n"
+               "#endif\n";
+    }
     out << "static " << cType(function.returnType) << ' '
         << functionAdapterName(program, id) << "(void *fdn_env";
     for (std::size_t index = 0; index < function.parameters.size(); ++index) {
@@ -5291,10 +5295,6 @@ void emitFunctionValueAdapter(std::ostringstream &out, const FirProgram &program
     }
     out << ");\n";
     if (function.diverges) {
-        out << "#if defined(_MSC_VER)\n"
-               "#pragma warning(push)\n"
-               "#pragma warning(disable : 4702)\n"
-               "#endif\n";
         out << "    fdn_panic_cstr(\"unreachable function value adapter\");\n";
     }
     out << "}\n";

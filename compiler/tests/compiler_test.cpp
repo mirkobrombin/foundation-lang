@@ -353,6 +353,11 @@ fn main() i32 {
     expect(firstC.find("fdn_state") != std::string::npos &&
                firstC.find("goto fdn_task_state_1") != std::string::npos,
            "task poll resumes from an explicit state");
+    const auto taskWarning = firstC.find("#pragma warning(disable : 4702)");
+    const auto taskPoll = firstC.find("_task_poll(void *fdn_raw", taskWarning);
+    expect(taskWarning != std::string::npos && taskPoll != std::string::npos &&
+               taskWarning < taskPoll,
+           "MSVC unreachable suppression wraps the complete suspended task poll");
 }
 
 void dynamicSelectTimeoutsLowerToStoredDeadlines() {
@@ -1365,8 +1370,14 @@ fn noOperation() void {
     return
 }
 
+task halt() i32 {
+    const operation fn() i32 = calculate
+    operation()
+}
+
 fn main() i32 {
-    calculate()
+    const pending = spawn halt()
+    $pending.wait()
 }
 )";
     auto result = check(source);
@@ -1385,6 +1396,11 @@ fn main() i32 {
            "code after a diverging operand is not emitted");
     expect(generated.find("return;\n    fdn_frame_leave") == std::string::npos,
            "explicit return does not emit a second frame epilogue");
+    const auto adapter = generated.find("_value_adapter(void *fdn_env) {");
+    const auto adapterWarning = generated.rfind("#pragma warning(disable : 4702)", adapter);
+    expect(adapter != std::string::npos && adapterWarning != std::string::npos &&
+               adapterWarning < adapter,
+           "MSVC unreachable suppression wraps the complete diverging function adapter");
 }
 
 void exhaustiveMatchExitsCloseGeneratedControlFlow() {

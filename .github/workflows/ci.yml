@@ -551,7 +551,9 @@ jobs:
           -P tests/prepare-host-locks.cmake
 
       - name: Test providers
-        shell: pwsh
+        shell: cmd
         run: |
-          $env:PATH = "${{ github.workspace }}\build\deps\openssl-3.5.6-prefix\bin;$env:PATH"
-          ctest --test-dir build/providers -C Release --output-on-failure --parallel 4
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set VS_PATH=%%i
+          call "%VS_PATH%\Common7\Tools\VsDevCmd.bat" -arch=x64
+          set "PATH=${{ github.workspace }}\build\deps\openssl-3.5.6-prefix\bin;%PATH%"
+          ctest --test-dir build/providers -C Release --output-on-failure --parallel 4 || exit /b 1
