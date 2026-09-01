@@ -343,29 +343,36 @@ task stall($listener own net.TcpListener) own net.TcpListener {
         Listener
         Value
     } = acceptedOutcome
-    const connection = connectionOr($Value)
-    const pair = pairOr(connection.Split())
-    const net.StreamPair { Reader Writer } = pair
-    const Channel { sender receiver } = channel<void>(0)
-    var endpoint = receiver
-    select {
-        endpoint.receive(): {
-            discard sender
-            discard endpoint
-        }
-        timeout 100.milliseconds: {
-            discard sender
-            discard endpoint
-        }
-        else error: {
+    match Value {
+        Err(error): {
             discard error
-            discard sender
-            discard endpoint
+            Listener
+        }
+        Ok(connection): {
+            const pair = pairOr(connection.Split())
+            const net.StreamPair { Reader Writer } = pair
+            const Channel { sender receiver } = channel<void>(0)
+            var endpoint = receiver
+            select {
+                endpoint.receive(): {
+                    discard sender
+                    discard endpoint
+                }
+                timeout 100.milliseconds: {
+                    discard sender
+                    discard endpoint
+                }
+                else error: {
+                    discard error
+                    discard sender
+                    discard endpoint
+                }
+            }
+            discard Reader
+            discard Writer
+            Listener
         }
     }
-    discard Reader
-    discard Writer
-    Listener
 }
 
 task serve(
