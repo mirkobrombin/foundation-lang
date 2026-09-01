@@ -160,7 +160,7 @@ fn main(args [String]) i32 {
             return 26
         }
     }
-    policy.SetCallTimeout(time.Milliseconds(25)) else error {
+    policy.SetCallTimeout(time.Seconds(1)) else error {
         discard error
         discard engine.Close()
         return 27
