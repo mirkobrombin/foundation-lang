@@ -1520,7 +1520,7 @@ int32_t foundation_openssl_server_open(const char *address, uint64_t address_len
     }
     {
         foundation_openssl_server_record *record = OPENSSL_zalloc(sizeof(*record));
-        foundation_openssl_server_record *existing;
+        foundation_openssl_server_record *existing = NULL;
         if (record == NULL) goto cleanup;
         record->configuration = CRYPTO_THREAD_lock_new();
         if (record->configuration == NULL) {

@@ -1,6 +1,9 @@
 #if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L
 #endif
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE
+#endif
 
 #include "foundation/runtime.h"
 #include "bytes_internal.h"

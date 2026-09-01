@@ -162,6 +162,8 @@ if(FOUNDATION_BUILD_WAMR_PROVIDER)
     )
     if(NOT WIN32)
         target_link_libraries(foundation_wamr_provider PRIVATE m)
+    else()
+        target_link_libraries(foundation_wamr_provider PRIVATE ntdll)
     endif()
     if(MSVC)
         target_compile_definitions(foundation_wamr_provider PRIVATE WASM_RUNTIME_API_EXTERN=)
@@ -2839,6 +2841,7 @@ if(BUILD_TESTING)
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
             -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
             -DRUNTIME_POOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pool.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake

@@ -419,7 +419,7 @@ jobs:
           git -C build/deps/wasm-micro-runtime remote add origin https://github.com/bytecodealliance/wasm-micro-runtime.git
           git -C build/deps/wasm-micro-runtime fetch --depth 1 origin 25bd7eb63e828e4bd242cc9b38d260b4b31c6605
           git -C build/deps/wasm-micro-runtime checkout --detach FETCH_HEAD
-          cmake -S build/deps/wasm-micro-runtime/product-mini/platforms/darwin -B build/deps/wamr-build -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_FAST_INTERP=0 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_LIBC_WASI=1 -DWAMR_BUILD_INVOKE_NATIVE_GENERAL=1
+          cmake -S build/deps/wasm-micro-runtime/product-mini/platforms/darwin -B build/deps/wamr-build -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_FAST_INTERP=0 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_LIBC_WASI=1
           cmake --build build/deps/wamr-build --parallel 4
 
       - name: Configure providers
@@ -522,7 +522,7 @@ jobs:
           git -C build/deps/wasm-micro-runtime fetch --depth 1 origin 25bd7eb63e828e4bd242cc9b38d260b4b31c6605
           git -C build/deps/wasm-micro-runtime checkout --detach FETCH_HEAD
           cmake -S build/deps/wasm-micro-runtime/product-mini/platforms/windows -B build/deps/wamr-build -A x64 -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_FAST_INTERP=0 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_LIBC_WASI=1
-          cmake --build build/deps/wamr-build --config Debug --parallel 4
+          cmake --build build/deps/wamr-build --config Release --parallel 4
 
       - name: Configure providers
         shell: pwsh
@@ -537,16 +537,16 @@ jobs:
           -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix
           -DFOUNDATION_BUILD_WAMR_PROVIDER=ON
           -DFOUNDATION_WAMR_SOURCE=${{ github.workspace }}/build/deps/wasm-micro-runtime
-          -DFOUNDATION_WAMR_LIBRARY=${{ github.workspace }}/build/deps/wamr-build/Debug/libiwasm.lib
+          -DFOUNDATION_WAMR_LIBRARY=${{ github.workspace }}/build/deps/wamr-build/Release/libiwasm.lib
 
       - name: Build providers
-        run: cmake --build build/providers --config Debug --parallel 4
+        run: cmake --build build/providers --config Release --parallel 4
 
       - name: Prepare package locks for host
         shell: pwsh
         run: >-
           cmake
-          -DCOMPILER=${{ github.workspace }}/build/providers/Debug/foundationc.exe
+          -DCOMPILER=${{ github.workspace }}/build/providers/Release/foundationc.exe
           -DROOT=${{ github.workspace }}
           -P tests/prepare-host-locks.cmake
 
@@ -554,4 +554,4 @@ jobs:
         shell: pwsh
         run: |
           $env:PATH = "${{ github.workspace }}\build\deps\openssl-3.5.6-prefix\bin;$env:PATH"
-          ctest --test-dir build/providers -C Debug --output-on-failure --parallel 4
+          ctest --test-dir build/providers -C Release --output-on-failure --parallel 4

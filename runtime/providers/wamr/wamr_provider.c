@@ -191,6 +191,8 @@ typedef struct fdn_wamr_module {
 #endif
 } fdn_wamr_module;
 
+static FDN_WAMR_THREAD_LOCAL fdn_wamr_module *fdn_wamr_current_module;
+
 struct fdn_wamr_slot {
     fdn_wamr_slot *next;
     uint32_t index;
@@ -476,7 +478,12 @@ static void fdn_wamr_engine_release(fdn_wamr_engine *engine) {
 
 static fdn_wamr_module *fdn_wamr_module_for_execution(wasm_exec_env_t execution) {
     fdn_wamr_module *module;
-    const wasm_module_inst_t instance = wasm_runtime_get_module_inst(execution);
+    wasm_module_inst_t instance;
+    module = fdn_wamr_current_module;
+    if (module != NULL) {
+        return fdn_wamr_module_enter(module) ? module : NULL;
+    }
+    instance = wasm_runtime_get_module_inst(execution);
     fdn_wamr_lock();
     for (module = fdn_wamr_modules; module != NULL; module = module->next) {
         if (module->instance == instance) {
@@ -488,6 +495,17 @@ static fdn_wamr_module *fdn_wamr_module_for_execution(wasm_exec_env_t execution)
     }
     fdn_wamr_unlock();
     return module;
+}
+
+static bool fdn_wamr_call_wasm(fdn_wamr_module *module,
+                               wasm_function_inst_t function, uint32_t argc,
+                               uint32_t arguments[]) {
+    fdn_wamr_module *previous = fdn_wamr_current_module;
+    bool called;
+    fdn_wamr_current_module = module;
+    called = wasm_runtime_call_wasm(module->execution, function, argc, arguments);
+    fdn_wamr_current_module = previous;
+    return called;
 }
 
 static int32_t fdn_wamr_host_read(wasm_exec_env_t execution, uint32_t pointer,
@@ -1243,8 +1261,7 @@ static int32_t fdn_wamr_call_status(fdn_wamr_module *module, const char *name) {
         return FDN_WAMR_CLOSED;
     }
     function = fdn_wamr_required_export(module, name);
-    if (function == NULL ||
-        !wasm_runtime_call_wasm(module->execution, function, 0, result)) {
+    if (function == NULL || !fdn_wamr_call_wasm(module, function, 0, result)) {
         return atomic_load(&module->terminated) ? FDN_WAMR_CLOSED
                                                 : FDN_WAMR_HANDLER_ERROR;
     }
@@ -1281,7 +1298,7 @@ static int32_t fdn_wamr_validate_contract(fdn_wamr_module *module) {
         return FDN_WAMR_INVALID_REQUEST;
     }
     version = fdn_wamr_required_export(module, FDN_WASM_EXPORT_ABI_VERSION);
-    if (!wasm_runtime_call_wasm(module->execution, version, 0, result)) {
+    if (!fdn_wamr_call_wasm(module, version, 0, result)) {
         return FDN_WAMR_HANDLER_ERROR;
     }
     (void)memcpy(&packed, result, sizeof(packed));
@@ -1421,7 +1438,7 @@ static int32_t fdn_wamr_guest_alloc(fdn_wamr_module *module, uint32_t length,
         return FDN_WAMR_HANDLER_ERROR;
     }
     arguments[0] = length;
-    if (!wasm_runtime_call_wasm(module->execution, function, 1, arguments) ||
+    if (!fdn_wamr_call_wasm(module, function, 1, arguments) ||
         (length != 0 && (arguments[0] == 0 || !fdn_wamr_app_range_valid(
             module->instance, arguments[0], length)))) {
         return atomic_load(&module->terminated) ? FDN_WAMR_CLOSED
@@ -1444,7 +1461,7 @@ static void fdn_wamr_guest_free(fdn_wamr_module *module, uint32_t offset,
     }
     arguments[0] = offset;
     arguments[1] = length;
-    (void)wasm_runtime_call_wasm(module->execution, function, 2, arguments);
+    (void)fdn_wamr_call_wasm(module, function, 2, arguments);
 }
 
 static int fdn_wamr_ranges_overlap(uint32_t left_offset, uint32_t left_length,
@@ -1464,7 +1481,7 @@ static int32_t fdn_wamr_read_last_error(fdn_wamr_module *module) {
     uint32_t offset;
     uint32_t length;
     if (function == NULL ||
-        !wasm_runtime_call_wasm(module->execution, function, 0, arguments)) {
+        !fdn_wamr_call_wasm(module, function, 0, arguments)) {
         return atomic_load(&module->terminated) ? FDN_WAMR_CLOSED
                                                 : FDN_WAMR_HANDLER_ERROR;
     }
@@ -1497,8 +1514,8 @@ static int32_t fdn_wamr_module_metadata_acquired(void *value, uint8_t **output,
     *output_length = 0;
     fdn_wamr_state_lock(&module->execution_lock);
     function = fdn_wamr_required_export(module, FDN_WASM_EXPORT_METADATA);
-    if (function == NULL || !wasm_runtime_call_wasm(module->execution, function, 0,
-                                                     arguments)) {
+    if (function == NULL ||
+        !fdn_wamr_call_wasm(module, function, 0, arguments)) {
         fdn_wamr_state_unlock(&module->execution_lock);
         return atomic_load(&module->terminated) ? FDN_WAMR_CLOSED
                                                 : FDN_WAMR_HANDLER_ERROR;
@@ -1588,7 +1605,7 @@ static int32_t fdn_wamr_module_call_acquired(
     arguments[1] = (uint32_t)method->length;
     arguments[2] = input_offset;
     arguments[3] = (uint32_t)input_length;
-    if (!wasm_runtime_call_wasm(module->execution, function, 4, arguments)) {
+    if (!fdn_wamr_call_wasm(module, function, 4, arguments)) {
         fdn_wamr_guest_free(module, method_offset, (uint32_t)method->length);
         fdn_wamr_guest_free(module, input_offset, input_allocation_length);
         fdn_wamr_state_unlock(&module->execution_lock);
