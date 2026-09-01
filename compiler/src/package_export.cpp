@@ -2447,6 +2447,7 @@ class GoSourceEmitter {
         if (const auto *unary = std::get_if<FirUnaryExpression>(&expression.value)) {
             if (unary->operation != FirUnaryOperator::Negate &&
                 unary->operation != FirUnaryOperator::Not &&
+                unary->operation != FirUnaryOperator::BitwiseNot &&
                 unary->operation != FirUnaryOperator::Empty) {
                 fail("go-source reached an unsupported unary operation", expression.span);
                 return false;
@@ -2454,6 +2455,11 @@ class GoSourceEmitter {
             if (unary->operation == FirUnaryOperator::Negate && !isSignedInteger(expression.type) &&
                 !isFloating(expression.type)) {
                 fail("go-source cannot negate this value", expression.span);
+                return false;
+            }
+            if (unary->operation == FirUnaryOperator::BitwiseNot &&
+                !isInteger(expression.type)) {
+                fail("go-source cannot complement this value", expression.span);
                 return false;
             }
             if (!scanExpression(function, unary->operand)) {
@@ -2594,7 +2600,10 @@ class GoSourceEmitter {
                  binary->operation == FirBinaryOperator::Divide ||
                  binary->operation == FirBinaryOperator::Remainder ||
                  binary->operation == FirBinaryOperator::ShiftLeft ||
-                 binary->operation == FirBinaryOperator::ShiftRight) &&
+                 binary->operation == FirBinaryOperator::ShiftRight ||
+                 binary->operation == FirBinaryOperator::BitwiseAnd ||
+                 binary->operation == FirBinaryOperator::BitwiseXor ||
+                 binary->operation == FirBinaryOperator::BitwiseOr) &&
                 !isNumeric(operandType)) {
                 fail("go-source reached unsupported arithmetic", expression.span);
                 return false;
@@ -2607,6 +2616,13 @@ class GoSourceEmitter {
                  binary->operation == FirBinaryOperator::ShiftRight) &&
                 !isInteger(operandType)) {
                 fail("go-source reached unsupported shift arithmetic", expression.span);
+                return false;
+            }
+            if ((binary->operation == FirBinaryOperator::BitwiseAnd ||
+                 binary->operation == FirBinaryOperator::BitwiseXor ||
+                 binary->operation == FirBinaryOperator::BitwiseOr) &&
+                !isInteger(operandType)) {
+                fail("go-source reached unsupported bitwise arithmetic", expression.span);
                 return false;
             }
             return true;
@@ -3419,6 +3435,9 @@ class GoSourceEmitter {
             if (unary->operation == FirUnaryOperator::Not) {
                 return "(!" + *operand + ')';
             }
+            if (unary->operation == FirUnaryOperator::BitwiseNot) {
+                return "(^" + *operand + ')';
+            }
             if (unary->operation == FirUnaryOperator::Empty) {
                 return "(len(" + *operand + ") == 0)";
             }
@@ -3456,6 +3475,9 @@ class GoSourceEmitter {
                                 : binary->operation == FirBinaryOperator::Remainder    ? "%"
                                 : binary->operation == FirBinaryOperator::ShiftLeft    ? "<<"
                                 : binary->operation == FirBinaryOperator::ShiftRight   ? ">>"
+                                : binary->operation == FirBinaryOperator::BitwiseAnd   ? "&"
+                                : binary->operation == FirBinaryOperator::BitwiseXor   ? "^"
+                                : binary->operation == FirBinaryOperator::BitwiseOr    ? "|"
                                 : binary->operation == FirBinaryOperator::Equal        ? "=="
                                 : binary->operation == FirBinaryOperator::NotEqual     ? "!="
                                 : binary->operation == FirBinaryOperator::Less         ? "<"

@@ -34,7 +34,9 @@ bool binary(TokenKind kind) {
            kind == TokenKind::Star || kind == TokenKind::StarEqual || kind == TokenKind::Slash ||
            kind == TokenKind::SlashEqual || kind == TokenKind::Percent ||
            kind == TokenKind::PercentEqual || kind == TokenKind::LessEqual ||
-           kind == TokenKind::GreaterEqual || kind == TokenKind::AndAnd || kind == TokenKind::OrOr;
+           kind == TokenKind::GreaterEqual || kind == TokenKind::Ampersand ||
+           kind == TokenKind::Pipe || kind == TokenKind::Caret || kind == TokenKind::AndAnd ||
+           kind == TokenKind::OrOr;
 }
 
 bool unaryMinus(const std::vector<Token> &tokens, std::size_t index) {
@@ -45,6 +47,14 @@ bool unaryMinus(const std::vector<Token> &tokens, std::size_t index) {
 bool unaryStar(const std::vector<Token> &tokens, std::size_t index,
                const std::unordered_set<std::size_t> &typeStarts) {
     return tokens[index].kind == TokenKind::Star &&
+           (typeStarts.contains(tokens[index].span.offset) || index == 0 ||
+            tokens[index - 1].span.line != tokens[index].span.line ||
+            !endsExpression(tokens[index - 1].kind));
+}
+
+bool unaryAmpersand(const std::vector<Token> &tokens, std::size_t index,
+                    const std::unordered_set<std::size_t> &typeStarts) {
+    return tokens[index].kind == TokenKind::Ampersand &&
            (typeStarts.contains(tokens[index].span.offset) || index == 0 ||
             tokens[index - 1].span.line != tokens[index].span.line ||
             !endsExpression(tokens[index - 1].kind));
@@ -192,8 +202,11 @@ bool spaceBetween(const std::vector<Token> &tokens, std::size_t index,
     }
     if (previous == TokenKind::LeftParen || previous == TokenKind::LeftBracket ||
         previous == TokenKind::At || previous == TokenKind::Dot || previous == TokenKind::Bang ||
-        previous == TokenKind::Ampersand || previous == TokenKind::Dollar ||
+        previous == TokenKind::Tilde || previous == TokenKind::Dollar ||
         unaryMinus(tokens, index - 1) || unaryStar(tokens, index - 1, typeStarts)) {
+        return false;
+    }
+    if (unaryAmpersand(tokens, index - 1, typeStarts)) {
         return false;
     }
     if (current == TokenKind::LeftParen) {
@@ -226,7 +239,8 @@ bool spaceBetween(const std::vector<Token> &tokens, std::size_t index,
     if (comparisonDelimiter(current)) {
         return !genericDelimiters[index];
     }
-    if (current == TokenKind::Bang || unaryMinus(tokens, index)) {
+    if (current == TokenKind::Bang || current == TokenKind::Tilde ||
+        unaryMinus(tokens, index)) {
         return true;
     }
     if (previous == TokenKind::Comma || previous == TokenKind::Colon ||

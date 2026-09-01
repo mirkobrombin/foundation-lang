@@ -3076,6 +3076,18 @@ if(BUILD_TESTING)
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/raw-pointers.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
     )
+    foreach(native_systems_backend IN ITEMS llvm c)
+        add_test(
+            NAME compiler.run.native-systems-${native_systems_backend}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/native-systems.fn
+                -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/native_systems.c
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/native-systems.out
+                -DBACKEND=${native_systems_backend}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
+        )
+    endforeach()
     add_test(
         NAME compiler.run.service-actions
         COMMAND ${CMAKE_COMMAND}

@@ -93,15 +93,35 @@ class TypeLookahead {
             match(TokenKind::Const);
             return scanType(depth + 1);
         }
-        if (match(TokenKind::Fn)) {
+        auto functionType = match(TokenKind::Fn);
+        if (!functionType && check(TokenKind::Extern) && current_ + 2 < tokens_.size() &&
+            tokens_[current_ + 1].kind == TokenKind::Identifier &&
+            tokens_[current_ + 1].text == "c" &&
+            tokens_[current_ + 2].kind == TokenKind::Fn) {
+            current_ += 3;
+            functionType = true;
+        } else if (!functionType && check(TokenKind::Identifier) &&
+                   tokens_[current_].text == "transferable" &&
+                   current_ + 1 < tokens_.size() &&
+                   tokens_[current_ + 1].kind == TokenKind::Fn) {
+            current_ += 2;
+            functionType = true;
+        }
+        if (functionType) {
             if (!match(TokenKind::LeftParen)) {
                 return false;
             }
             if (!check(TokenKind::RightParen)) {
+                if (check(TokenKind::Ampersand) || check(TokenKind::Dollar)) {
+                    ++current_;
+                }
                 if (!scanType(depth + 1)) {
                     return false;
                 }
                 while (match(TokenKind::Comma)) {
+                    if (check(TokenKind::Ampersand) || check(TokenKind::Dollar)) {
+                        ++current_;
+                    }
                     if (!scanType(depth + 1)) {
                         return false;
                     }
@@ -2281,10 +2301,40 @@ AstExpressionId Parser::logicalOr() {
 }
 
 AstExpressionId Parser::logicalAnd() {
-    auto value = equality();
+    auto value = bitwiseOr();
     while (continuesLine() && match(TokenKind::AndAnd)) {
-        const auto right = equality();
+        const auto right = bitwiseOr();
         value = addExpression(BinaryExpression{value, BinaryOperator::And, right},
+                              program_.expressions[value].span);
+    }
+    return value;
+}
+
+AstExpressionId Parser::bitwiseOr() {
+    auto value = bitwiseXor();
+    while (continuesLine() && match(TokenKind::Pipe)) {
+        const auto right = bitwiseXor();
+        value = addExpression(BinaryExpression{value, BinaryOperator::BitwiseOr, right},
+                              program_.expressions[value].span);
+    }
+    return value;
+}
+
+AstExpressionId Parser::bitwiseXor() {
+    auto value = bitwiseAnd();
+    while (continuesLine() && match(TokenKind::Caret)) {
+        const auto right = bitwiseAnd();
+        value = addExpression(BinaryExpression{value, BinaryOperator::BitwiseXor, right},
+                              program_.expressions[value].span);
+    }
+    return value;
+}
+
+AstExpressionId Parser::bitwiseAnd() {
+    auto value = equality();
+    while (continuesLine() && match(TokenKind::Ampersand)) {
+        const auto right = equality();
+        value = addExpression(BinaryExpression{value, BinaryOperator::BitwiseAnd, right},
                               program_.expressions[value].span);
     }
     return value;
@@ -2439,6 +2489,9 @@ AstExpressionId Parser::unary() {
     } else if (match(TokenKind::Bang)) {
         const auto start = previous().span;
         result = addExpression(UnaryExpression{UnaryOperator::Not, unary()}, start);
+    } else if (match(TokenKind::Tilde)) {
+        const auto start = previous().span;
+        result = addExpression(UnaryExpression{UnaryOperator::BitwiseNot, unary()}, start);
     } else if (match(TokenKind::Star)) {
         const auto start = previous().span;
         result = addExpression(UnaryExpression{UnaryOperator::Dereference, unary()}, start);

@@ -32,6 +32,8 @@ FirUnaryOperator lowerUnary(UnaryOperator operation) {
         return FirUnaryOperator::Negate;
     case UnaryOperator::Not:
         return FirUnaryOperator::Not;
+    case UnaryOperator::BitwiseNot:
+        return FirUnaryOperator::BitwiseNot;
     case UnaryOperator::Dereference:
         return FirUnaryOperator::Dereference;
     }
@@ -106,6 +108,12 @@ FirBinaryOperator lowerBinary(BinaryOperator operation) {
         return FirBinaryOperator::ShiftLeft;
     case BinaryOperator::ShiftRight:
         return FirBinaryOperator::ShiftRight;
+    case BinaryOperator::BitwiseAnd:
+        return FirBinaryOperator::BitwiseAnd;
+    case BinaryOperator::BitwiseXor:
+        return FirBinaryOperator::BitwiseXor;
+    case BinaryOperator::BitwiseOr:
+        return FirBinaryOperator::BitwiseOr;
     case BinaryOperator::Equal:
         return FirBinaryOperator::Equal;
     case BinaryOperator::NotEqual:
@@ -691,6 +699,15 @@ class Lowerer {
                     break;
                 case CallTargetKind::IsNull:
                     kind = FirCallKind::IsNull;
+                    break;
+                case CallTargetKind::CString:
+                    kind = FirCallKind::CString;
+                    break;
+                case CallTargetKind::SizeOf:
+                    kind = FirCallKind::SizeOf;
+                    break;
+                case CallTargetKind::PointerCast:
+                    kind = FirCallKind::PointerCast;
                     break;
                 case CallTargetKind::NumericConversion:
                     kind = FirCallKind::NumericConversion;

@@ -757,7 +757,7 @@
             "patterns": [
                 {
                     "name": "support.function.builtin.foundation",
-                    "match": "\\b(channel|send|receive|clone|len|null|isNull|print|panic|range)\\b"
+                    "match": "\\b(channel|send|receive|clone|len|null|isNull|cString|sizeOf|pointerCast|print|panic|range)\\b"
                 }
             ]
         },
@@ -974,7 +974,7 @@
                 },
                 {
                     "name": "keyword.operator.foundation",
-                    "match": "<<|>>|==|!=|<=|>=|&&|\\|\\||[+\\-*/%!<>&$]"
+                    "match": "<<|>>|==|!=|<=|>=|&&|\\|\\||[+\\-*/%!<>&$|^~]"
                 }
             ]
         },

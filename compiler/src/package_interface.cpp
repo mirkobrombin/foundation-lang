@@ -473,7 +473,10 @@ bool validateCAbiV1(const PiiType& type, PiiOwnership ownership, bool result, st
         return false;
     }
     if (type.kind == PiiTypeKind::Struct) {
-        reason = "C ABI v1 structs cross the boundary through raw pointers";
+        if (!result && (ownership == PiiOwnership::Borrowed ||
+                        ownership == PiiOwnership::ExclusiveBorrow))
+            return true;
+        reason = "C ABI v1 structs cross the boundary through a parameter borrow or raw pointer";
         return false;
     }
     if (type.kind == PiiTypeKind::Function) {
@@ -597,6 +600,11 @@ std::optional<PackageInterface> buildPackageInterface(const FirProgram& source,
         if (type.kind == TypeKind::Struct) {
             collectStructLayout(program, type, result.library, layouts, layoutStates,
                                 diagnostics, span);
+            return;
+        }
+        if ((type.kind == TypeKind::View || type.kind == TypeKind::Edit) &&
+            type.arguments.size() == 1) {
+            self(self, type.arguments.front(), layouts, layoutStates, span);
             return;
         }
         if ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst ||

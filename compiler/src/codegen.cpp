@@ -1226,9 +1226,10 @@ class Monomorphizer {
         std::vector<bool> unwrappedReads(function.locals.size());
         for (std::size_t index = 0;
              index < function.parameters.size() && index < function.readParameters.size();
-             ++index) {
+            ++index) {
             const auto local = function.parameters[index];
-            if (!function.readParameters[index] || local >= function.locals.size()) {
+            if (!function.readParameters[index] || function.cSymbol.has_value() ||
+                local >= function.locals.size()) {
                 continue;
             }
             auto &type = function.locals[local].type;
@@ -1258,6 +1259,7 @@ class Monomorphizer {
             if (const auto *ownership = std::get_if<FirOwnershipExpression>(&expression.value);
                 ownership != nullptr && ownership->implicitRead &&
                 !contractOperands[expressionIndex] && substitutedType.kind == TypeKind::View &&
+                substitutedType.declaration != cAbiBorrowQualifier &&
                 substitutedType.arguments.size() == 1 &&
                 copyParameterType(instantiateType(substitutedType.arguments.front()))) {
                 expression.type = instantiateType(substitutedType.arguments.front());
@@ -1996,6 +1998,8 @@ class FunctionEmitter {
                 }
             } else if (unary->operation == FirUnaryOperator::Not) {
                 out_ << '!' << operand.value << ";\n";
+            } else if (unary->operation == FirUnaryOperator::BitwiseNot) {
+                out_ << '~' << operand.value << ";\n";
             } else if (unary->operation == FirUnaryOperator::Empty) {
                 auto type = function_.expressions[unary->operand].type;
                 auto member = std::string{"."};
@@ -2467,6 +2471,15 @@ class FunctionEmitter {
         case FirBinaryOperator::ShiftRight:
             out_ << "fdn_" << cTypeTag(type) << "_shift_right(" << left << ", " << right << ')';
             break;
+        case FirBinaryOperator::BitwiseAnd:
+            out_ << left << " & " << right;
+            break;
+        case FirBinaryOperator::BitwiseXor:
+            out_ << left << " ^ " << right;
+            break;
+        case FirBinaryOperator::BitwiseOr:
+            out_ << left << " | " << right;
+            break;
         default:
             internalError("non-arithmetic operation reached arithmetic code generation");
         }
@@ -2510,7 +2523,10 @@ class FunctionEmitter {
             binary.operation == FirBinaryOperator::Divide ||
             binary.operation == FirBinaryOperator::Remainder ||
             binary.operation == FirBinaryOperator::ShiftLeft ||
-            binary.operation == FirBinaryOperator::ShiftRight) {
+            binary.operation == FirBinaryOperator::ShiftRight ||
+            binary.operation == FirBinaryOperator::BitwiseAnd ||
+            binary.operation == FirBinaryOperator::BitwiseXor ||
+            binary.operation == FirBinaryOperator::BitwiseOr) {
             const auto temporary =
                 emitArithmetic(binary.operation, type, left.value, right.value, span, depth);
             dropInspectedTemporary(binary.left, left, depth);
@@ -2527,6 +2543,9 @@ class FunctionEmitter {
         case FirBinaryOperator::Remainder:
         case FirBinaryOperator::ShiftLeft:
         case FirBinaryOperator::ShiftRight:
+        case FirBinaryOperator::BitwiseAnd:
+        case FirBinaryOperator::BitwiseXor:
+        case FirBinaryOperator::BitwiseOr:
             internalError("arithmetic operation bypassed arithmetic code generation");
         case FirBinaryOperator::Equal:
             if (function_.expressions[binary.left].type == stringType) {
@@ -2692,6 +2711,20 @@ class FunctionEmitter {
 
     EmittedExpression emitCall(const FirCallExpression &call, const Type &type, SourceSpan span,
                                unsigned int depth) {
+        if (call.kind == FirCallKind::CString) {
+            if (call.arguments.size() != 1 || !call.typeArguments.empty()) {
+                internalError("cString has invalid arguments");
+            }
+            const auto *literal = std::get_if<FirStringExpression>(
+                &function_.expressions[call.arguments.front()].value);
+            if (literal == nullptr) {
+                internalError("cString argument is not a string literal");
+            }
+            const auto temporary = nextTemporary();
+            out_ << indentation(depth) << "const uint8_t *" << temporary
+                 << " = (const uint8_t *)" << cString(literal->value) << ";\n";
+            return {temporary, false};
+        }
         std::vector<EmittedExpression> emittedArguments;
         std::vector<std::string> arguments;
         emittedArguments.reserve(call.arguments.size());
@@ -2742,6 +2775,37 @@ class FunctionEmitter {
             const auto temporary = nextTemporary();
             out_ << indentation(depth) << "bool " << temporary << " = "
                  << orderedArguments.front() << " == NULL;\n";
+            return {temporary, false};
+        }
+        if (call.kind == FirCallKind::SizeOf) {
+            if (!orderedArguments.empty() || call.typeArguments.size() != 1) {
+                internalError("sizeOf has invalid arguments");
+            }
+            const auto temporary = nextTemporary();
+            out_ << indentation(depth) << "size_t " << temporary << " = sizeof("
+                 << cType(call.typeArguments.front()) << ");\n";
+            return {temporary, false};
+        }
+        if (call.kind == FirCallKind::PointerCast) {
+            if (orderedArguments.size() != 1 || call.typeArguments.size() != 2) {
+                internalError("pointerCast has invalid arguments");
+            }
+            const auto temporary = nextTemporary();
+            if (isCFunction(type)) {
+                const auto source = nextTemporary();
+                const auto &sourceType = function_.expressions[call.arguments.front()].type;
+                out_ << indentation(depth) << cType(sourceType) << ' ' << source << " = "
+                     << orderedArguments.front() << ";\n";
+                out_ << indentation(depth) << cType(type) << ' ' << temporary << " = NULL;\n";
+                out_ << indentation(depth) << "_Static_assert(sizeof(" << temporary
+                     << ") == sizeof(" << source
+                     << "), \"incompatible function pointer representation\");\n";
+                out_ << indentation(depth) << "memcpy(&" << temporary << ", &" << source
+                     << ", sizeof(" << temporary << "));\n";
+            } else {
+                out_ << indentation(depth) << cType(type) << ' ' << temporary << " = ("
+                     << cType(type) << ")" << orderedArguments.front() << ";\n";
+            }
             return {temporary, false};
         }
         if (call.kind == FirCallKind::NumericConversion) {
@@ -5783,12 +5847,27 @@ std::string emitCImpl(const FirProgram &source, std::string_view sourcePath,
     const auto functionTypes = collectFunctionTypes(program);
     const auto functionValueUses = collectFunctionValueUses(program);
     const auto channelPayloads = collectChannelPayloadTypes(program);
+    auto usesFunctionPointerCast = false;
+    for (const auto &function : program.functions) {
+        for (const auto &expression : function.expressions) {
+            const auto *call = std::get_if<FirCallExpression>(&expression.value);
+            if (call != nullptr && call->kind == FirCallKind::PointerCast &&
+                isCFunction(expression.type)) {
+                usesFunctionPointerCast = true;
+                break;
+            }
+        }
+        if (usesFunctionPointerCast) {
+            break;
+        }
+    }
     std::ostringstream out;
     out << "#include <stdbool.h>\n";
     out << "#include <stdint.h>\n";
     out << "#include <math.h>\n";
-    if (!libraryPackage.has_value() && !testEntry.has_value() &&
-        !program.functions[program.main].parameters.empty()) {
+    if (usesFunctionPointerCast ||
+        (!libraryPackage.has_value() && !testEntry.has_value() &&
+         !program.functions[program.main].parameters.empty())) {
         out << "#include <string.h>\n";
     }
     out << "#include \"foundation/runtime.h\"\n\n";

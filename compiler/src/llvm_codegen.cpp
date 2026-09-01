@@ -1108,6 +1108,11 @@ class LlvmEmitter {
         if (type.kind == TypeKind::Struct || type.kind == TypeKind::Enum) {
             return true;
         }
+        if (type.kind == TypeKind::View || type.kind == TypeKind::Edit ||
+            type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst ||
+            type.kind == TypeKind::Function) {
+            return false;
+        }
         return std::any_of(type.arguments.begin(), type.arguments.end(),
                            [&](const Type &argument) { return containsAggregate(argument); });
     }
@@ -4579,6 +4584,8 @@ class LlvmEmitter {
             break;
         case FirUnaryOperator::Not:
             return {builder_.CreateNot(operand.value), false};
+        case FirUnaryOperator::BitwiseNot:
+            return {builder_.CreateNot(operand.value), false};
         case FirUnaryOperator::Empty:
             if (type == boolType && function_->expressions[unary.operand].type == stringType) {
                 auto *length = builder_.CreateExtractValue(operand.value, 1);
@@ -4633,6 +4640,15 @@ class LlvmEmitter {
             }
         }
         if (isInteger(type)) {
+            if (operation == FirBinaryOperator::BitwiseAnd) {
+                return builder_.CreateAnd(left, right);
+            }
+            if (operation == FirBinaryOperator::BitwiseXor) {
+                return builder_.CreateXor(left, right);
+            }
+            if (operation == FirBinaryOperator::BitwiseOr) {
+                return builder_.CreateOr(left, right);
+            }
             std::string name;
             switch (operation) {
             case FirBinaryOperator::Add:
@@ -4694,6 +4710,9 @@ class LlvmEmitter {
         case FirBinaryOperator::Remainder:
         case FirBinaryOperator::ShiftLeft:
         case FirBinaryOperator::ShiftRight:
+        case FirBinaryOperator::BitwiseAnd:
+        case FirBinaryOperator::BitwiseXor:
+        case FirBinaryOperator::BitwiseOr:
             return finish(emitArithmetic(binary.operation, type, left.value, right.value, span));
         case FirBinaryOperator::Equal:
         case FirBinaryOperator::NotEqual:
@@ -4804,6 +4823,19 @@ class LlvmEmitter {
     }
 
     EmittedValue emitCall(const FirCallExpression &call, const Type &type, SourceSpan span) {
+        if (call.kind == FirCallKind::CString) {
+            if (call.arguments.size() != 1 || !call.typeArguments.empty()) {
+                fail(span, "LLVM cString call has invalid arguments");
+                return {};
+            }
+            const auto *literal = std::get_if<FirStringExpression>(
+                &function_->expressions[call.arguments.front()].value);
+            if (literal == nullptr) {
+                fail(span, "LLVM cString argument is not a string literal");
+                return {};
+            }
+            return {builder_.CreateGlobalString(literal->value, "cstring"), false};
+        }
         std::vector<EmittedValue> arguments;
         arguments.reserve(call.arguments.size());
         for (const auto argument : call.arguments) {
@@ -4915,6 +4947,31 @@ class LlvmEmitter {
             }
             result = builder_.CreateICmpEQ(values.front(),
                                            llvm::ConstantPointerNull::get(pointerType()));
+            break;
+        case FirCallKind::CString:
+            fail(span, "LLVM cString call reached ordinary call lowering");
+            return {};
+        case FirCallKind::SizeOf:
+            if (!values.empty() || call.typeArguments.size() != 1) {
+                fail(span, "LLVM sizeOf call has invalid arguments");
+                return {};
+            }
+            if (auto *target = typeOf(call.typeArguments.front());
+                target != nullptr && target->isSized()) {
+                result = llvm::ConstantExpr::getSizeOf(target);
+                if (result->getType() != sizeType()) {
+                    result = builder_.CreateIntCast(result, sizeType(), false);
+                }
+                break;
+            }
+            fail(span, "LLVM sizeOf call has an unsized type");
+            return {};
+        case FirCallKind::PointerCast:
+            if (values.size() != 1 || call.typeArguments.size() != 2) {
+                fail(span, "LLVM pointerCast call has invalid arguments");
+                return {};
+            }
+            result = values.front();
             break;
         case FirCallKind::NumericConversion:
             if (values.size() != 1 || call.typeArguments.size() != 2) {

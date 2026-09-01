@@ -133,8 +133,32 @@ constexpr std::array builtinEditorInfos{
         "isNull",
         "fn isNull(pointer P) bool",
         "isNull(${1:pointer})",
-        "Checks a raw pointer without dereferencing it and is safe outside `unsafe`.",
+        "Checks a raw or C function pointer without dereferencing it and is safe outside "
+        "`unsafe`.",
         "pointer P",
+    },
+    BuiltinEditorInfo{
+        "cString",
+        "fn cString(literal String) *const u8",
+        "cString(${1:\"value\"})",
+        "Returns a process-lifetime, null-terminated pointer for a string literal. This is "
+        "available only inside `unsafe`.",
+        "literal String",
+    },
+    BuiltinEditorInfo{
+        "sizeOf",
+        "fn sizeOf<T>() usize",
+        "sizeOf<${1:T}>()",
+        "Returns the storage size of `T` for the current compilation target.",
+        "",
+    },
+    BuiltinEditorInfo{
+        "pointerCast",
+        "fn pointerCast<P>(pointer R) P",
+        "pointerCast<${1:P}>(${2:pointer})",
+        "Converts a raw pointer to another raw pointer type or a C function pointer. This is "
+        "available only inside `unsafe`.",
+        "pointer R",
     },
     BuiltinEditorInfo{
         "channel",

@@ -1708,7 +1708,8 @@ bool reservedIdentifier(std::string_view name) {
         "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "f32", "f64",
         "bool", "String", "void", "never", "Option", "Result", "ChannelError", "NumberError",
         "Task",
-        "Channel", "Sender", "Receiver", "channel", "null", "isNull"};
+        "Channel", "Sender", "Receiver", "channel", "null", "isNull", "cString",
+        "sizeOf", "pointerCast"};
     return reserved.contains(name);
 }
 

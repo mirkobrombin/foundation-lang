@@ -24,6 +24,9 @@ enum class CallTargetKind {
     Len,
     Null,
     IsNull,
+    CString,
+    SizeOf,
+    PointerCast,
     Channel,
     NumericConversion,
 };

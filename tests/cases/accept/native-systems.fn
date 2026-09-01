@@ -1,0 +1,29 @@
+struct NativePair {
+    Left u32
+    Right u32
+}
+
+extern c fn nativeFill(&pair NativePair) void as foundation_native_fill
+extern c fn nativeRead(pair NativePair) u32 as foundation_native_read_pair
+extern c fn nativeSymbol() *void as foundation_native_symbol
+extern c fn nativeCheckCString(value *const u8) bool as foundation_native_check_cstring
+
+fn main() i32 {
+    const flags u32 = (5 | 2) ^ 1
+    if (flags & 2) != 2 return 1
+    const one u8 = 1
+    const inverted u8 = 254
+    if ~one != inverted return 2
+    var pair = NativePair { Left = 1 Right = 2 }
+    nativeFill(&pair)
+    if nativeRead(pair) != 42 return 3
+    if sizeOf<NativePair>() != 8 return 4
+    // SAFETY: the fixture symbol names a matching C callback and the literal has static storage.
+    unsafe {
+        const callback = pointerCast<extern c fn(i32) i32>(nativeSymbol())
+        if isNull(callback) return 5
+        if callback(41) != 42 return 6
+        if !nativeCheckCString(cString("foundation")) return 7
+    }
+    0
+}

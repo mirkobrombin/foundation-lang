@@ -54,6 +54,7 @@ struct AttributeApplication {
 enum class UnaryOperator {
     Negate,
     Not,
+    BitwiseNot,
     Dereference,
 };
 
@@ -93,6 +94,9 @@ enum class BinaryOperator {
     Remainder,
     ShiftLeft,
     ShiftRight,
+    BitwiseAnd,
+    BitwiseXor,
+    BitwiseOr,
     Equal,
     NotEqual,
     Less,

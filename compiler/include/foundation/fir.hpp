@@ -94,6 +94,7 @@ enum class FirCaptureMode {
 enum class FirUnaryOperator {
     Negate,
     Not,
+    BitwiseNot,
     Empty,
     Dereference,
 };
@@ -118,6 +119,9 @@ enum class FirBinaryOperator {
     Remainder,
     ShiftLeft,
     ShiftRight,
+    BitwiseAnd,
+    BitwiseXor,
+    BitwiseOr,
     Equal,
     NotEqual,
     Less,
@@ -138,6 +142,9 @@ enum class FirCallKind {
     Len,
     Null,
     IsNull,
+    CString,
+    SizeOf,
+    PointerCast,
     NumericConversion,
 };
 

@@ -91,6 +91,9 @@ class Parser {
     AstExpressionId conditional();
     AstExpressionId logicalOr();
     AstExpressionId logicalAnd();
+    AstExpressionId bitwiseOr();
+    AstExpressionId bitwiseXor();
+    AstExpressionId bitwiseAnd();
     AstExpressionId equality();
     AstExpressionId comparison();
     AstExpressionId shift();

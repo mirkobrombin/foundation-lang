@@ -104,13 +104,16 @@ tail-expression  = expression ;
 expression       = conditional ;
 conditional      = logical-or ("if" logical-or "else" conditional)? ;
 logical-or       = logical-and ("||" logical-and)* ;
-logical-and      = equality ("&&" equality)* ;
+logical-and      = bitwise-or ("&&" bitwise-or)* ;
+bitwise-or       = bitwise-xor ("|" bitwise-xor)* ;
+bitwise-xor      = bitwise-and ("^" bitwise-and)* ;
+bitwise-and      = equality ("&" equality)* ;
 equality         = comparison (("==" | "!=") comparison)* ;
 comparison       = shift (("<" | "<=" | ">" | ">=") shift)* ;
 shift            = term (("<<" | ">>") term)* ;
 term             = factor (("+" | "-") factor)* ;
 factor           = unary (("*" | "/" | "%") unary)* ;
-unary            = ("-" | "!" | "&" | "$" | "new" | "own" | "view" | "edit") unary
+unary            = ("-" | "!" | "~" | "&" | "$" | "new" | "own" | "view" | "edit") unary
                  | postfix ;
 postfix          = primary (("." identifier type-arguments? ("(" arguments? ")")?)
                  | ("[" expression "]"))* ;
@@ -265,7 +268,8 @@ called only as a standalone binding or `discard` inside a `task`.
 
 `len(value) usize` returns the encoded byte length of a String, the fixed length of an array, or the
 runtime length of a slice. It inspects its argument without consuming it. `len`, `print`, and
-`panic` are reserved builtins and cannot be redeclared.
+`panic` are reserved builtins and cannot be redeclared. `sizeOf<T>() usize` returns the storage size
+of a value type for the current compilation target.
 
 Return analysis treats every `while` as able to fall through. A non-void function must
 therefore contain a return path after a loop unless an earlier statement already prevents
@@ -455,7 +459,9 @@ Shift operands have the same integer type. The count must be non-negative for si
 less than the width of the operand type. Left shift is checked arithmetic and panics when the
 mathematical result is outside the operand type. Right shift is arithmetic for signed integers and
 logical for unsigned integers. Addition binds more tightly than shift; shift binds more tightly
-than comparison. Compound `<<=` and `>>=` preserve the same rules and require an editable place.
+than comparison. The integer operators `&`, `^`, and `|` bind between equality and logical `&&`, in
+that order from tighter to looser. Unary `~` complements every bit. Compound `<<=` and `>>=`
+preserve the same rules and require an editable place.
 
 Generic bodies are checked once with symbolic parameters. Operations that require a concrete
 capability, including arithmetic and equality, are unavailable on an unconstrained parameter.
@@ -941,17 +947,18 @@ Raw pointer types are `*T` and read-only `*const T`. `*void` and `*const void` r
 handles and cannot be dereferenced or used for arithmetic. A mutable pointer converts to the
 corresponding read-only pointer, and any typed pointer converts to a `void` pointer with compatible
 mutability. Reverse casts are not implicit. The current portable ABI surface permits machine scalar,
-`void`, and nested raw-pointer pointees; nominal Foundation values cross only through explicit native
-adapters.
+`void`, nested raw-pointer pointees, and checked C-layout structs.
 
 Pointer construction with `null<P>()`, where `P` is the complete raw-pointer type, pointer arithmetic
-by a `usize` element offset, dereference, slice `.pointer` access,
-and unsafe native calls are valid only in a lexical `unsafe { ... }` block. `isNull(pointer)` is a
-safe inspection and does not dereference. Every unsafe block has an immediately preceding
-`// SAFETY: ...` proof. Safe references and slices cannot be forged from a pointer without proving
-alignment, lifetime, bounds, and exclusivity. Those guarantees resume at the boundary when a safe
-value leaves the block. `unsafe` does not disable type checking, ownership, Result must-use, or
-target checks.
+by a `usize` element offset, dereference, slice `.pointer` access, `pointerCast<P>(pointer)`, and
+unsafe native calls are valid only in a lexical `unsafe { ... }` block. `pointerCast` accepts a raw
+pointer and produces another raw pointer type or a direct C function pointer. `isNull(pointer)`
+safely inspects either form and does not dereference. `cString("literal")` produces a
+process-lifetime, null-terminated `*const u8`; its argument must be a literal. Every unsafe block
+has an immediately preceding `// SAFETY: ...` proof. Safe references and slices cannot be forged
+from a pointer without proving alignment, lifetime, bounds, and exclusivity. Those guarantees resume
+at the boundary when a safe value leaves the block. `unsafe` does not disable type checking,
+ownership, Result must-use, or target checks.
 
 ## Tasks, channels, and selection
 
@@ -1490,18 +1497,21 @@ to `intptr_t`, `usize` to `size_t`, `f32` to `float`, `f64` to `double`, `bool` 
 pointer, the `fdn_string` value, and its bytes remain borrowed for the duration of the call. Native
 code cannot retain them, mutate them, or release their storage.
 
-An `&` machine scalar or `&String` parameter is an exclusive call-scoped C pointer. An `&String`
-callee may replace the value but must preserve valid UTF-8, release the
-old owned value, use Foundation allocation for new owned storage, and never retain the pointer.
+An `&` machine scalar, `&String`, or `&NativeStruct` parameter is an exclusive call-scoped C
+pointer. A plain `NativeStruct` parameter is a read-only call-scoped pointer. The struct must have
+the checked C layout described below. An `&String` callee may replace the value but must preserve
+valid UTF-8, release the old owned value, use Foundation allocation for new owned storage, and never
+retain the pointer.
 A `String` return transfers one `fdn_string` by value. `owned = 0` denotes process-lifetime static
 storage; `owned = 1` denotes storage allocated with `fdn_alloc` that the receiving side releases
 exactly once with `fdn_string_drop`.
 
 Other owned values, arrays, slices, by-value structs, enums, contracts, generic functions, and
-methods cannot cross this boundary yet. The compiler rejects them before C emission. A raw pointer
-may name an exported concrete struct whose complete field set has a checked C layout. Such a struct
-cannot be a service, generic, or custom-drop type; every field must be exported and must be a
-machine scalar, raw pointer, direct C function pointer, or another checked C-layout struct.
+methods cannot cross this boundary yet. The compiler rejects them before C emission. A borrowed
+parameter or raw pointer may name an exported concrete struct whose complete field set has a checked
+C layout. Such a struct cannot be a service, generic, or custom-drop type; every field must be
+exported and must be a machine scalar, raw pointer, direct C function pointer, or another checked
+C-layout struct.
 
 `extern c fn(P) R` is the direct C function-pointer type. It has no Foundation closure environment,
 is copied like a native pointer, and may appear in checked C layouts and C ABI parameters or

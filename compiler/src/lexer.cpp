@@ -238,6 +238,12 @@ const char *tokenName(TokenKind kind) {
         return "&&";
     case TokenKind::OrOr:
         return "||";
+    case TokenKind::Pipe:
+        return "|";
+    case TokenKind::Caret:
+        return "^";
+    case TokenKind::Tilde:
+        return "~";
     case TokenKind::At:
         return "@";
     case TokenKind::Ampersand:
@@ -449,7 +455,11 @@ Token Lexer::next() {
                 advance();
                 return simple(TokenKind::OrOr, "||");
             }
-            break;
+            return simple(TokenKind::Pipe, "|");
+        case '^':
+            return simple(TokenKind::Caret, "^");
+        case '~':
+            return simple(TokenKind::Tilde, "~");
         case '"': {
             auto token = string();
             token.leadingSafetyProof = leadingSafetyProof;

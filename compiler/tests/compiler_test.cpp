@@ -2336,6 +2336,80 @@ fn main() i32 {
            "nested raw const qualification survives public header emission");
 }
 
+void nativeSystemsPrimitivesLowerToBothBoundaries() {
+    constexpr std::string_view source = R"(
+struct NativePair {
+    Left u32
+    Right u32
+}
+
+extern c fn nativeFill(&pair NativePair) void as foundation_native_fill
+extern c fn nativeRead(pair NativePair) u32 as foundation_native_read_pair
+extern c fn nativeSymbol() *void as foundation_native_symbol
+extern c fn nativeCheckCString(value *const u8) bool as foundation_native_check_cstring
+
+fn main() i32 {
+    const flags u32 = (5 | 2) ^ 1
+    if (flags & 2) != 2 return 1
+    const one u8 = 1
+    const inverted u8 = 254
+    if ~one != inverted return 2
+    var pair = NativePair { Left = 1 Right = 2 }
+    nativeFill(&pair)
+    if nativeRead(pair) != 42 return 3
+    if sizeOf<NativePair>() != 8 return 4
+    // SAFETY: the fixture symbol names a matching C callback and the literal has static storage.
+    unsafe {
+        const callback = pointerCast<extern c fn(i32) i32>(nativeSymbol())
+        if isNull(callback) return 5
+        if callback(41) != 42 return 6
+        if !nativeCheckCString(cString("foundation")) return 7
+    }
+    0
+}
+)";
+    const auto result = check(source);
+    expect(!result.diagnostics.hasErrors(), "native systems primitives have no diagnostics");
+    if (!result.fir.has_value()) {
+        expect(false, "native systems primitives lower to FIR");
+        return;
+    }
+
+    const auto generated = foundation::emitC(*result.fir, "native-systems.fn");
+    expect(generated.find("foundation_native_fill(fdn_struct_0 *") != std::string::npos &&
+               generated.find("foundation_native_read_pair(const fdn_struct_0 *") !=
+                   std::string::npos,
+           "borrowed C-layout structs lower to typed pointers");
+    expect(generated.find("sizeof(fdn_struct_0)") != std::string::npos,
+           "sizeOf lowers to the target C type");
+    expect(generated.find("_Static_assert(sizeof(") != std::string::npos &&
+               generated.find("memcpy(&") != std::string::npos,
+           "function pointer casts preserve the platform representation");
+    expect(generated.find("(const uint8_t *)\"foundation\"") != std::string::npos,
+           "C string literals lower to static null-terminated storage");
+
+    const auto unsafeCast = check(R"(
+extern c fn nativeSymbol() *void as foundation_native_symbol
+fn main() i32 {
+    discard pointerCast<*i32>(nativeSymbol())
+    0
+}
+)");
+    expect(hasCode(unsafeCast.diagnostics, "FDN2213"),
+           "pointerCast requires an unsafe block");
+
+    const auto nonLiteral = check(R"(
+fn main() i32 {
+    const value = "foundation"
+    // SAFETY: this fixture checks literal enforcement only.
+    unsafe { discard cString(value) }
+    0
+}
+)");
+    expect(hasCode(nonLiteral.diagnostics, "FDN2214"),
+           "cString rejects non-literal storage");
+}
+
 void blockingImportsLowerToTaskSuspension() {
     constexpr std::string_view source = R"(
 @blocking
@@ -3060,6 +3134,7 @@ int main() {
     cFunctionPointersRejectManagedCallablesAndOpaqueRecords();
     packageInterfacesUseReachableMonomorphizedCBoundaries();
     rawPointersLowerToExplicitCBoundaries();
+    nativeSystemsPrimitivesLowerToBothBoundaries();
     blockingImportsLowerToTaskSuspension();
     callbackImportsLowerToReactorSuspension();
     closuresLowerToDeterministicFunctionValues();

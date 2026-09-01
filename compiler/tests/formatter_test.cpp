@@ -153,6 +153,31 @@ void formatsShiftOperatorsWithoutBreakingNestedGenerics() {
            "shift formatting is idempotent");
 }
 
+void formatsBitwiseAndNativePointerSyntax() {
+    constexpr std::string_view source =
+        "struct Native { Value u32 }\n"
+        "extern c fn fill(&value Native)void as native_fill\n"
+        "fn main()i32{\n"
+        "const flags=(5|2)^1\n"
+        "const masked=flags&2\n"
+        "const inverted=~masked\n"
+        "discard sizeOf<Native>()\n"
+        "discard inverted\n"
+        "0\n"
+        "}\n";
+    const auto formatted = foundation::formatSource(source);
+    expect(!formatted.diagnostics.hasErrors(), "native pointer source formats");
+    expect(formatted.contents.find("fill(&value Native) void") != std::string::npos,
+           "edit parameters keep their ownership marker attached");
+    expect(formatted.contents.find("(5 | 2) ^ 1") != std::string::npos &&
+               formatted.contents.find("flags & 2") != std::string::npos,
+           "bitwise binary operators receive canonical spaces");
+    expect(formatted.contents.find("~masked") != std::string::npos,
+           "bitwise complement stays attached to its operand");
+    expect(foundation::formatSource(formatted.contents).contents == formatted.contents,
+           "native pointer formatting is idempotent");
+}
+
 void preservesLineAndNestedBlockComments() {
     constexpr std::string_view source =
         "/* Long comment.\r\n"
@@ -394,6 +419,7 @@ int main() {
     formatsFoundationSource();
     preservesLineSensitiveSyntax();
     formatsShiftOperatorsWithoutBreakingNestedGenerics();
+    formatsBitwiseAndNativePointerSyntax();
     preservesLineAndNestedBlockComments();
     keepsTaskOwnershipCompact();
     formatsNestedCallableSignatures();

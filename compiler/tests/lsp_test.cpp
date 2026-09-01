@@ -3513,7 +3513,8 @@ void compilerBuiltinsExposeEditorDetails() {
     expect(status == 0, "builtin language server transcript exits cleanly");
     expect(errors.str().empty(), "builtin requests write no server errors");
     const auto completion = responseFor(transcript, 179);
-    for (const auto builtin : {"print", "panic", "len", "null", "isNull", "channel"}) {
+    for (const auto builtin : {"print", "panic", "len", "null", "isNull", "cString",
+                               "sizeOf", "pointerCast", "channel"}) {
         expect(completion.find("\"label\":\"" + std::string(builtin) + "\"") !=
                    std::string::npos,
                "compiler builtin completion is available from the shared editor catalog");

@@ -339,7 +339,9 @@ bool simpleExpression(const Program &program, AstExpressionId expression) {
     }
     const auto &value = program.expressions[expression].value;
     if (const auto *unary = std::get_if<UnaryExpression>(&value)) {
-        return (unary->operation == UnaryOperator::Not || unary->operation == UnaryOperator::Negate) &&
+        return (unary->operation == UnaryOperator::Not ||
+                unary->operation == UnaryOperator::BitwiseNot ||
+                unary->operation == UnaryOperator::Negate) &&
                simpleExpression(program, unary->operand);
     }
     if (const auto *binary = std::get_if<BinaryExpression>(&value)) {

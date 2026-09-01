@@ -167,11 +167,13 @@ bool isCParameterType(const Type &type, std::string_view symbol,
            ((type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) &&
             type.arguments.size() == 1) ||
            (type.kind == TypeKind::View && type.arguments.size() == 1 &&
-            type.arguments.front() == stringType) ||
+            (type.arguments.front() == stringType ||
+             type.arguments.front().kind == TypeKind::Struct)) ||
            (type.kind == TypeKind::Edit && type.arguments.size() == 1 &&
             ((isMachineScalar(type.arguments.front()) &&
               type.arguments.front() != voidType && type.arguments.front() != neverType) ||
-             type.arguments.front() == boolType || type.arguments.front() == stringType)) ||
+             type.arguments.front() == boolType || type.arguments.front() == stringType ||
+             type.arguments.front().kind == TypeKind::Struct)) ||
            (packageName == "foundation.worker" &&
             (symbol == "foundation_runtime_supervisor_adopt" ||
              symbol == "foundation_runtime_pool_submit") &&
@@ -577,7 +579,8 @@ class Analyzer {
 
     Type specializeReadParameter(Type type, ParameterMode mode) const {
         if (mode == ParameterMode::Read && type.kind == TypeKind::View &&
-            type.arguments.size() == 1 && isCopyParameterType(type.arguments.front())) {
+            type.declaration != cAbiBorrowQualifier && type.arguments.size() == 1 &&
+            isCopyParameterType(type.arguments.front())) {
             return type.arguments.front();
         }
         return type;
@@ -1754,8 +1757,12 @@ class Analyzer {
                                    function.returnType.span);
             }
             for (const auto &parameter : function.parameters) {
-                const auto type = parameter.inferredType ? invalidType
-                                                         : resolveParameterType(parameter);
+                auto type = parameter.inferredType ? invalidType
+                                                   : resolveParameterType(parameter);
+                if (function.cSymbol.has_value() && parameter.mode == ParameterMode::Read &&
+                    type.kind == TypeKind::Struct) {
+                    type = Type{TypeKind::View, cAbiBorrowQualifier, {type}};
+                }
                 semantic.parameterTypes.push_back(type);
                 if (parameter.inferredType) {
                     continue;
@@ -1807,10 +1814,18 @@ class Analyzer {
                 }
                 for (std::size_t parameter = 0;
                      parameter < semantic.parameterTypes.size(); ++parameter) {
-                    if (!isCParameterType(semantic.parameterTypes[parameter],
+                    const auto &parameterType = semantic.parameterTypes[parameter];
+                    const auto borrowedRecord =
+                        (parameterType.kind == TypeKind::View ||
+                         parameterType.kind == TypeKind::Edit) &&
+                        parameterType.arguments.size() == 1 &&
+                        parameterType.arguments.front().kind == TypeKind::Struct;
+                    if (!isCParameterType(parameterType,
                                           function.hasBody ? std::string_view{}
                                                            : std::string_view{*function.cSymbol},
-                                          function.packageName)) {
+                                          function.packageName) ||
+                        (borrowedRecord &&
+                         !isCRecordType(parameterType.arguments.front()))) {
                         diagnostics_.error("FDN2114", "parameter type is not C ABI safe",
                                            function.parameters[parameter].span);
                     }
@@ -1948,6 +1963,15 @@ class Analyzer {
             }
             if (!function.receiver.has_value() && function.name == "isNull") {
                 diagnostics_.error("FDN2018", "isNull is a reserved builtin", function.span);
+            }
+            if (!function.receiver.has_value() && function.name == "cString") {
+                diagnostics_.error("FDN2018", "cString is a reserved builtin", function.span);
+            }
+            if (!function.receiver.has_value() && function.name == "sizeOf") {
+                diagnostics_.error("FDN2018", "sizeOf is a reserved builtin", function.span);
+            }
+            if (!function.receiver.has_value() && function.name == "pointerCast") {
+                diagnostics_.error("FDN2018", "pointerCast is a reserved builtin", function.span);
             }
             if (!function.receiver.has_value() && function.name == "channel") {
                 diagnostics_.error("FDN2018", "channel is a reserved builtin", function.span);
@@ -3724,6 +3748,13 @@ class Analyzer {
             }
             return operand;
         }
+        if (unary.operation == UnaryOperator::BitwiseNot) {
+            if (!isInteger(operand)) {
+                diagnostics_.error("FDN2011", "unary ~ requires an integer value", span);
+                return invalidType;
+            }
+            return operand;
+        }
         if (operand == boolType) {
             return boolType;
         }
@@ -4244,6 +4275,13 @@ class Analyzer {
                 diagnostics_.error("FDN2011", "shift operand requires an integer type", span);
                 return invalidType;
             }
+        } else if (operation == BinaryOperator::BitwiseAnd ||
+                   operation == BinaryOperator::BitwiseXor ||
+                   operation == BinaryOperator::BitwiseOr) {
+            if (!isInteger(left)) {
+                diagnostics_.error("FDN2011", "bitwise operand requires an integer type", span);
+                return invalidType;
+            }
         } else if (operation == BinaryOperator::Remainder) {
             if (!isInteger(left)) {
                 diagnostics_.error("FDN2011", "remainder operand requires an integer type", span);
@@ -4285,6 +4323,9 @@ class Analyzer {
         case BinaryOperator::Remainder:
         case BinaryOperator::ShiftLeft:
         case BinaryOperator::ShiftRight:
+        case BinaryOperator::BitwiseAnd:
+        case BinaryOperator::BitwiseXor:
+        case BinaryOperator::BitwiseOr:
             return validateArithmetic(binary.operation, left, right, span);
         case BinaryOperator::Less:
         case BinaryOperator::LessEqual:
@@ -4399,7 +4440,8 @@ class Analyzer {
             }
             return actual;
         }
-        if (isCopyParameterType(actual) && readTarget.kind != TypeKind::Contract &&
+        if (expected->declaration != cAbiBorrowQualifier && isCopyParameterType(actual) &&
+            readTarget.kind != TypeKind::Contract &&
             readTarget.kind != TypeKind::Slice) {
             return actual;
         }
@@ -4511,6 +4553,7 @@ class Analyzer {
         std::vector<std::optional<Type>> argumentExpectations(call.arguments.size());
         std::vector<ParameterMode> parameterModes(call.arguments.size(),
                                                   ParameterMode::TypeEncoded);
+        auto preserveReadBorrows = false;
         if (const auto local = lookupLocal(call.callee); local.has_value()) {
             rejectNamedArguments(call.argumentNames, "function value call", span);
             auto functionType = model_.functions[currentFunction_].locals[*local].type;
@@ -4552,6 +4595,7 @@ class Analyzer {
             }
             if (found != functions_.end()) {
                 const auto &declaration = program_.functions[found->second];
+                preserveReadBorrows = declaration.cSymbol.has_value();
                 const auto &signature = signatures_[found->second];
                 std::vector<std::string> parameterNames;
                 parameterNames.reserve(declaration.parameters.size());
@@ -4591,13 +4635,14 @@ class Analyzer {
         std::vector<std::optional<Type>> implicitBorrows(call.arguments.size());
         arguments.reserve(call.arguments.size());
         for (std::size_t index = 0; index < argumentExpectations.size(); ++index) {
-            if (argumentExpectations[index].has_value()) {
+            if (argumentExpectations[index].has_value() && !preserveReadBorrows) {
                 argumentExpectations[index] = specializeReadParameter(
                     *argumentExpectations[index], parameterModes[index]);
             }
         }
         const auto inspectsArguments = call.callee == "print" || call.callee == "panic" ||
-                                       call.callee == "len" || call.callee == "isNull";
+                                       call.callee == "len" || call.callee == "isNull" ||
+                                       call.callee == "cString" || call.callee == "pointerCast";
         for (std::size_t index = 0; index < call.arguments.size(); ++index) {
             const auto argument = call.arguments[index];
             arguments.push_back(
@@ -4769,13 +4814,79 @@ class Analyzer {
             if (arguments.size() != 1) {
                 diagnostics_.error("FDN2010", "isNull expects one argument", span);
             } else if (arguments.front().kind != TypeKind::Raw &&
-                       arguments.front().kind != TypeKind::RawConst) {
-                diagnostics_.error("FDN2214", "isNull requires a raw pointer", span);
+                       arguments.front().kind != TypeKind::RawConst &&
+                       !isCFunction(arguments.front())) {
+                diagnostics_.error("FDN2214", "isNull requires a raw or C function pointer", span);
             }
             CallTarget target;
             target.kind = CallTargetKind::IsNull;
             model_.callTargets[id] = std::move(target);
             return boolType;
+        }
+        if (call.callee == "cString") {
+            if (!explicitTypes.empty()) {
+                diagnostics_.error("FDN2043", "cString does not accept type arguments", span);
+            }
+            if (arguments.size() != 1) {
+                diagnostics_.error("FDN2010", "cString expects one string literal", span);
+            } else if (!std::holds_alternative<StringExpression>(
+                           program_.expressions[call.arguments.front()].value)) {
+                diagnostics_.error("FDN2214", "cString requires a string literal", span);
+            }
+            if (unsafeDepth_ == 0) {
+                diagnostics_.error("FDN2213", "cString requires an unsafe block", span);
+            }
+            CallTarget target;
+            target.kind = CallTargetKind::CString;
+            model_.callTargets[id] = std::move(target);
+            return Type{TypeKind::RawConst, 0, {u8Type}};
+        }
+        if (call.callee == "sizeOf") {
+            if (explicitTypes.size() != 1) {
+                diagnostics_.error("FDN2043", "sizeOf expects one type argument", span);
+            }
+            if (!arguments.empty()) {
+                diagnostics_.error("FDN2010", "sizeOf does not accept value arguments", span);
+            }
+            const auto measured = explicitTypes.size() == 1 ? explicitTypes.front() : invalidType;
+            if (measured == voidType || measured == neverType || measured == invalidType) {
+                diagnostics_.error("FDN2047", "sizeOf requires a value type", span);
+            }
+            CallTarget target;
+            target.kind = CallTargetKind::SizeOf;
+            target.typeArguments = explicitTypes;
+            model_.callTargets[id] = std::move(target);
+            return usizeType;
+        }
+        if (call.callee == "pointerCast") {
+            if (explicitTypes.size() != 1) {
+                diagnostics_.error("FDN2043", "pointerCast expects one type argument", span);
+            }
+            if (arguments.size() != 1) {
+                diagnostics_.error("FDN2010", "pointerCast expects one value argument", span);
+            }
+            const auto source = arguments.size() == 1 ? arguments.front() : invalidType;
+            const auto destination =
+                explicitTypes.size() == 1 ? explicitTypes.front() : invalidType;
+            const auto sourceRaw = source.kind == TypeKind::Raw ||
+                                   source.kind == TypeKind::RawConst;
+            const auto destinationPointer = destination.kind == TypeKind::Raw ||
+                                            destination.kind == TypeKind::RawConst ||
+                                            isCFunction(destination);
+            if (!sourceRaw || !destinationPointer) {
+                diagnostics_.error(
+                    "FDN2214",
+                    "pointerCast requires a raw source and a raw or C function pointer result",
+                    span);
+            }
+            if (unsafeDepth_ == 0) {
+                diagnostics_.error("FDN2213", "pointerCast requires an unsafe block", span);
+            }
+            CallTarget target;
+            target.kind = CallTargetKind::PointerCast;
+            target.typeArguments = {source, destination};
+            model_.callTargets[id] = std::move(target);
+            return destination;
         }
 
         auto found = functions_.end();
@@ -4826,13 +4937,14 @@ class Analyzer {
             }
         }
         const auto count = std::min(arguments.size(), signature.parameters.size());
+        const auto cBoundary = program_.functions[function].cSymbol.has_value();
         for (std::size_t source = 0; source < count; ++source) {
             const auto parameter = argumentParameters[source];
             if (parameter >= signature.parameters.size()) {
                 continue;
             }
             auto pattern = signature.parameters[parameter];
-            if (parameterModes[source] == ParameterMode::Read &&
+            if (!cBoundary && parameterModes[source] == ParameterMode::Read &&
                 pattern.kind == TypeKind::View && pattern.arguments.size() == 1 &&
                 isCopyParameterType(arguments[source])) {
                 pattern = pattern.arguments.front();
@@ -4849,9 +4961,10 @@ class Analyzer {
             if (parameter >= signature.parameters.size()) {
                 continue;
             }
-            const auto expected = specializeReadParameter(
-                substitute(signature.parameters[parameter], typeArguments),
-                parameterModes[source]);
+            auto expected = substitute(signature.parameters[parameter], typeArguments);
+            if (!cBoundary) {
+                expected = specializeReadParameter(expected, parameterModes[source]);
+            }
             if (const auto conversion = contractConversion(expected, arguments[source]);
                 conversion.has_value()) {
                 conversions[source] = *conversion;
@@ -6700,7 +6813,13 @@ class Analyzer {
                                        syntax.span);
                 }
                 for (std::size_t index = 1; index < arguments.size(); ++index) {
-                    if (!isCParameterType(arguments[index], {}, {})) {
+                    const auto &parameter = arguments[index];
+                    const auto borrowedRecord =
+                        (parameter.kind == TypeKind::View || parameter.kind == TypeKind::Edit) &&
+                        parameter.arguments.size() == 1 &&
+                        parameter.arguments.front().kind == TypeKind::Struct;
+                    if (!isCParameterType(parameter, {}, {}) ||
+                        (borrowedRecord && !isCRecordType(parameter.arguments.front()))) {
                         diagnostics_.error(
                             "FDN2215",
                             "C function pointer has an unsupported parameter type",
