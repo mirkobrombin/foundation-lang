@@ -1,0 +1,16 @@
+struct Tracked {
+    value String
+
+    fn drop(&self) void {}
+}
+
+fn tracked() Tracked {
+    Tracked { value = "tracked" }
+}
+
+fn main() i32 {
+    if tracked().value == "tracked" {
+        return 0
+    }
+    1
+}

@@ -2074,6 +2074,14 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/compiler/selfhost
             --backend c
     )
+    foreach(backend IN ITEMS llvm c)
+        add_test(
+            NAME compiler.test.temporary-field-cleanup.${backend}
+            COMMAND $<TARGET_FILE:foundationc> test
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/temporary-field-cleanup.fn
+                --backend ${backend}
+        )
+    endforeach()
     add_test(
         NAME compiler.check.accept
         COMMAND foundationc check ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fn
@@ -8406,6 +8414,14 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/owned-field-move.fn
+            -DCODE=FDN2078
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+    )
+    add_test(
+        NAME compiler.check.custom-drop-temporary-field
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/reject/custom-drop-temporary-field.fn
             -DCODE=FDN2078
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )

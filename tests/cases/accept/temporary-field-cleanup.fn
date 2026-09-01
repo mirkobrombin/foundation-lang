@@ -1,0 +1,47 @@
+struct Position {
+    line u64
+}
+
+struct Snapshot {
+    selected String
+    retained String
+    position Position
+}
+
+struct TrackedSnapshot {
+    retained String
+    line u64
+
+    fn drop(&self) void {}
+}
+
+fn snapshot(label String) Snapshot {
+    Snapshot {
+        selected = label + " selected"
+        retained = label + " retained"
+        position = Position { line = 42 }
+    }
+}
+
+fn trackedSnapshot(label String) TrackedSnapshot {
+    TrackedSnapshot {
+        retained = label + " retained"
+        line = 42
+    }
+}
+
+test "temporary copyable field drops its owner" {
+    expect(snapshot("copy").position.line == 42)
+}
+
+test "temporary owned field remains inspectable" {
+    expect(snapshot("inspect").selected == "inspect selected")
+}
+
+test "discarded temporary field drops its owner" {
+    discard snapshot("discard").position.line
+}
+
+test "custom drop temporary remains intact" {
+    expect(trackedSnapshot("custom").line == 42)
+}

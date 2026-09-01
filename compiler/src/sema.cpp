@@ -5609,8 +5609,17 @@ class Analyzer {
         model_.expressionFields[id] = *resolved;
         const auto result =
             substitute(model_.structs[base.declaration].fieldTypes[*resolved], base.arguments);
-        if (use == ExpressionUse::Consume && requiresDrop(result)) {
-            diagnostics_.error("FDN2078", "owned field cannot move independently", span);
+        if (requiresDrop(result)) {
+            if (use == ExpressionUse::Consume) {
+                diagnostics_.error("FDN2078", "owned field cannot move independently", span);
+            } else if (!isPlaceExpression(*member.base) &&
+                       base.declaration < methods_.size() &&
+                       methods_[base.declaration].contains("drop")) {
+                diagnostics_.error(
+                    "FDN2078",
+                    "owned field cannot be inspected through a temporary with custom drop",
+                    span);
+            }
         }
         return result;
     }

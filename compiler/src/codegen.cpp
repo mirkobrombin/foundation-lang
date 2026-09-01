@@ -2074,14 +2074,33 @@ class FunctionEmitter {
         }
         if (const auto *field = std::get_if<FirFieldExpression>(&expression.value)) {
             auto base = emitExpression(field->base, depth);
-            if (!base.diverges) {
-                const auto baseType = function_.expressions[field->base].type;
-                const auto pointer = baseType.kind == TypeKind::Own ||
-                                     baseType.kind == TypeKind::View ||
-                                     baseType.kind == TypeKind::Edit;
-                base.value += (pointer ? "->" : ".") + fieldName(field->field);
+            if (base.diverges) {
+                return base;
             }
-            return base;
+
+            const auto baseType = function_.expressions[field->base].type;
+            const auto pointer = baseType.kind == TypeKind::Own ||
+                                 baseType.kind == TypeKind::View ||
+                                 baseType.kind == TypeKind::Edit;
+            const auto access =
+                base.value + (pointer ? "->" : ".") + fieldName(field->field);
+            if (isPlaceExpression(field->base) ||
+                !typeRequiresDrop(program_, baseType)) {
+                base.value = access;
+                return base;
+            }
+
+            EmittedExpression result{"", false};
+            if (typeRequiresDrop(program_, expression.type)) {
+                result = emitMoveValue(expression.type, access, depth);
+            } else {
+                result.value = nextTemporary();
+                out_ << indentation(depth) << cType(expression.type) << ' ' << result.value
+                     << " = " << access << ";\n";
+            }
+            emitDropValue(out_, program_, baseType, base.value, depth);
+            emitCleanups(base, depth);
+            return result;
         }
         if (const auto *index = std::get_if<FirIndexExpression>(&expression.value)) {
             return emitIndex(*index, expression.span, depth);

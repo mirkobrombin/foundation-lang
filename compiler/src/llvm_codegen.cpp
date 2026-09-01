@@ -4302,16 +4302,30 @@ class LlvmEmitter {
                 fail(span, "LLVM backend received an invalid field receiver");
                 return {};
             }
-            const auto base = emitExpression(field.base);
+            auto base = emitExpression(field.base);
             if (base.diverges) {
                 return base;
             }
             auto *address =
                 structFieldAddress(base.value, baseType.arguments.front(), field.field, span);
-            return address == nullptr
-                       ? EmittedValue{}
-                       : EmittedValue{builder_.CreateLoad(typeOf(type), address, "field.value"),
-                                      false};
+            if (address == nullptr) {
+                return {};
+            }
+            if (isPlaceExpression(field.base) || !typeRequiresDrop(baseType)) {
+                return {builder_.CreateLoad(typeOf(type), address, "field.value"), false,
+                        std::move(base.cleanups)};
+            }
+
+            auto *value = typeRequiresDrop(type)
+                              ? moveFromAddress(address, type)
+                              : builder_.CreateLoad(typeOf(type), address, "field.value");
+            auto *owner = valueAddress(base.value, baseType, "field.owner.temporary");
+            dropAddress(owner, baseType);
+            for (auto cleanup = base.cleanups.rbegin(); cleanup != base.cleanups.rend();
+                 ++cleanup) {
+                dropAddress(cleanup->address, cleanup->type);
+            }
+            return {value, false};
         }
         if (isPlaceExpression(field.base)) {
             auto *address = emitAddress(field.base);
@@ -4324,7 +4338,7 @@ class LlvmEmitter {
                        : EmittedValue{builder_.CreateLoad(typeOf(type), address, "field.value"),
                                       false};
         }
-        const auto base = emitExpression(field.base);
+        auto base = emitExpression(field.base);
         if (base.diverges) {
             return base;
         }
@@ -4333,9 +4347,25 @@ class LlvmEmitter {
             fail(span, "LLVM backend received an invalid field access");
             return {};
         }
-        return {builder_.CreateExtractValue(base.value,
-                                            structFieldIndex(baseType.declaration, field.field)),
-                false};
+        if (!typeRequiresDrop(baseType)) {
+            return {builder_.CreateExtractValue(
+                        base.value, structFieldIndex(baseType.declaration, field.field)),
+                    false, std::move(base.cleanups)};
+        }
+
+        auto *owner = valueAddress(base.value, baseType, "field.owner.temporary");
+        auto *address = structFieldAddress(owner, baseType, field.field, span);
+        if (address == nullptr) {
+            return {};
+        }
+        auto *value = typeRequiresDrop(type)
+                          ? moveFromAddress(address, type)
+                          : builder_.CreateLoad(typeOf(type), address, "field.value");
+        dropAddress(owner, baseType);
+        for (auto cleanup = base.cleanups.rbegin(); cleanup != base.cleanups.rend(); ++cleanup) {
+            dropAddress(cleanup->address, cleanup->type);
+        }
+        return {value, false};
     }
 
     EmittedValue emitReplace(const FirReplaceExpression &replace, const Type &type,
