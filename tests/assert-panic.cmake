@@ -16,10 +16,13 @@ endif()
 
 if(C_COMPILER_ID STREQUAL "MSVC")
     set(executable "${OUTPUT}.exe")
+    set(object_directory "${OUTPUT}.objects")
+    file(REMOVE_RECURSE "${object_directory}")
+    file(MAKE_DIRECTORY "${object_directory}")
     execute_process(
         COMMAND "${C_COMPILER}" /nologo /std:c11 /O2 /W4 /WX "${GENERATED}"
                 "${RUNTIME_SOURCE}" "/I${RUNTIME_INCLUDE}" bcrypt.lib
-                "/Fe:${executable}"
+                "/Fe:${executable}" "/Fo:${object_directory}/" /link /STACK:8388608
         RESULT_VARIABLE build_result
         OUTPUT_VARIABLE build_output
         ERROR_VARIABLE build_error

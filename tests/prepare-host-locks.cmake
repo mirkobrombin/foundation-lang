@@ -11,10 +11,13 @@ file(GLOB_RECURSE lock_files
     "${ROOT}/tests/projects/*/foundation.lock"
     "${ROOT}/tests/projects/*/*/foundation.lock"
 )
+cmake_path(NORMAL_PATH ROOT OUTPUT_VARIABLE normalized_root)
 
 foreach(lock_file IN LISTS lock_files)
     get_filename_component(project "${lock_file}" DIRECTORY)
-    if(project STREQUAL "${ROOT}/tests/projects/target-selection")
+    cmake_path(NORMAL_PATH project OUTPUT_VARIABLE normalized_project)
+    if(normalized_project STREQUAL
+       "${normalized_root}/tests/projects/target-selection")
         continue()
     endif()
     if(NOT EXISTS "${project}/foundation.package")

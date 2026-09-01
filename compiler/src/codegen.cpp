@@ -5052,9 +5052,6 @@ void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunc
                    "#pragma warning(disable : 4702)\n"
                    "#endif\n";
             out << "    fdn_panic_cstr(\"unreachable task poll\");\n";
-            out << "#if defined(_MSC_VER)\n"
-                   "#pragma warning(pop)\n"
-                   "#endif\n";
         } else {
             out << "    fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
             if (function.returnType != voidType) {
@@ -5107,11 +5104,14 @@ void emitTaskSupport(std::ostringstream &out, const FirProgram &program, FirFunc
                 out << "    fdn_panic_cstr(\"task completed without a result\");\n";
             }
         }
+    }
+    out << "}\n";
+    if (function.diverges || suspensions != 0) {
         out << "#if defined(_MSC_VER)\n"
                "#pragma warning(pop)\n"
                "#endif\n";
     }
-    out << "}\n\n";
+    out << '\n';
 
     out << "static void " << taskMoveResultName(program, id)
         << "(void *fdn_raw, void *fdn_raw_result) {\n";
@@ -5296,11 +5296,14 @@ void emitFunctionValueAdapter(std::ostringstream &out, const FirProgram &program
                "#pragma warning(disable : 4702)\n"
                "#endif\n";
         out << "    fdn_panic_cstr(\"unreachable function value adapter\");\n";
+    }
+    out << "}\n";
+    if (function.diverges) {
         out << "#if defined(_MSC_VER)\n"
                "#pragma warning(pop)\n"
                "#endif\n";
     }
-    out << "}\n\n";
+    out << '\n';
 }
 
 void emitFunctionValueAdapterPrototype(std::ostringstream &out, const FirProgram &program,

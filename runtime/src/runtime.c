@@ -1380,7 +1380,23 @@ uint64_t foundation_runtime_time_unix_seconds(void) {
 
 uint64_t foundation_runtime_time_monotonic_nanoseconds(void) {
 #if defined(_WIN32)
-    return (uint64_t)GetTickCount64() * UINT64_C(1000000);
+    LARGE_INTEGER counter;
+    LARGE_INTEGER frequency;
+    if (!QueryPerformanceCounter(&counter) ||
+        !QueryPerformanceFrequency(&frequency) || counter.QuadPart < 0 ||
+        frequency.QuadPart <= 0) {
+        fdn_panic_cstr("monotonic clock failed");
+    }
+    const uint64_t ticks = (uint64_t)counter.QuadPart;
+    const uint64_t ticks_per_second = (uint64_t)frequency.QuadPart;
+    const uint64_t seconds = ticks / ticks_per_second;
+    if (seconds > UINT64_MAX / UINT64_C(1000000000)) {
+        fdn_panic_cstr("monotonic clock overflow");
+    }
+    const uint64_t remainder = ticks % ticks_per_second;
+    const uint64_t nanoseconds = (uint64_t)(
+        (long double)remainder * 1000000000.0L / (long double)ticks_per_second);
+    return seconds * UINT64_C(1000000000) + nanoseconds;
 #else
     struct timespec value;
     if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) {

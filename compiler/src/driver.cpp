@@ -454,6 +454,22 @@ std::optional<TempDirectory> createTempDirectory() {
     return std::nullopt;
 }
 
+std::string_view generatedProgramExtension(BackendKind backend) {
+    if (backend == BackendKind::C) {
+        return ".c";
+    }
+#ifdef _WIN32
+    return ".obj";
+#else
+    return ".o";
+#endif
+}
+
+std::filesystem::path generatedProgramPath(const std::filesystem::path &directory,
+                                           BackendKind backend) {
+    return directory / ("program" + std::string(generatedProgramExtension(backend)));
+}
+
 int report(const std::filesystem::path &path, const Compilation &compilation) {
     if (!compilation.diagnostics.hasErrors()) {
         return 0;
@@ -496,8 +512,11 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
     std::vector<std::string> arguments{FOUNDATION_C_COMPILER};
     const std::string compilerId = FOUNDATION_C_COMPILER_ID;
     if (compilerId == "MSVC") {
+        auto objectDirectory = generated.parent_path().string();
+        objectDirectory.push_back(std::filesystem::path::preferred_separator);
         arguments.insert(arguments.end(),
-                         {"/nologo", "/std:c11", "/W4", "/WX", generated.string()});
+                         {"/nologo", "/std:c11", "/W4", "/WX", generated.string(),
+                          "/Fo:" + objectDirectory});
         for (const auto &source : runtimeSources) {
             arguments.push_back(source.string());
         }
@@ -515,6 +534,7 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
         arguments.push_back("bcrypt.lib");
         arguments.push_back("ws2_32.lib");
         arguments.push_back("/Fe:" + output.string());
+        arguments.insert(arguments.end(), {"/link", "/STACK:8388608"});
         return arguments;
     }
 
@@ -1429,8 +1449,7 @@ int buildFile(const std::filesystem::path &source, const std::filesystem::path &
     if (!temporary.has_value()) {
         return 1;
     }
-    const auto generated = temporary->path() /
-                           (backend == BackendKind::Llvm ? "program.o" : "program.c");
+    const auto generated = generatedProgramPath(temporary->path(), backend);
     return buildCompilation(source, output, generated,
                             temporary->path() / "foundation_abi.h", nativeInputs, nativeLinks,
                             backend);
@@ -1816,8 +1835,7 @@ int runFile(const std::filesystem::path &source,
 #else
     const auto executable = temporary->path() / "program";
 #endif
-    const auto generated = temporary->path() /
-                           (backend == BackendKind::Llvm ? "program.o" : "program.c");
+    const auto generated = generatedProgramPath(temporary->path(), backend);
     const auto status = buildCompilation(source, executable, generated,
                                          temporary->path() / "foundation_abi.h", nativeInputs, nativeLinks,
                                          backend);
@@ -1868,7 +1886,7 @@ int runTests(const std::filesystem::path &source,
         const auto function = tests[index];
         const auto generated = temporary->path() /
                                ("test-" + std::to_string(index) +
-                                (backend == BackendKind::Llvm ? ".o" : ".c"));
+                                std::string(generatedProgramExtension(backend)));
 #ifdef _WIN32
         const auto executable =
             temporary->path() / ("test-" + std::to_string(index) + ".exe");

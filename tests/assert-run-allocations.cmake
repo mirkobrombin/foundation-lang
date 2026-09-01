@@ -61,6 +61,11 @@ endif()
 set(executable "${OUTPUT}")
 if(C_COMPILER_ID STREQUAL "MSVC")
     set(executable "${OUTPUT}.exe")
+    set(object_directory "${OUTPUT}.objects")
+    file(REMOVE_RECURSE "${object_directory}")
+    file(MAKE_DIRECTORY "${object_directory}")
+    set(msvc_source "${object_directory}/foundation_program.c")
+    file(COPY_FILE "${GENERATED}" "${msvc_source}")
     set(platform_libraries)
     list(APPEND platform_libraries bcrypt.lib)
     if(DEFINED RUNTIME_NET_SOURCE)
@@ -68,8 +73,9 @@ if(C_COMPILER_ID STREQUAL "MSVC")
     endif()
     execute_process(
         COMMAND "${C_COMPILER}" /nologo /std:c11 /W4 /WX
-                /DFOUNDATION_VERIFY_ALLOCATIONS "${GENERATED}" ${runtime_sources}
+                /DFOUNDATION_VERIFY_ALLOCATIONS "${msvc_source}" ${runtime_sources}
                 "/I${RUNTIME_INCLUDE}" ${platform_libraries} "/Fe:${executable}"
+                "/Fo:${object_directory}/" /link /STACK:8388608
         RESULT_VARIABLE build_result
         OUTPUT_VARIABLE build_output
         ERROR_VARIABLE build_error

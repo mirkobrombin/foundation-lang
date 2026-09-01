@@ -521,7 +521,7 @@ jobs:
           git -C build/deps/wasm-micro-runtime remote add origin https://github.com/bytecodealliance/wasm-micro-runtime.git
           git -C build/deps/wasm-micro-runtime fetch --depth 1 origin 25bd7eb63e828e4bd242cc9b38d260b4b31c6605
           git -C build/deps/wasm-micro-runtime checkout --detach FETCH_HEAD
-          cmake -S build/deps/wasm-micro-runtime/product-mini/platforms/windows -B build/deps/wamr-build -A x64 -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_FAST_INTERP=0 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_LIBC_WASI=1
+          cmake -S build/deps/wasm-micro-runtime/product-mini/platforms/windows -B build/deps/wamr-build -A x64 -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_FAST_INTERP=0 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_LIBC_WASI=1
           cmake --build build/deps/wamr-build --config Release --parallel 4
 
       - name: Configure providers

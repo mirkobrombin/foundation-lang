@@ -689,35 +689,68 @@ static int32_t fdn_wamr_host_error_read(wasm_exec_env_t execution,
     return result;
 }
 
-static NativeSymbol fdn_wamr_host_symbols[] = {
-    {FDN_WASM_IMPORT_HOST_CALL, NULL, "(iiiiii)i", NULL},
-    {FDN_WASM_IMPORT_RESPONSE_LENGTH, NULL, "()i", NULL},
-    {FDN_WASM_IMPORT_RESPONSE_READ, NULL, "(ii)i", NULL},
-    {FDN_WASM_IMPORT_ERROR_LENGTH, NULL, "()i", NULL},
-    {FDN_WASM_IMPORT_ERROR_READ, NULL, "(ii)i", NULL},
-};
+static void fdn_wamr_host_call_raw(wasm_exec_env_t execution, uint64_t *arguments) {
+    native_raw_return_type(int32_t, arguments);
+    native_raw_get_arg(uint32_t, capability_pointer, arguments);
+    native_raw_get_arg(uint32_t, capability_length, arguments);
+    native_raw_get_arg(uint32_t, operation_pointer, arguments);
+    native_raw_get_arg(uint32_t, operation_length, arguments);
+    native_raw_get_arg(uint32_t, input_pointer, arguments);
+    native_raw_get_arg(uint32_t, input_length, arguments);
+    native_raw_set_return(
+        fdn_wamr_host_call(execution, capability_pointer, capability_length,
+                           operation_pointer, operation_length, input_pointer, input_length));
+}
+
+static void fdn_wamr_host_response_length_raw(wasm_exec_env_t execution,
+                                              uint64_t *arguments) {
+    native_raw_return_type(int32_t, arguments);
+    native_raw_set_return(fdn_wamr_host_response_length(execution));
+}
+
+static void fdn_wamr_host_response_read_raw(wasm_exec_env_t execution,
+                                            uint64_t *arguments) {
+    native_raw_return_type(int32_t, arguments);
+    native_raw_get_arg(uint32_t, pointer, arguments);
+    native_raw_get_arg(uint32_t, capacity, arguments);
+    native_raw_set_return(fdn_wamr_host_response_read(execution, pointer, capacity));
+}
+
+static void fdn_wamr_host_error_length_raw(wasm_exec_env_t execution,
+                                           uint64_t *arguments) {
+    native_raw_return_type(int32_t, arguments);
+    native_raw_set_return(fdn_wamr_host_error_length(execution));
+}
+
+static void fdn_wamr_host_error_read_raw(wasm_exec_env_t execution,
+                                         uint64_t *arguments) {
+    native_raw_return_type(int32_t, arguments);
+    native_raw_get_arg(uint32_t, pointer, arguments);
+    native_raw_get_arg(uint32_t, capacity, arguments);
+    native_raw_set_return(fdn_wamr_host_error_read(execution, pointer, capacity));
+}
+
+static NativeSymbol fdn_wamr_host_symbols[5];
 
 static void fdn_wamr_host_symbols_initialize(void) {
     union {
-        int32_t (*function)(wasm_exec_env_t, uint32_t, uint32_t, uint32_t,
-                            uint32_t, uint32_t, uint32_t);
+        void (*function)(wasm_exec_env_t, uint64_t *);
         void *value;
-    } host_call = {.function = fdn_wamr_host_call};
-    union {
-        int32_t (*function)(wasm_exec_env_t);
-        void *value;
-    } response_length = {.function = fdn_wamr_host_response_length},
-      error_length = {.function = fdn_wamr_host_error_length};
-    union {
-        int32_t (*function)(wasm_exec_env_t, uint32_t, uint32_t);
-        void *value;
-    } response_read = {.function = fdn_wamr_host_response_read},
-      error_read = {.function = fdn_wamr_host_error_read};
-    fdn_wamr_host_symbols[0].func_ptr = host_call.value;
-    fdn_wamr_host_symbols[1].func_ptr = response_length.value;
-    fdn_wamr_host_symbols[2].func_ptr = response_read.value;
-    fdn_wamr_host_symbols[3].func_ptr = error_length.value;
-    fdn_wamr_host_symbols[4].func_ptr = error_read.value;
+    } host_call = {.function = fdn_wamr_host_call_raw},
+      response_length = {.function = fdn_wamr_host_response_length_raw},
+      response_read = {.function = fdn_wamr_host_response_read_raw},
+      error_length = {.function = fdn_wamr_host_error_length_raw},
+      error_read = {.function = fdn_wamr_host_error_read_raw};
+    fdn_wamr_host_symbols[0] = (NativeSymbol){FDN_WASM_IMPORT_HOST_CALL,
+                                              host_call.value, "(iiiiii)i", NULL};
+    fdn_wamr_host_symbols[1] = (NativeSymbol){FDN_WASM_IMPORT_RESPONSE_LENGTH,
+                                              response_length.value, "()i", NULL};
+    fdn_wamr_host_symbols[2] = (NativeSymbol){FDN_WASM_IMPORT_RESPONSE_READ,
+                                              response_read.value, "(ii)i", NULL};
+    fdn_wamr_host_symbols[3] = (NativeSymbol){FDN_WASM_IMPORT_ERROR_LENGTH,
+                                              error_length.value, "()i", NULL};
+    fdn_wamr_host_symbols[4] = (NativeSymbol){FDN_WASM_IMPORT_ERROR_READ,
+                                              error_read.value, "(ii)i", NULL};
 }
 
 static int fdn_wamr_text_valid(const fdn_string *value, size_t maximum) {
@@ -853,11 +886,15 @@ static int32_t fdn_wamr_engine_open(uint64_t *output) {
         fdn_wamr_host_symbols_initialize();
         (void)memset(&arguments, 0, sizeof(arguments));
         arguments.mem_alloc_type = Alloc_With_System_Allocator;
-        arguments.native_module_name = FDN_WASM_HOST_MODULE;
-        arguments.native_symbols = fdn_wamr_host_symbols;
-        arguments.n_native_symbols = (uint32_t)(sizeof(fdn_wamr_host_symbols) /
-                                                sizeof(fdn_wamr_host_symbols[0]));
         if (!wasm_runtime_full_init(&arguments)) {
+            fdn_wamr_unlock();
+            return FDN_WAMR_HANDLER_ERROR;
+        }
+        if (!wasm_runtime_register_natives_raw(
+                FDN_WASM_HOST_MODULE, fdn_wamr_host_symbols,
+                (uint32_t)(sizeof(fdn_wamr_host_symbols) /
+                           sizeof(fdn_wamr_host_symbols[0])))) {
+            wasm_runtime_destroy();
             fdn_wamr_unlock();
             return FDN_WAMR_HANDLER_ERROR;
         }
