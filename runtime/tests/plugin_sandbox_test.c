@@ -219,8 +219,8 @@ static void test_start_failure(const char *self, const char *mode, uint64_t time
     require_no_runtime_leaks();
 }
 
-static void test_stop_failure(const char *self, const char *mode, int32_t expected,
-                              int32_t expected_exit) {
+static void test_stop_failure(const char *self, const char *mode, uint64_t timeout,
+                              int32_t expected, int32_t expected_exit) {
     fdn_string ready = fdn_string_static("", 0);
     fdn_string detail = fdn_string_static("", 0);
     int32_t exit_code = 0;
@@ -228,7 +228,7 @@ static void test_stop_failure(const char *self, const char *mode, int32_t expect
     add_argument(handle, mode);
     require(start_sandbox(handle, UINT64_C(2000000000), &ready, &detail) == 0);
     require(foundation_runtime_plugin_sandbox_stop(
-                handle, UINT64_C(20000000), &exit_code, &detail) == expected);
+                handle, timeout, &exit_code, &detail) == expected);
     require(exit_code == expected_exit);
     require(detail.length != 0);
     fdn_string_drop(&ready);
@@ -259,9 +259,11 @@ int main(int argc, char **argv) {
     test_start_failure(argv[0], "child-no-ready", UINT64_C(20000000), 6);
     test_start_failure(argv[0], "child-too-large", UINT64_C(2000000000), 7);
     test_start_failure(argv[0], "child-exit", UINT64_C(2000000000), 8);
-    test_stop_failure(argv[0], "child-stop-timeout", 10, INT32_MIN);
-    test_stop_failure(argv[0], "child-nonzero", 11, 9);
-    test_stop_failure(argv[0], "child-closed-input", 9, INT32_MIN);
+    test_stop_failure(argv[0], "child-stop-timeout", UINT64_C(20000000), 10,
+                      INT32_MIN);
+    test_stop_failure(argv[0], "child-nonzero", UINT64_C(2000000000), 11, 9);
+    test_stop_failure(argv[0], "child-closed-input", UINT64_C(20000000), 9,
+                      INT32_MIN);
     test_close_running(argv[0]);
     return 0;
 }

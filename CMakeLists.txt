@@ -1649,7 +1649,7 @@ if(BUILD_TESTING)
     )
     set_tests_properties(
         compiler.run.plugin-wamr-provider-fake
-        PROPERTIES TIMEOUT ${FOUNDATION_SHORT_COMPILE_RUN_TIMEOUT}
+        PROPERTIES TIMEOUT ${FOUNDATION_COMPILE_RUN_TIMEOUT}
     )
     find_program(FOUNDATION_WASM_CLANG
         NAMES clang clang-21
