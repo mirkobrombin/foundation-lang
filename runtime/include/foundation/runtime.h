@@ -376,6 +376,35 @@ int32_t foundation_runtime_fs_write_private_text_atomic(const fdn_string *path,
                                                         const fdn_string *value,
                                                         uint64_t max_length);
 int32_t foundation_runtime_fs_delete_private_file(const fdn_string *path);
+int32_t foundation_runtime_fs_read_text_sync_limited(const fdn_string *path,
+                                                     uint64_t max_length,
+                                                     fdn_string *result);
+int32_t foundation_runtime_fs_write_text_atomic(const fdn_string *path,
+                                                const fdn_string *value,
+                                                uint64_t max_length);
+int32_t foundation_runtime_fs_create_directory_tree(const fdn_string *path);
+int32_t foundation_runtime_fs_exists(const fdn_string *path, bool *result);
+int32_t foundation_runtime_fs_kind(const fdn_string *path, uint32_t *kind);
+int32_t foundation_runtime_fs_canonicalize(const fdn_string *path,
+                                           fdn_string *result);
+int32_t foundation_runtime_fs_rename(const fdn_string *source,
+                                     const fdn_string *destination);
+int32_t foundation_runtime_fs_replace(const fdn_string *source,
+                                      const fdn_string *destination);
+int32_t foundation_runtime_fs_copy_file(const fdn_string *source,
+                                        const fdn_string *destination);
+int32_t foundation_runtime_fs_remove_file(const fdn_string *path);
+int32_t foundation_runtime_fs_remove_empty_directory(const fdn_string *path);
+int32_t foundation_runtime_fs_create_temp_directory(const fdn_string *parent,
+                                                    const fdn_string *prefix,
+                                                    fdn_string *result);
+int32_t foundation_runtime_fs_create_temp_file(const fdn_string *parent,
+                                               const fdn_string *prefix,
+                                               fdn_string *result);
+int32_t foundation_runtime_fs_is_executable(const fdn_string *path,
+                                            bool *result);
+int32_t foundation_runtime_fs_set_executable(const fdn_string *path,
+                                             bool executable);
 uint64_t foundation_runtime_fs_live_directories(void);
 int32_t foundation_runtime_fs_tree_open(const fdn_string *path,
                                         uint64_t max_entries,
@@ -402,6 +431,21 @@ void foundation_runtime_fs_watch_start(const fdn_string* path, uint64_t interval
                                        fdn_reactor_operation* operation);
 void foundation_runtime_fs_watch_cancel(fdn_reactor_operation* operation);
 uint64_t foundation_runtime_fs_watch_live_jobs(void);
+int32_t foundation_runtime_process_open(const fdn_string *program,
+                                        uint64_t output_limit,
+                                        bool inherit_environment,
+                                        uint64_t *handle);
+int32_t foundation_runtime_process_add_argument(uint64_t handle,
+                                                const fdn_string *argument);
+int32_t foundation_runtime_process_set_working_directory(
+    uint64_t handle, const fdn_string *working_directory);
+int32_t foundation_runtime_process_add_environment(uint64_t handle,
+                                                   const fdn_string *entry);
+int32_t foundation_runtime_process_run(uint64_t handle, int32_t *exit_code,
+                                       uint64_t *stdout_handle,
+                                       uint64_t *stderr_handle);
+void foundation_runtime_process_close(uint64_t *handle);
+uint64_t foundation_runtime_process_live_handles(void);
 int32_t foundation_runtime_net_resolve(const fdn_string *host, uint64_t port,
                                        uint64_t *addresses);
 void foundation_runtime_net_addresses_close(uint64_t addresses);

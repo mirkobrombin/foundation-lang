@@ -1,0 +1,303 @@
+package test.host_services
+
+import std.fs
+import std.path
+import std.process
+import std.text
+
+@target(linux)
+fn pathChecks() bool {
+    const relative = path.Relative("/tmp/build/base", "/tmp/build/out/file.fn")
+    const value = relative else error {
+        discard error
+        return false
+    }
+    path.IsAbsolute("/tmp") &&
+        path.Normalize("/tmp/./bé/../file.fn") == "/tmp/file.fn" &&
+        path.Parent("/tmp") == "/" &&
+        path.Parent("/tmp/build/file.fn") == "/tmp/build" &&
+        path.FileName("/tmp/build/file.fn") == "file.fn" &&
+        path.Extension("archive.tar.gz") == ".gz" &&
+        path.ReplaceExtension("archive.tar.gz", "fn") == "archive.tar.fn" &&
+        value == "../out/file.fn"
+}
+
+@target(macos)
+fn pathChecks() bool {
+    const relative = path.Relative("/tmp/build/base", "/tmp/build/out/file.fn")
+    const value = relative else error {
+        discard error
+        return false
+    }
+    path.IsAbsolute("/tmp") &&
+        path.Normalize("/tmp/./bé/../file.fn") == "/tmp/file.fn" &&
+        path.Parent("/tmp") == "/" &&
+        path.Parent("/tmp/build/file.fn") == "/tmp/build" &&
+        path.FileName("/tmp/build/file.fn") == "file.fn" &&
+        path.Extension("archive.tar.gz") == ".gz" &&
+        path.ReplaceExtension("archive.tar.gz", "fn") == "archive.tar.fn" &&
+        value == "../out/file.fn"
+}
+
+@target(windows)
+fn pathChecks() bool {
+    const relative = path.Relative(
+        "\\\\sérver\\Share\\base",
+        "\\\\sérver\\share\\BASE\\child.fn"
+    )
+    const value = relative else error {
+        discard error
+        return false
+    }
+    path.IsAbsolute("C:\\tmp") &&
+        path.Normalize("C:\\tmp\\.\\bé\\..\\file.fn") == "C:\\tmp\\file.fn" &&
+        path.Parent("C:\\tmp") == "C:\\" &&
+        path.Parent("C:\\tmp\\build\\file.fn") == "C:\\tmp\\build" &&
+        path.FileName("C:\\tmp\\build\\file.fn") == "file.fn" &&
+        path.Extension("archive.tar.gz") == ".gz" &&
+        path.ReplaceExtension("archive.tar.gz", "fn") == "archive.tar.fn" &&
+        value == "child.fn"
+}
+
+fn isTooLarge($value Result<void, fs.HostError>) bool {
+    match value {
+        Ok: false
+        Err(error): match error {
+            TooLarge: true
+            _: false
+        }
+    }
+}
+
+fn isFile(kind fs.EntryKind) bool {
+    match kind {
+        File: true
+        _: false
+    }
+}
+
+fn isOutputLimit($value Result<own process.Output, process.Error>) bool {
+    match value {
+        Ok(output): false
+        Err(error): match error {
+            OutputLimit: true
+            _: false
+        }
+    }
+}
+
+fn isMissing($value Result<own process.Output, process.Error>) bool {
+    match value {
+        Ok(output): false
+        Err(error): match error {
+            NotFound: true
+            _: false
+        }
+    }
+}
+
+@target(linux)
+fn executableChecks(file String) bool {
+    fs.SetExecutable(file, true) else error {
+        discard error
+        return false
+    }
+    const executable = fs.IsExecutable(file) else error {
+        discard error
+        return false
+    }
+    if !executable return false
+    fs.SetExecutable(file, false) else error {
+        discard error
+        return false
+    }
+    const cleared = fs.IsExecutable(file) else error {
+        discard error
+        return false
+    }
+    !cleared
+}
+
+@target(macos)
+fn executableChecks(file String) bool {
+    fs.SetExecutable(file, true) else error {
+        discard error
+        return false
+    }
+    const executable = fs.IsExecutable(file) else error {
+        discard error
+        return false
+    }
+    if !executable return false
+    fs.SetExecutable(file, false) else error {
+        discard error
+        return false
+    }
+    const cleared = fs.IsExecutable(file) else error {
+        discard error
+        return false
+    }
+    !cleared
+}
+
+@target(windows)
+fn executableChecks(file String) bool {
+    const executable = fs.IsExecutable(file) else error {
+        discard error
+        return false
+    }
+    if executable return false
+    match fs.SetExecutable(file, true) {
+        Ok: false
+        Err(error): match error {
+            Unsupported: true
+            _: false
+        }
+    }
+}
+
+fn main(args [String]) i32 {
+    if !pathChecks() return 1
+
+    const root = fs.CreateTempDirectory(args[1], "fdn-host") else error {
+        discard error
+        return 2
+    }
+    const nested = path.Join(path.Join(root, "nested"), "inner")
+    const source = path.Join(nested, "héllo.txt")
+    const copied = path.Join(nested, "copied.txt")
+    const moved = path.Join(nested, "moved.txt")
+    const replacement = path.Join(nested, "replacement.txt")
+    fs.CreateDirectory(nested) else error {
+        discard error
+        return 3
+    }
+    if !isTooLarge(fs.WriteTextAtomic(source, "héllo\n", 6)) return 4
+    fs.WriteTextAtomic(source, "héllo\n", 7) else error {
+        discard error
+        return 5
+    }
+    const contents = fs.ReadTextSync(source, 7) else error {
+        discard error
+        return 6
+    }
+    const exists = fs.Exists(source) else error {
+        discard error
+        return 7
+    }
+    const kind = fs.Kind(source) else error {
+        discard error
+        return 8
+    }
+    const canonical = fs.Canonicalize(source) else error {
+        discard error
+        return 9
+    }
+    if contents != "héllo\n" || !exists || !isFile(kind) || text.IsEmpty(canonical) {
+        return 10
+    }
+
+    fs.CopyFile(source, copied) else error {
+        discard error
+        return 11
+    }
+    fs.Rename(copied, moved) else error {
+        discard error
+        return 12
+    }
+    fs.WriteTextAtomic(replacement, "replacement\n", 12) else error {
+        discard error
+        return 13
+    }
+    fs.Replace(replacement, moved) else error {
+        discard error
+        return 14
+    }
+    if !executableChecks(moved) return 15
+
+    const command = ["child", "emit", "value ; $() & with spaces"]
+    const environment = ["FDN_HOST_ACCEPT=1"]
+    const output = process.Run(
+        args[0],
+        command,
+        environment,
+        process.Options {
+            WorkingDirectory = .Some(text.Copy(root))
+            InheritEnvironment = false
+            OutputLimit = 4096
+        }
+    ) else error {
+        discard error
+        return 16
+    }
+    const stdout = output.StdoutText() else error {
+        discard error
+        return 17
+    }
+    const stderr = output.StderrText() else error {
+        discard error
+        return 18
+    }
+    if output.ExitCode != 7 || stdout != "out:value ; $() & with spaces\n" ||
+        stderr != "err:value ; $() & with spaces\n" {
+        return 19
+    }
+
+    const flood = ["child", "flood"]
+    const floodOptions = process.Options {
+        WorkingDirectory = .None
+        InheritEnvironment = false
+        OutputLimit = 64
+    }
+    const floodResult = process.Run(
+        args[0],
+        flood,
+        environment,
+        $floodOptions
+    )
+    if !isOutputLimit($floodResult) return 20
+    const missingOptions = process.Options {
+        WorkingDirectory = .None
+        InheritEnvironment = false
+        OutputLimit = 64
+    }
+    const noArguments [0]String = []
+    const missingResult = process.Run(
+        "foundation-process-missing-7d8e3b2f",
+        noArguments,
+        environment,
+        $missingOptions
+    )
+    if !isMissing($missingResult) return 21
+
+    const temporary = fs.CreateTempFile(root, "fdn-host") else error {
+        discard error
+        return 22
+    }
+    fs.RemoveFile(temporary) else error {
+        discard error
+        return 23
+    }
+    fs.RemoveFile(source) else error {
+        discard error
+        return 24
+    }
+    fs.RemoveFile(moved) else error {
+        discard error
+        return 25
+    }
+    fs.RemoveEmptyDirectory(nested) else error {
+        discard error
+        return 26
+    }
+    fs.RemoveEmptyDirectory(path.Parent(nested)) else error {
+        discard error
+        return 27
+    }
+    fs.RemoveEmptyDirectory(root) else error {
+        discard error
+        return 28
+    }
+    print("host services ok")
+    0
+}

@@ -1,0 +1,152 @@
+package std.process
+
+import std.bytes
+
+enum Error {
+    NotFound
+    Permission
+    InvalidArgument
+    InvalidEnvironment
+    InvalidWorkingDirectory
+    OutputLimit
+    ResourceLimit
+    Io
+    Closed
+}
+
+struct Options {
+    WorkingDirectory Option<String>
+    InheritEnvironment bool
+    OutputLimit u64
+}
+
+struct Output {
+    ExitCode i32
+    Stdout own bytes.Bytes
+    Stderr own bytes.Bytes
+
+    fn StdoutText(self) Result<String, bytes.Error> {
+        self.Stdout.Text()
+    }
+
+    fn StderrText(self) Result<String, bytes.Error> {
+        self.Stderr.Text()
+    }
+}
+
+extern c fn openNative(
+    program String,
+    outputLimit u64,
+    inheritEnvironment bool,
+    &handle u64
+) i32 as foundation_runtime_process_open
+extern c fn addArgumentNative(
+    handle u64,
+    argument String
+) i32 as foundation_runtime_process_add_argument
+extern c fn setWorkingDirectoryNative(
+    handle u64,
+    workingDirectory String
+) i32 as foundation_runtime_process_set_working_directory
+extern c fn addEnvironmentNative(
+    handle u64,
+    entry String
+) i32 as foundation_runtime_process_add_environment
+extern c fn runNative(
+    handle u64,
+    &exitCode i32,
+    &stdoutHandle u64,
+    &stderrHandle u64
+) i32 as foundation_runtime_process_run
+extern c fn closeNative(
+    &handle u64
+) void as foundation_runtime_process_close
+
+fn errorFor(status i32) Error {
+    if status == 1 return .NotFound
+    if status == 2 return .Permission
+    if status == 3 return .InvalidArgument
+    if status == 4 return .InvalidEnvironment
+    if status == 5 return .InvalidWorkingDirectory
+    if status == 6 return .OutputLimit
+    if status == 7 return .ResourceLimit
+    if status == 9 return .Closed
+    .Io
+}
+
+fn DefaultOptions() Options {
+    Options {
+        WorkingDirectory = .None
+        InheritEnvironment = true
+        OutputLimit = 16777216
+    }
+}
+
+// Runs one program directly with argv semantics and separate bounded output.
+fn Run(
+    program String,
+    arguments [String],
+    environment [String],
+    $options Options
+) Result<own Output, Error> {
+    const Options {
+        WorkingDirectory
+        InheritEnvironment
+        OutputLimit
+    } = options
+    var handle u64 = 0
+    var status = openNative(
+        program,
+        OutputLimit,
+        InheritEnvironment,
+        &handle
+    )
+    if status != 0 return .Err(errorFor(status))
+
+    for argument in arguments {
+        status = addArgumentNative(handle, argument)
+        if status != 0 {
+            closeNative(&handle)
+            return .Err(errorFor(status))
+        }
+    }
+    match WorkingDirectory {
+        None: {}
+        Some(workingDirectory): {
+            status = setWorkingDirectoryNative(handle, workingDirectory)
+            if status != 0 {
+                closeNative(&handle)
+                return .Err(errorFor(status))
+            }
+        }
+    }
+    for entry in environment {
+        status = addEnvironmentNative(handle, entry)
+        if status != 0 {
+            closeNative(&handle)
+            return .Err(errorFor(status))
+        }
+    }
+
+    var exitCode i32 = 0
+    var stdoutHandle u64 = 0
+    var stderrHandle u64 = 0
+    status = runNative(handle, &exitCode, &stdoutHandle, &stderrHandle)
+    closeNative(&handle)
+    if status != 0 return .Err(errorFor(status))
+
+    const stdout = bytes.ClaimRuntimeHandle(stdoutHandle) else error {
+        discard error
+        return .Err(.Io)
+    }
+    const stderr = bytes.ClaimRuntimeHandle(stderrHandle) else error {
+        discard error
+        discard stdout
+        return .Err(.Io)
+    }
+    .Ok(own Output {
+        ExitCode = exitCode
+        Stdout = stdout
+        Stderr = stderr
+    })
+}

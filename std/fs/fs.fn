@@ -14,6 +14,29 @@ enum Error {
     Io
 }
 
+enum HostError {
+    NotFound
+    Permission
+    InvalidPath
+    InvalidUtf8
+    TooLarge
+    Io
+    AlreadyExists
+    NotDirectory
+    IsDirectory
+    Unsupported
+    NotEmpty
+    CrossDevice
+}
+
+enum EntryKind {
+    Missing
+    File
+    Directory
+    SymbolicLink
+    Other
+}
+
 extern c fn openLinesNative(path String, &handle u64) i32 as foundation_runtime_fs_open_lines
 extern c fn nextLineLimitedNative(handle u64, limit u64, &line String) i32 as foundation_runtime_fs_next_line_limited
 extern c fn closeNative(handle u64) i32 as foundation_runtime_fs_close
@@ -44,6 +67,21 @@ extern c fn writePrivateTextAtomicNative(path String, value String, limit u64) i
 
 @blocking
 extern c fn deletePrivateFileNative(path String) i32 as foundation_runtime_fs_delete_private_file
+extern c fn readTextSyncLimitedNative(path String, limit u64, &result String) i32 as foundation_runtime_fs_read_text_sync_limited
+extern c fn writeTextAtomicNative(path String, value String, limit u64) i32 as foundation_runtime_fs_write_text_atomic
+extern c fn createDirectoryTreeNative(path String) i32 as foundation_runtime_fs_create_directory_tree
+extern c fn existsNative(path String, &result bool) i32 as foundation_runtime_fs_exists
+extern c fn kindNative(path String, &kind u32) i32 as foundation_runtime_fs_kind
+extern c fn canonicalizeNative(path String, &result String) i32 as foundation_runtime_fs_canonicalize
+extern c fn renameNative(source String, destination String) i32 as foundation_runtime_fs_rename
+extern c fn replaceNative(source String, destination String) i32 as foundation_runtime_fs_replace
+extern c fn copyFileNative(source String, destination String) i32 as foundation_runtime_fs_copy_file
+extern c fn removeFileNative(path String) i32 as foundation_runtime_fs_remove_file
+extern c fn removeEmptyDirectoryNative(path String) i32 as foundation_runtime_fs_remove_empty_directory
+extern c fn createTempDirectoryNative(parent String, prefix String, &result String) i32 as foundation_runtime_fs_create_temp_directory
+extern c fn createTempFileNative(parent String, prefix String, &result String) i32 as foundation_runtime_fs_create_temp_file
+extern c fn isExecutableNative(path String, &result bool) i32 as foundation_runtime_fs_is_executable
+extern c fn setExecutableNative(path String, executable bool) i32 as foundation_runtime_fs_set_executable
 
 fn errorFor(status i32) Error {
     if status == 1 {
@@ -56,6 +94,25 @@ fn errorFor(status i32) Error {
         return .InvalidPath
     }
     .Io
+}
+
+fn hostErrorFor(status i32) HostError {
+    if status == 1 return .NotFound
+    if status == 2 return .Permission
+    if status == 3 return .InvalidPath
+    if status == 7 return .AlreadyExists
+    if status == 8 return .NotDirectory
+    if status == 9 return .IsDirectory
+    if status == 10 return .Unsupported
+    if status == 11 return .NotEmpty
+    if status == 12 return .CrossDevice
+    .Io
+}
+
+fn readHostErrorFor(status i32) HostError {
+    if status == 5 return .TooLarge
+    if status == 6 return .InvalidUtf8
+    hostErrorFor(status)
 }
 
 fn readErrorFor(status i32) Error {
@@ -127,6 +184,119 @@ task DeletePrivateFile($path String) Result<void, Error> {
     const status = deletePrivateFileNative(path)
     if status == 0 return .Ok
     .Err(errorFor(status))
+}
+
+// Reads one bounded UTF-8 file synchronously.
+fn ReadTextSync(path String, limit u64) Result<String, HostError> {
+    var result = ""
+    const status = readTextSyncLimitedNative(path, limit, &result)
+    if status == 0 return .Ok(result)
+    .Err(readHostErrorFor(status))
+}
+
+// Atomically replaces one bounded UTF-8 file.
+fn WriteTextAtomic(path String, value String, limit u64) Result<void, HostError> {
+    const status = writeTextAtomicNative(path, value, limit)
+    if status == 0 return .Ok
+    .Err(readHostErrorFor(status))
+}
+
+// Creates every missing directory component.
+fn CreateDirectory(path String) Result<void, HostError> {
+    const status = createDirectoryTreeNative(path)
+    if status == 0 return .Ok
+    .Err(hostErrorFor(status))
+}
+
+fn Exists(path String) Result<bool, HostError> {
+    var result = false
+    const status = existsNative(path, &result)
+    if status == 0 return .Ok(result)
+    .Err(hostErrorFor(status))
+}
+
+// Classifies the final path component without following a link.
+fn Kind(path String) Result<EntryKind, HostError> {
+    var result u32 = 0
+    const status = kindNative(path, &result)
+    if status != 0 return .Err(hostErrorFor(status))
+    if result == 0 return .Ok(.Missing)
+    if result == 1 return .Ok(.File)
+    if result == 2 return .Ok(.Directory)
+    if result == 3 return .Ok(.SymbolicLink)
+    if result == 4 return .Ok(.Other)
+    .Err(.Io)
+}
+
+// Resolves an existing path and rejects a symbolic final component.
+fn Canonicalize(path String) Result<String, HostError> {
+    var result = ""
+    const status = canonicalizeNative(path, &result)
+    if status == 0 return .Ok(result)
+    .Err(hostErrorFor(status))
+}
+
+// Renames one path and fails when the destination exists.
+fn Rename(source String, destination String) Result<void, HostError> {
+    const status = renameNative(source, destination)
+    if status == 0 return .Ok
+    .Err(hostErrorFor(status))
+}
+
+// Atomically replaces the destination with the source where the platform permits it.
+fn Replace(source String, destination String) Result<void, HostError> {
+    const status = replaceNative(source, destination)
+    if status == 0 return .Ok
+    .Err(hostErrorFor(status))
+}
+
+// Copies one regular file without following its final symbolic link.
+fn CopyFile(source String, destination String) Result<void, HostError> {
+    const status = copyFileNative(source, destination)
+    if status == 0 return .Ok
+    .Err(hostErrorFor(status))
+}
+
+fn RemoveFile(path String) Result<void, HostError> {
+    const status = removeFileNative(path)
+    if status == 0 return .Ok
+    .Err(hostErrorFor(status))
+}
+
+fn RemoveEmptyDirectory(path String) Result<void, HostError> {
+    const status = removeEmptyDirectoryNative(path)
+    if status == 0 return .Ok
+    .Err(hostErrorFor(status))
+}
+
+// Creates a collision-safe directory beneath an existing parent.
+fn CreateTempDirectory(parent String, prefix String) Result<String, HostError> {
+    var result = ""
+    const status = createTempDirectoryNative(parent, prefix, &result)
+    if status == 0 return .Ok(result)
+    .Err(hostErrorFor(status))
+}
+
+// Creates a collision-safe empty file beneath an existing parent.
+fn CreateTempFile(parent String, prefix String) Result<String, HostError> {
+    var result = ""
+    const status = createTempFileNative(parent, prefix, &result)
+    if status == 0 return .Ok(result)
+    .Err(hostErrorFor(status))
+}
+
+fn IsExecutable(path String) Result<bool, HostError> {
+    var result = false
+    const status = isExecutableNative(path, &result)
+    if status == 0 return .Ok(result)
+    .Err(hostErrorFor(status))
+}
+
+// Sets executable permission bits on platforms that expose them.
+fn SetExecutable(path String, executable bool) Result<void, HostError> {
+    const status = setExecutableNative(path, executable)
+    if status == 0 return .Ok
+    .Err(hostErrorFor(status))
 }
 
 struct LineReader {

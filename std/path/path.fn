@@ -2,6 +2,10 @@ package std.path
 
 import std.text
 
+enum Error {
+    DifferentRoot
+}
+
 @target(linux)
 fn Separator() String {
     "/"
@@ -36,6 +40,420 @@ fn SeparatorFor(left String) String {
     Separator()
 }
 
+@target(linux)
+fn isSeparator(value u64) bool {
+    value == 47
+}
+
+@target(macos)
+fn isSeparator(value u64) bool {
+    value == 47
+}
+
+@target(windows)
+fn isSeparator(value u64) bool {
+    value == 47 || value == 92
+}
+
+fn byteAt(value String, index u64) u64 {
+    const byte = text.ByteAt(value, index) else error {
+        discard error
+        panic("path byte is out of range")
+    }
+    byte
+}
+
+fn slice(value String, start u64, end u64) String {
+    const segment = text.Slice(value, start, end) else error {
+        discard error
+        panic("path boundary is invalid")
+    }
+    segment
+}
+
+@target(linux)
+fn volumeLength(value String) u64 {
+    0
+}
+
+@target(macos)
+fn volumeLength(value String) u64 {
+    0
+}
+
+@target(windows)
+fn volumeLength(value String) u64 {
+    const length = text.ByteLen(value)
+    if length >= 2 && byteAt(value, 1) == 58 {
+        return 2
+    }
+    if length < 2 || !isSeparator(byteAt(value, 0)) ||
+        !isSeparator(byteAt(value, 1)) {
+        return 0
+    }
+    var offset u64 = 2
+    while offset < length && !isSeparator(byteAt(value, offset)) {
+        offset = offset + 1
+    }
+    if offset == 2 || offset == length {
+        return 2
+    }
+    offset = offset + 1
+    const share = offset
+    while offset < length && !isSeparator(byteAt(value, offset)) {
+        offset = offset + 1
+    }
+    if offset == share {
+        return 2
+    }
+    offset
+}
+
+@target(linux)
+fn rootLength(value String) u64 {
+    if text.ByteLen(value) > 0 && isSeparator(byteAt(value, 0)) {
+        return 1
+    }
+    0
+}
+
+@target(macos)
+fn rootLength(value String) u64 {
+    if text.ByteLen(value) > 0 && isSeparator(byteAt(value, 0)) {
+        return 1
+    }
+    0
+}
+
+@target(windows)
+fn rootLength(value String) u64 {
+    const length = text.ByteLen(value)
+    const volume = volumeLength(value)
+    if volume >= 2 && byteAt(value, 1) == 58 {
+        if length > 2 && isSeparator(byteAt(value, 2)) {
+            return 3
+        }
+        return 0
+    }
+    if volume > 2 {
+        if volume < length && isSeparator(byteAt(value, volume)) {
+            return volume + 1
+        }
+        return volume
+    }
+    if length > 0 && isSeparator(byteAt(value, 0)) {
+        return 1
+    }
+    0
+}
+
+fn IsAbsolute(value String) bool {
+    rootLength(value) > 0
+}
+
+fn normalizedPrefix(value String, length u64, separator String) String {
+    if length == 0 return ""
+    var builder = text.NewBuilder()
+    var offset u64 = 0
+    var start u64 = 0
+    while offset < length {
+        if isSeparator(byteAt(value, offset)) {
+            if offset > start {
+                const written = builder.Write(slice(value, start, offset)) else error {
+                    discard error
+                    panic("path builder is closed")
+                }
+                discard written
+            }
+            const written = builder.Write(separator) else error {
+                discard error
+                panic("path builder is closed")
+            }
+            discard written
+            start = offset + 1
+        }
+        offset = offset + 1
+    }
+    if start < length {
+        const written = builder.Write(slice(value, start, length)) else error {
+            discard error
+            panic("path builder is closed")
+        }
+        discard written
+    }
+    const result = builder.Finish() else error {
+        discard error
+        panic("path builder is closed")
+    }
+    result
+}
+
+fn appendSegment(current String, segment String, separator String, rooted bool) String {
+    if text.IsEmpty(current) return text.Copy(segment)
+    if current == "." return text.Copy(segment)
+    if rooted && text.EndsWith(current, separator) return current + segment
+    const length = text.ByteLen(current)
+    if length > 0 && !isSeparator(byteAt(current, length - 1)) {
+        return current + separator + segment
+    }
+    current + segment
+}
+
+fn removeLastSegment(current String, root u64, prefix u64) String {
+    const length = text.ByteLen(current)
+    if length <= root || length <= prefix || current == "." return text.Copy(current)
+    var offset = length
+    while offset > root && offset > prefix {
+        if isSeparator(byteAt(current, offset - 1)) {
+            const end = offset - 1
+            if end < root return slice(current, 0, root)
+            if end == 0 return "."
+            return slice(current, 0, end)
+        }
+        offset = offset - 1
+    }
+    if root > 0 return normalizedPrefix(current, root, SeparatorFor(current))
+    if prefix > 0 return normalizedPrefix(current, prefix, SeparatorFor(current)) + "."
+    "."
+}
+
+fn isParentSegment(value String, separator String) bool {
+    value == ".." || text.EndsWith(value, separator + "..")
+}
+
+fn Normalize(value String) String {
+    const length = text.ByteLen(value)
+    if length == 0 return "."
+
+    const separator = SeparatorFor(value)
+    const root = rootLength(value)
+    const volume = volumeLength(value)
+    const prefix = if root > volume { root } else { volume }
+    var result = normalizedPrefix(value, prefix, separator)
+    var offset = prefix
+    while offset < length {
+        while offset < length && isSeparator(byteAt(value, offset)) {
+            offset = offset + 1
+        }
+        if offset == length break
+        const start = offset
+        while offset < length && !isSeparator(byteAt(value, offset)) {
+            offset = offset + 1
+        }
+        const segment = slice(value, start, offset)
+        if segment == "." {
+            continue
+        }
+        if segment == ".." {
+            const before = text.ByteLen(result)
+            if before > root && before > volume && result != "." &&
+                !isParentSegment(result, separator) {
+                result = removeLastSegment(result, root, volume)
+            } else {
+                if root == 0 {
+                    result = appendSegment(result, segment, separator, false)
+                }
+            }
+            continue
+        }
+        if root == 0 && volume > 0 && text.ByteLen(result) == volume {
+            result = result + segment
+        } else {
+            result = appendSegment(result, segment, separator, root > 0)
+        }
+    }
+
+    if text.IsEmpty(result) {
+        if root > 0 return normalizedPrefix(value, root, separator)
+        if volume > 0 return normalizedPrefix(value, volume, separator) + "."
+        return "."
+    }
+    result
+}
+
+fn Parent(value String) String {
+    const normalized = Normalize(value)
+    const root = rootLength(normalized)
+    const volume = volumeLength(normalized)
+    removeLastSegment(normalized, root, volume)
+}
+
+fn FileName(value String) String {
+    const normalized = Normalize(value)
+    const length = text.ByteLen(normalized)
+    const root = rootLength(normalized)
+    if length == root && root > 0 return ""
+    var offset = length
+    while offset > root {
+        if isSeparator(byteAt(normalized, offset - 1)) {
+            return slice(normalized, offset, length)
+        }
+        offset = offset - 1
+    }
+    const volume = volumeLength(normalized)
+    if volume > 0 return slice(normalized, volume, length)
+    text.Copy(normalized)
+}
+
+fn extensionOffset(name String) u64 {
+    const length = text.ByteLen(name)
+    var offset = length
+    while offset > 0 {
+        offset = offset - 1
+        if byteAt(name, offset) == 46 {
+            if offset == 0 return length
+            return offset
+        }
+    }
+    length
+}
+
+fn Extension(value String) String {
+    const name = FileName(value)
+    const offset = extensionOffset(name)
+    slice(name, offset, text.ByteLen(name))
+}
+
+fn ReplaceExtension(value String, extension String) String {
+    const normalized = Normalize(value)
+    const name = FileName(normalized)
+    const nameLength = text.ByteLen(name)
+    if nameLength == 0 return normalized
+    const baseLength = text.ByteLen(normalized) - nameLength + extensionOffset(name)
+    const base = slice(normalized, 0, baseLength)
+    if text.IsEmpty(extension) return base
+    if text.StartsWith(extension, ".") return base + extension
+    base + "." + extension
+}
+
+@target(linux)
+fn rootsEqual(left String, right String) bool {
+    IsAbsolute(left) == IsAbsolute(right)
+}
+
+@target(macos)
+fn rootsEqual(left String, right String) bool {
+    IsAbsolute(left) == IsAbsolute(right)
+}
+
+fn asciiUpper(value u64) u64 {
+    if value >= 97 && value <= 122 return value - 32
+    value
+}
+
+fn asciiEqual(left String, right String) bool {
+    const length = text.ByteLen(left)
+    if length != text.ByteLen(right) return false
+    var offset u64 = 0
+    while offset < length {
+        if asciiUpper(byteAt(left, offset)) != asciiUpper(byteAt(right, offset)) {
+            return false
+        }
+        offset = offset + 1
+    }
+    true
+}
+
+@target(linux)
+fn segmentsEqual(left String, right String) bool {
+    text.Equal(left, right)
+}
+
+@target(macos)
+fn segmentsEqual(left String, right String) bool {
+    text.Equal(left, right)
+}
+
+@target(windows)
+fn segmentsEqual(left String, right String) bool {
+    asciiEqual(left, right)
+}
+
+@target(windows)
+fn rootsEqual(left String, right String) bool {
+    const leftRoot = rootLength(left)
+    const rightRoot = rootLength(right)
+    const leftVolume = volumeLength(left)
+    const rightVolume = volumeLength(right)
+    if (leftRoot > 0) != (rightRoot > 0) return false
+    if leftVolume == 0 || rightVolume == 0 return leftVolume == rightVolume
+    if leftVolume != rightVolume return false
+    if leftVolume == 2 && byteAt(left, 1) == 58 && byteAt(right, 1) == 58 {
+        return asciiUpper(byteAt(left, 0)) == asciiUpper(byteAt(right, 0))
+    }
+    asciiEqual(slice(left, 0, leftVolume), slice(right, 0, rightVolume))
+}
+
+fn firstSegment(value String) u64 {
+    if value == "." return text.ByteLen(value)
+    const root = rootLength(value)
+    if root > 0 return root
+    volumeLength(value)
+}
+
+fn segmentEnd(value String, start u64) u64 {
+    const length = text.ByteLen(value)
+    var offset = start
+    while offset < length && !isSeparator(byteAt(value, offset)) {
+        offset = offset + 1
+    }
+    offset
+}
+
+fn nextSegment(value String, end u64) u64 {
+    const length = text.ByteLen(value)
+    var offset = end
+    while offset < length && isSeparator(byteAt(value, offset)) {
+        offset = offset + 1
+    }
+    offset
+}
+
+fn Relative(base String, target String) Result<String, Error> {
+    const left = Normalize(base)
+    const right = Normalize(target)
+    if !rootsEqual(left, right) return .Err(.DifferentRoot)
+    if left == right return .Ok(".")
+
+    var leftOffset = firstSegment(left)
+    var rightOffset = firstSegment(right)
+    const leftLength = text.ByteLen(left)
+    const rightLength = text.ByteLen(right)
+    if left == "." {
+        leftOffset = leftLength
+    }
+    if right == "." {
+        rightOffset = rightLength
+    }
+    while leftOffset < leftLength && rightOffset < rightLength {
+        const leftEnd = segmentEnd(left, leftOffset)
+        const rightEnd = segmentEnd(right, rightOffset)
+        if !segmentsEqual(
+            slice(left, leftOffset, leftEnd),
+            slice(right, rightOffset, rightEnd)
+        ) {
+            break
+        }
+        leftOffset = nextSegment(left, leftEnd)
+        rightOffset = nextSegment(right, rightEnd)
+    }
+
+    const separator = SeparatorFor(base)
+    var result = ""
+    var offset = leftOffset
+    while offset < leftLength {
+        const end = segmentEnd(left, offset)
+        result = appendSegment(result, "..", separator, false)
+        offset = nextSegment(left, end)
+    }
+    if rightOffset < rightLength {
+        const suffix = slice(right, rightOffset, rightLength)
+        result = appendSegment(result, suffix, separator, false)
+    }
+    if text.IsEmpty(result) return .Ok(".")
+    .Ok(result)
+}
+
 fn Join(left String, right String) String {
     if text.IsEmpty(left) {
         return text.Copy(right)
@@ -45,17 +463,13 @@ fn Join(left String, right String) String {
     }
 
     const separator = SeparatorFor(left)
-    const leftEnds = text.EndsWith(left, separator)
-    const rightStarts = text.StartsWith(right, separator)
+    const leftEnds = isSeparator(byteAt(left, text.ByteLen(left) - 1))
+    const rightStarts = isSeparator(byteAt(right, 0))
     const leftCopy = text.Copy(left)
     const rightCopy = text.Copy(right)
     if leftEnds && rightStarts {
         const rightLength = text.ByteLen(right)
-        const trimmed = text.Slice(right, 1, rightLength) else error {
-            discard error
-            panic("invalid path boundary")
-        }
-        return leftCopy + trimmed
+        return leftCopy + slice(right, 1, rightLength)
     }
     if leftEnds || rightStarts {
         return leftCopy + rightCopy

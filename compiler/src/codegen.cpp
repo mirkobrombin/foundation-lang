@@ -4667,6 +4667,8 @@ void emitArrayOwnership(std::ostringstream &out, const FirProgram &program, cons
             << "; fdn_index-- > 0;) {\n";
         emitDropValue(out, program, element, "value->fdn_data[fdn_index]", 2);
         out << "    }\n";
+    } else {
+        out << "    (void)value;\n";
     }
     out << "}\n\n";
 
@@ -4679,6 +4681,8 @@ void emitArrayOwnership(std::ostringstream &out, const FirProgram &program, cons
         emitMoveAssignment(out, program, element, "result.fdn_data[fdn_index]",
                            "value->fdn_data[fdn_index]", 2);
         out << "    }\n";
+    } else {
+        out << "    (void)value;\n";
     }
     out << "    return result;\n";
     out << "}\n\n";

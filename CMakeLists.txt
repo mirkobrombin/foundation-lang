@@ -88,6 +88,8 @@ set(FOUNDATION_V2_SOURCE "" CACHE PATH
 
 add_library(foundation_runtime STATIC
     runtime/src/runtime.c
+    runtime/src/fs_host.c
+    runtime/src/process.c
     runtime/src/crypto.c
     runtime/src/parse.c
     runtime/src/task.c
@@ -285,6 +287,8 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_ARCHIVER="${FOUNDATION_ARCHIVER_NAME}"
     FOUNDATION_RUNTIME_INCLUDE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/include"
     FOUNDATION_RUNTIME_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c"
+    FOUNDATION_RUNTIME_FS_HOST_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/fs_host.c"
+    FOUNDATION_RUNTIME_PROCESS_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/process.c"
     FOUNDATION_RUNTIME_CRYPTO_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c"
     FOUNDATION_RUNTIME_PARSE_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c"
     FOUNDATION_RUNTIME_TASK_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c"
@@ -1125,6 +1129,39 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_env_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_fs_test runtime/tests/fs_test.c)
     target_link_libraries(foundation_runtime_fs_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_fs_host_test runtime/tests/fs_host_test.c)
+    target_link_libraries(foundation_runtime_fs_host_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_process_test runtime/tests/process_test.c)
+    target_link_libraries(foundation_runtime_process_test PRIVATE foundation_runtime)
+    set(foundation_host_service_test_targets
+        foundation_runtime_fs_host_test
+        foundation_runtime_process_test
+    )
+    if(MSVC)
+        foreach(host_service_test IN LISTS foundation_host_service_test_targets)
+            target_compile_options(${host_service_test} PRIVATE /W4)
+            if(FOUNDATION_WARNINGS_AS_ERRORS)
+                target_compile_options(${host_service_test} PRIVATE /WX)
+            endif()
+        endforeach()
+    else()
+        foreach(host_service_test IN LISTS foundation_host_service_test_targets)
+            target_compile_options(${host_service_test} PRIVATE
+                -Wall -Wextra -Wpedantic
+            )
+            if(FOUNDATION_WARNINGS_AS_ERRORS)
+                target_compile_options(${host_service_test} PRIVATE -Werror)
+            endif()
+            if(FOUNDATION_BUILD_FUZZERS)
+                target_compile_options(${host_service_test} PRIVATE
+                    -fsanitize=address,undefined
+                )
+                target_link_options(${host_service_test} PRIVATE
+                    -fsanitize=address,undefined
+                )
+            endif()
+        endforeach()
+    endif()
     add_executable(foundation_runtime_time_test runtime/tests/time_test.c)
     target_link_libraries(foundation_runtime_time_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_uuid_test runtime/tests/uuid_test.c)
@@ -1973,6 +2010,41 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs/lines.jsonl
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fs
             ${CMAKE_CURRENT_BINARY_DIR}/fs-growing.jsonl
+    )
+    add_test(
+        NAME runtime.fs-host
+        COMMAND foundation_runtime_fs_host_test ${CMAKE_CURRENT_BINARY_DIR}
+    )
+    add_test(
+        NAME runtime.process
+        COMMAND foundation_runtime_process_test ${CMAKE_CURRENT_BINARY_DIR}
+    )
+    add_test(
+        NAME compiler.run.host-services.llvm
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/host-services.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/host-services.out
+            -DBACKEND=llvm
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_runtime_process_test>;${CMAKE_CURRENT_BINARY_DIR}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME compiler.run.host-services.c
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/host-services.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/host-services.out
+            -DBACKEND=c
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_runtime_process_test>;${CMAKE_CURRENT_BINARY_DIR}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    set_tests_properties(
+        runtime.fs-host
+        runtime.process
+        compiler.run.host-services.llvm
+        compiler.run.host-services.c
+        PROPERTIES TIMEOUT ${FOUNDATION_COMPILE_RUN_TIMEOUT}
     )
     add_test(
         NAME runtime.panic-native-boundary
