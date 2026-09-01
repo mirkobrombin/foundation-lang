@@ -1,0 +1,664 @@
+package foundation.compiler
+
+enum firCaptureMode {
+    Copy
+    Own
+    View
+    Edit
+}
+
+enum firUnaryOperator {
+    Negate
+    Not
+    BitwiseNot
+    Empty
+    Dereference
+}
+
+enum firOwnershipOperator {
+    Own
+    View
+    Edit
+}
+
+enum firReceiverKind {
+    View
+    Edit
+    Own
+}
+
+enum firBinaryOperator {
+    Add
+    Subtract
+    Multiply
+    Divide
+    Remainder
+    ShiftLeft
+    ShiftRight
+    BitwiseAnd
+    BitwiseXor
+    BitwiseOr
+    Equal
+    NotEqual
+    Less
+    LessEqual
+    Greater
+    GreaterEqual
+    And
+    Or
+}
+
+enum firCallKind {
+    Function
+    FunctionValue
+    ContractValue
+    Constrained
+    Print
+    Panic
+    Len
+    Null
+    IsNull
+    CString
+    SizeOf
+    PointerCast
+    NumericConversion
+}
+
+struct firIntegerExpression {
+    magnitude u64
+    negative bool
+}
+
+struct firFloatingExpression {
+    text String
+}
+
+struct firBooleanExpression {
+    value bool
+}
+
+struct firStringExpression {
+    value String
+}
+
+struct firArrayExpression {
+    elements own arena<u64>
+}
+
+struct firLocalExpression {
+    local u64
+}
+
+struct firReadExpression {
+    local u64
+}
+
+struct firMoveExpression {
+    local u64
+}
+
+struct firFunctionValueExpression {
+    function u64
+    typeArguments own arena<semanticType>
+}
+
+struct firClosureCapture {
+    local u64
+    mode firCaptureMode
+}
+
+struct firClosureExpression {
+    function u64
+    captures own arena<firClosureCapture>
+}
+
+struct firUnaryExpression {
+    operation firUnaryOperator
+    operand u64
+}
+
+struct firOwnershipExpression {
+    operation firOwnershipOperator
+    operand u64
+    implicitRead bool
+}
+
+struct firBinaryExpression {
+    left u64
+    operation firBinaryOperator
+    right u64
+}
+
+struct firCallExpression {
+    kind firCallKind
+    function u64
+    typeArguments own arena<semanticType>
+    arguments own arena<u64>
+    argumentDrops own arena<bool>
+    contractID u64
+    method u64
+    local u64
+    argumentParameters own arena<u64>
+    constrainedType semanticType
+}
+
+struct firContractMethodTarget {
+    function u64
+    typeArguments own arena<semanticType>
+    contractDefault bool
+    defaultContract semanticType
+    delegatePath own arena<u64>
+}
+
+struct firContractExpression {
+    value u64
+    concreteType semanticType
+    contractType semanticType
+    methodTargets own arena<firContractMethodTarget>
+}
+
+struct firStructFieldValue {
+    field u64
+    value u64
+}
+
+struct firStructExpression {
+    type semanticType
+    fields own arena<firStructFieldValue>
+}
+
+struct firFieldExpression {
+    base u64
+    field u64
+}
+
+struct firIndexExpression {
+    base u64
+    index u64
+}
+
+struct firRawPointerExpression {
+    base u64
+}
+
+struct firReplaceExpression {
+    target u64
+    value u64
+}
+
+struct firSpawnExpression {
+    call u64
+}
+
+struct firTaskWaitExpression {
+    taskValue u64
+}
+
+struct firBlockingCallExpression {
+    function u64
+    arguments own arena<u64>
+    argumentStorages own arena<u64>
+    resultStorage Option<u64>
+    argumentParameters own arena<u64>
+}
+
+struct firCallbackCallExpression {
+    function u64
+    arguments own arena<u64>
+    argumentStorages own arena<u64>
+    resultStorage u64
+    argumentParameters own arena<u64>
+}
+
+struct firChannelExpression {
+    payload semanticType
+    capacity u64
+}
+
+struct firChannelSenderCloneExpression {
+    sender u64
+}
+
+struct firChannelSendExpression {
+    sender u64
+    value Option<u64>
+    valueStorage Option<u64>
+    resultStorage u64
+}
+
+struct firChannelReceiveExpression {
+    receiver u64
+    resultStorage u64
+}
+
+struct firEnumExpression {
+    type semanticType
+    variant u64
+    payload Option<u64>
+}
+
+struct firMatchArm {
+    wildcard bool
+    variant u64
+    binding Option<u64>
+    guardBinding Option<u64>
+    pattern Option<u64>
+    guard Option<u64>
+    block u64
+    expression Option<u64>
+    drops own arena<u64>
+}
+
+struct firMatchExpression {
+    value u64
+    type semanticType
+    arms own arena<firMatchArm>
+    valueStorage Option<u64>
+}
+
+struct firConditionalExpression {
+    condition u64
+    thenBlock u64
+    thenValue u64
+    elseBlock u64
+    elseValue u64
+}
+
+enum firExpressionValue {
+    Integer(firIntegerExpression)
+    Floating(firFloatingExpression)
+    Boolean(firBooleanExpression)
+    StringValue(firStringExpression)
+    Array(firArrayExpression)
+    Local(firLocalExpression)
+    Read(firReadExpression)
+    Move(firMoveExpression)
+    FunctionValue(firFunctionValueExpression)
+    Closure(firClosureExpression)
+    Unary(firUnaryExpression)
+    Ownership(firOwnershipExpression)
+    Binary(firBinaryExpression)
+    Call(firCallExpression)
+    ContractValue(firContractExpression)
+    StructValue(firStructExpression)
+    Field(firFieldExpression)
+    Index(firIndexExpression)
+    RawPointer(firRawPointerExpression)
+    ReplaceValue(firReplaceExpression)
+    Spawn(firSpawnExpression)
+    TaskWait(firTaskWaitExpression)
+    BlockingCall(firBlockingCallExpression)
+    CallbackCall(firCallbackCallExpression)
+    ChannelValue(firChannelExpression)
+    ChannelSenderClone(firChannelSenderCloneExpression)
+    ChannelSend(firChannelSendExpression)
+    ChannelReceive(firChannelReceiveExpression)
+    EnumValue(firEnumExpression)
+    MatchValue(firMatchExpression)
+    Conditional(firConditionalExpression)
+}
+
+struct firExpression {
+    value firExpressionValue
+    type semanticType
+    span sourceSpan
+}
+
+struct firVariableStatement {
+    local u64
+    initializer u64
+}
+
+struct firStructBinding {
+    field u64
+    local u64
+}
+
+struct firStructDestructureStatement {
+    initializer u64
+    type semanticType
+    owned bool
+    bindings own arena<firStructBinding>
+}
+
+struct firLetElseStatement {
+    local u64
+    initializer u64
+    errorLocal u64
+    elseBlock u64
+}
+
+struct firResultElseStatement {
+    expression u64
+    errorLocal u64
+    elseBlock u64
+}
+
+enum firAssignmentOperator {
+    Assign
+    Add
+    Subtract
+    Multiply
+    Divide
+    Remainder
+    ShiftLeft
+    ShiftRight
+}
+
+struct firAssignmentStatement {
+    target u64
+    operation firAssignmentOperator
+    value u64
+}
+
+struct firExpressionStatement {
+    expression u64
+}
+
+struct firDiscardStatement {
+    expression u64
+}
+
+struct firReturnStatement {
+    value Option<u64>
+    drops own arena<u64>
+}
+
+struct firIfStatement {
+    condition u64
+    thenBlock u64
+    elseBlock Option<u64>
+}
+
+struct firWhileStatement {
+    condition u64
+    body u64
+}
+
+struct firForStatement {
+    sequence u64
+    sequenceStorage u64
+    index u64
+    value u64
+    body u64
+    next Option<u64>
+    ownsSequence bool
+}
+
+struct firBreakStatement {
+    drops own arena<u64>
+}
+
+struct firContinueStatement {
+    drops own arena<u64>
+}
+
+struct firUnsafeStatement {
+    body u64
+}
+
+struct firSelectOperationArm {
+    send bool
+    endpoint u64
+    value Option<u64>
+    valueStorage Option<u64>
+    resultStorage u64
+    binding Option<u64>
+    body u64
+    span sourceSpan
+}
+
+struct firSelectTimeoutArm {
+    nanoseconds u64
+    duration Option<u64>
+    body u64
+}
+
+struct firSelectStatement {
+    operations own arena<firSelectOperationArm>
+    timeoutArm Option<firSelectTimeoutArm>
+    errorLocal u64
+    errorBlock u64
+    deadlineStorage u64
+}
+
+enum firStatementValue {
+    Variable(firVariableStatement)
+    LetElse(firLetElseStatement)
+    ResultElse(firResultElseStatement)
+    StructDestructure(firStructDestructureStatement)
+    Assignment(firAssignmentStatement)
+    Expression(firExpressionStatement)
+    Discard(firDiscardStatement)
+    ReturnValue(firReturnStatement)
+    IfValue(firIfStatement)
+    WhileValue(firWhileStatement)
+    ForValue(firForStatement)
+    BreakValue(firBreakStatement)
+    ContinueValue(firContinueStatement)
+    SelectValue(firSelectStatement)
+    UnsafeValue(firUnsafeStatement)
+}
+
+struct firStatement {
+    value firStatementValue
+    span sourceSpan
+}
+
+struct firBlock {
+    statements own arena<u64>
+    drops own arena<u64>
+}
+
+struct firLocal {
+    name String
+    type semanticType
+    mutableBinding bool
+    captured bool
+    captureMode firCaptureMode
+    borrowedClosure bool
+}
+
+struct firStateTransitionFunction {
+    sourceVariants own arena<u64>
+    destinationVariant u64
+    destinationParameter Option<u64>
+    timeoutNanoseconds Option<u64>
+}
+
+struct firStateTimeoutFunction {
+    sourceVariants own arena<u64>
+    nanoseconds u64
+}
+
+enum firWorkflowKind {
+    Pipeline
+    Saga
+}
+
+struct firWorkflowStep {
+    name String
+    function u64
+    typeArguments own arena<semanticType>
+    attempts u64
+    compensation Option<u64>
+    compensationTypeArguments own arena<semanticType>
+}
+
+struct firWorkflowFunction {
+    kind firWorkflowKind
+    inputType semanticType
+    successType semanticType
+    errorType semanticType
+    failureType semanticType
+    failureDetailsType semanticType
+    steps own arena<firWorkflowStep>
+}
+
+struct firFunction {
+    name String
+    packageName String
+    sourcePath String
+    source u64
+    sourceSpan sourceSpan
+    generic bool
+    typeParameterCount u64
+    returnType semanticType
+    parameters own arena<u64>
+    readParameters own arena<bool>
+    locals own arena<firLocal>
+    expressions own arena<firExpression>
+    statements own arena<firStatement>
+    blocks own arena<firBlock>
+    body u64
+    exported bool
+    diverges bool
+    cSymbol Option<String>
+    hasBody bool
+    closure bool
+    method bool
+    receiver Option<firReceiverKind>
+    attributes own arena<firAttributeUse>
+    parameterAttributes own arena<own arena<firAttributeUse>>
+    taskFunction bool
+    blocking bool
+    callback bool
+    callbackCancelSymbol Option<String>
+    testName Option<String>
+    actionFunction bool
+    stateTransition Option<firStateTransitionFunction>
+    workflow Option<firWorkflowFunction>
+    stateTimeout Option<firStateTimeoutFunction>
+    constructor bool
+    typeParameterConstraints own arena<Option<semanticType>>
+}
+
+struct firStructField {
+    name String
+    type semanticType
+    exported bool
+    attributes own arena<firAttributeUse>
+    hasDefault bool
+}
+
+struct firStruct {
+    name String
+    sourcePath String
+    sourceSpan sourceSpan
+    typeParameterCount u64
+    fields own arena<firStructField>
+    implementations own arena<semanticType>
+    exported bool
+    dropFunction Option<u64>
+    attributes own arena<firAttributeUse>
+    serviceType bool
+    implementationDelegates own arena<Option<u64>>
+}
+
+struct firEnumVariant {
+    name String
+    payload Option<semanticType>
+    exported bool
+    attributes own arena<firAttributeUse>
+}
+
+struct firEnum {
+    name String
+    typeParameterCount u64
+    variants own arena<firEnumVariant>
+    exported bool
+    builtin bool
+    attributes own arena<firAttributeUse>
+    stateMachine bool
+}
+
+struct firContractMethod {
+    receiver firReceiverKind
+    name String
+    returnType semanticType
+    parameters own arena<semanticType>
+    readParameters own arena<bool>
+    parameterNames own arena<String>
+    exported bool
+    attributes own arena<firAttributeUse>
+    parameterAttributes own arena<own arena<firAttributeUse>>
+    originContract u64
+    originArguments own arena<semanticType>
+    defaultFunction Option<u64>
+}
+
+struct firContract {
+    name String
+    typeParameterCount u64
+    methodList own arena<firContractMethod>
+    exported bool
+    attributes own arena<firAttributeUse>
+    parents own arena<semanticType>
+}
+
+struct firProgram {
+    structs own arena<firStruct>
+    enums own arena<firEnum>
+    contracts own arena<firContract>
+    attributeDeclarations own arena<firAttributeDeclaration>
+    functions own arena<firFunction>
+    main u64
+}
+
+fn newFirFunction() firFunction {
+    var cSymbol Option<String> = .None
+    var receiver Option<firReceiverKind> = .None
+    var callbackCancelSymbol Option<String> = .None
+    var testName Option<String> = .None
+    var stateTransition Option<firStateTransitionFunction> = .None
+    var workflow Option<firWorkflowFunction> = .None
+    var stateTimeout Option<firStateTimeoutFunction> = .None
+    firFunction {
+        name = ""
+        packageName = ""
+        sourcePath = ""
+        source = 0
+        sourceSpan = sourceSpan { offset = 0 length = 0 line = 0 column = 0 source = 0 }
+        generic = false
+        typeParameterCount = 0
+        returnType = invalidSemanticType()
+        parameters = newArena<u64>()
+        readParameters = newArena<bool>()
+        locals = newArena<firLocal>()
+        expressions = newArena<firExpression>()
+        statements = newArena<firStatement>()
+        blocks = newArena<firBlock>()
+        body = 0
+        exported = false
+        diverges = false
+        cSymbol = cSymbol
+        hasBody = true
+        closure = false
+        method = false
+        receiver = receiver
+        attributes = newArena<firAttributeUse>()
+        parameterAttributes = newArena<own arena<firAttributeUse>>()
+        taskFunction = false
+        blocking = false
+        callback = false
+        callbackCancelSymbol = callbackCancelSymbol
+        testName = testName
+        actionFunction = false
+        stateTransition = stateTransition
+        workflow = workflow
+        stateTimeout = stateTimeout
+        constructor = false
+        typeParameterConstraints = newArena<Option<semanticType>>()
+    }
+}
+
+fn newFirProgram() own firProgram {
+    own firProgram {
+        structs = newArena<firStruct>()
+        enums = newArena<firEnum>()
+        contracts = newArena<firContract>()
+        attributeDeclarations = newArena<firAttributeDeclaration>()
+        functions = newArena<firFunction>()
+        main = 0
+    }
+}

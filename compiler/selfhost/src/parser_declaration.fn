@@ -3,6 +3,21 @@ package foundation.compiler
 import std.collections
 import std.text
 
+struct pendingStateTransition {
+    event tokenSnapshot
+    parameters own collections.List<parameter>
+    sources own collections.List<tokenSnapshot>
+    destination tokenSnapshot
+    destinationArgument Option<tokenSnapshot>
+    timeoutNanoseconds Option<u64>
+}
+
+struct parsedStateReference {
+    found bool
+    index u64
+    payload bool
+}
+
 methods parser {
     fn parseStructDeclaration(&self, isService bool) structDeclaration {
         const start = self.expectToken(
@@ -855,12 +870,20 @@ methods parser {
         discard self.expectToken(
             .LeftBrace, "FDN1193", "expected { after state machine name")
         var states = collections.NewList<enumVariant>()
-        var transitionCount u64 = 0
+        var transitions = collections.NewList<pendingStateTransition>()
+        var sawTransition = false
         while !self.check(.RightBrace) && !self.atEnd() {
             if self.check(.Identifier) && self.currentToken().text == "state" {
                 discard self.advance()
                 const state = self.expectToken(
                     .Identifier, "FDN1194", "expected state name")
+                if sawTransition {
+                    self.diagnostics.reportError(
+                        "FDN1195",
+                        "state must be declared before transitions",
+                        state.span
+                    )
+                }
                 var payloadType Option<typeSyntax> = .None
                 var payloadName Option<String> = .None
                 var payloadSpan Option<sourceSpan> = .None
@@ -890,6 +913,7 @@ methods parser {
             }
             if self.check(.Identifier) && self.currentToken().text == "on" {
                 discard self.advance()
+                sawTransition = true
                 const event = self.expectToken(
                     .Identifier, "FDN1199", "expected transition event name")
                 var parameters = collections.NewList<parameter>()
@@ -908,34 +932,34 @@ methods parser {
                     )
                 }
                 self.expectContextual("from", "FDN1201", "expected from in transition")
-                var sourceVariants = collections.NewList<u64>()
-                var sourceCount u64 = 0
+                var sources = collections.NewList<tokenSnapshot>()
                 var moreSources = true
                 while moreSources {
-                    discard self.expectToken(
+                    const source = self.expectToken(
                         .Identifier, "FDN1202", "expected source state")
-                    sourceVariants.PushFront($sourceCount)
-                    sourceCount += 1
+                    sources.PushFront($source)
                     moreSources = self.matchToken(.Comma)
                 }
                 self.expectContextual("to", "FDN1203", "expected to in transition")
-                discard self.expectToken(
+                const destination = self.expectToken(
                     .Identifier, "FDN1204", "expected destination state")
-                var destinationParameter Option<u64> = .None
+                var destinationArgument Option<tokenSnapshot> = .None
+                var hasDestinationArgument = false
                 if self.matchToken(.LeftParen) {
-                    discard self.expectToken(
+                    const argument = self.expectToken(
                         .Identifier,
                         "FDN1205",
                         "expected destination payload binding"
                     )
+                    destinationArgument = .Some(argument)
+                    hasDestinationArgument = true
                     discard self.expectToken(
                         .RightParen,
                         "FDN1206",
                         "expected ) after destination payload"
                     )
-                    destinationParameter = .Some(1)
                 }
-                var timeoutRule Option<u64> = .None
+                var timeoutNanoseconds Option<u64> = .None
                 if self.check(.Identifier) && self.currentToken().text == "after" {
                     discard self.advance()
                     const amount = self.expectToken(
@@ -963,30 +987,257 @@ methods parser {
                             "unknown state timeout duration unit " + unit.text,
                             unit.span
                         )
+                    }
+                    if multiplier != 0 &&
+                        magnitude > 9223372036854775807 / multiplier {
+                        self.diagnostics.reportError(
+                            "FDN1254",
+                            "state timeout duration is outside the supported range",
+                            amount.span
+                        )
                     } else {
-                        timeoutRule = .Some(magnitude * multiplier)
+                        if magnitude == 0 {
+                            self.diagnostics.reportError(
+                                "FDN1255",
+                                "state timeout duration must be positive",
+                                amount.span
+                            )
+                        } else {
+                            if multiplier != 0 {
+                                timeoutNanoseconds = .Some(magnitude * multiplier)
+                            }
+                        }
+                    }
+                    if !parameters.IsEmpty() {
+                        self.diagnostics.reportError(
+                            "FDN1256",
+                            "state timeout transition cannot require parameters",
+                            event.span
+                        )
+                    }
+                    if hasDestinationArgument {
+                        self.diagnostics.reportError(
+                            "FDN1257",
+                            "state timeout destination cannot require a payload",
+                            destination.span
+                        )
                     }
                 }
-                const body = self.addBlock(collections.NewList<u64>(), event.span)
-                var functionParameters = collections.NewList<parameter>()
-                functionParameters.PushFront($receiverParameter(
-                        name.text, &typeParameters.names, .Edit, name.span))
-                discard parameters
-                discard self.program.functions.add($functionDeclaration {
-                    name = text.Copy(event.text)
-                    typeParameters = copyStringList(&typeParameters.names)
-                    parameters = functionParameters
-                    returnType = resultType(
-                        namedType("void", event.span),
-                        namedType(name.text + "TransitionError", event.span),
-                        event.span
+                transitions.PushFront($pendingStateTransition {
+                    event = event
+                    parameters = reverseList($parameters)
+                    sources = reverseList($sources)
+                    destination = destination
+                    destinationArgument = destinationArgument
+                    timeoutNanoseconds = timeoutNanoseconds
+                })
+            } else {
+                self.diagnostics.reportError(
+                    "FDN1207",
+                    "expected state or on declaration",
+                    self.currentToken().span
+                )
+                discard self.advance()
+            }
+        }
+        discard self.expectToken(
+            .RightBrace, "FDN1208", "expected } after state machine")
+        states = reverseList($states)
+        transitions = reverseList($transitions)
+        if states.IsEmpty() {
+            self.diagnostics.reportError(
+                "FDN1209", "state machine requires at least one state", start.span)
+        }
+        const errorName = text.Copy(name.text) + "TransitionError"
+        var timeoutSources = collections.NewList<u64>()
+        while !transitions.IsEmpty() {
+            var transition = match transitions.PopFront() {
+                None: panic("state transition list invariant failed")
+                Some(value): value
+            }
+            var sourceVariants = collections.NewList<u64>()
+            while !transition.sources.IsEmpty() {
+                const source = match transition.sources.PopFront() {
+                    None: panic("state source list invariant failed")
+                    Some(value): value
+                }
+                const resolved = parserStateReference(&states, source.text)
+                if !resolved.found {
+                    self.diagnostics.reportError(
+                        "FDN1210", "unknown state " + source.text, source.span)
+                } else {
+                    if parserU64ListContains(&sourceVariants, resolved.index) {
+                        self.diagnostics.reportError(
+                            "FDN1211",
+                            "duplicate transition source " + source.text,
+                            source.span
+                        )
+                    } else {
+                        sourceVariants.PushFront(resolved.index)
+                        if optionU64Present(transition.timeoutNanoseconds) {
+                            if parserU64ListContains(&timeoutSources, resolved.index) {
+                                self.diagnostics.reportError(
+                                    "FDN1258",
+                                    "state accepts more than one declarative timeout rule",
+                                    source.span
+                                )
+                            } else {
+                                timeoutSources.PushFront(resolved.index)
+                            }
+                        }
+                    }
+                }
+            }
+            sourceVariants = reverseList($sourceVariants)
+            const destination = parserStateReference(
+                &states, transition.destination.text)
+            if !destination.found {
+                self.diagnostics.reportError(
+                    "FDN1210",
+                    "unknown state " + transition.destination.text,
+                    transition.destination.span
+                )
+            }
+            var destinationParameter Option<u64> = .None
+            var destinationHasArgument = false
+            var destinationArgumentName = ""
+            var destinationArgumentSpan = transition.destination.span
+            const selectedArgument = replace transition.destinationArgument with .None
+            match selectedArgument {
+                None: {}
+                Some(argument): {
+                    destinationHasArgument = true
+                    destinationArgumentName = text.Copy(argument.text)
+                    destinationArgumentSpan = argument.span
+                }
+            }
+            if destination.found && destination.payload != destinationHasArgument {
+                self.diagnostics.reportError(
+                    "FDN1212",
+                    "destination state requires a payload binding" if destination.payload else
+                    "destination state does not accept a payload",
+                    transition.destination.span
+                )
+            }
+            if destinationHasArgument {
+                const parameterIndex = parserParameterIndex(
+                    &transition.parameters, destinationArgumentName)
+                match parameterIndex {
+                    None: self.diagnostics.reportError(
+                        "FDN1213",
+                        "unknown transition parameter " + destinationArgumentName,
+                        destinationArgumentSpan
                     )
-                    body = body
-                    exported = isExportedName(event.text)
-                    span = event.span
+                    Some(index): {
+                        destinationParameter = .Some(index + 1)
+                    }
+                }
+            }
+            var timeoutPresent = false
+            var timeoutValue u64 = 0
+            var metadataTimeout Option<u64> = .None
+            const selectedTimeout = replace transition.timeoutNanoseconds with .None
+            match selectedTimeout {
+                None: {}
+                Some(value): {
+                    timeoutPresent = true
+                    timeoutValue = value
+                    metadataTimeout = .Some(value)
+                }
+            }
+            var functionParameters = collections.NewList<parameter>()
+            var transitionParameters = replace transition.parameters with
+            collections.NewList<parameter>()
+            var reversedParameters = reverseList($transitionParameters)
+            while !reversedParameters.IsEmpty() {
+                const parameter = match reversedParameters.PopFront() {
+                    None: panic("state parameter list invariant failed")
+                    Some(value): value
+                }
+                functionParameters.PushFront($parameter)
+            }
+            functionParameters.PushFront($receiverParameter(
+                    name.text, &typeParameters.names, .Edit, name.span))
+            const functionSources = copyU64List(&sourceVariants)
+            const body = self.addBlock(
+                collections.NewList<u64>(), transition.event.span)
+            discard self.program.functions.add($functionDeclaration {
+                name = text.Copy(transition.event.text)
+                typeParameters = copyStringList(&typeParameters.names)
+                parameters = functionParameters
+                returnType = resultType(
+                    namedType("void", transition.event.span),
+                    namedType(text.Copy(errorName), transition.event.span),
+                    transition.event.span
+                )
+                body = body
+                exported = isExportedName(transition.event.text)
+                span = transition.event.span
+                packageName = ""
+                sourcePath = ""
+                receiver = .Some(.Edit)
+                ownerType = text.Copy(name.text)
+                cSymbol = .None
+                hasBody = true
+                closure = false
+                captures = collections.NewList<closureCapture>()
+                attributes = collections.NewList<attributeApplication>()
+                taskFunction = false
+                blocking = false
+                callback = false
+                testName = .None
+                testNameSpan = .None
+                actionFunction = false
+                stateTransition = .Some(stateTransitionFunction {
+                    sourceVariants = functionSources
+                    destinationVariant = destination.index
+                    destinationParameter = destinationParameter
+                    timeoutNanoseconds = metadataTimeout
+                })
+                workflow = .None
+                inferredReturn = false
+                transferableTypeParameters = copyBoolList(
+                    &typeParameters.transferable)
+                stateTimeout = .None
+                constructor = false
+                typeParameterConstraints = copyOptionalTypeList(
+                    &typeParameters.constraints)
+            })
+            if timeoutPresent {
+                var stateType = namedType(text.Copy(name.text), name.span)
+                stateType.arguments = genericArguments(
+                    &typeParameters.names, name.span)
+                var timeoutParameters = collections.NewList<parameter>()
+                timeoutParameters.PushFront($parameter {
+                    name = "state"
+                    type = stateType
+                    span = name.span
+                    attributes = collections.NewList<attributeApplication>()
+                    mode = .Read
+                    inferredType = false
+                })
+                var timeoutArguments = collections.NewList<typeSyntax>()
+                timeoutArguments.PushFront($namedType(
+                        "u64", transition.event.span))
+                const timeoutBody = self.addBlock(
+                    collections.NewList<u64>(), transition.event.span)
+                discard self.program.functions.add($functionDeclaration {
+                    name = ("TimeoutFor" if isExportedName(transition.event.text) else
+                        "timeoutFor") + transition.event.text
+                    typeParameters = copyStringList(&typeParameters.names)
+                    parameters = timeoutParameters
+                    returnType = typeSyntax {
+                        name = "Option"
+                        arguments = timeoutArguments
+                        span = transition.event.span
+                        arrayLength = 0
+                    }
+                    body = timeoutBody
+                    exported = isExportedName(transition.event.text)
+                    span = transition.event.span
                     packageName = ""
                     sourcePath = ""
-                    receiver = .Some(.Edit)
+                    receiver = .None
                     ownerType = text.Copy(name.text)
                     cSymbol = .None
                     hasBody = true
@@ -999,40 +1250,28 @@ methods parser {
                     testName = .None
                     testNameSpan = .None
                     actionFunction = false
-                    stateTransition = .Some(stateTransitionFunction {
-                        sourceVariants = reverseList($sourceVariants)
-                        destinationVariant = 0
-                        destinationParameter = destinationParameter
-                        timeoutNanoseconds = timeoutRule
-                    })
+                    stateTransition = .None
                     workflow = .None
                     inferredReturn = false
-                    transferableTypeParameters = collections.NewList<bool>()
-                    stateTimeout = .None
+                    transferableTypeParameters = copyBoolList(
+                        &typeParameters.transferable)
+                    stateTimeout = .Some(stateTimeoutFunction {
+                        sourceVariants = sourceVariants
+                        nanoseconds = timeoutValue
+                    })
                     constructor = false
-                    typeParameterConstraints = collections.NewList<Option<typeSyntax>>()
+                    typeParameterConstraints = copyOptionalTypeList(
+                        &typeParameters.constraints)
                 })
-                transitionCount += 1
             } else {
-                self.diagnostics.reportError(
-                    "FDN1207",
-                    "expected state or on declaration",
-                    self.currentToken().span
-                )
-                discard self.advance()
+                discard sourceVariants
             }
         }
-        discard transitionCount
-        discard self.expectToken(
-            .RightBrace, "FDN1208", "expected } after state machine")
-        if states.IsEmpty() {
-            self.diagnostics.reportError(
-                "FDN1209", "state machine requires at least one state", start.span)
-        }
+        discard timeoutSources
         discard self.program.enums.add($enumDeclaration {
             name = text.Copy(name.text)
             typeParameters = copyStringList(&typeParameters.names)
-            variants = reverseList($states)
+            variants = states
             exported = isExportedName(name.text)
             builtin = .None
             span = start.span
@@ -1052,7 +1291,7 @@ methods parser {
             payloadNameSpan = .None
         })
         discard self.program.enums.add($enumDeclaration {
-            name = text.Copy(name.text) + "TransitionError"
+            name = errorName
             typeParameters = collections.NewList<String>()
             variants = errorVariants
             exported = isExportedName(name.text)
@@ -1099,18 +1338,24 @@ methods parser {
                 declaredReturn.span
             )
         } else {
-            successType = match declaredReturn.arguments.PopFront() {
+            var parsedSuccess = match declaredReturn.arguments.PopFront() {
                 None: panic("workflow result invariant failed")
                 Some(value): value
             }
-            errorType = match declaredReturn.arguments.PopFront() {
+            var parsedError = match declaredReturn.arguments.PopFront() {
                 None: panic("workflow error invariant failed")
                 Some(value): value
             }
+            successType = copyTypeSyntax(&parsedSuccess)
+            errorType = copyTypeSyntax(&parsedError)
+            declaredReturn.arguments.PushFront($parsedError)
+            declaredReturn.arguments.PushFront($parsedSuccess)
         }
         discard self.expectToken(
             .LeftBrace, "FDN1220", "expected { after workflow result type")
         var steps = collections.NewList<workflowStep>()
+        var stepNames = collections.NewList<String>()
+        var compensationCount u64 = 0
         while !self.check(.RightBrace) && !self.atEnd() {
             self.expectContextual("step", "FDN1221", "expected step in workflow")
             const stepName = self.expectToken(
@@ -1151,6 +1396,16 @@ methods parser {
                     "FDN1232", "expected compensation function", false)
                 compensation = .Some(text.Copy(value.name))
                 compensationSpan = .Some(value.span)
+                compensationCount += 1
+            }
+            if parserStringListContains(&stepNames, stepName.text) {
+                self.diagnostics.reportError(
+                    "FDN1233",
+                    "duplicate workflow step " + stepName.text,
+                    stepName.span
+                )
+            } else {
+                stepNames.PushFront($text.Copy(stepName.text))
             }
             steps.PushFront($workflowStep {
                 name = text.Copy(stepName.text)
@@ -1172,6 +1427,83 @@ methods parser {
                 name.span
             )
         }
+        if parameters.Len() != 1 {
+            self.diagnostics.reportError(
+                "FDN1235",
+                "pipeline requires exactly one input" if isPipeline else
+                "saga requires exactly one input",
+                name.span
+            )
+        }
+        if !isPipeline && compensationCount == 0 {
+            self.diagnostics.reportError(
+                "FDN1237", "saga requires at least one compensation", name.span)
+        }
+        var failureStruct Option<String> = .None
+        var failureEnum Option<String> = .None
+        var functionReturn = declaredReturn
+        if !isPipeline {
+            const detailsName = name.text + "CompensationFailure"
+            const failureName = name.text + "Failure"
+            failureStruct = .Some(text.Copy(detailsName))
+            failureEnum = .Some(text.Copy(failureName))
+
+            var errorArguments = collections.NewList<typeSyntax>()
+            errorArguments.PushFront($copyTypeSyntax(&errorType))
+            var errorArray = typeSyntax {
+                name = "[array]"
+                arguments = errorArguments
+                span = name.span
+                arrayLength = compensationCount
+            }
+            var fields = collections.NewList<structField>()
+            fields.PushFront($workflowStructField(
+                    "Original", copyTypeSyntax(&errorType), name.span))
+            fields.PushFront($workflowStructField(
+                    "CompensationCount", namedType("usize", name.span), name.span))
+            fields.PushFront($workflowStructField(
+                    "CompensationErrors", $errorArray, name.span))
+            discard self.program.structs.add($structDeclaration {
+                name = text.Copy(detailsName)
+                typeParameters = copyStringList(&typeParameters.names)
+                implementations = collections.NewList<structImplementation>()
+                fields = reverseList($fields)
+                exported = isExportedName(name.text)
+                span = start.span
+                packageName = ""
+                attributes = collections.NewList<attributeApplication>()
+                kind = .Struct
+                sourcePath = ""
+            })
+
+            var detailsType = namedType(text.Copy(detailsName), name.span)
+            detailsType.arguments = genericArguments(
+                &typeParameters.names, name.span)
+            var generatedFailureType = namedType(
+                text.Copy(failureName), name.span)
+            generatedFailureType.arguments = genericArguments(
+                &typeParameters.names, name.span)
+            var variants = collections.NewList<enumVariant>()
+            variants.PushFront($workflowEnumVariant(
+                    "Step", copyTypeSyntax(&errorType), "error", name.span))
+            variants.PushFront($workflowEnumVariant(
+                    "Compensation", $detailsType, "details", name.span))
+            discard self.program.enums.add($enumDeclaration {
+                name = text.Copy(failureName)
+                typeParameters = copyStringList(&typeParameters.names)
+                variants = reverseList($variants)
+                exported = isExportedName(name.text)
+                builtin = .None
+                span = start.span
+                packageName = ""
+                attributes = collections.NewList<attributeApplication>()
+                stateMachine = false
+                generated = false
+            })
+            discard replace functionReturn with resultType(
+                copyTypeSyntax(&successType), $generatedFailureType,
+                functionReturn.span)
+        }
         const body = self.addBlock(collections.NewList<u64>(), start.span)
         const parsedTypeParameters {
             names as workflowTypeParameters
@@ -1182,7 +1514,7 @@ methods parser {
             name = text.Copy(name.text)
             typeParameters = workflowTypeParameters
             parameters = reverseList($parameters)
-            returnType = declaredReturn
+            returnType = functionReturn
             body = body
             exported = isExportedName(name.text)
             span = start.span
@@ -1207,8 +1539,8 @@ methods parser {
                 successType = successType
                 errorType = errorType
                 steps = reverseList($steps)
-                failureStruct = .None
-                failureEnum = .None
+                failureStruct = failureStruct
+                failureEnum = failureEnum
             })
             inferredReturn = false
             transferableTypeParameters = workflowTransferable
@@ -1261,6 +1593,65 @@ methods parser {
     }
 }
 
+fn parserStringListContains(
+    &values collections.List<String>,
+    target String
+) bool {
+    var pending = collections.NewList<String>()
+    var found = false
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("string list invariant failed")
+            Some(value): value
+        }
+        if value == target {
+            found = true
+        }
+        pending.PushFront($value)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("string list restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront($value)
+    }
+    found
+}
+
+fn workflowStructField(
+    name String,
+    $type typeSyntax,
+    span sourceSpan
+) structField {
+    structField {
+        name = text.Copy(name)
+        type = type
+        exported = true
+        span = span
+        attributes = collections.NewList<attributeApplication>()
+        defaultFunction = .None
+        defaultSpan = .None
+    }
+}
+
+fn workflowEnumVariant(
+    name String,
+    $type typeSyntax,
+    payloadName String,
+    span sourceSpan
+) enumVariant {
+    enumVariant {
+        name = text.Copy(name)
+        payloadType = .Some(type)
+        exported = true
+        span = span
+        attributes = collections.NewList<attributeApplication>()
+        payloadName = .Some(text.Copy(payloadName))
+        payloadNameSpan = .Some(span)
+    }
+}
+
 fn memberKindCode(kind memberKind) i32 {
     match kind {
         Method: 0
@@ -1282,6 +1673,114 @@ fn workflowKindCode(kind workflowKind) i32 {
     match kind {
         Pipeline: 0
         Saga: 1
+    }
+}
+
+fn parserStateReference(
+    &states collections.List<enumVariant>,
+    name String
+) parsedStateReference {
+    var pending = collections.NewList<enumVariant>()
+    var result = parsedStateReference {
+        found = false index = 0 payload = false
+    }
+    var index u64 = 0
+    while !states.IsEmpty() {
+        var state = match states.PopFront() {
+            None: panic("state list invariant failed")
+            Some(value): value
+        }
+        if !result.found && state.name == name {
+            result.found = true
+            result.index = index
+            result.payload = optionTypePresent(state.payloadType)
+        }
+        pending.PushFront($state)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const state = match pending.PopFront() {
+            None: panic("state list restore invariant failed")
+            Some(value): value
+        }
+        states.PushFront($state)
+    }
+    result
+}
+
+fn parserParameterIndex(
+    &parameters collections.List<parameter>,
+    name String
+) Option<u64> {
+    var pending = collections.NewList<parameter>()
+    var result Option<u64> = .None
+    var found = false
+    var index u64 = 0
+    while !parameters.IsEmpty() {
+        const parameter = match parameters.PopFront() {
+            None: panic("parameter list invariant failed")
+            Some(value): value
+        }
+        if !found && parameter.name == name {
+            result = .Some(index)
+            found = true
+        }
+        pending.PushFront($parameter)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const parameter = match pending.PopFront() {
+            None: panic("parameter list restore invariant failed")
+            Some(value): value
+        }
+        parameters.PushFront($parameter)
+    }
+    result
+}
+
+fn parserU64ListContains(
+    &values collections.List<u64>,
+    expected u64
+) bool {
+    var pending = collections.NewList<u64>()
+    var found = false
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("integer list invariant failed")
+            Some(value): value
+        }
+        if value == expected {
+            found = true
+        }
+        pending.PushFront(value)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("integer list restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront(value)
+    }
+    found
+}
+
+fn optionTypePresent(value Option<typeSyntax>) bool {
+    match value {
+        None: false
+        Some(type): {
+            discard type
+            true
+        }
+    }
+}
+
+fn optionU64Present(value Option<u64>) bool {
+    match value {
+        None: false
+        Some(number): {
+            discard number
+            true
+        }
     }
 }
 

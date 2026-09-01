@@ -150,10 +150,10 @@ test "parser covers declaration families and generic closure context" {
         40
     )
     expect(!parsed.diagnostics.hasErrors())
-    expect(parsed.program.structs.len() == 1)
+    expect(parsed.program.structs.len() == 2)
     expect(parsed.program.contracts.len() == 1)
     expect(parsed.program.attributeDeclarations.len() == 1)
-    expect(parsed.program.enums.len() == 7)
+    expect(parsed.program.enums.len() == 8)
 
     const taskInfo = findFunction(&parsed.program, "work")
     expect(taskInfo.found)

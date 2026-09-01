@@ -90,6 +90,24 @@ enum structKind {
     Service
 }
 
+methods workflowKind {
+    fn Matches(self, name String) bool {
+        match self {
+            Pipeline: name == "Pipeline"
+            Saga: name == "Saga"
+        }
+    }
+}
+
+methods structKind {
+    fn Matches(self, name String) bool {
+        match self {
+            Struct: name == "Struct"
+            Service: name == "Service"
+        }
+    }
+}
+
 struct structField {
     name String
     type typeSyntax
@@ -157,6 +175,18 @@ enum builtinEnumKind {
     Result
     ChannelError
     NumberError
+}
+
+methods builtinEnumKind {
+    fn Matches(self, name String) bool {
+        match self {
+            None: name == "None"
+            Option: name == "Option"
+            Result: name == "Result"
+            ChannelError: name == "ChannelError"
+            NumberError: name == "NumberError"
+        }
+    }
 }
 
 struct enumDeclaration {

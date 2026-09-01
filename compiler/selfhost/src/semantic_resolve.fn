@@ -1,0 +1,3145 @@
+package foundation.compiler
+
+import std.collections
+import std.format
+import std.text
+
+fn semanticSourceName(value String) String {
+    var start u64 = 0
+    var index u64 = 0
+    while index < text.ByteLen(value) {
+        const byte = match text.ByteAt(value, index) {
+            Err(error): {
+                discard error
+                panic("attribute name is not valid UTF-8")
+            }
+            Ok(byte): byte
+        }
+        if byte == 46 { start = index + 1 }
+        index += 1
+    }
+    match text.Slice(value, start, text.ByteLen(value)) {
+        Err(error): {
+            discard error
+            panic("attribute name boundary is invalid")
+        }
+        Ok(name): name
+    }
+}
+
+fn isBuiltinSemanticType(name String) bool {
+    name == "void" || name == "never" || name == "i8" || name == "i16" ||
+        name == "i32" || name == "i64" || name == "u8" || name == "u16" ||
+        name == "u32" || name == "u64" || name == "isize" || name == "usize" ||
+        name == "f32" || name == "f64" || name == "bool" || name == "String" ||
+        name == "Option" || name == "Result" || name == "ChannelError" ||
+        name == "NumberError" || name == "Task" || name == "Channel" ||
+        name == "Sender" || name == "Receiver" || name == "own" ||
+        name == "view" || name == "edit"
+}
+
+fn semanticMachineScalar(name String) Option<semanticType> {
+    if name == "i8" return .Some(newSemanticType(.I8))
+    if name == "i16" return .Some(newSemanticType(.I16))
+    if name == "i32" return .Some(newSemanticType(.I32))
+    if name == "i64" return .Some(newSemanticType(.I64))
+    if name == "u8" return .Some(newSemanticType(.U8))
+    if name == "u16" return .Some(newSemanticType(.U16))
+    if name == "u32" return .Some(newSemanticType(.U32))
+    if name == "u64" return .Some(newSemanticType(.U64))
+    if name == "isize" return .Some(newSemanticType(.Isize))
+    if name == "usize" return .Some(newSemanticType(.Usize))
+    if name == "f32" return .Some(newSemanticType(.F32))
+    if name == "f64" return .Some(newSemanticType(.F64))
+    .None
+}
+
+fn semanticIntegerBits(&value semanticType) u64 {
+    match value.kind {
+        I8: 7
+        I16: 15
+        I32: 31
+        I64: 63
+        Isize: 63
+        U8: 8
+        U16: 16
+        U32: 32
+        U64: 64
+        Usize: 64
+        _: 0
+    }
+}
+
+fn semanticIntegerLiteralFits(
+    &type semanticType,
+    magnitude u64,
+    negative bool
+) bool {
+    if isUnsignedSemanticInteger(&type) {
+        if negative return false
+        return match type.kind {
+            U8: magnitude <= 255
+            U16: magnitude <= 65535
+            U32: magnitude <= 4294967295
+            U64: true
+            Usize: true
+            _: false
+        }
+    }
+    if isSignedSemanticInteger(&type) {
+        return match type.kind {
+            I8: magnitude <= if negative { 128 } else { 127 }
+            I16: magnitude <= if negative { 32768 } else { 32767 }
+            I32: magnitude <= if negative { 2147483648 } else { 2147483647 }
+            I64: magnitude <= if negative { 9223372036854775808 } else { 9223372036854775807 }
+            Isize: magnitude <= if negative { 9223372036854775808 } else { 9223372036854775807 }
+            _: false
+        }
+    }
+    false
+}
+
+fn numericSemanticConversionIsInfallible(
+    &source semanticType,
+    &target semanticType
+) bool {
+    if sameSemanticType(&source, &target) return true
+    if isSemanticInteger(&source) && isSemanticInteger(&target) {
+        if isSignedSemanticInteger(&source) && isUnsignedSemanticInteger(&target) {
+            return false
+        }
+        return semanticIntegerBits(&target) >= semanticIntegerBits(&source)
+    }
+    if isSemanticInteger(&source) && isSemanticFloating(&target) {
+        const precision u64 = if target.kind.Matches("F32") { 24 } else { 53 }
+        return precision >= semanticIntegerBits(&source)
+    }
+    source.kind.Matches("F32") && target.kind.Matches("F64")
+}
+
+fn containsSemanticBorrow(&type semanticType) bool {
+    if type.kind.Matches("Function") return false
+    type.kind.Matches("View") || type.kind.Matches("Edit") ||
+        containsSemanticTypeKind(&type, .View) || containsSemanticTypeKind(&type, .Edit)
+}
+
+fn containsNestedSemanticBorrow(&type semanticType, allowRoot bool) bool {
+    if type.kind.Matches("Function") return false
+    if !allowRoot && (type.kind.Matches("View") || type.kind.Matches("Edit")) return true
+    var index u64 = 0
+    while index < type.arguments.len() {
+        var argument = match type.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(argument): argument
+        }
+        const found = containsNestedSemanticBorrow(&argument, false)
+        type.arguments.restore(index, $argument)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn containsBareSemanticSlice(&type semanticType) bool {
+    if type.kind.Matches("Slice") return true
+    if (type.kind.Matches("View") || type.kind.Matches("Edit")) && type.arguments.len() == 1 {
+        var target = semanticTypeArgument(&type, 0)
+        if target.kind.Matches("Slice") return false
+    }
+    var index u64 = 0
+    while index < type.arguments.len() {
+        var argument = match type.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(argument): argument
+        }
+        const found = containsBareSemanticSlice(&argument)
+        type.arguments.restore(index, $argument)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn containsBareSemanticContract(&type semanticType, allowBorrowTarget bool) bool {
+    if type.kind.Matches("ContractValue") return true
+    if type.kind.Matches("Own") && type.arguments.len() == 1 {
+        var target = semanticTypeArgument(&type, 0)
+        if target.kind.Matches("ContractValue") return false
+    }
+    if allowBorrowTarget && (type.kind.Matches("View") || type.kind.Matches("Edit")) &&
+        type.arguments.len() == 1 {
+        var target = semanticTypeArgument(&type, 0)
+        if target.kind.Matches("ContractValue") return false
+    }
+    var index u64 = 0
+    while index < type.arguments.len() {
+        var argument = match type.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(argument): argument
+        }
+        const found = containsBareSemanticContract(&argument, false)
+        type.arguments.restore(index, $argument)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn containsRawSemanticPointer(&type semanticType) bool {
+    if type.kind.Matches("Raw") || type.kind.Matches("RawConst") return true
+    var index u64 = 0
+    while index < type.arguments.len() {
+        var argument = match type.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(argument): argument
+        }
+        const found = containsRawSemanticPointer(&argument)
+        type.arguments.restore(index, $argument)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn hasSemanticDrop(&source program, owner String) bool {
+    var index u64 = 0
+    while index < source.functions.len() {
+        var function = match source.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(function): function
+        }
+        const found = function.ownerType == owner && text.EndsWith(function.name, ".drop")
+        source.functions.restore(index, $function)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn isCopySemanticParameterType(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &type semanticType
+) bool {
+    var active = newArena<String>()
+    isCopySemanticParameterTypeActive(&analyzer, &source, &type, &active)
+}
+
+fn isCopySemanticParameterTypeActive(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &type semanticType,
+    &active arena<String>
+) bool {
+    if isSemanticMachineScalar(&type) && !type.kind.Matches("Void") && !type.kind.Matches("Never") {
+        return true
+    }
+    if type.kind.Matches("Raw") || type.kind.Matches("RawConst") {
+        return type.arguments.len() == 1
+    }
+    if isCSemanticFunction(&type) return true
+    if type.kind.Matches("Array") && type.arguments.len() == 1 {
+        var element = semanticTypeArgument(&type, 0)
+        return isCopySemanticParameterTypeActive(
+            &analyzer,
+            &source,
+            &element,
+            &active
+        )
+    }
+    if !type.kind.Matches("StructValue") && !type.kind.Matches("EnumValue") return false
+
+    const key = semanticTypeKey(&type)
+    if semanticStringContains(&active, key) return true
+    discard active.add(text.Copy(key))
+    var copy = true
+    const structValue = type.kind.Matches("StructValue")
+    if structValue && type.declaration < analyzer.model.structs.len() {
+        var declaration = match source.structs.take(type.declaration) {
+            None: panic("struct slot is empty")
+            Some(declaration): declaration
+        }
+        if hasSemanticDrop(&source, declaration.name) {
+            copy = false
+        }
+        var semantic = match analyzer.model.structs.take(type.declaration) {
+            None: panic("semantic struct slot is empty")
+            Some(semantic): semantic
+        }
+        var index u64 = 0
+        while copy && index < semantic.fieldTypes.len() {
+            var field = match semantic.fieldTypes.take(index) {
+                None: panic("semantic field type slot is empty")
+                Some(field): field
+            }
+            var substituted = substituteSemanticType(&field, &type.arguments)
+            copy = isCopySemanticParameterTypeActive(
+                &analyzer,
+                &source,
+                &substituted,
+                &active
+            )
+            semantic.fieldTypes.restore(index, $field)
+            index += 1
+        }
+        analyzer.model.structs.restore(type.declaration, $semantic)
+        source.structs.restore(type.declaration, $declaration)
+    }
+    if !structValue && type.declaration >= analyzer.model.enums.len() {
+        copy = false
+    }
+    if !structValue && type.declaration < analyzer.model.enums.len() {
+        var semantic = match analyzer.model.enums.take(type.declaration) {
+            None: panic("semantic enum slot is empty")
+            Some(semantic): semantic
+        }
+        var index u64 = 0
+        while copy && index < semantic.payloadTypes.len() {
+            const payload = match semantic.payloadTypes.take(index) {
+                None: panic("semantic payload slot is empty")
+                Some(payload): payload
+            }
+            match payload {
+                None: {
+                    var missing Option<semanticType> = .None
+                    semantic.payloadTypes.restore(index, $missing)
+                }
+                Some(value): {
+                    var original = value
+                    var substituted = substituteSemanticType(&original, &type.arguments)
+                    copy = isCopySemanticParameterTypeActive(
+                        &analyzer,
+                        &source,
+                        &substituted,
+                        &active
+                    )
+                    var restored Option<semanticType> = .Some(original)
+                    semantic.payloadTypes.restore(index, $restored)
+                }
+            }
+            index += 1
+        }
+        analyzer.model.enums.restore(type.declaration, $semantic)
+    }
+    active.truncate(active.len() - 1)
+    copy
+}
+
+fn semanticDirectType(
+    kind semanticTypeKind,
+    declaration u64,
+    $arguments own arena<semanticType>
+) semanticType {
+    semanticType {
+        kind = kind
+        declaration = declaration
+        arguments = arguments
+    }
+}
+
+fn semanticTypeArgumentCount(
+    &source program,
+    &base semanticType,
+    supplied u64
+) u64 {
+    if base.kind.Matches("StructValue") {
+        var declaration = match source.structs.take(base.declaration) {
+            None: panic("struct slot is empty")
+            Some(declaration): declaration
+        }
+        const count = listLength(&declaration.typeParameters)
+        source.structs.restore(base.declaration, $declaration)
+        return count
+    }
+    if base.kind.Matches("EnumValue") {
+        var declaration = match source.enums.take(base.declaration) {
+            None: panic("enum slot is empty")
+            Some(declaration): declaration
+        }
+        const count = listLength(&declaration.typeParameters)
+        source.enums.restore(base.declaration, $declaration)
+        return count
+    }
+    if base.kind.Matches("ContractValue") {
+        var declaration = match source.contracts.take(base.declaration) {
+            None: panic("contract slot is empty")
+            Some(declaration): declaration
+        }
+        const count = listLength(&declaration.typeParameters)
+        source.contracts.restore(base.declaration, $declaration)
+        return count
+    }
+    if base.kind.Matches("Function") return supplied
+    if base.kind.Matches("Own") || base.kind.Matches("View") || base.kind.Matches("Edit") ||
+        base.kind.Matches("Array") || base.kind.Matches("Slice") || base.kind.Matches("Raw") ||
+        base.kind.Matches("RawConst") || base.kind.Matches("Task") || base.kind.Matches("Channel") ||
+        base.kind.Matches("Sender") || base.kind.Matches("Receiver") {
+        return 1
+    }
+    0
+}
+
+fn setSemanticTypeParameters(
+    &analyzer semanticAnalyzer,
+    &parameters collections.List<String>,
+    span sourceSpan
+) void {
+    analyzer.state.typeParameters.clear()
+    analyzer.state.currentTypeParameterNames.clear()
+    var pending = collections.NewList<String>()
+    var index u64 = 0
+    while !parameters.IsEmpty() {
+        const name = match parameters.PopFront() {
+            None: panic("type parameter list invariant failed")
+            Some(name): name
+        }
+        discard analyzer.state.currentTypeParameterNames.add(text.Copy(name))
+        const shadows = name == "transferable" || isBuiltinSemanticType(name) ||
+            match findSemanticSymbol(&analyzer.state.structs, name) {
+            None: false
+            Some(id): { discard id true }
+        } || match findSemanticSymbol(&analyzer.state.enums, name) {
+            None: false
+            Some(id): { discard id true }
+        } || match findSemanticSymbol(&analyzer.state.contracts, name) {
+            None: false
+            Some(id): { discard id true }
+        }
+        if shadows || !addSemanticSymbol(&analyzer.state.typeParameters, name, index) {
+            analyzer.diagnostics.reportError(
+                "FDN2042",
+                "duplicate or shadowing type parameter " + name,
+                span
+            )
+        }
+        pending.PushFront($name)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const name = match pending.PopFront() {
+            None: panic("type parameter restore invariant failed")
+            Some(name): name
+        }
+        parameters.PushFront($name)
+    }
+}
+
+fn resolveSemanticType(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &syntax typeSyntax
+) semanticType {
+    if syntax.name == "[function-read]" || syntax.name == "[function-edit]" ||
+        syntax.name == "[function-transfer]" {
+        if listLength(&syntax.arguments) != 1 {
+            analyzer.diagnostics.reportError(
+                "FDN2043",
+                "invalid function parameter mode",
+                syntax.span
+            )
+            return invalidSemanticType()
+        }
+        var argument = match syntax.arguments.PopFront() {
+            None: panic("function parameter type is missing")
+            Some(argument): argument
+        }
+        var target = resolveSemanticType(&analyzer, &source, &argument)
+        syntax.arguments.PushFront($argument)
+        if target.kind.Matches("Void") || target.kind.Matches("Never") {
+            analyzer.diagnostics.reportError(
+                "FDN2016",
+                "function parameter cannot have type void or never",
+                syntax.span
+            )
+            return invalidSemanticType()
+        }
+        if syntax.name == "[function-read]" {
+            if isCopySemanticParameterType(&analyzer, &source, &target) return target
+            var result = unarySemanticType(.View, $target)
+            result.declaration = 1
+            return result
+        }
+        if syntax.name == "[function-edit]" return unarySemanticType(.Edit, $target)
+        return target
+    }
+
+    var found = false
+    var base = invalidSemanticType()
+    match semanticMachineScalar(syntax.name) {
+        None: {}
+        Some(type): { base = type found = true }
+    }
+    if syntax.name == "void" { base = voidSemanticType() found = true }
+    if syntax.name == "never" { base = neverSemanticType() found = true }
+    if syntax.name == "bool" { base = boolSemanticType() found = true }
+    if syntax.name == "String" { base = stringSemanticType() found = true }
+    if syntax.name == "[raw]" { base = newSemanticType(.Raw) found = true }
+    if syntax.name == "[raw-const]" {
+        base = newSemanticType(.RawConst)
+        found = true
+    }
+    if syntax.name == "[array]" {
+        base = declaredSemanticType(.Array, syntax.arrayLength)
+        found = true
+        if syntax.arrayLength > 2147483647 {
+            analyzer.diagnostics.reportError(
+                "FDN2080",
+                "array length exceeds the i32 index range",
+                syntax.span
+            )
+        }
+    }
+    if syntax.name == "[slice]" { base = newSemanticType(.Slice) found = true }
+    if syntax.name == "own" { base = newSemanticType(.Own) found = true }
+    if syntax.name == "view" { base = newSemanticType(.View) found = true }
+    if syntax.name == "edit" { base = newSemanticType(.Edit) found = true }
+    if syntax.name == "[function]" {
+        base = newSemanticType(.Function)
+        found = true
+    }
+    if syntax.name == "[transferable-function]" {
+        base = declaredSemanticType(.Function, 1)
+        found = true
+    }
+    if syntax.name == "[c-function]" {
+        base = declaredSemanticType(.Function, 2)
+        found = true
+    }
+    if syntax.name == "Task" { base = newSemanticType(.Task) found = true }
+    if syntax.name == "Channel" { base = newSemanticType(.Channel) found = true }
+    if syntax.name == "Sender" { base = newSemanticType(.Sender) found = true }
+    if syntax.name == "Receiver" { base = newSemanticType(.Receiver) found = true }
+    if !found {
+        match findSemanticSymbol(&analyzer.state.typeParameters, syntax.name) {
+            None: {}
+            Some(id): { base = declaredSemanticType(.Parameter, id) found = true }
+        }
+    }
+    if !found {
+        match findSemanticSymbol(&analyzer.state.structs, syntax.name) {
+            None: {}
+            Some(id): { base = declaredSemanticType(.StructValue, id) found = true }
+        }
+    }
+    if !found {
+        match findSemanticSymbol(&analyzer.state.enums, syntax.name) {
+            None: {}
+            Some(id): { base = declaredSemanticType(.EnumValue, id) found = true }
+        }
+    }
+    if !found {
+        match findSemanticSymbol(&analyzer.state.contracts, syntax.name) {
+            None: {}
+            Some(id): { base = declaredSemanticType(.ContractValue, id) found = true }
+        }
+    }
+
+    var arguments = newArena<semanticType>()
+    var pending = collections.NewList<typeSyntax>()
+    while !syntax.arguments.IsEmpty() {
+        var argument = match syntax.arguments.PopFront() {
+            None: panic("type argument list invariant failed")
+            Some(argument): argument
+        }
+        discard arguments.add(resolveSemanticType(&analyzer, &source, &argument))
+        pending.PushFront($argument)
+    }
+    while !pending.IsEmpty() {
+        const argument = match pending.PopFront() {
+            None: panic("type argument restore invariant failed")
+            Some(argument): argument
+        }
+        syntax.arguments.PushFront($argument)
+    }
+    if !found {
+        analyzer.diagnostics.reportError(
+            "FDN2002",
+            "unknown type " + syntax.name,
+            syntax.span
+        )
+        return invalidSemanticType()
+    }
+
+    const supplied = arguments.len()
+    const expected = semanticTypeArgumentCount(&source, &base, supplied)
+    if base.kind.Matches("Function") {
+        if supplied == 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2126",
+                "function type requires a return type",
+                syntax.span
+            )
+        }
+        var index u64 = 1
+        while index < supplied {
+            var parameter = match arguments.take(index) {
+                None: panic("function type argument slot is empty")
+                Some(parameter): parameter
+            }
+            if parameter.kind.Matches("Void") || parameter.kind.Matches("Never") {
+                analyzer.diagnostics.reportError(
+                    "FDN2016",
+                    "function parameter cannot have type void or never",
+                    syntax.span
+                )
+            }
+            arguments.restore(index, $parameter)
+            index += 1
+        }
+        if isCSemanticFunction(&base) && supplied != 0 {
+            var returnType = match arguments.take(0) {
+                None: panic("C function return type slot is empty")
+                Some(returnType): returnType
+            }
+            if !isSemanticCReturnType(&returnType) {
+                analyzer.diagnostics.reportError(
+                    "FDN2215",
+                    "C function pointer has an unsupported result type",
+                    syntax.span
+                )
+            }
+            arguments.restore(0, $returnType)
+            var parameterIndex u64 = 1
+            while parameterIndex < supplied {
+                var parameter = match arguments.take(parameterIndex) {
+                    None: panic("C function parameter type slot is empty")
+                    Some(parameter): parameter
+                }
+                var supported = isSemanticCParameterType(&parameter, "", "")
+                if supported && (parameter.kind.Matches("View") || parameter.kind.Matches("Edit")) &&
+                    parameter.arguments.len() == 1 {
+                    var target = semanticTypeArgument(&parameter, 0)
+                    if target.kind.Matches("StructValue") {
+                        supported = isSemanticCRecordType(&analyzer, &source, &target)
+                    }
+                }
+                if !supported {
+                    analyzer.diagnostics.reportError(
+                        "FDN2215",
+                        "C function pointer has an unsupported parameter type",
+                        syntax.span
+                    )
+                }
+                arguments.restore(parameterIndex, $parameter)
+                parameterIndex += 1
+            }
+        }
+    }
+    if supplied != expected {
+        analyzer.diagnostics.reportError(
+            "FDN2043",
+            "wrong type argument count for " + syntax.name,
+            syntax.span
+        )
+    }
+    base.arguments = arguments
+
+    if (base.kind.Matches("Own") || base.kind.Matches("View") || base.kind.Matches("Edit")) &&
+        base.arguments.len() != 0 {
+        var target = semanticTypeArgument(&base, 0)
+        if target.kind.Matches("Void") || target.kind.Matches("Never") || target.kind.Matches("View") ||
+            target.kind.Matches("Edit") || target.kind.Matches("Own") {
+            analyzer.diagnostics.reportError(
+                "FDN2064",
+                syntax.name + " requires a direct non-void value type",
+                syntax.span
+            )
+        }
+        if base.kind.Matches("Own") && target.kind.Matches("Slice") {
+            analyzer.diagnostics.reportError(
+                "FDN2080",
+                "slice cannot be owned directly",
+                syntax.span
+            )
+        }
+    }
+    if (base.kind.Matches("Array") || base.kind.Matches("Slice")) &&
+        base.arguments.len() != 0 {
+        var element = semanticTypeArgument(&base, 0)
+        if element.kind.Matches("Void") || element.kind.Matches("Never") {
+            analyzer.diagnostics.reportError(
+                "FDN2047",
+                "array or slice element cannot be void or never",
+                syntax.span
+            )
+        }
+    }
+    if (base.kind.Matches("Raw") || base.kind.Matches("RawConst")) &&
+        base.arguments.len() != 0 {
+        var pointee = semanticTypeArgument(&base, 0)
+        var supported = pointee.kind.Matches("Void") ||
+            (isSemanticMachineScalar(&pointee) && !pointee.kind.Matches("Never")) ||
+            isSemanticCRecordType(&analyzer, &source, &pointee)
+        if (pointee.kind.Matches("Raw") || pointee.kind.Matches("RawConst")) &&
+            pointee.arguments.len() == 1 {
+            supported = true
+        }
+        if !supported {
+            analyzer.diagnostics.reportError(
+                "FDN2214",
+                "raw pointer pointee must be a C ABI scalar or pointer",
+                syntax.span
+            )
+        }
+    }
+    if base.kind.Matches("Task") && base.arguments.len() != 0 {
+        var result = semanticTypeArgument(&base, 0)
+        if containsSemanticBorrow(&result) {
+            analyzer.diagnostics.reportError(
+                "FDN2165",
+                "Task result cannot contain a borrow",
+                syntax.span
+            )
+        }
+    }
+    if (base.kind.Matches("Channel") || base.kind.Matches("Sender") ||
+        base.kind.Matches("Receiver")) && base.arguments.len() != 0 {
+        var payload = semanticTypeArgument(&base, 0)
+        if containsSemanticBorrow(&payload) {
+            analyzer.diagnostics.reportError(
+                "FDN2165",
+                "channel payload cannot contain a borrow",
+                syntax.span
+            )
+        }
+    }
+    base
+}
+
+fn resolveSemanticParameterType(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &parameter parameter
+) semanticType {
+    var base = resolveSemanticType(&analyzer, &source, &parameter.type)
+    if base.kind.Matches("Void") return base
+    match parameter.mode {
+        TypeEncoded: base
+        Transfer: base
+        Edit: unarySemanticType(.Edit, $base)
+        Read: {
+            if isCopySemanticParameterType(&analyzer, &source, &base) return base
+            var result = unarySemanticType(.View, $base)
+            result.declaration = 1
+            result
+        }
+    }
+}
+
+fn declareSemanticTypes(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    var index u64 = 0
+    while index < source.structs.len() {
+        var declaration = match source.structs.take(index) {
+            None: panic("struct slot is empty")
+            Some(declaration): declaration
+        }
+        if isBuiltinSemanticType(declaration.name) ||
+            !addSemanticSymbol(&analyzer.state.structs, declaration.name, index) {
+            analyzer.diagnostics.reportError(
+                "FDN2020",
+                "duplicate type " + declaration.name,
+                declaration.span
+            )
+        }
+        source.structs.restore(index, $declaration)
+        index += 1
+    }
+
+    index = 0
+    while index < source.enums.len() {
+        var declaration = match source.enums.take(index) {
+            None: panic("enum slot is empty")
+            Some(declaration): declaration
+        }
+        var conflict = false
+        if declaration.builtin.Matches("None") && isBuiltinSemanticType(declaration.name) {
+            conflict = true
+        }
+        match findSemanticSymbol(&analyzer.state.structs, declaration.name) {
+            None: {}
+            Some(id): { discard id conflict = true }
+        }
+        if !addSemanticSymbol(&analyzer.state.enums, declaration.name, index) {
+            conflict = true
+        }
+        if conflict {
+            analyzer.diagnostics.reportError(
+                "FDN2020",
+                "duplicate type " + declaration.name,
+                declaration.span
+            )
+        }
+        if listLength(&declaration.variants) == 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2031",
+                "enum must declare at least one variant",
+                declaration.span
+            )
+        }
+        source.enums.restore(index, $declaration)
+        index += 1
+    }
+
+    index = 0
+    while index < source.contracts.len() {
+        var declaration = match source.contracts.take(index) {
+            None: panic("contract slot is empty")
+            Some(declaration): declaration
+        }
+        var conflict = isBuiltinSemanticType(declaration.name)
+        match findSemanticSymbol(&analyzer.state.structs, declaration.name) {
+            None: {}
+            Some(id): { discard id conflict = true }
+        }
+        match findSemanticSymbol(&analyzer.state.enums, declaration.name) {
+            None: {}
+            Some(id): { discard id conflict = true }
+        }
+        if !addSemanticSymbol(&analyzer.state.contracts, declaration.name, index) {
+            conflict = true
+        }
+        if conflict {
+            analyzer.diagnostics.reportError(
+                "FDN2020",
+                "duplicate type " + declaration.name,
+                declaration.span
+            )
+        }
+        if listLength(&declaration.methodList) == 0 &&
+            listLength(&declaration.parents) == 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2090",
+                "contract must declare at least one method",
+                declaration.span
+            )
+        }
+        source.contracts.restore(index, $declaration)
+        index += 1
+    }
+
+    index = 0
+    while index < source.attributeDeclarations.len() {
+        var declaration = match source.attributeDeclarations.take(index) {
+            None: panic("attribute declaration slot is empty")
+            Some(declaration): declaration
+        }
+        const name = semanticSourceName(declaration.name)
+        if name == "target" || name == "blocking" || name == "callback" {
+            analyzer.diagnostics.reportError(
+                "FDN2150",
+                name + " is reserved for the compiler",
+                declaration.span
+            )
+        }
+        if !addSemanticSymbol(&analyzer.state.attributes, declaration.name, index) {
+            analyzer.diagnostics.reportError(
+                "FDN2150",
+                "duplicate attribute " + declaration.name,
+                declaration.span
+            )
+        }
+        source.attributeDeclarations.restore(index, $declaration)
+        index += 1
+    }
+}
+
+fn lowerSemanticAttributeTarget(target attributeTarget) firAttributeTarget {
+    match target {
+        Function: .Function
+        Struct: .StructValue
+        Service: .Service
+        Enum: .EnumValue
+        Contract: .ContractValue
+        Method: .Method
+        Constructor: .Constructor
+        Action: .Action
+        Field: .Field
+        Variant: .Variant
+        Parameter: .Parameter
+    }
+}
+
+fn copySemanticTypeArena(&values arena<semanticType>) own arena<semanticType> {
+    var result = newArena<semanticType>()
+    var index u64 = 0
+    while index < values.len() {
+        var value = match values.take(index) {
+            None: panic("semantic type slot is empty")
+            Some(value): value
+        }
+        discard result.add(copySemanticType(&value))
+        values.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn sameSemanticTypeArena(
+    &left arena<semanticType>,
+    &right arena<semanticType>
+) bool {
+    if left.len() != right.len() return false
+    var index u64 = 0
+    while index < left.len() {
+        var leftValue = match left.take(index) {
+            None: panic("semantic type slot is empty")
+            Some(value): value
+        }
+        var rightValue = match right.take(index) {
+            None: panic("semantic type slot is empty")
+            Some(value): value
+        }
+        const same = sameSemanticType(&leftValue, &rightValue)
+        left.restore(index, $leftValue)
+        right.restore(index, $rightValue)
+        if !same return false
+        index += 1
+    }
+    true
+}
+
+fn sameParameterModeArena(
+    &left arena<parameterMode>,
+    &right arena<parameterMode>
+) bool {
+    if left.len() != right.len() return false
+    var index u64 = 0
+    while index < left.len() {
+        const leftValue = match left.take(index) {
+            None: panic("parameter mode slot is empty")
+            Some(value): value
+        }
+        const rightValue = match right.take(index) {
+            None: panic("parameter mode slot is empty")
+            Some(value): value
+        }
+        left.restore(index, $leftValue)
+        right.restore(index, $rightValue)
+        if !leftValue.Matches(rightValue.Name()) return false
+        index += 1
+    }
+    true
+}
+
+fn copySemanticContractMethod(
+    &source semanticContractMethod
+) semanticContractMethod {
+    var defaultFunction Option<u64> = match source.defaultFunction {
+        None: .None
+        Some(value): .Some(value)
+    }
+    semanticContractMethod {
+        name = text.Copy(source.name)
+        receiver = source.receiver
+        returnType = copySemanticType(&source.returnType)
+        parameterTypes = copySemanticTypeArena(&source.parameterTypes)
+        parameterNames = copyStringArena(&source.parameterNames)
+        parameterModes = copyParameterModeArena(&source.parameterModes)
+        exported = source.exported
+        span = source.span
+        originContract = source.originContract
+        originArguments = copySemanticTypeArena(&source.originArguments)
+        defaultFunction = defaultFunction
+        attributes = copyFirAttributeUseArena(&source.attributes)
+        parameterAttributes = copyFirAttributeUseArenaArena(&source.parameterAttributes)
+    }
+}
+
+fn copyStringArena(&values arena<String>) own arena<String> {
+    var result = newArena<String>()
+    var index u64 = 0
+    while index < values.len() {
+        const value = match values.take(index) {
+            None: panic("string slot is empty")
+            Some(value): value
+        }
+        discard result.add(text.Copy(value))
+        values.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn copyParameterModeArena(
+    &values arena<parameterMode>
+) own arena<parameterMode> {
+    var result = newArena<parameterMode>()
+    var index u64 = 0
+    while index < values.len() {
+        const value = match values.take(index) {
+            None: panic("parameter mode slot is empty")
+            Some(value): value
+        }
+        discard result.add(value)
+        values.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn optionalSemanticIDEqual(left Option<u64>, right Option<u64>) bool {
+    match left {
+        None: match right {
+            None: true
+            Some(value): { discard value false }
+        }
+        Some(leftValue): match right {
+            None: false
+            Some(rightValue): leftValue == rightValue
+        }
+    }
+}
+
+fn sameSemanticContractSignature(
+    &left semanticContractMethod,
+    &right semanticContractMethod
+) bool {
+    left.receiver.Matches(right.receiver.Name()) &&
+        sameSemanticType(&left.returnType, &right.returnType) &&
+        sameSemanticTypeArena(&left.parameterTypes, &right.parameterTypes) &&
+        sameParameterModeArena(&left.parameterModes, &right.parameterModes)
+}
+
+struct ambiguousSemanticDefault {
+    name String
+    span sourceSpan
+    active bool
+}
+
+fn findSemanticContractMethod(
+    &methodValues arena<semanticContractMethod>,
+    name String
+) Option<u64> {
+    var index u64 = 0
+    while index < methodValues.len() {
+        var method = match methodValues.take(index) {
+            None: panic("contract method slot is empty")
+            Some(method): method
+        }
+        const found = method.name == name
+        methodValues.restore(index, $method)
+        if found return .Some(index)
+        index += 1
+    }
+    .None
+}
+
+fn clearAmbiguousSemanticDefault(
+    &values arena<ambiguousSemanticDefault>,
+    name String
+) void {
+    var index u64 = 0
+    while index < values.len() {
+        var value = match values.take(index) {
+            None: panic("ambiguous default slot is empty")
+            Some(value): value
+        }
+        if value.name == name { value.active = false }
+        values.restore(index, $value)
+        index += 1
+    }
+}
+
+fn markAmbiguousSemanticDefault(
+    &values arena<ambiguousSemanticDefault>,
+    name String,
+    span sourceSpan
+) void {
+    var index u64 = 0
+    while index < values.len() {
+        var value = match values.take(index) {
+            None: panic("ambiguous default slot is empty")
+            Some(value): value
+        }
+        const found = value.name == name
+        if found {
+            value.active = true
+            value.span = span
+        }
+        values.restore(index, $value)
+        if found return
+        index += 1
+    }
+    discard values.add(ambiguousSemanticDefault {
+        name = text.Copy(name)
+        span = span
+        active = true
+    })
+}
+
+fn mergeSemanticContractMethod(
+    &analyzer semanticAnalyzer,
+    &methodValues arena<semanticContractMethod>,
+    $method semanticContractMethod,
+    span sourceSpan,
+    overriding bool,
+    &ambiguous arena<ambiguousSemanticDefault>
+) void {
+    var candidate = method
+    const found = findSemanticContractMethod(&methodValues, candidate.name)
+    const methodID = match found {
+        None: {
+            discard methodValues.add($candidate)
+            return
+        }
+        Some(id): id
+    }
+    var current = match methodValues.take(methodID) {
+        None: panic("contract method slot is empty")
+        Some(method): method
+    }
+    if !sameSemanticContractSignature(&current, &candidate) {
+        analyzer.diagnostics.reportError(
+            "FDN2143",
+            "conflicting inherited method " + candidate.name,
+            span
+        )
+        methodValues.restore(methodID, $current)
+        return
+    }
+    if overriding {
+        clearAmbiguousSemanticDefault(&ambiguous, candidate.name)
+        methodValues.restore(methodID, $candidate)
+        return
+    }
+    var currentDefault = false
+    match current.defaultFunction {
+        None: {}
+        Some(value): { discard value currentDefault = true }
+    }
+    var candidateDefault = false
+    match candidate.defaultFunction {
+        None: {}
+        Some(value): { discard value candidateDefault = true }
+    }
+    const conflictingDefaults = currentDefault && candidateDefault &&
+        !optionalSemanticIDEqual(current.defaultFunction, candidate.defaultFunction)
+    if conflictingDefaults {
+        markAmbiguousSemanticDefault(&ambiguous, candidate.name, span)
+    }
+    if !conflictingDefaults && !currentDefault && candidateDefault {
+        methodValues.restore(methodID, $candidate)
+        return
+    }
+    methodValues.restore(methodID, $current)
+}
+
+fn substituteSemanticContractMethod(
+    &method semanticContractMethod,
+    &arguments arena<semanticType>
+) semanticContractMethod {
+    var result = copySemanticContractMethod(&method)
+    result.returnType = substituteSemanticType(&result.returnType, &arguments)
+    var index u64 = 0
+    while index < result.parameterTypes.len() {
+        var parameter = match result.parameterTypes.take(index) {
+            None: panic("contract parameter type slot is empty")
+            Some(parameter): parameter
+        }
+        result.parameterTypes.restore(
+            index,
+            substituteSemanticType(&parameter, &arguments)
+        )
+        index += 1
+    }
+    index = 0
+    while index < result.originArguments.len() {
+        var argument = match result.originArguments.take(index) {
+            None: panic("contract origin argument slot is empty")
+            Some(argument): argument
+        }
+        result.originArguments.restore(
+            index,
+            substituteSemanticType(&argument, &arguments)
+        )
+        index += 1
+    }
+    result
+}
+
+fn resolveSemanticContracts(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    var index u64 = 0
+    while index < source.contracts.len() {
+        var declaration = match source.contracts.take(index) {
+            None: panic("contract slot is empty")
+            Some(declaration): declaration
+        }
+        const declarationSpan = declaration.span
+        setSemanticTypeParameters(
+            &analyzer,
+            &declaration.typeParameters,
+            declarationSpan
+        )
+        var semantic = match analyzer.model.contracts.take(index) {
+            None: panic("semantic contract slot is empty")
+            Some(semantic): semantic
+        }
+        semantic.typeParameterCount = listLength(&declaration.typeParameters)
+        var parentKeys = newArena<String>()
+        var parentPending = collections.NewList<typeSyntax>()
+        while !declaration.parents.IsEmpty() {
+            var parent = match declaration.parents.PopFront() {
+                None: panic("contract parent list invariant failed")
+                Some(parent): parent
+            }
+            var type = resolveSemanticType(&analyzer, &source, &parent)
+            const key = semanticTypeKey(&type)
+            const invalidParent = !type.kind.Matches("ContractValue")
+            const duplicateParent = !invalidParent &&
+                semanticStringContains(&parentKeys, key)
+            if invalidParent {
+                analyzer.diagnostics.reportError(
+                    "FDN2140",
+                    "extends requires a contract",
+                    parent.span
+                )
+            }
+            if duplicateParent {
+                analyzer.diagnostics.reportError(
+                    "FDN2141",
+                    "duplicate parent contract",
+                    parent.span
+                )
+            }
+            if !invalidParent && !duplicateParent {
+                discard parentKeys.add(text.Copy(key))
+            }
+            discard semantic.parents.add($type)
+            parentPending.PushFront($parent)
+        }
+        while !parentPending.IsEmpty() {
+            const parent = match parentPending.PopFront() {
+                None: panic("contract parent restore invariant failed")
+                Some(parent): parent
+            }
+            declaration.parents.PushFront($parent)
+        }
+
+        var methodNames = newArena<String>()
+        var methodPending = collections.NewList<contractMethod>()
+        while !declaration.methodList.IsEmpty() {
+            var method = match declaration.methodList.PopFront() {
+                None: panic("contract method list invariant failed")
+                Some(method): method
+            }
+            if semanticStringContains(&methodNames, method.name) {
+                analyzer.diagnostics.reportError(
+                    "FDN2091",
+                    "duplicate contract method " + method.name,
+                    method.span
+                )
+            } else {
+                discard methodNames.add(text.Copy(method.name))
+            }
+            if method.name == "drop" {
+                analyzer.diagnostics.reportError(
+                    "FDN2138",
+                    "drop is reserved for deterministic cleanup",
+                    method.span
+                )
+            }
+            var hasDefault = false
+            match method.defaultFunction {
+                None: {}
+                Some(value): { discard value hasDefault = true }
+            }
+            if method.receiver.Matches("Own") && hasDefault {
+                analyzer.diagnostics.reportError(
+                    "FDN2148",
+                    "own contract method cannot have a default",
+                    method.span
+                )
+            }
+            var defaultFunction Option<u64> = match method.defaultFunction {
+                None: .None
+                Some(value): .Some(value)
+            }
+            var target = semanticContractMethod {
+                name = text.Copy(method.name)
+                receiver = method.receiver
+                returnType = resolveSemanticType(
+                    &analyzer,
+                    &source,
+                    &method.returnType
+                )
+                parameterTypes = newArena<semanticType>()
+                parameterNames = newArena<String>()
+                parameterModes = newArena<parameterMode>()
+                exported = method.exported
+                span = method.span
+                originContract = index
+                originArguments = newArena<semanticType>()
+                defaultFunction = defaultFunction
+                attributes = newArena<firAttributeUse>()
+                parameterAttributes = newArena<own arena<firAttributeUse>>()
+            }
+            var parameterIndex u64 = 0
+            while parameterIndex < semantic.typeParameterCount {
+                discard target.originArguments.add(
+                    declaredSemanticType(.Parameter, parameterIndex)
+                )
+                parameterIndex += 1
+            }
+            if containsSemanticBorrow(&target.returnType) ||
+                containsBareSemanticSlice(&target.returnType) ||
+                containsBareSemanticContract(&target.returnType, true) {
+                analyzer.diagnostics.reportError(
+                    "FDN2063",
+                    "borrow cannot be returned from a method",
+                    method.returnType.span
+                )
+            }
+            var parameterPending = collections.NewList<parameter>()
+            while !method.parameters.IsEmpty() {
+                var parameter = match method.parameters.PopFront() {
+                    None: panic("contract parameter list invariant failed")
+                    Some(parameter): parameter
+                }
+                var type = resolveSemanticParameterType(
+                    &analyzer,
+                    &source,
+                    &parameter
+                )
+                if type.kind.Matches("Void") || type.kind.Matches("Never") {
+                    analyzer.diagnostics.reportError(
+                        "FDN2016",
+                        "parameter cannot have type void or never",
+                        parameter.span
+                    )
+                }
+                if containsBareSemanticSlice(&type) {
+                    analyzer.diagnostics.reportError(
+                        "FDN2080",
+                        "slice parameter requires view or edit",
+                        parameter.span
+                    )
+                }
+                if containsNestedSemanticBorrow(&type, true) {
+                    analyzer.diagnostics.reportError(
+                        "FDN2064",
+                        "parameter contains a nested borrow",
+                        parameter.span
+                    )
+                }
+                if containsBareSemanticContract(&type, true) {
+                    analyzer.diagnostics.reportError(
+                        "FDN2099",
+                        "contract value requires view, edit, or own",
+                        parameter.span
+                    )
+                }
+                discard target.parameterTypes.add($type)
+                discard target.parameterNames.add(text.Copy(parameter.name))
+                discard target.parameterModes.add(parameter.mode)
+                parameterPending.PushFront($parameter)
+            }
+            while !parameterPending.IsEmpty() {
+                const parameter = match parameterPending.PopFront() {
+                    None: panic("contract parameter restore invariant failed")
+                    Some(parameter): parameter
+                }
+                method.parameters.PushFront($parameter)
+            }
+            discard semantic.methodList.add($target)
+            methodPending.PushFront($method)
+        }
+        while !methodPending.IsEmpty() {
+            const method = match methodPending.PopFront() {
+                None: panic("contract method restore invariant failed")
+                Some(method): method
+            }
+            declaration.methodList.PushFront($method)
+        }
+        analyzer.model.contracts.restore(index, $semantic)
+        source.contracts.restore(index, $declaration)
+        index += 1
+    }
+
+    var states = newArena<u64>()
+    index = 0
+    while index < source.contracts.len() {
+        discard states.add(0)
+        index += 1
+    }
+    index = 0
+    while index < source.contracts.len() {
+        flattenSemanticContract(&analyzer, &source, index, &states)
+        index += 1
+    }
+}
+
+fn flattenSemanticContract(
+    &analyzer semanticAnalyzer,
+    &source program,
+    index u64,
+    &states arena<u64>
+) void {
+    if index >= states.len() return
+    const state = match states.take(index) {
+        None: panic("contract state slot is empty")
+        Some(state): state
+    }
+    states.restore(index, state)
+    if state == 2 return
+    if state == 1 {
+        var declaration = match source.contracts.take(index) {
+            None: panic("contract slot is empty")
+            Some(declaration): declaration
+        }
+        analyzer.diagnostics.reportError(
+            "FDN2142",
+            "contract inheritance cycle",
+            declaration.span
+        )
+        source.contracts.restore(index, $declaration)
+        return
+    }
+    states.take(index)
+    states.restore(index, 1)
+
+    var semantic = match analyzer.model.contracts.take(index) {
+        None: panic("semantic contract slot is empty")
+        Some(semantic): semantic
+    }
+    var directMethods = replace semantic.methodList with
+    newArena<semanticContractMethod>()
+    var parents = copySemanticTypeArena(&semantic.parents)
+    analyzer.model.contracts.restore(index, $semantic)
+    var ambiguous = newArena<ambiguousSemanticDefault>()
+
+    var parentIndex u64 = 0
+    while parentIndex < parents.len() {
+        var parent = match parents.take(parentIndex) {
+            None: panic("contract parent slot is empty")
+            Some(parent): parent
+        }
+        if parent.kind.Matches("ContractValue") && parent.declaration < source.contracts.len() {
+            flattenSemanticContract(&analyzer, &source, parent.declaration, &states)
+            var inherited = match analyzer.model.contracts.take(parent.declaration) {
+                None: panic("semantic parent contract slot is empty")
+                Some(inherited): inherited
+            }
+            var current = match analyzer.model.contracts.take(index) {
+                None: panic("semantic contract slot is empty")
+                Some(current): current
+            }
+            var methodIndex u64 = 0
+            while methodIndex < inherited.methodList.len() {
+                var method = match inherited.methodList.take(methodIndex) {
+                    None: panic("inherited contract method slot is empty")
+                    Some(method): method
+                }
+                var substituted = substituteSemanticContractMethod(
+                    &method,
+                    &parent.arguments
+                )
+                var declaration = match source.contracts.take(index) {
+                    None: panic("contract slot is empty")
+                    Some(declaration): declaration
+                }
+                var span = declaration.span
+                var syntaxIndex u64 = 0
+                var pending = collections.NewList<typeSyntax>()
+                while !declaration.parents.IsEmpty() {
+                    const syntax = match declaration.parents.PopFront() {
+                        None: panic("contract parent list invariant failed")
+                        Some(syntax): syntax
+                    }
+                    if syntaxIndex == parentIndex { span = syntax.span }
+                    pending.PushFront($syntax)
+                    syntaxIndex += 1
+                }
+                while !pending.IsEmpty() {
+                    const syntax = match pending.PopFront() {
+                        None: panic("contract parent restore invariant failed")
+                        Some(syntax): syntax
+                    }
+                    declaration.parents.PushFront($syntax)
+                }
+                source.contracts.restore(index, $declaration)
+                mergeSemanticContractMethod(
+                    &analyzer,
+                    &current.methodList,
+                    $substituted,
+                    span,
+                    false,
+                    &ambiguous
+                )
+                inherited.methodList.restore(methodIndex, $method)
+                methodIndex += 1
+            }
+            analyzer.model.contracts.restore(index, $current)
+            analyzer.model.contracts.restore(parent.declaration, $inherited)
+        }
+        parents.restore(parentIndex, $parent)
+        parentIndex += 1
+    }
+
+    semantic = match analyzer.model.contracts.take(index) {
+        None: panic("semantic contract slot is empty")
+        Some(semantic): semantic
+    }
+    var methodIndex u64 = 0
+    while methodIndex < directMethods.len() {
+        const method = match directMethods.take(methodIndex) {
+            None: panic("direct contract method slot is empty")
+            Some(method): method
+        }
+        const span = method.span
+        mergeSemanticContractMethod(
+            &analyzer,
+            &semantic.methodList,
+            $method,
+            span,
+            true,
+            &ambiguous
+        )
+        methodIndex += 1
+    }
+    analyzer.model.contracts.restore(index, $semantic)
+
+    var ambiguousIndex u64 = 0
+    while ambiguousIndex < ambiguous.len() {
+        const value = match ambiguous.take(ambiguousIndex) {
+            None: panic("ambiguous default slot is empty")
+            Some(value): value
+        }
+        if value.active {
+            analyzer.diagnostics.reportError(
+                "FDN2144",
+                "ambiguous inherited default " + value.name,
+                value.span
+            )
+        }
+        ambiguous.restore(ambiguousIndex, $value)
+        ambiguousIndex += 1
+    }
+    states.take(index)
+    states.restore(index, 2)
+}
+
+fn resolveSemanticStructs(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    var index u64 = 0
+    while index < source.structs.len() {
+        var declaration = match source.structs.take(index) {
+            None: panic("struct slot is empty")
+            Some(declaration): declaration
+        }
+        const declarationSpan = declaration.span
+        setSemanticTypeParameters(
+            &analyzer,
+            &declaration.typeParameters,
+            declarationSpan
+        )
+        var semantic = match analyzer.model.structs.take(index) {
+            None: panic("semantic struct slot is empty")
+            Some(semantic): semantic
+        }
+        semantic.typeParameterCount = listLength(&declaration.typeParameters)
+        var fields = newArena<semanticSymbol>()
+        var fieldPending = collections.NewList<structField>()
+        var fieldIndex u64 = 0
+        while !declaration.fields.IsEmpty() {
+            var field = match declaration.fields.PopFront() {
+                None: panic("struct field list invariant failed")
+                Some(field): field
+            }
+            if !addSemanticSymbol(&fields, field.name, fieldIndex) {
+                analyzer.diagnostics.reportError(
+                    "FDN2021",
+                    "duplicate field " + field.name,
+                    field.span
+                )
+            }
+            var type = resolveSemanticType(&analyzer, &source, &field.type)
+            if type.kind.Matches("Void") || type.kind.Matches("Never") {
+                analyzer.diagnostics.reportError(
+                    "FDN2022",
+                    "struct field cannot have type void or never",
+                    field.span
+                )
+            }
+            if containsSemanticBorrow(&type) {
+                analyzer.diagnostics.reportError(
+                    "FDN2062",
+                    "borrow cannot be stored in a struct field",
+                    field.span
+                )
+            }
+            if containsBareSemanticSlice(&type) {
+                analyzer.diagnostics.reportError(
+                    "FDN2080",
+                    "slice type requires view or edit",
+                    field.span
+                )
+            }
+            if containsBareSemanticContract(&type, true) {
+                analyzer.diagnostics.reportError(
+                    "FDN2099",
+                    "contract value requires view, edit, or own",
+                    field.span
+                )
+            }
+            discard semantic.fieldTypes.add($type)
+            fieldPending.PushFront($field)
+            fieldIndex += 1
+        }
+        while !fieldPending.IsEmpty() {
+            const field = match fieldPending.PopFront() {
+                None: panic("struct field restore invariant failed")
+                Some(field): field
+            }
+            declaration.fields.PushFront($field)
+        }
+
+        var implementations = newArena<u64>()
+        var implementationPending = collections.NewList<structImplementation>()
+        while !declaration.implementations.IsEmpty() {
+            var implementation = match declaration.implementations.PopFront() {
+                None: panic("implementation list invariant failed")
+                Some(implementation): implementation
+            }
+            var type = resolveSemanticType(
+                &analyzer,
+                &source,
+                &implementation.contractType
+            )
+            discard semantic.implementations.add(copySemanticType(&type))
+            var delegatedField Option<u64> = .None
+            const selectedField = replace implementation.delegatedField with .None
+            match selectedField {
+                None: {}
+                Some(name): {
+                    match findSemanticSymbol(&fields, name) {
+                        None: analyzer.diagnostics.reportError(
+                            "FDN2146",
+                            "unknown delegation field " + name,
+                            implementation.span
+                        )
+                        Some(field): { delegatedField = .Some(field) }
+                    }
+                    implementation.delegatedField = .Some(name)
+                }
+            }
+            semantic.implementationDelegates.add($delegatedField)
+            const invalidImplementation = !type.kind.Matches("ContractValue")
+            const duplicateImplementation = !invalidImplementation &&
+                semanticIDContains(&implementations, type.declaration)
+            if invalidImplementation {
+                analyzer.diagnostics.reportError(
+                    "FDN2092",
+                    "implements requires a contract",
+                    implementation.contractType.span
+                )
+            }
+            if duplicateImplementation {
+                analyzer.diagnostics.reportError(
+                    "FDN2093",
+                    "duplicate contract implementation",
+                    implementation.contractType.span
+                )
+            }
+            if !invalidImplementation && !duplicateImplementation {
+                discard implementations.add(type.declaration)
+            }
+            implementationPending.PushFront($implementation)
+        }
+        while !implementationPending.IsEmpty() {
+            const implementation = match implementationPending.PopFront() {
+                None: panic("implementation restore invariant failed")
+                Some(implementation): implementation
+            }
+            declaration.implementations.PushFront($implementation)
+        }
+        analyzer.model.structs.restore(index, $semantic)
+        source.structs.restore(index, $declaration)
+        index += 1
+    }
+}
+
+fn resolveSemanticEnums(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    var index u64 = 0
+    while index < source.enums.len() {
+        var declaration = match source.enums.take(index) {
+            None: panic("enum slot is empty")
+            Some(declaration): declaration
+        }
+        const declarationSpan = declaration.span
+        setSemanticTypeParameters(
+            &analyzer,
+            &declaration.typeParameters,
+            declarationSpan
+        )
+        var semantic = match analyzer.model.enums.take(index) {
+            None: panic("semantic enum slot is empty")
+            Some(semantic): semantic
+        }
+        semantic.typeParameterCount = listLength(&declaration.typeParameters)
+        var variants = newArena<String>()
+        var pending = collections.NewList<enumVariant>()
+        while !declaration.variants.IsEmpty() {
+            var variant = match declaration.variants.PopFront() {
+                None: panic("enum variant list invariant failed")
+                Some(variant): variant
+            }
+            if semanticStringContains(&variants, variant.name) {
+                analyzer.diagnostics.reportError(
+                    "FDN2032",
+                    "duplicate variant " + variant.name,
+                    variant.span
+                )
+            } else {
+                discard variants.add(text.Copy(variant.name))
+            }
+            const selectedPayload = replace variant.payloadType with .None
+            match selectedPayload {
+                None: {
+                    var missing Option<semanticType> = .None
+                    discard semantic.payloadTypes.add($missing)
+                }
+                Some(syntax): {
+                    var payloadSyntax = syntax
+                    var type = resolveSemanticType(
+                        &analyzer,
+                        &source,
+                        &payloadSyntax
+                    )
+                    if type.kind.Matches("Void") || type.kind.Matches("Never") {
+                        analyzer.diagnostics.reportError(
+                            "FDN2033",
+                            "enum payload cannot have type void or never",
+                            variant.span
+                        )
+                    }
+                    if containsSemanticBorrow(&type) {
+                        analyzer.diagnostics.reportError(
+                            "FDN2062",
+                            "borrow cannot be stored in an enum payload",
+                            variant.span
+                        )
+                    }
+                    if containsBareSemanticSlice(&type) {
+                        analyzer.diagnostics.reportError(
+                            "FDN2080",
+                            "slice type requires view or edit",
+                            variant.span
+                        )
+                    }
+                    if containsBareSemanticContract(&type, true) {
+                        analyzer.diagnostics.reportError(
+                            "FDN2099",
+                            "contract value requires view, edit, or own",
+                            variant.span
+                        )
+                    }
+                    var payload Option<semanticType> = .Some(type)
+                    discard semantic.payloadTypes.add($payload)
+                    variant.payloadType = .Some(payloadSyntax)
+                }
+            }
+            pending.PushFront($variant)
+        }
+        while !pending.IsEmpty() {
+            const variant = match pending.PopFront() {
+                None: panic("enum variant restore invariant failed")
+                Some(variant): variant
+            }
+            declaration.variants.PushFront($variant)
+        }
+        analyzer.model.enums.restore(index, $semantic)
+        source.enums.restore(index, $declaration)
+        index += 1
+    }
+}
+
+struct semanticLayoutChild {
+    type semanticType
+    span sourceSpan
+}
+
+fn semanticLayoutChildren(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &type semanticType
+) own arena<semanticLayoutChild> {
+    var result = newArena<semanticLayoutChild>()
+    if type.kind.Matches("StructValue") && type.declaration < analyzer.model.structs.len() {
+        var semantic = match analyzer.model.structs.take(type.declaration) {
+            None: panic("semantic struct slot is empty")
+            Some(semantic): semantic
+        }
+        var declaration = match source.structs.take(type.declaration) {
+            None: panic("struct slot is empty")
+            Some(declaration): declaration
+        }
+        var fields = collections.NewList<structField>()
+        var fieldIndex u64 = 0
+        while !declaration.fields.IsEmpty() {
+            const field = match declaration.fields.PopFront() {
+                None: panic("struct field list invariant failed")
+                Some(field): field
+            }
+            var fieldType = match semantic.fieldTypes.take(fieldIndex) {
+                None: panic("semantic field type slot is empty")
+                Some(fieldType): fieldType
+            }
+            var child = substituteSemanticType(&fieldType, &type.arguments)
+            while child.kind.Matches("Array") && child.arguments.len() == 1 {
+                child = semanticTypeArgument(&child, 0)
+            }
+            discard result.add(semanticLayoutChild { type = child span = field.span })
+            semantic.fieldTypes.restore(fieldIndex, $fieldType)
+            fields.PushFront($field)
+            fieldIndex += 1
+        }
+        while !fields.IsEmpty() {
+            const field = match fields.PopFront() {
+                None: panic("struct field restore invariant failed")
+                Some(field): field
+            }
+            declaration.fields.PushFront($field)
+        }
+        source.structs.restore(type.declaration, $declaration)
+        analyzer.model.structs.restore(type.declaration, $semantic)
+    }
+    if type.kind.Matches("EnumValue") && type.declaration < analyzer.model.enums.len() {
+        var semantic = match analyzer.model.enums.take(type.declaration) {
+            None: panic("semantic enum slot is empty")
+            Some(semantic): semantic
+        }
+        var declaration = match source.enums.take(type.declaration) {
+            None: panic("enum slot is empty")
+            Some(declaration): declaration
+        }
+        var variants = collections.NewList<enumVariant>()
+        var variantIndex u64 = 0
+        while !declaration.variants.IsEmpty() {
+            const variant = match declaration.variants.PopFront() {
+                None: panic("enum variant list invariant failed")
+                Some(variant): variant
+            }
+            const payload = match semantic.payloadTypes.take(variantIndex) {
+                None: panic("semantic payload slot is empty")
+                Some(payload): payload
+            }
+            match payload {
+                None: {
+                    var missing Option<semanticType> = .None
+                    semantic.payloadTypes.restore(variantIndex, $missing)
+                }
+                Some(value): {
+                    var original = value
+                    var child = substituteSemanticType(&original, &type.arguments)
+                    const skip = child.kind.Matches("Void") && declaration.builtin.Matches("Result")
+                    while child.kind.Matches("Array") && child.arguments.len() == 1 {
+                        child = semanticTypeArgument(&child, 0)
+                    }
+                    if !skip {
+                        discard result.add(semanticLayoutChild {
+                            type = child
+                            span = variant.span
+                        })
+                    }
+                    var restored Option<semanticType> = .Some(original)
+                    semantic.payloadTypes.restore(variantIndex, $restored)
+                }
+            }
+            variants.PushFront($variant)
+            variantIndex += 1
+        }
+        while !variants.IsEmpty() {
+            const variant = match variants.PopFront() {
+                None: panic("enum variant restore invariant failed")
+                Some(variant): variant
+            }
+            declaration.variants.PushFront($variant)
+        }
+        source.enums.restore(type.declaration, $declaration)
+        analyzer.model.enums.restore(type.declaration, $semantic)
+    }
+    result
+}
+
+fn containsProperSemanticType(
+    &outer semanticType,
+    &candidate semanticType
+) bool {
+    var index u64 = 0
+    while index < outer.arguments.len() {
+        var argument = match outer.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(argument): argument
+        }
+        const found = sameSemanticType(&argument, &candidate) ||
+            containsProperSemanticType(&argument, &candidate)
+        outer.arguments.restore(index, $argument)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn isInfiniteSemanticTypeRecurrence(
+    &active semanticType,
+    &child semanticType
+) bool {
+    if sameSemanticType(&active, &child) return true
+    if containsProperSemanticType(&active, &child) return false
+    var index u64 = 0
+    while index < active.arguments.len() {
+        var argument = match active.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(argument): argument
+        }
+        const found = sameSemanticType(&argument, &child) ||
+            containsProperSemanticType(&child, &argument)
+        active.arguments.restore(index, $argument)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn rejectSemanticTypeCycleFrom(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &type semanticType,
+    span sourceSpan,
+    &active arena<semanticType>,
+    &validated arena<String>
+) bool {
+    var activeIndex u64 = 0
+    while activeIndex < active.len() {
+        var ancestor = match active.take(activeIndex) {
+            None: panic("active type slot is empty")
+            Some(ancestor): ancestor
+        }
+        const sameNode = sameSemanticTypeKind(ancestor.kind, type.kind) &&
+            ancestor.declaration == type.declaration
+        const infinite = sameNode && isInfiniteSemanticTypeRecurrence(&ancestor, &type)
+        active.restore(activeIndex, $ancestor)
+        if infinite {
+            analyzer.diagnostics.reportError(
+                "FDN2023",
+                "recursive value type is not allowed",
+                span
+            )
+            return true
+        }
+        activeIndex += 1
+    }
+    const key = semanticTypeKey(&type)
+    if semanticStringContains(&validated, key) return false
+    discard active.add(copySemanticType(&type))
+    var children = semanticLayoutChildren(&analyzer, &source, &type)
+    var childIndex u64 = 0
+    while childIndex < children.len() {
+        var child = match children.take(childIndex) {
+            None: panic("layout child slot is empty")
+            Some(child): child
+        }
+        if child.type.kind.Matches("StructValue") || child.type.kind.Matches("EnumValue") {
+            const childSpan = child.span
+            if rejectSemanticTypeCycleFrom(
+                &analyzer,
+                &source,
+                &child.type,
+                childSpan,
+                &active,
+                &validated
+            ) {
+                children.restore(childIndex, $child)
+                const activeLength = active.len()
+                active.truncate(activeLength - 1)
+                return true
+            }
+        }
+        children.restore(childIndex, $child)
+        childIndex += 1
+    }
+    const activeLength = active.len()
+    active.truncate(activeLength - 1)
+    discard validated.add(text.Copy(key))
+    false
+}
+
+fn rejectSemanticTypeCycles(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    var validated = newArena<String>()
+    var id u64 = 0
+    while id < source.structs.len() {
+        var declaration = match source.structs.take(id) {
+            None: panic("struct slot is empty")
+            Some(declaration): declaration
+        }
+        const parameterCount = listLength(&declaration.typeParameters)
+        const span = declaration.span
+        source.structs.restore(id, $declaration)
+        var arguments = newArena<semanticType>()
+        var parameter u64 = 0
+        while parameter < parameterCount {
+            discard arguments.add(declaredSemanticType(.Parameter, parameter))
+            parameter += 1
+        }
+        var root = semanticDirectType(.StructValue, id, $arguments)
+        var active = newArena<semanticType>()
+        const rejected = rejectSemanticTypeCycleFrom(
+            &analyzer,
+            &source,
+            &root,
+            span,
+            &active,
+            &validated
+        )
+        if rejected return
+        id += 1
+    }
+    id = 0
+    while id < source.enums.len() {
+        var declaration = match source.enums.take(id) {
+            None: panic("enum slot is empty")
+            Some(declaration): declaration
+        }
+        const parameterCount = listLength(&declaration.typeParameters)
+        const span = declaration.span
+        source.enums.restore(id, $declaration)
+        var arguments = newArena<semanticType>()
+        var parameter u64 = 0
+        while parameter < parameterCount {
+            discard arguments.add(declaredSemanticType(.Parameter, parameter))
+            parameter += 1
+        }
+        var root = semanticDirectType(.EnumValue, id, $arguments)
+        var active = newArena<semanticType>()
+        const rejected = rejectSemanticTypeCycleFrom(
+            &analyzer,
+            &source,
+            &root,
+            span,
+            &active,
+            &validated
+        )
+        if rejected return
+        id += 1
+    }
+}
+
+fn metadataSemanticType(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &type semanticType,
+    span sourceSpan,
+    &active arena<String>
+) bool {
+    if isSemanticNumeric(&type) || type.kind.Matches("Bool") || type.kind.Matches("StringValue") {
+        return true
+    }
+    if type.kind.Matches("Array") && type.arguments.len() == 1 {
+        var element = semanticTypeArgument(&type, 0)
+        return metadataSemanticType(&analyzer, &source, &element, span, &active)
+    }
+    if !type.kind.Matches("StructValue") && !type.kind.Matches("EnumValue") {
+        analyzer.diagnostics.reportError(
+            "FDN2161",
+            "attribute parameter type is not metadata-safe",
+            span
+        )
+        return false
+    }
+    const key = semanticTypeName(type.kind) + ":" + format.U64(type.declaration)
+    if semanticStringContains(&active, key) {
+        analyzer.diagnostics.reportError(
+            "FDN2162",
+            "attribute metadata type cycle",
+            span
+        )
+        return false
+    }
+    discard active.add(text.Copy(key))
+    var valid = true
+    var children = semanticLayoutChildren(&analyzer, &source, &type)
+    var index u64 = 0
+    while index < children.len() {
+        var child = match children.take(index) {
+            None: panic("layout child slot is empty")
+            Some(child): child
+        }
+        const childSpan = child.span
+        if !metadataSemanticType(
+            &analyzer,
+            &source,
+            &child.type,
+            childSpan,
+            &active
+        ) {
+            valid = false
+        }
+        children.restore(index, $child)
+        index += 1
+    }
+    const activeLength = active.len()
+    active.truncate(activeLength - 1)
+    valid
+}
+
+fn resolveSemanticAttributeDeclarations(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    var empty = collections.NewList<String>()
+    setSemanticTypeParameters(&analyzer, &empty, sourceSpan {
+        offset = 0 length = 0 line = 0 column = 0 source = 0
+    })
+    var index u64 = 0
+    while index < source.attributeDeclarations.len() {
+        var declaration = match source.attributeDeclarations.take(index) {
+            None: panic("attribute declaration slot is empty")
+            Some(declaration): declaration
+        }
+        var target = match analyzer.model.attributeDeclarations.take(index) {
+            None: panic("semantic attribute declaration slot is empty")
+            Some(target): target
+        }
+        target.name = text.Copy(declaration.name)
+        target.repeatable = declaration.repeatable
+        target.exported = declaration.exported
+        if listLength(&declaration.targets) == 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2151",
+                "attribute must declare at least one target",
+                declaration.span
+            )
+        }
+        var targetIDs = newArena<firAttributeTarget>()
+        var targets = collections.NewList<attributeTarget>()
+        while !declaration.targets.IsEmpty() {
+            const sourceTarget = match declaration.targets.PopFront() {
+                None: panic("attribute target list invariant failed")
+                Some(sourceTarget): sourceTarget
+            }
+            const lowered = lowerSemanticAttributeTarget(sourceTarget)
+            var duplicate = false
+            var targetIndex u64 = 0
+            while targetIndex < targetIDs.len() {
+                const existing = match targetIDs.take(targetIndex) {
+                    None: panic("attribute target slot is empty")
+                    Some(existing): existing
+                }
+                targetIDs.restore(targetIndex, existing)
+                if existing.Matches(lowered.Name()) { duplicate = true }
+                targetIndex += 1
+            }
+            if duplicate {
+                analyzer.diagnostics.reportError(
+                    "FDN2151",
+                    "duplicate attribute target",
+                    declaration.span
+                )
+            }
+            discard targetIDs.add(lowered)
+            discard target.targets.add(lowered)
+            targets.PushFront(sourceTarget)
+        }
+        while !targets.IsEmpty() {
+            const sourceTarget = match targets.PopFront() {
+                None: panic("attribute target restore invariant failed")
+                Some(sourceTarget): sourceTarget
+            }
+            declaration.targets.PushFront(sourceTarget)
+        }
+
+        var parameterNames = newArena<String>()
+        var parameters = collections.NewList<parameter>()
+        while !declaration.parameters.IsEmpty() {
+            var parameter = match declaration.parameters.PopFront() {
+                None: panic("attribute parameter list invariant failed")
+                Some(parameter): parameter
+            }
+            if semanticStringContains(&parameterNames, parameter.name) {
+                analyzer.diagnostics.reportError(
+                    "FDN2151",
+                    "duplicate attribute parameter " + parameter.name,
+                    parameter.span
+                )
+            } else {
+                discard parameterNames.add(text.Copy(parameter.name))
+            }
+            var type = resolveSemanticType(&analyzer, &source, &parameter.type)
+            var active = newArena<String>()
+            discard metadataSemanticType(
+                &analyzer,
+                &source,
+                &type,
+                parameter.span,
+                &active
+            )
+            discard target.parameters.add(firAttributeParameter {
+                name = text.Copy(parameter.name)
+                type = type
+            })
+            parameters.PushFront($parameter)
+        }
+        while !parameters.IsEmpty() {
+            const parameter = match parameters.PopFront() {
+                None: panic("attribute parameter restore invariant failed")
+                Some(parameter): parameter
+            }
+            declaration.parameters.PushFront($parameter)
+        }
+        analyzer.model.attributeDeclarations.restore(index, $target)
+        source.attributeDeclarations.restore(index, $declaration)
+        index += 1
+    }
+}
+
+fn semanticCKeyword(value String) bool {
+    value == "alignas" || value == "alignof" || value == "and" ||
+        value == "and_eq" || value == "asm" || value == "auto" ||
+        value == "bitand" || value == "bitor" || value == "bool" ||
+        value == "break" || value == "case" || value == "catch" ||
+        value == "char" || value == "char8_t" || value == "char16_t" ||
+        value == "char32_t" || value == "class" || value == "compl" ||
+        value == "concept" || value == "const" || value == "consteval" ||
+        value == "constexpr" || value == "constinit" || value == "const_cast" ||
+        value == "continue" || value == "co_await" || value == "co_return" ||
+        value == "co_yield" || value == "decltype" || value == "default" ||
+        value == "delete" || value == "do" || value == "double" ||
+        value == "dynamic_cast" || value == "else" || value == "enum" ||
+        value == "explicit" || value == "export" || value == "extern" ||
+        value == "false" || value == "float" || value == "for" ||
+        value == "friend" || value == "goto" || value == "if" ||
+        value == "import" || value == "inline" || value == "int" ||
+        value == "long" || value == "module" || value == "mutable" ||
+        value == "namespace" || value == "new" || value == "noexcept" ||
+        value == "not" || value == "not_eq" || value == "nullptr" ||
+        value == "operator" || value == "or" || value == "or_eq" ||
+        value == "private" || value == "protected" || value == "public" ||
+        value == "register" || value == "reinterpret_cast" ||
+        value == "requires" || value == "restrict" || value == "return" ||
+        value == "short" || value == "signed" || value == "sizeof" ||
+        value == "static" || value == "static_assert" ||
+        value == "static_cast" || value == "struct" || value == "switch" ||
+        value == "template" || value == "this" || value == "thread_local" ||
+        value == "throw" || value == "true" || value == "try" ||
+        value == "typedef" || value == "typeid" || value == "typename" ||
+        value == "union" || value == "unsigned" || value == "using" ||
+        value == "virtual" || value == "void" || value == "volatile" ||
+        value == "wchar_t" || value == "while" || value == "xor" ||
+        value == "xor_eq" || value == "_Alignas" || value == "_Alignof" ||
+        value == "_Atomic" || value == "_Bool" || value == "_Complex" ||
+        value == "_Generic" || value == "_Imaginary" || value == "_Noreturn" ||
+        value == "_Static_assert" || value == "_Thread_local"
+}
+
+fn isSemanticCIdentifier(value String) bool {
+    if text.IsEmpty(value) return false
+    var index u64 = 0
+    while index < text.ByteLen(value) {
+        const byte = match text.ByteAt(value, index) {
+            Err(error): { discard error return false }
+            Ok(byte): byte
+        }
+        const letter = (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+        const digit = byte >= 48 && byte <= 57
+        if !(letter || byte == 95 || (index != 0 && digit)) return false
+        index += 1
+    }
+    !semanticCKeyword(value)
+}
+
+fn isReservedSemanticCSymbol(value String) bool {
+    value == "main" || text.StartsWith(value, "fdn_") ||
+        text.StartsWith(value, "_")
+}
+
+fn isSemanticCReturnType(&type semanticType) bool {
+    (isSemanticMachineScalar(&type) && !type.kind.Matches("Never")) ||
+        type.kind.Matches("StringValue") || isCSemanticFunction(&type) ||
+        ((type.kind.Matches("Raw") || type.kind.Matches("RawConst")) && type.arguments.len() == 1)
+}
+
+fn isSemanticCParameterType(
+    &type semanticType,
+    symbol String,
+    packageName String
+) bool {
+    if isSemanticMachineScalar(&type) && !type.kind.Matches("Void") && !type.kind.Matches("Never") {
+        return true
+    }
+    if isCSemanticFunction(&type) return true
+    if (type.kind.Matches("Raw") || type.kind.Matches("RawConst")) && type.arguments.len() == 1 {
+        return true
+    }
+    if type.kind.Matches("View") && type.arguments.len() == 1 {
+        var target = semanticTypeArgument(&type, 0)
+        if target.kind.Matches("StringValue") || target.kind.Matches("StructValue") return true
+    }
+    if type.kind.Matches("Edit") && type.arguments.len() == 1 {
+        var target = semanticTypeArgument(&type, 0)
+        if (isSemanticMachineScalar(&target) && !target.kind.Matches("Void") &&
+            !target.kind.Matches("Never")) || target.kind.Matches("Bool") ||
+            target.kind.Matches("StringValue") || target.kind.Matches("StructValue") {
+            return true
+        }
+    }
+    packageName == "foundation.worker" &&
+        (symbol == "foundation_runtime_supervisor_adopt" ||
+        symbol == "foundation_runtime_pool_submit") && type.kind.Matches("Task") &&
+        type.arguments.len() == 1 && semanticTypeArgument(&type, 0).kind.Matches("Void")
+}
+
+fn isSemanticCRecordType(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &type semanticType
+) bool {
+    var active = newArena<String>()
+    isSemanticCRecordTypeActive(&analyzer, &source, &type, &active)
+}
+
+fn isSemanticCRecordTypeActive(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &type semanticType,
+    &active arena<String>
+) bool {
+    if !type.kind.Matches("StructValue") || type.declaration >= source.structs.len() ||
+        type.declaration >= analyzer.model.structs.len() || type.arguments.len() != 0 {
+        return false
+    }
+    const key = semanticTypeKey(&type)
+    if semanticStringContains(&active, key) return false
+    discard active.add(text.Copy(key))
+    var declaration = match source.structs.take(type.declaration) {
+        None: panic("struct slot is empty")
+        Some(declaration): declaration
+    }
+    var semantic = match analyzer.model.structs.take(type.declaration) {
+        None: panic("semantic struct slot is empty")
+        Some(semantic): semantic
+    }
+    var valid = declaration.exported && declaration.kind.Matches("Struct") &&
+        listLength(&declaration.typeParameters) == 0 &&
+        listLength(&declaration.fields) == semantic.fieldTypes.len() &&
+        !hasSemanticDrop(&source, declaration.name)
+    var fields = collections.NewList<structField>()
+    var index u64 = 0
+    while valid && !declaration.fields.IsEmpty() {
+        const field = match declaration.fields.PopFront() {
+            None: panic("struct field list invariant failed")
+            Some(field): field
+        }
+        var fieldType = match semantic.fieldTypes.take(index) {
+            None: panic("semantic field type slot is empty")
+            Some(fieldType): fieldType
+        }
+        var fieldValid = field.exported &&
+            ((isSemanticMachineScalar(&fieldType) && !fieldType.kind.Matches("Void") &&
+                !fieldType.kind.Matches("Never")) ||
+            ((fieldType.kind.Matches("Raw") || fieldType.kind.Matches("RawConst")) &&
+                fieldType.arguments.len() == 1) || isCSemanticFunction(&fieldType))
+        if fieldType.kind.Matches("StructValue") {
+            fieldValid = field.exported && isSemanticCRecordTypeActive(
+                &analyzer,
+                &source,
+                &fieldType,
+                &active
+            )
+        }
+        valid = fieldValid
+        semantic.fieldTypes.restore(index, $fieldType)
+        fields.PushFront($field)
+        index += 1
+    }
+    while !declaration.fields.IsEmpty() {
+        const field = match declaration.fields.PopFront() {
+            None: panic("struct field list invariant failed")
+            Some(field): field
+        }
+        fields.PushFront($field)
+    }
+    while !fields.IsEmpty() {
+        const field = match fields.PopFront() {
+            None: panic("struct field restore invariant failed")
+            Some(field): field
+        }
+        declaration.fields.PushFront($field)
+    }
+    analyzer.model.structs.restore(type.declaration, $semantic)
+    source.structs.restore(type.declaration, $declaration)
+    active.truncate(active.len() - 1)
+    valid
+}
+
+fn semanticMethodName(owner String, name String) String {
+    const prefix = owner + "."
+    if !text.StartsWith(name, prefix) return text.Copy(name)
+    match text.Slice(name, text.ByteLen(prefix), text.ByteLen(name)) {
+        Err(error): { discard error panic("method name boundary is invalid") }
+        Ok(value): value
+    }
+}
+
+fn semanticOptionFunctionHasValue(value Option<u64>) bool {
+    match value {
+        None: false
+        Some(id): { discard id true }
+    }
+}
+
+fn semanticReceiverHasValue(value Option<receiverKind>) bool {
+    match value {
+        None: false
+        Some(receiver): { discard receiver true }
+    }
+}
+
+fn semanticStringOptionValue(value Option<String>) Option<String> {
+    match value {
+        None: .None
+        Some(textValue): .Some(text.Copy(textValue))
+    }
+}
+
+fn isSemanticResult(
+    &source program,
+    &type semanticType
+) bool {
+    if !type.kind.Matches("EnumValue") || type.declaration >= source.enums.len() return false
+    var declaration = match source.enums.take(type.declaration) {
+        None: panic("enum slot is empty")
+        Some(declaration): declaration
+    }
+    const result = declaration.builtin.Matches("Result")
+    source.enums.restore(type.declaration, $declaration)
+    result
+}
+
+fn resolveSemanticFunctionParameters(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &function functionDeclaration,
+    &semantic semanticFunction
+) void {
+    var pending = collections.NewList<parameter>()
+    var hasCSymbol = false
+    const selectedCSymbol = replace function.cSymbol with .None
+    match selectedCSymbol {
+        None: {}
+        Some(symbol): {
+            hasCSymbol = true
+            function.cSymbol = .Some(symbol)
+        }
+    }
+    while !function.parameters.IsEmpty() {
+        var parameter = match function.parameters.PopFront() {
+            None: panic("function parameter list invariant failed")
+            Some(parameter): parameter
+        }
+        var type = if parameter.inferredType {
+            invalidSemanticType()
+        } else {
+            resolveSemanticParameterType(&analyzer, &source, &parameter)
+        }
+        if hasCSymbol && parameter.mode.Matches("Read") && type.kind.Matches("StructValue") {
+            var qualified = unarySemanticType(.View, $type)
+            qualified.declaration = 2
+            type = qualified
+        }
+        discard semantic.parameterTypes.add($type)
+        if !parameter.inferredType {
+            const storedIndex = semantic.parameterTypes.len() - 1
+            var stored = match semantic.parameterTypes.take(storedIndex) {
+                None: panic("semantic parameter slot is empty")
+                Some(stored): stored
+            }
+            if stored.kind.Matches("Void") || stored.kind.Matches("Never") {
+                analyzer.diagnostics.reportError(
+                    "FDN2016",
+                    "parameter cannot have type void or never",
+                    parameter.span
+                )
+            }
+            if containsBareSemanticSlice(&stored) {
+                analyzer.diagnostics.reportError(
+                    "FDN2080",
+                    "slice parameter requires view or edit",
+                    parameter.span
+                )
+            }
+            if containsNestedSemanticBorrow(&stored, true) {
+                analyzer.diagnostics.reportError(
+                    "FDN2064",
+                    "parameter contains a nested borrow",
+                    parameter.span
+                )
+            }
+            if containsBareSemanticContract(&stored, true) {
+                analyzer.diagnostics.reportError(
+                    "FDN2099",
+                    "contract value requires view, edit, or own",
+                    parameter.span
+                )
+            }
+            if function.taskFunction && containsSemanticBorrow(&stored) {
+                analyzer.diagnostics.reportError(
+                    "FDN2165",
+                    "task parameter cannot borrow from its caller",
+                    parameter.span
+                )
+            }
+            semantic.parameterTypes.restore(storedIndex, $stored)
+        }
+        pending.PushFront($parameter)
+    }
+    while !pending.IsEmpty() {
+        const parameter = match pending.PopFront() {
+            None: panic("function parameter restore invariant failed")
+            Some(parameter): parameter
+        }
+        function.parameters.PushFront($parameter)
+    }
+}
+
+fn copySemanticSignature(
+    &returnType semanticType,
+    &parameters arena<semanticType>
+) functionSignature {
+    functionSignature {
+        returnType = copySemanticType(&returnType)
+        parameters = copySemanticTypeArena(&parameters)
+    }
+}
+
+fn declareSemanticFunctions(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    var foundMain = false
+    var cSymbols = newArena<String>()
+    var callbackCancelSymbols = newArena<String>()
+    var testNames = newArena<String>()
+    var index u64 = 0
+    while index < source.functions.len() {
+        var function = match source.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(function): function
+        }
+        var semantic = match analyzer.model.functions.take(index) {
+            None: panic("semantic function slot is empty")
+            Some(semantic): semantic
+        }
+        const functionSpan = function.span
+        setSemanticTypeParameters(
+            &analyzer,
+            &function.typeParameters,
+            functionSpan
+        )
+        semantic.typeParameterCount = listLength(&function.typeParameters)
+        var constraints = collections.NewList<Option<typeSyntax>>()
+        while !function.typeParameterConstraints.IsEmpty() {
+            const constraint = match function.typeParameterConstraints.PopFront() {
+                None: panic("type constraint list invariant failed")
+                Some(constraint): constraint
+            }
+            match constraint {
+                None: {
+                    var missing Option<semanticType> = .None
+                    discard semantic.typeParameterConstraints.add($missing)
+                    var sourceMissing Option<typeSyntax> = .None
+                    constraints.PushFront($sourceMissing)
+                }
+                Some(syntax): {
+                    var sourceSyntax = syntax
+                    var resolved = resolveSemanticType(&analyzer, &source, &sourceSyntax)
+                    if !resolved.kind.Matches("ContractValue") {
+                        analyzer.diagnostics.reportError(
+                            "FDN2250",
+                            "type parameter constraint must be a contract",
+                            sourceSyntax.span
+                        )
+                    }
+                    var targetConstraint Option<semanticType> = .Some(resolved)
+                    discard semantic.typeParameterConstraints.add($targetConstraint)
+                    var restored Option<typeSyntax> = .Some(sourceSyntax)
+                    constraints.PushFront($restored)
+                }
+            }
+        }
+        while !constraints.IsEmpty() {
+            const constraint = match constraints.PopFront() {
+                None: panic("type constraint restore invariant failed")
+                Some(constraint): constraint
+            }
+            function.typeParameterConstraints.PushFront($constraint)
+        }
+        semantic.returnType = if function.inferredReturn {
+            invalidSemanticType()
+        } else {
+            resolveSemanticType(&analyzer, &source, &function.returnType)
+        }
+        resolveSemanticFunctionParameters(&analyzer, &source, &function, &semantic)
+
+        if function.taskFunction && semantic.returnType.kind.Matches("Never") {
+            analyzer.diagnostics.reportError(
+                "FDN2016",
+                "task cannot return never",
+                function.returnType.span
+            )
+        }
+        if function.taskFunction && function.name == "main" {
+            analyzer.diagnostics.reportError(
+                "FDN2164",
+                "main must be a function, not a task",
+                function.span
+            )
+        }
+        var hasCSymbol = false
+        var cSymbol = ""
+        const selectedCSymbol = replace function.cSymbol with .None
+        match selectedCSymbol {
+            None: {}
+            Some(value): {
+                hasCSymbol = true
+                cSymbol = text.Copy(value)
+                function.cSymbol = .Some(value)
+            }
+        }
+        var blockingCount u64 = 0
+        var callbackCount u64 = 0
+        var functionAttributes = collections.NewList<attributeApplication>()
+        while !function.attributes.IsEmpty() {
+            var application = match function.attributes.PopFront() {
+                None: panic("function attribute list invariant failed")
+                Some(application): application
+            }
+            if application.name == "blocking" {
+                blockingCount += 1
+                if application.parenthesized ||
+                    listLength(&application.arguments) != 0 {
+                    analyzer.diagnostics.reportError(
+                        "FDN2179",
+                        "@blocking does not accept parentheses or arguments",
+                        application.span
+                    )
+                }
+            }
+            if application.name == "callback" {
+                callbackCount += 1
+                if application.parenthesized {
+                    var valid = listLength(&application.arguments) == 1
+                    var cancelName = ""
+                    var cancelSpan = application.span
+                    if valid {
+                        var argument = match application.arguments.PopFront() {
+                            None: panic("callback argument list invariant failed")
+                            Some(argument): argument
+                        }
+                        cancelSpan = argument.span
+                        const selectedName = replace argument.name with .None
+                        match selectedName {
+                            None: { valid = false }
+                            Some(name): {
+                                if name != "cancel" { valid = false }
+                                argument.name = .Some(name)
+                            }
+                        }
+                        if valid {
+                            const probe = semanticNameAt(&source, argument.value)
+                            var typeArguments = semanticNameTypeArguments(
+                                &source, argument.value)
+                            valid = probe.matched && listLength(&typeArguments) == 0 &&
+                                isSemanticCIdentifier(probe.name) &&
+                                !isReservedSemanticCSymbol(probe.name)
+                            if valid { cancelName = text.Copy(probe.name) }
+                        }
+                        application.arguments.PushFront($argument)
+                    }
+                    if listLength(&application.arguments) != 1 {
+                        analyzer.diagnostics.reportError(
+                            "FDN2181",
+                            "@callback accepts only the named cancel symbol",
+                            application.span
+                        )
+                    } else {
+                        if !valid {
+                            analyzer.diagnostics.reportError(
+                                "FDN2181",
+                                "@callback cancel must be a plain C ABI symbol",
+                                cancelSpan
+                            )
+                        } else {
+                            semantic.callbackCancelSymbol = .Some(
+                                text.Copy(cancelName))
+                            if semanticStringContains(&cSymbols, cancelName) {
+                                analyzer.diagnostics.reportError(
+                                    "FDN2181",
+                                    "callback cancel symbol conflicts with C symbol " +
+                                    cancelName,
+                                    cancelSpan
+                                )
+                            }
+                            discard callbackCancelSymbols.add($cancelName)
+                        }
+                    }
+                }
+            }
+            functionAttributes.PushFront($application)
+        }
+        while !functionAttributes.IsEmpty() {
+            const application = match functionAttributes.PopFront() {
+                None: panic("function attribute restore invariant failed")
+                Some(application): application
+            }
+            function.attributes.PushFront($application)
+        }
+        if function.blocking {
+            if blockingCount > 1 {
+                analyzer.diagnostics.reportError(
+                    "FDN2179", "function has more than one @blocking", function.span)
+            }
+            if !hasCSymbol || function.hasBody || function.taskFunction ||
+                semanticReceiverHasValue(function.receiver) || function.closure {
+                analyzer.diagnostics.reportError(
+                    "FDN2178",
+                    "@blocking requires a bodyless extern c function declaration",
+                    function.span
+                )
+            }
+        }
+        if function.callback {
+            if callbackCount > 1 {
+                analyzer.diagnostics.reportError(
+                    "FDN2181", "function has more than one @callback", function.span)
+            }
+            if function.blocking {
+                analyzer.diagnostics.reportError(
+                    "FDN2181", "function cannot be both @blocking and @callback", function.span)
+            }
+            if !hasCSymbol || function.hasBody || function.taskFunction ||
+                semanticReceiverHasValue(function.receiver) || function.closure {
+                analyzer.diagnostics.reportError(
+                    "FDN2178",
+                    "@callback requires a bodyless extern c function declaration",
+                    function.span
+                )
+            }
+            var completion = i32SemanticType()
+            if !sameSemanticType(&semantic.returnType, &completion) {
+                analyzer.diagnostics.reportError(
+                    "FDN2182",
+                    "@callback return type must be i32 completion status",
+                    function.returnType.span
+                )
+            }
+        }
+        if function.taskFunction && hasCSymbol {
+            analyzer.diagnostics.reportError(
+                "FDN2163",
+                "task cannot use an external ABI declaration",
+                function.span
+            )
+        }
+        if !function.inferredReturn &&
+            (containsSemanticBorrow(&semantic.returnType) ||
+            containsBareSemanticSlice(&semantic.returnType) ||
+            containsBareSemanticContract(&semantic.returnType, true)) {
+            analyzer.diagnostics.reportError(
+                "FDN2063",
+                "borrow cannot be returned from a function",
+                function.returnType.span
+            )
+        }
+
+        if hasCSymbol {
+            const invalidCSymbol = !isSemanticCIdentifier(cSymbol)
+            const duplicateCSymbol = !invalidCSymbol &&
+                semanticStringContains(&cSymbols, cSymbol)
+            if invalidCSymbol {
+                analyzer.diagnostics.reportError(
+                    "FDN2110",
+                    "invalid C or C++ symbol " + cSymbol,
+                    function.span
+                )
+            }
+            if duplicateCSymbol {
+                analyzer.diagnostics.reportError(
+                    "FDN2111",
+                    "duplicate C symbol " + cSymbol,
+                    function.span
+                )
+            }
+            if !invalidCSymbol && !duplicateCSymbol &&
+                semanticStringContains(&callbackCancelSymbols, cSymbol) {
+                analyzer.diagnostics.reportError(
+                    "FDN2181",
+                    "C symbol conflicts with callback cancel symbol " + cSymbol,
+                    function.span
+                )
+            }
+            if !invalidCSymbol && !duplicateCSymbol {
+                discard cSymbols.add(text.Copy(cSymbol))
+            }
+            if listLength(&function.typeParameters) != 0 {
+                analyzer.diagnostics.reportError(
+                    "FDN2112",
+                    "C ABI function cannot be generic",
+                    function.span
+                )
+            }
+            if !isSemanticCReturnType(&semantic.returnType) {
+                analyzer.diagnostics.reportError(
+                    "FDN2113",
+                    "return type is not C ABI safe",
+                    function.returnType.span
+                )
+            }
+            var parameters = collections.NewList<parameter>()
+            var parameterIndex u64 = 0
+            while !function.parameters.IsEmpty() {
+                const parameter = match function.parameters.PopFront() {
+                    None: panic("function parameter list invariant failed")
+                    Some(parameter): parameter
+                }
+                var parameterType = match semantic.parameterTypes.take(parameterIndex) {
+                    None: panic("semantic parameter slot is empty")
+                    Some(parameterType): parameterType
+                }
+                var borrowedRecord = false
+                if (parameterType.kind.Matches("View") || parameterType.kind.Matches("Edit")) &&
+                    parameterType.arguments.len() == 1 {
+                    var target = semanticTypeArgument(&parameterType, 0)
+                    borrowedRecord = target.kind.Matches("StructValue")
+                    if borrowedRecord && !isSemanticCRecordType(
+                        &analyzer,
+                        &source,
+                        &target
+                    ) {
+                        borrowedRecord = false
+                        analyzer.diagnostics.reportError(
+                            "FDN2114",
+                            "parameter type is not C ABI safe",
+                            parameter.span
+                        )
+                    }
+                }
+                var validParameter = false
+                if function.hasBody {
+                    validParameter = isSemanticCParameterType(
+                        &parameterType, "", function.packageName)
+                } else {
+                    validParameter = isSemanticCParameterType(
+                        &parameterType, cSymbol, function.packageName)
+                }
+                if !validParameter && !borrowedRecord {
+                    analyzer.diagnostics.reportError(
+                        "FDN2114",
+                        "parameter type is not C ABI safe",
+                        parameter.span
+                    )
+                }
+                semantic.parameterTypes.restore(parameterIndex, $parameterType)
+                parameters.PushFront($parameter)
+                parameterIndex += 1
+            }
+            while !parameters.IsEmpty() {
+                const parameter = match parameters.PopFront() {
+                    None: panic("function parameter restore invariant failed")
+                    Some(parameter): parameter
+                }
+                function.parameters.PushFront($parameter)
+            }
+            if isReservedSemanticCSymbol(cSymbol) {
+                analyzer.diagnostics.reportError(
+                    "FDN2115",
+                    "C ABI symbol is reserved " + cSymbol,
+                    function.span
+                )
+            }
+            if function.name == "main" {
+                analyzer.diagnostics.reportError(
+                    "FDN2116",
+                    "main cannot use the C ABI declaration form",
+                    function.span
+                )
+            }
+        }
+
+        var testNamePresent = false
+        var testName = ""
+        const selectedTestName = replace function.testName with .None
+        match selectedTestName {
+            None: {}
+            Some(value): {
+                testNamePresent = true
+                testName = text.Copy(value)
+                function.testName = .Some(value)
+            }
+        }
+        if testNamePresent {
+            const emptyTestName = text.IsEmpty(testName)
+            const duplicateTestName = !emptyTestName &&
+                semanticStringContains(&testNames, testName)
+            if emptyTestName {
+                analyzer.diagnostics.reportError(
+                    "FDN2211",
+                    "test name cannot be empty",
+                    function.span
+                )
+            }
+            if duplicateTestName {
+                analyzer.diagnostics.reportError(
+                    "FDN2211",
+                    "duplicate test name " + testName,
+                    function.span
+                )
+            }
+            if !emptyTestName && !duplicateTestName {
+                discard testNames.add(text.Copy(testName))
+            }
+            if listLength(&function.typeParameters) != 0 ||
+                listLength(&function.parameters) != 0 ||
+                !semantic.returnType.kind.Matches("Void") ||
+                semanticReceiverHasValue(function.receiver) || function.taskFunction ||
+                hasCSymbol || function.closure {
+                analyzer.diagnostics.reportError(
+                    "FDN2211",
+                    "test declaration has an invalid signature",
+                    function.span
+                )
+            }
+        }
+
+        const receiverPresent = semanticReceiverHasValue(function.receiver)
+        if !testNamePresent && !function.closure {
+            if !text.IsEmpty(function.ownerType) {
+                const structOwner = findSemanticSymbol(
+                    &analyzer.state.structs,
+                    function.ownerType
+                )
+                const enumOwner = findSemanticSymbol(
+                    &analyzer.state.enums,
+                    function.ownerType
+                )
+                var ownerFound = false
+                var ownerIsStruct = false
+                match structOwner {
+                    None: {}
+                    Some(id): { discard id ownerFound = true ownerIsStruct = true }
+                }
+                match enumOwner {
+                    None: {}
+                    Some(id): { discard id ownerFound = true }
+                }
+                if ownerFound {
+                    const methodName = semanticMethodName(function.ownerType, function.name)
+                    if function.actionFunction && !ownerIsStruct {
+                        analyzer.diagnostics.reportError(
+                            "FDN2215",
+                            "action owner must be a service",
+                            function.span
+                        )
+                    }
+                    if function.actionFunction && !receiverPresent {
+                        analyzer.diagnostics.reportError(
+                            "FDN2215",
+                            "action requires an explicit receiver",
+                            function.span
+                        )
+                    }
+                    if function.actionFunction && methodName == "drop" {
+                        analyzer.diagnostics.reportError(
+                            "FDN2215",
+                            "action cannot be named drop",
+                            function.span
+                        )
+                    }
+                    if function.constructor && !ownerIsStruct {
+                        analyzer.diagnostics.reportError(
+                            "FDN2240",
+                            "constructor owner must be a struct or service",
+                            function.span
+                        )
+                    }
+                    if function.constructor && receiverPresent {
+                        analyzer.diagnostics.reportError(
+                            "FDN2241",
+                            "constructor cannot declare a receiver",
+                            function.span
+                        )
+                    }
+                    if function.constructor && ownerIsStruct {
+                        var ownerID u64 = 0
+                        match structOwner {
+                            None: {}
+                            Some(id): { ownerID = id }
+                        }
+                        var arguments = newArena<semanticType>()
+                        var parameter u64 = 0
+                        while parameter < semantic.typeParameterCount {
+                            discard arguments.add(
+                                declaredSemanticType(.Parameter, parameter)
+                            )
+                            parameter += 1
+                        }
+                        var constructed = semanticDirectType(
+                            .StructValue,
+                            ownerID,
+                            $arguments
+                        )
+                        var valid = sameSemanticType(&semantic.returnType, &constructed)
+                        if !valid && isSemanticResult(&source, &semantic.returnType) &&
+                            semantic.returnType.arguments.len() == 2 {
+                            var valueType = semanticTypeArgument(&semantic.returnType, 0)
+                            valid = sameSemanticType(&valueType, &constructed)
+                        }
+                        if !valid {
+                            analyzer.diagnostics.reportError(
+                                "FDN2242",
+                                "constructor must produce its owner or Result of its owner",
+                                function.span
+                            )
+                        }
+                    }
+                    if receiverPresent {
+                        if !addSemanticMethod(
+                            &analyzer.state.methodList,
+                            function.ownerType,
+                            methodName,
+                            index
+                        ) {
+                            analyzer.diagnostics.reportError(
+                                "FDN2095",
+                                "duplicate method " + methodName,
+                                function.span
+                            )
+                        }
+                        if ownerIsStruct && methodName == "drop" {
+                            var receiverEdit = false
+                            match function.receiver {
+                                None: {}
+                                Some(receiver): { receiverEdit = receiver.Matches("Edit") }
+                            }
+                            if !receiverEdit || semantic.parameterTypes.len() != 1 ||
+                                !semantic.returnType.kind.Matches("Void") {
+                                analyzer.diagnostics.reportError(
+                                    "FDN2137",
+                                    "drop must have signature fn drop(edit) void",
+                                    function.span
+                                )
+                            }
+                        }
+                    }
+                    if !receiverPresent && !addSemanticSymbol(
+                        &analyzer.state.functions,
+                        function.ownerType + "." + methodName,
+                        index
+                    ) {
+                        analyzer.diagnostics.reportError(
+                            "FDN2001",
+                            "duplicate associated function " + methodName,
+                            function.span
+                        )
+                    }
+                }
+                if !ownerFound {
+                    var contractOwner = false
+                    match findSemanticSymbol(&analyzer.state.contracts, function.ownerType) {
+                        None: {}
+                        Some(id): { discard id contractOwner = true }
+                    }
+                    if !receiverPresent || !contractOwner {
+                        analyzer.diagnostics.reportError(
+                            "FDN2094",
+                            if receiverPresent {
+                            "method owner is not a struct, enum, or contract"
+                        } else {
+                            "associated function owner is not a struct or enum"
+                        },
+                            function.span
+                        )
+                    }
+                }
+            }
+            if text.IsEmpty(function.ownerType) && !addSemanticSymbol(
+                &analyzer.state.functions,
+                function.name,
+                index
+            ) {
+                analyzer.diagnostics.reportError(
+                    "FDN2001",
+                    "duplicate function " + function.name,
+                    function.span
+                )
+            }
+            if !receiverPresent && (function.name == "print" || function.name == "panic" ||
+                function.name == "len" || function.name == "null" ||
+                function.name == "isNull" || function.name == "cString" ||
+                function.name == "sizeOf" || function.name == "pointerCast" ||
+                function.name == "channel") {
+                analyzer.diagnostics.reportError(
+                    "FDN2018",
+                    function.name + " is a reserved builtin",
+                    function.span
+                )
+            }
+        }
+
+        var signatureReturn = copySemanticType(&semantic.returnType)
+        var signatureParameters = copySemanticTypeArena(
+            &semantic.parameterTypes)
+        var signature = functionSignature {
+            returnType = signatureReturn
+            parameters = signatureParameters
+        }
+        discard analyzer.state.signatures.add($signature)
+        if !receiverPresent && function.name == "main" && !hasCSymbol {
+            if !foundMain { analyzer.model.main = index }
+            foundMain = true
+            var slice = unarySemanticType(.Slice, stringSemanticType())
+            var argumentsType = unarySemanticType(.View, $slice)
+            var acceptsArguments = false
+            if semantic.parameterTypes.len() == 1 {
+                var parameter = match semantic.parameterTypes.take(0) {
+                    None: panic("main parameter slot is empty")
+                    Some(parameter): parameter
+                }
+                acceptsArguments = sameSemanticType(&parameter, &argumentsType)
+                semantic.parameterTypes.restore(0, $parameter)
+            }
+            if listLength(&function.typeParameters) != 0 ||
+                (semantic.parameterTypes.len() != 0 && !acceptsArguments) ||
+                !semantic.returnType.kind.Matches("I32") {
+                analyzer.diagnostics.reportError(
+                    "FDN2007",
+                    "main must have signature fn main() i32 or fn main(args view [String]) i32",
+                    function.span
+                )
+            }
+        }
+        analyzer.model.functions.restore(index, $semantic)
+        source.functions.restore(index, $function)
+        index += 1
+    }
+    if !foundMain && analyzer.options.requireMain {
+        analyzer.diagnostics.reportError(
+            "FDN2006",
+            "program must declare main",
+            sourceSpan { offset = 0 length = 0 line = 1 column = 1 source = 0 }
+        )
+    }
+}

@@ -1,0 +1,205 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+struct semanticAnalysisParameter {
+    name String
+    type semanticType
+    span sourceSpan
+}
+
+struct semanticFunctionBody {
+    body u64
+    hasBody bool
+    closure bool
+    span sourceSpan
+    typeParameters own collections.List<String>
+}
+
+fn semanticFunctionBodyAt(
+    &source program,
+    function u64
+) semanticFunctionBody {
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    const result = semanticFunctionBody {
+        body = declaration.body
+        hasBody = declaration.hasBody
+        closure = declaration.closure
+        span = declaration.span
+        typeParameters = copyStringList(&declaration.typeParameters)
+    }
+    source.functions.restore(function, $declaration)
+    result
+}
+
+fn semanticFunctionAnalysisParameters(
+    &analyzer semanticAnalyzer,
+    &source program,
+    function u64
+) own arena<semanticAnalysisParameter> {
+    var result = newArena<semanticAnalysisParameter>()
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    var semantic = match analyzer.model.functions.take(function) {
+        None: panic("semantic function slot is empty")
+        Some(semantic): semantic
+    }
+    var pending = collections.NewList<parameter>()
+    var index u64 = 0
+    while !declaration.parameters.IsEmpty() {
+        const parameter = match declaration.parameters.PopFront() {
+            None: panic("parameter list invariant failed")
+            Some(parameter): parameter
+        }
+        var type = invalidSemanticType()
+        if index < semantic.parameterTypes.len() {
+            var stored = match semantic.parameterTypes.take(index) {
+                None: panic("semantic parameter slot is empty")
+                Some(stored): stored
+            }
+            type = copySemanticType(&stored)
+            semantic.parameterTypes.restore(index, $stored)
+        }
+        discard result.add(semanticAnalysisParameter {
+            name = text.Copy(parameter.name)
+            type = type
+            span = parameter.span
+        })
+        pending.PushFront($parameter)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const parameter = match pending.PopFront() {
+            None: panic("parameter restore invariant failed")
+            Some(parameter): parameter
+        }
+        declaration.parameters.PushFront($parameter)
+    }
+    analyzer.model.functions.restore(function, $semantic)
+    source.functions.restore(function, $declaration)
+    result
+}
+
+fn appendSemanticParameterLocal(
+    &analyzer semanticAnalyzer,
+    function u64,
+    local u64
+) void {
+    var semantic = match analyzer.model.functions.take(function) {
+        None: panic("semantic function slot is empty")
+        Some(semantic): semantic
+    }
+    discard semantic.parameters.add(local)
+    analyzer.model.functions.restore(function, $semantic)
+}
+
+fn resetSemanticFunctionState(
+    &analyzer semanticAnalyzer,
+    function u64
+) void {
+    analyzer.state.currentFunction = function
+    analyzer.state.scopes.clear()
+    pushSemanticScope(&analyzer.state)
+    analyzer.state.resultOutstanding.clear()
+    analyzer.state.resultExitReported.clear()
+    analyzer.state.localSpans.clear()
+    analyzer.state.moveStates.clear()
+    analyzer.state.loanStates.clear()
+    analyzer.state.transferRoot = .None
+    analyzer.state.taskWaitRoot = .None
+    analyzer.state.taskWaitVoidStatement = false
+    analyzer.state.channelStorage = 0
+    analyzer.state.blockingStorage = 0
+    analyzer.state.callbackStorage = 0
+    analyzer.state.iterationStorage = 0
+    analyzer.state.loopScopeBases.clear()
+    analyzer.state.loopJumps = 0
+    analyzer.state.unsafeDepth = 0
+}
+
+fn analyzeSemanticFunction(
+    &analyzer semanticAnalyzer,
+    &source program,
+    function u64
+) void {
+    var body = semanticFunctionBodyAt(&source, function)
+    if body.closure return
+    resetSemanticFunctionState(&analyzer, function)
+    const bodySpan = body.span
+    setSemanticTypeParameters(&analyzer, &body.typeParameters, bodySpan)
+    var parameters = semanticFunctionAnalysisParameters(
+        &analyzer, &source, function)
+    var index u64 = 0
+    while index < parameters.len() {
+        var parameter = match parameters.take(index) {
+            None: panic("analysis parameter slot is empty")
+            Some(parameter): parameter
+        }
+        const name = text.Copy(parameter.name)
+        const parameterSpan = parameter.span
+        var parameterType = copySemanticType(&parameter.type)
+        const local = addSemanticLocalToFunction(
+            &analyzer,
+            &source,
+            name,
+            $parameterType,
+            false,
+            parameterSpan
+        )
+        appendSemanticParameterLocal(&analyzer, function, local)
+        parameters.restore(index, $parameter)
+        index += 1
+    }
+    if analyzeSemanticSpecialFunction(&analyzer, &source, function) return
+    if !body.hasBody return
+    const returns = analyzeSemanticBlock(
+        &analyzer, &source, body.body, false)
+    reportSemanticScopeAt(&analyzer, 0)
+    var returnType = semanticCurrentReturnType(&analyzer)
+    if !returnType.kind.Matches("Void") && !returns {
+        analyzer.diagnostics.reportError(
+            "FDN2008", "function does not return on every path", body.span)
+    }
+}
+
+fn analyzeSemanticFunctions(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    var function u64 = 0
+    while function < source.functions.len() {
+        analyzeSemanticFunction(&analyzer, &source, function)
+        function += 1
+    }
+}
+
+fn analyzeProgram(
+    &source program,
+    options analyzeOptions
+) semanticAnalysis {
+    var analyzer = newSemanticAnalyzer(&source, options)
+    declareSemanticTypes(&analyzer, &source)
+    resolveSemanticContracts(&analyzer, &source)
+    resolveSemanticStructs(&analyzer, &source)
+    resolveSemanticEnums(&analyzer, &source)
+    rejectSemanticTypeCycles(&analyzer, &source)
+    resolveSemanticAttributeDeclarations(&analyzer, &source)
+    declareSemanticFunctions(&analyzer, &source)
+    resolveSemanticAppliedAttributes(&analyzer, &source)
+    verifySemanticImplementations(&analyzer, &source)
+    analyzeSemanticFunctions(&analyzer, &source)
+    rejectSemanticPolymorphicRecursion(&analyzer, &source)
+    var model Option<own semanticModel> = .None
+    if !analyzer.diagnostics.hasErrors() || options.retainInvalidModel {
+        const selected = replace analyzer.model with newSemanticModel(&source)
+        model = .Some(selected)
+    }
+    const diagnostics = replace analyzer.diagnostics with newDiagnostics()
+    semanticAnalysis { model = model diagnostics = diagnostics }
+}

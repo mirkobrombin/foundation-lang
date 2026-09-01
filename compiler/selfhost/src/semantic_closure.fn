@@ -1,0 +1,725 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+struct semanticClosureParameter {
+    name String
+    mode parameterMode
+    inferred bool
+    span sourceSpan
+}
+
+struct semanticClosureCapture {
+    name String
+    mode captureMode
+    span sourceSpan
+}
+
+struct semanticClosureInfo {
+    body u64
+    span sourceSpan
+    closure bool
+    inferredReturn bool
+    parameters own arena<semanticClosureParameter>
+    captures own arena<semanticClosureCapture>
+    typeParameters own collections.List<String>
+}
+
+fn semanticCaptureModeMatches(
+    value captureMode,
+    name String
+) bool {
+    match value {
+        Copy: name == "Copy"
+        Own: name == "Own"
+        View: name == "View"
+        Edit: name == "Edit"
+    }
+}
+
+fn semanticCaptureModeAt(
+    &values arena<captureMode>,
+    index u64
+) captureMode {
+    const value = match values.take(index) {
+        None: panic("closure capture mode slot is empty")
+        Some(value): value
+    }
+    values.restore(index, value)
+    value
+}
+
+fn copyCaptureModeArena(
+    &values arena<captureMode>
+) own arena<captureMode> {
+    var result = newArena<captureMode>()
+    var index u64 = 0
+    while index < values.len() {
+        discard result.add(semanticCaptureModeAt(&values, index))
+        index += 1
+    }
+    result
+}
+
+fn semanticClosureInfoAt(
+    &source program,
+    function u64
+) semanticClosureInfo {
+    var declaration = match source.functions.take(function) {
+        None: panic("closure function slot is empty")
+        Some(declaration): declaration
+    }
+    var parameters = newArena<semanticClosureParameter>()
+    var pendingParameters = collections.NewList<parameter>()
+    while !declaration.parameters.IsEmpty() {
+        var value = match declaration.parameters.PopFront() {
+            None: panic("closure parameter list invariant failed")
+            Some(value): value
+        }
+        discard parameters.add(semanticClosureParameter {
+            name = text.Copy(value.name)
+            mode = value.mode
+            inferred = value.inferredType
+            span = value.span
+        })
+        pendingParameters.PushFront($value)
+    }
+    while !pendingParameters.IsEmpty() {
+        const value = match pendingParameters.PopFront() {
+            None: panic("closure parameter restore invariant failed")
+            Some(value): value
+        }
+        declaration.parameters.PushFront($value)
+    }
+
+    var captures = newArena<semanticClosureCapture>()
+    var pendingCaptures = collections.NewList<closureCapture>()
+    while !declaration.captures.IsEmpty() {
+        var value = match declaration.captures.PopFront() {
+            None: panic("closure capture list invariant failed")
+            Some(value): value
+        }
+        discard captures.add(semanticClosureCapture {
+            name = text.Copy(value.name)
+            mode = value.mode
+            span = value.span
+        })
+        pendingCaptures.PushFront($value)
+    }
+    while !pendingCaptures.IsEmpty() {
+        const value = match pendingCaptures.PopFront() {
+            None: panic("closure capture restore invariant failed")
+            Some(value): value
+        }
+        declaration.captures.PushFront($value)
+    }
+    const result = semanticClosureInfo {
+        body = declaration.body
+        span = declaration.span
+        closure = declaration.closure
+        inferredReturn = declaration.inferredReturn
+        parameters = parameters
+        captures = captures
+        typeParameters = copyStringList(&declaration.typeParameters)
+    }
+    source.functions.restore(function, $declaration)
+    result
+}
+
+fn semanticClosureParameterAt(
+    &values arena<semanticClosureParameter>,
+    index u64
+) semanticClosureParameter {
+    var value = match values.take(index) {
+        None: panic("closure parameter slot is empty")
+        Some(value): value
+    }
+    const result = semanticClosureParameter {
+        name = text.Copy(value.name)
+        mode = value.mode
+        inferred = value.inferred
+        span = value.span
+    }
+    values.restore(index, $value)
+    result
+}
+
+fn semanticClosureCaptureAt(
+    &values arena<semanticClosureCapture>,
+    index u64
+) semanticClosureCapture {
+    var value = match values.take(index) {
+        None: panic("closure capture slot is empty")
+        Some(value): value
+    }
+    const result = semanticClosureCapture {
+        name = text.Copy(value.name)
+        mode = value.mode
+        span = value.span
+    }
+    values.restore(index, $value)
+    result
+}
+
+fn semanticSetClosureSignature(
+    &analyzer semanticAnalyzer,
+    &source program,
+    function u64,
+    &info semanticClosureInfo,
+    &contextual semanticType
+) bool {
+    var semantic = match analyzer.model.functions.take(function) {
+        None: panic("semantic closure slot is empty")
+        Some(semantic): semantic
+    }
+    if info.inferredReturn {
+        semantic.returnType = semanticTypeArgument(&contextual, 0)
+    }
+    var modeMismatch = false
+    var index u64 = 0
+    while index < info.parameters.len() {
+        const parameter = semanticClosureParameterAt(&info.parameters, index)
+        if parameter.inferred {
+            var target = semanticTypeArgument(&contextual, index + 1)
+            var inferred = copySemanticType(&target)
+            if parameter.mode.Matches("Read") &&
+                target.kind.Matches("View") && target.declaration == 1 &&
+                target.arguments.len() == 1 {
+                var inner = semanticTypeArgument(&target, 0)
+                inferred = unarySemanticType(.View, $inner)
+            } else {
+                if parameter.mode.Matches("Read") &&
+                    !isCopySemanticParameterType(&analyzer, &source, &target) {
+                    inferred = invalidSemanticType()
+                    modeMismatch = true
+                } else {
+                    if parameter.mode.Matches("Edit") &&
+                        !target.kind.Matches("Edit") {
+                        inferred = invalidSemanticType()
+                        modeMismatch = true
+                    } else {
+                        if parameter.mode.Matches("Transfer") &&
+                            (target.kind.Matches("View") ||
+                            target.kind.Matches("Edit")) {
+                            inferred = invalidSemanticType()
+                            modeMismatch = true
+                        }
+                    }
+                }
+            }
+            setArenaValue<semanticType>(
+                &semantic.parameterTypes, index, $inferred)
+        }
+        index += 1
+    }
+    var signature = match analyzer.state.signatures.take(function) {
+        None: panic("closure signature slot is empty")
+        Some(signature): signature
+    }
+    signature.returnType = copySemanticType(&semantic.returnType)
+    signature.parameters = copySemanticTypeArena(&semantic.parameterTypes)
+    analyzer.state.signatures.restore(function, $signature)
+    analyzer.model.functions.restore(function, $semantic)
+    !modeMismatch
+}
+
+fn semanticClosureOuterNamesFrom(
+    &scopes arena<semanticScope>
+) own arena<String> {
+    var result = newArena<String>()
+    var scopeIndex u64 = 0
+    while scopeIndex < scopes.len() {
+        var scope = match scopes.take(scopeIndex) {
+            None: panic("semantic scope slot is empty")
+            Some(scope): scope
+        }
+        var bindingIndex u64 = 0
+        while bindingIndex < scope.bindings.len() {
+            var binding = match scope.bindings.take(bindingIndex) {
+                None: panic("semantic binding slot is empty")
+                Some(binding): binding
+            }
+            if !semanticStringContains(&result, binding.name) {
+                discard result.add(text.Copy(binding.name))
+            }
+            scope.bindings.restore(bindingIndex, $binding)
+            bindingIndex += 1
+        }
+        scopes.restore(scopeIndex, $scope)
+        scopeIndex += 1
+    }
+    result
+}
+
+fn semanticSetCaptureLocal(
+    &analyzer semanticAnalyzer,
+    local u64,
+    mode captureMode
+) void {
+    var function = match analyzer.model.functions.take(
+        analyzer.state.currentFunction) {
+        None: panic("semantic function slot is empty")
+        Some(function): function
+    }
+    var value = match function.locals.take(local) {
+        None: panic("semantic local slot is empty")
+        Some(value): value
+    }
+    value.captured = true
+    value.captureMode = mode
+    function.locals.restore(local, $value)
+    analyzer.model.functions.restore(analyzer.state.currentFunction, $function)
+}
+
+fn semanticClosureParameterNames(
+    &info semanticClosureInfo
+) own arena<String> {
+    var result = newArena<String>()
+    var index u64 = 0
+    while index < info.parameters.len() {
+        const parameter = semanticClosureParameterAt(&info.parameters, index)
+        discard result.add(text.Copy(parameter.name))
+        index += 1
+    }
+    result
+}
+
+fn analyzeSemanticClosureBody(
+    &analyzer semanticAnalyzer,
+    &source program,
+    function u64,
+    &info semanticClosureInfo,
+    &captureTypes arena<semanticType>,
+    &captureModes arena<captureMode>
+) void {
+    const savedFunction = analyzer.state.currentFunction
+    var savedScopes = replace analyzer.state.scopes with newArena<semanticScope>()
+    var savedOutstanding = replace analyzer.state.resultOutstanding with
+    newArena<bool>()
+    var savedExitReported = replace analyzer.state.resultExitReported with
+    newArena<bool>()
+    var savedSpans = replace analyzer.state.localSpans with newArena<sourceSpan>()
+    var savedMoves = replace analyzer.state.moveStates with newArena<moveState>()
+    var savedLoans = replace analyzer.state.loanStates with newArena<loanState>()
+    var savedTypeParameters = replace analyzer.state.typeParameters with
+    newArena<semanticSymbol>()
+    var savedTypeParameterNames = replace
+    analyzer.state.currentTypeParameterNames with newArena<String>()
+    var savedClosureOuterNames = replace analyzer.state.closureOuterNames with
+    newArena<String>()
+
+    analyzer.state.currentFunction = function
+    pushSemanticScope(&analyzer.state)
+    analyzer.state.closureOuterNames = semanticClosureOuterNamesFrom(&savedScopes)
+    const infoSpan = info.span
+    setSemanticTypeParameters(&analyzer, &info.typeParameters, infoSpan)
+
+    var index u64 = 0
+    while index < captureTypes.len() {
+        const captureInfo = semanticClosureCaptureAt(&info.captures, index)
+        var type = match captureTypes.take(index) {
+            None: panic("closure capture type slot is empty")
+            Some(type): type
+        }
+        const mode = semanticCaptureModeAt(&captureModes, index)
+        const local = addSemanticLocalToFunction(
+            &analyzer,
+            &source,
+            captureInfo.name,
+            copySemanticType(&type),
+            semanticCaptureModeMatches(mode, "Edit"),
+            captureInfo.span
+        )
+        semanticSetCaptureLocal(&analyzer, local, mode)
+        captureTypes.restore(index, $type)
+        index += 1
+    }
+
+    index = 0
+    while index < info.parameters.len() {
+        const parameter = semanticClosureParameterAt(&info.parameters, index)
+        var functionModel = match analyzer.model.functions.take(function) {
+            None: panic("semantic closure slot is empty")
+            Some(functionModel): functionModel
+        }
+        var parameterType = match functionModel.parameterTypes.take(index) {
+            None: panic("semantic closure parameter slot is empty")
+            Some(parameterType): parameterType
+        }
+        var localType = copySemanticType(&parameterType)
+        functionModel.parameterTypes.restore(index, $parameterType)
+        analyzer.model.functions.restore(function, $functionModel)
+        const local = addSemanticLocalToFunction(
+            &analyzer,
+            &source,
+            parameter.name,
+            $localType,
+            false,
+            parameter.span
+        )
+        functionModel = match analyzer.model.functions.take(function) {
+            None: panic("semantic closure slot is empty")
+            Some(value): value
+        }
+        discard functionModel.parameters.add(local)
+        analyzer.model.functions.restore(function, $functionModel)
+        index += 1
+    }
+    const returns = analyzeSemanticBlock(&analyzer, &source, info.body, false)
+    reportSemanticScopeAt(&analyzer, 0)
+    var returnType = semanticCurrentReturnType(&analyzer)
+    if !returnType.kind.Matches("Void") && !returns {
+        analyzer.diagnostics.reportError(
+            "FDN2008", "function does not return on every path", info.span)
+    }
+
+    analyzer.state.currentFunction = savedFunction
+    analyzer.state.scopes = savedScopes
+    analyzer.state.resultOutstanding = savedOutstanding
+    analyzer.state.resultExitReported = savedExitReported
+    analyzer.state.localSpans = savedSpans
+    analyzer.state.moveStates = savedMoves
+    analyzer.state.loanStates = savedLoans
+    analyzer.state.typeParameters = savedTypeParameters
+    analyzer.state.currentTypeParameterNames = savedTypeParameterNames
+    analyzer.state.closureOuterNames = savedClosureOuterNames
+}
+
+fn analyzeSemanticClosure(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    &functionValue functionExpression,
+    &expected semanticExpected,
+    span sourceSpan
+) semanticType {
+    if functionValue.function >= source.functions.len() {
+        analyzer.diagnostics.reportError(
+            "FDN2129", "invalid closure target", span)
+        return invalidSemanticType()
+    }
+    var info = semanticClosureInfoAt(&source, functionValue.function)
+    if !info.closure {
+        analyzer.diagnostics.reportError(
+            "FDN2129", "invalid closure target", span)
+        return invalidSemanticType()
+    }
+    var contextual = invalidSemanticType()
+    var hasContextual = expected.present
+    if hasContextual {
+        contextual = copySemanticType(&expected.type)
+        if (contextual.kind.Matches("View") ||
+            contextual.kind.Matches("Edit")) && contextual.arguments.len() == 1 {
+            contextual = semanticTypeArgument(&contextual, 0)
+        }
+    }
+    if hasContextual && isCSemanticFunction(&contextual) {
+        analyzer.diagnostics.reportError(
+            "FDN2215",
+            "anonymous function cannot become a C function pointer",
+            span
+        )
+        return invalidSemanticType()
+    }
+    var needsInference = info.inferredReturn
+    var index u64 = 0
+    while index < info.parameters.len() {
+        if semanticClosureParameterAt(&info.parameters, index).inferred {
+            needsInference = true
+        }
+        index += 1
+    }
+    if needsInference && (!hasContextual ||
+        !contextual.kind.Matches("Function")) {
+        analyzer.diagnostics.reportError(
+            "FDN2184",
+            "anonymous function signature requires an expected function type",
+            span
+        )
+        return invalidSemanticType()
+    }
+    if needsInference && contextual.arguments.len() !=
+        info.parameters.len() + 1 {
+        analyzer.diagnostics.reportError(
+            "FDN2184",
+            "anonymous function parameter count does not match expected function type",
+            span
+        )
+        return invalidSemanticType()
+    }
+    if needsInference && !semanticSetClosureSignature(
+        &analyzer,
+        &source,
+        functionValue.function,
+        &info,
+        &contextual
+    ) {
+        analyzer.diagnostics.reportError(
+            "FDN2011",
+            "anonymous parameter mode does not match expected function type",
+            span
+        )
+        return invalidSemanticType()
+    }
+
+    var semantic = match analyzer.model.functions.take(functionValue.function) {
+        None: panic("semantic closure slot is empty")
+        Some(semantic): semantic
+    }
+    if info.inferredReturn &&
+        (containsSemanticBorrow(&semantic.returnType) ||
+        containsBareSemanticSlice(&semantic.returnType) ||
+        containsBareSemanticContract(&semantic.returnType, true)) {
+        analyzer.diagnostics.reportError(
+            "FDN2063", "borrow cannot be returned from a function", info.span)
+    }
+    index = 0
+    while index < info.parameters.len() {
+        const parameter = semanticClosureParameterAt(&info.parameters, index)
+        if parameter.inferred {
+            var type = match semantic.parameterTypes.take(index) {
+                None: panic("semantic closure parameter slot is empty")
+                Some(type): type
+            }
+            if type.kind.Matches("Void") || type.kind.Matches("Never") {
+                analyzer.diagnostics.reportError(
+                    "FDN2016",
+                    "parameter cannot have type void or never",
+                    parameter.span
+                )
+            }
+            if containsBareSemanticSlice(&type) {
+                analyzer.diagnostics.reportError(
+                    "FDN2080", "slice parameter requires view or edit", parameter.span)
+            }
+            if containsNestedSemanticBorrow(&type, true) {
+                analyzer.diagnostics.reportError(
+                    "FDN2064", "parameter contains a nested borrow", parameter.span)
+            }
+            if containsBareSemanticContract(&type, true) {
+                analyzer.diagnostics.reportError(
+                    "FDN2099",
+                    "contract value requires view, edit, or own",
+                    parameter.span
+                )
+            }
+            semantic.parameterTypes.restore(index, $type)
+        }
+        index += 1
+    }
+    var parts = newArena<semanticType>()
+    discard parts.add(copySemanticType(&semantic.returnType))
+    index = 0
+    while index < semantic.parameterTypes.len() {
+        var type = match semantic.parameterTypes.take(index) {
+            None: panic("semantic closure parameter slot is empty")
+            Some(type): type
+        }
+        const parameter = semanticClosureParameterAt(&info.parameters, index)
+        discard parts.add(semanticFunctionValueParameterType(
+                &analyzer, &source, copySemanticType(&type), parameter.mode))
+        semantic.parameterTypes.restore(index, $type)
+        index += 1
+    }
+    analyzer.model.functions.restore(functionValue.function, $semantic)
+    var closureType = semanticType {
+        kind = .Function
+        declaration = 1 if hasContextual &&
+            isTransferableSemanticFunction(&contextual) else 0
+        arguments = parts
+    }
+    if hasContextual {
+        requireSameSemanticType(
+            &analyzer,
+            &source,
+            &contextual,
+            &closureType,
+            span,
+            "closure signature"
+        )
+    }
+
+    var captureNames = newArena<String>()
+    var parameterNames = semanticClosureParameterNames(&info)
+    var captureSources = newArena<u64>()
+    var captureModes = newArena<captureMode>()
+    var captureTypes = newArena<semanticType>()
+    var borrowed = false
+    index = 0
+    while index < info.captures.len() {
+        const captureInfo = semanticClosureCaptureAt(&info.captures, index)
+        if semanticStringContains(&captureNames, captureInfo.name) {
+            analyzer.diagnostics.reportError(
+                "FDN2121",
+                "duplicate capture " + captureInfo.name,
+                captureInfo.span
+            )
+            index += 1
+            continue
+        }
+        discard captureNames.add(text.Copy(captureInfo.name))
+        if semanticStringContains(&parameterNames, captureInfo.name) {
+            analyzer.diagnostics.reportError(
+                "FDN2122",
+                "capture conflicts with parameter " + captureInfo.name,
+                captureInfo.span
+            )
+        }
+        const sourceLocal = lookupSemanticLocal(
+            &analyzer.state, captureInfo.name)
+        const local = match sourceLocal {
+            None: {
+                analyzer.diagnostics.reportError(
+                    "FDN2120",
+                    "unknown captured binding " + captureInfo.name,
+                    captureInfo.span
+                )
+                index += 1
+                continue
+            }
+            Some(local): local
+        }
+        var type = semanticLocalType(&analyzer, local)
+        if semanticLocalBorrowedClosure(&analyzer, local) {
+            analyzer.diagnostics.reportError(
+                "FDN2127",
+                "borrowed closure cannot be captured",
+                captureInfo.span
+            )
+        }
+        var mode = captureInfo.mode
+        if semanticCaptureModeMatches(mode, "Copy") &&
+            requiresSemanticDrop(&analyzer, &source, &type) {
+            mode = .View
+        }
+        if containsSemanticBorrow(&type) &&
+            !semanticCaptureModeMatches(mode, "View") &&
+            !semanticCaptureModeMatches(mode, "Edit") {
+            analyzer.diagnostics.reportError(
+                "FDN2123",
+                "capture cannot own an existing borrow",
+                captureInfo.span
+            )
+        }
+        if semanticCaptureModeMatches(mode, "Own") {
+            const move = semanticMoveAt(&analyzer.state.moveStates, local)
+            if move.Matches("Moved") {
+                analyzer.diagnostics.reportError(
+                    "FDN2065",
+                    "use of moved binding " + captureInfo.name,
+                    captureInfo.span
+                )
+            } else {
+                if move.Matches("MaybeMoved") {
+                    analyzer.diagnostics.reportError(
+                        "FDN2066",
+                        "binding may have moved " + captureInfo.name,
+                        captureInfo.span
+                    )
+                } else {
+                    if !semanticLoanAt(
+                        &analyzer.state.loanStates, local).Matches("None") {
+                        analyzer.diagnostics.reportError(
+                            "FDN2067",
+                            "cannot move borrowed binding " + captureInfo.name,
+                            captureInfo.span
+                        )
+                    }
+                }
+            }
+            if requiresSemanticDrop(&analyzer, &source, &type) {
+                setSemanticMove(&analyzer.state.moveStates, local, .Moved)
+            }
+            if isSemanticResult(&source, &type) {
+                setSemanticBool(
+                    &analyzer.state.resultOutstanding, local, false)
+            }
+        } else {
+            if !semanticCaptureModeMatches(mode, "Copy") {
+                const editCapture = semanticCaptureModeMatches(mode, "Edit")
+                if editCapture && !semanticLocalMutable(&analyzer, local) &&
+                    !type.kind.Matches("Edit") {
+                    analyzer.diagnostics.reportError(
+                        "FDN2124",
+                        "edit capture requires a mutable binding",
+                        captureInfo.span
+                    )
+                }
+                const loan = semanticLoanAt(&analyzer.state.loanStates, local)
+                if (!editCapture && loan.Matches("Edit")) ||
+                    (editCapture && !loan.Matches("None")) {
+                    analyzer.diagnostics.reportError(
+                        "FDN2125",
+                        "conflicting capture of binding " + captureInfo.name,
+                        captureInfo.span
+                    )
+                } else {
+                    if editCapture || loan.Matches("None") {
+                        setSemanticLoan(
+                            &analyzer.state.loanStates,
+                            local,
+                            .Edit if editCapture else .View
+                        )
+                    }
+                }
+                borrowed = true
+            }
+        }
+        discard captureSources.add(local)
+        discard captureModes.add(mode)
+        discard captureTypes.add($type)
+        index += 1
+    }
+
+    if isTransferableSemanticFunction(&closureType) {
+        index = 0
+        while index < captureTypes.len() {
+            const captureInfo = semanticClosureCaptureAt(&info.captures, index)
+            const mode = semanticCaptureModeAt(&captureModes, index)
+            if semanticCaptureModeMatches(mode, "View") ||
+                semanticCaptureModeMatches(mode, "Edit") {
+                analyzer.diagnostics.reportError(
+                    "FDN2185",
+                    "transferable function cannot borrow capture " +
+                    captureInfo.name,
+                    captureInfo.span
+                )
+            } else {
+                var type = semanticTypeArenaAt(&captureTypes, index)
+                if !parallelSemanticTransferSafe(
+                    &analyzer, &source, &type) {
+                    analyzer.diagnostics.reportError(
+                        "FDN2185",
+                        "transferable function capture is not safe to transfer between threads: " +
+                        displaySemanticType(&analyzer, &source, &type),
+                        captureInfo.span
+                    )
+                }
+            }
+            index += 1
+        }
+    }
+
+    var target Option<closureTarget> = .Some(closureTarget {
+        function = functionValue.function
+        captures = captureSources
+        modes = copyCaptureModeArena(&captureModes)
+        borrowed = borrowed
+    })
+    setArenaValue<Option<closureTarget>>(
+        &analyzer.model.closureTargets, expression, $target)
+    setSemanticBool(
+        &analyzer.model.expressionBorrowedClosures, expression, borrowed)
+    if captureTypes.len() == info.captures.len() {
+        analyzeSemanticClosureBody(
+            &analyzer,
+            &source,
+            functionValue.function,
+            &info,
+            &captureTypes,
+            &captureModes
+        )
+    }
+    closureType
+}

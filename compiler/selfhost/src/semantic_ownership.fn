@@ -1,0 +1,507 @@
+package foundation.compiler
+
+struct semanticTaskWaitProbe {
+    matched bool
+    base u64
+    argumentCount u64
+    typeArgumentCount u64
+}
+
+fn semanticTaskWaitAt(
+    &source program,
+    expression u64
+) semanticTaskWaitProbe {
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    var result = semanticTaskWaitProbe {
+        matched = false
+        base = 0
+        argumentCount = 0
+        typeArgumentCount = 0
+    }
+    const restored = match value {
+        Member(payload): {
+            var current = payload
+            var hasBase = false
+            var base u64 = 0
+            match current.base {
+                None: {}
+                Some(value): { hasBase = true base = value }
+            }
+            if current.invoked && current.member == "wait" && hasBase {
+                result = semanticTaskWaitProbe {
+                    matched = true
+                    base = base
+                    argumentCount = listLength(&current.arguments)
+                    typeArgumentCount = listLength(&current.typeArguments)
+                }
+            }
+            expressionValue.Member(current)
+        }
+        Integer(payload): expressionValue.Integer(payload)
+        Floating(payload): expressionValue.Floating(payload)
+        Boolean(payload): expressionValue.Boolean(payload)
+        StringValue(payload): expressionValue.StringValue(payload)
+        Array(payload): expressionValue.Array(payload)
+        Name(payload): expressionValue.Name(payload)
+        Unary(payload): expressionValue.Unary(payload)
+        Ownership(payload): expressionValue.Ownership(payload)
+        Binary(payload): expressionValue.Binary(payload)
+        Call(payload): expressionValue.Call(payload)
+        StructValue(payload): expressionValue.StructValue(payload)
+        Index(payload): expressionValue.Index(payload)
+        Replace(payload): expressionValue.Replace(payload)
+        Spawn(payload): expressionValue.Spawn(payload)
+        MatchValue(payload): expressionValue.MatchValue(payload)
+        Conditional(payload): expressionValue.Conditional(payload)
+        FunctionValue(payload): expressionValue.FunctionValue(payload)
+    }
+    source.expressions.restore(expression, $expressionNode {
+        value = restored span = span
+    })
+    result
+}
+
+fn semanticTaskWaitRootMatches(
+    &analyzer semanticAnalyzer,
+    expression u64
+) bool {
+    match analyzer.state.taskWaitRoot {
+        None: false
+        Some(root): root == expression
+    }
+}
+
+fn setSemanticTaskWaitTarget(
+    &analyzer semanticAnalyzer,
+    expression u64,
+    taskValue u64
+) void {
+    var target Option<taskWaitTarget> = .Some(taskWaitTarget {
+        taskValue = taskValue
+    })
+    setArenaValue<Option<taskWaitTarget>>(
+        &analyzer.model.taskWaitTargets, expression, $target)
+}
+
+fn semanticNewOperandAllowed(&source program, expression u64) bool {
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    var allowed = false
+    const restored = match value {
+        StructValue(payload): {
+            allowed = true
+            expressionValue.StructValue(payload)
+        }
+        Call(payload): {
+            allowed = true
+            expressionValue.Call(payload)
+        }
+        Member(payload): {
+            allowed = true
+            expressionValue.Member(payload)
+        }
+        Integer(payload): expressionValue.Integer(payload)
+        Floating(payload): expressionValue.Floating(payload)
+        Boolean(payload): expressionValue.Boolean(payload)
+        StringValue(payload): expressionValue.StringValue(payload)
+        Array(payload): expressionValue.Array(payload)
+        Name(payload): expressionValue.Name(payload)
+        Unary(payload): expressionValue.Unary(payload)
+        Ownership(payload): expressionValue.Ownership(payload)
+        Binary(payload): expressionValue.Binary(payload)
+        Index(payload): expressionValue.Index(payload)
+        Replace(payload): expressionValue.Replace(payload)
+        Spawn(payload): expressionValue.Spawn(payload)
+        MatchValue(payload): expressionValue.MatchValue(payload)
+        Conditional(payload): expressionValue.Conditional(payload)
+        FunctionValue(payload): expressionValue.FunctionValue(payload)
+    }
+    source.expressions.restore(expression, $expressionNode {
+        value = restored
+        span = span
+    })
+    allowed
+}
+
+fn analyzeSemanticOwnership(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    &ownership ownershipExpression,
+    &expected semanticExpected,
+    span sourceSpan
+) semanticType {
+    if ownership.operation.Matches("Transfer") {
+        const wait = semanticTaskWaitAt(&source, ownership.operand)
+        if wait.matched {
+            if wait.argumentCount != 0 || wait.typeArgumentCount != 0 {
+                analyzer.diagnostics.reportError(
+                    "FDN2167", "Task.wait does not accept arguments", span)
+            }
+            var taskType = analyzeSemanticExpressionWithoutExpected(
+                &analyzer, &source, wait.base, .Consume)
+            const inTask = semanticFunctionTask(
+                &source, analyzer.state.currentFunction)
+            const namedBase = semanticNameAt(&source, wait.base).matched
+            if inTask &&
+                (!semanticTaskWaitRootMatches(&analyzer, expression) || !namedBase) {
+                analyzer.diagnostics.reportError(
+                    "FDN2168",
+                    "suspending task wait must be a standalone binding or void statement",
+                    span
+                )
+            }
+            if !taskType.kind.Matches("Task") || taskType.arguments.len() != 1 {
+                analyzer.diagnostics.reportError(
+                    "FDN2166", "$value.wait() requires a Task", span)
+                return invalidSemanticType()
+            }
+            var result = semanticTypeArgument(&taskType, 0)
+            if inTask && analyzer.state.taskWaitVoidStatement &&
+                !result.kind.Matches("Void") {
+                analyzer.diagnostics.reportError(
+                    "FDN2168",
+                    "standalone suspending task wait requires Task<void>",
+                    span
+                )
+            }
+            setSemanticTaskWaitTarget(
+                &analyzer, expression, wait.base)
+            return result
+        }
+        const previous = analyzer.state.transferRoot
+        analyzer.state.transferRoot = .Some(ownership.operand)
+        var expectedValue = absentSemanticType()
+        if expected.present {
+            expectedValue = expectedSemanticType(&expected.type)
+        }
+        var value = analyzeSemanticExpression(
+            &analyzer, &source, ownership.operand, $expectedValue, .Consume)
+        analyzer.state.transferRoot = previous
+        if value.kind.Matches("View") || value.kind.Matches("Edit") {
+            analyzer.diagnostics.reportError(
+                "FDN2068", "cannot transfer a borrowed value", span)
+            return invalidSemanticType()
+        }
+        var local Option<u64> = .None
+        setSemanticOwnershipTarget(
+            &analyzer,
+            expression,
+            $semanticOwnershipTarget {
+            operation = ownership.operation
+            local = local
+        }
+        )
+        return value
+    }
+    if ownership.operation.Matches("New") {
+        if !semanticNewOperandAllowed(&source, ownership.operand) {
+            analyzer.diagnostics.reportError(
+                "FDN2191", "new requires a struct literal or call", span)
+        }
+        var value = analyzeSemanticExpressionWithoutExpected(
+            &analyzer, &source, ownership.operand, .Consume)
+        if value.kind.Matches("Void") || value.kind.Matches("Invalid") ||
+            value.kind.Matches("View") || value.kind.Matches("Edit") {
+            analyzer.diagnostics.reportError(
+                "FDN2068", "new requires an owned value", span)
+            return invalidSemanticType()
+        }
+        var local Option<u64> = .None
+        setSemanticOwnershipTarget(
+            &analyzer,
+            expression,
+            $semanticOwnershipTarget {
+            operation = ownership.operation
+            local = local
+        }
+        )
+        return value
+    }
+    if ownership.operation.Matches("Own") {
+        var value = analyzeSemanticExpressionWithoutExpected(
+            &analyzer, &source, ownership.operand, .Consume)
+        if value.kind.Matches("Void") || value.kind.Matches("Invalid") || value.kind.Matches("Own") ||
+            value.kind.Matches("View") || value.kind.Matches("Edit") {
+            analyzer.diagnostics.reportError(
+                "FDN2068", "own requires a non-borrowed value", span)
+            return invalidSemanticType()
+        }
+        var local Option<u64> = .None
+        setSemanticOwnershipTarget(
+            &analyzer,
+            expression,
+            $semanticOwnershipTarget {
+            operation = ownership.operation
+            local = local
+        }
+        )
+        return unarySemanticType(.Own, $value)
+    }
+    if !isSemanticPlaceExpression(&analyzer, &source, ownership.operand) {
+        discard analyzeSemanticExpressionWithoutExpected(
+            &analyzer, &source, ownership.operand, .Inspect)
+        analyzer.diagnostics.reportError(
+            "FDN2069", "borrow requires a place", span)
+        return invalidSemanticType()
+    }
+    var value = analyzeSemanticExpressionWithoutExpected(
+        &analyzer, &source, ownership.operand, .Inspect)
+    const local = semanticPlaceRootLocal(&analyzer, &source, ownership.operand)
+    var hasLocal = false
+    var localID u64 = 0
+    match local {
+        None: {
+            analyzer.diagnostics.reportError(
+                "FDN2069", "borrow requires a place", span)
+        }
+        Some(id): {
+            hasLocal = true
+            localID = id
+        }
+    }
+    if !analyzer.state.transientBorrowsAllowed {
+        analyzer.diagnostics.reportError(
+            "FDN2070", "borrow must be passed directly to a function", span)
+    }
+    var target = copySemanticType(&value)
+    if (value.kind.Matches("Own") || value.kind.Matches("View") || value.kind.Matches("Edit")) &&
+        value.arguments.len() == 1 {
+        target = semanticTypeArgument(&value, 0)
+    }
+    if target.kind.Matches("Array") && target.arguments.len() == 1 {
+        var element = semanticTypeArgument(&target, 0)
+        target = unarySemanticType(.Slice, $element)
+    }
+    if value.kind.Matches("View") && ownership.operation.Matches("Edit") {
+        analyzer.diagnostics.reportError(
+            "FDN2071", "shared view cannot become an edit", span)
+    }
+    if ownership.operation.Matches("Edit") &&
+        !isSemanticEditablePlace(&analyzer, &source, ownership.operand) {
+        analyzer.diagnostics.reportError(
+            "FDN2072", "edit requires a mutable place", span)
+    }
+    if hasLocal {
+        const requested loanState = .View if ownership.operation.Matches("View") else .Edit
+        const current = semanticLoanAt(&analyzer.state.loanStates, localID)
+        if requested.Matches("View") && current.Matches("Edit") ||
+            requested.Matches("Edit") && !current.Matches("None") {
+            analyzer.diagnostics.reportError(
+                "FDN2073",
+                "conflicting borrow of binding " +
+                semanticLocalName(&analyzer, localID),
+                span
+            )
+        }
+        const conflicting = requested.Matches("View") && current.Matches("Edit") ||
+            requested.Matches("Edit") && !current.Matches("None")
+        if !conflicting && (requested.Matches("Edit") || current.Matches("None")) {
+            setSemanticLoan(&analyzer.state.loanStates, localID, requested)
+        }
+    }
+    var targetLocal Option<u64> = .Some(localID) if hasLocal else .None
+    setSemanticOwnershipTarget(
+        &analyzer,
+        expression,
+        $semanticOwnershipTarget {
+        operation = ownership.operation
+        local = targetLocal
+    }
+    )
+    unarySemanticType(
+        .View if ownership.operation.Matches("View") else .Edit,
+        $target
+    )
+}
+
+fn analyzeSemanticUnary(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    &unary unaryExpression,
+    &expected semanticExpected,
+    span sourceSpan
+) semanticType {
+    if unary.operation.Matches("Dereference") {
+        var operand = analyzeSemanticExpressionWithoutExpected(
+            &analyzer, &source, unary.operand, .Inspect)
+        if !operand.kind.Matches("Raw") && !operand.kind.Matches("RawConst") {
+            analyzer.diagnostics.reportError(
+                "FDN2213", "unary * requires a raw pointer", span)
+            return invalidSemanticType()
+        }
+        if analyzer.state.unsafeDepth == 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2213", "raw pointer dereference requires an unsafe block", span)
+        }
+        if operand.arguments.len() != 1 {
+            return invalidSemanticType()
+        }
+        var result = semanticTypeArgument(&operand, 0)
+        if result.kind.Matches("Void") {
+            analyzer.diagnostics.reportError(
+                "FDN2214", "void raw pointer cannot be dereferenced", span)
+            return invalidSemanticType()
+        }
+        return result
+    }
+    var expectedValue = absentSemanticType()
+    if expected.present &&
+        (isSignedSemanticInteger(&expected.type) ||
+        isSemanticFloating(&expected.type)) {
+        expectedValue = expectedSemanticType(&expected.type)
+    }
+    var operand = analyzeSemanticExpression(
+        &analyzer, &source, unary.operand, $expectedValue, .Inspect)
+    if unary.operation.Matches("Negate") {
+        if !isSignedSemanticInteger(&operand) && !isSemanticFloating(&operand) {
+            analyzer.diagnostics.reportError(
+                "FDN2011",
+                "unary - requires a signed integer or floating-point value",
+                span
+            )
+            return invalidSemanticType()
+        }
+        return operand
+    }
+    if unary.operation.Matches("BitwiseNot") {
+        if !isSemanticInteger(&operand) {
+            analyzer.diagnostics.reportError(
+                "FDN2011", "unary ~ requires an integer value", span)
+            return invalidSemanticType()
+        }
+        return operand
+    }
+    if operand.kind.Matches("Bool") return boolSemanticType()
+    var base = copySemanticType(&operand)
+    if (base.kind.Matches("Own") || base.kind.Matches("View") || base.kind.Matches("Edit")) &&
+        base.arguments.len() == 1 {
+        base = semanticTypeArgument(&base, 0)
+    }
+    if base.kind.Matches("StringValue") || base.kind.Matches("Array") || base.kind.Matches("Slice") {
+        setSemanticBool(&analyzer.model.emptyTests, expression, true)
+        var target = newCallTarget(.Len)
+        target.receiver = .Some(unary.operand)
+        setSemanticCallTarget(&analyzer, expression, $target)
+        return boolSemanticType()
+    }
+    analyzer.diagnostics.reportError(
+        "FDN2220",
+        "unary ! requires bool, String, a sequence, or fn IsEmpty(self) bool",
+        span
+    )
+    invalidSemanticType()
+}
+
+fn analyzeSemanticReplace(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    &replacement replaceExpression,
+    span sourceSpan
+) semanticType {
+    var target = analyzeSemanticExpressionWithoutExpected(
+        &analyzer, &source, replacement.target, .Inspect)
+    var value = analyzeSemanticExpression(
+        &analyzer,
+        &source,
+        replacement.value,
+        expectedSemanticType(&target),
+        .Consume
+    )
+    const place = isSemanticPlaceExpression(
+        &analyzer, &source, replacement.target)
+    if !place {
+        analyzer.diagnostics.reportError(
+            "FDN2134", "replace requires a place", span)
+    }
+    if place && !isSemanticEditablePlace(
+        &analyzer, &source, replacement.target) {
+        analyzer.diagnostics.reportError(
+            "FDN2135", "replace requires a mutable place", span)
+    }
+    if containsSemanticBorrow(&target) {
+        analyzer.diagnostics.reportError(
+            "FDN2136", "replace cannot target a borrow", span)
+    }
+    match semanticPlaceRootLocal(&analyzer, &source, replacement.target) {
+        None: {}
+        Some(local): {
+            if !semanticLoanAt(
+                &analyzer.state.loanStates, local).Matches("None") {
+                analyzer.diagnostics.reportError(
+                    "FDN2075",
+                    "cannot replace borrowed binding " +
+                    semanticLocalName(&analyzer, local),
+                    span
+                )
+            }
+            if semanticLocalBorrowedClosure(&analyzer, local) {
+                analyzer.diagnostics.reportError(
+                    "FDN2127", "borrowed closure cannot be replaced", span)
+            }
+        }
+    }
+    requireSameSemanticType(
+        &analyzer, &source, &target, &value, span, "replacement")
+    if semanticBoolAt(
+        &analyzer.model.expressionBorrowedClosures,
+        replacement.value
+    ) {
+        analyzer.diagnostics.reportError(
+            "FDN2127", "borrowed closure cannot be stored by replace", span)
+        setSemanticBool(
+            &analyzer.model.expressionBorrowedClosures,
+            expression,
+            true
+        )
+    }
+    target
+}
+
+fn analyzeSemanticSpawn(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &spawnValue spawnExpression,
+    span sourceSpan
+) semanticType {
+    const previous = analyzer.state.spawnCall
+    analyzer.state.spawnCall = .Some(spawnValue.call)
+    var result = analyzeSemanticExpressionWithoutExpected(
+        &analyzer, &source, spawnValue.call, .Consume)
+    analyzer.state.spawnCall = previous
+    var valid = false
+    const selected = analyzer.model.callTargets.take(spawnValue.call)
+    const target = match selected {
+        None: panic("call target slot is empty")
+        Some(target): target
+    }
+    match target {
+        None: {
+            var restored Option<callTarget> = .None
+            analyzer.model.callTargets.restore(spawnValue.call, $restored)
+        }
+        Some(value): {
+            valid = value.kind.Matches("Function") &&
+                semanticFunctionTask(&source, value.function)
+            var restored Option<callTarget> = .Some(value)
+            analyzer.model.callTargets.restore(spawnValue.call, $restored)
+        }
+    }
+    if !valid {
+        analyzer.diagnostics.reportError(
+            "FDN2163", "spawn requires a direct task call", span)
+        return invalidSemanticType()
+    }
+    unarySemanticType(.Task, $result)
+}

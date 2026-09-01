@@ -1,0 +1,281 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+test "semantic analysis lowers contracts, generics, closures, and matches" {
+    var parsed = parseSource(
+        "package semantic\n" +
+        "contract Counter {\n" +
+        "    fn Read(self) i32\n" +
+        "}\n" +
+        "struct Value implements Counter {\n" +
+        "    count i32\n" +
+        "    fn Read(self) i32 { self.count }\n" +
+        "}\n" +
+        "enum Choice { First Second }\n" +
+        "fn read<T Counter>(value T) i32 { value.Read() }\n" +
+        "fn main() i32 {\n" +
+        "    const base = 2\n" +
+        "    const add fn(i32) i32 = fn(value) capture(base) { value + base }\n" +
+        "    const selected = match Choice.First {\n" +
+        "        First: read(Value { count = 40 })\n" +
+        "        Second: 0\n" +
+        "    }\n" +
+        "    add(selected)\n" +
+        "}\n",
+        71
+    )
+    expect(!parsed.diagnostics.hasErrors())
+    var analysis = analyzeProgram(
+        &parsed.program,
+        analyzeOptions { requireMain = true retainInvalidModel = false }
+    )
+    var model = requireSemanticModel($analysis)
+    var lowered = lowerProgram(&parsed.program, &model)
+    expect(lowered.structs.len() == 1)
+    expect(lowered.contracts.len() == 1)
+    expect(lowered.functions.len() == 4)
+    const mainFunction = lowered.main
+    expect(firFunctionName(&lowered, mainFunction) == "main")
+}
+
+test "semantic analysis lowers task suspension and native callbacks" {
+    var parsed = parseSource(
+        "package concurrent\n" +
+        "@blocking\n" +
+        "extern c fn nativeValue(value i32) i32 as native_value\n" +
+        "@callback(cancel = native_cancel)\n" +
+        "extern c fn nativeRead(value i32, &result i32) i32 as native_read\n" +
+        "task receive($receiver Receiver<i32>) Result<i32, ChannelError> {\n" +
+        "    select {\n" +
+        "        const value = receiver.receive(): return .Ok(value)\n" +
+        "        timeout 1.milliseconds: return .Err(.Timeout)\n" +
+        "        else error: return .Err(error)\n" +
+        "    }\n" +
+        "}\n" +
+        "task work() i32 {\n" +
+        "    var result = 0\n" +
+        "    discard nativeRead(1, &result)\n" +
+        "    const value = nativeValue(result)\n" +
+        "    value\n" +
+        "}\n" +
+        "fn main() i32 {\n" +
+        "    const Channel { sender receiver } = channel<i32>(1)\n" +
+        "    const pending = spawn receive($receiver)\n" +
+        "    discard sender\n" +
+        "    discard $pending.wait()\n" +
+        "    const workTask = spawn work()\n" +
+        "    $workTask.wait()\n" +
+        "}\n",
+        72
+    )
+    expect(!parsed.diagnostics.hasErrors())
+    var analysis = analyzeProgram(
+        &parsed.program,
+        analyzeOptions { requireMain = true retainInvalidModel = false }
+    )
+    var model = requireSemanticModel($analysis)
+    var lowered = lowerProgram(&parsed.program, &model)
+    expect(lowered.functions.len() == 5)
+    const mainFunction = lowered.main
+    expect(firFunctionName(&lowered, mainFunction) == "main")
+    expect(firNamedFunctionFlag(&lowered, "nativeValue", "blocking"))
+    expect(firNamedFunctionFlag(&lowered, "nativeRead", "callback"))
+    expect(firNamedFunctionFlag(&lowered, "receive", "task"))
+}
+
+test "semantic analysis lowers state machines and workflows" {
+    var parsed = parseSource(
+        "package workflow\n" +
+        "enum Failure { Invalid }\n" +
+        "state_machine Order {\n" +
+        "    state Draft\n" +
+        "    state Submitted\n" +
+        "    on Submit from Draft to Submitted after 1.seconds\n" +
+        "}\n" +
+        "fn double(value i32) Result<i32, Failure> { .Ok(value * 2) }\n" +
+        "fn undo(value i32) Result<void, Failure> {\n" +
+        "    discard value\n" +
+        "    .Ok\n" +
+        "}\n" +
+        "pipeline Transform(input i32) Result<i32, Failure> {\n" +
+        "    step double using double retry exponential(max = 2)\n" +
+        "}\n" +
+        "saga Commit(input i32) Result<i32, Failure> {\n" +
+        "    step double using double compensate undo\n" +
+        "}\n" +
+        "fn main() i32 {\n" +
+        "    var order Order = .Draft\n" +
+        "    order.Submit() else error { discard error return 1 }\n" +
+        "    const transformed = Transform(2) else error { discard error return 2 }\n" +
+        "    transformed\n" +
+        "}\n",
+        73
+    )
+    expect(!parsed.diagnostics.hasErrors())
+    var analysis = analyzeProgram(
+        &parsed.program,
+        analyzeOptions { requireMain = true retainInvalidModel = false }
+    )
+    var model = requireSemanticModel($analysis)
+    var lowered = lowerProgram(&parsed.program, &model)
+    expect(lowered.structs.len() == 1)
+    expect(lowered.enums.len() == 8)
+    expect(firNamedFunctionFlag(&lowered, "Transform", "workflow"))
+    expect(firNamedFunctionFlag(&lowered, "Commit", "workflow"))
+}
+
+test "semantic diagnostics cover late language rules" {
+    expectSemanticDiagnostic(
+        "package invalid\n" +
+        "@blocking\n" +
+        "extern c fn nativeValue() i32 as native_value { 1 }\n" +
+        "fn main() i32 { 0 }\n",
+        "FDN2178",
+        74
+    )
+    expectSemanticDiagnostic(
+        "package invalid\n" +
+        "task waitFor(delay i32, $receiver Receiver<void>) bool {\n" +
+        "    select {\n" +
+        "        receiver.receive(): return true\n" +
+        "        timeout delay: return false\n" +
+        "        else error: return false\n" +
+        "    }\n" +
+        "}\n" +
+        "fn main() i32 { 0 }\n",
+        "FDN2011",
+        75
+    )
+    expectDiagnostic(
+        parseSource(
+            "package invalid\n" +
+            "state_machine Door {\n" +
+            "    state Closed\n" +
+            "    on Open from Missing to Closed\n" +
+            "}\n" +
+            "fn main() i32 { 0 }\n",
+            76
+        ),
+        "FDN1210"
+    )
+    expectSemanticDiagnostic(
+        "package invalid\n" +
+        "struct Token { value i32 }\n" +
+        "enum Choice { First Second }\n" +
+        "fn consume($token own Token) bool { token.value > 0 }\n" +
+        "fn score($choice Choice, $token own Token) i32 {\n" +
+        "    match choice {\n" +
+        "        First if consume($token): 1\n" +
+        "        _: 0\n" +
+        "    }\n" +
+        "}\n" +
+        "fn main() i32 { 0 }\n",
+        "FDN2228",
+        77
+    )
+}
+
+fn expectSemanticDiagnostic(
+    $source String,
+    code String,
+    sourceID u64
+) void {
+    var parsed = parseSource($source, sourceID)
+    expect(!parsed.diagnostics.hasErrors())
+    var analysis = analyzeProgram(
+        &parsed.program,
+        analyzeOptions { requireMain = true retainInvalidModel = false }
+    )
+    const semanticAnalysis { model diagnostics } = analysis
+    discard model
+    var values = $diagnostics.takeAll()
+    var found = false
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("diagnostic list invariant failed")
+            Some(value): value
+        }
+        if value.code == code {
+            found = true
+        }
+        discard value
+    }
+    expect(found)
+}
+
+fn requireSemanticModel(
+    $analysis semanticAnalysis
+) own semanticModel {
+    const semanticAnalysis { model diagnostics } = analysis
+    var values = $diagnostics.takeAll()
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("diagnostic list invariant failed")
+            Some(value): value
+        }
+        if isErrorSeverity(value.severity) {
+            panic(
+                "unexpected " + value.code + " at line " +
+                format.U64(value.span.line) + ": " + value.message
+            )
+        }
+        discard value
+    }
+    match model {
+        None: panic("expected semantic model")
+        Some(model): model
+    }
+}
+
+fn firNamedFunctionFlag(
+    &program firProgram,
+    name String,
+    flag String
+) bool {
+    var value = false
+    var id u64 = 0
+    while id < program.functions.len() {
+        var function = match program.functions.take(id) {
+            None: panic("FIR function slot is empty")
+            Some(function): function
+        }
+        const selected = function.name == name
+        if selected && flag == "blocking" {
+            value = function.blocking
+        }
+        if selected && flag == "callback" {
+            value = function.callback
+        }
+        if selected && flag == "task" {
+            value = function.taskFunction
+        }
+        if selected && flag == "workflow" {
+            match replace function.workflow with .None {
+                None: {}
+                Some(workflow): {
+                    function.workflow = .Some(workflow)
+                    value = true
+                }
+            }
+        }
+        program.functions.restore(id, $function)
+        if selected return value
+        id += 1
+    }
+    value
+}
+
+fn firFunctionName(
+    &program firProgram,
+    id u64
+) String {
+    var function = match program.functions.take(id) {
+        None: panic("FIR function slot is empty")
+        Some(function): function
+    }
+    const result = text.Copy(function.name)
+    program.functions.restore(id, $function)
+    result
+}

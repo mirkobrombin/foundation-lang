@@ -79,6 +79,27 @@ fn reverseList<T>(
     result
 }
 
+fn listLength<T>(&values collections.List<T>) u64 {
+    var pending = collections.NewList<T>()
+    var length u64 = 0
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("list invariant failed")
+            Some(value): value
+        }
+        pending.PushFront($value)
+        length += 1
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("list restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront($value)
+    }
+    length
+}
+
 fn copyStringList(
     &values collections.List<String>
 ) own collections.List<String> {
@@ -170,6 +191,29 @@ fn copyBoolList(
             Some(value): value
         }
         values.PushFront($value)
+    }
+    reverseList($copies)
+}
+
+fn copyU64List(
+    &values collections.List<u64>
+) own collections.List<u64> {
+    var originals = collections.NewList<u64>()
+    var copies = collections.NewList<u64>()
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("integer list invariant failed")
+            Some(value): value
+        }
+        copies.PushFront(value)
+        originals.PushFront(value)
+    }
+    while !originals.IsEmpty() {
+        const value = match originals.PopFront() {
+            None: panic("integer list restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront(value)
     }
     reverseList($copies)
 }

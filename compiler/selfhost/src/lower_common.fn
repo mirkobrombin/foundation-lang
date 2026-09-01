@@ -1,0 +1,277 @@
+package foundation.compiler
+
+fn lowerUnaryOperator(operation unaryOperator) firUnaryOperator {
+    match operation {
+        Negate: .Negate
+        Not: .Not
+        BitwiseNot: .BitwiseNot
+        Dereference: .Dereference
+    }
+}
+
+fn lowerOwnershipOperator(operation ownershipOperator) firOwnershipOperator {
+    match operation {
+        Own: .Own
+        View: .View
+        Edit: .Edit
+        Transfer: .Own
+        New: .Own
+    }
+}
+
+fn lowerReceiverKind(value receiverKind) firReceiverKind {
+    match value {
+        View: .View
+        Edit: .Edit
+        Own: .Own
+    }
+}
+
+fn lowerCaptureMode(value captureMode) firCaptureMode {
+    match value {
+        Copy: .Copy
+        Own: .Own
+        View: .View
+        Edit: .Edit
+    }
+}
+
+fn lowerBinaryOperator(operation binaryOperator) firBinaryOperator {
+    match operation {
+        Add: .Add
+        Subtract: .Subtract
+        Multiply: .Multiply
+        Divide: .Divide
+        Remainder: .Remainder
+        ShiftLeft: .ShiftLeft
+        ShiftRight: .ShiftRight
+        BitwiseAnd: .BitwiseAnd
+        BitwiseXor: .BitwiseXor
+        BitwiseOr: .BitwiseOr
+        Equal: .Equal
+        NotEqual: .NotEqual
+        Less: .Less
+        LessEqual: .LessEqual
+        Greater: .Greater
+        GreaterEqual: .GreaterEqual
+        And: .And
+        Or: .Or
+    }
+}
+
+fn lowerAssignmentOperator(operation assignmentOperator) firAssignmentOperator {
+    match operation {
+        Assign: .Assign
+        Add: .Add
+        Subtract: .Subtract
+        Multiply: .Multiply
+        Divide: .Divide
+        Remainder: .Remainder
+        ShiftLeft: .ShiftLeft
+        ShiftRight: .ShiftRight
+    }
+}
+
+fn newLowerMap(length u64) own arena<Option<u64>> {
+    var result = newArena<Option<u64>>()
+    var index u64 = 0
+    while index < length {
+        var missing Option<u64> = .None
+        discard result.add($missing)
+        index += 1
+    }
+    result
+}
+
+fn lowerMapValue(&values arena<Option<u64>>, index u64) Option<u64> {
+    const selected = values.take(index)
+    const value = match selected {
+        None: panic("lower map slot is empty")
+        Some(value): value
+    }
+    match value {
+        None: {
+            var restored Option<u64> = .None
+            values.restore(index, $restored)
+            .None
+        }
+        Some(id): {
+            var restored Option<u64> = .Some(id)
+            values.restore(index, $restored)
+            .Some(id)
+        }
+    }
+}
+
+fn setLowerMap(&values arena<Option<u64>>, index u64, value u64) void {
+    var target Option<u64> = .Some(value)
+    setArenaValue<Option<u64>>(&values, index, $target)
+}
+
+fn lowerExpressionType(
+    &model semanticModel,
+    expression u64
+) semanticType {
+    var value = match model.expressionTypes.take(expression) {
+        None: panic("expression type slot is empty")
+        Some(value): value
+    }
+    const result = copySemanticType(&value)
+    model.expressionTypes.restore(expression, $value)
+    result
+}
+
+fn lowerBoolValue(&values arena<bool>, index u64) bool {
+    semanticBoolAt(&values, index)
+}
+
+fn lowerOptionalIDAt(
+    &values arena<Option<u64>>,
+    index u64
+) Option<u64> {
+    const selected = values.take(index)
+    const value = match selected {
+        None: panic("optional id slot is empty")
+        Some(value): value
+    }
+    match value {
+        None: {
+            var restored Option<u64> = .None
+            values.restore(index, $restored)
+            .None
+        }
+        Some(id): {
+            var restored Option<u64> = .Some(id)
+            values.restore(index, $restored)
+            .Some(id)
+        }
+    }
+}
+
+fn copyIDHeap(&values arena<u64>) own arena<u64> {
+    var result = newArena<u64>()
+    var index u64 = 0
+    while index < values.len() {
+        const value = match values.take(index) {
+            None: panic("id slot is empty")
+            Some(value): value
+        }
+        discard result.add(value)
+        values.restore(index, value)
+        index += 1
+    }
+    result
+}
+
+fn lowerSemanticTypeAt(
+    &values arena<semanticType>,
+    index u64
+) semanticType {
+    var value = match values.take(index) {
+        None: panic("semantic type slot is empty")
+        Some(value): value
+    }
+    const result = copySemanticType(&value)
+    values.restore(index, $value)
+    result
+}
+
+fn copyBoolArena(&values arena<bool>) own arena<bool> {
+    var result = newArena<bool>()
+    var index u64 = 0
+    while index < values.len() {
+        discard result.add(semanticBoolAt(&values, index))
+        index += 1
+    }
+    result
+}
+
+fn lowerContractMethodTargets(
+    &values arena<contractMethodTarget>
+) own arena<firContractMethodTarget> {
+    var result = newArena<firContractMethodTarget>()
+    var index u64 = 0
+    while index < values.len() {
+        var value = match values.take(index) {
+            None: panic("contract method target slot is empty")
+            Some(value): value
+        }
+        discard result.add(firContractMethodTarget {
+            function = value.function
+            typeArguments = copySemanticTypeArena(&value.typeArguments)
+            contractDefault = value.contractDefault
+            defaultContract = copySemanticType(&value.defaultContract)
+            delegatePath = copyIDHeap(&value.delegatePath)
+        })
+        values.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn lowerContractConversionExpression(
+    &function firFunction,
+    value u64,
+    &conversion contractConversion,
+    span sourceSpan
+) u64 {
+    addFirExpression(
+        &function,
+        $firExpressionValue.ContractValue(firContractExpression {
+        value = value
+        concreteType = copySemanticType(&conversion.concreteType)
+        contractType = copySemanticType(&conversion.contractType)
+        methodTargets = lowerContractMethodTargets(
+            &conversion.methodTargets)
+    }),
+        copySemanticType(&conversion.targetType),
+        span
+    )
+}
+
+fn setFirExpressionType(
+    &function firFunction,
+    expression u64,
+    $type semanticType
+) void {
+    var value = match function.expressions.take(expression) {
+        None: panic("FIR expression slot is empty")
+        Some(value): value
+    }
+    value.type = type
+    function.expressions.restore(expression, $value)
+}
+
+fn firExpressionTypeKind(
+    &function firFunction,
+    expression u64
+) semanticTypeKind {
+    const value = match function.expressions.take(expression) {
+        None: panic("FIR expression slot is empty")
+        Some(value): value
+    }
+    const result = value.type.kind
+    function.expressions.restore(expression, $value)
+    result
+}
+
+fn addFirExpression(
+    &function firFunction,
+    $value firExpressionValue,
+    $type semanticType,
+    span sourceSpan
+) u64 {
+    function.expressions.add($firExpression {
+        value = value
+        type = type
+        span = span
+    })
+}
+
+fn addFirStatement(
+    &function firFunction,
+    $value firStatementValue,
+    span sourceSpan
+) u64 {
+    function.statements.add($firStatement { value = value span = span })
+}

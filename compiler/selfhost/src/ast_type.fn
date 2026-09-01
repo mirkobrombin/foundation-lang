@@ -103,6 +103,98 @@ enum assignmentOperator {
     ShiftRight
 }
 
+methods unaryOperator {
+    fn Matches(self, name String) bool {
+        match self {
+            Negate: name == "Negate"
+            Not: name == "Not"
+            BitwiseNot: name == "BitwiseNot"
+            Dereference: name == "Dereference"
+        }
+    }
+}
+
+methods ownershipOperator {
+    fn Matches(self, name String) bool {
+        match self {
+            Own: name == "Own"
+            View: name == "View"
+            Edit: name == "Edit"
+            Transfer: name == "Transfer"
+            New: name == "New"
+        }
+    }
+}
+
+methods parameterMode {
+    fn Name(self) String {
+        match self {
+            TypeEncoded: "TypeEncoded"
+            Read: "Read"
+            Edit: "Edit"
+            Transfer: "Transfer"
+        }
+    }
+
+    fn Matches(self, name String) bool {
+        self.Name() == name
+    }
+}
+
+methods receiverKind {
+    fn Name(self) String {
+        match self {
+            View: "View"
+            Edit: "Edit"
+            Own: "Own"
+        }
+    }
+
+    fn Matches(self, name String) bool {
+        self.Name() == name
+    }
+}
+
+methods binaryOperator {
+    fn Matches(self, name String) bool {
+        match self {
+            Add: name == "Add"
+            Subtract: name == "Subtract"
+            Multiply: name == "Multiply"
+            Divide: name == "Divide"
+            Remainder: name == "Remainder"
+            ShiftLeft: name == "ShiftLeft"
+            ShiftRight: name == "ShiftRight"
+            BitwiseAnd: name == "BitwiseAnd"
+            BitwiseXor: name == "BitwiseXor"
+            BitwiseOr: name == "BitwiseOr"
+            Equal: name == "Equal"
+            NotEqual: name == "NotEqual"
+            Less: name == "Less"
+            LessEqual: name == "LessEqual"
+            Greater: name == "Greater"
+            GreaterEqual: name == "GreaterEqual"
+            And: name == "And"
+            Or: name == "Or"
+        }
+    }
+}
+
+methods assignmentOperator {
+    fn Matches(self, name String) bool {
+        match self {
+            Assign: name == "Assign"
+            Add: name == "Add"
+            Subtract: name == "Subtract"
+            Multiply: name == "Multiply"
+            Divide: name == "Divide"
+            Remainder: name == "Remainder"
+            ShiftLeft: name == "ShiftLeft"
+            ShiftRight: name == "ShiftRight"
+        }
+    }
+}
+
 fn emptyType(span sourceSpan) typeSyntax {
     typeSyntax {
         name = "void"

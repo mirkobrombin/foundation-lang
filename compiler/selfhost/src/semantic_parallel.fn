@@ -1,0 +1,531 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+fn semanticFunctionTransferableParameter(
+    &source program,
+    function u64,
+    parameter u64
+) bool {
+    if function >= source.functions.len() return false
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    var pending = collections.NewList<bool>()
+    var index u64 = 0
+    var result = false
+    while !declaration.transferableTypeParameters.IsEmpty() {
+        const value = match declaration.transferableTypeParameters.PopFront() {
+            None: panic("transferable parameter list invariant failed")
+            Some(value): value
+        }
+        if index == parameter { result = value }
+        pending.PushFront(value)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("transferable parameter restore invariant failed")
+            Some(value): value
+        }
+        declaration.transferableTypeParameters.PushFront(value)
+    }
+    source.functions.restore(function, $declaration)
+    result
+}
+
+fn semanticParallelTransferOptIn(
+    &analyzer semanticAnalyzer,
+    declaration u64
+) bool {
+    if declaration >= analyzer.model.structs.len() return false
+    var structure = match analyzer.model.structs.take(declaration) {
+        None: panic("semantic struct slot is empty")
+        Some(structure): structure
+    }
+    var result = false
+    var index u64 = 0
+    while !result && index < structure.attributes.len() {
+        var application = match structure.attributes.take(index) {
+            None: panic("struct attribute slot is empty")
+            Some(application): application
+        }
+        if application.declaration < analyzer.model.attributeDeclarations.len() {
+            var attributeDeclaration = match analyzer.model.attributeDeclarations.take(
+                application.declaration
+            ) {
+                None: panic("attribute declaration slot is empty")
+                Some(value): value
+            }
+            result = attributeDeclaration.name == "std.concurrent.Transferable"
+            analyzer.model.attributeDeclarations.restore(
+                application.declaration, $attributeDeclaration)
+        }
+        structure.attributes.restore(index, $application)
+        index += 1
+    }
+    analyzer.model.structs.restore(declaration, $structure)
+    result
+}
+
+fn parallelSemanticTransferSafe(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &type semanticType
+) bool {
+    var active = newArena<String>()
+    parallelSemanticTransferSafeActive(
+        &analyzer, &source, &type, &active)
+}
+
+fn semanticTypeArenaAt(
+    &values arena<semanticType>,
+    index u64
+) semanticType {
+    var value = match values.take(index) {
+        None: panic("semantic type slot is empty")
+        Some(value): value
+    }
+    const result = copySemanticType(&value)
+    values.restore(index, $value)
+    result
+}
+
+fn parallelSemanticTransferSafeActive(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &type semanticType,
+    &active arena<String>
+) bool {
+    if isSemanticMachineScalar(&type) || type.kind.Matches("StringValue") return true
+    if type.kind.Matches("Parameter") {
+        return semanticFunctionTransferableParameter(
+            &source, analyzer.state.currentFunction, type.declaration)
+    }
+    if type.kind.Matches("Function") {
+        return isCSemanticFunction(&type) || isTransferableSemanticFunction(&type)
+    }
+    if (type.kind.Matches("Channel") || type.kind.Matches("Sender") ||
+        type.kind.Matches("Receiver") || type.kind.Matches("Own") ||
+        type.kind.Matches("Array")) && type.arguments.len() == 1 {
+        var argument = semanticTypeArgument(&type, 0)
+        return parallelSemanticTransferSafeActive(
+            &analyzer, &source, &argument, &active)
+    }
+    if !type.kind.Matches("StructValue") && !type.kind.Matches("EnumValue") {
+        return false
+    }
+    const key = semanticTypeKey(&type)
+    if semanticStringContains(&active, key) return true
+    discard active.add(text.Copy(key))
+    var safe = true
+    if type.kind.Matches("StructValue") {
+        if type.declaration >= analyzer.model.structs.len() {
+            safe = false
+        } else {
+            const owner = semanticStructName(&source, type.declaration)
+            var hasDrop = false
+            match findSemanticMethod(&analyzer.state.methodList, owner, "drop") {
+                None: {}
+                Some(function): { discard function hasDrop = true }
+            }
+            if hasDrop && !semanticParallelTransferOptIn(
+                &analyzer, type.declaration) {
+                safe = false
+            } else {
+                var structure = match analyzer.model.structs.take(type.declaration) {
+                    None: panic("semantic struct slot is empty")
+                    Some(structure): structure
+                }
+                var index u64 = 0
+                while safe && index < structure.fieldTypes.len() {
+                    var field = match structure.fieldTypes.take(index) {
+                        None: panic("semantic field type slot is empty")
+                        Some(field): field
+                    }
+                    var resolved = substituteSemanticType(
+                        &field, &type.arguments)
+                    safe = parallelSemanticTransferSafeActive(
+                        &analyzer, &source, &resolved, &active)
+                    structure.fieldTypes.restore(index, $field)
+                    index += 1
+                }
+                analyzer.model.structs.restore(type.declaration, $structure)
+            }
+        }
+    } else {
+        if type.declaration >= analyzer.model.enums.len() {
+            safe = false
+        } else {
+            var enumeration = match analyzer.model.enums.take(type.declaration) {
+                None: panic("semantic enum slot is empty")
+                Some(enumeration): enumeration
+            }
+            var index u64 = 0
+            while safe && index < enumeration.payloadTypes.len() {
+                const selected = match enumeration.payloadTypes.take(index) {
+                    None: panic("enum payload slot is empty")
+                    Some(selected): selected
+                }
+                match selected {
+                    None: {
+                        var missing Option<semanticType> = .None
+                        enumeration.payloadTypes.restore(index, $missing)
+                    }
+                    Some(payload): {
+                        var current = payload
+                        var resolved = substituteSemanticType(
+                            &current, &type.arguments)
+                        safe = parallelSemanticTransferSafeActive(
+                            &analyzer, &source, &resolved, &active)
+                        var restored Option<semanticType> = .Some(current)
+                        enumeration.payloadTypes.restore(index, $restored)
+                    }
+                }
+                index += 1
+            }
+            analyzer.model.enums.restore(type.declaration, $enumeration)
+        }
+    }
+    active.truncate(active.len() - 1)
+    safe
+}
+
+fn verifySemanticTransferableTypeArguments(
+    &analyzer semanticAnalyzer,
+    &source program,
+    function u64,
+    &arguments arena<semanticType>,
+    span sourceSpan
+) void {
+    var index u64 = 0
+    while index < arguments.len() {
+        if semanticFunctionTransferableParameter(&source, function, index) {
+            var argument = semanticTypeArenaAt(&arguments, index)
+            if !parallelSemanticTransferSafe(&analyzer, &source, &argument) {
+                analyzer.diagnostics.reportError(
+                    "FDN2185",
+                    "type argument is not safe to transfer between threads: " +
+                    displaySemanticType(&analyzer, &source, &argument),
+                    span
+                )
+            }
+        }
+        index += 1
+    }
+}
+
+fn semanticFunctionConstraintAt(
+    &analyzer semanticAnalyzer,
+    function u64,
+    parameter u64
+) Option<semanticType> {
+    if function >= analyzer.model.functions.len() return .None
+    var semantic = match analyzer.model.functions.take(function) {
+        None: panic("semantic function slot is empty")
+        Some(semantic): semantic
+    }
+    if parameter >= semantic.typeParameterConstraints.len() {
+        analyzer.model.functions.restore(function, $semantic)
+        return .None
+    }
+    const selected = match semantic.typeParameterConstraints.take(parameter) {
+        None: panic("type parameter constraint slot is empty")
+        Some(selected): selected
+    }
+    const result = match selected {
+        None: {
+            var missing Option<semanticType> = .None
+            semantic.typeParameterConstraints.restore(parameter, $missing)
+            Option<semanticType>.None
+        }
+        Some(value): {
+            var current = value
+            const copy = copySemanticType(&current)
+            var restored Option<semanticType> = .Some(current)
+            semantic.typeParameterConstraints.restore(parameter, $restored)
+            Option<semanticType>.Some(copy)
+        }
+    }
+    analyzer.model.functions.restore(function, $semantic)
+    result
+}
+
+fn verifySemanticContractTypeArguments(
+    &analyzer semanticAnalyzer,
+    &source program,
+    function u64,
+    &arguments arena<semanticType>,
+    span sourceSpan
+) void {
+    var index u64 = 0
+    while index < arguments.len() {
+        const selected = semanticFunctionConstraintAt(
+            &analyzer, function, index)
+        match selected {
+            None: {}
+            Some(constraint): {
+                var pattern = constraint
+                if pattern.kind.Matches("ContractValue") {
+                    var required = substituteSemanticType(
+                        &pattern, &arguments)
+                    var argument = semanticTypeArenaAt(&arguments, index)
+                    var satisfied = false
+                    if argument.kind.Matches("Parameter") {
+                        const currentFunction = analyzer.state.currentFunction
+                        match semanticFunctionConstraintAt(
+                            &analyzer,
+                            currentFunction,
+                            argument.declaration
+                        ) {
+                            None: {}
+                            Some(available): {
+                                var provided = available
+                                satisfied = semanticContractSatisfies(
+                                    &analyzer, &provided, &required)
+                            }
+                        }
+                    } else {
+                        match implementedSemanticContract(
+                            &analyzer, &argument, required.declaration) {
+                            None: {}
+                            Some(implementation): {
+                                var current = implementation
+                                satisfied = !current.ambiguous &&
+                                    sameSemanticType(
+                                    &current.contractType, &required)
+                            }
+                        }
+                    }
+                    if !satisfied {
+                        analyzer.diagnostics.reportError(
+                            "FDN2251",
+                            "type argument " + displaySemanticType(
+                                &analyzer, &source, &argument) +
+                            " does not implement " + displaySemanticType(
+                                &analyzer, &source, &required),
+                            span
+                        )
+                    }
+                }
+            }
+        }
+        index += 1
+    }
+}
+
+struct semanticSpawnCallProbe {
+    matched bool
+    call u64
+}
+
+fn semanticSpawnCallAt(
+    &source program,
+    expression u64
+) semanticSpawnCallProbe {
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    var result = semanticSpawnCallProbe { matched = false call = 0 }
+    const restored = match value {
+        Spawn(payload): {
+            result = semanticSpawnCallProbe {
+                matched = true call = payload.call
+            }
+            expressionValue.Spawn(payload)
+        }
+        Integer(payload): expressionValue.Integer(payload)
+        Floating(payload): expressionValue.Floating(payload)
+        Boolean(payload): expressionValue.Boolean(payload)
+        StringValue(payload): expressionValue.StringValue(payload)
+        Array(payload): expressionValue.Array(payload)
+        Name(payload): expressionValue.Name(payload)
+        Unary(payload): expressionValue.Unary(payload)
+        Ownership(payload): expressionValue.Ownership(payload)
+        Binary(payload): expressionValue.Binary(payload)
+        Call(payload): expressionValue.Call(payload)
+        StructValue(payload): expressionValue.StructValue(payload)
+        Member(payload): expressionValue.Member(payload)
+        Index(payload): expressionValue.Index(payload)
+        Replace(payload): expressionValue.Replace(payload)
+        MatchValue(payload): expressionValue.MatchValue(payload)
+        Conditional(payload): expressionValue.Conditional(payload)
+        FunctionValue(payload): expressionValue.FunctionValue(payload)
+    }
+    source.expressions.restore(expression, $expressionNode {
+        value = restored span = span
+    })
+    result
+}
+
+fn semanticDirectCallArguments(
+    &source program,
+    expression u64
+) own arena<u64> {
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    var result = newArena<u64>()
+    const restored = match value {
+        Call(payload): {
+            var current = payload
+            result = semanticCallArgumentIDs(&current.arguments)
+            expressionValue.Call(current)
+        }
+        Integer(payload): expressionValue.Integer(payload)
+        Floating(payload): expressionValue.Floating(payload)
+        Boolean(payload): expressionValue.Boolean(payload)
+        StringValue(payload): expressionValue.StringValue(payload)
+        Array(payload): expressionValue.Array(payload)
+        Name(payload): expressionValue.Name(payload)
+        Unary(payload): expressionValue.Unary(payload)
+        Ownership(payload): expressionValue.Ownership(payload)
+        Binary(payload): expressionValue.Binary(payload)
+        StructValue(payload): expressionValue.StructValue(payload)
+        Member(payload): expressionValue.Member(payload)
+        Index(payload): expressionValue.Index(payload)
+        Replace(payload): expressionValue.Replace(payload)
+        Spawn(payload): expressionValue.Spawn(payload)
+        MatchValue(payload): expressionValue.MatchValue(payload)
+        Conditional(payload): expressionValue.Conditional(payload)
+        FunctionValue(payload): expressionValue.FunctionValue(payload)
+    }
+    source.expressions.restore(expression, $expressionNode {
+        value = restored span = span
+    })
+    result
+}
+
+fn semanticFunctionOwner(
+    &source program,
+    function u64
+) String {
+    if function >= source.functions.len() return ""
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    const result = text.Copy(declaration.ownerType)
+    source.functions.restore(function, $declaration)
+    result
+}
+
+fn verifySemanticParallelPoolTask(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &base semanticType,
+    function u64,
+    member String,
+    &arguments arena<u64>,
+    span sourceSpan
+) void {
+    if member != "Start" || !base.kind.Matches("StructValue") ||
+        semanticStructName(&source, base.declaration) != "foundation.worker.Pool" ||
+        semanticFunctionPackage(&source, function) != "foundation.worker" ||
+        semanticFunctionOwner(&source, function) != "foundation.worker.Pool" ||
+        arguments.len() != 1 {
+        return
+    }
+    const argument = semanticArgumentID(&arguments, 0)
+    const spawned = semanticSpawnCallAt(&source, argument)
+    if !spawned.matched {
+        analyzer.diagnostics.reportError(
+            "FDN2185",
+            "parallel Pool.Start requires a direct spawn expression",
+            semanticExpressionSpan(&source, argument)
+        )
+        return
+    }
+    var callArguments = semanticDirectCallArguments(&source, spawned.call)
+    var index u64 = 0
+    while index < callArguments.len() {
+        const callArgument = semanticArgumentID(&callArguments, index)
+        var type = semanticExpressionType(&analyzer, callArgument)
+        if !parallelSemanticTransferSafe(&analyzer, &source, &type) {
+            var argumentSpan = semanticExpressionSpan(&source, callArgument)
+            if argumentSpan.length == 0 { argumentSpan = span }
+            analyzer.diagnostics.reportError(
+                "FDN2185",
+                "parallel task argument is not safe to transfer between threads: " +
+                displaySemanticType(&analyzer, &source, &type),
+                argumentSpan
+            )
+        }
+        index += 1
+    }
+}
+
+fn rejectSemanticPolymorphicRecursion(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    var callIndex u64 = 0
+    while callIndex < analyzer.state.genericCalls.len() {
+        var call = match analyzer.state.genericCalls.take(callIndex) {
+            None: panic("generic call slot is empty")
+            Some(call): call
+        }
+        var pending = newArena<u64>()
+        discard pending.add(call.to)
+        var seen = newArena<bool>()
+        var function u64 = 0
+        while function < source.functions.len() {
+            discard seen.add(false)
+            function += 1
+        }
+        var cyclic = false
+        while pending.len() != 0 && !cyclic {
+            const last = pending.len() - 1
+            const current = match pending.take(last) {
+                None: panic("generic recursion work slot is empty")
+                Some(current): current
+            }
+            pending.truncate(last)
+            if current == call.from {
+                cyclic = true
+            } else {
+                if current < seen.len() && !semanticBoolAt(&seen, current) {
+                    setSemanticBool(&seen, current, true)
+                    var edgeIndex u64 = 0
+                    while edgeIndex < analyzer.state.genericCalls.len() {
+                        var edge = match analyzer.state.genericCalls.take(edgeIndex) {
+                            None: panic("generic edge slot is empty")
+                            Some(edge): edge
+                        }
+                        if edge.from == current { discard pending.add(edge.to) }
+                        analyzer.state.genericCalls.restore(edgeIndex, $edge)
+                        edgeIndex += 1
+                    }
+                }
+            }
+        }
+        if cyclic {
+            const parameterCount = semanticFunctionTypeParameterCount(
+                &source, call.from)
+            var identity = call.arguments.len() == parameterCount
+            var argumentIndex u64 = 0
+            while identity && argumentIndex < call.arguments.len() {
+                var argument = semanticTypeArenaAt(
+                    &call.arguments, argumentIndex)
+                identity = argument.kind.Matches("Parameter") &&
+                    argument.declaration == argumentIndex &&
+                    argument.arguments.len() == 0
+                argumentIndex += 1
+            }
+            if !identity {
+                analyzer.diagnostics.reportError(
+                    "FDN2046", "polymorphic recursion is not supported", call.span)
+            }
+        }
+        analyzer.state.genericCalls.restore(callIndex, $call)
+        callIndex += 1
+    }
+}

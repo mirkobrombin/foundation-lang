@@ -1,0 +1,220 @@
+package foundation.compiler
+
+fn semanticFunctionConstraint(
+    &analyzer semanticAnalyzer,
+    parameter u64
+) Option<semanticType> {
+    var function = match analyzer.model.functions.take(analyzer.state.currentFunction) {
+        None: panic("semantic function slot is empty")
+        Some(function): function
+    }
+    if parameter >= function.typeParameterConstraints.len() {
+        analyzer.model.functions.restore(analyzer.state.currentFunction, $function)
+        return .None
+    }
+    const selected = function.typeParameterConstraints.take(parameter)
+    const value = match selected {
+        None: panic("type parameter constraint slot is empty")
+        Some(value): value
+    }
+    const result = match value {
+        None: {
+            var missing Option<semanticType> = .None
+            function.typeParameterConstraints.restore(parameter, $missing)
+            var result Option<semanticType> = .None
+            result
+        }
+        Some(type): {
+            var original = type
+            const copy = copySemanticType(&original)
+            var restored Option<semanticType> = .Some(original)
+            function.typeParameterConstraints.restore(parameter, $restored)
+            var result Option<semanticType> = .Some(copy)
+            result
+        }
+    }
+    analyzer.model.functions.restore(analyzer.state.currentFunction, $function)
+    result
+}
+
+fn semanticContractMethodIndex(
+    &analyzer semanticAnalyzer,
+    contractID u64,
+    name String
+) Option<u64> {
+    if contractID >= analyzer.model.contracts.len() return .None
+    var declaration = match analyzer.model.contracts.take(contractID) {
+        None: panic("semantic contract slot is empty")
+        Some(declaration): declaration
+    }
+    var index u64 = 0
+    var result Option<u64> = .None
+    while index < declaration.methodList.len() {
+        var method = match declaration.methodList.take(index) {
+            None: panic("semantic contract method slot is empty")
+            Some(method): method
+        }
+        if method.name == name { result = .Some(index) }
+        declaration.methodList.restore(index, $method)
+        index += 1
+    }
+    analyzer.model.contracts.restore(contractID, $declaration)
+    result
+}
+
+fn copySemanticContractMethodAt(
+    &analyzer semanticAnalyzer,
+    contractID u64,
+    method u64
+) semanticContractMethod {
+    var declaration = match analyzer.model.contracts.take(contractID) {
+        None: panic("semantic contract slot is empty")
+        Some(declaration): declaration
+    }
+    var value = match declaration.methodList.take(method) {
+        None: panic("semantic contract method slot is empty")
+        Some(value): value
+    }
+    const result = copySemanticContractMethod(&value)
+    declaration.methodList.restore(method, $value)
+    analyzer.model.contracts.restore(contractID, $declaration)
+    result
+}
+
+fn analyzeSemanticContractMethod(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    &member memberExpression,
+    &sourceType semanticType,
+    &base semanticType,
+    span sourceSpan
+) semanticType {
+    var contractType = copySemanticType(&base)
+    var constrained = false
+    var constrainedType = invalidSemanticType()
+    if base.kind.Matches("Parameter") {
+        match semanticFunctionConstraint(&analyzer, base.declaration) {
+            None: {
+                analyzer.diagnostics.reportError(
+                    "FDN2050", "type parameter has no contract constraint", span)
+                return invalidSemanticType()
+            }
+            Some(value): {
+                contractType = value
+                constrained = true
+                constrainedType = copySemanticType(&base)
+            }
+        }
+    }
+    if !contractType.kind.Matches("ContractValue") {
+        analyzer.diagnostics.reportError(
+            "FDN2050", "method call requires a contract", span)
+        return invalidSemanticType()
+    }
+    const method = match semanticContractMethodIndex(
+        &analyzer, contractType.declaration, member.member) {
+        None: {
+            analyzer.diagnostics.reportError(
+                "FDN2100", "unknown method " + member.member, span)
+            return invalidSemanticType()
+        }
+        Some(method): method
+    }
+    var semantic = copySemanticContractMethodAt(
+        &analyzer, contractType.declaration, method)
+    if semantic.receiver.Matches("Edit") && sourceType.kind.Matches("View") {
+        analyzer.diagnostics.reportError(
+            "FDN2101", "edit method requires an editable receiver", span)
+    }
+    if semantic.receiver.Matches("Own") && !sourceType.kind.Matches("Own") && !constrained {
+        analyzer.diagnostics.reportError(
+            "FDN2103", "own method requires an owned contract binding", span)
+    }
+    var arguments = semanticCallArgumentIDs(&member.arguments)
+    var argumentNames = semanticCallArgumentNames(&member.argumentNames)
+    var parameterMap = semanticMapArgumentParameters(
+        &analyzer,
+        &argumentNames,
+        arguments.len(),
+        &semantic.parameterNames,
+        span
+    )
+    if arguments.len() != semantic.parameterTypes.len() {
+        analyzer.diagnostics.reportError(
+            "FDN2010", "wrong argument count for method " + member.member, span)
+    }
+    var borrows = newArena<Option<semanticType>>()
+    var conversions = newArena<Option<contractConversion>>()
+    var parameters = newArena<u64>()
+    var index u64 = 0
+    while index < arguments.len() {
+        const parameter = semanticArgumentID(&parameterMap, index)
+        var expected = semanticExpected {
+            present = false type = invalidSemanticType()
+        }
+        var mode = parameterMode.TypeEncoded
+        if parameter < semantic.parameterTypes.len() {
+            var pattern = match semantic.parameterTypes.take(parameter) {
+                None: panic("contract parameter slot is empty")
+                Some(pattern): pattern
+            }
+            pattern = substituteSemanticType(&pattern, &contractType.arguments)
+            if parameter < semantic.parameterModes.len() {
+                mode = match semantic.parameterModes.take(parameter) {
+                    None: panic("contract parameter mode slot is empty")
+                    Some(mode): mode
+                }
+                semantic.parameterModes.restore(parameter, mode)
+            }
+            pattern = specializeSemanticReadParameter(
+                &analyzer, &source, $pattern, mode)
+            expected = semanticExpected { present = true type = pattern }
+        }
+        var analysis = semanticAnalyzeCallArgument(
+            &analyzer,
+            &source,
+            semanticArgumentID(&arguments, index),
+            &expected,
+            mode,
+            span
+        )
+        var actual = replace analysis.type with invalidSemanticType()
+        var implicitBorrow = replace analysis.implicitBorrow with .None
+        discard borrows.add($implicitBorrow)
+        var conversion Option<contractConversion> = .None
+        if expected.present {
+            match semanticContractConversion(
+                &analyzer, &source, &expected.type, &actual) {
+                None: requireSameSemanticType(
+                    &analyzer,
+                    &source,
+                    &expected.type,
+                    &actual,
+                    span,
+                    "method argument"
+                )
+                Some(value): { conversion = .Some(value) }
+            }
+        }
+        discard conversions.add($conversion)
+        discard parameters.add(parameter)
+        index += 1
+    }
+    var target = newCallTarget(
+        .ConstrainedMethod if constrained else .ContractMethod)
+    match member.base {
+        None: {}
+        Some(baseExpression): { target.receiver = .Some(baseExpression) }
+    }
+    target.receiverType = copySemanticType(&sourceType)
+    target.constrainedType = constrainedType
+    target.contractID = contractType.declaration
+    target.method = method
+    target.typeArguments = copySemanticTypeArena(&contractType.arguments)
+    target.argumentBorrows = borrows
+    target.argumentConversions = conversions
+    target.argumentParameters = parameters
+    setSemanticCallTarget(&analyzer, expression, $target)
+    substituteSemanticType(&semantic.returnType, &contractType.arguments)
+}

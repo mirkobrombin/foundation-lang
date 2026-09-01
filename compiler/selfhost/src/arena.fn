@@ -122,6 +122,15 @@ fn newArena<T>() own arena<T> {
     own arena<T> { root = .None length = 0 }
 }
 
+fn setArenaValue<T>(&values arena<T>, id u64, $value T) void {
+    const previous = values.take(id)
+    match previous {
+        None: panic("arena slot is empty")
+        Some(previous): { discard previous }
+    }
+    values.restore(id, $value)
+}
+
 fn newArenaNode<T>($value T) own arenaNode<T> {
     own arenaNode<T> {
         value = .Some(value)

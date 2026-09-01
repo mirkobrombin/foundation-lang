@@ -1,0 +1,377 @@
+package foundation.compiler
+
+import std.text
+
+struct functionSignature {
+    returnType semanticType
+    parameters own arena<semanticType>
+}
+
+struct genericCall {
+    from u64
+    to u64
+    arguments own arena<semanticType>
+    span sourceSpan
+}
+
+enum expressionUse {
+    Consume
+    Inspect
+}
+
+struct semanticSymbol {
+    name String
+    id u64
+}
+
+struct semanticMethodSymbol {
+    owner String
+    name String
+    id u64
+}
+
+struct semanticScopeBinding {
+    name String
+    local u64
+}
+
+struct semanticScope {
+    bindings own arena<semanticScopeBinding>
+}
+
+enum moveState {
+    Available
+    Moved
+    MaybeMoved
+}
+
+enum loanState {
+    None
+    View
+    Edit
+}
+
+methods expressionUse {
+    fn Matches(self, name String) bool {
+        match self {
+            Consume: name == "Consume"
+            Inspect: name == "Inspect"
+        }
+    }
+}
+
+methods moveState {
+    fn Name(self) String {
+        match self {
+            Available: "Available"
+            Moved: "Moved"
+            MaybeMoved: "MaybeMoved"
+        }
+    }
+
+    fn Matches(self, name String) bool {
+        self.Name() == name
+    }
+}
+
+methods loanState {
+    fn Name(self) String {
+        match self {
+            None: "None"
+            View: "View"
+            Edit: "Edit"
+        }
+    }
+
+    fn Matches(self, name String) bool {
+        self.Name() == name
+    }
+}
+
+struct semanticAnalyzerState {
+    structs own arena<semanticSymbol>
+    enums own arena<semanticSymbol>
+    contracts own arena<semanticSymbol>
+    attributes own arena<semanticSymbol>
+    functions own arena<semanticSymbol>
+    methodList own arena<semanticMethodSymbol>
+    typeParameters own arena<semanticSymbol>
+    currentTypeParameterNames own arena<String>
+    scopes own arena<semanticScope>
+    resultOutstanding own arena<bool>
+    resultExitReported own arena<bool>
+    localSpans own arena<sourceSpan>
+    moveStates own arena<moveState>
+    loanStates own arena<loanState>
+    closureOuterNames own arena<String>
+    currentPackageOverride String
+    transientBorrowsAllowed bool
+    spawnCall Option<u64>
+    transferRoot Option<u64>
+    taskWaitRoot Option<u64>
+    taskWaitVoidStatement bool
+    channelStorage u64
+    blockingStorage u64
+    callbackStorage u64
+    iterationStorage u64
+    loopScopeBases own arena<u64>
+    loopJumps u64
+    unsafeDepth u64
+    currentFunction u64
+    signatures own arena<functionSignature>
+    genericCalls own arena<genericCall>
+}
+
+struct semanticAnalyzer {
+    model own semanticModel
+    diagnostics own diagnostics
+    state own semanticAnalyzerState
+    options analyzeOptions
+}
+
+struct semanticAnalysis {
+    model Option<own semanticModel>
+    diagnostics own diagnostics
+}
+
+fn newSemanticAnalyzerState() own semanticAnalyzerState {
+    var spawnCall Option<u64> = .None
+    var transferRoot Option<u64> = .None
+    var taskWaitRoot Option<u64> = .None
+    own semanticAnalyzerState {
+        structs = newArena<semanticSymbol>()
+        enums = newArena<semanticSymbol>()
+        contracts = newArena<semanticSymbol>()
+        attributes = newArena<semanticSymbol>()
+        functions = newArena<semanticSymbol>()
+        methodList = newArena<semanticMethodSymbol>()
+        typeParameters = newArena<semanticSymbol>()
+        currentTypeParameterNames = newArena<String>()
+        scopes = newArena<semanticScope>()
+        resultOutstanding = newArena<bool>()
+        resultExitReported = newArena<bool>()
+        localSpans = newArena<sourceSpan>()
+        moveStates = newArena<moveState>()
+        loanStates = newArena<loanState>()
+        closureOuterNames = newArena<String>()
+        currentPackageOverride = ""
+        transientBorrowsAllowed = false
+        spawnCall = spawnCall
+        transferRoot = transferRoot
+        taskWaitRoot = taskWaitRoot
+        taskWaitVoidStatement = false
+        channelStorage = 0
+        blockingStorage = 0
+        callbackStorage = 0
+        iterationStorage = 0
+        loopScopeBases = newArena<u64>()
+        loopJumps = 0
+        unsafeDepth = 0
+        currentFunction = 0
+        signatures = newArena<functionSignature>()
+        genericCalls = newArena<genericCall>()
+    }
+}
+
+fn newSemanticAnalyzer(
+    &source program,
+    options analyzeOptions
+) own semanticAnalyzer {
+    own semanticAnalyzer {
+        model = newSemanticModel(&source)
+        diagnostics = newDiagnostics()
+        state = newSemanticAnalyzerState()
+        options = options
+    }
+}
+
+fn findSemanticSymbol(&symbols arena<semanticSymbol>, name String) Option<u64> {
+    var index u64 = 0
+    while index < symbols.len() {
+        const symbol = match symbols.take(index) {
+            None: panic("semantic symbol slot is empty")
+            Some(symbol): symbol
+        }
+        const found = symbol.name == name
+        const id = symbol.id
+        symbols.restore(index, $symbol)
+        if found return .Some(id)
+        index += 1
+    }
+    .None
+}
+
+fn addSemanticSymbol(
+    &symbols arena<semanticSymbol>,
+    name String,
+    id u64
+) bool {
+    match findSemanticSymbol(&symbols, name) {
+        None: {
+            discard symbols.add(semanticSymbol { name = text.Copy(name) id = id })
+            true
+        }
+        Some(existing): {
+            discard existing
+            false
+        }
+    }
+}
+
+fn findSemanticMethod(
+    &methodValues arena<semanticMethodSymbol>,
+    owner String,
+    name String
+) Option<u64> {
+    var index u64 = 0
+    while index < methodValues.len() {
+        const method = match methodValues.take(index) {
+            None: panic("semantic method slot is empty")
+            Some(method): method
+        }
+        const found = method.owner == owner && method.name == name
+        const id = method.id
+        methodValues.restore(index, $method)
+        if found return .Some(id)
+        index += 1
+    }
+    .None
+}
+
+fn addSemanticMethod(
+    &methodValues arena<semanticMethodSymbol>,
+    owner String,
+    name String,
+    id u64
+) bool {
+    match findSemanticMethod(&methodValues, owner, name) {
+        None: {
+            discard methodValues.add(semanticMethodSymbol {
+                owner = text.Copy(owner)
+                name = text.Copy(name)
+                id = id
+            })
+            true
+        }
+        Some(existing): {
+            discard existing
+            false
+        }
+    }
+}
+
+fn semanticStringContains(&values arena<String>, value String) bool {
+    var index u64 = 0
+    while index < values.len() {
+        const current = match values.take(index) {
+            None: panic("semantic string slot is empty")
+            Some(current): current
+        }
+        const found = current == value
+        values.restore(index, $current)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn semanticIDContains(&values arena<u64>, value u64) bool {
+    var index u64 = 0
+    while index < values.len() {
+        const current = match values.take(index) {
+            None: panic("semantic id slot is empty")
+            Some(current): current
+        }
+        values.restore(index, $current)
+        if current == value return true
+        index += 1
+    }
+    false
+}
+
+fn pushSemanticScope(&state semanticAnalyzerState) void {
+    discard state.scopes.add(semanticScope {
+        bindings = newArena<semanticScopeBinding>()
+    })
+}
+
+fn popSemanticScope(&state semanticAnalyzerState) void {
+    if state.scopes.len() == 0 { panic("semantic scope stack is empty") }
+    state.scopes.truncate(state.scopes.len() - 1)
+}
+
+fn declareSemanticLocal(
+    &state semanticAnalyzerState,
+    name String,
+    local u64
+) bool {
+    if state.scopes.len() == 0 { panic("semantic scope stack is empty") }
+    const scopeID = state.scopes.len() - 1
+    var scope = match state.scopes.take(scopeID) {
+        None: panic("semantic scope slot is empty")
+        Some(scope): scope
+    }
+    var duplicate = false
+    var index u64 = 0
+    while index < scope.bindings.len() {
+        const binding = match scope.bindings.take(index) {
+            None: panic("semantic binding slot is empty")
+            Some(binding): binding
+        }
+        if binding.name == name {
+            duplicate = true
+        }
+        scope.bindings.restore(index, $binding)
+        index += 1
+    }
+    if !duplicate {
+        discard scope.bindings.add(semanticScopeBinding {
+            name = text.Copy(name)
+            local = local
+        })
+    }
+    state.scopes.restore(scopeID, $scope)
+    !duplicate
+}
+
+fn lookupSemanticLocal(
+    &state semanticAnalyzerState,
+    name String
+) Option<u64> {
+    var scopeIndex = state.scopes.len()
+    while scopeIndex > 0 {
+        scopeIndex -= 1
+        var scope = match state.scopes.take(scopeIndex) {
+            None: panic("semantic scope slot is empty")
+            Some(scope): scope
+        }
+        var found Option<u64> = .None
+        var index u64 = 0
+        while index < scope.bindings.len() {
+            const binding = match scope.bindings.take(index) {
+                None: panic("semantic binding slot is empty")
+                Some(binding): binding
+            }
+            if binding.name == name {
+                found = .Some(binding.local)
+            }
+            scope.bindings.restore(index, $binding)
+            var complete = false
+            match found {
+                None: {}
+                Some(local): {
+                    discard local
+                    complete = true
+                }
+            }
+            if complete break
+            index += 1
+        }
+        state.scopes.restore(scopeIndex, $scope)
+        match found {
+            None: {}
+            Some(local): { return .Some(local) }
+        }
+    }
+    .None
+}

@@ -1,0 +1,866 @@
+package foundation.compiler
+
+import std.collections
+import std.format
+import std.text
+
+struct semanticBranchState {
+    type semanticType
+    outstanding own arena<bool>
+    moves own arena<moveState>
+    loans own arena<loanState>
+    terminates bool
+    borrowedClosure bool
+}
+
+fn setSemanticBlockDrops(
+    &analyzer semanticAnalyzer,
+    block u64,
+    $drops own arena<u64>
+) void {
+    setArenaValue<own arena<u64>>(&analyzer.model.blockDrops, block, $drops)
+}
+
+fn setSemanticLocalReadBinding(
+    &analyzer semanticAnalyzer,
+    local u64,
+    value bool
+) void {
+    var function = match analyzer.model.functions.take(analyzer.state.currentFunction) {
+        None: panic("semantic function slot is empty")
+        Some(function): function
+    }
+    var binding = match function.locals.take(local) {
+        None: panic("semantic local slot is empty")
+        Some(binding): binding
+    }
+    binding.readBinding = value
+    function.locals.restore(local, $binding)
+    analyzer.model.functions.restore(analyzer.state.currentFunction, $function)
+}
+
+fn semanticOptionalStringCopy(value Option<String>) Option<String> {
+    match value {
+        None: .None
+        Some(textValue): {
+            .Some(text.Copy(textValue))
+        }
+    }
+}
+
+fn semanticOptionalID(value Option<u64>) Option<u64> {
+    match value {
+        None: .None
+        Some(id): .Some(id)
+    }
+}
+
+fn semanticAnalyzeValueBranch(
+    &analyzer semanticAnalyzer,
+    &source program,
+    block u64,
+    value u64,
+    &expected semanticExpected,
+    beforeCount u64
+) semanticBranchState {
+    pushSemanticScope(&analyzer.state)
+    const blockTerminates = analyzeSemanticBlock(
+        &analyzer, &source, block, false)
+    var expectedValue = absentSemanticType()
+    if expected.present {
+        expectedValue = expectedSemanticType(&expected.type)
+    }
+    var type = analyzeSemanticExpression(
+        &analyzer, &source, value, $expectedValue, .Consume)
+    const scopeIndex = analyzer.state.scopes.len() - 1
+    const drops = semanticScopeDropsAt(
+        &analyzer, &source, scopeIndex)
+    setSemanticBlockDrops(&analyzer, block, $drops)
+    reportSemanticScopeAt(&analyzer, scopeIndex)
+    popSemanticScope(&analyzer.state)
+    semanticBranchState {
+        type = copySemanticType(&type)
+        outstanding = semanticBoolPrefix(
+            &analyzer.state.resultOutstanding, beforeCount)
+        moves = semanticMovePrefix(&analyzer.state.moveStates, beforeCount)
+        loans = semanticLoanPrefix(&analyzer.state.loanStates, beforeCount)
+        terminates = blockTerminates || type.kind.Matches("Never")
+        borrowedClosure = semanticBoolAt(
+            &analyzer.model.expressionBorrowedClosures, value)
+    }
+}
+
+fn semanticScopeAt(
+    &state semanticAnalyzerState,
+    index u64
+) semanticScope {
+    var scope = match state.scopes.take(index) {
+        None: panic("semantic scope slot is empty")
+        Some(scope): scope
+    }
+    var bindings = newArena<semanticScopeBinding>()
+    var bindingIndex u64 = 0
+    while bindingIndex < scope.bindings.len() {
+        const binding = match scope.bindings.take(bindingIndex) {
+            None: panic("semantic binding slot is empty")
+            Some(binding): binding
+        }
+        discard bindings.add(semanticScopeBinding {
+            name = text.Copy(binding.name)
+            local = binding.local
+        })
+        scope.bindings.restore(bindingIndex, $binding)
+        bindingIndex += 1
+    }
+    state.scopes.restore(index, $scope)
+    semanticScope { bindings = bindings }
+}
+
+fn mergeSemanticOutstanding(
+    &left arena<bool>,
+    leftTerminates bool,
+    &right arena<bool>,
+    rightTerminates bool
+) own arena<bool> {
+    if leftTerminates {
+        const length = right.len()
+        return semanticBoolPrefix(&right, length)
+    }
+    if rightTerminates {
+        const length = left.len()
+        return semanticBoolPrefix(&left, length)
+    }
+    const count = left.len() if left.len() < right.len() else right.len()
+    var result = newArena<bool>()
+    var index u64 = 0
+    while index < count {
+        discard result.add(
+            semanticBoolAt(&left, index) || semanticBoolAt(&right, index))
+        index += 1
+    }
+    result
+}
+
+fn analyzeSemanticConditional(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    &conditional conditionalExpression,
+    &expected semanticExpected,
+    span sourceSpan
+) semanticType {
+    var boolType = boolSemanticType()
+    var condition = analyzeSemanticExpression(
+        &analyzer,
+        &source,
+        conditional.condition,
+        expectedSemanticType(&boolType),
+        .Inspect
+    )
+    requireSameSemanticType(
+        &analyzer,
+        &source,
+        &boolType,
+        &condition,
+        span,
+        "conditional expression condition"
+    )
+    const count = analyzer.state.moveStates.len()
+    var beforeOutstanding = semanticBoolPrefix(
+        &analyzer.state.resultOutstanding, count)
+    var beforeMoves = semanticMovePrefix(&analyzer.state.moveStates, count)
+    var beforeLoans = semanticLoanPrefix(&analyzer.state.loanStates, count)
+    var thenState = semanticAnalyzeValueBranch(
+        &analyzer,
+        &source,
+        conditional.thenBlock,
+        conditional.thenValue,
+        &expected,
+        count
+    )
+    restoreSemanticBools(
+        &analyzer.state.resultOutstanding, &beforeOutstanding)
+    restoreSemanticMoves(&analyzer.state.moveStates, &beforeMoves)
+    restoreSemanticLoans(&analyzer.state.loanStates, &beforeLoans)
+    var elseExpected = semanticExpected {
+        present = true type = copySemanticType(&thenState.type)
+    }
+    if expected.present {
+        elseExpected = semanticExpected {
+            present = true type = copySemanticType(&expected.type)
+        }
+    }
+    var elseState = semanticAnalyzeValueBranch(
+        &analyzer,
+        &source,
+        conditional.elseBlock,
+        conditional.elseValue,
+        &elseExpected,
+        count
+    )
+    const thenTerminates = thenState.terminates
+    const elseTerminates = elseState.terminates
+    if !thenState.type.kind.Matches("Never") && !elseState.type.kind.Matches("Never") {
+        requireSameSemanticType(
+            &analyzer,
+            &source,
+            &thenState.type,
+            &elseState.type,
+            span,
+            "conditional expression branch"
+        )
+    }
+    var mergedOutstanding = mergeSemanticOutstanding(
+        &thenState.outstanding,
+        thenTerminates,
+        &elseState.outstanding,
+        elseTerminates
+    )
+    var mergedMoves = mergeSemanticMoves(
+        &beforeMoves,
+        &thenState.moves,
+        thenTerminates,
+        &elseState.moves,
+        elseTerminates
+    )
+    var mergedLoans = mergeSemanticLoans(
+        &beforeLoans,
+        &thenState.loans,
+        thenTerminates,
+        &elseState.loans,
+        elseTerminates
+    )
+    restoreSemanticBools(
+        &analyzer.state.resultOutstanding, &mergedOutstanding)
+    restoreSemanticMoves(&analyzer.state.moveStates, &mergedMoves)
+    restoreSemanticLoans(&analyzer.state.loanStates, &mergedLoans)
+    setSemanticBool(
+        &analyzer.model.expressionBorrowedClosures,
+        expression,
+        thenState.borrowedClosure || elseState.borrowedClosure
+    )
+    if thenState.type.kind.Matches("Never") {
+        return copySemanticType(&elseState.type)
+    }
+    copySemanticType(&thenState.type)
+}
+
+fn semanticEnumVariantCount(&source program, type u64) u64 {
+    if type >= source.enums.len() return 0
+    var declaration = match source.enums.take(type) {
+        None: panic("enum slot is empty")
+        Some(declaration): declaration
+    }
+    const result = listLength(&declaration.variants)
+    source.enums.restore(type, $declaration)
+    result
+}
+
+struct semanticMatchLiteralProbe {
+    valid bool
+    key String
+}
+
+fn semanticMatchLiteralAt(
+    &source program,
+    expression u64
+) semanticMatchLiteralProbe {
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    var result = semanticMatchLiteralProbe { valid = false key = "" }
+    const restored = match value {
+        Integer(payload): {
+            result = semanticMatchLiteralProbe {
+                valid = true
+                key = "integer:" + ("-" if payload.negative else "+") +
+                    format.U64(payload.magnitude)
+            }
+            expressionValue.Integer(payload)
+        }
+        Boolean(payload): {
+            result = semanticMatchLiteralProbe {
+                valid = true
+                key = "bool:true" if payload.value else "bool:false"
+            }
+            expressionValue.Boolean(payload)
+        }
+        StringValue(payload): {
+            result = semanticMatchLiteralProbe {
+                valid = true key = "string:" + payload.value
+            }
+            expressionValue.StringValue(payload)
+        }
+        Floating(payload): expressionValue.Floating(payload)
+        Array(payload): expressionValue.Array(payload)
+        Name(payload): expressionValue.Name(payload)
+        Unary(payload): expressionValue.Unary(payload)
+        Ownership(payload): expressionValue.Ownership(payload)
+        Binary(payload): expressionValue.Binary(payload)
+        Call(payload): expressionValue.Call(payload)
+        StructValue(payload): expressionValue.StructValue(payload)
+        Member(payload): expressionValue.Member(payload)
+        Index(payload): expressionValue.Index(payload)
+        Replace(payload): expressionValue.Replace(payload)
+        Spawn(payload): expressionValue.Spawn(payload)
+        MatchValue(payload): expressionValue.MatchValue(payload)
+        Conditional(payload): expressionValue.Conditional(payload)
+        FunctionValue(payload): expressionValue.FunctionValue(payload)
+    }
+    source.expressions.restore(expression, $expressionNode {
+        value = restored span = span
+    })
+    result
+}
+
+fn semanticMatchBindingType(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &payload semanticType,
+    borrowed bool
+) semanticType {
+    var result = copySemanticType(&payload)
+    if borrowed && !isCopySemanticParameterType(
+        &analyzer, &source, &result) {
+        if result.kind.Matches("Own") && result.arguments.len() == 1 {
+            result = semanticTypeArgument(&result, 0)
+        }
+        result = unarySemanticType(.View, $result)
+    }
+    result
+}
+
+fn analyzeSemanticMatchGuard(
+    &analyzer semanticAnalyzer,
+    &source program,
+    guard Option<u64>,
+    bindingPresent bool,
+    bindingName String,
+    payloadPresent bool,
+    &payload semanticType,
+    &movesBeforeArms arena<moveState>,
+    &loansBeforeArms arena<loanState>
+) Option<u64> {
+    const selectedGuard = semanticOptionalID(guard)
+    var hasGuard = false
+    var guardExpression u64 = 0
+    match selectedGuard {
+        None: {}
+        Some(value): { hasGuard = true guardExpression = value }
+    }
+    if !hasGuard return .None
+    var local Option<u64> = .None
+    var guardScope = false
+    if bindingPresent && payloadPresent {
+        pushSemanticScope(&analyzer.state)
+        guardScope = true
+        var guardType = copySemanticType(&payload)
+        var readBinding = false
+        if !isCopySemanticParameterType(&analyzer, &source, &guardType) {
+            if guardType.kind.Matches("Own") && guardType.arguments.len() == 1 {
+                guardType = semanticTypeArgument(&guardType, 0)
+            }
+            guardType = unarySemanticType(.View, $guardType)
+            readBinding = true
+        }
+        const span = semanticExpressionSpan(&source, guardExpression)
+        const id = addSemanticLocalToFunction(
+            &analyzer,
+            &source,
+            bindingName,
+            $guardType,
+            false,
+            span
+        )
+        setSemanticLocalReadBinding(&analyzer, id, readBinding)
+        local = .Some(id)
+    }
+    const moveCount = movesBeforeArms.len()
+    var movesBeforeGuard = semanticMovePrefix(
+        &analyzer.state.moveStates, moveCount)
+    var boolType = boolSemanticType()
+    const guardSpan = semanticExpressionSpan(&source, guardExpression)
+    var guardType = analyzeSemanticExpression(
+        &analyzer,
+        &source,
+        guardExpression,
+        expectedSemanticType(&boolType),
+        .Inspect
+    )
+    requireSameSemanticType(
+        &analyzer,
+        &source,
+        &boolType,
+        &guardType,
+        guardSpan,
+        "match guard"
+    )
+    var movesAfterGuard = semanticMovePrefix(
+        &analyzer.state.moveStates, moveCount)
+    var index u64 = 0
+    while index < movesBeforeGuard.len() {
+        if !semanticMoveAt(&movesBeforeGuard, index).Matches(
+            semanticMoveAt(&movesAfterGuard, index).Name()) {
+            analyzer.diagnostics.reportError(
+                "FDN2228",
+                "match guard cannot move binding " +
+                semanticLocalName(&analyzer, index),
+                guardSpan
+            )
+        }
+        index += 1
+    }
+    restoreSemanticMoves(&analyzer.state.moveStates, &movesBeforeGuard)
+    restoreSemanticLoans(&analyzer.state.loanStates, &loansBeforeArms)
+    if guardScope {
+        const scopeIndex = analyzer.state.scopes.len() - 1
+        reportSemanticScopeAt(&analyzer, scopeIndex)
+        popSemanticScope(&analyzer.state)
+    }
+    local
+}
+
+fn setSemanticMatchTarget(
+    &analyzer semanticAnalyzer,
+    expression u64,
+    $target matchTarget
+) void {
+    var value Option<matchTarget> = .Some(target)
+    setArenaValue<Option<matchTarget>>(
+        &analyzer.model.matchTargets,
+        expression,
+        $value
+    )
+}
+
+fn analyzeSemanticMatch(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    &matchValue matchExpression,
+    &expected semanticExpected,
+    span sourceSpan
+) semanticType {
+    var value = analyzeSemanticExpressionWithoutExpected(
+        &analyzer, &source, matchValue.value, .Consume)
+    var matchedType = copySemanticType(&value)
+    const borrowed = (value.kind.Matches("View") || value.kind.Matches("Edit")) &&
+        value.arguments.len() == 1
+    if borrowed { matchedType = semanticTypeArgument(&value, 0) }
+    if !matchedType.kind.Matches("EnumValue") ||
+        matchedType.declaration >= source.enums.len() {
+        analyzer.diagnostics.reportError(
+            "FDN2037", "match requires an enum value", span)
+        return invalidSemanticType()
+    }
+    const enumType = matchedType.declaration
+    const variantCount = semanticEnumVariantCount(&source, enumType)
+    var covered = newArena<bool>()
+    var variant u64 = 0
+    while variant < variantCount {
+        discard covered.add(false)
+        variant += 1
+    }
+    const stateCount = analyzer.state.moveStates.len()
+    var beforeOutstanding = semanticBoolPrefix(
+        &analyzer.state.resultOutstanding, stateCount)
+    var beforeMoves = semanticMovePrefix(&analyzer.state.moveStates, stateCount)
+    var beforeLoans = semanticLoanPrefix(&analyzer.state.loanStates, stateCount)
+    var variants = newArena<u64>()
+    var bindings = newArena<Option<u64>>()
+    var guardBindings = newArena<Option<u64>>()
+    var drops = newArena<own arena<u64>>()
+    var pending = collections.NewList<matchArm>()
+    var result = invalidSemanticType()
+    var hasBranch = false
+    var mergedOutstanding = semanticBoolPrefix(&beforeOutstanding, stateCount)
+    var mergedMoves = semanticMovePrefix(&beforeMoves, stateCount)
+    var mergedLoans = semanticLoanPrefix(&beforeLoans, stateCount)
+    var mergedTerminates = true
+    var wildcardCovered = false
+    var borrowedClosure = false
+    var literalPatterns = newArena<String>()
+    while !matchValue.arms.IsEmpty() {
+        var arm = match matchValue.arms.PopFront() {
+            None: panic("match arm list invariant failed")
+            Some(arm): arm
+        }
+        restoreSemanticBools(
+            &analyzer.state.resultOutstanding, &beforeOutstanding)
+        restoreSemanticMoves(&analyzer.state.moveStates, &beforeMoves)
+        restoreSemanticLoans(&analyzer.state.loanStates, &beforeLoans)
+        if wildcardCovered {
+            analyzer.diagnostics.reportError(
+                "FDN2039", "match arm is unreachable after wildcard", arm.span)
+        }
+        var resolvedVariant u64 = 0
+        var validVariant = false
+        if !arm.wildcard {
+            match findSemanticVariant(&source, enumType, arm.variant) {
+                None: analyzer.diagnostics.reportError(
+                    "FDN2035", "unknown variant " + arm.variant, arm.span)
+                Some(value): {
+                    validVariant = true
+                    resolvedVariant = value
+                }
+            }
+        }
+        pushSemanticScope(&analyzer.state)
+        var binding Option<u64> = .None
+        var guardBinding Option<u64> = .None
+        const bindingCopy = semanticOptionalStringCopy(arm.binding)
+        var bindingPresent = false
+        var bindingName = ""
+        match bindingCopy {
+            None: {}
+            Some(name): { bindingPresent = true bindingName = name }
+        }
+        const patternCopy = semanticOptionalID(arm.pattern)
+        var patternPresent = false
+        var patternExpression u64 = 0
+        match patternCopy {
+            None: {}
+            Some(value): { patternPresent = true patternExpression = value }
+        }
+        const guardCopy = semanticOptionalID(arm.guard)
+        const unconditional = match guardCopy {
+            None: true
+            Some(value): { discard value false }
+        }
+        var payload = invalidSemanticType()
+        var payloadPresent = false
+        if arm.wildcard {
+            if bindingPresent || patternPresent {
+                analyzer.diagnostics.reportError(
+                    "FDN2041", "wildcard does not accept a payload", arm.span)
+            }
+            guardBinding = analyzeSemanticMatchGuard(
+                &analyzer,
+                &source,
+                guardCopy,
+                false,
+                "",
+                false,
+                &payload,
+                &beforeMoves,
+                &beforeLoans
+            )
+            if unconditional {
+                wildcardCovered = true
+                variant = 0
+                while variant < covered.len() {
+                    setSemanticBool(&covered, variant, true)
+                    variant += 1
+                }
+            }
+        } else {
+            if validVariant {
+                var info = semanticVariantInfoAt(
+                    &analyzer,
+                    &source,
+                    enumType,
+                    resolvedVariant,
+                    &matchedType.arguments
+                )
+                if semanticEnumPackage(&source, enumType) !=
+                    currentSemanticPackage(&analyzer, &source) && !info.exported {
+                    analyzer.diagnostics.reportError(
+                        "FDN3008", "variant " + arm.variant + " is not exported", arm.span)
+                }
+                const selectedPayload = replace info.payload with .None
+                match selectedPayload {
+                    None: {}
+                    Some(value): {
+                        payload = value
+                        payloadPresent = true
+                        if payload.kind.Matches("Void") &&
+                            semanticEnumIsResult(&source, enumType) {
+                            payloadPresent = false
+                        }
+                    }
+                }
+                if !payloadPresent {
+                    if bindingPresent || patternPresent {
+                        analyzer.diagnostics.reportError(
+                            "FDN2041", "unit pattern does not accept a payload", arm.span)
+                    }
+                    if semanticBoolAt(&covered, resolvedVariant) {
+                        analyzer.diagnostics.reportError(
+                            "FDN2039", "duplicate match pattern " + arm.variant, arm.span)
+                    }
+                    guardBinding = analyzeSemanticMatchGuard(
+                        &analyzer,
+                        &source,
+                        guardCopy,
+                        false,
+                        "",
+                        false,
+                        &payload,
+                        &beforeMoves,
+                        &beforeLoans
+                    )
+                    if unconditional {
+                        setSemanticBool(&covered, resolvedVariant, true)
+                    }
+                } else {
+                    if bindingPresent {
+                        if semanticBoolAt(&covered, resolvedVariant) {
+                            analyzer.diagnostics.reportError(
+                                "FDN2039", "duplicate match pattern " + arm.variant, arm.span)
+                        }
+                        guardBinding = analyzeSemanticMatchGuard(
+                            &analyzer,
+                            &source,
+                            guardCopy,
+                            true,
+                            bindingName,
+                            true,
+                            &payload,
+                            &beforeMoves,
+                            &beforeLoans
+                        )
+                        if unconditional {
+                            setSemanticBool(&covered, resolvedVariant, true)
+                        }
+                        var bindingType = semanticMatchBindingType(
+                            &analyzer, &source, &payload, borrowed)
+                        const readBinding = borrowed &&
+                            !isCopySemanticParameterType(
+                            &analyzer, &source, &payload)
+                        const local = addSemanticLocalToFunction(
+                            &analyzer,
+                            &source,
+                            bindingName,
+                            $bindingType,
+                            false,
+                            arm.span
+                        )
+                        setSemanticLocalReadBinding(
+                            &analyzer, local, readBinding)
+                        binding = .Some(local)
+                    } else {
+                        if patternPresent {
+                            const patternSpan = semanticExpressionSpan(
+                                &source, patternExpression)
+                            const literal = semanticMatchLiteralAt(
+                                &source, patternExpression)
+                            if !literal.valid {
+                                analyzer.diagnostics.reportError(
+                                    "FDN2210",
+                                    "match payload pattern must be an integer, boolean, or string literal",
+                                    patternSpan
+                                )
+                            }
+                            var patternType = analyzeSemanticExpression(
+                                &analyzer,
+                                &source,
+                                patternExpression,
+                                expectedSemanticType(&payload),
+                                .Inspect
+                            )
+                            requireSameSemanticType(
+                                &analyzer,
+                                &source,
+                                &payload,
+                                &patternType,
+                                patternSpan,
+                                "match payload pattern"
+                            )
+                            const key = format.U64(resolvedVariant) + ":" + literal.key
+                            const duplicateLiteral = literal.valid &&
+                                semanticStringContains(&literalPatterns, key)
+                            if semanticBoolAt(&covered, resolvedVariant) ||
+                                (unconditional && duplicateLiteral) {
+                                analyzer.diagnostics.reportError(
+                                    "FDN2039", "duplicate match pattern " + arm.variant, arm.span)
+                            }
+                            guardBinding = analyzeSemanticMatchGuard(
+                                &analyzer,
+                                &source,
+                                guardCopy,
+                                false,
+                                "",
+                                false,
+                                &payload,
+                                &beforeMoves,
+                                &beforeLoans
+                            )
+                            if unconditional && literal.valid && !duplicateLiteral {
+                                discard literalPatterns.add(text.Copy(key))
+                            }
+                            if unconditional && payload.kind.Matches("Bool") {
+                                const trueKey = format.U64(resolvedVariant) + ":bool:true"
+                                const falseKey = format.U64(resolvedVariant) + ":bool:false"
+                                if semanticStringContains(&literalPatterns, trueKey) &&
+                                    semanticStringContains(&literalPatterns, falseKey) {
+                                    setSemanticBool(&covered, resolvedVariant, true)
+                                }
+                            }
+                        } else {
+                            analyzer.diagnostics.reportError(
+                                "FDN2041",
+                                "payload pattern requires a binding or literal",
+                                arm.span
+                            )
+                            setSemanticBool(&covered, resolvedVariant, true)
+                            guardBinding = analyzeSemanticMatchGuard(
+                                &analyzer,
+                                &source,
+                                guardCopy,
+                                false,
+                                "",
+                                false,
+                                &payload,
+                                &beforeMoves,
+                                &beforeLoans
+                            )
+                        }
+                    }
+                }
+            } else {
+                guardBinding = analyzeSemanticMatchGuard(
+                    &analyzer,
+                    &source,
+                    guardCopy,
+                    false,
+                    "",
+                    false,
+                    &payload,
+                    &beforeMoves,
+                    &beforeLoans
+                )
+            }
+        }
+        var blockTerminates = analyzeSemanticBlock(
+            &analyzer, &source, arm.block, false)
+        var armType = voidSemanticType()
+        match arm.expression {
+            None: {}
+            Some(valueExpression): {
+                var armExpected = absentSemanticType()
+                if expected.present {
+                    armExpected = expectedSemanticType(&expected.type)
+                } else {
+                    if !result.kind.Matches("Invalid") {
+                        armExpected = expectedSemanticType(&result)
+                    }
+                }
+                armType = analyzeSemanticExpression(
+                    &analyzer,
+                    &source,
+                    valueExpression,
+                    $armExpected,
+                    .Consume
+                )
+                if semanticBoolAt(
+                    &analyzer.model.expressionBorrowedClosures,
+                    valueExpression
+                ) {
+                    borrowedClosure = true
+                }
+            }
+        }
+        const scopeIndex = analyzer.state.scopes.len() - 1
+        const terminates = blockTerminates || armType.kind.Matches("Never")
+        var armDrops = semanticScopeDropsAt(
+            &analyzer, &source, scopeIndex)
+        discard drops.add($armDrops)
+        var scope = semanticScopeAt(&analyzer.state, scopeIndex)
+        reportSemanticScope(&analyzer, &scope)
+        popSemanticScope(&analyzer.state)
+        var armOutstanding = semanticBoolPrefix(
+            &analyzer.state.resultOutstanding, stateCount)
+        var armMoves = semanticMovePrefix(
+            &analyzer.state.moveStates, stateCount)
+        var armLoans = semanticLoanPrefix(
+            &analyzer.state.loanStates, stateCount)
+        if !hasBranch {
+            mergedOutstanding = semanticBoolPrefix(&armOutstanding, stateCount)
+            mergedMoves = semanticMovePrefix(&armMoves, stateCount)
+            mergedLoans = semanticLoanPrefix(&armLoans, stateCount)
+            mergedTerminates = terminates
+            hasBranch = true
+        } else {
+            mergedOutstanding = mergeSemanticOutstanding(
+                &mergedOutstanding,
+                mergedTerminates,
+                &armOutstanding,
+                terminates
+            )
+            mergedMoves = mergeSemanticMoves(
+                &beforeMoves,
+                &mergedMoves,
+                mergedTerminates,
+                &armMoves,
+                terminates
+            )
+            mergedLoans = mergeSemanticLoans(
+                &beforeLoans,
+                &mergedLoans,
+                mergedTerminates,
+                &armLoans,
+                terminates
+            )
+            mergedTerminates = mergedTerminates && terminates
+        }
+        const unsetResult = result.kind.Matches("Invalid") || result.kind.Matches("Never")
+        if unsetResult {
+            result = copySemanticType(&armType)
+        }
+        if !unsetResult && !armType.kind.Matches("Never") {
+            requireSameSemanticType(
+                &analyzer,
+                &source,
+                &result,
+                &armType,
+                arm.span,
+                "match arm"
+            )
+        }
+        discard variants.add(resolvedVariant)
+        discard bindings.add($binding)
+        discard guardBindings.add($guardBinding)
+        pending.PushFront($arm)
+    }
+    while !pending.IsEmpty() {
+        const arm = match pending.PopFront() {
+            None: panic("match arm restore invariant failed")
+            Some(arm): arm
+        }
+        matchValue.arms.PushFront($arm)
+    }
+    if hasBranch {
+        restoreSemanticBools(
+            &analyzer.state.resultOutstanding, &mergedOutstanding)
+        restoreSemanticMoves(&analyzer.state.moveStates, &mergedMoves)
+        restoreSemanticLoans(&analyzer.state.loanStates, &mergedLoans)
+    }
+    variant = 0
+    while variant < covered.len() {
+        if !semanticBoolAt(&covered, variant) {
+            analyzer.diagnostics.reportError(
+                "FDN2040", "match does not cover an enum variant", span)
+        }
+        variant += 1
+    }
+    setSemanticMatchTarget(
+        &analyzer,
+        expression,
+        $matchTarget {
+        type = copySemanticType(&matchedType)
+        variants = variants
+        bindings = bindings
+        guardBindings = guardBindings
+        drops = drops
+    }
+    )
+    setSemanticBool(
+        &analyzer.model.expressionBorrowedClosures,
+        expression,
+        borrowedClosure
+    )
+    result
+}

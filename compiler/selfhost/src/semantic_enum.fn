@@ -1,0 +1,612 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+struct semanticVariantInfo {
+    present bool
+    exported bool
+    payload Option<semanticType>
+    span sourceSpan
+}
+
+struct semanticExplicitEnumType {
+    present bool
+    type semanticType
+}
+
+struct semanticInferenceSnapshot {
+    complete bool
+    arguments own arena<semanticType>
+}
+
+fn semanticEnumExplicitType(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &member memberExpression,
+    typeID u64
+) semanticExplicitEnumType {
+    match semanticOptionalID(member.base) {
+        None: semanticExplicitEnumType {
+            present = false type = invalidSemanticType()
+        }
+        Some(base): {
+            const selected = source.expressions.take(base)
+            const node = match selected {
+                None: panic("expression slot is empty")
+                Some(node): node
+            }
+            const expressionNode { value span } = node
+            var present = false
+            var type = invalidSemanticType()
+            const restored = match value {
+                Name(payload): {
+                    var current = payload
+                    if listLength(&current.typeArguments) != 0 ||
+                        semanticEnumTypeParameterCount(&analyzer, typeID) == 0 {
+                        var syntax = typeSyntax {
+                            name = text.Copy(current.name)
+                            arguments = copyTypeSyntaxList(&current.typeArguments)
+                            span = span
+                            arrayLength = 0
+                        }
+                        type = resolveSemanticType(&analyzer, &source, &syntax)
+                    }
+                    present = true
+                    expressionValue.Name(current)
+                }
+                Integer(payload): expressionValue.Integer(payload)
+                Floating(payload): expressionValue.Floating(payload)
+                Boolean(payload): expressionValue.Boolean(payload)
+                StringValue(payload): expressionValue.StringValue(payload)
+                Array(payload): expressionValue.Array(payload)
+                Unary(payload): expressionValue.Unary(payload)
+                Ownership(payload): expressionValue.Ownership(payload)
+                Binary(payload): expressionValue.Binary(payload)
+                Call(payload): expressionValue.Call(payload)
+                StructValue(payload): expressionValue.StructValue(payload)
+                Member(payload): expressionValue.Member(payload)
+                Index(payload): expressionValue.Index(payload)
+                Replace(payload): expressionValue.Replace(payload)
+                Spawn(payload): expressionValue.Spawn(payload)
+                MatchValue(payload): expressionValue.MatchValue(payload)
+                Conditional(payload): expressionValue.Conditional(payload)
+                FunctionValue(payload): expressionValue.FunctionValue(payload)
+            }
+            source.expressions.restore(base, $expressionNode {
+                value = restored span = span
+            })
+            semanticExplicitEnumType { present = present type = type }
+        }
+    }
+}
+
+fn semanticEnumTypeParameters(
+    &source program,
+    type u64
+) own collections.List<String> {
+    if type >= source.enums.len() return collections.NewList<String>()
+    var declaration = match source.enums.take(type) {
+        None: panic("enum slot is empty")
+        Some(declaration): declaration
+    }
+    const result = copyStringList(&declaration.typeParameters)
+    source.enums.restore(type, $declaration)
+    result
+}
+
+fn semanticEnumDisplayName(&source program, type u64) String {
+    if type >= source.enums.len() return "enum"
+    var declaration = match source.enums.take(type) {
+        None: panic("enum slot is empty")
+        Some(declaration): declaration
+    }
+    const result = text.Copy(declaration.name)
+    source.enums.restore(type, $declaration)
+    result
+}
+
+fn semanticEnumIsResult(&source program, type u64) bool {
+    if type >= source.enums.len() return false
+    var declaration = match source.enums.take(type) {
+        None: panic("enum slot is empty")
+        Some(declaration): declaration
+    }
+    const result = declaration.builtin.Matches("Result")
+    source.enums.restore(type, $declaration)
+    result
+}
+
+fn semanticVariantPayloadPattern(
+    &analyzer semanticAnalyzer,
+    type u64,
+    variant u64
+) Option<semanticType> {
+    if type >= analyzer.model.enums.len() return .None
+    var declaration = match analyzer.model.enums.take(type) {
+        None: panic("semantic enum slot is empty")
+        Some(declaration): declaration
+    }
+    if variant >= declaration.payloadTypes.len() {
+        analyzer.model.enums.restore(type, $declaration)
+        return .None
+    }
+    const selected = declaration.payloadTypes.take(variant)
+    const payload = match selected {
+        None: panic("semantic payload slot is empty")
+        Some(payload): payload
+    }
+    const result = match payload {
+        None: {
+            var restored Option<semanticType> = .None
+            declaration.payloadTypes.restore(variant, $restored)
+            var missing Option<semanticType> = .None
+            missing
+        }
+        Some(value): {
+            var current = value
+            const copy = copySemanticType(&current)
+            var restored Option<semanticType> = .Some(current)
+            declaration.payloadTypes.restore(variant, $restored)
+            var result Option<semanticType> = .Some(copy)
+            result
+        }
+    }
+    analyzer.model.enums.restore(type, $declaration)
+    result
+}
+
+fn semanticInferenceSnapshot(
+    &inferred arena<Option<semanticType>>
+) semanticInferenceSnapshot {
+    var result = newArena<semanticType>()
+    var complete = true
+    var index u64 = 0
+    while index < inferred.len() {
+        const selected = inferred.take(index)
+        const value = match selected {
+            None: panic("inferred type slot is empty")
+            Some(value): value
+        }
+        match value {
+            None: {
+                complete = false
+                discard result.add(invalidSemanticType())
+                var restored Option<semanticType> = .None
+                inferred.restore(index, $restored)
+            }
+            Some(type): {
+                var current = type
+                discard result.add(copySemanticType(&current))
+                var restored Option<semanticType> = .Some(current)
+                inferred.restore(index, $restored)
+            }
+        }
+        index += 1
+    }
+    semanticInferenceSnapshot { complete = complete arguments = result }
+}
+
+fn semanticVariantPayloadName(
+    &source program,
+    type u64,
+    target u64
+) Option<String> {
+    if type >= source.enums.len() return .None
+    var declaration = match source.enums.take(type) {
+        None: panic("enum slot is empty")
+        Some(declaration): declaration
+    }
+    var pending = collections.NewList<enumVariant>()
+    var index u64 = 0
+    var result Option<String> = .None
+    while !declaration.variants.IsEmpty() {
+        const variant = match declaration.variants.PopFront() {
+            None: panic("enum variant list invariant failed")
+            Some(variant): variant
+        }
+        if index == target {
+            result = semanticOptionalStringCopy(variant.payloadName)
+        }
+        pending.PushFront($variant)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const variant = match pending.PopFront() {
+            None: panic("enum variant restore invariant failed")
+            Some(variant): variant
+        }
+        declaration.variants.PushFront($variant)
+    }
+    source.enums.restore(type, $declaration)
+    result
+}
+
+fn semanticVariantInfoAt(
+    &analyzer semanticAnalyzer,
+    &source program,
+    type u64,
+    variant u64,
+    &arguments arena<semanticType>
+) semanticVariantInfo {
+    if type >= source.enums.len() return semanticVariantInfo {
+        present = false exported = false payload = .None
+        span = sourceSpan { offset = 0 length = 0 line = 0 column = 0 source = 0 }
+    }
+    var declaration = match source.enums.take(type) {
+        None: panic("enum slot is empty")
+        Some(declaration): declaration
+    }
+    var semantic = match analyzer.model.enums.take(type) {
+        None: panic("semantic enum slot is empty")
+        Some(semantic): semantic
+    }
+    var pending = collections.NewList<enumVariant>()
+    var index u64 = 0
+    var result = semanticVariantInfo {
+        present = false exported = false payload = .None span = declaration.span
+    }
+    while !declaration.variants.IsEmpty() {
+        const value = match declaration.variants.PopFront() {
+            None: panic("enum variant list invariant failed")
+            Some(value): value
+        }
+        if index == variant {
+            var payload Option<semanticType> = .None
+            if index < semantic.payloadTypes.len() {
+                const selected = semantic.payloadTypes.take(index)
+                const stored = match selected {
+                    None: panic("semantic payload slot is empty")
+                    Some(stored): stored
+                }
+                match stored {
+                    None: {
+                        var missing Option<semanticType> = .None
+                        semantic.payloadTypes.restore(index, $missing)
+                    }
+                    Some(type): {
+                        var original = type
+                        payload = .Some(substituteSemanticType(&original, &arguments))
+                        var restored Option<semanticType> = .Some(original)
+                        semantic.payloadTypes.restore(index, $restored)
+                    }
+                }
+            }
+            result = semanticVariantInfo {
+                present = true
+                exported = value.exported
+                payload = payload
+                span = value.span
+            }
+        }
+        pending.PushFront($value)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("enum variant restore invariant failed")
+            Some(value): value
+        }
+        declaration.variants.PushFront($value)
+    }
+    analyzer.model.enums.restore(type, $semantic)
+    source.enums.restore(type, $declaration)
+    result
+}
+
+fn semanticEnumPackage(&source program, type u64) String {
+    if type >= source.enums.len() return ""
+    var declaration = match source.enums.take(type) {
+        None: panic("enum slot is empty")
+        Some(declaration): declaration
+    }
+    const result = text.Copy(declaration.packageName)
+    source.enums.restore(type, $declaration)
+    result
+}
+
+fn setSemanticEnumTarget(
+    &analyzer semanticAnalyzer,
+    expression u64,
+    $target enumTarget
+) void {
+    var value Option<enumTarget> = .Some(target)
+    setArenaValue<Option<enumTarget>>(
+        &analyzer.model.enumTargets,
+        expression,
+        $value
+    )
+}
+
+fn analyzeSemanticEnumConstructor(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    &member memberExpression,
+    &expected semanticExpected,
+    span sourceSpan
+) semanticType {
+    if expected.present {
+        var target = copySemanticType(&expected.type)
+        if (target.kind.Matches("Own") || target.kind.Matches("View") || target.kind.Matches("Edit")) &&
+            target.arguments.len() == 1 {
+            target = semanticTypeArgument(&target, 0)
+        }
+        if target.kind.Matches("EnumValue") {
+            return analyzeSemanticNamedEnumConstructor(
+                &analyzer,
+                &source,
+                expression,
+                target.declaration,
+                &member,
+                &expected,
+                span
+            )
+        }
+    }
+    analyzer.diagnostics.reportError(
+        "FDN2034",
+        "cannot resolve enum for ." + member.member,
+        span
+    )
+    var pending = semanticCallArgumentIDs(&member.arguments)
+    var index u64 = 0
+    while index < pending.len() {
+        discard analyzeSemanticExpressionWithoutExpected(
+            &analyzer, &source, semanticArgumentID(&pending, index), .Consume)
+        index += 1
+    }
+    invalidSemanticType()
+}
+
+fn analyzeSemanticNamedEnumConstructor(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    type u64,
+    &member memberExpression,
+    &expected semanticExpected,
+    span sourceSpan
+) semanticType {
+    if listLength(&member.typeArguments) != 0 {
+        analyzer.diagnostics.reportError(
+            "FDN2043", "enum variant does not accept type arguments", span)
+    }
+    const variant = match findSemanticVariant(&source, type, member.member) {
+        None: {
+            var pending = semanticCallArgumentIDs(&member.arguments)
+            var argument u64 = 0
+            while argument < pending.len() {
+                discard analyzeSemanticExpressionWithoutExpected(
+                    &analyzer,
+                    &source,
+                    semanticArgumentID(&pending, argument),
+                    .Consume
+                )
+                argument += 1
+            }
+            analyzer.diagnostics.reportError(
+                "FDN2035", "unknown variant " + member.member, span)
+            return invalidSemanticType()
+        }
+        Some(variant): variant
+    }
+    const typeParameterCount = semanticEnumTypeParameterCount(&analyzer, type)
+    var inferred = newArena<Option<semanticType>>()
+    var index u64 = 0
+    while index < typeParameterCount {
+        var missing Option<semanticType> = .None
+        discard inferred.add($missing)
+        index += 1
+    }
+    var explicitType = semanticEnumExplicitType(
+        &analyzer, &source, &member, type)
+    var seeded = false
+    if explicitType.present &&
+        (explicitType.type.arguments.len() != 0 || typeParameterCount == 0) {
+        index = 0
+        while index < explicitType.type.arguments.len() && index < inferred.len() {
+            var argument = semanticTypeArgument(&explicitType.type, index)
+            var value Option<semanticType> = .Some(argument)
+            setArenaValue<Option<semanticType>>(&inferred, index, $value)
+            index += 1
+        }
+        seeded = true
+    }
+    if !seeded && expected.present {
+        var contextual = copySemanticType(&expected.type)
+        if (contextual.kind.Matches("Own") || contextual.kind.Matches("View") ||
+            contextual.kind.Matches("Edit")) && contextual.arguments.len() == 1 {
+            contextual = semanticTypeArgument(&contextual, 0)
+        }
+        if contextual.kind.Matches("EnumValue") && contextual.declaration == type {
+            index = 0
+            while index < contextual.arguments.len() && index < inferred.len() {
+                var argument = semanticTypeArgument(&contextual, index)
+                var value Option<semanticType> = .Some(argument)
+                setArenaValue<Option<semanticType>>(&inferred, index, $value)
+                index += 1
+            }
+        }
+    }
+
+    var argumentNames = semanticCallArgumentNames(&member.argumentNames)
+    if semanticHasNamedArguments(&argumentNames) {
+        match semanticVariantPayloadName(&source, type, variant) {
+            None: {
+                rejectSemanticNamedArguments(
+                    &analyzer, &argumentNames, "enum variant", span)
+            }
+            Some(name): {
+                var parameterNames = newArena<String>()
+                discard parameterNames.add($name)
+                discard semanticMapArgumentParameters(
+                    &analyzer,
+                    &argumentNames,
+                    listLength(&member.arguments),
+                    &parameterNames,
+                    span
+                )
+            }
+        }
+    }
+
+    var arguments = semanticCallArgumentIDs(&member.arguments)
+    var payloadPattern = semanticVariantPayloadPattern(
+        &analyzer, type, variant)
+    var hasPayload = false
+    var pattern = invalidSemanticType()
+    const selectedPayload = replace payloadPattern with .None
+    match selectedPayload {
+        None: {}
+        Some(payload): {
+            pattern = payload
+            hasPayload = true
+        }
+    }
+    if hasPayload {
+        var known = semanticInferenceSnapshot(&inferred)
+        if known.complete {
+            var resolvedPayload = substituteSemanticType(
+                &pattern, &known.arguments)
+            if resolvedPayload.kind.Matches("Void") &&
+                semanticEnumIsResult(&source, type) {
+                hasPayload = false
+            }
+        }
+    }
+
+    var actualPayload Option<semanticType> = .None
+    if hasPayload && arguments.len() == 0 {
+        analyzer.diagnostics.reportError(
+            "FDN2036", "variant requires a payload", span)
+    } else {
+        if !hasPayload && arguments.len() != 0 {
+            index = 0
+            while index < arguments.len() {
+                discard analyzeSemanticExpressionWithoutExpected(
+                    &analyzer,
+                    &source,
+                    semanticArgumentID(&arguments, index),
+                    .Consume
+                )
+                index += 1
+            }
+            analyzer.diagnostics.reportError(
+                "FDN2036", "unit variant does not accept a payload", span)
+        } else {
+            if hasPayload && arguments.len() == 1 {
+                var known = semanticInferenceSnapshot(&inferred)
+                var expectedPayload = absentSemanticType()
+                if known.complete {
+                    var resolved = substituteSemanticType(
+                        &pattern, &known.arguments)
+                    expectedPayload = expectedSemanticType(&resolved)
+                }
+                const argument = semanticArgumentID(&arguments, 0)
+                var actual = analyzeSemanticExpression(
+                    &analyzer,
+                    &source,
+                    argument,
+                    $expectedPayload,
+                    .Consume
+                )
+                if semanticBoolAt(
+                    &analyzer.model.expressionBorrowedClosures, argument) {
+                    analyzer.diagnostics.reportError(
+                        "FDN2127",
+                        "borrowed closure cannot be stored in an enum",
+                        span
+                    )
+                    setSemanticBool(
+                        &analyzer.model.expressionBorrowedClosures,
+                        expression,
+                        true
+                    )
+                }
+                inferSemanticType(
+                    &analyzer,
+                    &source,
+                    &pattern,
+                    &actual,
+                    &inferred,
+                    span,
+                    "variant payload"
+                )
+                actualPayload = .Some(actual)
+            } else {
+                if hasPayload {
+                    index = 0
+                    while index < arguments.len() {
+                        discard analyzeSemanticExpressionWithoutExpected(
+                            &analyzer,
+                            &source,
+                            semanticArgumentID(&arguments, index),
+                            .Consume
+                        )
+                        index += 1
+                    }
+                    analyzer.diagnostics.reportError(
+                        "FDN2036", "variant accepts one payload", span)
+                }
+            }
+        }
+    }
+
+    var typeParameterNames = semanticEnumTypeParameters(&source, type)
+    var typeArguments = completeSemanticInference(
+        &analyzer,
+        &inferred,
+        &typeParameterNames,
+        span,
+        semanticEnumDisplayName(&source, type)
+    )
+    const selectedActual = replace actualPayload with .None
+    match selectedActual {
+        None: {}
+        Some(actual): {
+            if hasPayload {
+                var expectedPayload = substituteSemanticType(
+                    &pattern, &typeArguments)
+                var currentActual = actual
+                requireSameSemanticType(
+                    &analyzer,
+                    &source,
+                    &expectedPayload,
+                    &currentActual,
+                    span,
+                    "variant payload"
+                )
+            }
+        }
+    }
+    var result = declaredSemanticType(.EnumValue, type)
+    result.arguments = copySemanticTypeArena(&typeArguments)
+    var info = semanticVariantInfoAt(
+        &analyzer, &source, type, variant, &result.arguments)
+    if semanticEnumPackage(&source, type) !=
+        currentSemanticPackage(&analyzer, &source) && !info.exported {
+        analyzer.diagnostics.reportError(
+            "FDN3008", "variant " + member.member + " is not exported", span)
+    }
+    setSemanticEnumTarget(
+        &analyzer,
+        expression,
+        $enumTarget { type = copySemanticType(&result) variant = variant }
+    )
+    result
+}
+
+fn semanticEnumTypeParameterCount(
+    &analyzer semanticAnalyzer,
+    type u64
+) u64 {
+    if type >= analyzer.model.enums.len() return 0
+    var declaration = match analyzer.model.enums.take(type) {
+        None: panic("semantic enum slot is empty")
+        Some(declaration): declaration
+    }
+    const result = declaration.typeParameterCount
+    analyzer.model.enums.restore(type, $declaration)
+    result
+}

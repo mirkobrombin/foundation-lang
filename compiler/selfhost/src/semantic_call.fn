@@ -1,0 +1,1181 @@
+package foundation.compiler
+
+import std.collections
+import std.format
+import std.text
+
+struct semanticCallArgumentResult {
+    type semanticType
+    implicitBorrow Option<semanticType>
+}
+
+struct semanticNamedArgument {
+    present bool
+    name String
+}
+
+struct semanticSuspendingFunctionInfo {
+    blockingCall bool
+    callbackCall bool
+}
+
+fn semanticSuspendingFunction(
+    &source program,
+    function u64
+) semanticSuspendingFunctionInfo {
+    if function >= source.functions.len() {
+        return semanticSuspendingFunctionInfo {
+            blockingCall = false callbackCall = false
+        }
+    }
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    const result = semanticSuspendingFunctionInfo {
+        blockingCall = declaration.blocking
+        callbackCall = declaration.callback
+    }
+    source.functions.restore(function, $declaration)
+    result
+}
+
+fn semanticSuspendingArgumentStorages(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &signature functionSignature,
+    &typeArguments arena<semanticType>,
+    count u64,
+    prefix String,
+    callbackCall bool,
+    span sourceSpan
+) own arena<u64> {
+    var storages = newArena<u64>()
+    var index u64 = 0
+    while index < count && index < signature.parameters.len() {
+        var parameter = match signature.parameters.take(index) {
+            None: panic("suspending parameter slot is empty")
+            Some(parameter): parameter
+        }
+        var type = substituteSemanticType(&parameter, &typeArguments)
+        const suffix = if callbackCall {
+            format.U64(analyzer.state.callbackStorage)
+        } else {
+            format.U64(analyzer.state.blockingStorage)
+        }
+        const local = addSemanticLocalToFunction(
+            &analyzer,
+            &source,
+            prefix + suffix,
+            $type,
+            false,
+            span
+        )
+        if callbackCall {
+            analyzer.state.callbackStorage += 1
+        } else {
+            analyzer.state.blockingStorage += 1
+        }
+        discard storages.add(local)
+        signature.parameters.restore(index, $parameter)
+        index += 1
+    }
+    storages
+}
+
+fn semanticCallArgumentResult(
+    $type semanticType,
+    $implicitBorrow Option<semanticType>
+) semanticCallArgumentResult {
+    semanticCallArgumentResult {
+        type = type
+        implicitBorrow = implicitBorrow
+    }
+}
+
+fn semanticCallArgumentWithoutBorrow(
+    $type semanticType
+) semanticCallArgumentResult {
+    var implicitBorrow Option<semanticType> = .None
+    semanticCallArgumentResult($type, $implicitBorrow)
+}
+
+fn specializeSemanticReadParameter(
+    &analyzer semanticAnalyzer,
+    &source program,
+    $type semanticType,
+    mode parameterMode
+) semanticType {
+    var value = type
+    if mode.Matches("Read") && value.kind.Matches("View") && value.declaration != 2 &&
+        value.arguments.len() == 1 {
+        var target = semanticTypeArgument(&value, 0)
+        if isCopySemanticParameterType(&analyzer, &source, &target) return target
+    }
+    value
+}
+
+fn resolveSemanticTypeArgumentList(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &values collections.List<typeSyntax>
+) own arena<semanticType> {
+    var result = newArena<semanticType>()
+    var pending = collections.NewList<typeSyntax>()
+    while !values.IsEmpty() {
+        var syntax = match values.PopFront() {
+            None: panic("type argument list invariant failed")
+            Some(syntax): syntax
+        }
+        discard result.add(resolveSemanticType(&analyzer, &source, &syntax))
+        pending.PushFront($syntax)
+    }
+    while !pending.IsEmpty() {
+        const syntax = match pending.PopFront() {
+            None: panic("type argument restore invariant failed")
+            Some(syntax): syntax
+        }
+        values.PushFront($syntax)
+    }
+    result
+}
+
+fn semanticCallFunction(
+    &analyzer semanticAnalyzer,
+    &source program,
+    callee String
+) Option<u64> {
+    if !text.Contains(callee, ".") {
+        const packageName = currentSemanticPackage(&analyzer, &source)
+        if !text.IsEmpty(packageName) {
+            match findSemanticSymbol(
+                &analyzer.state.functions,
+                packageName + "." + callee
+            ) {
+                None: {}
+                Some(function): { return .Some(function) }
+            }
+        }
+    }
+    match findSemanticSymbol(&analyzer.state.functions, callee) {
+        None: {
+            if !text.Contains(callee, ".") {
+                return findSemanticSymbol(
+                    &analyzer.state.functions,
+                    "std.prelude." + callee
+                )
+            }
+            .None
+        }
+        Some(function): .Some(function)
+    }
+}
+
+fn semanticCallArgumentIDs(
+    &values collections.List<u64>
+) own arena<u64> {
+    var result = newArena<u64>()
+    var pending = collections.NewList<u64>()
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("argument list invariant failed")
+            Some(value): value
+        }
+        discard result.add(value)
+        pending.PushFront(value)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("argument restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront(value)
+    }
+    result
+}
+
+fn semanticArgumentID(&values arena<u64>, index u64) u64 {
+    const value = match values.take(index) {
+        None: panic("argument slot is empty")
+        Some(value): value
+    }
+    values.restore(index, value)
+    value
+}
+
+fn semanticCallArgumentNames(
+    &values collections.List<Option<String>>
+) own arena<Option<String>> {
+    var result = newArena<Option<String>>()
+    var pending = collections.NewList<Option<String>>()
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("argument name list invariant failed")
+            Some(value): value
+        }
+        var copy = semanticOptionalStringCopy(value)
+        discard result.add($copy)
+        pending.PushFront($value)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("argument name restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront($value)
+    }
+    result
+}
+
+fn semanticNamedArgumentAt(
+    &values arena<Option<String>>,
+    index u64
+) semanticNamedArgument {
+    if index >= values.len() return semanticNamedArgument {
+        present = false name = ""
+    }
+    const selected = values.take(index)
+    const value = match selected {
+        None: panic("argument name slot is empty")
+        Some(value): value
+    }
+    const result = match semanticOptionalStringCopy(value) {
+        None: semanticNamedArgument { present = false name = "" }
+        Some(name): semanticNamedArgument { present = true name = name }
+    }
+    values.restore(index, $value)
+    result
+}
+
+fn semanticHasNamedArguments(
+    &names arena<Option<String>>
+) bool {
+    var index u64 = 0
+    while index < names.len() {
+        if semanticNamedArgumentAt(&names, index).present return true
+        index += 1
+    }
+    false
+}
+
+fn rejectSemanticNamedArguments(
+    &analyzer semanticAnalyzer,
+    &names arena<Option<String>>,
+    target String,
+    span sourceSpan
+) void {
+    if semanticHasNamedArguments(&names) {
+        analyzer.diagnostics.reportError(
+            "FDN2209", target + " does not accept named arguments", span)
+    }
+}
+
+fn semanticParameterNameAt(
+    &names arena<String>,
+    index u64
+) String {
+    const selected = names.take(index)
+    const value = match selected {
+        None: panic("parameter name slot is empty")
+        Some(value): value
+    }
+    const result = text.Copy(value)
+    names.restore(index, $value)
+    result
+}
+
+fn semanticParameterNameIndex(
+    &names arena<String>,
+    name String
+) Option<u64> {
+    var index u64 = 0
+    while index < names.len() {
+        if semanticParameterNameAt(&names, index) == name return .Some(index)
+        index += 1
+    }
+    .None
+}
+
+fn semanticMapArgumentParameters(
+    &analyzer semanticAnalyzer,
+    &argumentNames arena<Option<String>>,
+    argumentCount u64,
+    &parameterNames arena<String>,
+    span sourceSpan
+) own arena<u64> {
+    var result = newArena<u64>()
+    var assigned = newArena<bool>()
+    var index u64 = 0
+    while index < argumentCount {
+        discard result.add(index)
+        index += 1
+    }
+    index = 0
+    while index < parameterNames.len() {
+        discard assigned.add(false)
+        index += 1
+    }
+    if !semanticHasNamedArguments(&argumentNames) return result
+
+    var positional u64 = 0
+    var sawNamed = false
+    var sourceIndex u64 = 0
+    while sourceIndex < argumentCount {
+        const namedArgument = semanticNamedArgumentAt(
+            &argumentNames, sourceIndex)
+        var parameter = sourceIndex
+        var valid = true
+        if namedArgument.present {
+            sawNamed = true
+            match semanticParameterNameIndex(&parameterNames, namedArgument.name) {
+                None: {
+                    analyzer.diagnostics.reportError(
+                        "FDN2206",
+                        "unknown named argument " + namedArgument.name,
+                        span
+                    )
+                    valid = false
+                }
+                Some(found): { parameter = found }
+            }
+        } else {
+            if sawNamed {
+                analyzer.diagnostics.reportError(
+                    "FDN2207",
+                    "positional argument cannot follow a named argument",
+                    span
+                )
+            }
+            while positional < assigned.len() &&
+                semanticBoolAt(&assigned, positional) {
+                positional += 1
+            }
+            parameter = positional
+            positional += 1
+        }
+        if valid && parameter < assigned.len() {
+            setArenaValue<u64>(&result, sourceIndex, parameter)
+            if semanticBoolAt(&assigned, parameter) {
+                analyzer.diagnostics.reportError(
+                    "FDN2208",
+                    "argument " + semanticParameterNameAt(
+                        &parameterNames, parameter) + " is supplied more than once",
+                    span
+                )
+            }
+            setSemanticBool(&assigned, parameter, true)
+        }
+        sourceIndex += 1
+    }
+    result
+}
+
+fn semanticFunctionParameterNames(
+    &source program,
+    function u64,
+    start u64
+) own arena<String> {
+    var result = newArena<String>()
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    var pending = collections.NewList<parameter>()
+    var index u64 = 0
+    while !declaration.parameters.IsEmpty() {
+        const parameter = match declaration.parameters.PopFront() {
+            None: panic("function parameter list invariant failed")
+            Some(parameter): parameter
+        }
+        if index >= start {
+            discard result.add(text.Copy(parameter.name))
+        }
+        pending.PushFront($parameter)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const parameter = match pending.PopFront() {
+            None: panic("function parameter restore invariant failed")
+            Some(parameter): parameter
+        }
+        declaration.parameters.PushFront($parameter)
+    }
+    source.functions.restore(function, $declaration)
+    result
+}
+
+fn semanticAnalyzeCallArgument(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    &expected semanticExpected,
+    mode parameterMode,
+    span sourceSpan
+) semanticCallArgumentResult {
+    const ownership = semanticOwnershipAt(&source, expression)
+    if mode.Matches("Edit") && (!ownership.matched || !ownership.operation.Matches("Edit")) {
+        analyzer.diagnostics.reportError(
+            "FDN2192", "edit parameter requires & at the call site", span)
+    }
+    var expectedValue = absentSemanticType()
+    if expected.present {
+        expectedValue = expectedSemanticType(&expected.type)
+    }
+    if !mode.Matches("Read") {
+        var actual = analyzeSemanticExpression(
+            &analyzer, &source, expression, $expectedValue, .Consume)
+        if mode.Matches("Transfer") && requiresSemanticDrop(&analyzer, &source, &actual) &&
+            isSemanticPlaceExpression(&analyzer, &source, expression) &&
+            (!ownership.matched || !ownership.operation.Matches("Transfer")) {
+            analyzer.diagnostics.reportError(
+                "FDN2193", "transfer parameter requires $ at the call site", span)
+        }
+        return semanticCallArgumentWithoutBorrow($actual)
+    }
+    if ownership.matched &&
+        (ownership.operation.Matches("Edit") || ownership.operation.Matches("Transfer")) {
+        analyzer.diagnostics.reportError(
+            "FDN2194", "read parameter does not accept & or $", span)
+    }
+    if !expected.present || !expected.type.kind.Matches("View") ||
+        expected.type.arguments.len() != 1 {
+        var actual = analyzeSemanticExpression(
+            &analyzer, &source, expression, $expectedValue, .Inspect)
+        return semanticCallArgumentWithoutBorrow($actual)
+    }
+    if ownership.matched && ownership.operation.Matches("View") {
+        var actual = analyzeSemanticExpression(
+            &analyzer, &source, expression, $expectedValue, .Consume)
+        return semanticCallArgumentWithoutBorrow($actual)
+    }
+    var target = semanticTypeArgument(&expected.type, 0)
+    var contextual = absentSemanticType()
+    if !target.kind.Matches("ContractValue") && !target.kind.Matches("Slice") {
+        contextual = expectedSemanticType(&target)
+    }
+    var actual = analyzeSemanticExpression(
+        &analyzer, &source, expression, $contextual, .Inspect)
+    if actual.kind.Matches("View") {
+        if actual.arguments.len() == 1 {
+            var actualTarget = semanticTypeArgument(&actual, 0)
+            if sameSemanticType(&actualTarget, &target) {
+                return semanticCallArgumentWithoutBorrow(
+                    copySemanticType(&expected.type))
+            }
+        }
+        return semanticCallArgumentWithoutBorrow($actual)
+    }
+    if isCopySemanticParameterType(&analyzer, &source, &actual) &&
+        !target.kind.Matches("ContractValue") && !target.kind.Matches("Slice") {
+        return semanticCallArgumentWithoutBorrow($actual)
+    }
+    if (actual.kind.Matches("Own") || actual.kind.Matches("Edit")) &&
+        actual.arguments.len() == 1 {
+        actual = semanticTypeArgument(&actual, 0)
+    }
+    if actual.kind.Matches("Array") && actual.arguments.len() == 1 {
+        var element = semanticTypeArgument(&actual, 0)
+        actual = unarySemanticType(.Slice, $element)
+    }
+    var implicitBorrow Option<semanticType> = .Some(unarySemanticType(
+            .View,
+            copySemanticType(&actual)
+        ))
+    match semanticPlaceRootLocal(&analyzer, &source, expression) {
+        None: {}
+        Some(local): {
+            const loan = semanticLoanAt(&analyzer.state.loanStates, local)
+            if loan.Matches("Edit") {
+                analyzer.diagnostics.reportError(
+                    "FDN2073",
+                    "conflicting borrow of binding " +
+                    semanticLocalName(&analyzer, local),
+                    span
+                )
+            }
+            if loan.Matches("None") {
+                setSemanticLoan(&analyzer.state.loanStates, local, .View)
+            }
+        }
+    }
+    semanticCallArgumentResult(
+        unarySemanticType(.View, $actual), $implicitBorrow)
+}
+
+fn analyzeSemanticCall(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    &call callExpression,
+    span sourceSpan
+) semanticType {
+    const previousTransient = analyzer.state.transientBorrowsAllowed
+    const loanCount = analyzer.state.loanStates.len()
+    var previousLoans = semanticLoanPrefix(
+        &analyzer.state.loanStates, loanCount)
+    analyzer.state.transientBorrowsAllowed = true
+    var result = analyzeSemanticCallInner(
+        &analyzer, &source, expression, &call, span)
+    analyzer.state.transientBorrowsAllowed = previousTransient
+    restoreSemanticLoans(&analyzer.state.loanStates, &previousLoans)
+    result
+}
+
+fn analyzeSemanticCallInner(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    &call callExpression,
+    span sourceSpan
+) semanticType {
+    var explicitTypes = resolveSemanticTypeArgumentList(
+        &analyzer, &source, &call.typeArguments)
+    var arguments = semanticCallArgumentIDs(&call.arguments)
+    var argumentNames = semanticCallArgumentNames(&call.argumentNames)
+    const count = arguments.len()
+    match lookupSemanticLocal(&analyzer.state, call.callee) {
+        None: {}
+        Some(local): {
+            rejectSemanticNamedArguments(
+                &analyzer, &argumentNames, "function value call", span)
+            return analyzeSemanticFunctionValueCall(
+                &analyzer,
+                &source,
+                expression,
+                local,
+                &arguments,
+                &explicitTypes,
+                call.callee,
+                span
+            )
+        }
+    }
+    if call.callee == "print" || call.callee == "panic" ||
+        call.callee == "len" || call.callee == "channel" ||
+        call.callee == "null" || call.callee == "isNull" ||
+        call.callee == "cString" || call.callee == "sizeOf" ||
+        call.callee == "pointerCast" {
+        if call.callee == "print" || call.callee == "panic" ||
+            call.callee == "channel" || call.callee == "len" {
+            rejectSemanticNamedArguments(
+                &analyzer, &argumentNames, call.callee, span)
+        }
+        return analyzeSemanticBuiltinCall(
+            &analyzer,
+            &source,
+            expression,
+            call.callee,
+            &arguments,
+            &explicitTypes,
+            span
+        )
+    }
+    const selected = semanticCallFunction(&analyzer, &source, call.callee)
+    const function = match selected {
+        None: {
+            analyzer.diagnostics.reportError(
+                "FDN2009", "unknown function " + call.callee, span)
+            var index u64 = 0
+            while index < count {
+                discard analyzeSemanticExpressionWithoutExpected(
+                    &analyzer,
+                    &source,
+                    semanticArgumentID(&arguments, index),
+                    .Consume
+                )
+                index += 1
+            }
+            return invalidSemanticType()
+        }
+        Some(function): function
+    }
+    if semanticFunctionName(&source, function) == "main" {
+        analyzer.diagnostics.reportError("FDN2019", "main cannot be called", span)
+    }
+    if semanticFunctionTask(&source, function) {
+        var spawned = false
+        match analyzer.state.spawnCall {
+            None: {}
+            Some(root): {
+                if root == expression { spawned = true }
+            }
+        }
+        if !spawned {
+            analyzer.diagnostics.reportError(
+                "FDN2163", "task call requires spawn", span)
+        }
+    }
+    const packageName = semanticFunctionPackage(&source, function)
+    if packageName != currentSemanticPackage(&analyzer, &source) &&
+        !semanticFunctionExported(&source, function) {
+        analyzer.diagnostics.reportError(
+            "FDN3008", "function " + call.callee + " is not exported", span)
+    }
+    var signature = semanticFunctionSignatureAt(&analyzer, function)
+    const parameterCount = signature.parameters.len()
+    if count != parameterCount {
+        analyzer.diagnostics.reportError(
+            "FDN2010", "wrong argument count for " + call.callee, span)
+    }
+    const typeParameterCount = semanticFunctionTypeParameterCount(&source, function)
+    var inferred = newArena<Option<semanticType>>()
+    var index u64 = 0
+    while index < typeParameterCount {
+        var missing Option<semanticType> = .None
+        discard inferred.add($missing)
+        index += 1
+    }
+    if explicitTypes.len() != 0 && explicitTypes.len() != typeParameterCount {
+        analyzer.diagnostics.reportError(
+            "FDN2043",
+            "wrong type argument count for function " + call.callee,
+            span
+        )
+    }
+    index = 0
+    while index < explicitTypes.len() && index < inferred.len() {
+        var type = match explicitTypes.take(index) {
+            None: panic("explicit type slot is empty")
+            Some(type): type
+        }
+        var selectedType Option<semanticType> = .Some(copySemanticType(&type))
+        setArenaValue<Option<semanticType>>(&inferred, index, $selectedType)
+        explicitTypes.restore(index, $type)
+        index += 1
+    }
+    var actualTypes = newArena<semanticType>()
+    var parameterNames = semanticFunctionParameterNames(&source, function, 0)
+    var parameterMap = semanticMapArgumentParameters(
+        &analyzer,
+        &argumentNames,
+        count,
+        &parameterNames,
+        span
+    )
+    var argumentBorrows = newArena<Option<semanticType>>()
+    var argumentConversions = newArena<Option<contractConversion>>()
+    index = 0
+    while index < count {
+        const parameter = semanticArgumentID(&parameterMap, index)
+        var expected = semanticExpected {
+            present = false type = invalidSemanticType()
+        }
+        var mode = parameterMode.TypeEncoded
+        if parameter < parameterCount {
+            var storedPattern = match signature.parameters.take(parameter) {
+                None: panic("signature parameter slot is empty")
+                Some(pattern): pattern
+            }
+            var pattern = copySemanticType(&storedPattern)
+            signature.parameters.restore(parameter, $storedPattern)
+            if explicitTypes.len() == typeParameterCount {
+                pattern = substituteSemanticType(&pattern, &explicitTypes)
+            }
+            const info = semanticFunctionParameterInfoAt(
+                &source, function, parameter)
+            mode = info.mode
+            if !semanticFunctionHasCSymbol(&source, function) {
+                pattern = specializeSemanticReadParameter(
+                    &analyzer, &source, $pattern, mode)
+            }
+            expected = semanticExpected { present = true type = pattern }
+        }
+        var analysis = semanticAnalyzeCallArgument(
+            &analyzer,
+            &source,
+            semanticArgumentID(&arguments, index),
+            &expected,
+            mode,
+            span
+        )
+        var actual = replace analysis.type with invalidSemanticType()
+        var implicitBorrow = replace analysis.implicitBorrow with .None
+        discard actualTypes.add(copySemanticType(&actual))
+        discard argumentBorrows.add($implicitBorrow)
+        var missingConversion Option<contractConversion> = .None
+        discard argumentConversions.add($missingConversion)
+        if parameter < parameterCount {
+            var pattern = match signature.parameters.take(parameter) {
+                None: panic("signature parameter slot is empty")
+                Some(pattern): pattern
+            }
+            inferSemanticType(
+                &analyzer,
+                &source,
+                &pattern,
+                &actual,
+                &inferred,
+                span,
+                "function argument"
+            )
+            signature.parameters.restore(parameter, $pattern)
+        }
+        index += 1
+    }
+    var typeParameterNames = semanticFunctionTypeParameters(&source, function)
+    var typeArguments = completeSemanticInference(
+        &analyzer,
+        &inferred,
+        &typeParameterNames,
+        span,
+        call.callee
+    )
+    verifySemanticTransferableTypeArguments(
+        &analyzer, &source, function, &typeArguments, span)
+    verifySemanticContractTypeArguments(
+        &analyzer, &source, function, &typeArguments, span)
+    index = 0
+    const comparable = count if count < parameterCount else parameterCount
+    while index < comparable {
+        const parameter = semanticArgumentID(&parameterMap, index)
+        if parameter >= parameterCount {
+            index += 1
+            continue
+        }
+        var pattern = match signature.parameters.take(parameter) {
+            None: panic("signature parameter slot is empty")
+            Some(pattern): pattern
+        }
+        var expected = substituteSemanticType(&pattern, &typeArguments)
+        const info = semanticFunctionParameterInfoAt(
+            &source, function, parameter)
+        if !semanticFunctionHasCSymbol(&source, function) {
+            expected = specializeSemanticReadParameter(
+                &analyzer, &source, $expected, info.mode)
+        }
+        var actual = match actualTypes.take(index) {
+            None: panic("call argument type slot is empty")
+            Some(actual): actual
+        }
+        match semanticContractConversion(
+            &analyzer, &source, &expected, &actual) {
+            None: requireSameSemanticType(
+                &analyzer,
+                &source,
+                &expected,
+                &actual,
+                span,
+                "function argument"
+            )
+            Some(value): {
+                var conversion Option<contractConversion> = .Some(value)
+                setArenaValue<Option<contractConversion>>(
+                    &argumentConversions, index, $conversion)
+            }
+        }
+        actualTypes.restore(index, $actual)
+        signature.parameters.restore(parameter, $pattern)
+        index += 1
+    }
+    var target = newCallTarget(.Function)
+    target.function = function
+    target.typeArguments = copySemanticTypeArena(&typeArguments)
+    target.argumentBorrows = argumentBorrows
+    target.argumentConversions = argumentConversions
+    target.argumentParameters = parameterMap
+    setSemanticCallTarget(&analyzer, expression, $target)
+    var result = substituteSemanticType(&signature.returnType, &typeArguments)
+    const suspension = semanticSuspendingFunction(&source, function)
+    if suspension.blockingCall {
+        if !semanticFunctionTask(&source, analyzer.state.currentFunction) {
+            analyzer.diagnostics.reportError(
+                "FDN2180", "blocking call is only available inside a task", span)
+        } else {
+            if !semanticTaskWaitRootMatches(&analyzer, expression) {
+                analyzer.diagnostics.reportError(
+                    "FDN2168",
+                    "blocking call must be a standalone task binding or discard",
+                    span
+                )
+            } else {
+                var storages = semanticSuspendingArgumentStorages(
+                    &analyzer,
+                    &source,
+                    &signature,
+                    &typeArguments,
+                    comparable,
+                    "$blockingArgument",
+                    false,
+                    span
+                )
+                var resultStorage Option<u64> = .None
+                if !result.kind.Matches("Void") {
+                    const suffix = format.U64(analyzer.state.blockingStorage)
+                    const local = addSemanticLocalToFunction(
+                        &analyzer,
+                        &source,
+                        "$blockingResult" + suffix,
+                        copySemanticType(&result),
+                        false,
+                        span
+                    )
+                    analyzer.state.blockingStorage += 1
+                    setSemanticBool(
+                        &analyzer.state.resultOutstanding, local, false)
+                    resultStorage = .Some(local)
+                }
+                var blockingTarget Option<blockingCallTarget> =
+                    .Some(blockingCallTarget {
+                    function = function
+                    argumentStorages = storages
+                    resultStorage = resultStorage
+                })
+                setArenaValue<Option<blockingCallTarget>>(
+                    &analyzer.model.blockingCallTargets,
+                    expression,
+                    $blockingTarget
+                )
+            }
+        }
+    }
+    if suspension.callbackCall && !suspension.blockingCall {
+        if !semanticFunctionTask(&source, analyzer.state.currentFunction) {
+            analyzer.diagnostics.reportError(
+                "FDN2183", "callback call is only available inside a task", span)
+        } else {
+            if !semanticTaskWaitRootMatches(&analyzer, expression) {
+                analyzer.diagnostics.reportError(
+                    "FDN2168",
+                    "callback call must be a standalone task binding or discard",
+                    span
+                )
+            } else {
+                var storages = semanticSuspendingArgumentStorages(
+                    &analyzer,
+                    &source,
+                    &signature,
+                    &typeArguments,
+                    comparable,
+                    "$callbackArgument",
+                    true,
+                    span
+                )
+                const suffix = format.U64(analyzer.state.callbackStorage)
+                var callbackResult = i32SemanticType()
+                const resultStorage = addSemanticLocalToFunction(
+                    &analyzer,
+                    &source,
+                    "$callbackResult" + suffix,
+                    $callbackResult,
+                    false,
+                    span
+                )
+                analyzer.state.callbackStorage += 1
+                var callbackTarget Option<callbackCallTarget> =
+                    .Some(callbackCallTarget {
+                    function = function
+                    argumentStorages = storages
+                    resultStorage = resultStorage
+                })
+                setArenaValue<Option<callbackCallTarget>>(
+                    &analyzer.model.callbackCallTargets,
+                    expression,
+                    $callbackTarget
+                )
+            }
+        }
+    }
+    if semanticFunctionTypeParameterCount(
+        &source, analyzer.state.currentFunction) != 0 &&
+        typeParameterCount != 0 {
+        discard analyzer.state.genericCalls.add(genericCall {
+            from = analyzer.state.currentFunction
+            to = function
+            arguments = copySemanticTypeArena(&typeArguments)
+            span = span
+        })
+    }
+    result
+}
+
+fn analyzeSemanticFunctionValueCall(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    local u64,
+    &arguments arena<u64>,
+    &explicitTypes arena<semanticType>,
+    callee String,
+    span sourceSpan
+) semanticType {
+    var functionType = semanticLocalType(&analyzer, local)
+    if (functionType.kind.Matches("View") || functionType.kind.Matches("Edit")) &&
+        functionType.arguments.len() == 1 {
+        functionType = semanticTypeArgument(&functionType, 0)
+    }
+    if !functionType.kind.Matches("Function") || functionType.arguments.len() == 0 {
+        analyzer.diagnostics.reportError(
+            "FDN2128", callee + " is not callable", span)
+        return invalidSemanticType()
+    }
+    if explicitTypes.len() != 0 {
+        analyzer.diagnostics.reportError(
+            "FDN2043", "function value call does not accept type arguments", span)
+    }
+    const parameterCount = functionType.arguments.len() - 1
+    if arguments.len() != parameterCount {
+        analyzer.diagnostics.reportError(
+            "FDN2010", "wrong argument count for " + callee, span)
+    }
+    var borrows = newArena<Option<semanticType>>()
+    var conversions = newArena<Option<contractConversion>>()
+    var parameters = newArena<u64>()
+    var index u64 = 0
+    while index < arguments.len() {
+        var expected = semanticExpected {
+            present = false type = invalidSemanticType()
+        }
+        if index < parameterCount {
+            expected = semanticExpected {
+                present = true
+                type = semanticTypeArgument(&functionType, index + 1)
+            }
+        }
+        const mode = semanticModeFromFunctionType(
+            &analyzer, &source, &expected.type)
+        var analysis = semanticAnalyzeCallArgument(
+            &analyzer,
+            &source,
+            semanticArgumentID(&arguments, index),
+            &expected,
+            mode,
+            span
+        )
+        var actual = replace analysis.type with invalidSemanticType()
+        var implicitBorrow = replace analysis.implicitBorrow with .None
+        discard borrows.add($implicitBorrow)
+        var conversion Option<contractConversion> = .None
+        if expected.present {
+            match semanticContractConversion(
+                &analyzer, &source, &expected.type, &actual) {
+                None: requireSameSemanticType(
+                    &analyzer,
+                    &source,
+                    &expected.type,
+                    &actual,
+                    span,
+                    "function value argument"
+                )
+                Some(value): { conversion = .Some(value) }
+            }
+        }
+        discard conversions.add($conversion)
+        discard parameters.add(index)
+        index += 1
+    }
+    var target = newCallTarget(.FunctionValue)
+    target.local = local
+    target.argumentBorrows = borrows
+    target.argumentConversions = conversions
+    target.argumentParameters = parameters
+    setSemanticCallTarget(&analyzer, expression, $target)
+    semanticTypeArgument(&functionType, 0)
+}
+
+fn semanticModeFromFunctionType(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &type semanticType
+) parameterMode {
+    if type.kind.Matches("View") return .Read
+    if type.kind.Matches("Edit") return .Edit
+    if isCopySemanticParameterType(&analyzer, &source, &type) return .Read
+    .Transfer
+}
+
+fn analyzeSemanticBuiltinCall(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    callee String,
+    &arguments arena<u64>,
+    &explicitTypes arena<semanticType>,
+    span sourceSpan
+) semanticType {
+    var types = newArena<semanticType>()
+    var index u64 = 0
+    while index < arguments.len() {
+        const argument = semanticArgumentID(&arguments, index)
+        var expected = absentSemanticType()
+        if (callee == "print" || callee == "panic") && index == 0 {
+            var stringType = stringSemanticType()
+            expected = expectedSemanticType(&stringType)
+        }
+        if callee == "channel" && index == 0 {
+            var capacity = u64SemanticType()
+            expected = expectedSemanticType(&capacity)
+        }
+        discard types.add(analyzeSemanticExpression(
+                &analyzer, &source, argument, $expected, .Inspect))
+        index += 1
+    }
+    if callee == "print" || callee == "panic" {
+        if explicitTypes.len() != 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2043", callee + " does not accept type arguments", span)
+        }
+        if types.len() != 1 {
+            analyzer.diagnostics.reportError(
+                "FDN2010", callee + " expects one argument", span)
+        } else {
+            var expected = stringSemanticType()
+            var actual = match types.take(0) {
+                None: panic("builtin argument type slot is empty")
+                Some(actual): actual
+            }
+            requireSameSemanticType(
+                &analyzer, &source, &expected, &actual, span, callee + " argument")
+            types.restore(0, $actual)
+        }
+        var target = newCallTarget(.Print if callee == "print" else .Panic)
+        setSemanticCallTarget(&analyzer, expression, $target)
+        if callee == "panic" return neverSemanticType()
+        return voidSemanticType()
+    }
+    if callee == "len" {
+        if explicitTypes.len() != 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2043", "len does not accept type arguments", span)
+        }
+        if types.len() != 1 {
+            analyzer.diagnostics.reportError(
+                "FDN2010", "len expects one argument", span)
+        } else {
+            var sequence = match types.take(0) {
+                None: panic("builtin argument type slot is empty")
+                Some(sequence): sequence
+            }
+            if (sequence.kind.Matches("View") || sequence.kind.Matches("Edit")) &&
+                sequence.arguments.len() == 1 {
+                sequence = semanticTypeArgument(&sequence, 0)
+            }
+            if !sequence.kind.Matches("StringValue") && !sequence.kind.Matches("Array") &&
+                !sequence.kind.Matches("Slice") {
+                analyzer.diagnostics.reportError(
+                    "FDN2011", "len requires a String, array, or slice", span)
+            }
+            types.restore(0, $sequence)
+        }
+        var target = newCallTarget(.Len)
+        setSemanticCallTarget(&analyzer, expression, $target)
+        return usizeSemanticType()
+    }
+    if callee == "channel" {
+        if explicitTypes.len() != 1 {
+            analyzer.diagnostics.reportError(
+                "FDN2043", "channel expects one type argument", span)
+        }
+        if types.len() != 1 {
+            analyzer.diagnostics.reportError(
+                "FDN2010", "channel expects one capacity argument", span)
+        }
+        var payload = invalidSemanticType()
+        if explicitTypes.len() == 1 {
+            var selected = match explicitTypes.take(0) {
+                None: panic("explicit type slot is empty")
+                Some(selected): selected
+            }
+            payload = copySemanticType(&selected)
+            explicitTypes.restore(0, $selected)
+        }
+        if containsSemanticBorrow(&payload) {
+            analyzer.diagnostics.reportError(
+                "FDN2165", "channel payload cannot contain a borrow", span)
+        }
+        var target = newCallTarget(.Channel)
+        discard target.typeArguments.add(copySemanticType(&payload))
+        setSemanticCallTarget(&analyzer, expression, $target)
+        return unarySemanticType(.Channel, $payload)
+    }
+    if callee == "null" {
+        var result = invalidSemanticType()
+        if explicitTypes.len() == 1 {
+            var type = match explicitTypes.take(0) {
+                None: panic("explicit type slot is empty")
+                Some(type): type
+            }
+            result = copySemanticType(&type)
+            explicitTypes.restore(0, $type)
+        } else {
+            analyzer.diagnostics.reportError(
+                "FDN2214", "null expects one raw pointer type argument", span)
+        }
+        if arguments.len() != 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2010", "null does not accept value arguments", span)
+        }
+        if analyzer.state.unsafeDepth == 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2213", "raw pointer construction requires an unsafe block", span)
+        }
+        var target = newCallTarget(.Null)
+        target.typeArguments = copySemanticTypeArena(&explicitTypes)
+        setSemanticCallTarget(&analyzer, expression, $target)
+        return result
+    }
+    if callee == "isNull" {
+        if explicitTypes.len() != 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2043", "isNull does not accept type arguments", span)
+        }
+        if types.len() != 1 {
+            analyzer.diagnostics.reportError(
+                "FDN2010", "isNull expects one argument", span)
+        }
+        var target = newCallTarget(.IsNull)
+        setSemanticCallTarget(&analyzer, expression, $target)
+        return boolSemanticType()
+    }
+    if callee == "cString" {
+        if types.len() != 1 {
+            analyzer.diagnostics.reportError(
+                "FDN2010", "cString expects one string literal", span)
+        }
+        if analyzer.state.unsafeDepth == 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2213", "cString requires an unsafe block", span)
+        }
+        var target = newCallTarget(.CString)
+        setSemanticCallTarget(&analyzer, expression, $target)
+        var byte = newSemanticType(.U8)
+        return unarySemanticType(.RawConst, $byte)
+    }
+    if callee == "sizeOf" {
+        if explicitTypes.len() != 1 {
+            analyzer.diagnostics.reportError(
+                "FDN2043", "sizeOf expects one type argument", span)
+        }
+        if arguments.len() != 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2010", "sizeOf does not accept value arguments", span)
+        }
+        var target = newCallTarget(.SizeOf)
+        target.typeArguments = copySemanticTypeArena(&explicitTypes)
+        setSemanticCallTarget(&analyzer, expression, $target)
+        return usizeSemanticType()
+    }
+    if callee == "pointerCast" {
+        if explicitTypes.len() != 1 || types.len() != 1 {
+            analyzer.diagnostics.reportError(
+                "FDN2214", "pointerCast expects one type and one value", span)
+        }
+        var destination = invalidSemanticType()
+        if explicitTypes.len() == 1 {
+            var value = match explicitTypes.take(0) {
+                None: panic("explicit type slot is empty")
+                Some(value): value
+            }
+            destination = copySemanticType(&value)
+            explicitTypes.restore(0, $value)
+        }
+        if analyzer.state.unsafeDepth == 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2213", "pointerCast requires an unsafe block", span)
+        }
+        var target = newCallTarget(.PointerCast)
+        target.typeArguments = copySemanticTypeArena(&explicitTypes)
+        setSemanticCallTarget(&analyzer, expression, $target)
+        return destination
+    }
+    invalidSemanticType()
+}

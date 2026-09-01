@@ -1,0 +1,839 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+struct semanticStateFunctionInfo {
+    transition bool
+    timeoutAccessor bool
+    owner String
+    span sourceSpan
+    returnSpan sourceSpan
+    typeParameterCount u64
+    transitionSourceCount u64
+    destinationVariant u64
+    destinationParameter Option<u64>
+    timeoutSourceCount u64
+    timeoutNanoseconds u64
+}
+
+struct semanticWorkflowSourceStep {
+    name String
+    function String
+    span sourceSpan
+    functionSpan sourceSpan
+    attempts u64
+    compensation Option<String>
+    compensationSpan Option<sourceSpan>
+}
+
+struct semanticWorkflowSource {
+    present bool
+    kind workflowKind
+    successType typeSyntax
+    errorType typeSyntax
+    steps own arena<semanticWorkflowSourceStep>
+}
+
+struct semanticWorkflowCallableInfo {
+    receiver bool
+    taskFunction bool
+    blockingCall bool
+    callbackCall bool
+    testFunction bool
+    cFunction bool
+    parameterCount u64
+    firstMode parameterMode
+    firstSpan sourceSpan
+    returnSpan sourceSpan
+    typeParameters own collections.List<String>
+}
+
+struct semanticWorkflowTarget {
+    present bool
+    function u64
+    typeArguments own arena<semanticType>
+    successType semanticType
+}
+
+fn emptySemanticTypeSyntax() typeSyntax {
+    typeSyntax {
+        name = ""
+        arguments = collections.NewList<typeSyntax>()
+        span = sourceSpan {
+            offset = 0 length = 0 line = 0 column = 0 source = 0
+        }
+        arrayLength = 0
+    }
+}
+
+fn semanticStateFunctionInfoAt(
+    &source program,
+    function u64
+) semanticStateFunctionInfo {
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    var result = semanticStateFunctionInfo {
+        transition = false
+        timeoutAccessor = false
+        owner = text.Copy(declaration.ownerType)
+        span = declaration.span
+        returnSpan = declaration.returnType.span
+        typeParameterCount = listLength(&declaration.typeParameters)
+        transitionSourceCount = 0
+        destinationVariant = 0
+        destinationParameter = .None
+        timeoutSourceCount = 0
+        timeoutNanoseconds = 0
+    }
+    const selectedTransition = replace declaration.stateTransition with .None
+    match selectedTransition {
+        None: { discard replace declaration.stateTransition with .None }
+        Some(transition): {
+            var current = transition
+            result.transition = true
+            result.transitionSourceCount = listLength(&current.sourceVariants)
+            result.destinationVariant = current.destinationVariant
+            result.destinationParameter = semanticOptionalID(
+                current.destinationParameter)
+            declaration.stateTransition = .Some(current)
+        }
+    }
+    const selectedTimeout = replace declaration.stateTimeout with .None
+    match selectedTimeout {
+        None: { discard replace declaration.stateTimeout with .None }
+        Some(timeoutValue): {
+            var current = timeoutValue
+            result.timeoutAccessor = true
+            result.timeoutSourceCount = listLength(&current.sourceVariants)
+            result.timeoutNanoseconds = current.nanoseconds
+            declaration.stateTimeout = .Some(current)
+        }
+    }
+    source.functions.restore(function, $declaration)
+    result
+}
+
+fn semanticWorkflowSourceAt(
+    &source program,
+    function u64
+) semanticWorkflowSource {
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    var result = semanticWorkflowSource {
+        present = false
+        kind = .Pipeline
+        successType = emptySemanticTypeSyntax()
+        errorType = emptySemanticTypeSyntax()
+        steps = newArena<semanticWorkflowSourceStep>()
+    }
+    const selected = replace declaration.workflow with .None
+    match selected {
+        None: { discard replace declaration.workflow with .None }
+        Some(workflowValue): {
+            var current = workflowValue
+            result.present = true
+            result.kind = current.kind
+            result.successType = copyTypeSyntax(&current.successType)
+            result.errorType = copyTypeSyntax(&current.errorType)
+            var pending = collections.NewList<workflowStep>()
+            while !current.steps.IsEmpty() {
+                var step = match current.steps.PopFront() {
+                    None: panic("workflow step list invariant failed")
+                    Some(step): step
+                }
+                discard result.steps.add(semanticWorkflowSourceStep {
+                    name = text.Copy(step.name)
+                    function = text.Copy(step.function)
+                    span = step.span
+                    functionSpan = step.functionSpan
+                    attempts = step.attempts
+                    compensation = semanticOptionalStringCopy(
+                        step.compensation)
+                    compensationSpan = match step.compensationSpan {
+                        None: Option<sourceSpan>.None
+                        Some(value): Option<sourceSpan>.Some(value)
+                    }
+                })
+                pending.PushFront($step)
+            }
+            while !pending.IsEmpty() {
+                const step = match pending.PopFront() {
+                    None: panic("workflow step restore invariant failed")
+                    Some(step): step
+                }
+                current.steps.PushFront($step)
+            }
+            declaration.workflow = .Some(current)
+        }
+    }
+    source.functions.restore(function, $declaration)
+    result
+}
+
+fn semanticFunctionParameterSpan(
+    &source program,
+    function u64,
+    target u64
+) sourceSpan {
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    var pending = collections.NewList<parameter>()
+    var index u64 = 0
+    var result = declaration.span
+    while !declaration.parameters.IsEmpty() {
+        const parameter = match declaration.parameters.PopFront() {
+            None: panic("parameter list invariant failed")
+            Some(parameter): parameter
+        }
+        if index == target { result = parameter.span }
+        pending.PushFront($parameter)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const parameter = match pending.PopFront() {
+            None: panic("parameter restore invariant failed")
+            Some(parameter): parameter
+        }
+        declaration.parameters.PushFront($parameter)
+    }
+    source.functions.restore(function, $declaration)
+    result
+}
+
+fn semanticWorkflowCallableInfoAt(
+    &source program,
+    function u64
+) semanticWorkflowCallableInfo {
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    var firstMode = parameterMode.TypeEncoded
+    var firstSpan = declaration.span
+    var pending = collections.NewList<parameter>()
+    var index u64 = 0
+    while !declaration.parameters.IsEmpty() {
+        const parameter = match declaration.parameters.PopFront() {
+            None: panic("parameter list invariant failed")
+            Some(parameter): parameter
+        }
+        if index == 0 {
+            firstMode = parameter.mode
+            firstSpan = parameter.span
+        }
+        pending.PushFront($parameter)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const parameter = match pending.PopFront() {
+            None: panic("parameter restore invariant failed")
+            Some(parameter): parameter
+        }
+        declaration.parameters.PushFront($parameter)
+    }
+    const testFunction = match replace declaration.testName with .None {
+        None: false
+        Some(value): { declaration.testName = .Some(value) true }
+    }
+    const cFunction = match replace declaration.cSymbol with .None {
+        None: false
+        Some(value): { declaration.cSymbol = .Some(value) true }
+    }
+    const result = semanticWorkflowCallableInfo {
+        receiver = semanticReceiverHasValue(declaration.receiver)
+        taskFunction = declaration.taskFunction
+        blockingCall = declaration.blocking
+        callbackCall = declaration.callback
+        testFunction = testFunction
+        cFunction = cFunction
+        parameterCount = index
+        firstMode = firstMode
+        firstSpan = firstSpan
+        returnSpan = declaration.returnType.span
+        typeParameters = copyStringList(&declaration.typeParameters)
+    }
+    source.functions.restore(function, $declaration)
+    result
+}
+
+fn semanticWorkflowFailureDetails(
+    &analyzer semanticAnalyzer,
+    &failure semanticType
+) Option<semanticType> {
+    if !failure.kind.Matches("EnumValue") ||
+        failure.declaration >= analyzer.model.enums.len() {
+        return .None
+    }
+    var enumeration = match analyzer.model.enums.take(failure.declaration) {
+        None: panic("semantic enum slot is empty")
+        Some(enumeration): enumeration
+    }
+    if enumeration.payloadTypes.len() != 2 {
+        analyzer.model.enums.restore(failure.declaration, $enumeration)
+        return .None
+    }
+    const selected = match enumeration.payloadTypes.take(1) {
+        None: panic("saga failure payload slot is empty")
+        Some(selected): selected
+    }
+    const result = match selected {
+        None: {
+            var missing Option<semanticType> = .None
+            enumeration.payloadTypes.restore(1, $missing)
+            Option<semanticType>.None
+        }
+        Some(payload): {
+            var current = payload
+            var resolved = substituteSemanticType(
+                &current, &failure.arguments)
+            var restored Option<semanticType> = .Some(current)
+            enumeration.payloadTypes.restore(1, $restored)
+            Option<semanticType>.Some(resolved)
+        }
+    }
+    analyzer.model.enums.restore(failure.declaration, $enumeration)
+    result
+}
+
+fn analyzeSemanticWorkflowTarget(
+    &analyzer semanticAnalyzer,
+    &source program,
+    name String,
+    &input semanticType,
+    &errorType semanticType,
+    expectedPresent bool,
+    &expectedSuccess semanticType,
+    span sourceSpan,
+    role String
+) semanticWorkflowTarget {
+    const selected = semanticCallFunction(&analyzer, &source, name)
+    const function = match selected {
+        None: {
+            analyzer.diagnostics.reportError(
+                "FDN2221", "unknown " + role + " " + name, span)
+            return semanticWorkflowTarget {
+                present = false
+                function = 0
+                typeArguments = newArena<semanticType>()
+                successType = invalidSemanticType()
+            }
+        }
+        Some(value): value
+    }
+    var callable = semanticWorkflowCallableInfoAt(&source, function)
+    if callable.receiver || callable.taskFunction || callable.blockingCall ||
+        callable.callbackCall || callable.testFunction || callable.cFunction {
+        analyzer.diagnostics.reportError(
+            "FDN2222", role + " must be a synchronous Foundation function", span)
+    }
+    var signature = semanticFunctionSignatureAt(&analyzer, function)
+    if callable.parameterCount != 1 || signature.parameters.len() != 1 {
+        analyzer.diagnostics.reportError(
+            "FDN2223", role + " must accept exactly one input", span)
+        return semanticWorkflowTarget {
+            present = false
+            function = function
+            typeArguments = newArena<semanticType>()
+            successType = invalidSemanticType()
+        }
+    }
+    if !callable.firstMode.Matches("Read") {
+        analyzer.diagnostics.reportError(
+            "FDN2224", role + " input must use read mode", callable.firstSpan)
+    }
+    var parameter = semanticTypeArenaAt(&signature.parameters, 0)
+    if parameter.kind.Matches("View") && parameter.arguments.len() == 1 {
+        parameter = semanticTypeArgument(&parameter, 0)
+    }
+    if !isSemanticResult(&source, &signature.returnType) ||
+        signature.returnType.arguments.len() != 2 {
+        analyzer.diagnostics.reportError(
+            "FDN2225", role + " must return Result<Value, Error>", callable.returnSpan)
+        return semanticWorkflowTarget {
+            present = false
+            function = function
+            typeArguments = newArena<semanticType>()
+            successType = invalidSemanticType()
+        }
+    }
+    const parameterCount = semanticFunctionTypeParameterCount(&source, function)
+    var inferred = newArena<Option<semanticType>>()
+    var index u64 = 0
+    while index < parameterCount {
+        var missing Option<semanticType> = .None
+        discard inferred.add($missing)
+        index += 1
+    }
+    inferSemanticType(
+        &analyzer, &source, &parameter, &input, &inferred, span, role)
+    var returnError = semanticTypeArgument(&signature.returnType, 1)
+    inferSemanticType(
+        &analyzer, &source, &returnError, &errorType, &inferred, span, role)
+    var returnSuccess = semanticTypeArgument(&signature.returnType, 0)
+    if expectedPresent {
+        inferSemanticType(
+            &analyzer,
+            &source,
+            &returnSuccess,
+            &expectedSuccess,
+            &inferred,
+            span,
+            role
+        )
+    }
+    var typeArguments = completeSemanticInference(
+        &analyzer,
+        &inferred,
+        &callable.typeParameters,
+        span,
+        name
+    )
+    var resolvedParameter = substituteSemanticType(
+        &parameter, &typeArguments)
+    requireSameSemanticType(
+        &analyzer, &source, &resolvedParameter, &input, span, role)
+    var resolvedError = substituteSemanticType(
+        &returnError, &typeArguments)
+    requireSameSemanticType(
+        &analyzer, &source, &errorType, &resolvedError, span, role)
+    var success = substituteSemanticType(
+        &returnSuccess, &typeArguments)
+    if expectedPresent {
+        requireSameSemanticType(
+            &analyzer,
+            &source,
+            &expectedSuccess,
+            &success,
+            span,
+            role
+        )
+    }
+    if semanticFunctionTypeParameterCount(
+        &source, analyzer.state.currentFunction) != 0 && parameterCount != 0 {
+        discard analyzer.state.genericCalls.add(genericCall {
+            from = analyzer.state.currentFunction
+            to = function
+            arguments = copySemanticTypeArena(&typeArguments)
+            span = span
+        })
+    }
+    semanticWorkflowTarget {
+        present = true
+        function = function
+        typeArguments = typeArguments
+        successType = success
+    }
+}
+
+fn storeSemanticWorkflow(
+    &analyzer semanticAnalyzer,
+    function u64,
+    $workflowValue semanticWorkflowFunction
+) void {
+    var semantic = match analyzer.model.functions.take(function) {
+        None: panic("semantic function slot is empty")
+        Some(semantic): semantic
+    }
+    semantic.workflow = .Some(workflowValue)
+    analyzer.model.functions.restore(function, $semantic)
+}
+
+fn analyzeSemanticWorkflow(
+    &analyzer semanticAnalyzer,
+    &source program,
+    function u64,
+    &workflowSource semanticWorkflowSource,
+    functionSpan sourceSpan,
+    returnSpan sourceSpan
+) void {
+    var successType = copyTypeSyntax(&workflowSource.successType)
+    var errorSyntax = copyTypeSyntax(&workflowSource.errorType)
+    var workflowValue = semanticWorkflowFunction {
+        kind = workflowSource.kind
+        inputType = invalidSemanticType()
+        successType = resolveSemanticType(&analyzer, &source, &successType)
+        errorType = resolveSemanticType(&analyzer, &source, &errorSyntax)
+        failureType = invalidSemanticType()
+        failureDetailsType = invalidSemanticType()
+        steps = newArena<semanticWorkflowStep>()
+    }
+    const parameterCount = semanticFunctionParameterCount(&source, function)
+    var semantic = match analyzer.model.functions.take(function) {
+        None: panic("semantic function slot is empty")
+        Some(semantic): semantic
+    }
+    const semanticParameterCount = semantic.parameterTypes.len()
+    var returnType = copySemanticType(&semantic.returnType)
+    var input = invalidSemanticType()
+    if semanticParameterCount != 0 {
+        input = semanticTypeArenaAt(&semantic.parameterTypes, 0)
+    }
+    analyzer.model.functions.restore(function, $semantic)
+    if parameterCount != 1 || semanticParameterCount != 1 {
+        analyzer.diagnostics.reportError(
+            "FDN2226", "workflow requires exactly one input", functionSpan)
+        storeSemanticWorkflow(&analyzer, function, $workflowValue)
+        return
+    }
+    const parameterInfo = semanticFunctionParameterInfoAt(
+        &source, function, 0)
+    if !parameterInfo.mode.Matches("Read") {
+        analyzer.diagnostics.reportError(
+            "FDN2224",
+            "workflow input must use read mode",
+            semanticFunctionParameterSpan(&source, function, 0)
+        )
+    }
+    if input.kind.Matches("View") && input.arguments.len() == 1 {
+        input = semanticTypeArgument(&input, 0)
+    }
+    workflowValue.inputType = copySemanticType(&input)
+    if !isSemanticResult(&source, &returnType) ||
+        returnType.arguments.len() != 2 {
+        analyzer.diagnostics.reportError(
+            "FDN2227", "workflow callable type must be a Result", returnSpan)
+    } else {
+        var returnSuccess = semanticTypeArgument(&returnType, 0)
+        requireSameSemanticType(
+            &analyzer,
+            &source,
+            &workflowValue.successType,
+            &returnSuccess,
+            functionSpan,
+            "workflow output"
+        )
+        workflowValue.failureType = semanticTypeArgument(&returnType, 1)
+        if workflowSource.kind.Matches("Pipeline") {
+            var workflowError = copySemanticType(&workflowValue.errorType)
+            var workflowFailure = copySemanticType(&workflowValue.failureType)
+            requireSameSemanticType(
+                &analyzer,
+                &source,
+                &workflowError,
+                &workflowFailure,
+                functionSpan,
+                "pipeline error"
+            )
+        } else {
+            var workflowFailure = copySemanticType(&workflowValue.failureType)
+            match semanticWorkflowFailureDetails(
+                &analyzer, &workflowFailure) {
+                None: analyzer.diagnostics.reportError(
+                    "FDN2227", "saga failure type is invalid", functionSpan)
+                Some(details): { workflowValue.failureDetailsType = details }
+            }
+        }
+    }
+    var current = copySemanticType(&input)
+    var index u64 = 0
+    while index < workflowSource.steps.len() {
+        var step = match workflowSource.steps.take(index) {
+            None: panic("workflow source step slot is empty")
+            Some(step): step
+        }
+        const last = index + 1 == workflowSource.steps.len()
+        var expectedSuccess = voidSemanticType()
+        var expectedPresent = workflowSource.kind.Matches("Saga")
+        if expectedPresent && last {
+            expectedSuccess = copySemanticType(&workflowValue.successType)
+        }
+        var stepInput = copySemanticType(&input)
+        if workflowSource.kind.Matches("Pipeline") {
+            stepInput = copySemanticType(&current)
+        }
+        var workflowError = copySemanticType(&workflowValue.errorType)
+        var target = analyzeSemanticWorkflowTarget(
+            &analyzer,
+            &source,
+            step.function,
+            &stepInput,
+            &workflowError,
+            expectedPresent,
+            &expectedSuccess,
+            step.functionSpan,
+            "workflow step"
+        )
+        var lowered = semanticWorkflowStep {
+            name = text.Copy(step.name)
+            function = target.function
+            typeArguments = copySemanticTypeArena(&target.typeArguments)
+            attempts = step.attempts
+            compensation = .None
+            compensationTypeArguments = newArena<semanticType>()
+        }
+        if target.present && workflowSource.kind.Matches("Pipeline") {
+            current = copySemanticType(&target.successType)
+        }
+        const selectedCompensation = semanticOptionalStringCopy(
+            step.compensation)
+        match selectedCompensation {
+            None: {}
+            Some(compensationName): {
+                const compensationSpan = match step.compensationSpan {
+                    None: step.span
+                    Some(value): value
+                }
+                var voidSuccess = voidSemanticType()
+                var compensation = analyzeSemanticWorkflowTarget(
+                    &analyzer,
+                    &source,
+                    compensationName,
+                    &input,
+                    &workflowValue.errorType,
+                    true,
+                    &voidSuccess,
+                    compensationSpan,
+                    "saga compensation"
+                )
+                if compensation.present {
+                    lowered.compensation = .Some(compensation.function)
+                    lowered.compensationTypeArguments =
+                        copySemanticTypeArena(&compensation.typeArguments)
+                }
+            }
+        }
+        discard workflowValue.steps.add($lowered)
+        workflowSource.steps.restore(index, $step)
+        index += 1
+    }
+    if workflowSource.kind.Matches("Pipeline") {
+        requireSameSemanticType(
+            &analyzer,
+            &source,
+            &workflowValue.successType,
+            &current,
+            functionSpan,
+            "pipeline output"
+        )
+    }
+    storeSemanticWorkflow(&analyzer, function, $workflowValue)
+}
+
+fn analyzeSemanticSpecialFunction(
+    &analyzer semanticAnalyzer,
+    &source program,
+    function u64
+) bool {
+    const info = semanticStateFunctionInfoAt(&source, function)
+    if info.transition {
+        const owner = findSemanticSymbol(&analyzer.state.enums, info.owner)
+        const enumID = match owner {
+            None: {
+                analyzer.diagnostics.reportError(
+                    "FDN2196", "state transition owner is not an enum", info.span)
+                return true
+            }
+            Some(value): value
+        }
+        var machine = declaredSemanticType(.EnumValue, enumID)
+        var parameter u64 = 0
+        while parameter < info.typeParameterCount {
+            discard machine.arguments.add(
+                declaredSemanticType(.Parameter, parameter))
+            parameter += 1
+        }
+        var receiver = unarySemanticType(
+            .Edit, copySemanticType(&machine))
+        var semantic = match analyzer.model.functions.take(function) {
+            None: panic("semantic function slot is empty")
+            Some(semantic): semantic
+        }
+        const parameterCount = semantic.parameterTypes.len()
+        var returnType = copySemanticType(&semantic.returnType)
+        if parameterCount == 0 {
+            analyzer.model.functions.restore(function, $semantic)
+            analyzer.diagnostics.reportError(
+                "FDN2196", "state transition requires an edit receiver", info.span)
+            return true
+        }
+        var actualReceiver = semanticTypeArenaAt(&semantic.parameterTypes, 0)
+        requireSameSemanticType(
+            &analyzer,
+            &source,
+            &receiver,
+            &actualReceiver,
+            info.span,
+            "state transition receiver"
+        )
+        if info.transitionSourceCount == 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2197", "state transition requires a valid source state", info.span)
+        }
+        var enumeration = match analyzer.model.enums.take(enumID) {
+            None: panic("semantic enum slot is empty")
+            Some(enumeration): enumeration
+        }
+        if info.destinationVariant >= enumeration.payloadTypes.len() {
+            analyzer.model.enums.restore(enumID, $enumeration)
+            analyzer.model.functions.restore(function, $semantic)
+            analyzer.diagnostics.reportError(
+                "FDN2198", "state transition destination is invalid", info.span)
+            return true
+        }
+        const selectedPayload = match enumeration.payloadTypes.take(
+            info.destinationVariant
+        ) {
+            None: panic("transition payload slot is empty")
+            Some(selected): selected
+        }
+        match selectedPayload {
+            None: {
+                var missing Option<semanticType> = .None
+                enumeration.payloadTypes.restore(
+                    info.destinationVariant, $missing)
+                match info.destinationParameter {
+                    None: {}
+                    Some(value): {
+                        discard value
+                        analyzer.diagnostics.reportError(
+                            "FDN2198",
+                            "unit state transition cannot store a payload",
+                            info.span
+                        )
+                    }
+                }
+            }
+            Some(payload): {
+                var current = payload
+                match info.destinationParameter {
+                    None: analyzer.diagnostics.reportError(
+                        "FDN2198",
+                        "state transition destination payload is missing",
+                        info.span
+                    )
+                    Some(destination): {
+                        if destination >= parameterCount {
+                            analyzer.diagnostics.reportError(
+                                "FDN2198",
+                                "state transition destination payload is missing",
+                                info.span
+                            )
+                        } else {
+                            var actual = semanticTypeArenaAt(
+                                &semantic.parameterTypes, destination)
+                            const parameterSpan = semanticFunctionParameterSpan(
+                                &source, function, destination)
+                            requireSameSemanticType(
+                                &analyzer,
+                                &source,
+                                &current,
+                                &actual,
+                                parameterSpan,
+                                "state transition destination payload"
+                            )
+                        }
+                    }
+                }
+                var restored Option<semanticType> = .Some(current)
+                enumeration.payloadTypes.restore(
+                    info.destinationVariant, $restored)
+            }
+        }
+        analyzer.model.enums.restore(enumID, $enumeration)
+        analyzer.model.functions.restore(function, $semantic)
+        if !isSemanticResult(&source, &returnType) ||
+            returnType.arguments.len() != 2 ||
+            !semanticTypeArgument(&returnType, 0).kind.Matches("Void") {
+            analyzer.diagnostics.reportError(
+                "FDN2199",
+                "state transition must return Result<void, E>",
+                info.returnSpan
+            )
+        }
+        return true
+    }
+    if info.timeoutAccessor {
+        const owner = findSemanticSymbol(&analyzer.state.enums, info.owner)
+        var enumID u64 = 0
+        var validOwner = false
+        match owner {
+            None: {}
+            Some(value): {
+                enumID = value
+                if value < source.enums.len() {
+                    var declaration = match source.enums.take(value) {
+                        None: panic("enum slot is empty")
+                        Some(declaration): declaration
+                    }
+                    validOwner = declaration.stateMachine
+                    source.enums.restore(value, $declaration)
+                }
+            }
+        }
+        if !validOwner {
+            analyzer.diagnostics.reportError(
+                "FDN2230", "state timeout owner is not a state machine", info.span)
+            return true
+        }
+        var machine = declaredSemanticType(.EnumValue, enumID)
+        var parameter u64 = 0
+        while parameter < info.typeParameterCount {
+            discard machine.arguments.add(
+                declaredSemanticType(.Parameter, parameter))
+            parameter += 1
+        }
+        var readable = copySemanticType(&machine)
+        if !isCopySemanticParameterType(&analyzer, &source, &readable) {
+            readable = unarySemanticType(.View, $readable)
+        }
+        var semantic = match analyzer.model.functions.take(function) {
+            None: panic("semantic function slot is empty")
+            Some(semantic): semantic
+        }
+        const parameterCount = semantic.parameterTypes.len()
+        var returnType = copySemanticType(&semantic.returnType)
+        if parameterCount != 1 {
+            analyzer.diagnostics.reportError(
+                "FDN2231", "state timeout accessor requires one state", info.span)
+        } else {
+            var actual = semanticTypeArenaAt(&semantic.parameterTypes, 0)
+            requireSameSemanticType(
+                &analyzer,
+                &source,
+                &readable,
+                &actual,
+                info.span,
+                "state timeout accessor state"
+            )
+        }
+        analyzer.model.functions.restore(function, $semantic)
+        var validReturn = isSemanticOption(&source, &returnType) &&
+            returnType.arguments.len() == 1
+        if validReturn {
+            var payload = semanticTypeArgument(&returnType, 0)
+            validReturn = payload.kind.Matches("U64")
+        }
+        if !validReturn {
+            analyzer.diagnostics.reportError(
+                "FDN2232",
+                "state timeout accessor must return Option<u64>",
+                info.returnSpan
+            )
+        }
+        if info.timeoutSourceCount == 0 || info.timeoutNanoseconds == 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2233", "state timeout metadata is invalid", info.span)
+        }
+        return true
+    }
+    var workflowSource = semanticWorkflowSourceAt(&source, function)
+    if workflowSource.present {
+        analyzeSemanticWorkflow(
+            &analyzer,
+            &source,
+            function,
+            &workflowSource,
+            info.span,
+            info.returnSpan
+        )
+        return true
+    }
+    false
+}

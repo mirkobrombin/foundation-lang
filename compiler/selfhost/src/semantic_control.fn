@@ -1,0 +1,742 @@
+package foundation.compiler
+
+import std.collections
+import std.format
+
+fn analyzeSemanticIf(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &branch ifStatement,
+    span sourceSpan
+) bool {
+    var expected = boolSemanticType()
+    var condition = analyzeSemanticExpression(
+        &analyzer,
+        &source,
+        branch.condition,
+        expectedSemanticType(&expected),
+        .Inspect
+    )
+    requireSameSemanticType(
+        &analyzer, &source, &expected, &condition, span, "if condition")
+    const count = analyzer.state.moveStates.len()
+    var beforeOutstanding = semanticBoolPrefix(
+        &analyzer.state.resultOutstanding, count)
+    var beforeMoves = semanticMovePrefix(&analyzer.state.moveStates, count)
+    var beforeLoans = semanticLoanPrefix(&analyzer.state.loanStates, count)
+    const thenReturns = analyzeSemanticBlock(
+        &analyzer, &source, branch.thenBlock, true)
+    var thenOutstanding = semanticBoolPrefix(
+        &analyzer.state.resultOutstanding, count)
+    var thenMoves = semanticMovePrefix(&analyzer.state.moveStates, count)
+    var thenLoans = semanticLoanPrefix(&analyzer.state.loanStates, count)
+    restoreSemanticBools(
+        &analyzer.state.resultOutstanding, &beforeOutstanding)
+    restoreSemanticMoves(&analyzer.state.moveStates, &beforeMoves)
+    restoreSemanticLoans(&analyzer.state.loanStates, &beforeLoans)
+    var elseReturns = false
+    match branch.elseBlock {
+        None: {}
+        Some(block): {
+            elseReturns = analyzeSemanticBlock(
+                &analyzer, &source, block, true)
+        }
+    }
+    var elseOutstanding = semanticBoolPrefix(
+        &analyzer.state.resultOutstanding, count)
+    var elseMoves = semanticMovePrefix(&analyzer.state.moveStates, count)
+    var elseLoans = semanticLoanPrefix(&analyzer.state.loanStates, count)
+    var mergedOutstanding = mergeSemanticOutstanding(
+        &thenOutstanding,
+        thenReturns,
+        &elseOutstanding,
+        elseReturns
+    )
+    var mergedMoves = mergeSemanticMoves(
+        &beforeMoves,
+        &thenMoves,
+        thenReturns,
+        &elseMoves,
+        elseReturns
+    )
+    var mergedLoans = mergeSemanticLoans(
+        &beforeLoans,
+        &thenLoans,
+        thenReturns,
+        &elseLoans,
+        elseReturns
+    )
+    restoreSemanticBools(
+        &analyzer.state.resultOutstanding, &mergedOutstanding)
+    restoreSemanticMoves(&analyzer.state.moveStates, &mergedMoves)
+    restoreSemanticLoans(&analyzer.state.loanStates, &mergedLoans)
+    thenReturns && elseReturns
+}
+
+fn analyzeSemanticWhile(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &loop whileStatement,
+    span sourceSpan
+) bool {
+    const count = analyzer.state.moveStates.len()
+    var movesBeforeCondition = semanticMovePrefix(
+        &analyzer.state.moveStates, count)
+    var expected = boolSemanticType()
+    var condition = analyzeSemanticExpression(
+        &analyzer,
+        &source,
+        loop.condition,
+        expectedSemanticType(&expected),
+        .Inspect
+    )
+    requireSameSemanticType(
+        &analyzer, &source, &expected, &condition, span, "while condition")
+    const outstandingCount = analyzer.state.resultOutstanding.len()
+    var beforeOutstanding = semanticBoolPrefix(
+        &analyzer.state.resultOutstanding, outstandingCount)
+    var beforeMoves = semanticMovePrefix(&analyzer.state.moveStates, count)
+    const jumpsBefore = analyzer.state.loopJumps
+    const loopScopeBase = analyzer.state.scopes.len()
+    discard analyzer.state.loopScopeBases.add(loopScopeBase)
+    const bodyReturns = analyzeSemanticBlock(
+        &analyzer, &source, loop.body, true)
+    const loopDepth = analyzer.state.loopScopeBases.len()
+    analyzer.state.loopScopeBases.truncate(loopDepth - 1)
+    const hasJump = analyzer.state.loopJumps != jumpsBefore
+    const branchOutstandingCount = beforeOutstanding.len()
+    var bodyOutstanding = semanticBoolPrefix(
+        &analyzer.state.resultOutstanding, branchOutstandingCount)
+    var bodyMoves = semanticMovePrefix(&analyzer.state.moveStates, count)
+    var mergedOutstanding = newArena<bool>()
+    var index u64 = 0
+    while index < beforeOutstanding.len() {
+        discard mergedOutstanding.add(
+            semanticBoolAt(&beforeOutstanding, index) ||
+            semanticBoolAt(&bodyOutstanding, index))
+        index += 1
+    }
+    restoreSemanticBools(
+        &analyzer.state.resultOutstanding, &mergedOutstanding)
+    index = 0
+    while index < count {
+        const before = semanticMoveAt(&beforeMoves, index)
+        const after = semanticMoveAt(&bodyMoves, index)
+        if (!bodyReturns || hasJump) && !before.Matches(after.Name()) {
+            const localName = semanticLocalName(&analyzer, index)
+            analyzer.diagnostics.reportError(
+                "FDN2079",
+                "loop body cannot leave binding " + localName + " moved",
+                span
+            )
+            setSemanticMove(&analyzer.state.moveStates, index, .MaybeMoved)
+        } else {
+            setSemanticMove(&analyzer.state.moveStates, index, before)
+        }
+        index += 1
+    }
+    false
+}
+
+fn semanticLastLoopScope(&analyzer semanticAnalyzer) Option<u64> {
+    if analyzer.state.loopScopeBases.len() == 0 return .None
+    const index = analyzer.state.loopScopeBases.len() - 1
+    const value = match analyzer.state.loopScopeBases.take(index) {
+        None: panic("loop scope slot is empty")
+        Some(value): value
+    }
+    analyzer.state.loopScopeBases.restore(index, value)
+    .Some(value)
+}
+
+fn analyzeSemanticLoopJump(
+    &analyzer semanticAnalyzer,
+    &source program,
+    statement u64,
+    keyword String,
+    span sourceSpan
+) bool {
+    match semanticLastLoopScope(&analyzer) {
+        None: analyzer.diagnostics.reportError(
+            "FDN2200", keyword + " is only available inside a loop", span)
+        Some(scope): {
+            analyzer.state.loopJumps += 1
+            const drops = semanticActiveDropsFrom(&analyzer, &source, scope)
+            setSemanticStatementDrops(&analyzer, statement, $drops)
+        }
+    }
+    true
+}
+
+fn setSemanticForTarget(
+    &analyzer semanticAnalyzer,
+    statement u64,
+    $target forTarget
+) void {
+    var value Option<forTarget> = .Some(target)
+    setArenaValue<Option<forTarget>>(
+        &analyzer.model.forTargets, statement, $value)
+}
+
+fn analyzeSemanticFor(
+    &analyzer semanticAnalyzer,
+    &source program,
+    statement u64,
+    &loop forStatement,
+    span sourceSpan
+) bool {
+    const loanCount = analyzer.state.loanStates.len()
+    var loansBefore = semanticLoanPrefix(
+        &analyzer.state.loanStates, loanCount)
+    var sequence = analyzeSemanticExpressionWithoutExpected(
+        &analyzer, &source, loop.sequence, .Inspect)
+    var base = copySemanticType(&sequence)
+    if (base.kind.Matches("Own") || base.kind.Matches("View") || base.kind.Matches("Edit")) &&
+        base.arguments.len() == 1 {
+        base = semanticTypeArgument(&base, 0)
+    }
+    var element = invalidSemanticType()
+    var indexed = false
+    if (base.kind.Matches("Array") || base.kind.Matches("Slice")) &&
+        base.arguments.len() == 1 {
+        indexed = true
+        element = semanticTypeArgument(&base, 0)
+    }
+    var iterator = false
+    var nextFunction u64 = 0
+    var nextTypeArguments = newArena<semanticType>()
+    var nextResultType = invalidSemanticType()
+    if !indexed && base.kind.Matches("StructValue") {
+        const owner = semanticStructName(&source, base.declaration)
+        match findSemanticMethod(&analyzer.state.methodList, owner, "Next") {
+            None: {}
+            Some(function): {
+                nextFunction = function
+                var signature = semanticFunctionSignatureAt(&analyzer, function)
+                nextTypeArguments = copySemanticTypeArena(&base.arguments)
+                nextResultType = substituteSemanticType(
+                    &signature.returnType, &nextTypeArguments)
+                iterator = semanticFunctionReceiver(
+                    &source, function).Matches("Edit") &&
+                    signature.parameters.len() == 1 &&
+                    isSemanticOption(&source, &nextResultType) &&
+                    nextResultType.arguments.len() == 1
+                if iterator {
+                    element = semanticTypeArgument(&nextResultType, 0)
+                }
+            }
+        }
+        if !iterator {
+            analyzer.diagnostics.reportError(
+                "FDN2204", "iterator requires fn Next(&self) Option<T>", span)
+        }
+    } else {
+        if !indexed {
+            analyzer.diagnostics.reportError(
+                "FDN2201",
+                "for requires an array, sequence view, or iterator",
+                span
+            )
+        }
+    }
+    if iterator && loop.editable {
+        analyzer.diagnostics.reportError(
+            "FDN2205", "iterator values cannot use editable iteration", span)
+    } else {
+        if !iterator && loop.editable &&
+            (!isSemanticPlaceExpression(&analyzer, &source, loop.sequence) ||
+            !isSemanticEditablePlace(&analyzer, &source, loop.sequence)) {
+            analyzer.diagnostics.reportError(
+                "FDN2202", "editable iteration requires a mutable place", span)
+        }
+    }
+    if !iterator && loop.editable && sequence.kind.Matches("View") {
+        analyzer.diagnostics.reportError(
+            "FDN2071", "shared view cannot become an edit", span)
+    }
+    if iterator && isSemanticPlaceExpression(
+        &analyzer, &source, loop.sequence) &&
+        (sequence.kind.Matches("View") ||
+        !isSemanticEditablePlace(&analyzer, &source, loop.sequence)) {
+        analyzer.diagnostics.reportError(
+            "FDN2202", "iterator requires a mutable place", span)
+    }
+    if !iterator && semanticFunctionTask(
+        &source, analyzer.state.currentFunction) &&
+        !isSemanticPlaceExpression(&analyzer, &source, loop.sequence) {
+        analyzer.diagnostics.reportError(
+            "FDN2203",
+            "task iteration requires a bound sequence so it survives suspension",
+            span
+        )
+    }
+    match semanticPlaceRootLocal(&analyzer, &source, loop.sequence) {
+        None: {}
+        Some(local): {
+            const requested loanState = .Edit if iterator || loop.editable else .View
+            const current = semanticLoanAt(&analyzer.state.loanStates, local)
+            if requested.Matches("View") && current.Matches("Edit") ||
+                requested.Matches("Edit") && !current.Matches("None") {
+                const localName = semanticLocalName(&analyzer, local)
+                analyzer.diagnostics.reportError(
+                    "FDN2073",
+                    "conflicting borrow of binding " + localName,
+                    span
+                )
+            } else {
+                setSemanticLoan(&analyzer.state.loanStates, local, requested)
+            }
+        }
+    }
+    const persistentScope = analyzer.state.scopes.len()
+    pushSemanticScope(&analyzer.state)
+    const suffix = format.U64(analyzer.state.iterationStorage)
+    analyzer.state.iterationStorage += 1
+    const ownsSequence = iterator &&
+        !isSemanticPlaceExpression(&analyzer, &source, loop.sequence)
+    var sequenceType = copySemanticType(&base)
+    if iterator && !ownsSequence {
+        sequenceType = unarySemanticType(.Edit, copySemanticType(&base))
+    }
+    if !iterator {
+        var slice = unarySemanticType(.Slice, copySemanticType(&element))
+        sequenceType = unarySemanticType(
+            .Edit if loop.editable else .View,
+            $slice
+        )
+    }
+    const sequenceStorage = addSemanticLocalToFunction(
+        &analyzer,
+        &source,
+        "$forSequence" + suffix,
+        copySemanticType(&sequenceType),
+        ownsSequence,
+        span
+    )
+    pushSemanticScope(&analyzer.state)
+    var indexName = "$forIndex" + suffix
+    var copiedIndex = semanticOptionalStringCopy(loop.indexBinding)
+    match copiedIndex {
+        None: {}
+        Some(name): { indexName = name }
+    }
+    var indexType = usizeSemanticType()
+    const indexLocal = addSemanticLocalToFunction(
+        &analyzer, &source, indexName, $indexType, false, span)
+    var valueType = copySemanticType(&element)
+    var readBinding = false
+    if !iterator && loop.editable {
+        valueType = unarySemanticType(.Edit, $valueType)
+        readBinding = true
+    }
+    if !iterator && !loop.editable && requiresSemanticDrop(
+        &analyzer, &source, &valueType) {
+        valueType = unarySemanticType(.View, $valueType)
+        readBinding = true
+    }
+    const valueLocal = addSemanticLocalToFunction(
+        &analyzer,
+        &source,
+        loop.valueBinding,
+        $valueType,
+        loop.editable,
+        span
+    )
+    setSemanticLocalReadBinding(&analyzer, valueLocal, readBinding)
+    discard analyzer.state.loopScopeBases.add(persistentScope + 1)
+    discard analyzeSemanticBlock(&analyzer, &source, loop.body, false)
+    const loopDepth = analyzer.state.loopScopeBases.len()
+    analyzer.state.loopScopeBases.truncate(loopDepth - 1)
+    const innerScope = analyzer.state.scopes.len() - 1
+    reportSemanticScopeAt(&analyzer, innerScope)
+    popSemanticScope(&analyzer.state)
+    const outerScope = analyzer.state.scopes.len() - 1
+    reportSemanticScopeAt(&analyzer, outerScope)
+    popSemanticScope(&analyzer.state)
+    restoreSemanticLoans(&analyzer.state.loanStates, &loansBefore)
+    setSemanticForTarget(
+        &analyzer,
+        statement,
+        $forTarget {
+        sequenceStorage = sequenceStorage
+        index = indexLocal
+        value = valueLocal
+        sequenceType = sequenceType
+        editable = loop.editable
+        iterator = iterator
+        nextFunction = nextFunction
+        nextTypeArguments = nextTypeArguments
+        nextResultType = nextResultType
+        ownsSequence = ownsSequence
+    }
+    )
+    false
+}
+
+struct semanticSelectOperationInfo {
+    present bool
+    send bool
+}
+
+struct semanticSelectArmAnalysis {
+    local Option<u64>
+    hasContinuing bool
+}
+
+fn semanticBlockSpan(&source program, block u64) sourceSpan {
+    const selected = source.blocks.take(block)
+    const node = match selected {
+        None: panic("block slot is empty")
+        Some(node): node
+    }
+    const span = node.span
+    source.blocks.restore(block, $node)
+    span
+}
+
+fn semanticSelectOperationAt(
+    &analyzer semanticAnalyzer,
+    expression u64
+) semanticSelectOperationInfo {
+    const selected = analyzer.model.channelOperationTargets.take(expression)
+    const optional = match selected {
+        None: panic("channel operation target slot is empty")
+        Some(optional): optional
+    }
+    match optional {
+        None: {
+            var restored Option<channelOperationTarget> = .None
+            analyzer.model.channelOperationTargets.restore(expression, $restored)
+            semanticSelectOperationInfo { present = false send = false }
+        }
+        Some(target): {
+            const send = target.kind.Matches("Send")
+            var restored Option<channelOperationTarget> = .Some(target)
+            analyzer.model.channelOperationTargets.restore(expression, $restored)
+            semanticSelectOperationInfo { present = true send = send }
+        }
+    }
+}
+
+fn analyzeSemanticSelectArm(
+    &analyzer semanticAnalyzer,
+    &source program,
+    body u64,
+    bindingPresent bool,
+    bindingName String,
+    $bindingType semanticType,
+    &baselineOutstanding arena<bool>,
+    &baselineMoves arena<moveState>,
+    &baselineLoans arena<loanState>,
+    &mergedOutstanding arena<bool>,
+    &mergedMoves arena<moveState>,
+    &mergedLoans arena<loanState>,
+    hasContinuing bool
+) semanticSelectArmAnalysis {
+    restoreSemanticBools(
+        &analyzer.state.resultOutstanding, &baselineOutstanding)
+    restoreSemanticMoves(&analyzer.state.moveStates, &baselineMoves)
+    restoreSemanticLoans(&analyzer.state.loanStates, &baselineLoans)
+    pushSemanticScope(&analyzer.state)
+    var local Option<u64> = .None
+    if bindingPresent {
+        const span = semanticBlockSpan(&source, body)
+        const id = addSemanticLocalToFunction(
+            &analyzer,
+            &source,
+            bindingName,
+            $bindingType,
+            false,
+            span
+        )
+        local = .Some(id)
+    }
+    const returns = analyzeSemanticBlock(&analyzer, &source, body, false)
+    const outstandingCount = baselineOutstanding.len()
+    const moveCount = baselineMoves.len()
+    const loanCount = baselineLoans.len()
+    var branchOutstanding = semanticBoolPrefix(
+        &analyzer.state.resultOutstanding, outstandingCount)
+    var branchMoves = semanticMovePrefix(
+        &analyzer.state.moveStates, moveCount)
+    var branchLoans = semanticLoanPrefix(
+        &analyzer.state.loanStates, loanCount)
+    const scopeIndex = analyzer.state.scopes.len() - 1
+    reportSemanticScopeAt(&analyzer, scopeIndex)
+    popSemanticScope(&analyzer.state)
+    var continuing = hasContinuing
+    if !returns {
+        if !continuing {
+            restoreSemanticBools(&mergedOutstanding, &branchOutstanding)
+            restoreSemanticMoves(&mergedMoves, &branchMoves)
+            restoreSemanticLoans(&mergedLoans, &branchLoans)
+            continuing = true
+        } else {
+            var nextOutstanding = mergeSemanticOutstanding(
+                &mergedOutstanding, false, &branchOutstanding, false)
+            var nextMoves = mergeSemanticMoves(
+                &baselineMoves, &mergedMoves, false, &branchMoves, false)
+            var nextLoans = mergeSemanticLoans(
+                &baselineLoans, &mergedLoans, false, &branchLoans, false)
+            restoreSemanticBools(&mergedOutstanding, &nextOutstanding)
+            restoreSemanticMoves(&mergedMoves, &nextMoves)
+            restoreSemanticLoans(&mergedLoans, &nextLoans)
+        }
+    }
+    semanticSelectArmAnalysis {
+        local = local hasContinuing = continuing
+    }
+}
+
+fn analyzeSemanticSelect(
+    &analyzer semanticAnalyzer,
+    &source program,
+    statement u64,
+    &selection selectStatement,
+    span sourceSpan
+) bool {
+    if !semanticFunctionTask(&source, analyzer.state.currentFunction) {
+        analyzer.diagnostics.reportError(
+            "FDN2174", "select is only available inside a task", span)
+    }
+    const selectedTimeout = replace selection.timeoutArm with .None
+    match selectedTimeout {
+        None: { discard replace selection.timeoutArm with .None }
+        Some(timeoutArm): {
+            var current = timeoutArm
+            match current.duration {
+                None: {}
+                Some(expression): {
+                    var expected = u64SemanticType()
+                    var duration = analyzeSemanticExpression(
+                        &analyzer,
+                        &source,
+                        expression,
+                        expectedSemanticType(&expected),
+                        .Inspect
+                    )
+                    requireSameSemanticType(
+                        &analyzer,
+                        &source,
+                        &expected,
+                        &duration,
+                        current.span,
+                        "dynamic select timeout"
+                    )
+                }
+            }
+            discard replace selection.timeoutArm with .Some(current)
+        }
+    }
+    var payloads = newArena<semanticType>()
+    var sends = newArena<bool>()
+    var operations = collections.NewList<selectOperationArm>()
+    while !selection.operations.IsEmpty() {
+        var arm = match selection.operations.PopFront() {
+            None: panic("select operation list invariant failed")
+            Some(arm): arm
+        }
+        const previousRoot = analyzer.state.taskWaitRoot
+        analyzer.state.taskWaitRoot = .Some(arm.operation)
+        var result = analyzeSemanticExpressionWithoutExpected(
+            &analyzer, &source, arm.operation, .Consume)
+        analyzer.state.taskWaitRoot = previousRoot
+        var payload = invalidSemanticType()
+        var validResult = false
+        if isSemanticResult(&source, &result) && result.arguments.len() == 2 {
+            payload = semanticTypeArgument(&result, 0)
+            validResult = true
+        } else {
+            analyzer.diagnostics.reportError(
+                "FDN2175",
+                "select operation must be Sender.send or Receiver.receive",
+                arm.span
+            )
+        }
+        const operation = semanticSelectOperationAt(
+            &analyzer, arm.operation)
+        if validResult && !operation.present {
+            analyzer.diagnostics.reportError(
+                "FDN2175",
+                "select operation must be Sender.send or Receiver.receive",
+                arm.span
+            )
+        }
+        discard payloads.add($payload)
+        discard sends.add(operation.present && operation.send)
+        operations.PushFront($arm)
+    }
+    while !operations.IsEmpty() {
+        const arm = match operations.PopFront() {
+            None: panic("select operation restore invariant failed")
+            Some(arm): arm
+        }
+        selection.operations.PushFront($arm)
+    }
+
+    const outstandingCount = analyzer.state.resultOutstanding.len()
+    const moveCount = analyzer.state.moveStates.len()
+    const loanCount = analyzer.state.loanStates.len()
+    var baselineOutstanding = semanticBoolPrefix(
+        &analyzer.state.resultOutstanding, outstandingCount)
+    var baselineMoves = semanticMovePrefix(
+        &analyzer.state.moveStates, moveCount)
+    var baselineLoans = semanticLoanPrefix(
+        &analyzer.state.loanStates, loanCount)
+    var mergedOutstanding = semanticBoolPrefix(
+        &baselineOutstanding, outstandingCount)
+    var mergedMoves = semanticMovePrefix(&baselineMoves, moveCount)
+    var mergedLoans = semanticLoanPrefix(&baselineLoans, loanCount)
+    var hasContinuing = false
+    var bindings = newArena<Option<u64>>()
+    var index u64 = 0
+    while !selection.operations.IsEmpty() {
+        var arm = match selection.operations.PopFront() {
+            None: panic("select operation list invariant failed")
+            Some(arm): arm
+        }
+        var payload = match payloads.take(index) {
+            None: panic("select payload slot is empty")
+            Some(payload): payload
+        }
+        const send = semanticBoolAt(&sends, index)
+        var copied = semanticOptionalStringCopy(arm.binding)
+        var bindingPresent = false
+        var bindingName = ""
+        match copied {
+            None: {
+                if !send && !payload.kind.Matches("Void") &&
+                    !payload.kind.Matches("Invalid") {
+                    analyzer.diagnostics.reportError(
+                        "FDN2177",
+                        "select receive payload requires a const binding",
+                        arm.span
+                    )
+                }
+            }
+            Some(name): {
+                if send || payload.kind.Matches("Void") {
+                    analyzer.diagnostics.reportError(
+                        "FDN2176",
+                        "select binding requires a receive payload",
+                        arm.span
+                    )
+                }
+                if !send && !payload.kind.Matches("Void") {
+                    bindingPresent = true
+                    bindingName = name
+                }
+            }
+        }
+        var analysis = analyzeSemanticSelectArm(
+            &analyzer,
+            &source,
+            arm.body,
+            bindingPresent,
+            bindingName,
+            $payload,
+            &baselineOutstanding,
+            &baselineMoves,
+            &baselineLoans,
+            &mergedOutstanding,
+            &mergedMoves,
+            &mergedLoans,
+            hasContinuing
+        )
+        hasContinuing = analysis.hasContinuing
+        var binding = replace analysis.local with .None
+        discard bindings.add($binding)
+        operations.PushFront($arm)
+        index += 1
+    }
+    while !operations.IsEmpty() {
+        const arm = match operations.PopFront() {
+            None: panic("select operation restore invariant failed")
+            Some(arm): arm
+        }
+        selection.operations.PushFront($arm)
+    }
+    const timeoutForBody = replace selection.timeoutArm with .None
+    match timeoutForBody {
+        None: { discard replace selection.timeoutArm with .None }
+        Some(timeoutArm): {
+            var current = timeoutArm
+            var noType = invalidSemanticType()
+            var analysis = analyzeSemanticSelectArm(
+                &analyzer,
+                &source,
+                current.body,
+                false,
+                "",
+                $noType,
+                &baselineOutstanding,
+                &baselineMoves,
+                &baselineLoans,
+                &mergedOutstanding,
+                &mergedMoves,
+                &mergedLoans,
+                hasContinuing
+            )
+            hasContinuing = analysis.hasContinuing
+            discard replace selection.timeoutArm with .Some(current)
+        }
+    }
+    var channelError = invalidSemanticType()
+    match semanticBuiltinEnum(&source, "ChannelError") {
+        None: {}
+        Some(type): {
+            channelError = declaredSemanticType(.EnumValue, type)
+        }
+    }
+    var errorAnalysis = analyzeSemanticSelectArm(
+        &analyzer,
+        &source,
+        selection.errorBlock,
+        true,
+        selection.errorBinding,
+        $channelError,
+        &baselineOutstanding,
+        &baselineMoves,
+        &baselineLoans,
+        &mergedOutstanding,
+        &mergedMoves,
+        &mergedLoans,
+        hasContinuing
+    )
+    hasContinuing = errorAnalysis.hasContinuing
+    const errorLocal = match replace errorAnalysis.local with .None {
+        None: panic("select error branch has no local")
+        Some(local): local
+    }
+    var deadlineType = u64SemanticType()
+    const deadlineName =
+        "$selectDeadline" + format.U64(analyzer.state.channelStorage)
+    const deadline = addSemanticLocalToFunction(
+        &analyzer,
+        &source,
+        deadlineName,
+        $deadlineType,
+        false,
+        span
+    )
+    analyzer.state.channelStorage += 1
+    var target Option<selectTarget> = .Some(selectTarget {
+        bindings = bindings
+        errorLocal = errorLocal
+        deadlineStorage = deadline
+    })
+    setArenaValue<Option<selectTarget>>(
+        &analyzer.model.selectTargets, statement, $target)
+    if hasContinuing {
+        restoreSemanticBools(
+            &analyzer.state.resultOutstanding, &mergedOutstanding)
+        restoreSemanticMoves(&analyzer.state.moveStates, &mergedMoves)
+        restoreSemanticLoans(&analyzer.state.loanStates, &mergedLoans)
+    } else {
+        restoreSemanticBools(
+            &analyzer.state.resultOutstanding, &baselineOutstanding)
+        restoreSemanticMoves(&analyzer.state.moveStates, &baselineMoves)
+        restoreSemanticLoans(&analyzer.state.loanStates, &baselineLoans)
+    }
+    !hasContinuing
+}

@@ -1,0 +1,1000 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+struct semanticAttributeArgumentSnapshot {
+    named bool
+    name String
+    value u64
+    span sourceSpan
+}
+
+fn semanticAttributeTargetName(target firAttributeTarget) String {
+    match target {
+        Function: "fn"
+        StructValue: "struct"
+        Service: "service"
+        EnumValue: "enum"
+        ContractValue: "contract"
+        Method: "method"
+        Constructor: "ctor"
+        Action: "action"
+        Field: "field"
+        Variant: "variant"
+        Parameter: "parameter"
+    }
+}
+
+fn semanticAttributeHasTarget(
+    &declaration firAttributeDeclaration,
+    target firAttributeTarget
+) bool {
+    var index u64 = 0
+    while index < declaration.targets.len() {
+        const candidate = match declaration.targets.take(index) {
+            None: panic("attribute target slot is empty")
+            Some(candidate): candidate
+        }
+        declaration.targets.restore(index, candidate)
+        if candidate.Matches(target.Name()) return true
+        index += 1
+    }
+    false
+}
+
+fn semanticAttributeStructFieldCount(
+    &analyzer semanticAnalyzer,
+    &source program,
+    name String
+) Option<u64> {
+    const selected = findSemanticSymbol(&analyzer.state.structs, name)
+    match selected {
+        None: .None
+        Some(id): {
+            var declaration = match source.structs.take(id) {
+                None: panic("struct slot is empty")
+                Some(declaration): declaration
+            }
+            const count = listLength(&declaration.fields)
+            source.structs.restore(id, $declaration)
+            .Some(count)
+        }
+    }
+}
+
+fn semanticAttributeConstant(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64
+) bool {
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    var constant = false
+    const restored = match value {
+        Integer(payload): {
+            constant = true
+            expressionValue.Integer(payload)
+        }
+        Floating(payload): {
+            constant = true
+            expressionValue.Floating(payload)
+        }
+        Boolean(payload): {
+            constant = true
+            expressionValue.Boolean(payload)
+        }
+        StringValue(payload): {
+            constant = true
+            expressionValue.StringValue(payload)
+        }
+        Array(payload): {
+            var current = payload
+            var pending = collections.NewList<u64>()
+            constant = true
+            while !current.elements.IsEmpty() {
+                const element = match current.elements.PopFront() {
+                    None: panic("array element list invariant failed")
+                    Some(element): element
+                }
+                if !semanticAttributeConstant(&analyzer, &source, element) {
+                    constant = false
+                }
+                pending.PushFront(element)
+            }
+            while !pending.IsEmpty() {
+                const element = match pending.PopFront() {
+                    None: panic("array element restore invariant failed")
+                    Some(element): element
+                }
+                current.elements.PushFront(element)
+            }
+            expressionValue.Array(current)
+        }
+        StructValue(payload): {
+            var current = payload
+            constant = true
+            match semanticAttributeStructFieldCount(
+                &analyzer, &source, current.type.name) {
+                None: {}
+                Some(count): {
+                    if count != listLength(&current.fields) {
+                        constant = false
+                    }
+                }
+            }
+            var pending = collections.NewList<structFieldInitializer>()
+            while !current.fields.IsEmpty() {
+                const field = match current.fields.PopFront() {
+                    None: panic("struct field initializer list invariant failed")
+                    Some(field): field
+                }
+                if !semanticAttributeConstant(&analyzer, &source, field.value) {
+                    constant = false
+                }
+                pending.PushFront($field)
+            }
+            while !pending.IsEmpty() {
+                const field = match pending.PopFront() {
+                    None: panic("struct field initializer restore invariant failed")
+                    Some(field): field
+                }
+                current.fields.PushFront($field)
+            }
+            expressionValue.StructValue(current)
+        }
+        Member(payload): {
+            var current = payload
+            constant = true
+            match semanticOptionalID(current.base) {
+                None: {}
+                Some(base): {
+                    const baseNode = source.expressions.take(base)
+                    const baseExpression = match baseNode {
+                        None: panic("expression slot is empty")
+                        Some(baseExpression): baseExpression
+                    }
+                    const expressionNode { value as baseValue span as baseSpan } = baseExpression
+                    const baseRestored = match baseValue {
+                        Name(name): expressionValue.Name(name)
+                        Integer(value): {
+                            constant = false
+                            expressionValue.Integer(value)
+                        }
+                        Floating(value): {
+                            constant = false
+                            expressionValue.Floating(value)
+                        }
+                        Boolean(value): {
+                            constant = false
+                            expressionValue.Boolean(value)
+                        }
+                        StringValue(value): {
+                            constant = false
+                            expressionValue.StringValue(value)
+                        }
+                        Array(value): {
+                            constant = false
+                            expressionValue.Array(value)
+                        }
+                        Unary(value): {
+                            constant = false
+                            expressionValue.Unary(value)
+                        }
+                        Ownership(value): {
+                            constant = false
+                            expressionValue.Ownership(value)
+                        }
+                        Binary(value): {
+                            constant = false
+                            expressionValue.Binary(value)
+                        }
+                        Call(value): {
+                            constant = false
+                            expressionValue.Call(value)
+                        }
+                        StructValue(value): {
+                            constant = false
+                            expressionValue.StructValue(value)
+                        }
+                        Member(value): {
+                            constant = false
+                            expressionValue.Member(value)
+                        }
+                        Index(value): {
+                            constant = false
+                            expressionValue.Index(value)
+                        }
+                        Replace(value): {
+                            constant = false
+                            expressionValue.Replace(value)
+                        }
+                        Spawn(value): {
+                            constant = false
+                            expressionValue.Spawn(value)
+                        }
+                        MatchValue(value): {
+                            constant = false
+                            expressionValue.MatchValue(value)
+                        }
+                        Conditional(value): {
+                            constant = false
+                            expressionValue.Conditional(value)
+                        }
+                        FunctionValue(value): {
+                            constant = false
+                            expressionValue.FunctionValue(value)
+                        }
+                    }
+                    source.expressions.restore(base, $expressionNode {
+                        value = baseRestored span = baseSpan
+                    })
+                }
+            }
+            var pending = collections.NewList<u64>()
+            while !current.arguments.IsEmpty() {
+                const argument = match current.arguments.PopFront() {
+                    None: panic("member argument list invariant failed")
+                    Some(argument): argument
+                }
+                if !semanticAttributeConstant(&analyzer, &source, argument) {
+                    constant = false
+                }
+                pending.PushFront(argument)
+            }
+            while !pending.IsEmpty() {
+                const argument = match pending.PopFront() {
+                    None: panic("member argument restore invariant failed")
+                    Some(argument): argument
+                }
+                current.arguments.PushFront(argument)
+            }
+            expressionValue.Member(current)
+        }
+        Name(payload): expressionValue.Name(payload)
+        Unary(payload): expressionValue.Unary(payload)
+        Ownership(payload): expressionValue.Ownership(payload)
+        Binary(payload): expressionValue.Binary(payload)
+        Call(payload): expressionValue.Call(payload)
+        Index(payload): expressionValue.Index(payload)
+        Replace(payload): expressionValue.Replace(payload)
+        Spawn(payload): expressionValue.Spawn(payload)
+        MatchValue(payload): expressionValue.MatchValue(payload)
+        Conditional(payload): expressionValue.Conditional(payload)
+        FunctionValue(payload): expressionValue.FunctionValue(payload)
+    }
+    source.expressions.restore(expression, $expressionNode {
+        value = restored span = span
+    })
+    constant
+}
+
+fn semanticAttributeEnumVariant(
+    &analyzer semanticAnalyzer,
+    expression u64
+) Option<u64> {
+    const selected = analyzer.model.enumTargets.take(expression)
+    const target = match selected {
+        None: panic("enum target slot is empty")
+        Some(target): target
+    }
+    match target {
+        None: {
+            var restored Option<enumTarget> = .None
+            analyzer.model.enumTargets.restore(expression, $restored)
+            .None
+        }
+        Some(value): {
+            const variant = value.variant
+            var restored Option<enumTarget> = .Some(value)
+            analyzer.model.enumTargets.restore(expression, $restored)
+            .Some(variant)
+        }
+    }
+}
+
+fn semanticAttributeValue(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64
+) firAttributeValue {
+    var result = emptyFirAttributeValue()
+    result.type = semanticExpressionType(&analyzer, expression)
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    const restored = match value {
+        Integer(payload): {
+            result.kind = .Integer
+            result.magnitude = payload.magnitude
+            result.negative = payload.negative
+            expressionValue.Integer(payload)
+        }
+        Floating(payload): {
+            result.kind = .Floating
+            result.text = text.Copy(payload.text)
+            expressionValue.Floating(payload)
+        }
+        Boolean(payload): {
+            result.kind = .Boolean
+            result.boolean = payload.value
+            expressionValue.Boolean(payload)
+        }
+        StringValue(payload): {
+            result.kind = .StringValue
+            result.text = text.Copy(payload.value)
+            expressionValue.StringValue(payload)
+        }
+        Array(payload): {
+            var current = payload
+            result.kind = .Array
+            var pending = collections.NewList<u64>()
+            while !current.elements.IsEmpty() {
+                const element = match current.elements.PopFront() {
+                    None: panic("array element list invariant failed")
+                    Some(element): element
+                }
+                discard result.children.add(semanticAttributeValue(
+                        &analyzer, &source, element))
+                pending.PushFront(element)
+            }
+            while !pending.IsEmpty() {
+                const element = match pending.PopFront() {
+                    None: panic("array element restore invariant failed")
+                    Some(element): element
+                }
+                current.elements.PushFront(element)
+            }
+            expressionValue.Array(current)
+        }
+        StructValue(payload): {
+            var current = payload
+            result.kind = .StructValue
+            var pending = collections.NewList<structFieldInitializer>()
+            while !current.fields.IsEmpty() {
+                const field = match current.fields.PopFront() {
+                    None: panic("struct field initializer list invariant failed")
+                    Some(field): field
+                }
+                discard result.members.add(text.Copy(field.name))
+                discard result.children.add(semanticAttributeValue(
+                        &analyzer, &source, field.value))
+                pending.PushFront($field)
+            }
+            while !pending.IsEmpty() {
+                const field = match pending.PopFront() {
+                    None: panic("struct field initializer restore invariant failed")
+                    Some(field): field
+                }
+                current.fields.PushFront($field)
+            }
+            expressionValue.StructValue(current)
+        }
+        Member(payload): {
+            var current = payload
+            result.kind = .EnumValue
+            match semanticAttributeEnumVariant(&analyzer, expression) {
+                None: {}
+                Some(variant): { result.variant = variant }
+            }
+            var pending = collections.NewList<u64>()
+            while !current.arguments.IsEmpty() {
+                const argument = match current.arguments.PopFront() {
+                    None: panic("member argument list invariant failed")
+                    Some(argument): argument
+                }
+                discard result.children.add(semanticAttributeValue(
+                        &analyzer, &source, argument))
+                pending.PushFront(argument)
+            }
+            while !pending.IsEmpty() {
+                const argument = match pending.PopFront() {
+                    None: panic("member argument restore invariant failed")
+                    Some(argument): argument
+                }
+                current.arguments.PushFront(argument)
+            }
+            expressionValue.Member(current)
+        }
+        Name(payload): expressionValue.Name(payload)
+        Unary(payload): expressionValue.Unary(payload)
+        Ownership(payload): expressionValue.Ownership(payload)
+        Binary(payload): expressionValue.Binary(payload)
+        Call(payload): expressionValue.Call(payload)
+        Index(payload): expressionValue.Index(payload)
+        Replace(payload): expressionValue.Replace(payload)
+        Spawn(payload): expressionValue.Spawn(payload)
+        MatchValue(payload): expressionValue.MatchValue(payload)
+        Conditional(payload): expressionValue.Conditional(payload)
+        FunctionValue(payload): expressionValue.FunctionValue(payload)
+    }
+    source.expressions.restore(expression, $expressionNode {
+        value = restored span = span
+    })
+    result
+}
+
+fn semanticAttributeArgumentSnapshots(
+    &arguments collections.List<attributeArgument>
+) own arena<semanticAttributeArgumentSnapshot> {
+    var result = newArena<semanticAttributeArgumentSnapshot>()
+    var pending = collections.NewList<attributeArgument>()
+    while !arguments.IsEmpty() {
+        const argument = match arguments.PopFront() {
+            None: panic("attribute argument list invariant failed")
+            Some(argument): argument
+        }
+        var named = false
+        var name = ""
+        match semanticOptionalStringCopy(argument.name) {
+            None: {}
+            Some(value): {
+                named = true
+                name = value
+            }
+        }
+        discard result.add(semanticAttributeArgumentSnapshot {
+            named = named
+            name = name
+            value = argument.value
+            span = argument.span
+        })
+        pending.PushFront($argument)
+    }
+    while !pending.IsEmpty() {
+        const argument = match pending.PopFront() {
+            None: panic("attribute argument restore invariant failed")
+            Some(argument): argument
+        }
+        arguments.PushFront($argument)
+    }
+    result
+}
+
+fn semanticAttributeParameterIndex(
+    &declaration firAttributeDeclaration,
+    name String
+) Option<u64> {
+    var index u64 = 0
+    while index < declaration.parameters.len() {
+        var parameter = match declaration.parameters.take(index) {
+            None: panic("attribute parameter slot is empty")
+            Some(parameter): parameter
+        }
+        const found = parameter.name == name
+        declaration.parameters.restore(index, $parameter)
+        if found return .Some(index)
+        index += 1
+    }
+    .None
+}
+
+fn semanticOrderedAttributeArgument(
+    &ordered arena<Option<u64>>,
+    index u64
+) Option<u64> {
+    const selected = ordered.take(index)
+    const value = match selected {
+        None: panic("ordered attribute argument slot is empty")
+        Some(value): value
+    }
+    const result = semanticOptionalID(value)
+    ordered.restore(index, $value)
+    result
+}
+
+fn semanticSetOrderedAttributeArgument(
+    &ordered arena<Option<u64>>,
+    index u64,
+    value u64
+) void {
+    var selected Option<u64> = .Some(value)
+    setArenaValue<Option<u64>>(&ordered, index, $selected)
+}
+
+fn resolveSemanticAttributeApplication(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &application attributeApplication,
+    target firAttributeTarget,
+    &seen arena<u64>
+) Option<firAttributeUse> {
+    if application.name == "blocking" || application.name == "callback" {
+        if !target.Matches("Function") {
+            analyzer.diagnostics.reportError(
+                "FDN2178",
+                "@" + application.name + " can only target a function",
+                application.span
+            )
+        }
+        return .None
+    }
+    const attributeID = match findSemanticSymbol(
+        &analyzer.state.attributes, application.name) {
+        None: {
+            analyzer.diagnostics.reportError(
+                "FDN2152", "unknown attribute @" + application.name,
+                application.span)
+            return .None
+        }
+        Some(attributeID): attributeID
+    }
+    var declaration = match analyzer.model.attributeDeclarations.take(attributeID) {
+        None: panic("semantic attribute declaration slot is empty")
+        Some(declaration): declaration
+    }
+    if !semanticAttributeHasTarget(&declaration, target) {
+        analyzer.diagnostics.reportError(
+            "FDN2153",
+            "attribute @" + application.name + " cannot target " +
+            semanticAttributeTargetName(target),
+            application.span
+        )
+    }
+    if !declaration.repeatable && semanticIDContains(&seen, attributeID) {
+        analyzer.diagnostics.reportError(
+            "FDN2154",
+            "attribute @" + application.name + " is not repeatable",
+            application.span
+        )
+    } else {
+        discard seen.add(attributeID)
+    }
+
+    var arguments = semanticAttributeArgumentSnapshots(&application.arguments)
+    var ordered = newArena<Option<u64>>()
+    var parameter u64 = 0
+    while parameter < declaration.parameters.len() {
+        var missing Option<u64> = .None
+        discard ordered.add($missing)
+        parameter += 1
+    }
+    var positional u64 = 0
+    var sawNamed = false
+    var index u64 = 0
+    while index < arguments.len() {
+        var argument = match arguments.take(index) {
+            None: panic("attribute argument snapshot slot is empty")
+            Some(argument): argument
+        }
+        if argument.named {
+            sawNamed = true
+            match semanticAttributeParameterIndex(&declaration, argument.name) {
+                None: {
+                    analyzer.diagnostics.reportError(
+                        "FDN2156",
+                        "unknown attribute argument " + argument.name,
+                        argument.span
+                    )
+                }
+                Some(parameter): {
+                    match semanticOrderedAttributeArgument(&ordered, parameter) {
+                        None: {
+                            semanticSetOrderedAttributeArgument(
+                                &ordered, parameter, index)
+                        }
+                        Some(existing): {
+                            discard existing
+                            analyzer.diagnostics.reportError(
+                                "FDN2157",
+                                "duplicate attribute argument " + argument.name,
+                                argument.span
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            if sawNamed {
+                analyzer.diagnostics.reportError(
+                    "FDN2155",
+                    "positional attribute argument follows named argument",
+                    argument.span
+                )
+            } else {
+                if positional >= ordered.len() {
+                    analyzer.diagnostics.reportError(
+                        "FDN2156", "too many attribute arguments",
+                        argument.span)
+                } else {
+                    semanticSetOrderedAttributeArgument(
+                        &ordered, positional, index)
+                    positional += 1
+                }
+            }
+        }
+        arguments.restore(index, $argument)
+        index += 1
+    }
+
+    var use = newFirAttributeUse(attributeID)
+    parameter = 0
+    while parameter < declaration.parameters.len() {
+        var expected = match declaration.parameters.take(parameter) {
+            None: panic("attribute parameter slot is empty")
+            Some(expected): expected
+        }
+        match semanticOrderedAttributeArgument(&ordered, parameter) {
+            None: {
+                analyzer.diagnostics.reportError(
+                    "FDN2158",
+                    "missing attribute argument " + expected.name,
+                    application.span
+                )
+            }
+            Some(argumentIndex): {
+                var argument = match arguments.take(argumentIndex) {
+                    None: panic("attribute argument snapshot slot is empty")
+                    Some(argument): argument
+                }
+                if !semanticAttributeConstant(&analyzer, &source, argument.value) {
+                    analyzer.diagnostics.reportError(
+                        "FDN2160", "attribute argument must be constant",
+                        argument.span)
+                } else {
+                    var actual = analyzeSemanticExpression(
+                        &analyzer,
+                        &source,
+                        argument.value,
+                        expectedSemanticType(&expected.type),
+                        .Inspect
+                    )
+                    requireSameSemanticType(
+                        &analyzer,
+                        &source,
+                        &expected.type,
+                        &actual,
+                        argument.span,
+                        "attribute argument"
+                    )
+                    discard use.arguments.add(firAttributeArgument {
+                        name = text.Copy(expected.name)
+                        value = semanticAttributeValue(
+                            &analyzer, &source, argument.value)
+                    })
+                }
+                arguments.restore(argumentIndex, $argument)
+            }
+        }
+        declaration.parameters.restore(parameter, $expected)
+        parameter += 1
+    }
+    analyzer.model.attributeDeclarations.restore(attributeID, $declaration)
+    .Some(use)
+}
+
+fn resolveSemanticAttributes(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &applications collections.List<attributeApplication>,
+    target firAttributeTarget,
+    packageName String
+) own arena<firAttributeUse> {
+    var result = newArena<firAttributeUse>()
+    var seen = newArena<u64>()
+    var pending = collections.NewList<attributeApplication>()
+    analyzer.state.currentPackageOverride = text.Copy(packageName)
+    analyzer.state.typeParameters.clear()
+    analyzer.state.currentTypeParameterNames.clear()
+    while !applications.IsEmpty() {
+        var application = match applications.PopFront() {
+            None: panic("attribute application list invariant failed")
+            Some(application): application
+        }
+        match resolveSemanticAttributeApplication(
+            &analyzer, &source, &application, target, &seen) {
+            None: {}
+            Some(use): { discard result.add($use) }
+        }
+        pending.PushFront($application)
+    }
+    while !pending.IsEmpty() {
+        const application = match pending.PopFront() {
+            None: panic("attribute application restore invariant failed")
+            Some(application): application
+        }
+        applications.PushFront($application)
+    }
+    analyzer.state.currentPackageOverride = ""
+    result
+}
+
+fn setSemanticAttributeUses(
+    &target arena<firAttributeUse>,
+    $values own arena<firAttributeUse>
+) void {
+    target.clear()
+    var currentValues = values
+    var index u64 = 0
+    while index < currentValues.len() {
+        const value = match currentValues.take(index) {
+            None: panic("attribute use slot is empty")
+            Some(value): value
+        }
+        discard target.add($value)
+        index += 1
+    }
+}
+
+fn resolveSemanticStructAttributes(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    var index u64 = 0
+    while index < source.structs.len() {
+        var declaration = match source.structs.take(index) {
+            None: panic("struct slot is empty")
+            Some(declaration): declaration
+        }
+        var target = match analyzer.model.structs.take(index) {
+            None: panic("semantic struct slot is empty")
+            Some(target): target
+        }
+        const kind = if declaration.kind.Matches("Service") {
+            firAttributeTarget.Service
+        } else {
+            firAttributeTarget.StructValue
+        }
+        const packageName = text.Copy(declaration.packageName)
+        const attributes = resolveSemanticAttributes(
+            &analyzer, &source, &declaration.attributes, kind,
+            packageName)
+        setSemanticAttributeUses(&target.attributes, $attributes)
+        target.fieldAttributes.clear()
+        var fields = collections.NewList<structField>()
+        while !declaration.fields.IsEmpty() {
+            var field = match declaration.fields.PopFront() {
+                None: panic("struct field list invariant failed")
+                Some(field): field
+            }
+            const fieldAttributes = resolveSemanticAttributes(
+                &analyzer,
+                &source,
+                &field.attributes,
+                .Field,
+                packageName
+            )
+            discard target.fieldAttributes.add($fieldAttributes)
+            fields.PushFront($field)
+        }
+        while !fields.IsEmpty() {
+            const field = match fields.PopFront() {
+                None: panic("struct field restore invariant failed")
+                Some(field): field
+            }
+            declaration.fields.PushFront($field)
+        }
+        analyzer.model.structs.restore(index, $target)
+        source.structs.restore(index, $declaration)
+        index += 1
+    }
+}
+
+fn resolveSemanticEnumAttributes(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    var index u64 = 0
+    while index < source.enums.len() {
+        var declaration = match source.enums.take(index) {
+            None: panic("enum slot is empty")
+            Some(declaration): declaration
+        }
+        var target = match analyzer.model.enums.take(index) {
+            None: panic("semantic enum slot is empty")
+            Some(target): target
+        }
+        const packageName = text.Copy(declaration.packageName)
+        const attributes = resolveSemanticAttributes(
+            &analyzer, &source, &declaration.attributes, .EnumValue,
+            packageName)
+        setSemanticAttributeUses(&target.attributes, $attributes)
+        target.variantAttributes.clear()
+        var variants = collections.NewList<enumVariant>()
+        while !declaration.variants.IsEmpty() {
+            var variant = match declaration.variants.PopFront() {
+                None: panic("enum variant list invariant failed")
+                Some(variant): variant
+            }
+            const variantAttributes = resolveSemanticAttributes(
+                &analyzer,
+                &source,
+                &variant.attributes,
+                .Variant,
+                packageName
+            )
+            discard target.variantAttributes.add($variantAttributes)
+            variants.PushFront($variant)
+        }
+        while !variants.IsEmpty() {
+            const variant = match variants.PopFront() {
+                None: panic("enum variant restore invariant failed")
+                Some(variant): variant
+            }
+            declaration.variants.PushFront($variant)
+        }
+        analyzer.model.enums.restore(index, $target)
+        source.enums.restore(index, $declaration)
+        index += 1
+    }
+}
+
+fn resolveSemanticContractMethodAttributes(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &target semanticContractMethod
+) void {
+    var origin = match source.contracts.take(target.originContract) {
+        None: panic("contract slot is empty")
+        Some(origin): origin
+    }
+    var pendingMethods = collections.NewList<contractMethod>()
+    var found = false
+    while !origin.methodList.IsEmpty() {
+        var method = match origin.methodList.PopFront() {
+            None: panic("contract method list invariant failed")
+            Some(method): method
+        }
+        if !found && method.name == target.name {
+            found = true
+            const attributes = resolveSemanticAttributes(
+                &analyzer,
+                &source,
+                &method.attributes,
+                .Method,
+                origin.packageName
+            )
+            setSemanticAttributeUses(&target.attributes, $attributes)
+            target.parameterAttributes.clear()
+            var parameters = collections.NewList<parameter>()
+            while !method.parameters.IsEmpty() {
+                var parameter = match method.parameters.PopFront() {
+                    None: panic("contract parameter list invariant failed")
+                    Some(parameter): parameter
+                }
+                const parameterAttributes = resolveSemanticAttributes(
+                    &analyzer,
+                    &source,
+                    &parameter.attributes,
+                    .Parameter,
+                    origin.packageName
+                )
+                discard target.parameterAttributes.add($parameterAttributes)
+                parameters.PushFront($parameter)
+            }
+            while !parameters.IsEmpty() {
+                const parameter = match parameters.PopFront() {
+                    None: panic("contract parameter restore invariant failed")
+                    Some(parameter): parameter
+                }
+                method.parameters.PushFront($parameter)
+            }
+        }
+        pendingMethods.PushFront($method)
+    }
+    while !pendingMethods.IsEmpty() {
+        const method = match pendingMethods.PopFront() {
+            None: panic("contract method restore invariant failed")
+            Some(method): method
+        }
+        origin.methodList.PushFront($method)
+    }
+    source.contracts.restore(target.originContract, $origin)
+}
+
+fn resolveSemanticContractAttributes(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    var index u64 = 0
+    while index < source.contracts.len() {
+        var declaration = match source.contracts.take(index) {
+            None: panic("contract slot is empty")
+            Some(declaration): declaration
+        }
+        var target = match analyzer.model.contracts.take(index) {
+            None: panic("semantic contract slot is empty")
+            Some(target): target
+        }
+        const packageName = text.Copy(declaration.packageName)
+        const attributes = resolveSemanticAttributes(
+            &analyzer, &source, &declaration.attributes, .ContractValue,
+            packageName)
+        setSemanticAttributeUses(&target.attributes, $attributes)
+        source.contracts.restore(index, $declaration)
+        var method u64 = 0
+        while method < target.methodList.len() {
+            var current = match target.methodList.take(method) {
+                None: panic("semantic contract method slot is empty")
+                Some(current): current
+            }
+            resolveSemanticContractMethodAttributes(
+                &analyzer, &source, &current)
+            target.methodList.restore(method, $current)
+            method += 1
+        }
+        analyzer.model.contracts.restore(index, $target)
+        index += 1
+    }
+}
+
+fn semanticFunctionAttributeTarget(
+    &declaration functionDeclaration
+) firAttributeTarget {
+    if declaration.actionFunction return .Action
+    if declaration.constructor return .Constructor
+    if !text.IsEmpty(declaration.ownerType) return .Method
+    .Function
+}
+
+fn resolveSemanticFunctionAttributes(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    var index u64 = 0
+    while index < source.functions.len() {
+        var declaration = match source.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(declaration): declaration
+        }
+        var target = match analyzer.model.functions.take(index) {
+            None: panic("semantic function slot is empty")
+            Some(target): target
+        }
+        const attributeTarget = semanticFunctionAttributeTarget(&declaration)
+        const packageName = text.Copy(declaration.packageName)
+        const attributes = resolveSemanticAttributes(
+            &analyzer,
+            &source,
+            &declaration.attributes,
+            attributeTarget,
+            packageName
+        )
+        setSemanticAttributeUses(&target.attributes, $attributes)
+        target.parameterAttributes.clear()
+        var parameters = collections.NewList<parameter>()
+        while !declaration.parameters.IsEmpty() {
+            var parameter = match declaration.parameters.PopFront() {
+                None: panic("function parameter list invariant failed")
+                Some(parameter): parameter
+            }
+            const parameterAttributes = resolveSemanticAttributes(
+                &analyzer,
+                &source,
+                &parameter.attributes,
+                .Parameter,
+                packageName
+            )
+            discard target.parameterAttributes.add($parameterAttributes)
+            parameters.PushFront($parameter)
+        }
+        while !parameters.IsEmpty() {
+            const parameter = match parameters.PopFront() {
+                None: panic("function parameter restore invariant failed")
+                Some(parameter): parameter
+            }
+            declaration.parameters.PushFront($parameter)
+        }
+        analyzer.model.functions.restore(index, $target)
+        source.functions.restore(index, $declaration)
+        index += 1
+    }
+}
+
+fn resolveSemanticAppliedAttributes(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    analyzer.state.currentFunction = source.functions.len()
+    resolveSemanticStructAttributes(&analyzer, &source)
+    resolveSemanticEnumAttributes(&analyzer, &source)
+    resolveSemanticContractAttributes(&analyzer, &source)
+    resolveSemanticFunctionAttributes(&analyzer, &source)
+}

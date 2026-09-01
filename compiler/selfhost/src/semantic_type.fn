@@ -1,0 +1,348 @@
+package foundation.compiler
+
+import std.format
+
+enum semanticTypeKind {
+    Invalid
+    Void
+    Never
+    I8
+    I16
+    I32
+    I64
+    U8
+    U16
+    U32
+    U64
+    Isize
+    Usize
+    F32
+    F64
+    Bool
+    StringValue
+    Raw
+    RawConst
+    Array
+    Slice
+    Own
+    View
+    Edit
+    Parameter
+    StructValue
+    EnumValue
+    ContractValue
+    Function
+    Task
+    Channel
+    Sender
+    Receiver
+}
+
+methods semanticTypeKind {
+    fn Name(self) String {
+        match self {
+            Invalid: "Invalid"
+            Void: "Void"
+            Never: "Never"
+            I8: "I8"
+            I16: "I16"
+            I32: "I32"
+            I64: "I64"
+            U8: "U8"
+            U16: "U16"
+            U32: "U32"
+            U64: "U64"
+            Isize: "Isize"
+            Usize: "Usize"
+            F32: "F32"
+            F64: "F64"
+            Bool: "Bool"
+            StringValue: "StringValue"
+            Raw: "Raw"
+            RawConst: "RawConst"
+            Array: "Array"
+            Slice: "Slice"
+            Own: "Own"
+            View: "View"
+            Edit: "Edit"
+            Parameter: "Parameter"
+            StructValue: "StructValue"
+            EnumValue: "EnumValue"
+            ContractValue: "ContractValue"
+            Function: "Function"
+            Task: "Task"
+            Channel: "Channel"
+            Sender: "Sender"
+            Receiver: "Receiver"
+        }
+    }
+
+    fn Matches(self, name String) bool {
+        self.Name() == name
+    }
+}
+
+struct semanticType {
+    kind semanticTypeKind
+    declaration u64
+    arguments own arena<semanticType>
+}
+
+fn newSemanticType(kind semanticTypeKind) semanticType {
+    semanticType {
+        kind = kind
+        declaration = 0
+        arguments = newArena<semanticType>()
+    }
+}
+
+fn declaredSemanticType(kind semanticTypeKind, declaration u64) semanticType {
+    semanticType {
+        kind = kind
+        declaration = declaration
+        arguments = newArena<semanticType>()
+    }
+}
+
+fn unarySemanticType(kind semanticTypeKind, $argument semanticType) semanticType {
+    var arguments = newArena<semanticType>()
+    discard arguments.add($argument)
+    semanticType { kind = kind declaration = 0 arguments = arguments }
+}
+
+fn invalidSemanticType() semanticType {
+    newSemanticType(.Invalid)
+}
+
+fn voidSemanticType() semanticType {
+    newSemanticType(.Void)
+}
+
+fn neverSemanticType() semanticType {
+    newSemanticType(.Never)
+}
+
+fn boolSemanticType() semanticType {
+    newSemanticType(.Bool)
+}
+
+fn stringSemanticType() semanticType {
+    newSemanticType(.StringValue)
+}
+
+fn i32SemanticType() semanticType {
+    newSemanticType(.I32)
+}
+
+fn u64SemanticType() semanticType {
+    newSemanticType(.U64)
+}
+
+fn usizeSemanticType() semanticType {
+    newSemanticType(.Usize)
+}
+
+fn copySemanticType(&value semanticType) semanticType {
+    var arguments = newArena<semanticType>()
+    var index u64 = 0
+    while index < value.arguments.len() {
+        var argument = match value.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(argument): argument
+        }
+        discard arguments.add(copySemanticType(&argument))
+        value.arguments.restore(index, $argument)
+        index += 1
+    }
+    semanticType {
+        kind = value.kind
+        declaration = value.declaration
+        arguments = arguments
+    }
+}
+
+fn semanticTypeArgument(&value semanticType, index u64) semanticType {
+    var argument = match value.arguments.take(index) {
+        None: panic("semantic type argument slot is empty")
+        Some(argument): argument
+    }
+    const result = copySemanticType(&argument)
+    value.arguments.restore(index, $argument)
+    result
+}
+
+fn sameSemanticType(&left semanticType, &right semanticType) bool {
+    if !sameSemanticTypeKind(left.kind, right.kind) ||
+        left.declaration != right.declaration ||
+        left.arguments.len() != right.arguments.len() {
+        return false
+    }
+    var index u64 = 0
+    while index < left.arguments.len() {
+        var leftArgument = match left.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(argument): argument
+        }
+        var rightArgument = match right.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(argument): argument
+        }
+        const same = sameSemanticType(&leftArgument, &rightArgument)
+        left.arguments.restore(index, $leftArgument)
+        right.arguments.restore(index, $rightArgument)
+        if !same return false
+        index += 1
+    }
+    true
+}
+
+fn sameSemanticTypeKind(left semanticTypeKind, right semanticTypeKind) bool {
+    left.Name() == right.Name()
+}
+
+fn isSignedSemanticInteger(&value semanticType) bool {
+    match value.kind {
+        I8: true
+        I16: true
+        I32: true
+        I64: true
+        Isize: true
+        _: false
+    }
+}
+
+fn isUnsignedSemanticInteger(&value semanticType) bool {
+    match value.kind {
+        U8: true
+        U16: true
+        U32: true
+        U64: true
+        Usize: true
+        _: false
+    }
+}
+
+fn isSemanticInteger(&value semanticType) bool {
+    isSignedSemanticInteger(&value) || isUnsignedSemanticInteger(&value)
+}
+
+fn isSemanticFloating(&value semanticType) bool {
+    match value.kind {
+        F32: true
+        F64: true
+        _: false
+    }
+}
+
+fn isSemanticNumeric(&value semanticType) bool {
+    isSemanticInteger(&value) || isSemanticFloating(&value)
+}
+
+fn isSemanticMachineScalar(&value semanticType) bool {
+    isSemanticNumeric(&value) || value.kind.Matches("Bool") || value.kind.Matches("Raw") ||
+        value.kind.Matches("RawConst")
+}
+
+fn isTransferableSemanticFunction(&value semanticType) bool {
+    value.kind.Matches("Function") && value.declaration == 1
+}
+
+fn isCSemanticFunction(&value semanticType) bool {
+    value.kind.Matches("Function") && value.declaration == 2
+}
+
+fn substituteSemanticType(
+    &value semanticType,
+    &arguments arena<semanticType>
+) semanticType {
+    if value.kind.Matches("Parameter") && value.declaration < arguments.len() {
+        var selected = match arguments.take(value.declaration) {
+            None: panic("semantic substitution slot is empty")
+            Some(selected): selected
+        }
+        const result = copySemanticType(&selected)
+        arguments.restore(value.declaration, $selected)
+        return result
+    }
+    var substituted = declaredSemanticType(value.kind, value.declaration)
+    var index u64 = 0
+    while index < value.arguments.len() {
+        var argument = match value.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(argument): argument
+        }
+        discard substituted.arguments.add(substituteSemanticType(&argument, &arguments))
+        value.arguments.restore(index, $argument)
+        index += 1
+    }
+    substituted
+}
+
+fn semanticTypeName(kind semanticTypeKind) String {
+    match kind {
+        Invalid: "<invalid>"
+        Void: "void"
+        Never: "never"
+        I8: "i8"
+        I16: "i16"
+        I32: "i32"
+        I64: "i64"
+        U8: "u8"
+        U16: "u16"
+        U32: "u32"
+        U64: "u64"
+        Isize: "isize"
+        Usize: "usize"
+        F32: "f32"
+        F64: "f64"
+        Bool: "bool"
+        StringValue: "String"
+        Raw: "*"
+        RawConst: "*const"
+        Array: "array"
+        Slice: "slice"
+        Own: "own"
+        View: "view"
+        Edit: "edit"
+        Parameter: "parameter"
+        StructValue: "struct"
+        EnumValue: "enum"
+        ContractValue: "contract"
+        Function: "fn"
+        Task: "Task"
+        Channel: "Channel"
+        Sender: "Sender"
+        Receiver: "Receiver"
+    }
+}
+
+fn semanticTypeKey(&value semanticType) String {
+    var result = semanticTypeName(value.kind) + ":" + format.U64(value.declaration)
+    var index u64 = 0
+    while index < value.arguments.len() {
+        var argument = match value.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(argument): argument
+        }
+        result = result + "<" + semanticTypeKey(&argument) + ">"
+        value.arguments.restore(index, $argument)
+        index += 1
+    }
+    result
+}
+
+fn containsSemanticTypeKind(&value semanticType, kind semanticTypeKind) bool {
+    if sameSemanticTypeKind(value.kind, kind) return true
+    var index u64 = 0
+    while index < value.arguments.len() {
+        var argument = match value.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(argument): argument
+        }
+        const found = containsSemanticTypeKind(&argument, kind)
+        value.arguments.restore(index, $argument)
+        if found return true
+        index += 1
+    }
+    false
+}

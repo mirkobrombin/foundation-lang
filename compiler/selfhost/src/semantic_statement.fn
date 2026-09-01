@@ -1,0 +1,992 @@
+package foundation.compiler
+
+import std.collections
+import std.format
+import std.text
+
+fn setSemanticStatementLocal(
+    &analyzer semanticAnalyzer,
+    statement u64,
+    local u64
+) void {
+    var value Option<u64> = .Some(local)
+    setArenaValue<Option<u64>>(
+        &analyzer.model.statementLocals, statement, $value)
+}
+
+fn setSemanticStatementElseLocal(
+    &analyzer semanticAnalyzer,
+    statement u64,
+    local u64
+) void {
+    var value Option<u64> = .Some(local)
+    setArenaValue<Option<u64>>(
+        &analyzer.model.statementElseLocals, statement, $value)
+}
+
+fn setSemanticStatementDrops(
+    &analyzer semanticAnalyzer,
+    statement u64,
+    $drops own arena<u64>
+) void {
+    setArenaValue<own arena<u64>>(
+        &analyzer.model.statementDrops, statement, $drops)
+}
+
+fn setSemanticLocalBorrowedClosure(
+    &analyzer semanticAnalyzer,
+    local u64,
+    value bool
+) void {
+    var function = match analyzer.model.functions.take(analyzer.state.currentFunction) {
+        None: panic("semantic function slot is empty")
+        Some(function): function
+    }
+    var binding = match function.locals.take(local) {
+        None: panic("semantic local slot is empty")
+        Some(binding): binding
+    }
+    binding.borrowedClosure = value
+    function.locals.restore(local, $binding)
+    analyzer.model.functions.restore(analyzer.state.currentFunction, $function)
+}
+
+fn analyzeSemanticBlock(
+    &analyzer semanticAnalyzer,
+    &source program,
+    block u64,
+    nested bool
+) bool {
+    if nested { pushSemanticScope(&analyzer.state) }
+    var node = match source.blocks.take(block) {
+        None: panic("block slot is empty")
+        Some(node): node
+    }
+    var pending = collections.NewList<u64>()
+    var returns = false
+    while !node.statements.IsEmpty() {
+        const statement = match node.statements.PopFront() {
+            None: panic("statement list invariant failed")
+            Some(statement): statement
+        }
+        if analyzeSemanticStatement(&analyzer, &source, statement) {
+            returns = true
+        }
+        pending.PushFront(statement)
+    }
+    while !pending.IsEmpty() {
+        const statement = match pending.PopFront() {
+            None: panic("statement restore invariant failed")
+            Some(statement): statement
+        }
+        node.statements.PushFront(statement)
+    }
+    source.blocks.restore(block, $node)
+    const scopeIndex = analyzer.state.scopes.len() - 1
+    const drops = semanticScopeDropsAt(&analyzer, &source, scopeIndex)
+    setSemanticBlockDrops(&analyzer, block, $drops)
+    if nested {
+        reportSemanticScopeAt(&analyzer, scopeIndex)
+        popSemanticScope(&analyzer.state)
+    }
+    returns
+}
+
+fn analyzeSemanticStatement(
+    &analyzer semanticAnalyzer,
+    &source program,
+    statement u64
+) bool {
+    const selected = source.statements.take(statement)
+    const node = match selected {
+        None: panic("statement slot is empty")
+        Some(node): node
+    }
+    const statementNode { value span } = node
+    var returns = false
+    const restored = match value {
+        Variable(payload): {
+            var current = payload
+            returns = analyzeSemanticVariable(
+                &analyzer, &source, statement, &current, span)
+            statementValue.Variable(current)
+        }
+        StructDestructure(payload): {
+            var current = payload
+            returns = analyzeSemanticStructDestructure(
+                &analyzer, &source, statement, &current, span)
+            statementValue.StructDestructure(current)
+        }
+        Assignment(payload): {
+            var current = payload
+            returns = analyzeSemanticAssignment(
+                &analyzer, &source, statement, &current, span)
+            statementValue.Assignment(current)
+        }
+        Expression(payload): {
+            var current = payload
+            returns = analyzeSemanticExpressionStatement(
+                &analyzer, &source, &current, span)
+            statementValue.Expression(current)
+        }
+        ResultElse(payload): {
+            var current = payload
+            returns = analyzeSemanticResultElse(
+                &analyzer, &source, statement, &current, span)
+            statementValue.ResultElse(current)
+        }
+        ReturnValue(payload): {
+            var current = payload
+            returns = analyzeSemanticReturn(
+                &analyzer, &source, statement, &current, span)
+            statementValue.ReturnValue(current)
+        }
+        DiscardValue(payload): {
+            const previousRoot = analyzer.state.taskWaitRoot
+            const previousVoid = analyzer.state.taskWaitVoidStatement
+            if semanticFunctionTask(&source, analyzer.state.currentFunction) {
+                analyzer.state.taskWaitRoot = .Some(payload.value)
+                analyzer.state.taskWaitVoidStatement = true
+            }
+            discard analyzeSemanticExpressionWithoutExpected(
+                &analyzer, &source, payload.value, .Consume)
+            analyzer.state.taskWaitRoot = previousRoot
+            analyzer.state.taskWaitVoidStatement = previousVoid
+            statementValue.DiscardValue(payload)
+        }
+        IfValue(payload): {
+            var current = payload
+            returns = analyzeSemanticIf(
+                &analyzer, &source, &current, span)
+            statementValue.IfValue(current)
+        }
+        WhileValue(payload): {
+            var current = payload
+            returns = analyzeSemanticWhile(
+                &analyzer, &source, &current, span)
+            statementValue.WhileValue(current)
+        }
+        ForValue(payload): {
+            var current = payload
+            returns = analyzeSemanticFor(
+                &analyzer, &source, statement, &current, span)
+            statementValue.ForValue(current)
+        }
+        BreakValue: {
+            returns = analyzeSemanticLoopJump(
+                &analyzer, &source, statement, "break", span)
+            statementValue.BreakValue
+        }
+        ContinueValue: {
+            returns = analyzeSemanticLoopJump(
+                &analyzer, &source, statement, "continue", span)
+            statementValue.ContinueValue
+        }
+        SelectValue(payload): {
+            var current = payload
+            returns = analyzeSemanticSelect(
+                &analyzer, &source, statement, &current, span)
+            statementValue.SelectValue(current)
+        }
+        UnsafeValue(payload): {
+            if !payload.safetyProof {
+                analyzer.diagnostics.reportError(
+                    "FDN2212",
+                    "unsafe block requires an immediately preceding // SAFETY: proof",
+                    span
+                )
+            }
+            analyzer.state.unsafeDepth += 1
+            returns = analyzeSemanticBlock(
+                &analyzer, &source, payload.body, true)
+            analyzer.state.unsafeDepth -= 1
+            statementValue.UnsafeValue(payload)
+        }
+    }
+    source.statements.restore(statement, $statementNode {
+        value = restored span = span
+    })
+    returns
+}
+
+fn analyzeSemanticVariable(
+    &analyzer semanticAnalyzer,
+    &source program,
+    statement u64,
+    &variable variableStatement,
+    span sourceSpan
+) bool {
+    var declared = invalidSemanticType()
+    var hasDeclared = false
+    const selectedType = replace variable.type with .None
+    match selectedType {
+        None: {}
+        Some(syntax): {
+            var original = syntax
+            declared = resolveSemanticType(&analyzer, &source, &original)
+            hasDeclared = true
+            discard replace variable.type with .Some(original)
+        }
+    }
+    var hasElse = false
+    var elseBlock u64 = 0
+    match variable.elseBlock {
+        None: {}
+        Some(block): {
+            hasElse = true
+            elseBlock = block
+        }
+    }
+    var expected = absentSemanticType()
+    if hasDeclared && !hasElse {
+        expected = expectedSemanticType(&declared)
+    }
+    const previousRoot = analyzer.state.taskWaitRoot
+    if semanticFunctionTask(&source, analyzer.state.currentFunction) && !hasElse {
+        analyzer.state.taskWaitRoot = .Some(variable.initializer)
+    }
+    var initializer = analyzeSemanticExpression(
+        &analyzer, &source, variable.initializer, $expected, .Consume)
+    analyzer.state.taskWaitRoot = previousRoot
+    if hasElse {
+        if !isSemanticResult(&source, &initializer) ||
+            initializer.arguments.len() != 2 {
+            analyzer.diagnostics.reportError(
+                "FDN2053", "const else requires a Result initializer", span)
+            declared = invalidSemanticType()
+        } else {
+            var payload = semanticTypeArgument(&initializer, 0)
+            var errorType = semanticTypeArgument(&initializer, 1)
+            if hasDeclared {
+                requireSameSemanticType(
+                    &analyzer,
+                    &source,
+                    &declared,
+                    &payload,
+                    span,
+                    "const else payload"
+                )
+            } else {
+                declared = payload
+            }
+            const outstandingCount = analyzer.state.resultOutstanding.len()
+            const moveCount = analyzer.state.moveStates.len()
+            const loanCount = analyzer.state.loanStates.len()
+            var successOutstanding = semanticBoolPrefix(
+                &analyzer.state.resultOutstanding, outstandingCount)
+            var successMoves = semanticMovePrefix(
+                &analyzer.state.moveStates, moveCount)
+            var successLoans = semanticLoanPrefix(
+                &analyzer.state.loanStates, loanCount)
+            pushSemanticScope(&analyzer.state)
+            var bindingName = "$constElseError" + format.U64(statement)
+            var explicitBinding = false
+            var copied = semanticOptionalStringCopy(variable.elseBinding)
+            match copied {
+                None: {}
+                Some(name): {
+                    bindingName = name
+                    explicitBinding = true
+                }
+            }
+            const errorLocal = addSemanticLocalToFunction(
+                &analyzer,
+                &source,
+                bindingName,
+                $errorType,
+                false,
+                span
+            )
+            if !explicitBinding {
+                setSemanticBool(
+                    &analyzer.state.resultOutstanding, errorLocal, false)
+            }
+            setSemanticStatementElseLocal(&analyzer, statement, errorLocal)
+            const exits = analyzeSemanticBlock(
+                &analyzer, &source, elseBlock, false)
+            const scopeIndex = analyzer.state.scopes.len() - 1
+            reportSemanticScopeAt(&analyzer, scopeIndex)
+            popSemanticScope(&analyzer.state)
+            restoreSemanticBools(
+                &analyzer.state.resultOutstanding, &successOutstanding)
+            restoreSemanticMoves(&analyzer.state.moveStates, &successMoves)
+            restoreSemanticLoans(&analyzer.state.loanStates, &successLoans)
+            if !exits {
+                analyzer.diagnostics.reportError(
+                    "FDN2054", "const else block must exit", span)
+            }
+        }
+    }
+    if !hasElse && !hasDeclared {
+        declared = copySemanticType(&initializer)
+    }
+    if !hasElse && hasDeclared {
+        requireSameSemanticType(
+            &analyzer,
+            &source,
+            &declared,
+            &initializer,
+            span,
+            "binding initializer"
+        )
+    }
+    if declared.kind.Matches("Void") {
+        analyzer.diagnostics.reportError(
+            "FDN2016", "binding initializer cannot be void", span)
+        declared = invalidSemanticType()
+    }
+    if containsSemanticBorrow(&declared) {
+        analyzer.diagnostics.reportError(
+            "FDN2074", "borrow cannot be stored in a local binding", span)
+    }
+    if containsBareSemanticSlice(&declared) {
+        analyzer.diagnostics.reportError(
+            "FDN2080", "slice binding requires view or edit", span)
+    }
+    if containsBareSemanticContract(&declared, true) {
+        analyzer.diagnostics.reportError(
+            "FDN2099", "contract value requires view, edit, or own", span)
+    }
+    const local = addSemanticLocalToFunction(
+        &analyzer,
+        &source,
+        variable.name,
+        $declared,
+        variable.mutableBinding,
+        span
+    )
+    setSemanticStatementLocal(&analyzer, statement, local)
+    const borrowedClosure = semanticBoolAt(
+        &analyzer.model.expressionBorrowedClosures,
+        variable.initializer
+    )
+    setSemanticLocalBorrowedClosure(
+        &analyzer,
+        local,
+        borrowedClosure
+    )
+    false
+}
+
+fn setSemanticStructDestructureTarget(
+    &analyzer semanticAnalyzer,
+    statement u64,
+    $target structDestructureTarget
+) void {
+    var value Option<structDestructureTarget> = .Some(target)
+    setArenaValue<Option<structDestructureTarget>>(
+        &analyzer.model.statementStructTargets,
+        statement,
+        $value
+    )
+}
+
+fn semanticDestructureStruct(
+    &analyzer semanticAnalyzer,
+    &source program,
+    name String
+) Option<u64> {
+    if !text.Contains(name, ".") {
+        const packageName = currentSemanticPackage(&analyzer, &source)
+        if !text.IsEmpty(packageName) {
+            match findSemanticSymbol(
+                &analyzer.state.structs, packageName + "." + name) {
+                None: {}
+                Some(value): { return .Some(value) }
+            }
+        }
+    }
+    findSemanticSymbol(&analyzer.state.structs, name)
+}
+
+fn semanticStructFieldName(
+    &source program,
+    type u64,
+    target u64
+) String {
+    if type >= source.structs.len() return "field"
+    var declaration = match source.structs.take(type) {
+        None: panic("struct slot is empty")
+        Some(declaration): declaration
+    }
+    var pending = collections.NewList<structField>()
+    var index u64 = 0
+    var result = "field"
+    while !declaration.fields.IsEmpty() {
+        var field = match declaration.fields.PopFront() {
+            None: panic("struct field list invariant failed")
+            Some(field): field
+        }
+        if index == target { result = text.Copy(field.name) }
+        pending.PushFront($field)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const field = match pending.PopFront() {
+            None: panic("struct field restore invariant failed")
+            Some(field): field
+        }
+        declaration.fields.PushFront($field)
+    }
+    source.structs.restore(type, $declaration)
+    result
+}
+
+fn analyzeSemanticChannelDestructure(
+    &analyzer semanticAnalyzer,
+    &source program,
+    statement u64,
+    &destructure structDestructureStatement,
+    &sourceType semanticType,
+    owned bool,
+    span sourceSpan
+) bool {
+    if !sourceType.kind.Matches("Channel") || sourceType.arguments.len() != 1 {
+        analyzer.diagnostics.reportError(
+            "FDN2130",
+            "Channel destructuring requires a Channel value or owner",
+            span
+        )
+    }
+    if listLength(&destructure.type.arguments) != 0 {
+        var pattern = resolveSemanticType(
+            &analyzer, &source, &destructure.type)
+        requireSameSemanticType(
+            &analyzer,
+            &source,
+            &pattern,
+            &sourceType,
+            span,
+            "Channel pattern"
+        )
+    }
+    var bound = newArena<bool>()
+    discard bound.add(false)
+    discard bound.add(false)
+    var fields = newArena<u64>()
+    var bindings = newArena<u64>()
+    var pending = collections.NewList<structPatternField>()
+    while !destructure.fields.IsEmpty() {
+        var fieldPattern = match destructure.fields.PopFront() {
+            None: panic("struct pattern list invariant failed")
+            Some(fieldPattern): fieldPattern
+        }
+        var fieldPresent = false
+        var field u64 = 0
+        if fieldPattern.field == "sender" {
+            fieldPresent = true
+            field = 0
+        }
+        if fieldPattern.field == "receiver" {
+            fieldPresent = true
+            field = 1
+        }
+        if !fieldPresent {
+            analyzer.diagnostics.reportError(
+                "FDN2025",
+                "unknown Channel field " + fieldPattern.field,
+                fieldPattern.span
+            )
+        } else {
+            if semanticBoolAt(&bound, field) {
+                analyzer.diagnostics.reportError(
+                    "FDN2132",
+                    "duplicate field pattern " + fieldPattern.field,
+                    fieldPattern.span
+                )
+            }
+            setSemanticBool(&bound, field, true)
+        }
+        var payload = invalidSemanticType()
+        if sourceType.kind.Matches("Channel") &&
+            sourceType.arguments.len() == 1 {
+            payload = semanticTypeArgument(&sourceType, 0)
+        }
+        var endpoint = invalidSemanticType()
+        if fieldPresent {
+            endpoint = unarySemanticType(
+                .Sender if field == 0 else .Receiver,
+                $payload
+            )
+        }
+        const local = addSemanticLocalToFunction(
+            &analyzer,
+            &source,
+            fieldPattern.binding,
+            $endpoint,
+            false,
+            fieldPattern.span
+        )
+        discard fields.add(field)
+        discard bindings.add(local)
+        pending.PushFront($fieldPattern)
+    }
+    while !pending.IsEmpty() {
+        const fieldPattern = match pending.PopFront() {
+            None: panic("struct pattern restore invariant failed")
+            Some(fieldPattern): fieldPattern
+        }
+        destructure.fields.PushFront($fieldPattern)
+    }
+    if !semanticBoolAt(&bound, 0) {
+        analyzer.diagnostics.reportError(
+            "FDN2133", "Channel pattern is missing field sender", span)
+    }
+    if !semanticBoolAt(&bound, 1) {
+        analyzer.diagnostics.reportError(
+            "FDN2133", "Channel pattern is missing field receiver", span)
+    }
+    var targetType = invalidSemanticType()
+    if sourceType.kind.Matches("Channel") {
+        targetType = copySemanticType(&sourceType)
+    }
+    setSemanticStructDestructureTarget(
+        &analyzer,
+        statement,
+        $structDestructureTarget {
+        type = targetType
+        owned = owned
+        fields = fields
+        bindings = bindings
+    }
+    )
+    false
+}
+
+fn analyzeSemanticStructDestructure(
+    &analyzer semanticAnalyzer,
+    &source program,
+    statement u64,
+    &destructure structDestructureStatement,
+    span sourceSpan
+) bool {
+    var initializer = analyzeSemanticExpressionWithoutExpected(
+        &analyzer, &source, destructure.initializer, .Consume)
+    var type = copySemanticType(&initializer)
+    var owned = false
+    if type.kind.Matches("Own") && type.arguments.len() == 1 {
+        type = semanticTypeArgument(&type, 0)
+        owned = true
+    }
+    if destructure.type.name == "Channel" {
+        return analyzeSemanticChannelDestructure(
+            &analyzer,
+            &source,
+            statement,
+            &destructure,
+            &type,
+            owned,
+            span
+        )
+    }
+
+    const found = semanticDestructureStruct(
+        &analyzer, &source, destructure.type.name)
+    var declarationPresent = false
+    var declarationID u64 = 0
+    match found {
+        None: analyzer.diagnostics.reportError(
+            "FDN2024",
+            "unknown struct " + destructure.type.name,
+            destructure.type.span
+        )
+        Some(value): {
+            declarationPresent = true
+            declarationID = value
+        }
+    }
+    const validSource = type.kind.Matches("StructValue") &&
+        type.declaration < source.structs.len()
+    if !validSource {
+        analyzer.diagnostics.reportError(
+            "FDN2130", "struct destructuring requires a struct value or owner", span)
+    } else {
+        if declarationPresent && type.declaration != declarationID {
+            analyzer.diagnostics.reportError(
+                "FDN2131", "struct pattern does not match initializer", span)
+        } else {
+            const owner = semanticStructName(&source, type.declaration)
+            match findSemanticMethod(&analyzer.state.methodList, owner, "drop") {
+                None: {}
+                Some(function): {
+                    discard function
+                    analyzer.diagnostics.reportError(
+                        "FDN2139",
+                        "struct with custom drop cannot be destructured",
+                        span
+                    )
+                }
+            }
+        }
+    }
+    if !declarationPresent && validSource {
+        declarationPresent = true
+        declarationID = type.declaration
+    }
+    var fields = newArena<u64>()
+    var bindings = newArena<u64>()
+    var bound = newArena<bool>()
+    const fieldCount = if declarationPresent {
+        semanticStructFieldCount(&analyzer, declarationID)
+    } else { 0 }
+    var index u64 = 0
+    while index < fieldCount {
+        discard bound.add(false)
+        index += 1
+    }
+    var pending = collections.NewList<structPatternField>()
+    while !destructure.fields.IsEmpty() {
+        const pattern = match destructure.fields.PopFront() {
+            None: panic("struct pattern list invariant failed")
+            Some(pattern): pattern
+        }
+        var field u64 = 0
+        var fieldType = invalidSemanticType()
+        const foundField = if declarationPresent {
+            findSemanticField(&source, declarationID, pattern.field)
+        } else { Option<u64>.None }
+        match foundField {
+            None: analyzer.diagnostics.reportError(
+                "FDN2025", "unknown field " + pattern.field, pattern.span)
+            Some(value): {
+                field = value
+                if semanticBoolAt(&bound, field) {
+                    analyzer.diagnostics.reportError(
+                        "FDN2132",
+                        "duplicate field pattern " + pattern.field,
+                        pattern.span
+                    )
+                }
+                setSemanticBool(&bound, field, true)
+                if validSource && type.declaration == declarationID {
+                    fieldType = semanticStructFieldType(
+                        &analyzer, declarationID, field, &type.arguments)
+                }
+                const info = semanticFieldInfoAt(
+                    &source, declarationID, field)
+                if semanticStructPackage(&source, declarationID) !=
+                    currentSemanticPackage(&analyzer, &source) &&
+                    !info.exported {
+                    analyzer.diagnostics.reportError(
+                        "FDN3008",
+                        "field " + pattern.field + " is not exported",
+                        pattern.span
+                    )
+                }
+            }
+        }
+        const local = addSemanticLocalToFunction(
+            &analyzer,
+            &source,
+            pattern.binding,
+            $fieldType,
+            false,
+            pattern.span
+        )
+        discard fields.add(field)
+        discard bindings.add(local)
+        pending.PushFront($pattern)
+    }
+    while !pending.IsEmpty() {
+        const pattern = match pending.PopFront() {
+            None: panic("struct pattern restore invariant failed")
+            Some(pattern): pattern
+        }
+        destructure.fields.PushFront($pattern)
+    }
+    index = 0
+    while index < bound.len() {
+        if !semanticBoolAt(&bound, index) {
+            analyzer.diagnostics.reportError(
+                "FDN2133",
+                "struct pattern is missing field " +
+                semanticStructFieldName(&source, declarationID, index),
+                span
+            )
+        }
+        index += 1
+    }
+    if semanticBoolAt(
+        &analyzer.model.expressionBorrowedClosures,
+        destructure.initializer
+    ) {
+        analyzer.diagnostics.reportError(
+            "FDN2127", "borrowed closure cannot be destructured", span)
+    }
+    var targetType = invalidSemanticType()
+    if validSource { targetType = copySemanticType(&type) }
+    setSemanticStructDestructureTarget(
+        &analyzer,
+        statement,
+        $structDestructureTarget {
+        type = targetType
+        owned = owned
+        fields = fields
+        bindings = bindings
+    }
+    )
+    false
+}
+
+fn analyzeSemanticAssignment(
+    &analyzer semanticAnalyzer,
+    &source program,
+    statement u64,
+    &assignment assignmentStatement,
+    span sourceSpan
+) bool {
+    var target = analyzeSemanticExpressionWithoutExpected(
+        &analyzer, &source, assignment.target, .Inspect)
+    var expected = expectedSemanticType(&target)
+    if !assignment.operation.Matches("Assign") && !isSemanticNumeric(&target) &&
+        !target.kind.Matches("StringValue") && !target.kind.Matches("Raw") &&
+        !target.kind.Matches("RawConst") {
+        expected = absentSemanticType()
+    }
+    var value = analyzeSemanticExpression(
+        &analyzer, &source, assignment.value, $expected,
+        .Inspect if !assignment.operation.Matches("Assign") else .Consume)
+    if !isSemanticEditablePlace(&analyzer, &source, assignment.target) {
+        analyzer.diagnostics.reportError(
+            "FDN2077",
+            "assignment requires a mutable binding or edit borrow",
+            span
+        )
+    }
+    if assignment.operation.Matches("Assign") {
+        requireSameSemanticType(
+            &analyzer, &source, &target, &value, span, "assignment")
+    } else {
+        discard validateSemanticArithmetic(
+            &analyzer,
+            &source,
+            semanticAssignmentBinary(assignment.operation),
+            &target,
+            &value,
+            span
+        )
+    }
+    const borrowedClosure = semanticBoolAt(
+        &analyzer.model.expressionBorrowedClosures, assignment.value)
+    if borrowedClosure {
+        analyzer.diagnostics.reportError(
+            "FDN2127", "borrowed closure cannot be assigned", span)
+    }
+    var name = semanticNameAt(&source, assignment.target)
+    match semanticPlaceRootLocal(&analyzer, &source, assignment.target) {
+        None: {}
+        Some(local): {
+            var localType = semanticLocalType(&analyzer, local)
+            const directEdit = localType.kind.Matches("Edit") &&
+                localType.arguments.len() == 1
+            if assignment.operation.Matches("Assign") && name.matched &&
+                !semanticLocalMutable(&analyzer, local) && !directEdit {
+                analyzer.diagnostics.reportError(
+                    "FDN2013",
+                    "cannot assign to immutable binding " + name.name,
+                    span
+                )
+            }
+            const loan = semanticLoanAt(&analyzer.state.loanStates, local)
+            if !loan.Matches("None") {
+                const localName = semanticLocalName(&analyzer, local)
+                analyzer.diagnostics.reportError(
+                    "FDN2075",
+                    "cannot replace borrowed binding " + localName,
+                    span
+                )
+            }
+            setSemanticStatementLocal(&analyzer, statement, local)
+            if requiresSemanticDrop(&analyzer, &source, &target) {
+                setSemanticMove(&analyzer.state.moveStates, local, .Available)
+            }
+            if isSemanticResult(&source, &target) {
+                if semanticBoolAt(&analyzer.state.resultOutstanding, local) {
+                    analyzer.diagnostics.reportError(
+                        "FDN2052", "assignment replaces an unhandled Result", span)
+                }
+                setSemanticBool(
+                    &analyzer.state.resultOutstanding, local, true)
+            }
+        }
+    }
+    false
+}
+
+fn semanticAssignmentBinary(operation assignmentOperator) binaryOperator {
+    match operation {
+        Assign: .Add
+        Add: .Add
+        Subtract: .Subtract
+        Multiply: .Multiply
+        Divide: .Divide
+        Remainder: .Remainder
+        ShiftLeft: .ShiftLeft
+        ShiftRight: .ShiftRight
+    }
+}
+
+fn analyzeSemanticExpressionStatement(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &statement expressionStatement,
+    span sourceSpan
+) bool {
+    const previousRoot = analyzer.state.taskWaitRoot
+    const previousVoid = analyzer.state.taskWaitVoidStatement
+    if semanticFunctionTask(&source, analyzer.state.currentFunction) {
+        analyzer.state.taskWaitRoot = .Some(statement.expression)
+        analyzer.state.taskWaitVoidStatement = true
+    }
+    var type = analyzeSemanticExpressionWithoutExpected(
+        &analyzer, &source, statement.expression, .Consume)
+    analyzer.state.taskWaitRoot = previousRoot
+    analyzer.state.taskWaitVoidStatement = previousVoid
+    if isSemanticResult(&source, &type) {
+        analyzer.diagnostics.reportError(
+            "FDN2051", "Result value must be handled or discarded", span)
+    }
+    if requiresSemanticDrop(&analyzer, &source, &type) {
+        analyzer.diagnostics.reportError(
+            "FDN2076", "owned value must be handled or discarded", span)
+    }
+    if type.kind.Matches("Never") {
+        semanticClearOutstanding(&analyzer.state)
+        return true
+    }
+    false
+}
+
+fn semanticClearOutstanding(&state semanticAnalyzerState) void {
+    var index u64 = 0
+    while index < state.resultOutstanding.len() {
+        setSemanticBool(&state.resultOutstanding, index, false)
+        index += 1
+    }
+}
+
+fn analyzeSemanticResultElse(
+    &analyzer semanticAnalyzer,
+    &source program,
+    statement u64,
+    &resultElse resultElseStatement,
+    span sourceSpan
+) bool {
+    const previousRoot = analyzer.state.taskWaitRoot
+    const previousVoid = analyzer.state.taskWaitVoidStatement
+    if semanticFunctionTask(&source, analyzer.state.currentFunction) {
+        analyzer.state.taskWaitRoot = .Some(resultElse.expression)
+        analyzer.state.taskWaitVoidStatement = true
+    }
+    var result = analyzeSemanticExpressionWithoutExpected(
+        &analyzer, &source, resultElse.expression, .Consume)
+    analyzer.state.taskWaitRoot = previousRoot
+    analyzer.state.taskWaitVoidStatement = previousVoid
+    if !isSemanticResult(&source, &result) || result.arguments.len() != 2 {
+        analyzer.diagnostics.reportError(
+            "FDN2053", "expression else requires a Result value", span)
+        return false
+    }
+    var success = semanticTypeArgument(&result, 0)
+    if !success.kind.Matches("Void") {
+        analyzer.diagnostics.reportError(
+            "FDN2053",
+            "expression else requires Result<void, E>; bind a non-void success value",
+            span
+        )
+    }
+    var errorType = semanticTypeArgument(&result, 1)
+    const outstandingCount = analyzer.state.resultOutstanding.len()
+    const moveCount = analyzer.state.moveStates.len()
+    const loanCount = analyzer.state.loanStates.len()
+    var successOutstanding = semanticBoolPrefix(
+        &analyzer.state.resultOutstanding, outstandingCount)
+    var successMoves = semanticMovePrefix(
+        &analyzer.state.moveStates, moveCount)
+    var successLoans = semanticLoanPrefix(
+        &analyzer.state.loanStates, loanCount)
+    pushSemanticScope(&analyzer.state)
+    var name = "$resultElseError" + format.U64(statement)
+    var explicitBinding = false
+    var copied = semanticOptionalStringCopy(resultElse.errorBinding)
+    match copied {
+        None: {}
+        Some(value): {
+            name = value
+            explicitBinding = true
+        }
+    }
+    const local = addSemanticLocalToFunction(
+        &analyzer, &source, name, $errorType, false, span)
+    if !explicitBinding {
+        setSemanticBool(&analyzer.state.resultOutstanding, local, false)
+    }
+    setSemanticStatementElseLocal(&analyzer, statement, local)
+    const exits = analyzeSemanticBlock(
+        &analyzer, &source, resultElse.elseBlock, false)
+    const scopeIndex = analyzer.state.scopes.len() - 1
+    reportSemanticScopeAt(&analyzer, scopeIndex)
+    popSemanticScope(&analyzer.state)
+    restoreSemanticBools(
+        &analyzer.state.resultOutstanding, &successOutstanding)
+    restoreSemanticMoves(&analyzer.state.moveStates, &successMoves)
+    restoreSemanticLoans(&analyzer.state.loanStates, &successLoans)
+    if !exits {
+        analyzer.diagnostics.reportError(
+            "FDN2054", "expression else block must exit", span)
+    }
+    false
+}
+
+fn semanticCurrentReturnType(&analyzer semanticAnalyzer) semanticType {
+    var function = match analyzer.model.functions.take(analyzer.state.currentFunction) {
+        None: panic("semantic function slot is empty")
+        Some(function): function
+    }
+    const result = copySemanticType(&function.returnType)
+    analyzer.model.functions.restore(analyzer.state.currentFunction, $function)
+    result
+}
+
+fn analyzeSemanticReturn(
+    &analyzer semanticAnalyzer,
+    &source program,
+    statement u64,
+    &returned returnStatement,
+    span sourceSpan
+) bool {
+    var expected = semanticCurrentReturnType(&analyzer)
+    match returned.value {
+        None: {
+            if !expected.kind.Matches("Void") {
+                analyzer.diagnostics.reportError(
+                    "FDN2014", "non-void function must return a value", span)
+            }
+        }
+        Some(expression): {
+            if returned.tail && expected.kind.Matches("Void") {
+                discard analyzeSemanticExpressionWithoutExpected(
+                    &analyzer, &source, expression, .Consume)
+                return false
+            }
+            var value = analyzeSemanticExpression(
+                &analyzer,
+                &source,
+                expression,
+                expectedSemanticType(&expected),
+                .Consume
+            )
+            if expected.kind.Matches("Void") {
+                analyzer.diagnostics.reportError(
+                    "FDN2015", "void function must use a bare return", span)
+            } else {
+                requireSameSemanticType(
+                    &analyzer, &source, &expected, &value, span, "return")
+            }
+        }
+    }
+    reportSemanticOutstanding(&analyzer, span, 0)
+    const drops = semanticActiveDrops(&analyzer, &source)
+    setSemanticStatementDrops(&analyzer, statement, $drops)
+    true
+}

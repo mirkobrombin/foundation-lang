@@ -1,0 +1,202 @@
+package foundation.compiler
+
+import std.text
+
+enum firAttributeTarget {
+    Function
+    StructValue
+    Service
+    EnumValue
+    ContractValue
+    Method
+    Constructor
+    Action
+    Field
+    Variant
+    Parameter
+}
+
+methods firAttributeTarget {
+    fn Name(self) String {
+        match self {
+            Function: "Function"
+            StructValue: "StructValue"
+            Service: "Service"
+            EnumValue: "EnumValue"
+            ContractValue: "ContractValue"
+            Method: "Method"
+            Constructor: "Constructor"
+            Action: "Action"
+            Field: "Field"
+            Variant: "Variant"
+            Parameter: "Parameter"
+        }
+    }
+
+    fn Matches(self, name String) bool {
+        self.Name() == name
+    }
+}
+
+enum firAttributeValueKind {
+    Integer
+    Floating
+    Boolean
+    StringValue
+    EnumValue
+    Array
+    StructValue
+}
+
+struct firAttributeValue {
+    kind firAttributeValueKind
+    type semanticType
+    magnitude u64
+    negative bool
+    boolean bool
+    text String
+    variant u64
+    members own arena<String>
+    children own arena<firAttributeValue>
+}
+
+struct firAttributeArgument {
+    name String
+    value firAttributeValue
+}
+
+struct firAttributeUse {
+    declaration u64
+    arguments own arena<firAttributeArgument>
+}
+
+struct firAttributeParameter {
+    name String
+    type semanticType
+}
+
+struct firAttributeDeclaration {
+    name String
+    parameters own arena<firAttributeParameter>
+    targets own arena<firAttributeTarget>
+    repeatable bool
+    exported bool
+}
+
+fn emptyFirAttributeValue() firAttributeValue {
+    firAttributeValue {
+        kind = .Integer
+        type = invalidSemanticType()
+        magnitude = 0
+        negative = false
+        boolean = false
+        text = ""
+        variant = 0
+        members = newArena<String>()
+        children = newArena<firAttributeValue>()
+    }
+}
+
+fn newFirAttributeUse(declaration u64) firAttributeUse {
+    firAttributeUse {
+        declaration = declaration
+        arguments = newArena<firAttributeArgument>()
+    }
+}
+
+fn newFirAttributeDeclaration() firAttributeDeclaration {
+    firAttributeDeclaration {
+        name = ""
+        parameters = newArena<firAttributeParameter>()
+        targets = newArena<firAttributeTarget>()
+        repeatable = false
+        exported = false
+    }
+}
+
+fn copyFirAttributeValue(&source firAttributeValue) firAttributeValue {
+    var result = firAttributeValue {
+        kind = source.kind
+        type = copySemanticType(&source.type)
+        magnitude = source.magnitude
+        negative = source.negative
+        boolean = source.boolean
+        text = text.Copy(source.text)
+        variant = source.variant
+        members = newArena<String>()
+        children = newArena<firAttributeValue>()
+    }
+    var index u64 = 0
+    while index < source.members.len() {
+        const member = match source.members.take(index) {
+            None: panic("attribute member slot is empty")
+            Some(member): member
+        }
+        discard result.members.add(text.Copy(member))
+        source.members.restore(index, $member)
+        index += 1
+    }
+    index = 0
+    while index < source.children.len() {
+        var child = match source.children.take(index) {
+            None: panic("attribute child slot is empty")
+            Some(child): child
+        }
+        discard result.children.add(copyFirAttributeValue(&child))
+        source.children.restore(index, $child)
+        index += 1
+    }
+    result
+}
+
+fn copyFirAttributeUse(&source firAttributeUse) firAttributeUse {
+    var result = newFirAttributeUse(source.declaration)
+    var index u64 = 0
+    while index < source.arguments.len() {
+        var argument = match source.arguments.take(index) {
+            None: panic("attribute argument slot is empty")
+            Some(argument): argument
+        }
+        discard result.arguments.add(firAttributeArgument {
+            name = text.Copy(argument.name)
+            value = copyFirAttributeValue(&argument.value)
+        })
+        source.arguments.restore(index, $argument)
+        index += 1
+    }
+    result
+}
+
+fn copyFirAttributeUseArena(
+    &source arena<firAttributeUse>
+) own arena<firAttributeUse> {
+    var result = newArena<firAttributeUse>()
+    var index u64 = 0
+    while index < source.len() {
+        var value = match source.take(index) {
+            None: panic("attribute use slot is empty")
+            Some(value): value
+        }
+        discard result.add(copyFirAttributeUse(&value))
+        source.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirAttributeUseArenaArena(
+    &source arena<own arena<firAttributeUse>>
+) own arena<own arena<firAttributeUse>> {
+    var result = newArena<own arena<firAttributeUse>>()
+    var index u64 = 0
+    while index < source.len() {
+        var value = match source.take(index) {
+            None: panic("attribute use group slot is empty")
+            Some(value): value
+        }
+        discard result.add($copyFirAttributeUseArena(&value))
+        source.restore(index, $value)
+        index += 1
+    }
+    result
+}

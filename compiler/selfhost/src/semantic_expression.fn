@@ -1,0 +1,1411 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+struct semanticExpected {
+    present bool
+    type semanticType
+}
+
+struct semanticOwnershipProbe {
+    matched bool
+    operation ownershipOperator
+    operand u64
+}
+
+struct semanticParameterInfo {
+    present bool
+    name String
+    mode parameterMode
+}
+
+fn takeSemanticExpected($value Option<semanticType>) semanticExpected {
+    match value {
+        None: semanticExpected {
+            present = false
+            type = invalidSemanticType()
+        }
+        Some(type): semanticExpected { present = true type = type }
+    }
+}
+
+fn absentSemanticType() Option<semanticType> {
+    var result Option<semanticType> = .None
+    result
+}
+
+fn expectedSemanticType(&value semanticType) Option<semanticType> {
+    var result Option<semanticType> = .Some(copySemanticType(&value))
+    result
+}
+
+fn setSemanticExpressionType(
+    &analyzer semanticAnalyzer,
+    expression u64,
+    &type semanticType
+) void {
+    setArenaValue<semanticType>(
+        &analyzer.model.expressionTypes,
+        expression,
+        copySemanticType(&type)
+    )
+}
+
+fn setSemanticExpressionRead(
+    &analyzer semanticAnalyzer,
+    expression u64,
+    value bool
+) void {
+    setArenaValue<bool>(&analyzer.model.expressionReads, expression, value)
+}
+
+fn setSemanticExpressionMove(
+    &analyzer semanticAnalyzer,
+    expression u64,
+    value bool
+) void {
+    setArenaValue<bool>(&analyzer.model.expressionMoves, expression, value)
+}
+
+fn setSemanticExpressionLocal(
+    &analyzer semanticAnalyzer,
+    expression u64,
+    local u64
+) void {
+    var value Option<u64> = .Some(local)
+    setArenaValue<Option<u64>>(
+        &analyzer.model.expressionLocals,
+        expression,
+        $value
+    )
+}
+
+fn setSemanticCallTarget(
+    &analyzer semanticAnalyzer,
+    expression u64,
+    $target callTarget
+) void {
+    var value Option<callTarget> = .Some(target)
+    setArenaValue<Option<callTarget>>(
+        &analyzer.model.callTargets,
+        expression,
+        $value
+    )
+}
+
+fn setSemanticOwnershipTarget(
+    &analyzer semanticAnalyzer,
+    expression u64,
+    $target semanticOwnershipTarget
+) void {
+    var value Option<semanticOwnershipTarget> = .Some(target)
+    setArenaValue<Option<semanticOwnershipTarget>>(
+        &analyzer.model.ownershipTargets,
+        expression,
+        $value
+    )
+}
+
+fn semanticExpressionSpan(&source program, expression u64) sourceSpan {
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(node): node
+    }
+    const span = node.span
+    source.expressions.restore(expression, $node)
+    span
+}
+
+fn semanticOwnershipAt(
+    &source program,
+    expression u64
+) semanticOwnershipProbe {
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    var result = semanticOwnershipProbe {
+        matched = false
+        operation = .Own
+        operand = 0
+    }
+    const restored = match value {
+        Ownership(payload): {
+            result = semanticOwnershipProbe {
+                matched = true
+                operation = payload.operation
+                operand = payload.operand
+            }
+            expressionValue.Ownership(payload)
+        }
+        Integer(payload): expressionValue.Integer(payload)
+        Floating(payload): expressionValue.Floating(payload)
+        Boolean(payload): expressionValue.Boolean(payload)
+        StringValue(payload): expressionValue.StringValue(payload)
+        Array(payload): expressionValue.Array(payload)
+        Name(payload): expressionValue.Name(payload)
+        Unary(payload): expressionValue.Unary(payload)
+        Binary(payload): expressionValue.Binary(payload)
+        Call(payload): expressionValue.Call(payload)
+        StructValue(payload): expressionValue.StructValue(payload)
+        Member(payload): expressionValue.Member(payload)
+        Index(payload): expressionValue.Index(payload)
+        Replace(payload): expressionValue.Replace(payload)
+        Spawn(payload): expressionValue.Spawn(payload)
+        MatchValue(payload): expressionValue.MatchValue(payload)
+        Conditional(payload): expressionValue.Conditional(payload)
+        FunctionValue(payload): expressionValue.FunctionValue(payload)
+    }
+    source.expressions.restore(expression, $expressionNode {
+        value = restored
+        span = span
+    })
+    result
+}
+
+fn semanticExpressionLocal(
+    &analyzer semanticAnalyzer,
+    expression u64
+) Option<u64> {
+    const selected = analyzer.model.expressionLocals.take(expression)
+    const value = match selected {
+        None: panic("expression local slot is empty")
+        Some(value): value
+    }
+    match value {
+        None: {
+            var restored Option<u64> = .None
+            analyzer.model.expressionLocals.restore(expression, $restored)
+            .None
+        }
+        Some(local): {
+            var restored Option<u64> = .Some(local)
+            analyzer.model.expressionLocals.restore(expression, $restored)
+            .Some(local)
+        }
+    }
+}
+
+fn semanticFunctionParameterInfoAt(
+    &source program,
+    function u64,
+    target u64
+) semanticParameterInfo {
+    if function >= source.functions.len() return semanticParameterInfo {
+        present = false name = "" mode = .TypeEncoded
+    }
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    var pending = collections.NewList<parameter>()
+    var index u64 = 0
+    var result = semanticParameterInfo {
+        present = false name = "" mode = .TypeEncoded
+    }
+    while !declaration.parameters.IsEmpty() {
+        const parameter = match declaration.parameters.PopFront() {
+            None: panic("parameter list invariant failed")
+            Some(parameter): parameter
+        }
+        if index == target {
+            result = semanticParameterInfo {
+                present = true
+                name = text.Copy(parameter.name)
+                mode = parameter.mode
+            }
+        }
+        pending.PushFront($parameter)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const parameter = match pending.PopFront() {
+            None: panic("parameter restore invariant failed")
+            Some(parameter): parameter
+        }
+        declaration.parameters.PushFront($parameter)
+    }
+    source.functions.restore(function, $declaration)
+    result
+}
+
+fn semanticFunctionParameterCount(
+    &source program,
+    function u64
+) u64 {
+    if function >= source.functions.len() return 0
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    const count = listLength(&declaration.parameters)
+    source.functions.restore(function, $declaration)
+    count
+}
+
+fn semanticFunctionTypeParameterCount(
+    &source program,
+    function u64
+) u64 {
+    if function >= source.functions.len() return 0
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    const count = listLength(&declaration.typeParameters)
+    source.functions.restore(function, $declaration)
+    count
+}
+
+fn semanticFunctionName(
+    &source program,
+    function u64
+) String {
+    if function >= source.functions.len() return ""
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    const name = text.Copy(declaration.name)
+    source.functions.restore(function, $declaration)
+    name
+}
+
+fn semanticFunctionExported(
+    &source program,
+    function u64
+) bool {
+    if function >= source.functions.len() return false
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    const value = declaration.exported
+    source.functions.restore(function, $declaration)
+    value
+}
+
+fn semanticFunctionPackage(
+    &source program,
+    function u64
+) String {
+    if function >= source.functions.len() return ""
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    const value = text.Copy(declaration.packageName)
+    source.functions.restore(function, $declaration)
+    value
+}
+
+fn semanticFunctionTask(
+    &source program,
+    function u64
+) bool {
+    if function >= source.functions.len() return false
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    const value = declaration.taskFunction
+    source.functions.restore(function, $declaration)
+    value
+}
+
+fn semanticFunctionHasCSymbol(
+    &source program,
+    function u64
+) bool {
+    if function >= source.functions.len() return false
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    const selected = replace declaration.cSymbol with .None
+    const value = match selected {
+        None: false
+        Some(symbol): {
+            declaration.cSymbol = .Some(symbol)
+            true
+        }
+    }
+    source.functions.restore(function, $declaration)
+    value
+}
+
+fn semanticFunctionSignatureAt(
+    &analyzer semanticAnalyzer,
+    function u64
+) functionSignature {
+    var signature = match analyzer.state.signatures.take(function) {
+        None: panic("function signature slot is empty")
+        Some(signature): signature
+    }
+    var returnType = copySemanticType(&signature.returnType)
+    var parameters = copySemanticTypeArena(&signature.parameters)
+    const result = functionSignature {
+        returnType = returnType
+        parameters = parameters
+    }
+    analyzer.state.signatures.restore(function, $signature)
+    result
+}
+
+fn semanticLocalReadBinding(
+    &analyzer semanticAnalyzer,
+    local u64
+) bool {
+    var function = match analyzer.model.functions.take(analyzer.state.currentFunction) {
+        None: panic("semantic function slot is empty")
+        Some(function): function
+    }
+    var value = match function.locals.take(local) {
+        None: panic("semantic local slot is empty")
+        Some(value): value
+    }
+    const result = value.readBinding
+    function.locals.restore(local, $value)
+    analyzer.model.functions.restore(analyzer.state.currentFunction, $function)
+    result
+}
+
+fn semanticLocalBorrowedClosure(
+    &analyzer semanticAnalyzer,
+    local u64
+) bool {
+    var function = match analyzer.model.functions.take(analyzer.state.currentFunction) {
+        None: panic("semantic function slot is empty")
+        Some(function): function
+    }
+    var value = match function.locals.take(local) {
+        None: panic("semantic local slot is empty")
+        Some(value): value
+    }
+    const result = value.borrowedClosure
+    function.locals.restore(local, $value)
+    analyzer.model.functions.restore(analyzer.state.currentFunction, $function)
+    result
+}
+
+fn semanticLocalCapture(
+    &analyzer semanticAnalyzer,
+    local u64
+) bool {
+    var function = match analyzer.model.functions.take(analyzer.state.currentFunction) {
+        None: panic("semantic function slot is empty")
+        Some(function): function
+    }
+    var value = match function.locals.take(local) {
+        None: panic("semantic local slot is empty")
+        Some(value): value
+    }
+    const result = value.captured
+    function.locals.restore(local, $value)
+    analyzer.model.functions.restore(analyzer.state.currentFunction, $function)
+    result
+}
+
+fn semanticLocalName(
+    &analyzer semanticAnalyzer,
+    local u64
+) String {
+    var function = match analyzer.model.functions.take(analyzer.state.currentFunction) {
+        None: panic("semantic function slot is empty")
+        Some(function): function
+    }
+    var value = match function.locals.take(local) {
+        None: panic("semantic local slot is empty")
+        Some(value): value
+    }
+    const result = text.Copy(value.name)
+    function.locals.restore(local, $value)
+    analyzer.model.functions.restore(analyzer.state.currentFunction, $function)
+    result
+}
+
+fn semanticParameterLocal(
+    &analyzer semanticAnalyzer,
+    local u64
+) Option<u64> {
+    var function = match analyzer.model.functions.take(analyzer.state.currentFunction) {
+        None: panic("semantic function slot is empty")
+        Some(function): function
+    }
+    var index u64 = 0
+    var found Option<u64> = .None
+    while index < function.parameters.len() {
+        const value = match function.parameters.take(index) {
+            None: panic("semantic parameter local slot is empty")
+            Some(value): value
+        }
+        function.parameters.restore(index, value)
+        if value == local { found = .Some(index) }
+        index += 1
+    }
+    analyzer.model.functions.restore(analyzer.state.currentFunction, $function)
+    found
+}
+
+fn semanticNameType(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    &name nameExpression,
+    &expected semanticExpected,
+    use expressionUse,
+    span sourceSpan
+) semanticType {
+    match lookupSemanticLocal(&analyzer.state, name.name) {
+        Some(local): {
+            setSemanticExpressionLocal(&analyzer, expression, local)
+            var type = semanticLocalType(&analyzer, local)
+            var readTarget = semanticLocalReadBinding(&analyzer, local)
+            match semanticParameterLocal(&analyzer, local) {
+                None: {}
+                Some(parameter): {
+                    const info = semanticFunctionParameterInfoAt(
+                        &source,
+                        analyzer.state.currentFunction,
+                        parameter
+                    )
+                    if info.present && info.mode.Matches("Read") {
+                        readTarget = true
+                    }
+                }
+            }
+            if readTarget && use.Matches("Inspect") &&
+                (type.kind.Matches("View") || type.kind.Matches("Edit")) &&
+                type.arguments.len() == 1 {
+                type = semanticTypeArgument(&type, 0)
+                setSemanticExpressionRead(&analyzer, expression, true)
+            }
+            if semanticLoanAt(
+                &analyzer.state.loanStates, local).Matches("Edit") {
+                analyzer.diagnostics.reportError(
+                    "FDN2073",
+                    "cannot inspect edited binding " + name.name,
+                    span
+                )
+            }
+            if use.Matches("Consume") && semanticLocalBorrowedClosure(&analyzer, local) {
+                analyzer.diagnostics.reportError(
+                    "FDN2127",
+                    "borrowed closure cannot escape",
+                    span
+                )
+            }
+            if requiresSemanticDrop(&analyzer, &source, &type) {
+                if semanticLocalCapture(&analyzer, local) && use.Matches("Consume") {
+                    analyzer.diagnostics.reportError(
+                        "FDN2126",
+                        "closure capture cannot be consumed " + name.name,
+                        span
+                    )
+                }
+                const state = semanticMoveAt(&analyzer.state.moveStates, local)
+                if state.Matches("Moved") {
+                    analyzer.diagnostics.reportError(
+                        "FDN2065",
+                        "use of moved binding " + name.name,
+                        span
+                    )
+                }
+                if state.Matches("MaybeMoved") {
+                    analyzer.diagnostics.reportError(
+                        "FDN2066",
+                        "binding may have moved " + name.name,
+                        span
+                    )
+                }
+                if !state.Matches("Moved") && !state.Matches("MaybeMoved") && use.Matches("Consume") {
+                    if !semanticLoanAt(
+                        &analyzer.state.loanStates, local).Matches("None") {
+                        analyzer.diagnostics.reportError(
+                            "FDN2067",
+                            "cannot move borrowed binding " + name.name,
+                            span
+                        )
+                    }
+                    setSemanticMove(&analyzer.state.moveStates, local, .Moved)
+                    setSemanticExpressionMove(&analyzer, expression, true)
+                }
+            }
+            if isSemanticResult(&source, &type) {
+                setSemanticBool(&analyzer.state.resultOutstanding, local, false)
+            }
+            return type
+        }
+        None: {}
+    }
+
+    var functionName = text.Copy(name.name)
+    if !text.Contains(functionName, ".") {
+        const packageName = currentSemanticPackage(&analyzer, &source)
+        if !text.IsEmpty(packageName) {
+            const qualified = packageName + "." + functionName
+            match findSemanticSymbol(&analyzer.state.functions, qualified) {
+                None: {}
+                Some(function): {
+                    return semanticFunctionValueType(
+                        &analyzer,
+                        &source,
+                        expression,
+                        function,
+                        &name.typeArguments,
+                        &expected,
+                        span
+                    )
+                }
+            }
+        }
+    }
+    match findSemanticSymbol(&analyzer.state.functions, functionName) {
+        Some(function): semanticFunctionValueType(
+            &analyzer,
+            &source,
+            expression,
+            function,
+            &name.typeArguments,
+            &expected,
+            span
+        )
+        None: {
+            discard findSemanticLocal(&analyzer, name.name, span)
+            invalidSemanticType()
+        }
+    }
+}
+
+fn semanticFunctionValueType(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    function u64,
+    &syntaxArguments collections.List<typeSyntax>,
+    &expected semanticExpected,
+    span sourceSpan
+) semanticType {
+    const name = semanticFunctionName(&source, function)
+    if name == "main" {
+        analyzer.diagnostics.reportError(
+            "FDN2019", "main cannot be used as a value", span)
+    }
+    if semanticFunctionTask(&source, function) {
+        analyzer.diagnostics.reportError(
+            "FDN2163", "task cannot be used as a function value", span)
+    }
+    const suspension = semanticSuspendingFunction(&source, function)
+    if suspension.blockingCall {
+        analyzer.diagnostics.reportError(
+            "FDN2178", "blocking function cannot be used as a function value", span)
+    }
+    if suspension.callbackCall {
+        analyzer.diagnostics.reportError(
+            "FDN2178", "callback function cannot be used as a function value", span)
+    }
+    var signature = semanticFunctionSignatureAt(&analyzer, function)
+    const parameterCount = semanticFunctionTypeParameterCount(&source, function)
+    var inferred = newArena<Option<semanticType>>()
+    var parameter u64 = 0
+    while parameter < parameterCount {
+        var missing Option<semanticType> = .None
+        discard inferred.add($missing)
+        parameter += 1
+    }
+    var pending = collections.NewList<typeSyntax>()
+    var index u64 = 0
+    while !syntaxArguments.IsEmpty() {
+        var syntax = match syntaxArguments.PopFront() {
+            None: panic("type argument list invariant failed")
+            Some(syntax): syntax
+        }
+        const type = resolveSemanticType(&analyzer, &source, &syntax)
+        if index < inferred.len() {
+            var value Option<semanticType> = .Some(type)
+            setArenaValue<Option<semanticType>>(&inferred, index, $value)
+        }
+        pending.PushFront($syntax)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const syntax = match pending.PopFront() {
+            None: panic("type argument restore invariant failed")
+            Some(syntax): syntax
+        }
+        syntaxArguments.PushFront($syntax)
+    }
+    if index > parameterCount {
+        analyzer.diagnostics.reportError(
+            "FDN2043",
+            "wrong type argument count for function " + name,
+            span
+        )
+    }
+    var parameterNames = semanticFunctionTypeParameters(&source, function)
+    var typeArguments = completeSemanticInference(
+        &analyzer,
+        &inferred,
+        &parameterNames,
+        span,
+        name
+    )
+    verifySemanticTransferableTypeArguments(
+        &analyzer, &source, function, &typeArguments, span)
+    verifySemanticContractTypeArguments(
+        &analyzer, &source, function, &typeArguments, span)
+    var parts = newArena<semanticType>()
+    discard parts.add(substituteSemanticType(&signature.returnType, &typeArguments))
+    index = 0
+    while index < signature.parameters.len() {
+        var parameterType = match signature.parameters.take(index) {
+            None: panic("signature parameter slot is empty")
+            Some(type): type
+        }
+        var resolved = substituteSemanticType(&parameterType, &typeArguments)
+        const info = semanticFunctionParameterInfoAt(&source, function, index)
+        resolved = semanticFunctionValueParameterType(&analyzer, &source, $resolved, info.mode)
+        discard parts.add($resolved)
+        signature.parameters.restore(index, $parameterType)
+        index += 1
+    }
+    const qualifier u64 = expected.type.declaration if
+    expected.present && expected.type.kind.Matches("Function") else 0
+    var target Option<functionValueTarget> = .Some(functionValueTarget {
+        function = function
+        typeArguments = copySemanticTypeArena(&typeArguments)
+    })
+    setArenaValue<Option<functionValueTarget>>(
+        &analyzer.model.functionValueTargets,
+        expression,
+        $target
+    )
+    semanticType {
+        kind = .Function
+        declaration = qualifier
+        arguments = parts
+    }
+}
+
+fn semanticFunctionTypeParameters(
+    &source program,
+    function u64
+) own collections.List<String> {
+    if function >= source.functions.len() return collections.NewList<String>()
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    const result = copyStringList(&declaration.typeParameters)
+    source.functions.restore(function, $declaration)
+    result
+}
+
+fn semanticFunctionValueParameterType(
+    &analyzer semanticAnalyzer,
+    &source program,
+    $type semanticType,
+    mode parameterMode
+) semanticType {
+    var value = type
+    if mode.Matches("Read") {
+        if isCopySemanticParameterType(&analyzer, &source, &value) return value
+        if value.kind.Matches("View") && value.arguments.len() == 1 return value
+        return unarySemanticType(.View, $value)
+    }
+    value
+}
+
+fn semanticPlaceNameLocal(
+    &analyzer semanticAnalyzer,
+    expression u64,
+    name String
+) Option<u64> {
+    match semanticExpressionLocal(&analyzer, expression) {
+        None: lookupSemanticLocal(&analyzer.state, name)
+        Some(local): .Some(local)
+    }
+}
+
+fn semanticPlaceRootLocal(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64
+) Option<u64> {
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    var next Option<u64> = .None
+    var direct Option<u64> = .None
+    const restored = match value {
+        Name(payload): {
+            direct = semanticPlaceNameLocal(
+                &analyzer, expression, payload.name)
+            expressionValue.Name(payload)
+        }
+        Member(payload): {
+            match payload.base {
+                None: {}
+                Some(base): { next = .Some(base) }
+            }
+            expressionValue.Member(payload)
+        }
+        Index(payload): {
+            next = .Some(payload.base)
+            expressionValue.Index(payload)
+        }
+        Unary(payload): {
+            if payload.operation.Matches("Dereference") {
+                next = .Some(payload.operand)
+            }
+            expressionValue.Unary(payload)
+        }
+        Integer(payload): expressionValue.Integer(payload)
+        Floating(payload): expressionValue.Floating(payload)
+        Boolean(payload): expressionValue.Boolean(payload)
+        StringValue(payload): expressionValue.StringValue(payload)
+        Array(payload): expressionValue.Array(payload)
+        Ownership(payload): expressionValue.Ownership(payload)
+        Binary(payload): expressionValue.Binary(payload)
+        Call(payload): expressionValue.Call(payload)
+        StructValue(payload): expressionValue.StructValue(payload)
+        Replace(payload): expressionValue.Replace(payload)
+        Spawn(payload): expressionValue.Spawn(payload)
+        MatchValue(payload): expressionValue.MatchValue(payload)
+        Conditional(payload): expressionValue.Conditional(payload)
+        FunctionValue(payload): expressionValue.FunctionValue(payload)
+    }
+    source.expressions.restore(expression, $expressionNode {
+        value = restored span = span
+    })
+    match direct {
+        Some(local): .Some(local)
+        None: match next {
+            None: .None
+            Some(value): semanticPlaceRootLocal(&analyzer, &source, value)
+        }
+    }
+}
+
+fn isSemanticPlaceExpression(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64
+) bool {
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    var result = false
+    const restored = match value {
+        Name(payload): {
+            match semanticPlaceNameLocal(
+                &analyzer, expression, payload.name) {
+                None: {}
+                Some(local): {
+                    discard local
+                    result = true
+                }
+            }
+            expressionValue.Name(payload)
+        }
+        Member(payload): {
+            match payload.base {
+                None: {}
+                Some(base): {
+                    result = isSemanticPlaceExpression(
+                        &analyzer, &source, base)
+                }
+            }
+            expressionValue.Member(payload)
+        }
+        Index(payload): {
+            result = isSemanticPlaceExpression(&analyzer, &source, payload.base)
+            expressionValue.Index(payload)
+        }
+        Unary(payload): {
+            result = payload.operation.Matches("Dereference")
+            expressionValue.Unary(payload)
+        }
+        Integer(payload): expressionValue.Integer(payload)
+        Floating(payload): expressionValue.Floating(payload)
+        Boolean(payload): expressionValue.Boolean(payload)
+        StringValue(payload): expressionValue.StringValue(payload)
+        Array(payload): expressionValue.Array(payload)
+        Ownership(payload): expressionValue.Ownership(payload)
+        Binary(payload): expressionValue.Binary(payload)
+        Call(payload): expressionValue.Call(payload)
+        StructValue(payload): expressionValue.StructValue(payload)
+        Replace(payload): expressionValue.Replace(payload)
+        Spawn(payload): expressionValue.Spawn(payload)
+        MatchValue(payload): expressionValue.MatchValue(payload)
+        Conditional(payload): expressionValue.Conditional(payload)
+        FunctionValue(payload): expressionValue.FunctionValue(payload)
+    }
+    source.expressions.restore(expression, $expressionNode {
+        value = restored span = span
+    })
+    result
+}
+
+fn isSemanticEditablePlace(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64
+) bool {
+    match semanticPlaceRootLocal(&analyzer, &source, expression) {
+        None: {
+            const selected = source.expressions.take(expression)
+            const node = match selected {
+                None: panic("expression slot is empty")
+                Some(node): node
+            }
+            const expressionNode { value span } = node
+            var editable = false
+            const restored = match value {
+                Unary(payload): {
+                    if payload.operation.Matches("Dereference") {
+                        const type = semanticExpressionType(&analyzer, payload.operand)
+                        editable = type.kind.Matches("Raw")
+                    }
+                    expressionValue.Unary(payload)
+                }
+                Integer(payload): expressionValue.Integer(payload)
+                Floating(payload): expressionValue.Floating(payload)
+                Boolean(payload): expressionValue.Boolean(payload)
+                StringValue(payload): expressionValue.StringValue(payload)
+                Array(payload): expressionValue.Array(payload)
+                Name(payload): expressionValue.Name(payload)
+                Ownership(payload): expressionValue.Ownership(payload)
+                Binary(payload): expressionValue.Binary(payload)
+                Call(payload): expressionValue.Call(payload)
+                StructValue(payload): expressionValue.StructValue(payload)
+                Member(payload): expressionValue.Member(payload)
+                Index(payload): expressionValue.Index(payload)
+                Replace(payload): expressionValue.Replace(payload)
+                Spawn(payload): expressionValue.Spawn(payload)
+                MatchValue(payload): expressionValue.MatchValue(payload)
+                Conditional(payload): expressionValue.Conditional(payload)
+                FunctionValue(payload): expressionValue.FunctionValue(payload)
+            }
+            source.expressions.restore(expression, $expressionNode {
+                value = restored span = span
+            })
+            editable
+        }
+        Some(local): {
+            var type = semanticLocalType(&analyzer, local)
+            semanticLocalMutable(&analyzer, local) || type.kind.Matches("Edit")
+        }
+    }
+}
+
+fn semanticExpressionType(
+    &analyzer semanticAnalyzer,
+    expression u64
+) semanticType {
+    var type = match analyzer.model.expressionTypes.take(expression) {
+        None: panic("expression type slot is empty")
+        Some(type): type
+    }
+    const result = copySemanticType(&type)
+    analyzer.model.expressionTypes.restore(expression, $type)
+    result
+}
+
+fn analyzeSemanticExpression(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    $expectedValue Option<semanticType>,
+    use expressionUse
+) semanticType {
+    var expected = takeSemanticExpected($expectedValue)
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    var type = invalidSemanticType()
+    const restored = match value {
+        Integer(payload): {
+            if expected.present && isSemanticNumeric(&expected.type) {
+                type = copySemanticType(&expected.type)
+            } else {
+                type = i32SemanticType()
+            }
+            if isSemanticInteger(&type) &&
+                !semanticIntegerLiteralFits(&type, payload.magnitude, payload.negative) {
+                analyzer.diagnostics.reportError(
+                    "FDN2005",
+                    "integer literal does not fit " + semanticTypeName(type.kind),
+                    span
+                )
+            }
+            expressionValue.Integer(payload)
+        }
+        Floating(payload): {
+            if expected.present && expected.type.kind.Matches("F32") {
+                type = newSemanticType(.F32)
+            } else {
+                type = newSemanticType(.F64)
+            }
+            expressionValue.Floating(payload)
+        }
+        Boolean(payload): {
+            type = boolSemanticType()
+            expressionValue.Boolean(payload)
+        }
+        StringValue(payload): {
+            type = stringSemanticType()
+            expressionValue.StringValue(payload)
+        }
+        Array(payload): {
+            var current = payload
+            type = analyzeSemanticArray(
+                &analyzer, &source, expression, &current, &expected, span)
+            expressionValue.Array(current)
+        }
+        Name(payload): {
+            var current = payload
+            type = semanticNameType(
+                &analyzer,
+                &source,
+                expression,
+                &current,
+                &expected,
+                use,
+                span
+            )
+            expressionValue.Name(current)
+        }
+        Unary(payload): {
+            var current = payload
+            type = analyzeSemanticUnary(
+                &analyzer, &source, expression, &current, &expected, span)
+            expressionValue.Unary(current)
+        }
+        Ownership(payload): {
+            var current = payload
+            type = analyzeSemanticOwnership(
+                &analyzer, &source, expression, &current, &expected, span)
+            expressionValue.Ownership(current)
+        }
+        Binary(payload): {
+            var current = payload
+            type = analyzeSemanticBinary(
+                &analyzer, &source, &current, &expected, span)
+            expressionValue.Binary(current)
+        }
+        Call(payload): {
+            var current = payload
+            type = analyzeSemanticCall(
+                &analyzer, &source, expression, &current, span)
+            expressionValue.Call(current)
+        }
+        StructValue(payload): {
+            var current = payload
+            type = analyzeSemanticStruct(
+                &analyzer, &source, expression, &current, span)
+            expressionValue.StructValue(current)
+        }
+        Member(payload): {
+            var current = payload
+            type = analyzeSemanticMember(
+                &analyzer,
+                &source,
+                expression,
+                &current,
+                &expected,
+                use,
+                span
+            )
+            expressionValue.Member(current)
+        }
+        Index(payload): {
+            var current = payload
+            type = analyzeSemanticIndex(&analyzer, &source, &current, use, span)
+            expressionValue.Index(current)
+        }
+        Replace(payload): {
+            var current = payload
+            type = analyzeSemanticReplace(
+                &analyzer, &source, expression, &current, span)
+            expressionValue.Replace(current)
+        }
+        Spawn(payload): {
+            var current = payload
+            type = analyzeSemanticSpawn(&analyzer, &source, &current, span)
+            expressionValue.Spawn(current)
+        }
+        MatchValue(payload): {
+            var current = payload
+            type = analyzeSemanticMatch(
+                &analyzer, &source, expression, &current, &expected, span)
+            expressionValue.MatchValue(current)
+        }
+        Conditional(payload): {
+            var current = payload
+            type = analyzeSemanticConditional(
+                &analyzer, &source, expression, &current, &expected, span)
+            expressionValue.Conditional(current)
+        }
+        FunctionValue(payload): {
+            var current = payload
+            type = analyzeSemanticClosure(
+                &analyzer, &source, expression, &current, &expected, span)
+            expressionValue.FunctionValue(current)
+        }
+    }
+    source.expressions.restore(expression, $expressionNode {
+        value = restored span = span
+    })
+    setSemanticExpressionType(&analyzer, expression, &type)
+    type
+}
+
+fn analyzeSemanticExpressionWithoutExpected(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    use expressionUse
+) semanticType {
+    analyzeSemanticExpression(
+        &analyzer,
+        &source,
+        expression,
+        absentSemanticType(),
+        use
+    )
+}
+
+fn analyzeSemanticArray(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    &array arrayExpression,
+    &expected semanticExpected,
+    span sourceSpan
+) semanticType {
+    var expectedElement = invalidSemanticType()
+    var hasExpectedElement = false
+    if expected.present && expected.type.kind.Matches("Array") &&
+        expected.type.arguments.len() == 1 {
+        expectedElement = semanticTypeArgument(&expected.type, 0)
+        hasExpectedElement = true
+        if expected.type.declaration != listLength(&array.elements) {
+            analyzer.diagnostics.reportError(
+                "FDN2082",
+                "array literal length does not match its type",
+                span
+            )
+        }
+    }
+    const length = listLength(&array.elements)
+    if length == 0 {
+        if !hasExpectedElement {
+            analyzer.diagnostics.reportError(
+                "FDN2081", "empty array literal requires an array type", span)
+            return invalidSemanticType()
+        }
+        return copySemanticType(&expected.type)
+    }
+    var pending = collections.NewList<u64>()
+    var element = invalidSemanticType()
+    var index u64 = 0
+    var borrowedClosure = false
+    while !array.elements.IsEmpty() {
+        const value = match array.elements.PopFront() {
+            None: panic("array element list invariant failed")
+            Some(value): value
+        }
+        var expectedValue = absentSemanticType()
+        if index == 0 && hasExpectedElement {
+            expectedValue = expectedSemanticType(&expectedElement)
+        }
+        if index != 0 {
+            expectedValue = expectedSemanticType(&element)
+        }
+        var current = analyzeSemanticExpression(
+            &analyzer, &source, value, $expectedValue, .Consume)
+        if index == 0 {
+            element = copySemanticType(&current)
+        }
+        if index != 0 {
+            const valueSpan = semanticExpressionSpan(&source, value)
+            requireSameSemanticType(
+                &analyzer,
+                &source,
+                &element,
+                &current,
+                valueSpan,
+                "array element"
+            )
+        }
+        if semanticBoolAt(&analyzer.model.expressionBorrowedClosures, value) {
+            borrowedClosure = true
+        }
+        pending.PushFront(value)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("array element restore invariant failed")
+            Some(value): value
+        }
+        array.elements.PushFront(value)
+    }
+    if borrowedClosure {
+        analyzer.diagnostics.reportError(
+            "FDN2127", "borrowed closure cannot be stored in an array", span)
+        setSemanticBool(
+            &analyzer.model.expressionBorrowedClosures,
+            expression,
+            true
+        )
+    }
+    if hasExpectedElement {
+        requireSameSemanticType(
+            &analyzer,
+            &source,
+            &expectedElement,
+            &element,
+            span,
+            "array element"
+        )
+        element = copySemanticType(&expectedElement)
+    }
+    unarySemanticType(.Array, $element)
+}
+
+fn analyzeSemanticIndex(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &index indexExpression,
+    use expressionUse,
+    span sourceSpan
+) semanticType {
+    var base = analyzeSemanticExpressionWithoutExpected(
+        &analyzer, &source, index.base, .Inspect)
+    var expectedIndex = usizeSemanticType()
+    var actualIndex = analyzeSemanticExpression(
+        &analyzer,
+        &source,
+        index.index,
+        expectedSemanticType(&expectedIndex),
+        .Inspect
+    )
+    requireSameSemanticType(
+        &analyzer,
+        &source,
+        &expectedIndex,
+        &actualIndex,
+        span,
+        "index"
+    )
+    if (base.kind.Matches("Own") || base.kind.Matches("View") || base.kind.Matches("Edit")) &&
+        base.arguments.len() == 1 {
+        base = semanticTypeArgument(&base, 0)
+    }
+    if (!base.kind.Matches("Array") && !base.kind.Matches("Slice")) ||
+        base.arguments.len() != 1 {
+        analyzer.diagnostics.reportError(
+            "FDN2084", "indexing requires an array or slice", span)
+        return invalidSemanticType()
+    }
+    var element = semanticTypeArgument(&base, 0)
+    if use.Matches("Consume") && requiresSemanticDrop(&analyzer, &source, &element) {
+        analyzer.diagnostics.reportError(
+            "FDN2083", "owned array element cannot move independently", span)
+    }
+    element
+}
+
+fn validateSemanticArithmetic(
+    &analyzer semanticAnalyzer,
+    &source program,
+    operation binaryOperator,
+    &left semanticType,
+    &right semanticType,
+    span sourceSpan
+) semanticType {
+    if operation.Matches("Add") {
+        if left.kind.Matches("Raw") || left.kind.Matches("RawConst") {
+            if analyzer.state.unsafeDepth == 0 {
+                analyzer.diagnostics.reportError(
+                    "FDN2213", "raw pointer arithmetic requires an unsafe block", span)
+            }
+            var expected = usizeSemanticType()
+            requireSameSemanticType(
+                &analyzer, &source, &expected, &right, span, "raw pointer offset")
+            return copySemanticType(&left)
+        }
+        if left.kind.Matches("StringValue") || right.kind.Matches("StringValue") {
+            var expected = stringSemanticType()
+            requireSameSemanticType(
+                &analyzer, &source, &expected, &left, span,
+                "string concatenation operand")
+            requireSameSemanticType(
+                &analyzer, &source, &expected, &right, span,
+                "string concatenation operand")
+            return expected
+        }
+    }
+    if operation.Matches("Subtract") && (left.kind.Matches("Raw") || left.kind.Matches("RawConst")) {
+        if analyzer.state.unsafeDepth == 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2213", "raw pointer arithmetic requires an unsafe block", span)
+        }
+        var expected = usizeSemanticType()
+        requireSameSemanticType(
+            &analyzer, &source, &expected, &right, span, "raw pointer offset")
+        return copySemanticType(&left)
+    }
+    const integerOnly = operation.Matches("ShiftLeft") || operation.Matches("ShiftRight") ||
+        operation.Matches("BitwiseAnd") || operation.Matches("BitwiseXor") ||
+        operation.Matches("BitwiseOr") || operation.Matches("Remainder")
+    if integerOnly {
+        if !isSemanticInteger(&left) {
+            analyzer.diagnostics.reportError(
+                "FDN2011", "integer operation requires an integer type", span)
+            return invalidSemanticType()
+        }
+    }
+    if !integerOnly && !isSemanticNumeric(&left) {
+        analyzer.diagnostics.reportError(
+            "FDN2011", "arithmetic operand requires a numeric type", span)
+        return invalidSemanticType()
+    }
+    requireSameSemanticType(
+        &analyzer, &source, &left, &right, span, "arithmetic operand")
+    copySemanticType(&left)
+}
+
+fn analyzeSemanticBinary(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &binary binaryExpression,
+    &expected semanticExpected,
+    span sourceSpan
+) semanticType {
+    var leftExpected = absentSemanticType()
+    if expected.present && isSemanticNumeric(&expected.type) {
+        leftExpected = expectedSemanticType(&expected.type)
+    }
+    var left = analyzeSemanticExpression(
+        &analyzer, &source, binary.left, $leftExpected, .Inspect)
+    var rightExpected = absentSemanticType()
+    if isSemanticNumeric(&left) {
+        rightExpected = expectedSemanticType(&left)
+    }
+    if !isSemanticNumeric(&left) &&
+        (left.kind.Matches("Raw") || left.kind.Matches("RawConst")) {
+        var offset = usizeSemanticType()
+        rightExpected = expectedSemanticType(&offset)
+    }
+    var right = analyzeSemanticExpression(
+        &analyzer, &source, binary.right, $rightExpected, .Inspect)
+    match binary.operation {
+        Add: validateSemanticArithmetic(
+            &analyzer, &source, .Add, &left, &right, span)
+        Subtract: validateSemanticArithmetic(
+            &analyzer, &source, .Subtract, &left, &right, span)
+        Multiply: validateSemanticArithmetic(
+            &analyzer, &source, .Multiply, &left, &right, span)
+        Divide: validateSemanticArithmetic(
+            &analyzer, &source, .Divide, &left, &right, span)
+        Remainder: validateSemanticArithmetic(
+            &analyzer, &source, .Remainder, &left, &right, span)
+        ShiftLeft: validateSemanticArithmetic(
+            &analyzer, &source, .ShiftLeft, &left, &right, span)
+        ShiftRight: validateSemanticArithmetic(
+            &analyzer, &source, .ShiftRight, &left, &right, span)
+        BitwiseAnd: validateSemanticArithmetic(
+            &analyzer, &source, .BitwiseAnd, &left, &right, span)
+        BitwiseXor: validateSemanticArithmetic(
+            &analyzer, &source, .BitwiseXor, &left, &right, span)
+        BitwiseOr: validateSemanticArithmetic(
+            &analyzer, &source, .BitwiseOr, &left, &right, span)
+        Less: analyzeSemanticComparison(&analyzer, &source, &left, &right, span)
+        LessEqual: analyzeSemanticComparison(
+            &analyzer, &source, &left, &right, span)
+        Greater: analyzeSemanticComparison(
+            &analyzer, &source, &left, &right, span)
+        GreaterEqual: analyzeSemanticComparison(
+            &analyzer, &source, &left, &right, span)
+        Equal: analyzeSemanticEquality(&analyzer, &source, &left, &right, span)
+        NotEqual: analyzeSemanticEquality(
+            &analyzer, &source, &left, &right, span)
+        And: analyzeSemanticLogical(&analyzer, &source, &left, &right, span)
+        Or: analyzeSemanticLogical(&analyzer, &source, &left, &right, span)
+    }
+}
+
+fn analyzeSemanticComparison(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &left semanticType,
+    &right semanticType,
+    span sourceSpan
+) semanticType {
+    if !isSemanticNumeric(&left) {
+        analyzer.diagnostics.reportError(
+            "FDN2011", "comparison operand requires a numeric type", span)
+    }
+    requireSameSemanticType(
+        &analyzer, &source, &left, &right, span, "comparison operand")
+    boolSemanticType()
+}
+
+fn analyzeSemanticEquality(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &left semanticType,
+    &right semanticType,
+    span sourceSpan
+) semanticType {
+    if left.kind.Matches("Parameter") || right.kind.Matches("Parameter") ||
+        left.kind.Matches("StructValue") || right.kind.Matches("StructValue") ||
+        left.kind.Matches("EnumValue") || right.kind.Matches("EnumValue") ||
+        left.kind.Matches("Function") || right.kind.Matches("Function") ||
+        left.kind.Matches("Task") || right.kind.Matches("Task") ||
+        left.kind.Matches("Channel") || right.kind.Matches("Channel") ||
+        left.kind.Matches("Sender") || right.kind.Matches("Sender") ||
+        left.kind.Matches("Receiver") || right.kind.Matches("Receiver") {
+        analyzer.diagnostics.reportError(
+            "FDN2012", "equality is not available for this type", span)
+    } else {
+        requireSameSemanticType(
+            &analyzer, &source, &left, &right, span, "equality operand")
+        if left.kind.Matches("Void") {
+            analyzer.diagnostics.reportError(
+                "FDN2012", "void values cannot be compared", span)
+        }
+    }
+    boolSemanticType()
+}
+
+fn analyzeSemanticLogical(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &left semanticType,
+    &right semanticType,
+    span sourceSpan
+) semanticType {
+    var expected = boolSemanticType()
+    requireSameSemanticType(
+        &analyzer, &source, &expected, &left, span, "logical operand")
+    requireSameSemanticType(
+        &analyzer, &source, &expected, &right, span, "logical operand")
+    expected
+}

@@ -1,0 +1,694 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+fn lowerSemanticExpression(
+    &source program,
+    &model semanticModel,
+    &function firFunction,
+    &expressionMap arena<Option<u64>>,
+    &statementMap arena<Option<u64>>,
+    &blockMap arena<Option<u64>>,
+    expression u64
+) u64 {
+    match lowerMapValue(&expressionMap, expression) {
+        None: {}
+        Some(value): { return value }
+    }
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    var lowered u64 = 0
+    const restored = match value {
+        Integer(payload): {
+            lowered = addFirExpression(
+                &function,
+                $firExpressionValue.Integer(firIntegerExpression {
+                magnitude = payload.magnitude negative = payload.negative
+            }),
+                lowerExpressionType(&model, expression),
+                span
+            )
+            expressionValue.Integer(payload)
+        }
+        Floating(payload): {
+            lowered = addFirExpression(
+                &function,
+                $firExpressionValue.Floating(firFloatingExpression {
+                text = text.Copy(payload.text)
+            }),
+                lowerExpressionType(&model, expression),
+                span
+            )
+            expressionValue.Floating(payload)
+        }
+        Boolean(payload): {
+            lowered = addFirExpression(
+                &function,
+                $firExpressionValue.Boolean(firBooleanExpression {
+                value = payload.value
+            }),
+                lowerExpressionType(&model, expression),
+                span
+            )
+            expressionValue.Boolean(payload)
+        }
+        StringValue(payload): {
+            lowered = addFirExpression(
+                &function,
+                $firExpressionValue.StringValue(firStringExpression {
+                value = text.Copy(payload.value)
+            }),
+                lowerExpressionType(&model, expression),
+                span
+            )
+            expressionValue.StringValue(payload)
+        }
+        Array(payload): {
+            var current = payload
+            var elements = newArena<u64>()
+            var pending = collections.NewList<u64>()
+            while !current.elements.IsEmpty() {
+                const value = match current.elements.PopFront() {
+                    None: panic("array element list invariant failed")
+                    Some(value): value
+                }
+                discard elements.add(lowerSemanticExpression(
+                        &source,
+                        &model,
+                        &function,
+                        &expressionMap,
+                        &statementMap,
+                        &blockMap,
+                        value
+                    ))
+                pending.PushFront(value)
+            }
+            while !pending.IsEmpty() {
+                const value = match pending.PopFront() {
+                    None: panic("array element restore invariant failed")
+                    Some(value): value
+                }
+                current.elements.PushFront(value)
+            }
+            lowered = addFirExpression(
+                &function,
+                $firExpressionValue.Array(firArrayExpression {
+                elements = elements
+            }),
+                lowerExpressionType(&model, expression),
+                span
+            )
+            expressionValue.Array(current)
+        }
+        Name(payload): {
+            lowered = lowerSemanticNameExpression(
+                &model, &function, expression, span)
+            expressionValue.Name(payload)
+        }
+        Unary(payload): {
+            const operand = lowerSemanticExpression(
+                &source,
+                &model,
+                &function,
+                &expressionMap,
+                &statementMap,
+                &blockMap,
+                payload.operand
+            )
+            var operation = lowerUnaryOperator(payload.operation)
+            if lowerBoolValue(&model.emptyTests, expression) {
+                operation = .Empty
+            }
+            lowered = addFirExpression(
+                &function,
+                $firExpressionValue.Unary(firUnaryExpression {
+                operation = operation operand = operand
+            }),
+                lowerExpressionType(&model, expression),
+                span
+            )
+            expressionValue.Unary(payload)
+        }
+        Ownership(payload): {
+            const selectedWait = model.taskWaitTargets.take(expression)
+            const waitTarget = match selectedWait {
+                None: panic("task wait target slot is empty")
+                Some(waitTarget): waitTarget
+            }
+            match waitTarget {
+                Some(target): {
+                    const taskValue = lowerSemanticExpression(
+                        &source,
+                        &model,
+                        &function,
+                        &expressionMap,
+                        &statementMap,
+                        &blockMap,
+                        target.taskValue
+                    )
+                    lowered = addFirExpression(
+                        &function,
+                        $firExpressionValue.TaskWait(firTaskWaitExpression {
+                        taskValue = taskValue
+                    }),
+                        lowerExpressionType(&model, expression),
+                        span
+                    )
+                    var restored Option<taskWaitTarget> = .Some(target)
+                    model.taskWaitTargets.restore(expression, $restored)
+                }
+                None: {
+                    var restored Option<taskWaitTarget> = .None
+                    model.taskWaitTargets.restore(expression, $restored)
+                    const operand = lowerSemanticExpression(
+                        &source,
+                        &model,
+                        &function,
+                        &expressionMap,
+                        &statementMap,
+                        &blockMap,
+                        payload.operand
+                    )
+                    const direct = payload.operation.Matches("Transfer") ||
+                        payload.operation.Matches("New")
+                    if direct {
+                        lowered = operand
+                    }
+                    if !direct {
+                        lowered = addFirExpression(
+                            &function,
+                            $firExpressionValue.Ownership(
+                                firOwnershipExpression {
+                            operation = lowerOwnershipOperator(
+                                payload.operation)
+                            operand = operand
+                            implicitRead = false
+                        }
+                            ),
+                            lowerExpressionType(&model, expression),
+                            span
+                        )
+                    }
+                }
+            }
+            expressionValue.Ownership(payload)
+        }
+        Binary(payload): {
+            const left = lowerSemanticExpression(
+                &source, &model, &function, &expressionMap,
+                &statementMap, &blockMap, payload.left)
+            const right = lowerSemanticExpression(
+                &source, &model, &function, &expressionMap,
+                &statementMap, &blockMap, payload.right)
+            lowered = addFirExpression(
+                &function,
+                $firExpressionValue.Binary(firBinaryExpression {
+                left = left
+                operation = lowerBinaryOperator(payload.operation)
+                right = right
+            }),
+                lowerExpressionType(&model, expression),
+                span
+            )
+            expressionValue.Binary(payload)
+        }
+        Call(payload): {
+            var current = payload
+            lowered = lowerSemanticCallExpression(
+                &source,
+                &model,
+                &function,
+                &expressionMap,
+                &statementMap,
+                &blockMap,
+                expression,
+                &current,
+                span
+            )
+            expressionValue.Call(current)
+        }
+        StructValue(payload): {
+            var current = payload
+            lowered = lowerSemanticStructExpression(
+                &source,
+                &model,
+                &function,
+                &expressionMap,
+                &statementMap,
+                &blockMap,
+                expression,
+                &current,
+                span
+            )
+            expressionValue.StructValue(current)
+        }
+        Member(payload): {
+            var current = payload
+            lowered = lowerSemanticMemberExpression(
+                &source,
+                &model,
+                &function,
+                &expressionMap,
+                &statementMap,
+                &blockMap,
+                expression,
+                &current,
+                span
+            )
+            expressionValue.Member(current)
+        }
+        Index(payload): {
+            const base = lowerSemanticExpression(
+                &source, &model, &function, &expressionMap,
+                &statementMap, &blockMap, payload.base)
+            const index = lowerSemanticExpression(
+                &source, &model, &function, &expressionMap,
+                &statementMap, &blockMap, payload.index)
+            lowered = addFirExpression(
+                &function,
+                $firExpressionValue.Index(firIndexExpression {
+                base = base index = index
+            }),
+                lowerExpressionType(&model, expression),
+                span
+            )
+            expressionValue.Index(payload)
+        }
+        Replace(payload): {
+            const target = lowerSemanticExpression(
+                &source, &model, &function, &expressionMap,
+                &statementMap, &blockMap, payload.target)
+            const replacement = lowerSemanticExpression(
+                &source, &model, &function, &expressionMap,
+                &statementMap, &blockMap, payload.value)
+            lowered = addFirExpression(
+                &function,
+                $firExpressionValue.ReplaceValue(firReplaceExpression {
+                target = target value = replacement
+            }),
+                lowerExpressionType(&model, expression),
+                span
+            )
+            expressionValue.Replace(payload)
+        }
+        Spawn(payload): {
+            const call = lowerSemanticExpression(
+                &source, &model, &function, &expressionMap,
+                &statementMap, &blockMap, payload.call)
+            lowered = addFirExpression(
+                &function,
+                $firExpressionValue.Spawn(firSpawnExpression { call = call }),
+                lowerExpressionType(&model, expression),
+                span
+            )
+            expressionValue.Spawn(payload)
+        }
+        MatchValue(payload): {
+            var current = payload
+            lowered = lowerSemanticMatchExpression(
+                &source,
+                &model,
+                &function,
+                &expressionMap,
+                &statementMap,
+                &blockMap,
+                expression,
+                &current,
+                span
+            )
+            expressionValue.MatchValue(current)
+        }
+        Conditional(payload): {
+            const condition = lowerSemanticExpression(
+                &source, &model, &function, &expressionMap,
+                &statementMap, &blockMap, payload.condition)
+            const thenBlock = lowerSemanticBlock(
+                &source, &model, &function, &expressionMap,
+                &statementMap, &blockMap, payload.thenBlock)
+            const thenValue = lowerSemanticExpression(
+                &source, &model, &function, &expressionMap,
+                &statementMap, &blockMap, payload.thenValue)
+            const elseBlock = lowerSemanticBlock(
+                &source, &model, &function, &expressionMap,
+                &statementMap, &blockMap, payload.elseBlock)
+            const elseValue = lowerSemanticExpression(
+                &source, &model, &function, &expressionMap,
+                &statementMap, &blockMap, payload.elseValue)
+            lowered = addFirExpression(
+                &function,
+                $firExpressionValue.Conditional(firConditionalExpression {
+                condition = condition
+                thenBlock = thenBlock
+                thenValue = thenValue
+                elseBlock = elseBlock
+                elseValue = elseValue
+            }),
+                lowerExpressionType(&model, expression),
+                span
+            )
+            expressionValue.Conditional(payload)
+        }
+        FunctionValue(payload): {
+            lowered = lowerSemanticClosureExpression(
+                &model, &function, expression, span)
+            expressionValue.FunctionValue(payload)
+        }
+    }
+    lowered = lowerSemanticExpressionConversion(
+        &model, &function, expression, lowered, span)
+    source.expressions.restore(expression, $expressionNode {
+        value = restored span = span
+    })
+    setLowerMap(&expressionMap, expression, lowered)
+    lowered
+}
+
+fn lowerSemanticNameExpression(
+    &model semanticModel,
+    &function firFunction,
+    expression u64,
+    span sourceSpan
+) u64 {
+    const selected = model.functionValueTargets.take(expression)
+    const target = match selected {
+        None: panic("function value target slot is empty")
+        Some(target): target
+    }
+    match target {
+        None: {
+            var restored Option<functionValueTarget> = .None
+            model.functionValueTargets.restore(expression, $restored)
+            const local = match lowerOptionalIDAt(
+                &model.expressionLocals, expression) {
+                None: panic("name expression has no local")
+                Some(local): local
+            }
+            var value = firExpressionValue.Local(firLocalExpression {
+                local = local
+            })
+            if lowerBoolValue(&model.expressionMoves, expression) {
+                value = .Move(firMoveExpression { local = local })
+            } else {
+                if lowerBoolValue(&model.expressionReads, expression) {
+                    value = .Read(firReadExpression { local = local })
+                }
+            }
+            addFirExpression(
+                &function,
+                $value,
+                lowerExpressionType(&model, expression),
+                span
+            )
+        }
+        Some(value): {
+            var current = value
+            const lowered = addFirExpression(
+                &function,
+                $firExpressionValue.FunctionValue(firFunctionValueExpression {
+                function = current.function
+                typeArguments = copySemanticTypeArena(&current.typeArguments)
+            }),
+                lowerExpressionType(&model, expression),
+                span
+            )
+            var restored Option<functionValueTarget> = .Some(current)
+            model.functionValueTargets.restore(expression, $restored)
+            lowered
+        }
+    }
+}
+
+fn lowerCallKind(kind callTargetKind) firCallKind {
+    match kind {
+        Function: .Function
+        FunctionValue: .FunctionValue
+        Method: .Function
+        ContractMethod: .ContractValue
+        ConstrainedMethod: .Constrained
+        Print: .Print
+        Panic: .Panic
+        Len: .Len
+        Null: .Null
+        IsNull: .IsNull
+        CString: .CString
+        SizeOf: .SizeOf
+        PointerCast: .PointerCast
+        Channel: .Function
+        NumericConversion: .NumericConversion
+    }
+}
+
+fn lowerSemanticCallArgument(
+    &source program,
+    &model semanticModel,
+    &function firFunction,
+    &expressionMap arena<Option<u64>>,
+    &statementMap arena<Option<u64>>,
+    &blockMap arena<Option<u64>>,
+    expression u64,
+    &target callTarget,
+    index u64,
+    span sourceSpan
+) u64 {
+    var lowered = lowerSemanticExpression(
+        &source, &model, &function, &expressionMap,
+        &statementMap, &blockMap, expression)
+    if index < target.argumentBorrows.len() {
+        const selected = target.argumentBorrows.take(index)
+        const borrow = match selected {
+            None: panic("argument borrow slot is empty")
+            Some(borrow): borrow
+        }
+        match borrow {
+            None: {
+                var restored Option<semanticType> = .None
+                target.argumentBorrows.restore(index, $restored)
+            }
+            Some(type): {
+                var borrowType = type
+                lowered = addFirExpression(
+                    &function,
+                    $firExpressionValue.Ownership(firOwnershipExpression {
+                    operation = .View
+                    operand = lowered
+                    implicitRead = true
+                }),
+                    copySemanticType(&borrowType),
+                    span
+                )
+                var restored Option<semanticType> = .Some(borrowType)
+                target.argumentBorrows.restore(index, $restored)
+            }
+        }
+    }
+    if index < target.argumentConversions.len() {
+        const selected = target.argumentConversions.take(index)
+        const conversion = match selected {
+            None: panic("argument conversion slot is empty")
+            Some(conversion): conversion
+        }
+        match conversion {
+            None: {
+                var restored Option<contractConversion> = .None
+                target.argumentConversions.restore(index, $restored)
+            }
+            Some(value): {
+                var current = value
+                lowered = lowerContractConversionExpression(
+                    &function, lowered, &current, span)
+                var restored Option<contractConversion> = .Some(current)
+                target.argumentConversions.restore(index, $restored)
+            }
+        }
+    }
+    lowered
+}
+
+fn lowerSemanticExpressionConversion(
+    &model semanticModel,
+    &function firFunction,
+    expression u64,
+    lowered u64,
+    span sourceSpan
+) u64 {
+    const selected = model.expressionContractConversions.take(expression)
+    const conversion = match selected {
+        None: panic("expression conversion slot is empty")
+        Some(conversion): conversion
+    }
+    match conversion {
+        None: {
+            var restored Option<contractConversion> = .None
+            model.expressionContractConversions.restore(expression, $restored)
+            lowered
+        }
+        Some(value): {
+            var current = value
+            setFirExpressionType(
+                &function, lowered, copySemanticType(&current.sourceType))
+            const converted = lowerContractConversionExpression(
+                &function, lowered, &current, span)
+            var restored Option<contractConversion> = .Some(current)
+            model.expressionContractConversions.restore(expression, $restored)
+            converted
+        }
+    }
+}
+
+fn lowerSemanticCallExpression(
+    &source program,
+    &model semanticModel,
+    &function firFunction,
+    &expressionMap arena<Option<u64>>,
+    &statementMap arena<Option<u64>>,
+    &blockMap arena<Option<u64>>,
+    expression u64,
+    &call callExpression,
+    span sourceSpan
+) u64 {
+    const selected = model.callTargets.take(expression)
+    const optional = match selected {
+        None: panic("call target slot is empty")
+        Some(optional): optional
+    }
+    var target = match optional {
+        None: panic("call expression has no target")
+        Some(target): target
+    }
+    var arguments = newArena<u64>()
+    var pending = collections.NewList<u64>()
+    var index u64 = 0
+    while !call.arguments.IsEmpty() {
+        const argument = match call.arguments.PopFront() {
+            None: panic("call argument list invariant failed")
+            Some(argument): argument
+        }
+        discard arguments.add(lowerSemanticCallArgument(
+                &source,
+                &model,
+                &function,
+                &expressionMap,
+                &statementMap,
+                &blockMap,
+                argument,
+                &target,
+                index,
+                span
+            ))
+        pending.PushFront(argument)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const argument = match pending.PopFront() {
+            None: panic("call argument restore invariant failed")
+            Some(argument): argument
+        }
+        call.arguments.PushFront(argument)
+    }
+    const selectedBlocking = model.blockingCallTargets.take(expression)
+    const blocking = match selectedBlocking {
+        None: panic("blocking call target slot is empty")
+        Some(blocking): blocking
+    }
+    match blocking {
+        None: {
+            var restored Option<blockingCallTarget> = .None
+            model.blockingCallTargets.restore(expression, $restored)
+        }
+        Some(blockingTarget): {
+            var current = blockingTarget
+            const value = firExpressionValue.BlockingCall(
+                firBlockingCallExpression {
+                function = current.function
+                arguments = arguments
+                argumentStorages = copyIDHeap(&current.argumentStorages)
+                resultStorage = semanticOptionalID(current.resultStorage)
+                argumentParameters = copyIDHeap(&target.argumentParameters)
+            })
+            var restored Option<blockingCallTarget> = .Some(current)
+            model.blockingCallTargets.restore(expression, $restored)
+            return finishLowerSemanticCall(
+                &model, &function, expression, $target, $value, span)
+        }
+    }
+    const selectedCallback = model.callbackCallTargets.take(expression)
+    const callback = match selectedCallback {
+        None: panic("callback call target slot is empty")
+        Some(callback): callback
+    }
+    match callback {
+        None: {
+            var restored Option<callbackCallTarget> = .None
+            model.callbackCallTargets.restore(expression, $restored)
+        }
+        Some(callbackTarget): {
+            var current = callbackTarget
+            const value = firExpressionValue.CallbackCall(
+                firCallbackCallExpression {
+                function = current.function
+                arguments = arguments
+                argumentStorages = copyIDHeap(&current.argumentStorages)
+                resultStorage = current.resultStorage
+                argumentParameters = copyIDHeap(
+                    &target.argumentParameters)
+            })
+            var restored Option<callbackCallTarget> = .Some(current)
+            model.callbackCallTargets.restore(expression, $restored)
+            return finishLowerSemanticCall(
+                &model, &function, expression, $target, $value, span)
+        }
+    }
+    if target.kind.Matches("Channel") {
+        var payload = invalidSemanticType()
+        if target.typeArguments.len() != 0 {
+            payload = lowerSemanticTypeAt(&target.typeArguments, 0)
+        }
+        var capacity u64 = 0
+        if arguments.len() != 0 {
+            capacity = match arguments.take(0) {
+                None: panic("channel capacity slot is empty")
+                Some(capacity): capacity
+            }
+            arguments.restore(0, capacity)
+        }
+        const value = firExpressionValue.ChannelValue(firChannelExpression {
+            payload = payload capacity = capacity
+        })
+        return finishLowerSemanticCall(
+            &model, &function, expression, $target, $value, span)
+    }
+    const value = firExpressionValue.Call(firCallExpression {
+        kind = lowerCallKind(target.kind)
+        function = target.function
+        typeArguments = copySemanticTypeArena(&target.typeArguments)
+        arguments = arguments
+        argumentDrops = copyBoolArena(&target.argumentDrops)
+        contractID = target.contractID
+        method = target.method
+        local = target.local
+        argumentParameters = copyIDHeap(&target.argumentParameters)
+        constrainedType = copySemanticType(&target.constrainedType)
+    })
+    finishLowerSemanticCall(
+        &model, &function, expression, $target, $value, span)
+}
+
+fn finishLowerSemanticCall(
+    &model semanticModel,
+    &function firFunction,
+    expression u64,
+    $target callTarget,
+    $value firExpressionValue,
+    span sourceSpan
+) u64 {
+    const lowered = addFirExpression(
+        &function, $value, lowerExpressionType(&model, expression), span)
+    var restored Option<callTarget> = .Some(target)
+    model.callTargets.restore(expression, $restored)
+    lowered
+}

@@ -1,0 +1,718 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+fn copyOptionalSemanticTypeArena(
+    &values arena<Option<semanticType>>
+) own arena<Option<semanticType>> {
+    var result = newArena<Option<semanticType>>()
+    var index u64 = 0
+    while index < values.len() {
+        const selected = values.take(index)
+        const value = match selected {
+            None: panic("optional semantic type slot is empty")
+            Some(value): value
+        }
+        match value {
+            None: {
+                var restored Option<semanticType> = .None
+                var copy Option<semanticType> = .None
+                values.restore(index, $restored)
+                discard result.add($copy)
+            }
+            Some(type): {
+                var original = type
+                const duplicate = copySemanticType(&original)
+                var restored Option<semanticType> = .Some(original)
+                var copy Option<semanticType> = .Some(duplicate)
+                values.restore(index, $restored)
+                discard result.add($copy)
+            }
+        }
+        index += 1
+    }
+    result
+}
+
+fn copyOptionalIDArena(
+    &values arena<Option<u64>>
+) own arena<Option<u64>> {
+    var result = newArena<Option<u64>>()
+    var index u64 = 0
+    while index < values.len() {
+        const value = lowerOptionalIDAt(&values, index)
+        discard result.add(value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirAttributeDeclaration(
+    &source firAttributeDeclaration
+) firAttributeDeclaration {
+    var parameters = newArena<firAttributeParameter>()
+    var index u64 = 0
+    while index < source.parameters.len() {
+        var parameter = match source.parameters.take(index) {
+            None: panic("attribute parameter slot is empty")
+            Some(parameter): parameter
+        }
+        discard parameters.add(firAttributeParameter {
+            name = text.Copy(parameter.name)
+            type = copySemanticType(&parameter.type)
+        })
+        source.parameters.restore(index, $parameter)
+        index += 1
+    }
+    var targets = newArena<firAttributeTarget>()
+    index = 0
+    while index < source.targets.len() {
+        const target = match source.targets.take(index) {
+            None: panic("attribute target slot is empty")
+            Some(target): target
+        }
+        discard targets.add(target)
+        source.targets.restore(index, target)
+        index += 1
+    }
+    firAttributeDeclaration {
+        name = text.Copy(source.name)
+        parameters = parameters
+        targets = targets
+        repeatable = source.repeatable
+        exported = source.exported
+    }
+}
+
+fn lowerFirAttributeDeclarations(
+    &model semanticModel
+) own arena<firAttributeDeclaration> {
+    var result = newArena<firAttributeDeclaration>()
+    var index u64 = 0
+    while index < model.attributeDeclarations.len() {
+        var declaration = match model.attributeDeclarations.take(index) {
+            None: panic("attribute declaration slot is empty")
+            Some(declaration): declaration
+        }
+        discard result.add(copyFirAttributeDeclaration(&declaration))
+        model.attributeDeclarations.restore(index, $declaration)
+        index += 1
+    }
+    result
+}
+
+fn lowerFirStruct(
+    &source program,
+    &model semanticModel,
+    id u64
+) firStruct {
+    var declaration = match source.structs.take(id) {
+        None: panic("struct declaration slot is empty")
+        Some(declaration): declaration
+    }
+    var semantic = match model.structs.take(id) {
+        None: panic("semantic struct slot is empty")
+        Some(semantic): semantic
+    }
+    var fields = newArena<firStructField>()
+    var pending = collections.NewList<structField>()
+    var field u64 = 0
+    while !declaration.fields.IsEmpty() {
+        const sourceField = match declaration.fields.PopFront() {
+            None: panic("struct field list invariant failed")
+            Some(sourceField): sourceField
+        }
+        var fieldType = match semantic.fieldTypes.take(field) {
+            None: panic("semantic field type slot is empty")
+            Some(fieldType): fieldType
+        }
+        var attributes = match semantic.fieldAttributes.take(field) {
+            None: panic("semantic field attribute slot is empty")
+            Some(attributes): attributes
+        }
+        discard fields.add(firStructField {
+            name = text.Copy(sourceField.name)
+            type = copySemanticType(&fieldType)
+            exported = sourceField.exported
+            attributes = copyFirAttributeUseArena(&attributes)
+            hasDefault = semanticOptionIDPresent(sourceField.defaultFunction)
+        })
+        semantic.fieldTypes.restore(field, $fieldType)
+        semantic.fieldAttributes.restore(field, $attributes)
+        pending.PushFront($sourceField)
+        field += 1
+    }
+    while !pending.IsEmpty() {
+        const sourceField = match pending.PopFront() {
+            None: panic("struct field restore invariant failed")
+            Some(sourceField): sourceField
+        }
+        declaration.fields.PushFront($sourceField)
+    }
+    const result = firStruct {
+        name = text.Copy(declaration.name)
+        sourcePath = text.Copy(declaration.sourcePath)
+        sourceSpan = declaration.span
+        typeParameterCount = listLength(&declaration.typeParameters)
+        fields = fields
+        implementations = copySemanticTypeArena(&semantic.implementations)
+        exported = declaration.exported
+        dropFunction = .None
+        attributes = copyFirAttributeUseArena(&semantic.attributes)
+        serviceType = declaration.kind.Matches("Service")
+        implementationDelegates = copyOptionalIDArena(
+            &semantic.implementationDelegates)
+    }
+    model.structs.restore(id, $semantic)
+    source.structs.restore(id, $declaration)
+    result
+}
+
+fn lowerOptionalSemanticTypeAt(
+    &values arena<Option<semanticType>>,
+    index u64
+) Option<semanticType> {
+    const selected = values.take(index)
+    const value = match selected {
+        None: panic("optional semantic type slot is empty")
+        Some(value): value
+    }
+    match value {
+        None: {
+            var restored Option<semanticType> = .None
+            values.restore(index, $restored)
+            var result Option<semanticType> = .None
+            result
+        }
+        Some(type): {
+            var original = type
+            const duplicate = copySemanticType(&original)
+            var restored Option<semanticType> = .Some(original)
+            var result Option<semanticType> = .Some(duplicate)
+            values.restore(index, $restored)
+            result
+        }
+    }
+}
+
+fn lowerFirEnum(
+    &source program,
+    &model semanticModel,
+    id u64
+) firEnum {
+    var declaration = match source.enums.take(id) {
+        None: panic("enum declaration slot is empty")
+        Some(declaration): declaration
+    }
+    var semantic = match model.enums.take(id) {
+        None: panic("semantic enum slot is empty")
+        Some(semantic): semantic
+    }
+    var variants = newArena<firEnumVariant>()
+    var pending = collections.NewList<enumVariant>()
+    var variant u64 = 0
+    while !declaration.variants.IsEmpty() {
+        const sourceVariant = match declaration.variants.PopFront() {
+            None: panic("enum variant list invariant failed")
+            Some(sourceVariant): sourceVariant
+        }
+        var attributes = match semantic.variantAttributes.take(variant) {
+            None: panic("semantic variant attribute slot is empty")
+            Some(attributes): attributes
+        }
+        discard variants.add(firEnumVariant {
+            name = text.Copy(sourceVariant.name)
+            payload = lowerOptionalSemanticTypeAt(
+                &semantic.payloadTypes, variant)
+            exported = sourceVariant.exported
+            attributes = copyFirAttributeUseArena(&attributes)
+        })
+        semantic.variantAttributes.restore(variant, $attributes)
+        pending.PushFront($sourceVariant)
+        variant += 1
+    }
+    while !pending.IsEmpty() {
+        const sourceVariant = match pending.PopFront() {
+            None: panic("enum variant restore invariant failed")
+            Some(sourceVariant): sourceVariant
+        }
+        declaration.variants.PushFront($sourceVariant)
+    }
+    const result = firEnum {
+        name = text.Copy(declaration.name)
+        typeParameterCount = listLength(&declaration.typeParameters)
+        variants = variants
+        exported = declaration.exported
+        builtin = !declaration.builtin.Matches("None")
+        attributes = copyFirAttributeUseArena(&semantic.attributes)
+        stateMachine = declaration.stateMachine
+    }
+    model.enums.restore(id, $semantic)
+    source.enums.restore(id, $declaration)
+    result
+}
+
+fn lowerFirContractMethod(
+    &source semanticContractMethod
+) firContractMethod {
+    var readParameters = newArena<bool>()
+    var index u64 = 0
+    while index < source.parameterModes.len() {
+        const mode = match source.parameterModes.take(index) {
+            None: panic("contract parameter mode slot is empty")
+            Some(mode): mode
+        }
+        discard readParameters.add(mode.Matches("Read"))
+        source.parameterModes.restore(index, mode)
+        index += 1
+    }
+    var names = newArena<String>()
+    index = 0
+    while index < source.parameterNames.len() {
+        const name = match source.parameterNames.take(index) {
+            None: panic("contract parameter name slot is empty")
+            Some(name): name
+        }
+        discard names.add(text.Copy(name))
+        source.parameterNames.restore(index, $name)
+        index += 1
+    }
+    firContractMethod {
+        receiver = lowerReceiverKind(source.receiver)
+        name = text.Copy(source.name)
+        returnType = copySemanticType(&source.returnType)
+        parameters = copySemanticTypeArena(&source.parameterTypes)
+        readParameters = readParameters
+        parameterNames = names
+        exported = source.exported
+        attributes = copyFirAttributeUseArena(&source.attributes)
+        parameterAttributes = copyFirAttributeUseArenaArena(
+            &source.parameterAttributes)
+        originContract = source.originContract
+        originArguments = copySemanticTypeArena(&source.originArguments)
+        defaultFunction = semanticOptionalID(source.defaultFunction)
+    }
+}
+
+fn lowerFirContract(
+    &source program,
+    &model semanticModel,
+    id u64
+) firContract {
+    var declaration = match source.contracts.take(id) {
+        None: panic("contract declaration slot is empty")
+        Some(declaration): declaration
+    }
+    var semantic = match model.contracts.take(id) {
+        None: panic("semantic contract slot is empty")
+        Some(semantic): semantic
+    }
+    var methodValues = newArena<firContractMethod>()
+    var index u64 = 0
+    while index < semantic.methodList.len() {
+        var method = match semantic.methodList.take(index) {
+            None: panic("semantic contract method slot is empty")
+            Some(method): method
+        }
+        discard methodValues.add(lowerFirContractMethod(&method))
+        semantic.methodList.restore(index, $method)
+        index += 1
+    }
+    const result = firContract {
+        name = text.Copy(declaration.name)
+        typeParameterCount = listLength(&declaration.typeParameters)
+        methodList = methodValues
+        exported = declaration.exported
+        attributes = copyFirAttributeUseArena(&semantic.attributes)
+        parents = copySemanticTypeArena(&semantic.parents)
+    }
+    model.contracts.restore(id, $semantic)
+    source.contracts.restore(id, $declaration)
+    result
+}
+
+fn lowerFirLocal(&source semanticLocal) firLocal {
+    firLocal {
+        name = text.Copy(source.name)
+        type = copySemanticType(&source.type)
+        mutableBinding = source.mutableBinding
+        captured = source.captured
+        captureMode = lowerCaptureMode(source.captureMode)
+        borrowedClosure = source.borrowedClosure
+    }
+}
+
+fn lowerFunctionLocals(
+    &source arena<semanticLocal>
+) own arena<firLocal> {
+    var result = newArena<firLocal>()
+    var index u64 = 0
+    while index < source.len() {
+        var local = match source.take(index) {
+            None: panic("semantic local slot is empty")
+            Some(local): local
+        }
+        discard result.add(lowerFirLocal(&local))
+        source.restore(index, $local)
+        index += 1
+    }
+    result
+}
+
+fn lowerReadParameters(
+    &parameters collections.List<parameter>
+) own arena<bool> {
+    var result = newArena<bool>()
+    var pending = collections.NewList<parameter>()
+    while !parameters.IsEmpty() {
+        const parameter = match parameters.PopFront() {
+            None: panic("parameter list invariant failed")
+            Some(parameter): parameter
+        }
+        discard result.add(parameter.mode.Matches("Read"))
+        pending.PushFront($parameter)
+    }
+    while !pending.IsEmpty() {
+        const parameter = match pending.PopFront() {
+            None: panic("parameter restore invariant failed")
+            Some(parameter): parameter
+        }
+        parameters.PushFront($parameter)
+    }
+    result
+}
+
+struct loweredTransition {
+    original Option<stateTransitionFunction>
+    value Option<firStateTransitionFunction>
+    present bool
+}
+
+struct loweredStateTimeout {
+    original Option<stateTimeoutFunction>
+    value Option<firStateTimeoutFunction>
+    present bool
+}
+
+struct loweredWorkflow {
+    original Option<semanticWorkflowFunction>
+    value Option<firWorkflowFunction>
+    present bool
+}
+
+fn lowerTransition(
+    $source Option<stateTransitionFunction>,
+    &parameters arena<u64>
+) loweredTransition {
+    match source {
+        None: {
+            loweredTransition {
+                original = .None
+                value = .None
+                present = false
+            }
+        }
+        Some(transition): {
+            var original = transition
+            var variants = newArena<u64>()
+            var pending = collections.NewList<u64>()
+            while !original.sourceVariants.IsEmpty() {
+                const variant = match original.sourceVariants.PopFront() {
+                    None: panic("transition variant list invariant failed")
+                    Some(variant): variant
+                }
+                discard variants.add(variant)
+                pending.PushFront(variant)
+            }
+            while !pending.IsEmpty() {
+                const variant = match pending.PopFront() {
+                    None: panic("transition variant restore invariant failed")
+                    Some(variant): variant
+                }
+                original.sourceVariants.PushFront(variant)
+            }
+            var destination Option<u64> = .None
+            match original.destinationParameter {
+                None: {}
+                Some(parameter): {
+                    if parameter < parameters.len() {
+                        const local = match parameters.take(parameter) {
+                            None: panic("transition parameter slot is empty")
+                            Some(local): local
+                        }
+                        parameters.restore(parameter, local)
+                        destination = .Some(local)
+                    }
+                }
+            }
+            loweredTransition {
+                value = .Some(firStateTransitionFunction {
+                    sourceVariants = variants
+                    destinationVariant = original.destinationVariant
+                    destinationParameter = destination
+                    timeoutNanoseconds = semanticOptionalID(
+                        original.timeoutNanoseconds)
+                })
+                present = true
+                original = .Some(original)
+            }
+        }
+    }
+}
+
+fn lowerStateTimeout(
+    $source Option<stateTimeoutFunction>
+) loweredStateTimeout {
+    match source {
+        None: {
+            loweredStateTimeout {
+                original = .None
+                value = .None
+                present = false
+            }
+        }
+        Some(timeoutValue): {
+            var original = timeoutValue
+            var variants = newArena<u64>()
+            var pending = collections.NewList<u64>()
+            while !original.sourceVariants.IsEmpty() {
+                const variant = match original.sourceVariants.PopFront() {
+                    None: panic("timeout variant list invariant failed")
+                    Some(variant): variant
+                }
+                discard variants.add(variant)
+                pending.PushFront(variant)
+            }
+            while !pending.IsEmpty() {
+                const variant = match pending.PopFront() {
+                    None: panic("timeout variant restore invariant failed")
+                    Some(variant): variant
+                }
+                original.sourceVariants.PushFront(variant)
+            }
+            loweredStateTimeout {
+                value = .Some(firStateTimeoutFunction {
+                    sourceVariants = variants nanoseconds = original.nanoseconds
+                })
+                present = true
+                original = .Some(original)
+            }
+        }
+    }
+}
+
+fn lowerWorkflow(
+    $source Option<semanticWorkflowFunction>
+) loweredWorkflow {
+    match source {
+        None: {
+            loweredWorkflow {
+                original = .None
+                value = .None
+                present = false
+            }
+        }
+        Some(workflow): {
+            var original = workflow
+            var steps = newArena<firWorkflowStep>()
+            var index u64 = 0
+            while index < original.steps.len() {
+                var step = match original.steps.take(index) {
+                    None: panic("workflow step slot is empty")
+                    Some(step): step
+                }
+                discard steps.add(firWorkflowStep {
+                    name = text.Copy(step.name)
+                    function = step.function
+                    typeArguments = copySemanticTypeArena(&step.typeArguments)
+                    attempts = step.attempts
+                    compensation = semanticOptionalID(step.compensation)
+                    compensationTypeArguments = copySemanticTypeArena(
+                        &step.compensationTypeArguments)
+                })
+                original.steps.restore(index, $step)
+                index += 1
+            }
+            var lowered Option<firWorkflowFunction> = .Some(firWorkflowFunction {
+                kind = .Pipeline if original.kind.Matches("Pipeline") else .Saga
+                inputType = copySemanticType(&original.inputType)
+                successType = copySemanticType(&original.successType)
+                errorType = copySemanticType(&original.errorType)
+                failureType = copySemanticType(&original.failureType)
+                failureDetailsType = copySemanticType(
+                    &original.failureDetailsType)
+                steps = steps
+            })
+            loweredWorkflow {
+                value = lowered
+                present = true
+                original = .Some(original)
+            }
+        }
+    }
+}
+
+fn lowerFirFunction(
+    &source program,
+    &model semanticModel,
+    id u64
+) firFunction {
+    var declaration = match source.functions.take(id) {
+        None: panic("function declaration slot is empty")
+        Some(declaration): declaration
+    }
+    var semantic = match model.functions.take(id) {
+        None: panic("semantic function slot is empty")
+        Some(semantic): semantic
+    }
+    var result = newFirFunction()
+    result.name = text.Copy(declaration.name)
+    result.packageName = text.Copy(declaration.packageName)
+    result.sourcePath = text.Copy(declaration.sourcePath)
+    result.source = id
+    result.sourceSpan = declaration.span
+    result.generic = listLength(&declaration.typeParameters) != 0
+    result.typeParameterCount = listLength(&declaration.typeParameters)
+    result.typeParameterConstraints = copyOptionalSemanticTypeArena(
+        &semantic.typeParameterConstraints)
+    result.returnType = copySemanticType(&semantic.returnType)
+    result.parameters = copyIDHeap(&semantic.parameters)
+    result.readParameters = lowerReadParameters(&declaration.parameters)
+    result.locals = lowerFunctionLocals(&semantic.locals)
+    result.exported = declaration.exported
+    result.cSymbol = semanticOptionalStringCopy(declaration.cSymbol)
+    result.hasBody = declaration.hasBody
+    result.closure = declaration.closure
+    result.method = !text.IsEmpty(declaration.ownerType)
+    match declaration.receiver {
+        None: { result.receiver = .None }
+        Some(receiver): {
+            result.receiver = .Some(lowerReceiverKind(receiver))
+        }
+    }
+    result.attributes = copyFirAttributeUseArena(&semantic.attributes)
+    result.parameterAttributes = copyFirAttributeUseArenaArena(
+        &semantic.parameterAttributes)
+    result.taskFunction = declaration.taskFunction
+    result.blocking = declaration.blocking
+    result.callback = declaration.callback
+    result.callbackCancelSymbol = semanticOptionalStringCopy(
+        semantic.callbackCancelSymbol)
+    result.testName = semanticOptionalStringCopy(declaration.testName)
+    result.actionFunction = declaration.actionFunction
+    const transitionSource = replace declaration.stateTransition with .None
+    const timeoutSource = replace declaration.stateTimeout with .None
+    const workflowSource = replace semantic.workflow with .None
+    const loweredTransition {
+        original as restoredTransition
+        value as transition
+        present as hasTransition
+    } = lowerTransition($transitionSource, &semantic.parameters)
+    const loweredStateTimeout {
+        original as restoredTimeout
+        value as timeoutValue
+        present as hasTimeout
+    } = lowerStateTimeout($timeoutSource)
+    const loweredWorkflow {
+        original as restoredWorkflow
+        value as workflowValue
+        present as hasWorkflow
+    } = lowerWorkflow($workflowSource)
+    declaration.stateTransition = restoredTransition
+    declaration.stateTimeout = restoredTimeout
+    semantic.workflow = restoredWorkflow
+    result.stateTransition = transition
+    result.stateTimeout = timeoutValue
+    result.workflow = workflowValue
+    result.constructor = declaration.constructor
+    const body = declaration.body
+    const lowerBody = declaration.hasBody && !hasTransition &&
+        !hasTimeout && !hasWorkflow
+    model.functions.restore(id, $semantic)
+    source.functions.restore(id, $declaration)
+    if lowerBody {
+        var expressionMap = newLowerMap(source.expressions.len())
+        var statementMap = newLowerMap(source.statements.len())
+        var blockMap = newLowerMap(source.blocks.len())
+        result.body = lowerSemanticBlock(
+            &source,
+            &model,
+            &result,
+            &expressionMap,
+            &statementMap,
+            &blockMap,
+            body
+        )
+    }
+    result
+}
+
+fn lowerStructDropFunctions(
+    &source program,
+    &result firProgram
+) void {
+    var function u64 = 0
+    while function < source.functions.len() {
+        var declaration = match source.functions.take(function) {
+            None: panic("function declaration slot is empty")
+            Some(declaration): declaration
+        }
+        if !text.IsEmpty(declaration.ownerType) &&
+            !declaration.actionFunction &&
+            text.EndsWith(declaration.name, ".drop") {
+            var type u64 = 0
+            while type < source.structs.len() {
+                var owner = match source.structs.take(type) {
+                    None: panic("struct declaration slot is empty")
+                    Some(owner): owner
+                }
+                const found = owner.name == declaration.ownerType
+                source.structs.restore(type, $owner)
+                if found {
+                    var lowered = match result.structs.take(type) {
+                        None: panic("FIR struct slot is empty")
+                        Some(lowered): lowered
+                    }
+                    lowered.dropFunction = .Some(function)
+                    result.structs.restore(type, $lowered)
+                    break
+                }
+                type += 1
+            }
+        }
+        source.functions.restore(function, $declaration)
+        function += 1
+    }
+}
+
+fn lowerProgram(
+    &source program,
+    &model semanticModel
+) own firProgram {
+    var result = newFirProgram()
+    result.main = model.main
+    result.attributeDeclarations = lowerFirAttributeDeclarations(&model)
+    var index u64 = 0
+    while index < source.structs.len() {
+        discard result.structs.add(lowerFirStruct(&source, &model, index))
+        index += 1
+    }
+    index = 0
+    while index < source.enums.len() {
+        discard result.enums.add(lowerFirEnum(&source, &model, index))
+        index += 1
+    }
+    index = 0
+    while index < source.contracts.len() {
+        discard result.contracts.add(lowerFirContract(&source, &model, index))
+        index += 1
+    }
+    index = 0
+    while index < source.functions.len() {
+        discard result.functions.add(lowerFirFunction(&source, &model, index))
+        index += 1
+    }
+    lowerStructDropFunctions(&source, &result)
+    result
+}

@@ -1,0 +1,629 @@
+package foundation.compiler
+
+import std.text
+
+fn isSemanticOption(
+    &source program,
+    &type semanticType
+) bool {
+    if !type.kind.Matches("EnumValue") || type.declaration >= source.enums.len() return false
+    var declaration = match source.enums.take(type.declaration) {
+        None: panic("enum slot is empty")
+        Some(declaration): declaration
+    }
+    const result = declaration.builtin.Matches("Option")
+    source.enums.restore(type.declaration, $declaration)
+    result
+}
+
+fn requiresSemanticDrop(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &type semanticType
+) bool {
+    var active = newArena<String>()
+    requiresSemanticDropActive(&analyzer, &source, &type, &active)
+}
+
+fn requiresSemanticDropActive(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &type semanticType,
+    &active arena<String>
+) bool {
+    if type.kind.Matches("StringValue") || type.kind.Matches("Own") || type.kind.Matches("Task") ||
+        type.kind.Matches("Channel") || type.kind.Matches("Sender") || type.kind.Matches("Receiver") ||
+        (type.kind.Matches("Function") && !isCSemanticFunction(&type)) ||
+        type.kind.Matches("Parameter") {
+        return true
+    }
+    if type.kind.Matches("Array") && type.arguments.len() == 1 {
+        var element = semanticTypeArgument(&type, 0)
+        return requiresSemanticDropActive(&analyzer, &source, &element, &active)
+    }
+    if !type.kind.Matches("StructValue") && !type.kind.Matches("EnumValue") return false
+    const key = semanticTypeKey(&type)
+    if semanticStringContains(&active, key) return false
+    discard active.add(text.Copy(key))
+    var required = false
+    if type.kind.Matches("StructValue") && type.declaration < analyzer.model.structs.len() {
+        var declaration = match source.structs.take(type.declaration) {
+            None: panic("struct slot is empty")
+            Some(declaration): declaration
+        }
+        if hasSemanticDrop(&source, declaration.name) {
+            required = true
+        }
+        source.structs.restore(type.declaration, $declaration)
+        if !required {
+            var semantic = match analyzer.model.structs.take(type.declaration) {
+                None: panic("semantic struct slot is empty")
+                Some(semantic): semantic
+            }
+            var index u64 = 0
+            while !required && index < semantic.fieldTypes.len() {
+                var field = match semantic.fieldTypes.take(index) {
+                    None: panic("semantic field type slot is empty")
+                    Some(field): field
+                }
+                var resolved = substituteSemanticType(&field, &type.arguments)
+                required = requiresSemanticDropActive(
+                    &analyzer,
+                    &source,
+                    &resolved,
+                    &active
+                )
+                semantic.fieldTypes.restore(index, $field)
+                index += 1
+            }
+            analyzer.model.structs.restore(type.declaration, $semantic)
+        }
+    }
+    if type.kind.Matches("EnumValue") &&
+        type.declaration < analyzer.model.enums.len() {
+        var semantic = match analyzer.model.enums.take(type.declaration) {
+            None: panic("semantic enum slot is empty")
+            Some(semantic): semantic
+        }
+        var index u64 = 0
+        while !required && index < semantic.payloadTypes.len() {
+            const payload = match semantic.payloadTypes.take(index) {
+                None: panic("semantic payload slot is empty")
+                Some(payload): payload
+            }
+            match payload {
+                None: {
+                    var missing Option<semanticType> = .None
+                    semantic.payloadTypes.restore(index, $missing)
+                }
+                Some(value): {
+                    var original = value
+                    var resolved = substituteSemanticType(&original, &type.arguments)
+                    required = requiresSemanticDropActive(
+                        &analyzer,
+                        &source,
+                        &resolved,
+                        &active
+                    )
+                    var restored Option<semanticType> = .Some(original)
+                    semantic.payloadTypes.restore(index, $restored)
+                }
+            }
+            index += 1
+        }
+        analyzer.model.enums.restore(type.declaration, $semantic)
+    }
+    active.truncate(active.len() - 1)
+    required
+}
+
+fn addSemanticLocalToFunction(
+    &analyzer semanticAnalyzer,
+    &source program,
+    name String,
+    $type semanticType,
+    mutableBinding bool,
+    span sourceSpan
+) u64 {
+    var value = type
+    match lookupSemanticLocal(&analyzer.state, name) {
+        None: {}
+        Some(local): {
+            if analyzer.state.scopes.len() != 0 {
+                var scope = match analyzer.state.scopes.take(
+                    analyzer.state.scopes.len() - 1
+                ) {
+                    None: panic("semantic scope slot is empty")
+                    Some(scope): scope
+                }
+                var duplicate = false
+                var index u64 = 0
+                while index < scope.bindings.len() {
+                    const binding = match scope.bindings.take(index) {
+                        None: panic("semantic binding slot is empty")
+                        Some(binding): binding
+                    }
+                    if binding.name == name { duplicate = true }
+                    scope.bindings.restore(index, $binding)
+                    index += 1
+                }
+                analyzer.state.scopes.restore(
+                    analyzer.state.scopes.len() - 1,
+                    $scope
+                )
+                if duplicate {
+                    analyzer.diagnostics.reportError(
+                        "FDN2003",
+                        "duplicate binding " + name,
+                        span
+                    )
+                    return local
+                }
+            }
+        }
+    }
+    var function = match analyzer.model.functions.take(analyzer.state.currentFunction) {
+        None: panic("semantic function slot is empty")
+        Some(function): function
+    }
+    const id = function.locals.len()
+    discard function.locals.add(semanticLocal {
+        name = text.Copy(name)
+        type = copySemanticType(&value)
+        mutableBinding = mutableBinding
+        captured = false
+        captureMode = .Copy
+        borrowedClosure = false
+        readBinding = false
+    })
+    analyzer.model.functions.restore(analyzer.state.currentFunction, $function)
+    discard analyzer.state.resultOutstanding.add(isSemanticResult(&source, &value))
+    discard analyzer.state.resultExitReported.add(false)
+    discard analyzer.state.localSpans.add(span)
+    discard analyzer.state.moveStates.add(.Available)
+    discard analyzer.state.loanStates.add(.None)
+    discard declareSemanticLocal(&analyzer.state, name, id)
+    id
+}
+
+fn semanticLocalType(
+    &analyzer semanticAnalyzer,
+    local u64
+) semanticType {
+    var function = match analyzer.model.functions.take(analyzer.state.currentFunction) {
+        None: panic("semantic function slot is empty")
+        Some(function): function
+    }
+    var value = match function.locals.take(local) {
+        None: panic("semantic local slot is empty")
+        Some(value): value
+    }
+    const result = copySemanticType(&value.type)
+    function.locals.restore(local, $value)
+    analyzer.model.functions.restore(analyzer.state.currentFunction, $function)
+    result
+}
+
+fn semanticLocalMutable(
+    &analyzer semanticAnalyzer,
+    local u64
+) bool {
+    var function = match analyzer.model.functions.take(analyzer.state.currentFunction) {
+        None: panic("semantic function slot is empty")
+        Some(function): function
+    }
+    var value = match function.locals.take(local) {
+        None: panic("semantic local slot is empty")
+        Some(value): value
+    }
+    const result = value.mutableBinding
+    function.locals.restore(local, $value)
+    analyzer.model.functions.restore(analyzer.state.currentFunction, $function)
+    result
+}
+
+fn semanticBoolAt(&values arena<bool>, index u64) bool {
+    const value = match values.take(index) {
+        None: panic("boolean slot is empty")
+        Some(value): value
+    }
+    values.restore(index, value)
+    value
+}
+
+fn setSemanticBool(&values arena<bool>, index u64, value bool) void {
+    const previous = values.take(index)
+    match previous {
+        None: panic("boolean slot is empty")
+        Some(previous): { discard previous }
+    }
+    values.restore(index, value)
+}
+
+fn semanticMoveAt(&values arena<moveState>, index u64) moveState {
+    const value = match values.take(index) {
+        None: panic("move state slot is empty")
+        Some(value): value
+    }
+    values.restore(index, value)
+    value
+}
+
+fn setSemanticMove(&values arena<moveState>, index u64, value moveState) void {
+    const previous = values.take(index)
+    match previous {
+        None: panic("move state slot is empty")
+        Some(previous): { discard previous }
+    }
+    values.restore(index, value)
+}
+
+fn semanticLoanAt(&values arena<loanState>, index u64) loanState {
+    const value = match values.take(index) {
+        None: panic("loan state slot is empty")
+        Some(value): value
+    }
+    values.restore(index, value)
+    value
+}
+
+fn setSemanticLoan(&values arena<loanState>, index u64, value loanState) void {
+    const previous = values.take(index)
+    match previous {
+        None: panic("loan state slot is empty")
+        Some(previous): { discard previous }
+    }
+    values.restore(index, value)
+}
+
+fn semanticScopeDrops(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &scope semanticScope
+) own arena<u64> {
+    var drops = newArena<u64>()
+    var index = scope.bindings.len()
+    while index != 0 {
+        index -= 1
+        const binding = match scope.bindings.take(index) {
+            None: panic("semantic binding slot is empty")
+            Some(binding): binding
+        }
+        const local = binding.local
+        scope.bindings.restore(index, $binding)
+        var function = match analyzer.model.functions.take(analyzer.state.currentFunction) {
+            None: panic("semantic function slot is empty")
+            Some(function): function
+        }
+        var value = match function.locals.take(local) {
+            None: panic("semantic local slot is empty")
+            Some(value): value
+        }
+        const drop = !value.captured &&
+            semanticMoveAt(
+            &analyzer.state.moveStates, local).Matches("Available") &&
+            requiresSemanticDrop(&analyzer, &source, &value.type)
+        function.locals.restore(local, $value)
+        analyzer.model.functions.restore(analyzer.state.currentFunction, $function)
+        if drop { discard drops.add(local) }
+    }
+    drops
+}
+
+fn semanticScopeDropsAt(
+    &analyzer semanticAnalyzer,
+    &source program,
+    scopeIndex u64
+) own arena<u64> {
+    var scope = match analyzer.state.scopes.take(scopeIndex) {
+        None: panic("semantic scope slot is empty")
+        Some(scope): scope
+    }
+    const result = semanticScopeDrops(&analyzer, &source, &scope)
+    analyzer.state.scopes.restore(scopeIndex, $scope)
+    result
+}
+
+fn reportSemanticScope(
+    &analyzer semanticAnalyzer,
+    &scope semanticScope
+) void {
+    var index u64 = 0
+    while index < scope.bindings.len() {
+        const binding = match scope.bindings.take(index) {
+            None: panic("semantic binding slot is empty")
+            Some(binding): binding
+        }
+        const local = binding.local
+        scope.bindings.restore(index, $binding)
+        if local < analyzer.state.resultOutstanding.len() &&
+            semanticBoolAt(&analyzer.state.resultOutstanding, local) {
+            if !semanticBoolAt(&analyzer.state.resultExitReported, local) {
+                var span = match analyzer.state.localSpans.take(local) {
+                    None: panic("local span slot is empty")
+                    Some(span): span
+                }
+                analyzer.state.localSpans.restore(local, span)
+                analyzer.diagnostics.reportError(
+                    "FDN2052", "Result binding is not handled", span)
+                setSemanticBool(
+                    &analyzer.state.resultExitReported, local, true)
+            }
+            setSemanticBool(&analyzer.state.resultOutstanding, local, false)
+        }
+        index += 1
+    }
+}
+
+fn reportSemanticScopeAt(
+    &analyzer semanticAnalyzer,
+    scopeIndex u64
+) void {
+    var scope = match analyzer.state.scopes.take(scopeIndex) {
+        None: panic("semantic scope slot is empty")
+        Some(scope): scope
+    }
+    reportSemanticScope(&analyzer, &scope)
+    analyzer.state.scopes.restore(scopeIndex, $scope)
+}
+
+fn semanticActiveDropsFrom(
+    &analyzer semanticAnalyzer,
+    &source program,
+    firstScope u64
+) own arena<u64> {
+    var drops = newArena<u64>()
+    var scopeIndex = analyzer.state.scopes.len()
+    while scopeIndex > firstScope {
+        scopeIndex -= 1
+        var scope = match analyzer.state.scopes.take(scopeIndex) {
+            None: panic("semantic scope slot is empty")
+            Some(scope): scope
+        }
+        var current = semanticScopeDrops(&analyzer, &source, &scope)
+        var index u64 = 0
+        while index < current.len() {
+            const local = match current.take(index) {
+                None: panic("drop slot is empty")
+                Some(local): local
+            }
+            discard drops.add(local)
+            current.restore(index, local)
+            index += 1
+        }
+        analyzer.state.scopes.restore(scopeIndex, $scope)
+    }
+    drops
+}
+
+fn semanticActiveDrops(
+    &analyzer semanticAnalyzer,
+    &source program
+) own arena<u64> {
+    semanticActiveDropsFrom(&analyzer, &source, 0)
+}
+
+fn reportSemanticOutstanding(
+    &analyzer semanticAnalyzer,
+    span sourceSpan,
+    firstLocal u64
+) void {
+    var local = firstLocal
+    while local < analyzer.state.resultOutstanding.len() {
+        if semanticBoolAt(&analyzer.state.resultOutstanding, local) &&
+            !semanticBoolAt(&analyzer.state.resultExitReported, local) {
+            var localSpan = match analyzer.state.localSpans.take(local) {
+                None: panic("local span slot is empty")
+                Some(localSpan): localSpan
+            }
+            const reportSpan = if localSpan.length == 0 { span } else { localSpan }
+            analyzer.state.localSpans.restore(local, localSpan)
+            analyzer.diagnostics.reportError(
+                "FDN2051",
+                "Result must be handled before leaving scope",
+                reportSpan
+            )
+            setSemanticBool(&analyzer.state.resultExitReported, local, true)
+        }
+        local += 1
+    }
+}
+
+fn semanticMovePrefix(
+    &values arena<moveState>,
+    count u64
+) own arena<moveState> {
+    var result = newArena<moveState>()
+    var index u64 = 0
+    while index < count && index < values.len() {
+        discard result.add(semanticMoveAt(&values, index))
+        index += 1
+    }
+    result
+}
+
+fn semanticLoanPrefix(
+    &values arena<loanState>,
+    count u64
+) own arena<loanState> {
+    var result = newArena<loanState>()
+    var index u64 = 0
+    while index < count && index < values.len() {
+        discard result.add(semanticLoanAt(&values, index))
+        index += 1
+    }
+    result
+}
+
+fn semanticBoolPrefix(
+    &values arena<bool>,
+    count u64
+) own arena<bool> {
+    var result = newArena<bool>()
+    var index u64 = 0
+    while index < count && index < values.len() {
+        discard result.add(semanticBoolAt(&values, index))
+        index += 1
+    }
+    result
+}
+
+fn restoreSemanticMoves(
+    &target arena<moveState>,
+    &source arena<moveState>
+) void {
+    while target.len() < source.len() {
+        discard target.add(.Available)
+    }
+    var index u64 = 0
+    while index < source.len() {
+        const value = semanticMoveAt(&source, index)
+        setSemanticMove(&target, index, value)
+        index += 1
+    }
+    while index < target.len() {
+        setSemanticMove(&target, index, .Available)
+        index += 1
+    }
+}
+
+fn restoreSemanticLoans(
+    &target arena<loanState>,
+    &source arena<loanState>
+) void {
+    while target.len() < source.len() {
+        discard target.add(.None)
+    }
+    var index u64 = 0
+    while index < source.len() {
+        const value = semanticLoanAt(&source, index)
+        setSemanticLoan(&target, index, value)
+        index += 1
+    }
+    while index < target.len() {
+        setSemanticLoan(&target, index, .None)
+        index += 1
+    }
+}
+
+fn restoreSemanticBools(&target arena<bool>, &source arena<bool>) void {
+    while target.len() < source.len() {
+        discard target.add(false)
+    }
+    var index u64 = 0
+    while index < source.len() {
+        const value = semanticBoolAt(&source, index)
+        setSemanticBool(&target, index, value)
+        index += 1
+    }
+    while index < target.len() {
+        setSemanticBool(&target, index, false)
+        index += 1
+    }
+}
+
+fn mergeSemanticMove(left moveState, right moveState) moveState {
+    if left.Matches(right.Name()) return left
+    .MaybeMoved
+}
+
+fn mergeSemanticLoan(left loanState, right loanState) loanState {
+    if left.Matches(right.Name()) return left
+    if left.Matches("Edit") || right.Matches("Edit") return .Edit
+    if left.Matches("View") || right.Matches("View") return .View
+    .None
+}
+
+fn mergeSemanticMoves(
+    &before arena<moveState>,
+    &left arena<moveState>,
+    leftTerminates bool,
+    &right arena<moveState>,
+    rightTerminates bool
+) own arena<moveState> {
+    if leftTerminates {
+        const length = right.len()
+        return semanticMovePrefix(&right, length)
+    }
+    if rightTerminates {
+        const length = left.len()
+        return semanticMovePrefix(&left, length)
+    }
+    var result = newArena<moveState>()
+    var index u64 = 0
+    while index < before.len() {
+        const leftValue = if index < left.len() {
+            semanticMoveAt(&left, index)
+        } else {
+            semanticMoveAt(&before, index)
+        }
+        const rightValue = if index < right.len() {
+            semanticMoveAt(&right, index)
+        } else {
+            semanticMoveAt(&before, index)
+        }
+        discard result.add(mergeSemanticMove(leftValue, rightValue))
+        index += 1
+    }
+    result
+}
+
+fn mergeSemanticLoans(
+    &before arena<loanState>,
+    &left arena<loanState>,
+    leftTerminates bool,
+    &right arena<loanState>,
+    rightTerminates bool
+) own arena<loanState> {
+    if leftTerminates {
+        const length = right.len()
+        return semanticLoanPrefix(&right, length)
+    }
+    if rightTerminates {
+        const length = left.len()
+        return semanticLoanPrefix(&left, length)
+    }
+    var result = newArena<loanState>()
+    var index u64 = 0
+    while index < before.len() {
+        const leftValue = if index < left.len() {
+            semanticLoanAt(&left, index)
+        } else {
+            semanticLoanAt(&before, index)
+        }
+        const rightValue = if index < right.len() {
+            semanticLoanAt(&right, index)
+        } else {
+            semanticLoanAt(&before, index)
+        }
+        discard result.add(mergeSemanticLoan(leftValue, rightValue))
+        index += 1
+    }
+    result
+}
+
+fn findSemanticLocal(
+    &analyzer semanticAnalyzer,
+    name String,
+    span sourceSpan
+) Option<u64> {
+    match lookupSemanticLocal(&analyzer.state, name) {
+        Some(local): .Some(local)
+        None: {
+            const closure = semanticStringContains(
+                &analyzer.state.closureOuterNames,
+                name
+            )
+            analyzer.diagnostics.reportError(
+                if closure { "FDN2120" } else { "FDN2004" },
+                if closure {
+                "binding must be listed after capture " + name
+            } else {
+                "unknown binding " + name
+            },
+                span
+            )
+            .None
+        }
+    }
+}

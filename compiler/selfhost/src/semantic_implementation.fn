@@ -1,0 +1,940 @@
+package foundation.compiler
+
+import std.collections
+import std.format
+import std.text
+
+struct semanticImplementationInfo {
+    span sourceSpan
+    contractName String
+}
+
+struct semanticDefaultMethodCandidate {
+    contractType semanticType
+    method u64
+}
+
+fn semanticImplementationInfoAt(
+    &source program,
+    type u64,
+    implementation u64
+) semanticImplementationInfo {
+    var declaration = match source.structs.take(type) {
+        None: panic("struct slot is empty")
+        Some(declaration): declaration
+    }
+    var pending = collections.NewList<structImplementation>()
+    var index u64 = 0
+    var result = semanticImplementationInfo {
+        span = declaration.span
+        contractName = "contract"
+    }
+    while !declaration.implementations.IsEmpty() {
+        var value = match declaration.implementations.PopFront() {
+            None: panic("implementation list invariant failed")
+            Some(value): value
+        }
+        if index == implementation {
+            result = semanticImplementationInfo {
+                span = value.span
+                contractName = text.Copy(value.contractType.name)
+            }
+        }
+        pending.PushFront($value)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("implementation restore invariant failed")
+            Some(value): value
+        }
+        declaration.implementations.PushFront($value)
+    }
+    source.structs.restore(type, $declaration)
+    result
+}
+
+fn semanticContractPackage(
+    &source program,
+    contractID u64
+) String {
+    if contractID >= source.contracts.len() return ""
+    var declaration = match source.contracts.take(contractID) {
+        None: panic("contract slot is empty")
+        Some(declaration): declaration
+    }
+    const result = text.Copy(declaration.packageName)
+    source.contracts.restore(contractID, $declaration)
+    result
+}
+
+fn semanticFunctionSpan(
+    &source program,
+    function u64
+) sourceSpan {
+    if function >= source.functions.len() {
+        return sourceSpan {
+            offset = 0 length = 0 line = 0 column = 0 source = 0
+        }
+    }
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    const result = declaration.span
+    source.functions.restore(function, $declaration)
+    result
+}
+
+fn semanticFunctionReceiver(
+    &source program,
+    function u64
+) receiverKind {
+    if function >= source.functions.len() return .View
+    var declaration = match source.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(declaration): declaration
+    }
+    const result = match replace declaration.receiver with .None {
+        None: receiverKind.View
+        Some(value): {
+            declaration.receiver = .Some(value)
+            value
+        }
+    }
+    source.functions.restore(function, $declaration)
+    result
+}
+
+fn semanticPrependDelegate(
+    &path arena<u64>,
+    field u64
+) own arena<u64> {
+    var result = newArena<u64>()
+    discard result.add(field)
+    var index u64 = 0
+    while index < path.len() {
+        discard result.add(semanticArgumentID(&path, index))
+        index += 1
+    }
+    result
+}
+
+fn semanticContractMethodTarget(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &concrete semanticType,
+    &contractTypeValue semanticType,
+    method u64,
+    &active arena<String>
+) Option<contractMethodTarget> {
+    if !concrete.kind.Matches("StructValue") ||
+        concrete.declaration >= analyzer.model.structs.len() ||
+        !contractTypeValue.kind.Matches("ContractValue") ||
+        contractTypeValue.declaration >= analyzer.model.contracts.len() {
+        return .None
+    }
+    var contractModel = match analyzer.model.contracts.take(
+        contractTypeValue.declaration) {
+        None: panic("semantic contract slot is empty")
+        Some(contractModel): contractModel
+    }
+    if method >= contractModel.methodList.len() {
+        analyzer.model.contracts.restore(
+            contractTypeValue.declaration, $contractModel)
+        return .None
+    }
+    var required = match contractModel.methodList.take(method) {
+        None: panic("semantic contract method slot is empty")
+        Some(required): required
+    }
+    const methodName = text.Copy(required.name)
+    const defaultFunction = match required.defaultFunction {
+        None: Option<u64>.None
+        Some(function): Option<u64>.Some(function)
+    }
+    const originContract = required.originContract
+    var originArguments = copySemanticTypeArena(&required.originArguments)
+    contractModel.methodList.restore(method, $required)
+    analyzer.model.contracts.restore(
+        contractTypeValue.declaration, $contractModel)
+
+    const owner = semanticStructName(&source, concrete.declaration)
+    match findSemanticMethod(&analyzer.state.methodList, owner, methodName) {
+        None: {}
+        Some(function): {
+            return .Some(contractMethodTarget {
+                function = function
+                typeArguments = copySemanticTypeArena(&concrete.arguments)
+                contractDefault = false
+                defaultContract = invalidSemanticType()
+                delegatePath = newArena<u64>()
+            })
+        }
+    }
+
+    const key = semanticTypeKey(&concrete) + ":" +
+        semanticTypeKey(&contractTypeValue) + ":" + format.U64(method)
+    if semanticStringContains(&active, key) return .None
+    discard active.add(text.Copy(key))
+
+    const implemented = implementedSemanticContract(
+        &analyzer, &concrete, contractTypeValue.declaration)
+    match implemented {
+        None: {}
+        Some(matchValue): {
+            var current = matchValue
+            var delegatePresent = false
+            var delegateField u64 = 0
+            match current.delegateID {
+                None: {}
+                Some(value): {
+                    delegatePresent = true
+                    delegateField = value
+                }
+            }
+            if !current.ambiguous && delegatePresent &&
+                sameSemanticType(&current.contractType, &contractTypeValue) {
+                var structModel = match analyzer.model.structs.take(
+                    concrete.declaration) {
+                    None: panic("semantic struct slot is empty")
+                    Some(structModel): structModel
+                }
+                if delegateField < structModel.fieldTypes.len() {
+                    var fieldType = match structModel.fieldTypes.take(
+                        delegateField) {
+                        None: panic("semantic field type slot is empty")
+                        Some(fieldType): fieldType
+                    }
+                    var delegated = substituteSemanticType(
+                        &fieldType, &concrete.arguments)
+                    structModel.fieldTypes.restore(delegateField, $fieldType)
+                    analyzer.model.structs.restore(
+                        concrete.declaration, $structModel)
+                    const target = semanticContractMethodTarget(
+                        &analyzer,
+                        &source,
+                        &delegated,
+                        &contractTypeValue,
+                        method,
+                        &active
+                    )
+                    match target {
+                        None: {}
+                        Some(value): {
+                            var result = value
+                            if !result.contractDefault {
+                                result.delegatePath = semanticPrependDelegate(
+                                    &result.delegatePath, delegateField)
+                            }
+                            active.truncate(active.len() - 1)
+                            return .Some(result)
+                        }
+                    }
+                } else {
+                    analyzer.model.structs.restore(
+                        concrete.declaration, $structModel)
+                }
+            }
+        }
+    }
+    active.truncate(active.len() - 1)
+
+    match defaultFunction {
+        None: .None
+        Some(function): {
+            var typeArguments = newArena<semanticType>()
+            var index u64 = 0
+            while index < originArguments.len() {
+                var argument = match originArguments.take(index) {
+                    None: panic("contract origin argument slot is empty")
+                    Some(argument): argument
+                }
+                discard typeArguments.add(substituteSemanticType(
+                        &argument, &contractTypeValue.arguments))
+                originArguments.restore(index, $argument)
+                index += 1
+            }
+            var defaultArguments = copySemanticTypeArena(&typeArguments)
+            .Some(contractMethodTarget {
+                function = function
+                typeArguments = typeArguments
+                contractDefault = true
+                defaultContract = semanticDirectType(
+                    .ContractValue,
+                    originContract,
+                    $defaultArguments
+                )
+                delegatePath = newArena<u64>()
+            })
+        }
+    }
+}
+
+fn semanticContractConversion(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &expected semanticType,
+    &actual semanticType
+) Option<contractConversion> {
+    const expectedWrapper = expected.kind.Matches("View") ||
+        expected.kind.Matches("Edit") || expected.kind.Matches("Own")
+    const actualWrapper = actual.kind.Matches("View") ||
+        actual.kind.Matches("Edit") || actual.kind.Matches("Own")
+    if !expectedWrapper || expected.arguments.len() != 1 ||
+        !actualWrapper || actual.arguments.len() != 1 {
+        return .None
+    }
+    var contractTypeValue = semanticTypeArgument(&expected, 0)
+    var concrete = semanticTypeArgument(&actual, 0)
+    if !contractTypeValue.kind.Matches("ContractValue") ||
+        !concrete.kind.Matches("StructValue") ||
+        (expected.kind.Matches("Edit") && !actual.kind.Matches("Edit")) ||
+        (expected.kind.Matches("Own") && !actual.kind.Matches("Own")) ||
+        (!expected.kind.Matches("Own") && actual.kind.Matches("Own")) {
+        return .None
+    }
+    const implemented = implementedSemanticContract(
+        &analyzer, &concrete, contractTypeValue.declaration)
+    const valid = match implemented {
+        None: false
+        Some(value): {
+            var matchValue = value
+            !matchValue.ambiguous &&
+                sameSemanticType(&matchValue.contractType, &contractTypeValue)
+        }
+    }
+    if !valid return .None
+
+    var contractModel = match analyzer.model.contracts.take(
+        contractTypeValue.declaration) {
+        None: panic("semantic contract slot is empty")
+        Some(contractModel): contractModel
+    }
+    const methodCount = contractModel.methodList.len()
+    analyzer.model.contracts.restore(
+        contractTypeValue.declaration, $contractModel)
+    var targets = newArena<contractMethodTarget>()
+    var method u64 = 0
+    while method < methodCount {
+        var active = newArena<String>()
+        match semanticContractMethodTarget(
+            &analyzer,
+            &source,
+            &concrete,
+            &contractTypeValue,
+            method,
+            &active
+        ) {
+            None: { return .None }
+            Some(target): { discard targets.add($target) }
+        }
+        method += 1
+    }
+    .Some(contractConversion {
+        sourceType = copySemanticType(&actual)
+        concreteType = concrete
+        contractType = contractTypeValue
+        targetType = copySemanticType(&expected)
+        methodTargets = targets
+    })
+}
+
+fn semanticDefaultMethodsMatch(
+    &analyzer semanticAnalyzer,
+    &leftCandidate semanticDefaultMethodCandidate,
+    &rightContract semanticType,
+    &rightMethod semanticContractMethod
+) bool {
+    var left = copySemanticContractMethodAt(
+        &analyzer,
+        leftCandidate.contractType.declaration,
+        leftCandidate.method
+    )
+    if !optionalSemanticIDEqual(
+        left.defaultFunction, rightMethod.defaultFunction) ||
+        !left.receiver.Matches(rightMethod.receiver.Name()) ||
+        left.parameterTypes.len() != rightMethod.parameterTypes.len() {
+        return false
+    }
+    var leftReturn = substituteSemanticType(
+        &left.returnType, &leftCandidate.contractType.arguments)
+    var rightReturn = substituteSemanticType(
+        &rightMethod.returnType, &rightContract.arguments)
+    if !sameSemanticType(&leftReturn, &rightReturn) return false
+    var parameter u64 = 0
+    while parameter < left.parameterTypes.len() {
+        var leftType = match left.parameterTypes.take(parameter) {
+            None: panic("contract parameter type slot is empty")
+            Some(value): value
+        }
+        var rightType = match rightMethod.parameterTypes.take(parameter) {
+            None: panic("contract parameter type slot is empty")
+            Some(value): value
+        }
+        var leftValue = substituteSemanticType(
+            &leftType, &leftCandidate.contractType.arguments)
+        var rightValue = substituteSemanticType(
+            &rightType, &rightContract.arguments)
+        left.parameterTypes.restore(parameter, $leftType)
+        rightMethod.parameterTypes.restore(parameter, $rightType)
+        if !sameSemanticType(&leftValue, &rightValue) return false
+        parameter += 1
+    }
+    true
+}
+
+fn findSemanticDefaultMethod(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &base semanticType,
+    name String,
+    span sourceSpan
+) Option<semanticDefaultMethodCandidate> {
+    if !base.kind.Matches("StructValue") ||
+        base.declaration >= analyzer.model.structs.len() {
+        return .None
+    }
+    var structModel = match analyzer.model.structs.take(base.declaration) {
+        None: panic("semantic struct slot is empty")
+        Some(structModel): structModel
+    }
+    var result Option<semanticDefaultMethodCandidate> = .None
+    var implementation u64 = 0
+    while implementation < structModel.implementations.len() {
+        var rawContract = match structModel.implementations.take(implementation) {
+            None: panic("semantic implementation slot is empty")
+            Some(value): value
+        }
+        var contractTypeValue = substituteSemanticType(
+            &rawContract, &base.arguments)
+        if contractTypeValue.kind.Matches("ContractValue") &&
+            contractTypeValue.declaration < analyzer.model.contracts.len() {
+            var contractModel = match analyzer.model.contracts.take(
+                contractTypeValue.declaration) {
+                None: panic("semantic contract slot is empty")
+                Some(contractModel): contractModel
+            }
+            var method u64 = 0
+            while method < contractModel.methodList.len() {
+                var candidate = match contractModel.methodList.take(method) {
+                    None: panic("semantic contract method slot is empty")
+                    Some(candidate): candidate
+                }
+                var hasDefault = false
+                match candidate.defaultFunction {
+                    None: {}
+                    Some(function): { discard function hasDefault = true }
+                }
+                if candidate.name == name && hasDefault {
+                    const selected = replace result with .None
+                    match selected {
+                        None: {
+                            result = .Some(semanticDefaultMethodCandidate {
+                                contractType = copySemanticType(
+                                    &contractTypeValue)
+                                method = method
+                            })
+                        }
+                        Some(existing): {
+                            var current = existing
+                            const same = semanticDefaultMethodsMatch(
+                                &analyzer,
+                                &current,
+                                &contractTypeValue,
+                                &candidate
+                            )
+                            result = .Some(current)
+                            if !same {
+                                analyzer.diagnostics.reportError(
+                                    "FDN2145",
+                                    "ambiguous default method " + name,
+                                    span
+                                )
+                                contractModel.methodList.restore(
+                                    method, $candidate)
+                                analyzer.model.contracts.restore(
+                                    contractTypeValue.declaration,
+                                    $contractModel
+                                )
+                                structModel.implementations.restore(
+                                    implementation, $rawContract)
+                                analyzer.model.structs.restore(
+                                    base.declaration, $structModel)
+                                return .None
+                            }
+                        }
+                    }
+                }
+                contractModel.methodList.restore(method, $candidate)
+                method += 1
+            }
+            analyzer.model.contracts.restore(
+                contractTypeValue.declaration, $contractModel)
+        }
+        structModel.implementations.restore(implementation, $rawContract)
+        implementation += 1
+    }
+    analyzer.model.structs.restore(base.declaration, $structModel)
+    result
+}
+
+fn analyzeSemanticDefaultMethod(
+    &analyzer semanticAnalyzer,
+    &source program,
+    expression u64,
+    &member memberExpression,
+    &sourceType semanticType,
+    &base semanticType,
+    &candidate semanticDefaultMethodCandidate,
+    span sourceSpan
+) semanticType {
+    var method = copySemanticContractMethodAt(
+        &analyzer,
+        candidate.contractType.declaration,
+        candidate.method
+    )
+    if semanticContractPackage(&source, method.originContract) !=
+        currentSemanticPackage(&analyzer, &source) && !method.exported {
+        analyzer.diagnostics.reportError(
+            "FDN3008", "method " + member.member + " is not exported", span)
+    }
+    if method.receiver.Matches("Edit") &&
+        (sourceType.kind.Matches("View") ||
+        !semanticMemberBaseEditable(&analyzer, &source, &member)) {
+        analyzer.diagnostics.reportError(
+            "FDN2101", "edit method requires an editable receiver", span)
+    }
+    if method.receiver.Matches("Own") {
+        analyzer.diagnostics.reportError(
+            "FDN2103",
+            "own default method requires an owned contract value",
+            span
+        )
+    }
+
+    var arguments = semanticCallArgumentIDs(&member.arguments)
+    var argumentNames = semanticCallArgumentNames(&member.argumentNames)
+    var parameterMap = semanticMapArgumentParameters(
+        &analyzer,
+        &argumentNames,
+        arguments.len(),
+        &method.parameterNames,
+        span
+    )
+    if arguments.len() != method.parameterTypes.len() {
+        analyzer.diagnostics.reportError(
+            "FDN2010", "wrong argument count for method " + member.member, span)
+    }
+    var borrows = newArena<Option<semanticType>>()
+    var conversions = newArena<Option<contractConversion>>()
+    var parameters = newArena<u64>()
+    var index u64 = 0
+    while index < arguments.len() {
+        const parameter = semanticArgumentID(&parameterMap, index)
+        var expected = semanticExpected {
+            present = false type = invalidSemanticType()
+        }
+        var mode = parameterMode.TypeEncoded
+        if parameter < method.parameterTypes.len() {
+            var pattern = match method.parameterTypes.take(parameter) {
+                None: panic("contract parameter type slot is empty")
+                Some(pattern): pattern
+            }
+            pattern = substituteSemanticType(
+                &pattern, &candidate.contractType.arguments)
+            if parameter < method.parameterModes.len() {
+                mode = match method.parameterModes.take(parameter) {
+                    None: panic("contract parameter mode slot is empty")
+                    Some(value): value
+                }
+                method.parameterModes.restore(parameter, mode)
+            }
+            pattern = specializeSemanticReadParameter(
+                &analyzer, &source, $pattern, mode)
+            expected = semanticExpected { present = true type = pattern }
+        }
+        var analysis = semanticAnalyzeCallArgument(
+            &analyzer,
+            &source,
+            semanticArgumentID(&arguments, index),
+            &expected,
+            mode,
+            span
+        )
+        var actual = replace analysis.type with invalidSemanticType()
+        var implicitBorrow = replace analysis.implicitBorrow with .None
+        discard borrows.add($implicitBorrow)
+        var conversion Option<contractConversion> = .None
+        if expected.present {
+            match semanticContractConversion(
+                &analyzer, &source, &expected.type, &actual) {
+                None: requireSameSemanticType(
+                    &analyzer,
+                    &source,
+                    &expected.type,
+                    &actual,
+                    span,
+                    "method argument"
+                )
+                Some(value): { conversion = .Some(value) }
+            }
+        }
+        discard conversions.add($conversion)
+        discard parameters.add(parameter)
+        index += 1
+    }
+
+    var concreteType = copySemanticType(&base)
+    var contractTypeValue = copySemanticType(&candidate.contractType)
+    var concreteBorrow = unarySemanticType(
+        .Edit if method.receiver.Matches("Edit") else .View,
+        $concreteType
+    )
+    var contractBorrow = unarySemanticType(
+        .Edit if method.receiver.Matches("Edit") else .View,
+        $contractTypeValue
+    )
+    var receiverConversion = semanticContractConversion(
+        &analyzer, &source, &contractBorrow, &concreteBorrow)
+    const conversionPresent = match replace receiverConversion with .None {
+        None: false
+        Some(value): {
+            receiverConversion = .Some(value)
+            true
+        }
+    }
+    if !conversionPresent {
+        analyzer.diagnostics.reportError(
+            "FDN2096",
+            "default method receiver does not implement contract",
+            span
+        )
+    }
+    var target = newCallTarget(.ContractMethod)
+    match member.base {
+        None: {}
+        Some(baseExpression): { target.receiver = .Some(baseExpression) }
+    }
+    target.receiverType = concreteBorrow
+    target.contractID = candidate.contractType.declaration
+    target.method = candidate.method
+    target.typeArguments = copySemanticTypeArena(
+        &candidate.contractType.arguments)
+    target.receiverConversion = receiverConversion
+    target.argumentBorrows = borrows
+    target.argumentConversions = conversions
+    target.argumentParameters = parameters
+    setSemanticCallTarget(&analyzer, expression, $target)
+    substituteSemanticType(
+        &method.returnType, &candidate.contractType.arguments)
+}
+
+fn semanticImplementationDelegate(
+    &semantic semanticStruct,
+    index u64
+) Option<u64> {
+    if index >= semantic.implementationDelegates.len() return .None
+    const selected = semantic.implementationDelegates.take(index)
+    const value = match selected {
+        None: panic("semantic delegate slot is empty")
+        Some(value): value
+    }
+    const result = match value {
+        None: Option<u64>.None
+        Some(field): Option<u64>.Some(field)
+    }
+    semantic.implementationDelegates.restore(index, $value)
+    result
+}
+
+struct semanticImplementationSelection {
+    implementation semanticType
+    delegateField Option<u64>
+    fieldType Option<semanticType>
+}
+
+fn semanticStructImplementationCount(
+    &analyzer semanticAnalyzer,
+    structID u64
+) u64 {
+    var semantic = match analyzer.model.structs.take(structID) {
+        None: panic("semantic struct slot is empty")
+        Some(semantic): semantic
+    }
+    const result = semantic.implementations.len()
+    analyzer.model.structs.restore(structID, $semantic)
+    result
+}
+
+fn semanticImplementationSelectionAt(
+    &analyzer semanticAnalyzer,
+    structID u64,
+    index u64
+) semanticImplementationSelection {
+    var semantic = match analyzer.model.structs.take(structID) {
+        None: panic("semantic struct slot is empty")
+        Some(semantic): semantic
+    }
+    var raw = match semantic.implementations.take(index) {
+        None: panic("semantic implementation slot is empty")
+        Some(raw): raw
+    }
+    const implementation = copySemanticType(&raw)
+    semantic.implementations.restore(index, $raw)
+    const delegateValue = semanticImplementationDelegate(&semantic, index)
+    var delegateCopy Option<u64> = .None
+    var fieldType Option<semanticType> = .None
+    match delegateValue {
+        None: {}
+        Some(field): {
+            delegateCopy = .Some(field)
+            if field < semantic.fieldTypes.len() {
+                var rawField = match semantic.fieldTypes.take(field) {
+                    None: panic("semantic field type slot is empty")
+                    Some(rawField): rawField
+                }
+                fieldType = .Some(copySemanticType(&rawField))
+                semantic.fieldTypes.restore(field, $rawField)
+            }
+        }
+    }
+    analyzer.model.structs.restore(structID, $semantic)
+    semanticImplementationSelection {
+        implementation = implementation
+        delegateField = delegateCopy
+        fieldType = fieldType
+    }
+}
+
+fn semanticContractMethodCount(
+    &analyzer semanticAnalyzer,
+    contractID u64
+) u64 {
+    var semantic = match analyzer.model.contracts.take(contractID) {
+        None: panic("semantic contract slot is empty")
+        Some(semantic): semantic
+    }
+    const result = semantic.methodList.len()
+    analyzer.model.contracts.restore(contractID, $semantic)
+    result
+}
+
+fn verifySemanticImplementations(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    var structID u64 = 0
+    while structID < source.structs.len() {
+        var declaration = match source.structs.take(structID) {
+            None: panic("struct slot is empty")
+            Some(declaration): declaration
+        }
+        var structArguments = newArena<semanticType>()
+        var parameter u64 = 0
+        const typeParameterCount = listLength(&declaration.typeParameters)
+        const structName = text.Copy(declaration.name)
+        source.structs.restore(structID, $declaration)
+        while parameter < typeParameterCount {
+            discard structArguments.add(declaredSemanticType(.Parameter, parameter))
+            parameter += 1
+        }
+        var concrete = semanticDirectType(
+            .StructValue, structID, $structArguments)
+        const implementationCount = semanticStructImplementationCount(
+            &analyzer, structID)
+        var implementationIndex u64 = 0
+        while implementationIndex < implementationCount {
+            var selection = semanticImplementationSelectionAt(
+                &analyzer, structID, implementationIndex)
+            var implementation = replace selection.implementation with
+            invalidSemanticType()
+            const info = semanticImplementationInfoAt(
+                &source, structID, implementationIndex)
+            if implementation.kind.Matches("ContractValue") &&
+                implementation.declaration < source.contracts.len() {
+                var delegated = false
+                match replace selection.delegateField with .None {
+                    None: {}
+                    Some(field): {
+                        delegated = true
+                        discard field
+                    }
+                }
+                if delegated {
+                    match replace selection.fieldType with .None {
+                        None: {}
+                        Some(fieldType): {
+                            var fieldValue = fieldType
+                            var delegatedType = substituteSemanticType(
+                                &fieldValue, &concrete.arguments)
+                            const matched = implementedSemanticContract(
+                                &analyzer,
+                                &delegatedType,
+                                implementation.declaration
+                            )
+                            const valid = match matched {
+                                None: false
+                                Some(value): {
+                                    var current = value
+                                    !current.ambiguous && sameSemanticType(
+                                        &current.contractType, &implementation)
+                                }
+                            }
+                            if !valid {
+                                analyzer.diagnostics.reportError(
+                                    "FDN2147",
+                                    "delegation field does not implement " +
+                                    info.contractName,
+                                    info.span
+                                )
+                            }
+                        }
+                    }
+                }
+
+                const methodCount = semanticContractMethodCount(
+                    &analyzer, implementation.declaration)
+                var method u64 = 0
+                while method < methodCount {
+                    var required = copySemanticContractMethodAt(
+                        &analyzer, implementation.declaration, method)
+                    const owner = text.Copy(structName)
+                    const found = findSemanticMethod(
+                        &analyzer.state.methodList, owner, required.name)
+                    match found {
+                        None: {
+                            if delegated && required.receiver.Matches("Own") {
+                                analyzer.diagnostics.reportError(
+                                    "FDN2149",
+                                    "own method must be implemented locally when using delegation",
+                                    info.span
+                                )
+                            } else {
+                                var active = newArena<String>()
+                                const target = semanticContractMethodTarget(
+                                    &analyzer,
+                                    &source,
+                                    &concrete,
+                                    &implementation,
+                                    method,
+                                    &active
+                                )
+                                const present = match target {
+                                    None: false
+                                    Some(value): { discard value true }
+                                }
+                                if !present {
+                                    analyzer.diagnostics.reportError(
+                                        "FDN2096",
+                                        structName + " does not implement " +
+                                        info.contractName + "." + required.name,
+                                        info.span
+                                    )
+                                }
+                            }
+                            discard 0
+                        }
+                        Some(function): {
+                            const functionSpan = semanticFunctionSpan(
+                                &source, function)
+                            const receiver = semanticFunctionReceiver(
+                                &source, function)
+                            if !receiver.Matches(required.receiver.Name()) {
+                                analyzer.diagnostics.reportError(
+                                    "FDN2097",
+                                    "receiver mismatch for method " + required.name,
+                                    functionSpan
+                                )
+                            }
+                            var signature = semanticFunctionSignatureAt(
+                                &analyzer, function)
+                            if signature.parameters.len() !=
+                                required.parameterTypes.len() + 1 {
+                                analyzer.diagnostics.reportError(
+                                    "FDN2098",
+                                    "parameter count mismatch for method " +
+                                    required.name,
+                                    functionSpan
+                                )
+                            } else {
+                                var argument u64 = 0
+                                while argument < required.parameterTypes.len() {
+                                    const providedInfo =
+                                        semanticFunctionParameterInfoAt(
+                                        &source, function, argument + 1)
+                                    var requiredMode = match
+                                    required.parameterModes.take(argument) {
+                                        None: panic("contract parameter mode slot is empty")
+                                        Some(mode): mode
+                                    }
+                                    if !providedInfo.mode.Matches(
+                                        requiredMode.Name()) {
+                                        analyzer.diagnostics.reportError(
+                                            "FDN2195",
+                                            "parameter mode mismatch for method " +
+                                            required.name,
+                                            functionSpan
+                                        )
+                                    }
+                                    var expected = match
+                                    required.parameterTypes.take(argument) {
+                                        None: panic("contract parameter type slot is empty")
+                                        Some(type): type
+                                    }
+                                    var actual = match
+                                    signature.parameters.take(argument + 1) {
+                                        None: panic("method parameter type slot is empty")
+                                        Some(type): type
+                                    }
+                                    var substituted = substituteSemanticType(
+                                        &expected, &implementation.arguments)
+                                    requireSameSemanticType(
+                                        &analyzer,
+                                        &source,
+                                        &substituted,
+                                        &actual,
+                                        functionSpan,
+                                        "contract method parameter"
+                                    )
+                                    required.parameterTypes.restore(
+                                        argument, $expected)
+                                    required.parameterModes.restore(
+                                        argument, requiredMode)
+                                    signature.parameters.restore(
+                                        argument + 1, $actual)
+                                    argument += 1
+                                }
+                            }
+                            var expectedReturn = substituteSemanticType(
+                                &required.returnType,
+                                &implementation.arguments
+                            )
+                            requireSameSemanticType(
+                                &analyzer,
+                                &source,
+                                &expectedReturn,
+                                &signature.returnType,
+                                functionSpan,
+                                "contract method return"
+                            )
+                            if semanticStructPackage(&source, structID) !=
+                                semanticContractPackage(
+                                &source, required.originContract) &&
+                                !semanticFunctionExported(&source, function) {
+                                analyzer.diagnostics.reportError(
+                                    "FDN3008",
+                                    "method " + required.name + " is not exported",
+                                    functionSpan
+                                )
+                            }
+                        }
+                    }
+                    method += 1
+                }
+            }
+            implementationIndex += 1
+        }
+        structID += 1
+    }
+}

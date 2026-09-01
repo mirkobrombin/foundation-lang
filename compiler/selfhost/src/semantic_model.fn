@@ -1,0 +1,485 @@
+package foundation.compiler
+
+enum callTargetKind {
+    Function
+    FunctionValue
+    Method
+    ContractMethod
+    ConstrainedMethod
+    Print
+    Panic
+    Len
+    Null
+    IsNull
+    CString
+    SizeOf
+    PointerCast
+    Channel
+    NumericConversion
+}
+
+struct contractMethodTarget {
+    function u64
+    typeArguments own arena<semanticType>
+    contractDefault bool
+    defaultContract semanticType
+    delegatePath own arena<u64>
+}
+
+struct contractConversion {
+    sourceType semanticType
+    concreteType semanticType
+    contractType semanticType
+    targetType semanticType
+    methodTargets own arena<contractMethodTarget>
+}
+
+struct callTarget {
+    kind callTargetKind
+    function u64
+    typeArguments own arena<semanticType>
+    argumentDrops own arena<bool>
+    receiver Option<u64>
+    receiverType semanticType
+    constrainedType semanticType
+    contractID u64
+    method u64
+    local u64
+    receiverConversion Option<contractConversion>
+    argumentBorrows own arena<Option<semanticType>>
+    argumentConversions own arena<Option<contractConversion>>
+    argumentParameters own arena<u64>
+}
+
+struct functionValueTarget {
+    function u64
+    typeArguments own arena<semanticType>
+}
+
+struct closureTarget {
+    function u64
+    captures own arena<u64>
+    modes own arena<captureMode>
+    borrowed bool
+}
+
+struct semanticLocal {
+    name String
+    type semanticType
+    mutableBinding bool
+    captured bool
+    captureMode captureMode
+    borrowedClosure bool
+    readBinding bool
+}
+
+struct semanticWorkflowStep {
+    name String
+    function u64
+    typeArguments own arena<semanticType>
+    attempts u64
+    compensation Option<u64>
+    compensationTypeArguments own arena<semanticType>
+}
+
+struct semanticWorkflowFunction {
+    kind workflowKind
+    inputType semanticType
+    successType semanticType
+    errorType semanticType
+    failureType semanticType
+    failureDetailsType semanticType
+    steps own arena<semanticWorkflowStep>
+}
+
+struct semanticFunction {
+    typeParameterCount u64
+    typeParameterConstraints own arena<Option<semanticType>>
+    returnType semanticType
+    parameterTypes own arena<semanticType>
+    parameters own arena<u64>
+    locals own arena<semanticLocal>
+    attributes own arena<firAttributeUse>
+    parameterAttributes own arena<own arena<firAttributeUse>>
+    callbackCancelSymbol Option<String>
+    workflow Option<semanticWorkflowFunction>
+}
+
+struct semanticStruct {
+    typeParameterCount u64
+    fieldTypes own arena<semanticType>
+    implementations own arena<semanticType>
+    implementationDelegates own arena<Option<u64>>
+    attributes own arena<firAttributeUse>
+    fieldAttributes own arena<own arena<firAttributeUse>>
+}
+
+struct semanticEnum {
+    typeParameterCount u64
+    payloadTypes own arena<Option<semanticType>>
+    attributes own arena<firAttributeUse>
+    variantAttributes own arena<own arena<firAttributeUse>>
+}
+
+struct semanticContractMethod {
+    name String
+    receiver receiverKind
+    returnType semanticType
+    parameterTypes own arena<semanticType>
+    parameterNames own arena<String>
+    parameterModes own arena<parameterMode>
+    exported bool
+    span sourceSpan
+    originContract u64
+    originArguments own arena<semanticType>
+    defaultFunction Option<u64>
+    attributes own arena<firAttributeUse>
+    parameterAttributes own arena<own arena<firAttributeUse>>
+}
+
+struct semanticContract {
+    typeParameterCount u64
+    parents own arena<semanticType>
+    methodList own arena<semanticContractMethod>
+    attributes own arena<firAttributeUse>
+}
+
+struct defaultFieldTarget {
+    field u64
+    function u64
+}
+
+struct structLiteralTarget {
+    type semanticType
+    fields own arena<u64>
+    defaults own arena<defaultFieldTarget>
+}
+
+struct structDestructureTarget {
+    type semanticType
+    owned bool
+    fields own arena<u64>
+    bindings own arena<u64>
+}
+
+struct enumTarget {
+    type semanticType
+    variant u64
+}
+
+struct matchTarget {
+    type semanticType
+    variants own arena<u64>
+    bindings own arena<Option<u64>>
+    guardBindings own arena<Option<u64>>
+    drops own arena<own arena<u64>>
+}
+
+struct semanticOwnershipTarget {
+    operation ownershipOperator
+    local Option<u64>
+}
+
+struct taskWaitTarget {
+    taskValue u64
+}
+
+struct blockingCallTarget {
+    function u64
+    argumentStorages own arena<u64>
+    resultStorage Option<u64>
+}
+
+struct callbackCallTarget {
+    function u64
+    argumentStorages own arena<u64>
+    resultStorage u64
+}
+
+enum channelOperationKind {
+    Send
+    Receive
+}
+
+methods callTargetKind {
+    fn Matches(self, name String) bool {
+        match self {
+            Function: name == "Function"
+            FunctionValue: name == "FunctionValue"
+            Method: name == "Method"
+            ContractMethod: name == "ContractMethod"
+            ConstrainedMethod: name == "ConstrainedMethod"
+            Print: name == "Print"
+            Panic: name == "Panic"
+            Len: name == "Len"
+            Null: name == "Null"
+            IsNull: name == "IsNull"
+            CString: name == "CString"
+            SizeOf: name == "SizeOf"
+            PointerCast: name == "PointerCast"
+            Channel: name == "Channel"
+            NumericConversion: name == "NumericConversion"
+        }
+    }
+}
+
+methods channelOperationKind {
+    fn Matches(self, name String) bool {
+        match self {
+            Send: name == "Send"
+            Receive: name == "Receive"
+        }
+    }
+}
+
+struct channelOperationTarget {
+    kind channelOperationKind
+    endpoint u64
+    value Option<u64>
+    valueStorage Option<u64>
+    resultStorage u64
+}
+
+struct selectTarget {
+    bindings own arena<Option<u64>>
+    errorLocal u64
+    deadlineStorage u64
+}
+
+struct forTarget {
+    sequenceStorage u64
+    index u64
+    value u64
+    sequenceType semanticType
+    editable bool
+    iterator bool
+    nextFunction u64
+    nextTypeArguments own arena<semanticType>
+    nextResultType semanticType
+    ownsSequence bool
+}
+
+struct semanticModel {
+    expressionTypes own arena<semanticType>
+    expressionReads own arena<bool>
+    expressionContractConversions own arena<Option<contractConversion>>
+    expressionLocals own arena<Option<u64>>
+    callTargets own arena<Option<callTarget>>
+    emptyTests own arena<bool>
+    structTargets own arena<Option<structLiteralTarget>>
+    expressionFields own arena<Option<u64>>
+    enumTargets own arena<Option<enumTarget>>
+    matchTargets own arena<Option<matchTarget>>
+    ownershipTargets own arena<Option<semanticOwnershipTarget>>
+    functionValueTargets own arena<Option<functionValueTarget>>
+    closureTargets own arena<Option<closureTarget>>
+    taskWaitTargets own arena<Option<taskWaitTarget>>
+    blockingCallTargets own arena<Option<blockingCallTarget>>
+    callbackCallTargets own arena<Option<callbackCallTarget>>
+    channelOperationTargets own arena<Option<channelOperationTarget>>
+    channelSenderClones own arena<bool>
+    selectTargets own arena<Option<selectTarget>>
+    forTargets own arena<Option<forTarget>>
+    expressionBorrowedClosures own arena<bool>
+    expressionMoves own arena<bool>
+    statementLocals own arena<Option<u64>>
+    statementElseLocals own arena<Option<u64>>
+    statementStructTargets own arena<Option<structDestructureTarget>>
+    statementDrops own arena<own arena<u64>>
+    blockDrops own arena<own arena<u64>>
+    structs own arena<semanticStruct>
+    enums own arena<semanticEnum>
+    contracts own arena<semanticContract>
+    attributeDeclarations own arena<firAttributeDeclaration>
+    functions own arena<semanticFunction>
+    main u64
+}
+
+struct analyzeOptions {
+    requireMain bool
+    retainInvalidModel bool
+}
+
+fn defaultAnalyzeOptions() analyzeOptions {
+    analyzeOptions { requireMain = true retainInvalidModel = false }
+}
+
+fn newCallTarget(kind callTargetKind) callTarget {
+    var receiver Option<u64> = .None
+    var receiverConversion Option<contractConversion> = .None
+    callTarget {
+        kind = kind
+        function = 0
+        typeArguments = newArena<semanticType>()
+        argumentDrops = newArena<bool>()
+        receiver = receiver
+        receiverType = invalidSemanticType()
+        constrainedType = invalidSemanticType()
+        contractID = 0
+        method = 0
+        local = 0
+        receiverConversion = receiverConversion
+        argumentBorrows = newArena<Option<semanticType>>()
+        argumentConversions = newArena<Option<contractConversion>>()
+        argumentParameters = newArena<u64>()
+    }
+}
+
+fn newSemanticFunction() semanticFunction {
+    var callbackCancelSymbol Option<String> = .None
+    var workflow Option<semanticWorkflowFunction> = .None
+    semanticFunction {
+        typeParameterCount = 0
+        typeParameterConstraints = newArena<Option<semanticType>>()
+        returnType = invalidSemanticType()
+        parameterTypes = newArena<semanticType>()
+        parameters = newArena<u64>()
+        locals = newArena<semanticLocal>()
+        attributes = newArena<firAttributeUse>()
+        parameterAttributes = newArena<own arena<firAttributeUse>>()
+        callbackCancelSymbol = callbackCancelSymbol
+        workflow = workflow
+    }
+}
+
+fn newSemanticStruct() semanticStruct {
+    semanticStruct {
+        typeParameterCount = 0
+        fieldTypes = newArena<semanticType>()
+        implementations = newArena<semanticType>()
+        implementationDelegates = newArena<Option<u64>>()
+        attributes = newArena<firAttributeUse>()
+        fieldAttributes = newArena<own arena<firAttributeUse>>()
+    }
+}
+
+fn newSemanticEnum() semanticEnum {
+    semanticEnum {
+        typeParameterCount = 0
+        payloadTypes = newArena<Option<semanticType>>()
+        attributes = newArena<firAttributeUse>()
+        variantAttributes = newArena<own arena<firAttributeUse>>()
+    }
+}
+
+fn newSemanticContract() semanticContract {
+    semanticContract {
+        typeParameterCount = 0
+        parents = newArena<semanticType>()
+        methodList = newArena<semanticContractMethod>()
+        attributes = newArena<firAttributeUse>()
+    }
+}
+
+fn addMissing<T>(&values arena<Option<T>>) void {
+    var value Option<T> = .None
+    discard values.add($value)
+}
+
+fn addEmptyIDs(&values arena<own arena<u64>>) void {
+    var value = newArena<u64>()
+    discard values.add($value)
+}
+
+fn newSemanticModel(&source program) own semanticModel {
+    var result = own semanticModel {
+        expressionTypes = newArena<semanticType>()
+        expressionReads = newArena<bool>()
+        expressionContractConversions = newArena<Option<contractConversion>>()
+        expressionLocals = newArena<Option<u64>>()
+        callTargets = newArena<Option<callTarget>>()
+        emptyTests = newArena<bool>()
+        structTargets = newArena<Option<structLiteralTarget>>()
+        expressionFields = newArena<Option<u64>>()
+        enumTargets = newArena<Option<enumTarget>>()
+        matchTargets = newArena<Option<matchTarget>>()
+        ownershipTargets = newArena<Option<semanticOwnershipTarget>>()
+        functionValueTargets = newArena<Option<functionValueTarget>>()
+        closureTargets = newArena<Option<closureTarget>>()
+        taskWaitTargets = newArena<Option<taskWaitTarget>>()
+        blockingCallTargets = newArena<Option<blockingCallTarget>>()
+        callbackCallTargets = newArena<Option<callbackCallTarget>>()
+        channelOperationTargets = newArena<Option<channelOperationTarget>>()
+        channelSenderClones = newArena<bool>()
+        selectTargets = newArena<Option<selectTarget>>()
+        forTargets = newArena<Option<forTarget>>()
+        expressionBorrowedClosures = newArena<bool>()
+        expressionMoves = newArena<bool>()
+        statementLocals = newArena<Option<u64>>()
+        statementElseLocals = newArena<Option<u64>>()
+        statementStructTargets = newArena<Option<structDestructureTarget>>()
+        statementDrops = newArena<own arena<u64>>()
+        blockDrops = newArena<own arena<u64>>()
+        structs = newArena<semanticStruct>()
+        enums = newArena<semanticEnum>()
+        contracts = newArena<semanticContract>()
+        attributeDeclarations = newArena<firAttributeDeclaration>()
+        functions = newArena<semanticFunction>()
+        main = 0
+    }
+    var index u64 = 0
+    while index < source.expressions.len() {
+        discard result.expressionTypes.add(invalidSemanticType())
+        discard result.expressionReads.add(false)
+        addMissing<contractConversion>(&result.expressionContractConversions)
+        addMissing<u64>(&result.expressionLocals)
+        addMissing<callTarget>(&result.callTargets)
+        discard result.emptyTests.add(false)
+        addMissing<structLiteralTarget>(&result.structTargets)
+        addMissing<u64>(&result.expressionFields)
+        addMissing<enumTarget>(&result.enumTargets)
+        addMissing<matchTarget>(&result.matchTargets)
+        addMissing<semanticOwnershipTarget>(&result.ownershipTargets)
+        addMissing<functionValueTarget>(&result.functionValueTargets)
+        addMissing<closureTarget>(&result.closureTargets)
+        addMissing<taskWaitTarget>(&result.taskWaitTargets)
+        addMissing<blockingCallTarget>(&result.blockingCallTargets)
+        addMissing<callbackCallTarget>(&result.callbackCallTargets)
+        addMissing<channelOperationTarget>(&result.channelOperationTargets)
+        discard result.channelSenderClones.add(false)
+        discard result.expressionBorrowedClosures.add(false)
+        discard result.expressionMoves.add(false)
+        index += 1
+    }
+    index = 0
+    while index < source.statements.len() {
+        addMissing<selectTarget>(&result.selectTargets)
+        addMissing<forTarget>(&result.forTargets)
+        addMissing<u64>(&result.statementLocals)
+        addMissing<u64>(&result.statementElseLocals)
+        addMissing<structDestructureTarget>(&result.statementStructTargets)
+        addEmptyIDs(&result.statementDrops)
+        index += 1
+    }
+    index = 0
+    while index < source.blocks.len() {
+        addEmptyIDs(&result.blockDrops)
+        index += 1
+    }
+    index = 0
+    while index < source.structs.len() {
+        discard result.structs.add(newSemanticStruct())
+        index += 1
+    }
+    index = 0
+    while index < source.enums.len() {
+        discard result.enums.add(newSemanticEnum())
+        index += 1
+    }
+    index = 0
+    while index < source.contracts.len() {
+        discard result.contracts.add(newSemanticContract())
+        index += 1
+    }
+    index = 0
+    while index < source.attributeDeclarations.len() {
+        discard result.attributeDeclarations.add(newFirAttributeDeclaration())
+        index += 1
+    }
+    index = 0
+    while index < source.functions.len() {
+        discard result.functions.add(newSemanticFunction())
+        index += 1
+    }
+    result
+}

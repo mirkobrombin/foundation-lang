@@ -1,0 +1,543 @@
+package foundation.compiler
+
+import std.collections
+
+fn lowerDropsAt(&values arena<own arena<u64>>, index u64) own arena<u64> {
+    var source = match values.take(index) {
+        None: panic("drop list slot is empty")
+        Some(source): source
+    }
+    const result = copyIDHeap(&source)
+    values.restore(index, $source)
+    result
+}
+
+fn lowerSemanticBlock(
+    &source program,
+    &model semanticModel,
+    &function firFunction,
+    &expressionMap arena<Option<u64>>,
+    &statementMap arena<Option<u64>>,
+    &blockMap arena<Option<u64>>,
+    block u64
+) u64 {
+    match lowerMapValue(&blockMap, block) {
+        None: {}
+        Some(value): { return value }
+    }
+    var sourceBlock = match source.blocks.take(block) {
+        None: panic("block slot is empty")
+        Some(sourceBlock): sourceBlock
+    }
+    var statements = newArena<u64>()
+    var pending = collections.NewList<u64>()
+    while !sourceBlock.statements.IsEmpty() {
+        const statement = match sourceBlock.statements.PopFront() {
+            None: panic("block statement list invariant failed")
+            Some(statement): statement
+        }
+        discard statements.add(lowerSemanticStatement(
+                &source,
+                &model,
+                &function,
+                &expressionMap,
+                &statementMap,
+                &blockMap,
+                statement
+            ))
+        pending.PushFront(statement)
+    }
+    while !pending.IsEmpty() {
+        const statement = match pending.PopFront() {
+            None: panic("block statement restore invariant failed")
+            Some(statement): statement
+        }
+        sourceBlock.statements.PushFront(statement)
+    }
+    source.blocks.restore(block, $sourceBlock)
+    const lowered = function.blocks.add($firBlock {
+        statements = statements
+        drops = lowerDropsAt(&model.blockDrops, block)
+    })
+    setLowerMap(&blockMap, block, lowered)
+    lowered
+}
+
+fn lowerSemanticStatement(
+    &source program,
+    &model semanticModel,
+    &function firFunction,
+    &expressionMap arena<Option<u64>>,
+    &statementMap arena<Option<u64>>,
+    &blockMap arena<Option<u64>>,
+    statement u64
+) u64 {
+    match lowerMapValue(&statementMap, statement) {
+        None: {}
+        Some(value): { return value }
+    }
+    const selected = source.statements.take(statement)
+    const node = match selected {
+        None: panic("statement slot is empty")
+        Some(node): node
+    }
+    const statementNode { value span } = node
+    var loweredValue = firStatementValue.BreakValue(firBreakStatement {
+        drops = newArena<u64>()
+    })
+    const restored = match value {
+        Variable(payload): {
+            const local = match lowerOptionalIDAt(
+                &model.statementLocals, statement) {
+                None: panic("variable statement has no local")
+                Some(local): local
+            }
+            const initializer = lowerSemanticExpression(
+                &source, &model, &function, &expressionMap,
+                &statementMap, &blockMap, payload.initializer)
+            match payload.elseBlock {
+                None: {
+                    loweredValue = .Variable(firVariableStatement {
+                        local = local initializer = initializer
+                    })
+                }
+                Some(block): {
+                    const errorLocal = match lowerOptionalIDAt(
+                        &model.statementElseLocals, statement) {
+                        None: panic("let else statement has no error local")
+                        Some(local): local
+                    }
+                    loweredValue = .LetElse(firLetElseStatement {
+                        local = local
+                        initializer = initializer
+                        errorLocal = errorLocal
+                        elseBlock = lowerSemanticBlock(
+                            &source, &model, &function, &expressionMap,
+                            &statementMap, &blockMap, block)
+                    })
+                }
+            }
+            statementValue.Variable(payload)
+        }
+        StructDestructure(payload): {
+            var current = payload
+            loweredValue = lowerSemanticStructDestructureStatement(
+                &source,
+                &model,
+                &function,
+                &expressionMap,
+                &statementMap,
+                &blockMap,
+                statement,
+                &current
+            )
+            statementValue.StructDestructure(current)
+        }
+        Assignment(payload): {
+            loweredValue = .Assignment(firAssignmentStatement {
+                target = lowerSemanticExpression(
+                    &source, &model, &function, &expressionMap,
+                    &statementMap, &blockMap, payload.target)
+                operation = lowerAssignmentOperator(payload.operation)
+                value = lowerSemanticExpression(
+                    &source, &model, &function, &expressionMap,
+                    &statementMap, &blockMap, payload.value)
+            })
+            statementValue.Assignment(payload)
+        }
+        Expression(payload): {
+            loweredValue = .Expression(firExpressionStatement {
+                expression = lowerSemanticExpression(
+                    &source, &model, &function, &expressionMap,
+                    &statementMap, &blockMap, payload.expression)
+            })
+            statementValue.Expression(payload)
+        }
+        ResultElse(payload): {
+            const errorLocal = match lowerOptionalIDAt(
+                &model.statementElseLocals, statement) {
+                None: panic("result else statement has no error local")
+                Some(local): local
+            }
+            loweredValue = .ResultElse(firResultElseStatement {
+                expression = lowerSemanticExpression(
+                    &source, &model, &function, &expressionMap,
+                    &statementMap, &blockMap, payload.expression)
+                errorLocal = errorLocal
+                elseBlock = lowerSemanticBlock(
+                    &source, &model, &function, &expressionMap,
+                    &statementMap, &blockMap, payload.elseBlock)
+            })
+            statementValue.ResultElse(payload)
+        }
+        ReturnValue(payload): {
+            var result Option<u64> = .None
+            match payload.value {
+                None: {}
+                Some(value): {
+                    result = .Some(lowerSemanticExpression(
+                            &source, &model, &function, &expressionMap,
+                            &statementMap, &blockMap, value))
+                }
+            }
+            loweredValue = .ReturnValue(firReturnStatement {
+                value = result
+                drops = lowerDropsAt(&model.statementDrops, statement)
+            })
+            statementValue.ReturnValue(payload)
+        }
+        DiscardValue(payload): {
+            loweredValue = .Discard(firDiscardStatement {
+                expression = lowerSemanticExpression(
+                    &source, &model, &function, &expressionMap,
+                    &statementMap, &blockMap, payload.value)
+            })
+            statementValue.DiscardValue(payload)
+        }
+        IfValue(payload): {
+            var elseBlock Option<u64> = .None
+            match payload.elseBlock {
+                None: {}
+                Some(block): {
+                    elseBlock = .Some(lowerSemanticBlock(
+                            &source, &model, &function, &expressionMap,
+                            &statementMap, &blockMap, block))
+                }
+            }
+            loweredValue = .IfValue(firIfStatement {
+                condition = lowerSemanticExpression(
+                    &source, &model, &function, &expressionMap,
+                    &statementMap, &blockMap, payload.condition)
+                thenBlock = lowerSemanticBlock(
+                    &source, &model, &function, &expressionMap,
+                    &statementMap, &blockMap, payload.thenBlock)
+                elseBlock = elseBlock
+            })
+            statementValue.IfValue(payload)
+        }
+        WhileValue(payload): {
+            loweredValue = .WhileValue(firWhileStatement {
+                condition = lowerSemanticExpression(
+                    &source, &model, &function, &expressionMap,
+                    &statementMap, &blockMap, payload.condition)
+                body = lowerSemanticBlock(
+                    &source, &model, &function, &expressionMap,
+                    &statementMap, &blockMap, payload.body)
+            })
+            statementValue.WhileValue(payload)
+        }
+        ForValue(payload): {
+            var current = payload
+            loweredValue = lowerSemanticForStatement(
+                &source,
+                &model,
+                &function,
+                &expressionMap,
+                &statementMap,
+                &blockMap,
+                statement,
+                &current
+            )
+            statementValue.ForValue(current)
+        }
+        BreakValue: {
+            loweredValue = .BreakValue(firBreakStatement {
+                drops = lowerDropsAt(&model.statementDrops, statement)
+            })
+            statementValue.BreakValue
+        }
+        ContinueValue: {
+            loweredValue = .ContinueValue(firContinueStatement {
+                drops = lowerDropsAt(&model.statementDrops, statement)
+            })
+            statementValue.ContinueValue
+        }
+        SelectValue(payload): {
+            var current = payload
+            loweredValue = lowerSemanticSelectStatement(
+                &source,
+                &model,
+                &function,
+                &expressionMap,
+                &statementMap,
+                &blockMap,
+                statement,
+                &current
+            )
+            statementValue.SelectValue(current)
+        }
+        UnsafeValue(payload): {
+            loweredValue = .UnsafeValue(firUnsafeStatement {
+                body = lowerSemanticBlock(
+                    &source, &model, &function, &expressionMap,
+                    &statementMap, &blockMap, payload.body)
+            })
+            statementValue.UnsafeValue(payload)
+        }
+    }
+    source.statements.restore(statement, $statementNode {
+        value = restored span = span
+    })
+    const lowered = addFirStatement(&function, $loweredValue, span)
+    setLowerMap(&statementMap, statement, lowered)
+    lowered
+}
+
+fn lowerSemanticStructDestructureStatement(
+    &source program,
+    &model semanticModel,
+    &function firFunction,
+    &expressionMap arena<Option<u64>>,
+    &statementMap arena<Option<u64>>,
+    &blockMap arena<Option<u64>>,
+    statement u64,
+    &payload structDestructureStatement
+) firStatementValue {
+    const selected = model.statementStructTargets.take(statement)
+    const optional = match selected {
+        None: panic("destructure target slot is empty")
+        Some(optional): optional
+    }
+    var target = match optional {
+        None: panic("destructure statement has no target")
+        Some(target): target
+    }
+    var bindings = newArena<firStructBinding>()
+    var index u64 = 0
+    while index < target.fields.len() && index < target.bindings.len() {
+        const field = match target.fields.take(index) {
+            None: panic("destructure field slot is empty")
+            Some(field): field
+        }
+        const local = match target.bindings.take(index) {
+            None: panic("destructure binding slot is empty")
+            Some(local): local
+        }
+        discard bindings.add(firStructBinding { field = field local = local })
+        target.fields.restore(index, field)
+        target.bindings.restore(index, local)
+        index += 1
+    }
+    const result = firStatementValue.StructDestructure(
+        firStructDestructureStatement {
+        initializer = lowerSemanticExpression(
+            &source, &model, &function, &expressionMap,
+            &statementMap, &blockMap, payload.initializer)
+        type = copySemanticType(&target.type)
+        owned = target.owned
+        bindings = bindings
+    }
+    )
+    var restored Option<structDestructureTarget> = .Some(target)
+    model.statementStructTargets.restore(statement, $restored)
+    result
+}
+
+fn lowerSemanticForStatement(
+    &source program,
+    &model semanticModel,
+    &function firFunction,
+    &expressionMap arena<Option<u64>>,
+    &statementMap arena<Option<u64>>,
+    &blockMap arena<Option<u64>>,
+    statement u64,
+    &payload forStatement
+) firStatementValue {
+    const selected = model.forTargets.take(statement)
+    const optional = match selected {
+        None: panic("for target slot is empty")
+        Some(optional): optional
+    }
+    var target = match optional {
+        None: panic("for statement has no target")
+        Some(target): target
+    }
+    var sequence = lowerSemanticExpression(
+        &source, &model, &function, &expressionMap,
+        &statementMap, &blockMap, payload.sequence)
+    const span = semanticExpressionSpan(&source, payload.sequence)
+    if !target.iterator || !target.ownsSequence {
+        sequence = addFirExpression(
+            &function,
+            $firExpressionValue.Ownership(firOwnershipExpression {
+            operation = .Edit if target.iterator || target.editable else .View
+            operand = sequence
+            implicitRead = false
+        }),
+            copySemanticType(&target.sequenceType),
+            span
+        )
+    }
+    var next Option<u64> = .None
+    if target.iterator {
+        var receiver = addFirExpression(
+            &function,
+            $firExpressionValue.Local(firLocalExpression {
+            local = target.sequenceStorage
+        }),
+            copySemanticType(&target.sequenceType),
+            span
+        )
+        if target.ownsSequence {
+            receiver = addFirExpression(
+                &function,
+                $firExpressionValue.Ownership(firOwnershipExpression {
+                operation = .Edit
+                operand = receiver
+                implicitRead = false
+            }),
+                unarySemanticType(
+                    .Edit, copySemanticType(&target.sequenceType)),
+                span
+            )
+        }
+        var arguments = newArena<u64>()
+        discard arguments.add(receiver)
+        next = .Some(addFirExpression(
+                &function,
+                $firExpressionValue.Call(firCallExpression {
+            kind = .Function
+            function = target.nextFunction
+            typeArguments = copySemanticTypeArena(
+                &target.nextTypeArguments)
+            arguments = arguments
+            argumentDrops = newArena<bool>()
+            contractID = 0
+            method = 0
+            local = 0
+            argumentParameters = newArena<u64>()
+            constrainedType = invalidSemanticType()
+        }),
+                copySemanticType(&target.nextResultType),
+                span
+            ))
+    }
+    const result = firStatementValue.ForValue(firForStatement {
+        sequence = sequence
+        sequenceStorage = target.sequenceStorage
+        index = target.index
+        value = target.value
+        body = lowerSemanticBlock(
+            &source, &model, &function, &expressionMap,
+            &statementMap, &blockMap, payload.body)
+        next = next
+        ownsSequence = target.ownsSequence
+    })
+    var restored Option<forTarget> = .Some(target)
+    model.forTargets.restore(statement, $restored)
+    result
+}
+
+fn lowerSemanticSelectStatement(
+    &source program,
+    &model semanticModel,
+    &function firFunction,
+    &expressionMap arena<Option<u64>>,
+    &statementMap arena<Option<u64>>,
+    &blockMap arena<Option<u64>>,
+    statement u64,
+    &selection selectStatement
+) firStatementValue {
+    const selected = model.selectTargets.take(statement)
+    const optional = match selected {
+        None: panic("select target slot is empty")
+        Some(optional): optional
+    }
+    var target = match optional {
+        None: panic("select statement has no target")
+        Some(target): target
+    }
+    var operations = newArena<firSelectOperationArm>()
+    var pending = collections.NewList<selectOperationArm>()
+    var index u64 = 0
+    while !selection.operations.IsEmpty() {
+        const arm = match selection.operations.PopFront() {
+            None: panic("select arm list invariant failed")
+            Some(arm): arm
+        }
+        var binding Option<u64> = .None
+        if index < target.bindings.len() {
+            binding = lowerOptionalIDAt(&target.bindings, index)
+        }
+        const selectedOperation = model.channelOperationTargets.take(
+            arm.operation)
+        const optionalOperation = match selectedOperation {
+            None: panic("channel operation target slot is empty")
+            Some(optionalOperation): optionalOperation
+        }
+        var operation = match optionalOperation {
+            None: panic("select arm has no channel operation target")
+            Some(operation): operation
+        }
+        var value Option<u64> = .None
+        match operation.value {
+            None: {}
+            Some(expression): {
+                value = .Some(lowerSemanticExpression(
+                        &source, &model, &function, &expressionMap,
+                        &statementMap, &blockMap, expression))
+            }
+        }
+        discard operations.add(firSelectOperationArm {
+            send = operation.kind.Matches("Send")
+            endpoint = operation.endpoint
+            value = value
+            valueStorage = semanticOptionalID(operation.valueStorage)
+            resultStorage = operation.resultStorage
+            binding = binding
+            body = lowerSemanticBlock(
+                &source, &model, &function, &expressionMap,
+                &statementMap, &blockMap, arm.body)
+            span = arm.span
+        })
+        var restoredOperation Option<channelOperationTarget> = .Some(operation)
+        model.channelOperationTargets.restore(
+            arm.operation, $restoredOperation)
+        pending.PushFront($arm)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const arm = match pending.PopFront() {
+            None: panic("select arm restore invariant failed")
+            Some(arm): arm
+        }
+        selection.operations.PushFront($arm)
+    }
+    var timeoutValue Option<firSelectTimeoutArm> = .None
+    const selectedTimeout = replace selection.timeoutArm with .None
+    match selectedTimeout {
+        None: { discard replace selection.timeoutArm with .None }
+        Some(timeoutArm): {
+            var sourceTimeout = timeoutArm
+            var duration Option<u64> = .None
+            match sourceTimeout.duration {
+                None: {}
+                Some(expression): {
+                    duration = .Some(lowerSemanticExpression(
+                            &source, &model, &function, &expressionMap,
+                            &statementMap, &blockMap, expression))
+                }
+            }
+            timeoutValue = .Some(firSelectTimeoutArm {
+                nanoseconds = sourceTimeout.nanoseconds
+                duration = duration
+                body = lowerSemanticBlock(
+                    &source, &model, &function, &expressionMap,
+                    &statementMap, &blockMap, sourceTimeout.body)
+            })
+            discard replace selection.timeoutArm with .Some(sourceTimeout)
+        }
+    }
+    const result = firStatementValue.SelectValue(firSelectStatement {
+        operations = operations
+        timeoutArm = timeoutValue
+        errorLocal = target.errorLocal
+        errorBlock = lowerSemanticBlock(
+            &source, &model, &function, &expressionMap,
+            &statementMap, &blockMap, selection.errorBlock)
+        deadlineStorage = target.deadlineStorage
+    })
+    var restored Option<selectTarget> = .Some(target)
+    model.selectTargets.restore(statement, $restored)
+    result
+}
