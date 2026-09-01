@@ -39,7 +39,7 @@ static int remove_directory(const char *path) {
 #endif
 }
 
-int main(int argc, char **argv) {
+static int run_test(int argc, char **argv) {
     fdn_string path;
     fdn_string directory_path;
     fdn_string line = fdn_string_static("", 0);
@@ -382,4 +382,12 @@ int main(int argc, char **argv) {
         }
     }
     return 0;
+}
+
+int main(int argc, char **argv) {
+    const int status = run_test(argc, argv);
+    if (status != 0) {
+        (void)fprintf(stderr, "runtime.fs failed at check %d\n", status);
+    }
+    return status;
 }

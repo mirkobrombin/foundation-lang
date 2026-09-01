@@ -37,6 +37,10 @@ ctest --test-dir build/wamr --output-on-failure \
 and UndefinedBehaviorSanitizer. Use `FOUNDATION_WAMR_TSAN=ON` in a separate build for
 ThreadSanitizer; the options cannot be combined.
 
+WAMR 2.4.5 on Darwin AArch64 must be built with
+`-DWAMR_BUILD_INVOKE_NATIVE_GENERAL=1`. Its architecture-specific native invocation path does not
+follow Darwin's stack argument layout.
+
 The bridge and native tests both force a close while an open is active, checking that engine
 destruction waits for the live module. Other fixtures exercise the fake and pinned engines against
 invalid metadata, signature and memory failures, denied capabilities, cancellation, stale handles,

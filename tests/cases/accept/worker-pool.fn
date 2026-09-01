@@ -1,5 +1,4 @@
 import foundation.worker
-import std.concurrent
 
 task calculate(limit i32, $message String) void {
     var current = 0
@@ -14,11 +13,15 @@ task nested($message String) void {
     $child.wait()
 }
 
-task observeCancellation() void {
-    const source = concurrent.NewCancellationSource()
-    const cancellation = source.Token()
-    if cancellation.IsRequested() {
-        print("cancelled")
+task observeCancellation($receiver Receiver<void>) void {
+    const received = receiver.receive()
+    match received {
+        Ok: panic("cancelled worker received an unexpected value")
+        Err(error): match error {
+            Closed: panic("cancelled worker channel closed")
+            Cancelled: print("cancelled")
+            Timeout: panic("cancelled worker timed out")
+        }
     }
 }
 
@@ -30,8 +33,10 @@ fn main() i32 {
     pool.Shutdown()
     print("done")
 
+    const Channel { sender receiver } = channel<void>(0)
     const cancelled = worker.NewPool(1)
-    cancelled.Start(spawn observeCancellation())
+    cancelled.Start(spawn observeCancellation($receiver))
     cancelled.Cancel()
+    discard sender
     0
 }

@@ -96,7 +96,7 @@ fn main(args [String]) i32 {
         return 16
     }
     if capabilityText != "host:foundation" {
-        print(capabilityText)
+        print("unexpected capability response: " + capabilityText)
         discard module.Close()
         discard engine.Close()
         return 17

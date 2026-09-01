@@ -630,7 +630,8 @@ static int32_t foundation_openssl_tls_connect_with_ca(const char *server_name,
     SSL_CTX_set_verify(connection->context, SSL_VERIFY_PEER, NULL);
     connection->ssl = SSL_new(connection->context);
     if (connection->ssl == NULL || SSL_set_tlsext_host_name(connection->ssl, name) != 1 ||
-        SSL_set1_host(connection->ssl, name) != 1 || SSL_set_fd(connection->ssl, socket_fd) != 1) goto cleanup;
+        SSL_set1_host(connection->ssl, name) != 1 ||
+        SSL_set_fd(connection->ssl, (int)socket_fd) != 1) goto cleanup;
     status = foundation_openssl_tls_handshake_until(connection->ssl, socket_fd, 0, deadline, cancellation);
     if (status != FOUNDATION_OPENSSL_OK) {
         if (status == FOUNDATION_OPENSSL_HANDSHAKE_FAILED && SSL_get_verify_result(connection->ssl) != X509_V_OK) {
@@ -732,8 +733,13 @@ static int32_t foundation_openssl_string(const unsigned char *data, size_t lengt
 
 static int foundation_openssl_ascii_equal(const unsigned char *value, size_t value_length,
                                           const char *expected) {
+#ifdef _WIN32
+    return value_length == strlen(expected) &&
+        _strnicmp((const char *)value, expected, value_length) == 0;
+#else
     return value_length == strlen(expected) &&
         strncasecmp((const char *)value, expected, value_length) == 0;
+#endif
 }
 
 static const unsigned char *foundation_openssl_crlf(const unsigned char *value,
@@ -1486,7 +1492,12 @@ int32_t foundation_openssl_server_open(const char *address, uint64_t address_len
         socket_fd = socket(current->ai_family, current->ai_socktype, current->ai_protocol);
         if (socket_fd == FOUNDATION_OPENSSL_INVALID_SOCKET) continue;
         setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&enabled, sizeof(enabled));
-        if (bind(socket_fd, current->ai_addr, current->ai_addrlen) == 0 && listen(socket_fd, 128) == 0) break;
+#ifdef _WIN32
+        if (bind(socket_fd, current->ai_addr, (int)current->ai_addrlen) == 0 &&
+#else
+        if (bind(socket_fd, current->ai_addr, current->ai_addrlen) == 0 &&
+#endif
+            listen(socket_fd, 128) == 0) break;
         foundation_openssl_socket_close(socket_fd);
         socket_fd = FOUNDATION_OPENSSL_INVALID_SOCKET;
     }

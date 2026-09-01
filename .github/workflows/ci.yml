@@ -158,9 +158,9 @@ jobs:
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set VS_PATH=%%i
           call "%VS_PATH%\Common7\Tools\VsDevCmd.bat" -arch=x64
-          ctest --test-dir build/windows -C Debug --output-on-failure --parallel 4
-          ctest --test-dir build/windows -C Debug --output-on-failure --parallel 4
-          ctest --test-dir build/windows -C Debug --output-on-failure --parallel 4
+          ctest --test-dir build/windows -C Debug --output-on-failure --parallel 4 || exit /b 1
+          ctest --test-dir build/windows -C Debug --output-on-failure --parallel 4 || exit /b 1
+          ctest --test-dir build/windows -C Debug --output-on-failure --parallel 4 || exit /b 1
 
   fuzz:
     name: Parser fuzz and sanitizers
@@ -419,7 +419,7 @@ jobs:
           git -C build/deps/wasm-micro-runtime remote add origin https://github.com/bytecodealliance/wasm-micro-runtime.git
           git -C build/deps/wasm-micro-runtime fetch --depth 1 origin 25bd7eb63e828e4bd242cc9b38d260b4b31c6605
           git -C build/deps/wasm-micro-runtime checkout --detach FETCH_HEAD
-          cmake -S build/deps/wasm-micro-runtime/product-mini/platforms/darwin -B build/deps/wamr-build -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_FAST_INTERP=0 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_LIBC_WASI=1
+          cmake -S build/deps/wasm-micro-runtime/product-mini/platforms/darwin -B build/deps/wamr-build -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_FAST_INTERP=0 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_LIBC_WASI=1 -DWAMR_BUILD_INVOKE_NATIVE_GENERAL=1
           cmake --build build/deps/wamr-build --parallel 4
 
       - name: Configure providers
