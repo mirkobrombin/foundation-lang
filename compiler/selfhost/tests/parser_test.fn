@@ -1,0 +1,793 @@
+package foundation.compiler
+
+import std.collections
+
+test "parser builds a program with stable expression precedence" {
+    var parsed = parseSource(
+        "package sample.compiler\n" +
+        "import std.text as text\n" +
+        "fn main() i32 {\n" +
+        "    const value = 1 + 2 * 3\n" +
+        "    value\n" +
+        "}\n",
+        31
+    )
+    expect(!parsed.diagnostics.hasErrors())
+    expect(parsed.program.packageName == "sample.compiler")
+    expect(parsed.program.hasPackageDeclaration)
+    expect(parsed.program.imports.len() == 1)
+    expect(parsed.program.functions.len() == 1)
+    expect(parsed.program.blocks.len() == 1)
+    expect(parsed.program.statements.len() == 2)
+    expect(parsed.program.expressions.len() == 6)
+    expect(parsed.program.enums.len() == 4)
+
+    const function = match parsed.program.functions.take(0) {
+        None: panic("expected parsed function")
+        Some(function): function
+    }
+    expect(function.name == "main")
+    expect(function.returnType.name == "i32")
+
+    const block = match parsed.program.blocks.take(function.body) {
+        None: panic("expected parsed function body")
+        Some(block): block
+    }
+    expect(block.statements.Len() == 2)
+
+    const root = match parsed.program.expressions.take(4) {
+        None: panic("expected additive expression")
+        Some(expression): expression
+    }
+    const expressionNode { value as rootValue span as rootSpan } = root
+    discard rootSpan
+    match rootValue {
+        Binary(value): {
+            expect(binaryOperatorCode(value.operation) == binaryOperatorCode(.Add))
+            expect(value.left == 0)
+            expect(value.right == 3)
+        }
+        _: panic("expected additive expression root")
+    }
+
+    const product = match parsed.program.expressions.take(3) {
+        None: panic("expected multiplicative expression")
+        Some(expression): expression
+    }
+    const expressionNode { value as productValue span as productSpan } = product
+    discard productSpan
+    match productValue {
+        Binary(value): {
+            expect(binaryOperatorCode(value.operation) ==
+                binaryOperatorCode(.Multiply))
+            expect(value.left == 1)
+            expect(value.right == 2)
+        }
+        _: panic("expected multiplicative expression root")
+    }
+}
+
+test "parser keeps bitwise precedence distinct" {
+    var parsed = parseSource(
+        "package sample\nfn bits() u64 { 1 | 2 ^ 3 & 4 }\n",
+        32
+    )
+    expect(!parsed.diagnostics.hasErrors())
+    expect(parsed.program.functions.len() == 1)
+    expect(parsed.program.expressions.len() == 7)
+
+    expectBinaryOperation(&parsed.program, 4, .BitwiseAnd)
+    expectBinaryOperation(&parsed.program, 5, .BitwiseXor)
+    expectBinaryOperation(&parsed.program, 6, .BitwiseOr)
+}
+
+test "parser accepts nominal declarations and structured statements" {
+    var parsed = parseSource(
+        "package sample\n" +
+        "enum Failure { Missing }\n" +
+        "contract Reader { fn Read(self) Result<String, Failure> }\n" +
+        "struct Store implements Reader {\n" +
+        "    value String\n" +
+        "    fn Read(self) Result<String, Failure> { .Ok(self.value) }\n" +
+        "}\n" +
+        "fn use(store Store) i32 {\n" +
+        "    const value = store.Read() else error { discard error return 1 }\n" +
+        "    if !value return 1\n" +
+        "    0\n" +
+        "}\n",
+        33
+    )
+    expect(!parsed.diagnostics.hasErrors())
+    expect(parsed.program.structs.len() == 1)
+    expect(parsed.program.contracts.len() == 1)
+    expect(parsed.program.enums.len() == 5)
+    expect(parsed.program.functions.len() == 2)
+}
+
+test "parser covers declaration families and generic closure context" {
+    var parsed = parseForTarget(
+        "package dense\n" +
+        "attribute marker(value String) targets(fn, struct, method, field, variant, parameter) repeatable\n" +
+        "enum Failure { Invalid }\n" +
+        "contract Readable<T> {\n" +
+        "    fn Read(self) T { self }\n" +
+        "}\n" +
+        "@marker(\"box\")\n" +
+        "service Box<T transferable Readable> implements Readable<T> {\n" +
+        "    @marker(\"field\")\n" +
+        "    factory fn() T = fn() { value }\n" +
+        "    ctor New(value T) { Box<T> { factory = fn() { value } } }\n" +
+        "    action Run(self) T { self.factory() }\n" +
+        "    fn Read(self) T { self.factory() }\n" +
+        "}\n" +
+        "methods Box<T transferable Readable> {\n" +
+        "    fn Extra(self) T { self.factory() }\n" +
+        "}\n" +
+        "@marker(\"machine\")\n" +
+        "state_machine Order {\n" +
+        "    state Draft\n" +
+        "    state Submitted\n" +
+        "    on Submit from Draft to Submitted after 1.seconds\n" +
+        "}\n" +
+        "@marker(\"pipeline\")\n" +
+        "pipeline Transform(value i32) Result<i32, Failure> {\n" +
+        "    step run using run\n" +
+        "}\n" +
+        "@marker(\"saga\")\n" +
+        "saga Commit(value i32) Result<i32, Failure> {\n" +
+        "    step save using save compensate undo\n" +
+        "}\n" +
+        "@blocking\n" +
+        "task work() i32 { 1 }\n" +
+        "@callback\n" +
+        "extern c fn native() i32 as native_value\n" +
+        "test \"dense parser\" {}\n" +
+        "@target(windows)\n" +
+        "methods Box<T> { fn Hidden(self) T { self.factory() } }\n" +
+        "@target(windows)\n" +
+        "attribute hidden() targets(fn)\n",
+        .Linux,
+        40
+    )
+    expect(!parsed.diagnostics.hasErrors())
+    expect(parsed.program.structs.len() == 1)
+    expect(parsed.program.contracts.len() == 1)
+    expect(parsed.program.attributeDeclarations.len() == 1)
+    expect(parsed.program.enums.len() == 7)
+
+    const taskInfo = findFunction(&parsed.program, "work")
+    expect(taskInfo.found)
+    expect(taskInfo.blocking)
+    expect(taskInfo.taskFunction)
+    const nativeInfo = findFunction(&parsed.program, "native")
+    expect(nativeInfo.found)
+    expect(nativeInfo.callback)
+    expect(!findFunction(&parsed.program, "Hidden").found)
+    const closureInfo = findClosureWithTypeParameters(&parsed.program)
+    expect(closureInfo.found)
+    expect(closureInfo.typeParameters == 1)
+    expect(closureInfo.transferable)
+    expect(closureInfo.constrained)
+    expect(enumAttributeCount(&parsed.program, 5) == 1)
+    expect(functionAttributeCount(&parsed.program, "Transform") == 1)
+    expect(functionAttributeCount(&parsed.program, "Commit") == 1)
+}
+
+test "parser covers statements and primary expression families" {
+    var parsed = parseSource(
+        "package statements\n" +
+        "struct Packet { value i32 }\n" +
+        "task work() i32 { 1 }\n" +
+        "fn exercise(values [i32], receiver Receiver<i32>, pointer *i32) i32 {\n" +
+        "    const Packet { value as item } = Packet { value = 1 }\n" +
+        "    var count = item\n" +
+        "    count = 1\n" +
+        "    count += 1\n" +
+        "    count -= 1\n" +
+        "    count *= 2\n" +
+        "    count /= 2\n" +
+        "    count %= 2\n" +
+        "    count <<= 1\n" +
+        "    count >>= 1\n" +
+        "    while count < 2 { count += 1 break }\n" +
+        "    for index, &value in values { discard index discard value continue }\n" +
+        "    select {\n" +
+        "        const received = receiver.receive(): discard received\n" +
+        "        timeout 1.seconds: return 0\n" +
+        "        else error: { discard error return 0 }\n" +
+        "    }\n" +
+        "    unsafe { discard *pointer }\n" +
+        "    const array = [1, 2]\n" +
+        "    discard array[0]\n" +
+        "    var packet = Packet { value = 1 }\n" +
+        "    const previous = replace packet with Packet { value = 2 }\n" +
+        "    discard previous\n" +
+        "    discard spawn work()\n" +
+        "    const matched = match .Some(count) {\n" +
+        "        None: 0\n" +
+        "        Some(value) if value > 0: { value }\n" +
+        "    }\n" +
+        "    const choice = if true { 1 } else { 2 }\n" +
+        "    matched + choice\n" +
+        "}\n",
+        41
+    )
+    expect(!parsed.diagnostics.hasErrors())
+    expect(parsed.program.statements.len() >= 25)
+    expect(parsed.program.expressions.len() >= 45)
+}
+
+test "parser recognizes nested tail if expressions in every value block" {
+    var parsed = parseSource(
+        "package tails\n" +
+        "fn choose(first bool, second bool) i32 {\n" +
+        "    if first {\n" +
+        "        if second { 1 } else { 2 }\n" +
+        "    } else {\n" +
+        "        match second {\n" +
+        "            True: { if first { 3 } else { 4 } }\n" +
+        "            False: 5\n" +
+        "        }\n" +
+        "    }\n" +
+        "}\n",
+        42
+    )
+    expect(!parsed.diagnostics.hasErrors())
+    expect(countConditionalExpressions(&parsed.program) == 3)
+}
+
+test "parser distinguishes generic primaries from comparisons" {
+    var parsed = parseSource(
+        "package generic\n" +
+        "fn identity<T>(value T) T { value }\n" +
+        "fn compare(left i32, right i32) bool { left < right }\n" +
+        "fn call() i32 { identity<Result<own Box<i32>, bool>>(1) }\n" +
+        "fn types(\n" +
+        "    $first Box<i32>,\n" +
+        "    second *const i32,\n" +
+        "    third fn(&i32, $String) bool,\n" +
+        "    fourth [4]i32,\n" +
+        "    fifth [pkg.Value<i32>]\n" +
+        ") void {}\n",
+        43
+    )
+    expect(!parsed.diagnostics.hasErrors())
+    expectBinaryOperation(&parsed.program, 3, .Less)
+}
+
+test "parser folds signed numeric literals" {
+    var parsed = parseSource(
+        "package signs\n" +
+        "fn values() void {\n" +
+        "    discard -1\n" +
+        "    discard --1\n" +
+        "    discard -1.5\n" +
+        "    discard --1.5\n" +
+        "}\n",
+        44
+    )
+    expect(!parsed.diagnostics.hasErrors())
+    expectIntegerSign(&parsed.program, 1, true)
+    expectIntegerSign(&parsed.program, 4, false)
+    expectFloatingText(&parsed.program, 6, "-1.5")
+    expectFloatingText(&parsed.program, 9, "1.5")
+}
+
+test "parser rewrites qualified struct literals" {
+    var parsed = parseSource(
+        "package qualified\n" +
+        "fn values() void {\n" +
+        "    discard pkg.Empty {}\n" +
+        "    discard pkg.Item { value = 1 }\n" +
+        "}\n",
+        45
+    )
+    expect(!parsed.diagnostics.hasErrors())
+    expectStructType(&parsed.program, 2, "pkg.Empty", 0)
+    expectStructType(&parsed.program, 6, "pkg.Item", 1)
+}
+
+test "parser reports delegate mismatch and duplicate delegation" {
+    var missing = parseSource(
+        "package delegates\n" +
+        "contract Value<T> { fn Read(self) T }\n" +
+        "struct Bad implements Value<i32> {\n" +
+        "    inner i32\n" +
+        "    delegate inner as Value<String>\n" +
+        "}\n",
+        46
+    )
+    expectDiagnostic($missing, "FDN1171")
+
+    var duplicate = parseSource(
+        "package delegates\n" +
+        "contract Value<T> { fn Read(self) T }\n" +
+        "struct Bad implements Value<i32> {\n" +
+        "    first i32\n" +
+        "    second i32\n" +
+        "    delegate first as Value<i32>\n" +
+        "    delegate second as Value<i32>\n" +
+        "}\n",
+        47
+    )
+    expectDiagnostic($duplicate, "FDN1172")
+}
+
+test "parser enforces frontend resource limits" {
+    var blockSource = "package limits\nfn blocks() void {\n"
+    var blockIndex u64 = 0
+    while blockIndex < 129 {
+        blockSource = blockSource + "unsafe {\n"
+        blockIndex += 1
+    }
+    blockSource = blockSource + repeatText("}\n", 130)
+    var blockParsed = parseSource($blockSource, 48)
+    expectDiagnostic($blockParsed, "FDN1030")
+
+    const nestedType = repeatText("Box<", 130) + "i32" + repeatText(">", 130)
+    var typeParsed = parseSource(
+        "package limits\nfn types(value " + nestedType + ") void {}\n", 49)
+    expectDiagnostic($typeParsed, "FDN1065")
+
+    const nestedExpression = repeatText("(", 260) + "1" + repeatText(")", 260)
+    var expressionParsed = parseSource(
+        "package limits\nfn expression() i32 { " + nestedExpression + " }\n", 50)
+    expectDiagnostic($expressionParsed, "FDN1029")
+
+    var nodes = "1"
+    var nodeIndex u64 = 0
+    while nodeIndex < 520 {
+        nodes = nodes + " + 1"
+        nodeIndex += 1
+    }
+    var nodeParsed = parseSource(
+        "package limits\nfn nodes() i32 { " + nodes + " }\n", 51)
+    expectDiagnostic($nodeParsed, "FDN1029")
+
+    var generic = "value<"
+    var genericIndex u64 = 0
+    while genericIndex < 2050 {
+        generic = generic + "T,"
+        genericIndex += 1
+    }
+    generic = generic + "T>(1)"
+    var genericParsed = parseSource(
+        "package limits\nfn generic() void { discard " + generic + " }\n", 52)
+    expect(genericParsed.diagnostics.hasErrors())
+
+    var rangeParsed = parseSource(
+        "package limits\nfn range() void {\n" +
+        "    discard -18446744073709551616\n" +
+        "    discard 1e9999\n" +
+        "}\n",
+        54
+    )
+    expectDiagnostic($rangeParsed, "FDN1016")
+}
+
+test "arena and token storage preserve stable indexes" {
+    var values = newArena<u64>()
+    var ten u64 = 10
+    var twenty u64 = 20
+    expect(values.add($ten) == 0)
+    expect(values.add($twenty) == 1)
+    const first = match values.take(0) {
+        None: panic("expected first arena value")
+        Some(value): value
+    }
+    expect(first == 10)
+    values.restore(0, $first)
+    values.truncate(1)
+    expect(values.len() == 1)
+    var thirty u64 = 30
+    expect(values.add($thirty) == 1)
+
+    var next u64 = 2
+    while next < 130 {
+        var value = next * 10
+        expect(values.add($value) == next)
+        next += 1
+    }
+    const middle = match values.take(64) {
+        None: panic("expected middle arena value")
+        Some(value): value
+    }
+    expect(middle == 640)
+    values.restore(64, $middle)
+    values.truncate(65)
+    expect(values.len() == 65)
+    var replacement u64 = 650
+    expect(values.add($replacement) == 65)
+
+    var source = "name"
+    const scanResult { tokens diagnostics } = scan($source, 53)
+    expect(!diagnostics.hasErrors())
+    var buffer = newTokenBuffer($tokens)
+    const before = buffer.snapshot(0)
+    const again = buffer.snapshot(0)
+    expect(before.text == "name")
+    expect(again.text == "name")
+    expect(before.span.offset == again.span.offset)
+    buffer.clear()
+    expect(buffer.len() == 0)
+}
+
+fn expectBinaryOperation(
+    &program program,
+    id u64,
+    expected binaryOperator
+) void {
+    const expression = match program.expressions.take(id) {
+        None: panic("expected binary expression")
+        Some(expression): expression
+    }
+    const expressionNode { value span } = expression
+    discard span
+    match value {
+        Binary(value): expect(binaryOperatorCode(value.operation) ==
+            binaryOperatorCode(expected))
+        _: panic("expected binary expression")
+    }
+}
+
+fn binaryOperatorCode(operation binaryOperator) i32 {
+    match operation {
+        Add: 0
+        Subtract: 1
+        Multiply: 2
+        Divide: 3
+        Remainder: 4
+        ShiftLeft: 5
+        ShiftRight: 6
+        BitwiseAnd: 7
+        BitwiseXor: 8
+        BitwiseOr: 9
+        Equal: 10
+        NotEqual: 11
+        Less: 12
+        LessEqual: 13
+        Greater: 14
+        GreaterEqual: 15
+        And: 16
+        Or: 17
+    }
+}
+
+struct functionSummary {
+    found bool
+    blocking bool
+    callback bool
+    taskFunction bool
+    typeParameters i32
+    transferable bool
+    constrained bool
+}
+
+struct conditionalInspection {
+    value expressionValue
+    conditional bool
+}
+
+fn parseForTarget(
+    $source String,
+    target targetPlatform,
+    sourceID u64
+) own parseResult {
+    const scanResult { tokens diagnostics } = scan($source, sourceID)
+    parse($tokens, $diagnostics, true, target)
+}
+
+fn findFunction(
+    &program program,
+    name String
+) functionSummary {
+    var index u64 = 0
+    while index < program.functions.len() {
+        const selected = program.functions.take(index)
+        var function = match selected {
+            None: panic("function slot is empty")
+            Some(function): function
+        }
+        const matched = function.name == name
+        const summary = summarizeFunction(&function, matched)
+        program.functions.restore(index, $function)
+        if matched return summary
+        index += 1
+    }
+    emptyFunctionSummary()
+}
+
+fn findClosureWithTypeParameters(
+    &program program
+) functionSummary {
+    var index u64 = 0
+    while index < program.functions.len() {
+        const selected = program.functions.take(index)
+        var function = match selected {
+            None: panic("function slot is empty")
+            Some(function): function
+        }
+        const matched = function.closure && function.typeParameters.Len() != 0
+        const summary = summarizeFunction(&function, matched)
+        program.functions.restore(index, $function)
+        if matched return summary
+        index += 1
+    }
+    emptyFunctionSummary()
+}
+
+fn summarizeFunction(
+    &function functionDeclaration,
+    found bool
+) functionSummary {
+    functionSummary {
+        found = found
+        blocking = function.blocking
+        callback = function.callback
+        taskFunction = function.taskFunction
+        typeParameters = function.typeParameters.Len()
+        transferable = firstBool(&function.transferableTypeParameters)
+        constrained = firstConstraintPresent(&function.typeParameterConstraints)
+    }
+}
+
+fn emptyFunctionSummary() functionSummary {
+    functionSummary {
+        found = false
+        blocking = false
+        callback = false
+        taskFunction = false
+        typeParameters = 0
+        transferable = false
+        constrained = false
+    }
+}
+
+fn firstBool(&values collections.List<bool>) bool {
+    const selected = values.PopFront()
+    match selected {
+        None: false
+        Some(value): {
+            values.PushFront($value)
+            value
+        }
+    }
+}
+
+fn firstConstraintPresent(
+    &values collections.List<Option<typeSyntax>>
+) bool {
+    const selected = values.PopFront()
+    match selected {
+        None: false
+        Some(value): {
+            var present = false
+            match value {
+                None: {
+                    var restored Option<typeSyntax> = .None
+                    values.PushFront($restored)
+                }
+                Some(type): {
+                    present = true
+                    var restored Option<typeSyntax> = .Some(type)
+                    values.PushFront($restored)
+                }
+            }
+            present
+        }
+    }
+}
+
+fn enumAttributeCount(&program program, id u64) i32 {
+    const selected = program.enums.take(id)
+    const declaration = match selected {
+        None: panic("enum slot is empty")
+        Some(declaration): declaration
+    }
+    const count = declaration.attributes.Len()
+    program.enums.restore(id, $declaration)
+    count
+}
+
+fn functionAttributeCount(
+    &program program,
+    name String
+) i32 {
+    var index u64 = 0
+    while index < program.functions.len() {
+        const selected = program.functions.take(index)
+        const function = match selected {
+            None: panic("function slot is empty")
+            Some(function): function
+        }
+        const matched = function.name == name
+        const count = function.attributes.Len()
+        program.functions.restore(index, $function)
+        if matched return count
+        index += 1
+    }
+    0
+}
+
+fn countConditionalExpressions(&program program) u64 {
+    var count u64 = 0
+    var index u64 = 0
+    while index < program.expressions.len() {
+        const selected = program.expressions.take(index)
+        const node = match selected {
+            None: panic("expression slot is empty")
+            Some(node): node
+        }
+        const expressionNode { value span } = node
+        const conditionalInspection {
+            value as inspectedValue
+            conditional
+        } = inspectConditional($value)
+        if conditional {
+            count += 1
+        }
+        program.expressions.restore(index, $expressionNode {
+            value = inspectedValue span = span
+        })
+        index += 1
+    }
+    count
+}
+
+fn inspectConditional($value expressionValue) conditionalInspection {
+    match value {
+        Integer(payload): conditionalInspection {
+            value = .Integer(payload) conditional = false
+        }
+        Floating(payload): conditionalInspection {
+            value = .Floating(payload) conditional = false
+        }
+        Boolean(payload): conditionalInspection {
+            value = .Boolean(payload) conditional = false
+        }
+        StringValue(payload): conditionalInspection {
+            value = .StringValue(payload) conditional = false
+        }
+        Array(payload): conditionalInspection {
+            value = .Array(payload) conditional = false
+        }
+        Name(payload): conditionalInspection {
+            value = .Name(payload) conditional = false
+        }
+        Unary(payload): conditionalInspection {
+            value = .Unary(payload) conditional = false
+        }
+        Ownership(payload): conditionalInspection {
+            value = .Ownership(payload) conditional = false
+        }
+        Binary(payload): conditionalInspection {
+            value = .Binary(payload) conditional = false
+        }
+        Call(payload): conditionalInspection {
+            value = .Call(payload) conditional = false
+        }
+        StructValue(payload): conditionalInspection {
+            value = .StructValue(payload) conditional = false
+        }
+        Member(payload): conditionalInspection {
+            value = .Member(payload) conditional = false
+        }
+        Index(payload): conditionalInspection {
+            value = .Index(payload) conditional = false
+        }
+        Replace(payload): conditionalInspection {
+            value = .Replace(payload) conditional = false
+        }
+        Spawn(payload): conditionalInspection {
+            value = .Spawn(payload) conditional = false
+        }
+        MatchValue(payload): conditionalInspection {
+            value = .MatchValue(payload) conditional = false
+        }
+        Conditional(payload): conditionalInspection {
+            value = .Conditional(payload) conditional = true
+        }
+        FunctionValue(payload): conditionalInspection {
+            value = .FunctionValue(payload) conditional = false
+        }
+    }
+}
+
+fn expectIntegerSign(
+    &program program,
+    id u64,
+    negative bool
+) void {
+    const selected = program.expressions.take(id)
+    const node = match selected {
+        None: panic("integer expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    match value {
+        Integer(value): {
+            expect(value.negative == negative)
+            program.expressions.restore(id, $expressionNode {
+                value = .Integer(value) span = span
+            })
+        }
+        _: panic("expected integer expression")
+    }
+}
+
+fn expectFloatingText(
+    &program program,
+    id u64,
+    expected String
+) void {
+    const selected = program.expressions.take(id)
+    const node = match selected {
+        None: panic("floating expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    match value {
+        Floating(value): {
+            expect(value.text == expected)
+            program.expressions.restore(id, $expressionNode {
+                value = .Floating(value) span = span
+            })
+        }
+        _: panic("expected floating expression")
+    }
+}
+
+fn expectStructType(
+    &program program,
+    id u64,
+    name String,
+    fields i32
+) void {
+    const selected = program.expressions.take(id)
+    const node = match selected {
+        None: panic("struct expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    match value {
+        StructValue(value): {
+            expect(value.type.name == name)
+            expect(value.fields.Len() == fields)
+            program.expressions.restore(id, $expressionNode {
+                value = .StructValue(value) span = span
+            })
+        }
+        _: panic("expected struct expression")
+    }
+}
+
+fn expectDiagnostic(
+    $parsed own parseResult,
+    code String
+) void {
+    const parseResult { program diagnostics } = parsed
+    discard program
+    var values = $diagnostics.takeAll()
+    var found = false
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("diagnostic list invariant failed")
+            Some(value): value
+        }
+        if value.code == code {
+            found = true
+        }
+        discard value
+    }
+    expect(found)
+}
+
+fn repeatText(value String, count u64) String {
+    var result = ""
+    var index u64 = 0
+    while index < count {
+        result = result + value
+        index += 1
+    }
+    result
+}

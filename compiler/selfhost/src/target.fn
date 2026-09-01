@@ -1,0 +1,40 @@
+package foundation.compiler
+
+import std.platform
+
+enum targetPlatform {
+    Unknown
+    Linux
+    MacOS
+    Windows
+}
+
+fn hostTargetPlatform() targetPlatform {
+    match platform.Current() {
+        Linux: .Linux
+        MacOS: .MacOS
+        Windows: .Windows
+    }
+}
+
+fn targetPlatformName(target targetPlatform) String {
+    match target {
+        Unknown: "unknown"
+        Linux: "linux"
+        MacOS: "macos"
+        Windows: "windows"
+    }
+}
+
+fn sameTarget(left targetPlatform, right targetPlatform) bool {
+    targetPlatformCode(left) == targetPlatformCode(right)
+}
+
+fn targetPlatformCode(target targetPlatform) i32 {
+    match target {
+        Unknown: 0
+        Linux: 1
+        MacOS: 2
+        Windows: 3
+    }
+}

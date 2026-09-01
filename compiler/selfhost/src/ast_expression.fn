@@ -1,0 +1,143 @@
+package foundation.compiler
+
+import std.collections
+
+struct integerExpression {
+    magnitude u64
+    negative bool
+}
+
+struct floatingExpression {
+    text String
+}
+
+struct booleanExpression {
+    value bool
+}
+
+struct stringExpression {
+    value String
+}
+
+struct arrayExpression {
+    elements own collections.List<u64>
+}
+
+struct nameExpression {
+    name String
+    typeArguments own collections.List<typeSyntax>
+}
+
+struct unaryExpression {
+    operation unaryOperator
+    operand u64
+}
+
+struct ownershipExpression {
+    operation ownershipOperator
+    operand u64
+}
+
+struct binaryExpression {
+    left u64
+    operation binaryOperator
+    right u64
+}
+
+struct callExpression {
+    callee String
+    typeArguments own collections.List<typeSyntax>
+    arguments own collections.List<u64>
+    argumentNames own collections.List<Option<String>>
+    argumentNameSpans own collections.List<Option<sourceSpan>>
+}
+
+struct structFieldInitializer {
+    name String
+    value u64
+    span sourceSpan
+}
+
+struct structExpression {
+    type typeSyntax
+    fields own collections.List<structFieldInitializer>
+}
+
+struct memberExpression {
+    base Option<u64>
+    member String
+    typeArguments own collections.List<typeSyntax>
+    invoked bool
+    arguments own collections.List<u64>
+    argumentNames own collections.List<Option<String>>
+    argumentNameSpans own collections.List<Option<sourceSpan>>
+}
+
+struct indexExpression {
+    base u64
+    index u64
+}
+
+struct replaceExpression {
+    target u64
+    value u64
+}
+
+struct spawnExpression {
+    call u64
+}
+
+struct matchArm {
+    wildcard bool
+    variant String
+    binding Option<String>
+    pattern Option<u64>
+    guard Option<u64>
+    block u64
+    expression Option<u64>
+    span sourceSpan
+}
+
+struct matchExpression {
+    value u64
+    arms own collections.List<matchArm>
+}
+
+struct conditionalExpression {
+    condition u64
+    thenBlock u64
+    thenValue u64
+    elseBlock u64
+    elseValue u64
+    postfix bool
+}
+
+struct functionExpression {
+    function u64
+}
+
+enum expressionValue {
+    Integer(integerExpression)
+    Floating(floatingExpression)
+    Boolean(booleanExpression)
+    StringValue(stringExpression)
+    Array(arrayExpression)
+    Name(nameExpression)
+    Unary(unaryExpression)
+    Ownership(ownershipExpression)
+    Binary(binaryExpression)
+    Call(callExpression)
+    StructValue(structExpression)
+    Member(memberExpression)
+    Index(indexExpression)
+    Replace(replaceExpression)
+    Spawn(spawnExpression)
+    MatchValue(matchExpression)
+    Conditional(conditionalExpression)
+    FunctionValue(functionExpression)
+}
+
+struct expressionNode {
+    value expressionValue
+    span sourceSpan
+}

@@ -1,0 +1,189 @@
+package foundation.compiler
+
+import std.collections
+
+struct parameter {
+    name String
+    type typeSyntax
+    span sourceSpan
+    attributes own collections.List<attributeApplication>
+    mode parameterMode
+    inferredType bool
+}
+
+struct closureCapture {
+    mode captureMode
+    name String
+    span sourceSpan
+}
+
+struct stateTransitionFunction {
+    sourceVariants own collections.List<u64>
+    destinationVariant u64
+    destinationParameter Option<u64>
+    timeoutNanoseconds Option<u64>
+}
+
+struct stateTimeoutFunction {
+    sourceVariants own collections.List<u64>
+    nanoseconds u64
+}
+
+enum workflowKind {
+    Pipeline
+    Saga
+}
+
+struct workflowStep {
+    name String
+    function String
+    span sourceSpan
+    functionSpan sourceSpan
+    attempts u64
+    compensation Option<String>
+    compensationSpan Option<sourceSpan>
+}
+
+struct workflowFunction {
+    kind workflowKind
+    successType typeSyntax
+    errorType typeSyntax
+    steps own collections.List<workflowStep>
+    failureStruct Option<String>
+    failureEnum Option<String>
+}
+
+struct functionDeclaration {
+    name String
+    typeParameters own collections.List<String>
+    parameters own collections.List<parameter>
+    returnType typeSyntax
+    body u64
+    exported bool
+    span sourceSpan
+    packageName String
+    sourcePath String
+    receiver Option<receiverKind>
+    ownerType String
+    cSymbol Option<String>
+    hasBody bool
+    closure bool
+    captures own collections.List<closureCapture>
+    attributes own collections.List<attributeApplication>
+    taskFunction bool
+    blocking bool
+    callback bool
+    testName Option<String>
+    testNameSpan Option<sourceSpan>
+    actionFunction bool
+    stateTransition Option<stateTransitionFunction>
+    workflow Option<workflowFunction>
+    inferredReturn bool
+    transferableTypeParameters own collections.List<bool>
+    stateTimeout Option<stateTimeoutFunction>
+    constructor bool
+    typeParameterConstraints own collections.List<Option<typeSyntax>>
+}
+
+enum structKind {
+    Struct
+    Service
+}
+
+struct structField {
+    name String
+    type typeSyntax
+    exported bool
+    span sourceSpan
+    attributes own collections.List<attributeApplication>
+    defaultFunction Option<u64>
+    defaultSpan Option<sourceSpan>
+}
+
+struct structImplementation {
+    contractType typeSyntax
+    delegatedField Option<String>
+    span sourceSpan
+}
+
+struct structDeclaration {
+    name String
+    typeParameters own collections.List<String>
+    implementations own collections.List<structImplementation>
+    fields own collections.List<structField>
+    exported bool
+    span sourceSpan
+    packageName String
+    attributes own collections.List<attributeApplication>
+    kind structKind
+    sourcePath String
+}
+
+struct contractMethod {
+    name String
+    receiver receiverKind
+    parameters own collections.List<parameter>
+    returnType typeSyntax
+    exported bool
+    span sourceSpan
+    defaultFunction Option<u64>
+    attributes own collections.List<attributeApplication>
+}
+
+struct contractDeclaration {
+    name String
+    typeParameters own collections.List<String>
+    parents own collections.List<typeSyntax>
+    methodList own collections.List<contractMethod>
+    exported bool
+    span sourceSpan
+    packageName String
+    attributes own collections.List<attributeApplication>
+}
+
+struct enumVariant {
+    name String
+    payloadType Option<typeSyntax>
+    exported bool
+    span sourceSpan
+    attributes own collections.List<attributeApplication>
+    payloadName Option<String>
+    payloadNameSpan Option<sourceSpan>
+}
+
+enum builtinEnumKind {
+    None
+    Option
+    Result
+    ChannelError
+    NumberError
+}
+
+struct enumDeclaration {
+    name String
+    typeParameters own collections.List<String>
+    variants own collections.List<enumVariant>
+    exported bool
+    builtin builtinEnumKind
+    span sourceSpan
+    packageName String
+    attributes own collections.List<attributeApplication>
+    stateMachine bool
+    generated bool
+}
+
+struct attributeDeclaration {
+    name String
+    parameters own collections.List<parameter>
+    targets own collections.List<attributeTarget>
+    repeatable bool
+    exported bool
+    span sourceSpan
+    packageName String
+}
+
+struct importDeclaration {
+    packageName String
+    alias String
+    span sourceSpan
+}

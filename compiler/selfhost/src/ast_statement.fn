@@ -1,0 +1,121 @@
+package foundation.compiler
+
+import std.collections
+
+struct variableStatement {
+    mutableBinding bool
+    name String
+    type Option<typeSyntax>
+    initializer u64
+    elseBinding Option<String>
+    elseBlock Option<u64>
+}
+
+struct structPatternField {
+    field String
+    binding String
+    span sourceSpan
+}
+
+struct structDestructureStatement {
+    type typeSyntax
+    fields own collections.List<structPatternField>
+    initializer u64
+}
+
+struct assignmentStatement {
+    target u64
+    operation assignmentOperator
+    value u64
+}
+
+struct expressionStatement {
+    expression u64
+}
+
+struct resultElseStatement {
+    expression u64
+    errorBinding Option<String>
+    elseBlock u64
+}
+
+struct returnStatement {
+    value Option<u64>
+    tail bool
+}
+
+struct discardStatement {
+    value u64
+}
+
+struct ifStatement {
+    condition u64
+    thenBlock u64
+    elseBlock Option<u64>
+}
+
+struct whileStatement {
+    condition u64
+    body u64
+}
+
+struct forStatement {
+    indexBinding Option<String>
+    valueBinding String
+    editable bool
+    sequence u64
+    body u64
+}
+
+struct selectOperationArm {
+    binding Option<String>
+    operation u64
+    body u64
+    span sourceSpan
+}
+
+struct selectTimeoutArm {
+    nanoseconds u64
+    duration Option<u64>
+    body u64
+    span sourceSpan
+}
+
+struct selectStatement {
+    operations own collections.List<selectOperationArm>
+    timeoutArm Option<selectTimeoutArm>
+    errorBinding String
+    errorBlock u64
+}
+
+struct unsafeStatement {
+    body u64
+    safetyProof bool
+}
+
+enum statementValue {
+    Variable(variableStatement)
+    StructDestructure(structDestructureStatement)
+    Assignment(assignmentStatement)
+    Expression(expressionStatement)
+    ResultElse(resultElseStatement)
+    ReturnValue(returnStatement)
+    DiscardValue(discardStatement)
+    IfValue(ifStatement)
+    WhileValue(whileStatement)
+    ForValue(forStatement)
+    BreakValue
+    ContinueValue
+    SelectValue(selectStatement)
+    UnsafeValue(unsafeStatement)
+}
+
+struct statementNode {
+    value statementValue
+    span sourceSpan
+}
+
+struct blockNode {
+    statements own collections.List<u64>
+    span sourceSpan
+}

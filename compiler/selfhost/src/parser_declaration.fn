@@ -1,0 +1,1530 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+methods parser {
+    fn parseStructDeclaration(&self, isService bool) structDeclaration {
+        const start = self.expectToken(
+            .Service if isService else .Struct,
+            "FDN1031",
+            "expected service" if isService else "expected struct"
+        )
+        const name = self.expectToken(
+            .Identifier,
+            "FDN1032",
+            "expected service name" if isService else "expected struct name"
+        )
+        var typeParameters = self.parseTypeParameters()
+        var implementations = collections.NewList<structImplementation>()
+        if self.matchToken(.Implements) {
+            var more = true
+            while more {
+                const contractType = self.parseTypeSyntax(
+                    "FDN1094", "expected contract after implements")
+                implementations.PushFront($structImplementation {
+                    span = contractType.span
+                    contractType = contractType
+                    delegatedField = .None
+                })
+                more = self.matchToken(.Comma)
+            }
+            implementations = reverseList($implementations)
+        }
+        discard self.expectToken(
+            .LeftBrace, "FDN1033", "expected { after struct name")
+        var fields = collections.NewList<structField>()
+        while !self.check(.RightBrace) && !self.atEnd() {
+            if self.matchToken(.Delegate) {
+                const delegation = self.previousToken()
+                const field = self.expectToken(
+                    .Identifier, "FDN1168", "expected field after delegate")
+                discard self.expectToken(
+                    .As, "FDN1169", "expected as after delegated field")
+                var contractType = self.parseTypeSyntax(
+                    "FDN1170", "expected contract after as")
+                match assignDelegate(&implementations, &contractType, field.text) {
+                    Missing: self.diagnostics.reportError(
+                        "FDN1171", "delegated contract must appear after implements",
+                        contractType.span)
+                    AlreadyAssigned: self.diagnostics.reportError(
+                        "FDN1172", "contract already has a delegate", delegation.span)
+                    Assigned: {}
+                }
+                discard contractType
+            } else {
+                const parsedAttributes {
+                    selected
+                    applications
+                } = self.parseAttributes(false)
+                discard selected
+                if self.check(.Extern) {
+                    self.diagnostics.reportError(
+                        "FDN2117", "C ABI function cannot be a method", self.currentToken().span)
+                    discard self.advance()
+                    discard applications
+                    continue
+                }
+                if self.check(.Fn) || self.check(.Ctor) || self.check(.Action) {
+                    const kind memberKind = .Constructor if self.check(.Ctor) else
+                    .Action if self.check(.Action) else .Method
+                    var declaration = self.parseMethod(name.text, &typeParameters, kind)
+                    declaration.attributes = applications
+                    discard self.program.functions.add($declaration)
+                    continue
+                }
+                if !self.check(.Identifier) {
+                    self.diagnostics.reportError(
+                        "FDN1034", "expected struct field or method", self.currentToken().span)
+                    discard self.advance()
+                    discard applications
+                    continue
+                }
+                const field = self.advance()
+                var type = self.parseTypeSyntax(
+                    "FDN1036", "expected struct field type")
+                var defaultFunction Option<u64> = .None
+                var defaultSpan Option<sourceSpan> = .None
+                if self.matchToken(.Equal) {
+                    const defaultStart = self.currentToken().span
+                    const previousContext = self.activateGenericContext(&typeParameters)
+                    const value = self.parseExpression()
+                    self.restoreGenericContext($previousContext)
+                    const defaultEnd = self.previousToken().span
+                    defaultSpan = .Some(spanBetween(defaultStart, defaultEnd))
+                    const returned = self.addStatement(.ReturnValue(returnStatement {
+                        value = .Some(value)
+                        tail = false
+                    }), field.span)
+                    var statements = collections.NewList<u64>()
+                    statements.PushFront($returned)
+                    const body = self.addBlock($statements, field.span)
+                    const functionID = self.program.functions.len()
+                    const returnType = copyTypeSyntax(&type)
+                    discard self.program.functions.add($functionDeclaration {
+                        name = "$field_default." + name.text + "." + field.text
+                        typeParameters = copyStringList(&typeParameters.names)
+                        parameters = collections.NewList<parameter>()
+                        returnType = returnType
+                        body = body
+                        exported = false
+                        span = field.span
+                        packageName = ""
+                        sourcePath = ""
+                        receiver = .None
+                        ownerType = ""
+                        cSymbol = .None
+                        hasBody = true
+                        closure = false
+                        captures = collections.NewList<closureCapture>()
+                        attributes = collections.NewList<attributeApplication>()
+                        taskFunction = false
+                        blocking = false
+                        callback = false
+                        testName = .None
+                        testNameSpan = .None
+                        actionFunction = false
+                        stateTransition = .None
+                        workflow = .None
+                        inferredReturn = false
+                        transferableTypeParameters = copyBoolList(
+                            &typeParameters.transferable)
+                        stateTimeout = .None
+                        constructor = false
+                        typeParameterConstraints = copyOptionalTypeList(
+                            &typeParameters.constraints)
+                    })
+                    defaultFunction = .Some(functionID)
+                }
+                fields.PushFront($structField {
+                    name = text.Copy(field.text)
+                    type = type
+                    exported = isExportedName(field.text)
+                    span = field.span
+                    attributes = applications
+                    defaultFunction = defaultFunction
+                    defaultSpan = defaultSpan
+                })
+            }
+        }
+        discard self.expectToken(
+            .RightBrace, "FDN1037", "expected } after struct declaration")
+        const parsedTypeParameters {
+            names as structTypeParameters
+            transferable
+            constraints
+        } = typeParameters
+        discard transferable
+        discard constraints
+        structDeclaration {
+            name = text.Copy(name.text)
+            typeParameters = structTypeParameters
+            implementations = implementations
+            fields = reverseList($fields)
+            exported = isExportedName(name.text)
+            span = start.span
+            packageName = ""
+            attributes = collections.NewList<attributeApplication>()
+            kind = structKind.Service if isService else structKind.Struct
+            sourcePath = ""
+        }
+    }
+
+    fn parseMethodsDeclaration(&self) void {
+        discard self.expectToken(.Methods, "FDN1161", "expected methods")
+        const owner = self.expectToken(
+            .Identifier, "FDN1162", "expected type name after methods")
+        var typeParameters = self.parseTypeParameters()
+        discard self.expectToken(
+            .LeftBrace, "FDN1163", "expected { after methods type")
+        while !self.check(.RightBrace) && !self.atEnd() {
+            const parsedAttributes {
+                selected
+                applications
+            } = self.parseAttributes(false)
+            discard selected
+            if self.check(.Extern) {
+                self.diagnostics.reportError(
+                    "FDN2117", "C ABI function cannot be a method", self.currentToken().span)
+                discard self.advance()
+                discard applications
+                continue
+            }
+            if !self.check(.Fn) && !self.check(.Ctor) && !self.check(.Action) {
+                self.diagnostics.reportError(
+                    "FDN1164", "expected method declaration", self.currentToken().span)
+                discard self.advance()
+                discard applications
+                continue
+            }
+            const kind memberKind = .Constructor if self.check(.Ctor) else
+            .Action if self.check(.Action) else .Method
+            var declaration = self.parseMethod(owner.text, &typeParameters, kind)
+            declaration.attributes = applications
+            discard self.program.functions.add($declaration)
+        }
+        discard self.expectToken(
+            .RightBrace, "FDN1165", "expected } after methods block")
+        discard typeParameters
+    }
+
+    fn parseEnumDeclaration(&self) enumDeclaration {
+        const start = self.expectToken(.Enum, "FDN1042", "expected enum")
+        const name = self.expectToken(.Identifier, "FDN1043", "expected enum name")
+        var typeParameters = self.parseTypeParameters()
+        discard self.expectToken(.LeftBrace, "FDN1044", "expected { after enum name")
+        var variants = collections.NewList<enumVariant>()
+        while !self.check(.RightBrace) && !self.atEnd() {
+            const parsedAttributes {
+                selected
+                applications
+            } = self.parseAttributes(false)
+            discard selected
+            if self.check(.Ctor) {
+                self.diagnostics.reportError(
+                    "FDN1243", "enum cannot declare constructors", self.currentToken().span)
+                self.discardConstructor(name.text)
+                discard applications
+                continue
+            }
+            if !self.check(.Identifier) {
+                self.diagnostics.reportError(
+                    "FDN1045", "expected enum variant name", self.currentToken().span)
+                discard self.advance()
+                discard applications
+                continue
+            }
+            const variant = self.advance()
+            var payloadType Option<typeSyntax> = .None
+            var payloadName Option<String> = .None
+            var payloadNameSpan Option<sourceSpan> = .None
+            if self.matchToken(.LeftParen) {
+                if self.payloadHasName() {
+                    const payload = self.advance()
+                    payloadName = .Some(text.Copy(payload.text))
+                    payloadNameSpan = .Some(payload.span)
+                }
+                payloadType = .Some(self.parseTypeSyntax(
+                        "FDN1048", "expected payload type"))
+                discard self.expectToken(
+                    .RightParen,
+                    "FDN1049",
+                    "expected ) after enum payload"
+                )
+            }
+            variants.PushFront($enumVariant {
+                name = text.Copy(variant.text)
+                payloadType = payloadType
+                exported = isExportedName(variant.text)
+                span = variant.span
+                attributes = applications
+                payloadName = payloadName
+                payloadNameSpan = payloadNameSpan
+            })
+        }
+        discard self.expectToken(
+            .RightBrace, "FDN1050", "expected } after enum declaration")
+        const parsedTypeParameters {
+            names as enumTypeParameters
+            transferable
+            constraints
+        } = typeParameters
+        discard transferable
+        discard constraints
+        enumDeclaration {
+            name = text.Copy(name.text)
+            typeParameters = enumTypeParameters
+            variants = reverseList($variants)
+            exported = isExportedName(name.text)
+            builtin = .None
+            span = start.span
+            packageName = ""
+            attributes = collections.NewList<attributeApplication>()
+            stateMachine = false
+            generated = false
+        }
+    }
+
+    fn parseContractDeclaration(&self) contractDeclaration {
+        const start = self.expectToken(
+            .Contract, "FDN1095", "expected contract")
+        const name = self.expectToken(
+            .Identifier, "FDN1096", "expected contract name")
+        var typeParameters = self.parseTypeParameters()
+        var parents = collections.NewList<typeSyntax>()
+        if self.matchToken(.Extends) {
+            var more = true
+            while more {
+                parents.PushFront($self.parseTypeSyntax(
+                        "FDN1140", "expected contract after extends"))
+                more = self.matchToken(.Comma)
+            }
+        }
+        discard self.expectToken(
+            .LeftBrace, "FDN1097", "expected { after contract name")
+        var methodValues = collections.NewList<contractMethod>()
+        while !self.check(.RightBrace) && !self.atEnd() {
+            const parsedAttributes {
+                selected
+                applications
+            } = self.parseAttributes(false)
+            discard selected
+            if self.check(.Extern) {
+                self.diagnostics.reportError(
+                    "FDN2117", "C ABI function cannot be a method", self.currentToken().span)
+                discard self.advance()
+                discard applications
+                continue
+            }
+            if self.check(.Ctor) {
+                self.diagnostics.reportError(
+                    "FDN1244", "contract cannot declare constructors", self.currentToken().span)
+                self.discardConstructor(name.text)
+                discard applications
+                continue
+            }
+            if !self.check(.Fn) {
+                self.diagnostics.reportError(
+                    "FDN1098", "expected contract method", self.currentToken().span)
+                discard self.advance()
+                discard applications
+                continue
+            }
+            var declaration = self.parseContractMethod(name.text, &typeParameters)
+            declaration.attributes = applications
+            methodValues.PushFront($declaration)
+        }
+        discard self.expectToken(
+            .RightBrace, "FDN1099", "expected } after contract declaration")
+        const parsedTypeParameters {
+            names as contractTypeParameters
+            transferable
+            constraints
+        } = typeParameters
+        discard transferable
+        discard constraints
+        contractDeclaration {
+            name = text.Copy(name.text)
+            typeParameters = contractTypeParameters
+            parents = reverseList($parents)
+            methodList = reverseList($methodValues)
+            exported = isExportedName(name.text)
+            span = start.span
+            packageName = ""
+            attributes = collections.NewList<attributeApplication>()
+        }
+    }
+
+    fn parseAttributeDeclaration(&self) attributeDeclaration {
+        const start = self.expectToken(
+            .Attribute, "FDN1150", "expected attribute")
+        const name = self.expectToken(
+            .Identifier, "FDN1151", "expected attribute name")
+        discard self.expectToken(
+            .LeftParen, "FDN1152", "expected ( after attribute name")
+        var parameters = collections.NewList<parameter>()
+        if !self.check(.RightParen) {
+            var more = true
+            while more {
+                parameters.PushFront($self.parseParameter(false))
+                more = self.matchToken(.Comma)
+            }
+        }
+        discard self.expectToken(
+            .RightParen,
+            "FDN1153",
+            "expected ) after attribute parameters"
+        )
+        const targets = self.expectToken(
+            .Identifier, "FDN1154", "expected targets")
+        if targets.text != "targets" {
+            self.diagnostics.reportError(
+                "FDN1154",
+                "expected targets after attribute parameters",
+                targets.span
+            )
+        }
+        discard self.expectToken(.LeftParen, "FDN1155", "expected ( after targets")
+        var targetList = collections.NewList<attributeTarget>()
+        if !self.check(.RightParen) {
+            var more = true
+            while more {
+                match self.parseAttributeTarget() {
+                    None: {}
+                    Some(target): targetList.PushFront($target)
+                }
+                more = self.matchToken(.Comma)
+            }
+        }
+        discard self.expectToken(
+            .RightParen, "FDN1156", "expected ) after attribute targets")
+        var repeatable = false
+        if self.check(.Identifier) && self.currentToken().text == "repeatable" {
+            discard self.advance()
+            repeatable = true
+        }
+        attributeDeclaration {
+            name = text.Copy(name.text)
+            parameters = reverseList($parameters)
+            targets = reverseList($targetList)
+            repeatable = repeatable
+            exported = isExportedName(name.text)
+            span = start.span
+            packageName = ""
+        }
+    }
+
+    fn parseFunction(
+        &self,
+        external bool,
+        taskFunction bool
+    ) functionDeclaration {
+        var start = self.currentToken()
+        if external {
+            start = self.expectToken(.Extern, "FDN1112", "expected extern")
+            const abi = self.expectToken(
+                .Identifier, "FDN1113", "expected c after extern")
+            if abi.text != "c" {
+                self.diagnostics.reportError(
+                    "FDN1113", "only the c external ABI is supported", abi.span)
+            }
+        }
+        discard self.expectToken(
+            .Task if taskFunction else .Fn,
+            "FDN1002",
+            "expected task" if taskFunction else "expected fn"
+        )
+        const name = self.expectToken(
+            .Identifier, "FDN1003", "expected function name")
+        var typeParameters = self.parseTypeParameters()
+        discard self.expectToken(
+            .LeftParen, "FDN1004", "expected ( after function name")
+        var parameters = collections.NewList<parameter>()
+        if !self.check(.RightParen) {
+            var more = true
+            while more {
+                parameters.PushFront($self.parseParameter(false))
+                more = self.matchToken(.Comma)
+            }
+        }
+        discard self.expectToken(
+            .RightParen, "FDN1005", "expected ) after function parameters")
+        const returnType = self.parseTypeSyntax(
+            "FDN1007", "expected function return type")
+        var cSymbol Option<String> = .None
+        var hasBody = true
+        if external {
+            discard self.expectToken(.As, "FDN1114", "expected as before C symbol")
+            const symbol = self.expectToken(
+                .Identifier, "FDN1115", "expected C symbol after as")
+            cSymbol = .Some(text.Copy(symbol.text))
+            hasBody = self.check(.LeftBrace)
+        }
+        var body u64 = 0
+        if hasBody {
+            const previousContext = self.activateGenericContext(&typeParameters)
+            body = self.parseBlock(returnType.name != "void")
+            self.restoreGenericContext($previousContext)
+        }
+        if !hasBody {
+            body = self.addBlock(collections.NewList<u64>(), start.span)
+        }
+        const parsedTypeParameters {
+            names as functionTypeParameters
+            transferable as functionTransferable
+            constraints as functionConstraints
+        } = typeParameters
+        functionDeclaration {
+            name = text.Copy(name.text)
+            typeParameters = functionTypeParameters
+            parameters = reverseList($parameters)
+            returnType = returnType
+            body = body
+            exported = isExportedName(name.text)
+            span = start.span
+            packageName = ""
+            sourcePath = ""
+            receiver = .None
+            ownerType = ""
+            cSymbol = cSymbol
+            hasBody = hasBody
+            closure = false
+            captures = collections.NewList<closureCapture>()
+            attributes = collections.NewList<attributeApplication>()
+            taskFunction = taskFunction
+            blocking = false
+            callback = false
+            testName = .None
+            testNameSpan = .None
+            actionFunction = false
+            stateTransition = .None
+            workflow = .None
+            inferredReturn = false
+            transferableTypeParameters = functionTransferable
+            stateTimeout = .None
+            constructor = false
+            typeParameterConstraints = functionConstraints
+        }
+    }
+
+    fn parseTestDeclaration(&self) functionDeclaration {
+        const start = self.advance()
+        if !sameTokenKind(start.kind, .Test) && start.text != "test" {
+            self.diagnostics.reportError("FDN1180", "expected test", start.span)
+        }
+        const name = self.expectToken(
+            .StringLiteral, "FDN1181", "expected test name")
+        const body = self.parseBlock(false)
+        functionDeclaration {
+            name = "$test." + decimalText(start.span.offset)
+            typeParameters = collections.NewList<String>()
+            parameters = collections.NewList<parameter>()
+            returnType = namedType("void", start.span)
+            body = body
+            exported = false
+            span = start.span
+            packageName = ""
+            sourcePath = ""
+            receiver = .None
+            ownerType = ""
+            cSymbol = .None
+            hasBody = true
+            closure = false
+            captures = collections.NewList<closureCapture>()
+            attributes = collections.NewList<attributeApplication>()
+            taskFunction = false
+            blocking = false
+            callback = false
+            testName = .Some(text.Copy(name.text))
+            testNameSpan = .Some(name.span)
+            actionFunction = false
+            stateTransition = .None
+            workflow = .None
+            inferredReturn = false
+            transferableTypeParameters = collections.NewList<bool>()
+            stateTimeout = .None
+            constructor = false
+            typeParameterConstraints = collections.NewList<Option<typeSyntax>>()
+        }
+    }
+
+    fn parseMethod(
+        &self,
+        owner String,
+        &ownerTypeParameters parsedTypeParameters,
+        kind memberKind
+    ) functionDeclaration {
+        const constructor = memberKindCode(kind) == memberKindCode(.Constructor)
+        const actionFunction = memberKindCode(kind) == memberKindCode(.Action)
+        const start = self.expectToken(
+            .Ctor if constructor else .Action if actionFunction else .Fn,
+            "FDN1100",
+            "expected ctor" if constructor else "expected action" if actionFunction else
+            "expected fn"
+        )
+        const name = self.expectToken(
+            .Identifier, "FDN1101", "expected method name")
+        discard self.expectToken(
+            .LeftParen, "FDN1102", "expected ( after method name")
+        var parameters = collections.NewList<parameter>()
+        var access Option<receiverKind> = .None
+        var parseParameters = true
+        if !constructor && self.startsReceiver() {
+            const receiverStart = self.currentToken()
+            const receiver = self.parseReceiver(
+                "FDN1103", "expected self, &self, or $self receiver")
+            access = .Some(receiver)
+            parameters.PushFront($receiverParameter(
+                    owner, &ownerTypeParameters.names, receiver, receiverStart.span))
+            parseParameters = self.matchToken(.Comma)
+        }
+        if parseParameters && !self.check(.RightParen) {
+            var more = true
+            while more {
+                parameters.PushFront($self.parseParameter(false))
+                more = self.matchToken(.Comma)
+            }
+        }
+        discard self.expectToken(
+            .RightParen, "FDN1104", "expected ) after method parameters")
+        var returnType = namedType(owner, start.span)
+        if constructor {
+            returnType.arguments = genericArguments(
+                &ownerTypeParameters.names, start.span)
+            if !self.check(.LeftBrace) {
+                var declared = self.parseTypeSyntax(
+                    "FDN1240", "expected constructor body or Result<Error>")
+                if declared.name != "Result" || declared.arguments.Len() != 1 {
+                    self.diagnostics.reportError(
+                        "FDN1241",
+                        "constructor result is implicit; fallible constructors use Result<Error>",
+                        declared.span
+                    )
+                    discard declared
+                } else {
+                    const errorType = match declared.arguments.PopFront() {
+                        None: panic("constructor result invariant failed")
+                        Some(value): value
+                    }
+                    var arguments = collections.NewList<typeSyntax>()
+                    arguments.PushFront($errorType)
+                    arguments.PushFront($returnType)
+                    returnType = typeSyntax {
+                        name = "Result"
+                        arguments = arguments
+                        span = declared.span
+                        arrayLength = 0
+                    }
+                    discard declared
+                }
+            }
+        } else {
+            discard returnType
+            returnType = self.parseTypeSyntax(
+                "FDN1105", "expected method return type")
+        }
+        const previousContext = self.activateGenericContext(&ownerTypeParameters)
+        const body = self.parseBlock(returnType.name != "void")
+        self.restoreGenericContext($previousContext)
+        functionDeclaration {
+            name = text.Copy(name.text)
+            typeParameters = copyStringList(&ownerTypeParameters.names)
+            parameters = reverseList($parameters)
+            returnType = returnType
+            body = body
+            exported = isExportedName(name.text)
+            span = start.span
+            packageName = ""
+            sourcePath = ""
+            receiver = access
+            ownerType = text.Copy(owner)
+            cSymbol = .None
+            hasBody = true
+            closure = false
+            captures = collections.NewList<closureCapture>()
+            attributes = collections.NewList<attributeApplication>()
+            taskFunction = false
+            blocking = false
+            callback = false
+            testName = .None
+            testNameSpan = .None
+            actionFunction = actionFunction
+            stateTransition = .None
+            workflow = .None
+            inferredReturn = false
+            transferableTypeParameters = copyBoolList(
+                &ownerTypeParameters.transferable)
+            stateTimeout = .None
+            constructor = constructor
+            typeParameterConstraints = copyOptionalTypeList(
+                &ownerTypeParameters.constraints)
+        }
+    }
+
+    fn discardConstructor(&self, owner String) void {
+        const expressionCount = self.program.expressions.len()
+        const statementCount = self.program.statements.len()
+        const blockCount = self.program.blocks.len()
+        const functionCount = self.program.functions.len()
+        var empty = parsedTypeParameters {
+            names = collections.NewList<String>()
+            transferable = collections.NewList<bool>()
+            constraints = collections.NewList<Option<typeSyntax>>()
+        }
+        discard self.parseMethod(owner, &empty, .Constructor)
+        self.restoreProgram(
+            expressionCount, statementCount, blockCount, functionCount)
+    }
+
+    fn parseContractMethod(
+        &self,
+        owner String,
+        &ownerTypeParameters parsedTypeParameters
+    ) contractMethod {
+        const start = self.expectToken(.Fn, "FDN1106", "expected fn")
+        const name = self.expectToken(
+            .Identifier, "FDN1107", "expected contract method name")
+        discard self.expectToken(
+            .LeftParen, "FDN1108", "expected ( after contract method name")
+        const access = self.parseReceiver(
+            "FDN1109", "expected self, &self, or $self receiver")
+        var parameters = collections.NewList<parameter>()
+        if self.matchToken(.Comma) {
+            var more = true
+            while more {
+                parameters.PushFront($self.parseParameter(false))
+                more = self.matchToken(.Comma)
+            }
+        }
+        discard self.expectToken(
+            .RightParen,
+            "FDN1110",
+            "expected ) after contract method parameters"
+        )
+        var returnType = self.parseTypeSyntax(
+            "FDN1111", "expected contract method return type")
+        var defaultFunction Option<u64> = .None
+        if self.check(.LeftBrace) {
+            var functionParameters = collections.NewList<parameter>()
+            functionParameters.PushFront($receiverParameter(
+                    owner, &ownerTypeParameters.names, access, start.span))
+            const previousContext = self.activateGenericContext(&ownerTypeParameters)
+            const body = self.parseBlock(returnType.name != "void")
+            self.restoreGenericContext($previousContext)
+            const functionID = self.program.functions.len()
+            discard self.program.functions.add($functionDeclaration {
+                name = text.Copy(name.text)
+                typeParameters = copyStringList(&ownerTypeParameters.names)
+                parameters = functionParameters
+                returnType = copyTypeSyntax(&returnType)
+                body = body
+                exported = isExportedName(name.text)
+                span = start.span
+                packageName = ""
+                sourcePath = ""
+                receiver = .Some(access)
+                ownerType = text.Copy(owner)
+                cSymbol = .None
+                hasBody = true
+                closure = false
+                captures = collections.NewList<closureCapture>()
+                attributes = collections.NewList<attributeApplication>()
+                taskFunction = false
+                blocking = false
+                callback = false
+                testName = .None
+                testNameSpan = .None
+                actionFunction = false
+                stateTransition = .None
+                workflow = .None
+                inferredReturn = false
+                transferableTypeParameters = copyBoolList(
+                    &ownerTypeParameters.transferable)
+                stateTimeout = .None
+                constructor = false
+                typeParameterConstraints = copyOptionalTypeList(
+                    &ownerTypeParameters.constraints)
+            })
+            defaultFunction = .Some(functionID)
+        }
+        contractMethod {
+            name = text.Copy(name.text)
+            receiver = access
+            parameters = reverseList($parameters)
+            returnType = returnType
+            exported = isExportedName(name.text)
+            span = start.span
+            defaultFunction = defaultFunction
+            attributes = collections.NewList<attributeApplication>()
+        }
+    }
+
+    fn parseReceiver(
+        &self,
+        $code String,
+        $message String
+    ) receiverKind {
+        if self.matchToken(.Ampersand) {
+            const receiver = self.expectToken(.Identifier, $code, $message)
+            if receiver.text != "self" {
+                self.diagnostics.reportError(
+                    "FDN1103", "expected self receiver", receiver.span)
+            }
+            return .Edit
+        }
+        if self.matchToken(.Dollar) {
+            const receiver = self.expectToken(.Identifier, $code, $message)
+            if receiver.text != "self" {
+                self.diagnostics.reportError(
+                    "FDN1103", "expected self receiver", receiver.span)
+            }
+            return .Own
+        }
+        if self.check(.Identifier) && self.currentToken().text == "self" {
+            discard code
+            discard message
+            discard self.advance()
+            return .View
+        }
+        if self.matchToken(.View) || self.matchToken(.Edit) || self.matchToken(.Own) {
+            const legacy = self.previousToken()
+            discard code
+            discard message
+            self.diagnostics.reportError(
+                "FDN1185",
+                "legacy receiver mode was removed; use self, &self, or $self",
+                legacy.span
+            )
+            if sameTokenKind(legacy.kind, .Edit) return .Edit
+            if sameTokenKind(legacy.kind, .Own) return .Own
+            return .View
+        }
+        self.diagnostics.reportError($code, $message, self.currentToken().span)
+        if !self.atEnd() {
+            discard self.advance()
+        }
+        .View
+    }
+
+    fn parseParameter(&self, allowInferredType bool) parameter {
+        const parsedAttributes {
+            selected
+            applications
+        } = self.parseAttributes(false)
+        discard selected
+        const start = self.currentToken().span
+        var mode = parameterMode.Read
+        if self.matchToken(.Ampersand) {
+            mode = .Edit
+        }
+        if parameterModeCode(mode) == parameterModeCode(.Read) &&
+            self.matchToken(.Dollar) {
+            mode = .Transfer
+        }
+        const name = self.expectToken(
+            .Identifier, "FDN1026", "expected parameter name")
+        const inferredType = allowInferredType &&
+            (self.check(.Comma) || self.check(.RightParen))
+        var type = emptyType(name.span) if inferredType else
+        self.parseTypeSyntax("FDN1028", "expected parameter type")
+        if parameterModeCode(mode) == parameterModeCode(.Read) &&
+            (type.name == "own" || type.name == "view" || type.name == "edit") {
+            self.diagnostics.reportError(
+                "FDN1186",
+                "parameter mode after the name was removed",
+                type.span
+            )
+            mode = .TypeEncoded
+        }
+        parameter {
+            name = text.Copy(name.text)
+            type = type
+            span = spanBetween(start, name.span)
+            attributes = applications
+            mode = mode
+            inferredType = inferredType
+        }
+    }
+
+    fn parseStateMachineDeclaration(&self) void {
+        const start = self.expectToken(
+            .StateMachine, "FDN1190", "expected state_machine")
+        const name = self.expectToken(
+            .Identifier, "FDN1191", "expected state machine name")
+        var typeParameters = self.parseTypeParameters()
+        discard self.expectToken(
+            .LeftBrace, "FDN1193", "expected { after state machine name")
+        var states = collections.NewList<enumVariant>()
+        var transitionCount u64 = 0
+        while !self.check(.RightBrace) && !self.atEnd() {
+            if self.check(.Identifier) && self.currentToken().text == "state" {
+                discard self.advance()
+                const state = self.expectToken(
+                    .Identifier, "FDN1194", "expected state name")
+                var payloadType Option<typeSyntax> = .None
+                var payloadName Option<String> = .None
+                var payloadSpan Option<sourceSpan> = .None
+                if self.matchToken(.LeftParen) {
+                    const payload = self.expectToken(
+                        .Identifier, "FDN1196", "expected state payload name")
+                    payloadName = .Some(text.Copy(payload.text))
+                    payloadSpan = .Some(payload.span)
+                    payloadType = .Some(self.parseTypeSyntax(
+                            "FDN1197", "expected state payload type"))
+                    discard self.expectToken(
+                        .RightParen,
+                        "FDN1198",
+                        "expected ) after state payload"
+                    )
+                }
+                states.PushFront($enumVariant {
+                    name = text.Copy(state.text)
+                    payloadType = payloadType
+                    exported = isExportedName(state.text)
+                    span = state.span
+                    attributes = collections.NewList<attributeApplication>()
+                    payloadName = payloadName
+                    payloadNameSpan = payloadSpan
+                })
+                continue
+            }
+            if self.check(.Identifier) && self.currentToken().text == "on" {
+                discard self.advance()
+                const event = self.expectToken(
+                    .Identifier, "FDN1199", "expected transition event name")
+                var parameters = collections.NewList<parameter>()
+                if self.matchToken(.LeftParen) {
+                    if !self.check(.RightParen) {
+                        var more = true
+                        while more {
+                            parameters.PushFront($self.parseParameter(false))
+                            more = self.matchToken(.Comma)
+                        }
+                    }
+                    discard self.expectToken(
+                        .RightParen,
+                        "FDN1200",
+                        "expected ) after transition parameters"
+                    )
+                }
+                self.expectContextual("from", "FDN1201", "expected from in transition")
+                var sourceVariants = collections.NewList<u64>()
+                var sourceCount u64 = 0
+                var moreSources = true
+                while moreSources {
+                    discard self.expectToken(
+                        .Identifier, "FDN1202", "expected source state")
+                    sourceVariants.PushFront($sourceCount)
+                    sourceCount += 1
+                    moreSources = self.matchToken(.Comma)
+                }
+                self.expectContextual("to", "FDN1203", "expected to in transition")
+                discard self.expectToken(
+                    .Identifier, "FDN1204", "expected destination state")
+                var destinationParameter Option<u64> = .None
+                if self.matchToken(.LeftParen) {
+                    discard self.expectToken(
+                        .Identifier,
+                        "FDN1205",
+                        "expected destination payload binding"
+                    )
+                    discard self.expectToken(
+                        .RightParen,
+                        "FDN1206",
+                        "expected ) after destination payload"
+                    )
+                    destinationParameter = .Some(1)
+                }
+                var timeoutRule Option<u64> = .None
+                if self.check(.Identifier) && self.currentToken().text == "after" {
+                    discard self.advance()
+                    const amount = self.expectToken(
+                        .Integer,
+                        "FDN1250",
+                        "expected state timeout duration amount"
+                    )
+                    discard self.expectToken(
+                        .Dot, "FDN1251", "expected . in timeout duration")
+                    const unit = self.expectToken(
+                        .Identifier, "FDN1252", "expected timeout duration unit")
+                    const parsedMagnitude = parseUnsigned(text.Copy(amount.text))
+                    if !parsedMagnitude.valid {
+                        self.diagnostics.reportError(
+                            "FDN1016",
+                            "integer is outside the supported range",
+                            amount.span
+                        )
+                    }
+                    const magnitude = parsedMagnitude.value
+                    const multiplier = timeoutMultiplier(unit.text)
+                    if multiplier == 0 {
+                        self.diagnostics.reportError(
+                            "FDN1253",
+                            "unknown state timeout duration unit " + unit.text,
+                            unit.span
+                        )
+                    } else {
+                        timeoutRule = .Some(magnitude * multiplier)
+                    }
+                }
+                const body = self.addBlock(collections.NewList<u64>(), event.span)
+                var functionParameters = collections.NewList<parameter>()
+                functionParameters.PushFront($receiverParameter(
+                        name.text, &typeParameters.names, .Edit, name.span))
+                discard parameters
+                discard self.program.functions.add($functionDeclaration {
+                    name = text.Copy(event.text)
+                    typeParameters = copyStringList(&typeParameters.names)
+                    parameters = functionParameters
+                    returnType = resultType(
+                        namedType("void", event.span),
+                        namedType(name.text + "TransitionError", event.span),
+                        event.span
+                    )
+                    body = body
+                    exported = isExportedName(event.text)
+                    span = event.span
+                    packageName = ""
+                    sourcePath = ""
+                    receiver = .Some(.Edit)
+                    ownerType = text.Copy(name.text)
+                    cSymbol = .None
+                    hasBody = true
+                    closure = false
+                    captures = collections.NewList<closureCapture>()
+                    attributes = collections.NewList<attributeApplication>()
+                    taskFunction = false
+                    blocking = false
+                    callback = false
+                    testName = .None
+                    testNameSpan = .None
+                    actionFunction = false
+                    stateTransition = .Some(stateTransitionFunction {
+                        sourceVariants = reverseList($sourceVariants)
+                        destinationVariant = 0
+                        destinationParameter = destinationParameter
+                        timeoutNanoseconds = timeoutRule
+                    })
+                    workflow = .None
+                    inferredReturn = false
+                    transferableTypeParameters = collections.NewList<bool>()
+                    stateTimeout = .None
+                    constructor = false
+                    typeParameterConstraints = collections.NewList<Option<typeSyntax>>()
+                })
+                transitionCount += 1
+            } else {
+                self.diagnostics.reportError(
+                    "FDN1207",
+                    "expected state or on declaration",
+                    self.currentToken().span
+                )
+                discard self.advance()
+            }
+        }
+        discard transitionCount
+        discard self.expectToken(
+            .RightBrace, "FDN1208", "expected } after state machine")
+        if states.IsEmpty() {
+            self.diagnostics.reportError(
+                "FDN1209", "state machine requires at least one state", start.span)
+        }
+        discard self.program.enums.add($enumDeclaration {
+            name = text.Copy(name.text)
+            typeParameters = copyStringList(&typeParameters.names)
+            variants = reverseList($states)
+            exported = isExportedName(name.text)
+            builtin = .None
+            span = start.span
+            packageName = ""
+            attributes = collections.NewList<attributeApplication>()
+            stateMachine = true
+            generated = false
+        })
+        var errorVariants = collections.NewList<enumVariant>()
+        errorVariants.PushFront($enumVariant {
+            name = "InvalidState"
+            payloadType = .None
+            exported = true
+            span = start.span
+            attributes = collections.NewList<attributeApplication>()
+            payloadName = .None
+            payloadNameSpan = .None
+        })
+        discard self.program.enums.add($enumDeclaration {
+            name = text.Copy(name.text) + "TransitionError"
+            typeParameters = collections.NewList<String>()
+            variants = errorVariants
+            exported = isExportedName(name.text)
+            builtin = .None
+            span = start.span
+            packageName = ""
+            attributes = collections.NewList<attributeApplication>()
+            stateMachine = false
+            generated = true
+        })
+        discard typeParameters
+    }
+
+    fn parseWorkflowDeclaration(&self, kind workflowKind) void {
+        const isPipeline = workflowKindCode(kind) == workflowKindCode(.Pipeline)
+        const start = self.expectToken(
+            .Pipeline if isPipeline else .Saga,
+            "FDN1214",
+            "expected workflow declaration"
+        )
+        const name = self.expectToken(
+            .Identifier, "FDN1215", "expected workflow name")
+        var typeParameters = self.parseTypeParameters()
+        discard self.expectToken(
+            .LeftParen, "FDN1216", "expected ( after workflow name")
+        var parameters = collections.NewList<parameter>()
+        if !self.check(.RightParen) {
+            var more = true
+            while more {
+                parameters.PushFront($self.parseParameter(false))
+                more = self.matchToken(.Comma)
+            }
+        }
+        discard self.expectToken(
+            .RightParen, "FDN1217", "expected ) after workflow input")
+        var declaredReturn = self.parseTypeSyntax(
+            "FDN1218", "expected workflow result type")
+        var successType = namedType("void", declaredReturn.span)
+        var errorType = namedType("void", declaredReturn.span)
+        if declaredReturn.name != "Result" || declaredReturn.arguments.Len() != 2 {
+            self.diagnostics.reportError(
+                "FDN1219",
+                "workflow must declare Result<Output, Error>",
+                declaredReturn.span
+            )
+        } else {
+            successType = match declaredReturn.arguments.PopFront() {
+                None: panic("workflow result invariant failed")
+                Some(value): value
+            }
+            errorType = match declaredReturn.arguments.PopFront() {
+                None: panic("workflow error invariant failed")
+                Some(value): value
+            }
+        }
+        discard self.expectToken(
+            .LeftBrace, "FDN1220", "expected { after workflow result type")
+        var steps = collections.NewList<workflowStep>()
+        while !self.check(.RightBrace) && !self.atEnd() {
+            self.expectContextual("step", "FDN1221", "expected step in workflow")
+            const stepName = self.expectToken(
+                .Identifier, "FDN1222", "expected workflow step name")
+            self.expectContextual("using", "FDN1223", "expected using after step name")
+            const function = self.qualifiedName(
+                "FDN1224", "expected workflow step function", false)
+            var attempts u64 = 1
+            if self.check(.Identifier) && self.currentToken().text == "retry" {
+                discard self.advance()
+                self.expectContextual(
+                    "exponential", "FDN1225", "expected exponential retry strategy")
+                discard self.expectToken(
+                    .LeftParen, "FDN1226", "expected ( after exponential")
+                self.expectContextual("max", "FDN1227", "expected max retry argument")
+                discard self.expectToken(
+                    .Equal, "FDN1228", "expected = after retry max")
+                const value = self.expectToken(
+                    .Integer, "FDN1229", "expected retry attempt count")
+                const parsedAttempts = parseUnsigned(text.Copy(value.text))
+                attempts = parsedAttempts.value
+                if attempts == 0 || attempts > 1024 {
+                    self.diagnostics.reportError(
+                        "FDN1230",
+                        "retry max must be between 1 and 1024",
+                        value.span
+                    )
+                }
+                discard self.expectToken(
+                    .RightParen, "FDN1231", "expected ) after retry strategy")
+            }
+            var compensation Option<String> = .None
+            var compensationSpan Option<sourceSpan> = .None
+            if !isPipeline && self.check(.Identifier) &&
+                self.currentToken().text == "compensate" {
+                discard self.advance()
+                const value = self.qualifiedName(
+                    "FDN1232", "expected compensation function", false)
+                compensation = .Some(text.Copy(value.name))
+                compensationSpan = .Some(value.span)
+            }
+            steps.PushFront($workflowStep {
+                name = text.Copy(stepName.text)
+                function = text.Copy(function.name)
+                span = stepName.span
+                functionSpan = function.span
+                attempts = attempts
+                compensation = compensation
+                compensationSpan = compensationSpan
+            })
+        }
+        discard self.expectToken(
+            .RightBrace, "FDN1234", "expected } after workflow")
+        if steps.IsEmpty() {
+            self.diagnostics.reportError(
+                "FDN1236",
+                "pipeline requires at least one step" if isPipeline else
+                "saga requires at least one step",
+                name.span
+            )
+        }
+        const body = self.addBlock(collections.NewList<u64>(), start.span)
+        const parsedTypeParameters {
+            names as workflowTypeParameters
+            transferable as workflowTransferable
+            constraints as workflowConstraints
+        } = typeParameters
+        discard self.program.functions.add($functionDeclaration {
+            name = text.Copy(name.text)
+            typeParameters = workflowTypeParameters
+            parameters = reverseList($parameters)
+            returnType = declaredReturn
+            body = body
+            exported = isExportedName(name.text)
+            span = start.span
+            packageName = ""
+            sourcePath = ""
+            receiver = .None
+            ownerType = ""
+            cSymbol = .None
+            hasBody = true
+            closure = false
+            captures = collections.NewList<closureCapture>()
+            attributes = collections.NewList<attributeApplication>()
+            taskFunction = false
+            blocking = false
+            callback = false
+            testName = .None
+            testNameSpan = .None
+            actionFunction = false
+            stateTransition = .None
+            workflow = .Some(workflowFunction {
+                kind = kind
+                successType = successType
+                errorType = errorType
+                steps = reverseList($steps)
+                failureStruct = .None
+                failureEnum = .None
+            })
+            inferredReturn = false
+            transferableTypeParameters = workflowTransferable
+            stateTimeout = .None
+            constructor = false
+            typeParameterConstraints = workflowConstraints
+        })
+    }
+
+    fn installBuiltins(&self) void {
+        const span = sourceSpan {
+            offset = 0 length = 0 line = 1 column = 1 source = 0
+        }
+        discard self.program.enums.add($builtinOption(span))
+        discard self.program.enums.add($builtinResult(span))
+        discard self.program.enums.add($builtinSimpleEnum(
+                "ChannelError", .ChannelError, span, "Closed", "Cancelled", "Timeout"))
+        discard self.program.enums.add($builtinSimpleEnum(
+                "NumberError", .NumberError, span, "OutOfRange", "NonFinite", "PrecisionLoss"))
+    }
+
+    fn expectContextual(
+        &self,
+        expected String,
+        $code String,
+        $message String
+    ) void {
+        const value = self.expectToken(.Identifier, $code, $message)
+        if value.text != expected {
+            self.diagnostics.reportError(
+                "FDN1001", "expected " + expected, value.span)
+        }
+    }
+
+    fn payloadHasName(&self) bool {
+        if !self.check(.Identifier) return false
+        const next = self.peekToken(1).kind
+        sameTokenKind(next, .Identifier) || sameTokenKind(next, .LeftBracket) ||
+            sameTokenKind(next, .Fn) || sameTokenKind(next, .Own) ||
+            sameTokenKind(next, .View) || sameTokenKind(next, .Edit) ||
+            sameTokenKind(next, .Star)
+    }
+
+    fn startsReceiver(&self) bool {
+        self.check(.View) || self.check(.Edit) || self.check(.Own) ||
+            self.check(.Identifier) && self.currentToken().text == "self" ||
+            (self.check(.Ampersand) || self.check(.Dollar)) &&
+            sameTokenKind(self.peekToken(1).kind, .Identifier) &&
+            self.peekToken(1).text == "self"
+    }
+}
+
+fn memberKindCode(kind memberKind) i32 {
+    match kind {
+        Method: 0
+        Constructor: 1
+        Action: 2
+    }
+}
+
+fn parameterModeCode(mode parameterMode) i32 {
+    match mode {
+        TypeEncoded: 0
+        Read: 1
+        Edit: 2
+        Transfer: 3
+    }
+}
+
+fn workflowKindCode(kind workflowKind) i32 {
+    match kind {
+        Pipeline: 0
+        Saga: 1
+    }
+}
+
+fn namedType(name String, span sourceSpan) typeSyntax {
+    typeSyntax {
+        name = text.Copy(name)
+        arguments = collections.NewList<typeSyntax>()
+        span = span
+        arrayLength = 0
+    }
+}
+
+fn resultType(
+    $success typeSyntax,
+    $failure typeSyntax,
+    span sourceSpan
+) typeSyntax {
+    var arguments = collections.NewList<typeSyntax>()
+    arguments.PushFront($failure)
+    arguments.PushFront($success)
+    typeSyntax {
+        name = "Result"
+        arguments = arguments
+        span = span
+        arrayLength = 0
+    }
+}
+
+fn genericArguments(
+    &names collections.List<String>,
+    span sourceSpan
+) own collections.List<typeSyntax> {
+    var pending = copyStringList(&names)
+    var arguments = collections.NewList<typeSyntax>()
+    while !pending.IsEmpty() {
+        const name = match pending.PopFront() {
+            None: panic("type parameter list invariant failed")
+            Some(name): name
+        }
+        arguments.PushFront($namedType(name, span))
+    }
+    reverseList($arguments)
+}
+
+fn receiverParameter(
+    owner String,
+    &typeParameters collections.List<String>,
+    receiver receiverKind,
+    span sourceSpan
+) parameter {
+    var ownerType = namedType(text.Copy(owner), span)
+    ownerType.arguments = genericArguments(&typeParameters, span)
+    var arguments = collections.NewList<typeSyntax>()
+    arguments.PushFront($ownerType)
+    parameter {
+        name = "self"
+        type = typeSyntax {
+            name = "view" if receiverKindCode(receiver) == 0 else
+            "edit" if receiverKindCode(receiver) == 1 else "own"
+            arguments = arguments
+            span = span
+            arrayLength = 0
+        }
+        span = span
+        attributes = collections.NewList<attributeApplication>()
+        mode = .TypeEncoded
+        inferredType = false
+    }
+}
+
+fn receiverKindCode(kind receiverKind) i32 {
+    match kind {
+        View: 0
+        Edit: 1
+        Own: 2
+    }
+}
+
+fn spanBetween(start sourceSpan, end sourceSpan) sourceSpan {
+    sourceSpan {
+        offset = start.offset
+        length = spanEnd(end) - start.offset
+        line = start.line
+        column = start.column
+        source = start.source
+    }
+}
+
+enum delegateAssignment {
+    Missing
+    AlreadyAssigned
+    Assigned
+}
+
+fn sameTypeSyntax(
+    &left typeSyntax,
+    &right typeSyntax
+) bool {
+    if left.name != right.name || left.arrayLength != right.arrayLength ||
+        left.arguments.Len() != right.arguments.Len() {
+        return false
+    }
+    var leftArguments = copyTypeSyntaxList(&left.arguments)
+    var rightArguments = copyTypeSyntaxList(&right.arguments)
+    while !leftArguments.IsEmpty() {
+        var leftArgument = match leftArguments.PopFront() {
+            None: panic("left type argument invariant failed")
+            Some(value): value
+        }
+        var rightArgument = match rightArguments.PopFront() {
+            None: panic("right type argument invariant failed")
+            Some(value): value
+        }
+        if !sameTypeSyntax(&leftArgument, &rightArgument) return false
+    }
+    true
+}
+
+fn assignDelegate(
+    &implementations collections.List<structImplementation>,
+    &contractType typeSyntax,
+    field String
+) delegateAssignment {
+    var pending = collections.NewList<structImplementation>()
+    var result = delegateAssignment.Missing
+    while !implementations.IsEmpty() {
+        var value = match implementations.PopFront() {
+            None: panic("implementation list invariant failed")
+            Some(value): value
+        }
+        if delegateAssignmentCode(result) == delegateAssignmentCode(.Missing) &&
+            sameTypeSyntax(&value.contractType, &contractType) {
+            const delegated = replace value.delegatedField with .None
+            match delegated {
+                None: {
+                    value.delegatedField = .Some(text.Copy(field))
+                    result = .Assigned
+                }
+                Some(existing): {
+                    value.delegatedField = .Some(existing)
+                    result = .AlreadyAssigned
+                }
+            }
+        }
+        pending.PushFront($value)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("implementation restore invariant failed")
+            Some(value): value
+        }
+        implementations.PushFront($value)
+    }
+    result
+}
+
+fn delegateAssignmentCode(value delegateAssignment) i32 {
+    match value {
+        Missing: 0
+        AlreadyAssigned: 1
+        Assigned: 2
+    }
+}
+
+fn builtinOption(span sourceSpan) enumDeclaration {
+    var parameters = collections.NewList<String>()
+    parameters.PushFront($"T")
+    var variants = collections.NewList<enumVariant>()
+    variants.PushFront($builtinVariant("Some", .Some(namedType("T", span)), span))
+    variants.PushFront($builtinVariant("None", .None, span))
+    enumDeclaration {
+        name = "Option"
+        typeParameters = parameters
+        variants = variants
+        exported = true
+        builtin = .Option
+        span = span
+        packageName = ""
+        attributes = collections.NewList<attributeApplication>()
+        stateMachine = false
+        generated = false
+    }
+}
+
+fn builtinResult(span sourceSpan) enumDeclaration {
+    var parameters = collections.NewList<String>()
+    parameters.PushFront($"E")
+    parameters.PushFront($"T")
+    var variants = collections.NewList<enumVariant>()
+    variants.PushFront($builtinVariant("Err", .Some(namedType("E", span)), span))
+    variants.PushFront($builtinVariant("Ok", .Some(namedType("T", span)), span))
+    enumDeclaration {
+        name = "Result"
+        typeParameters = parameters
+        variants = variants
+        exported = true
+        builtin = .Result
+        span = span
+        packageName = ""
+        attributes = collections.NewList<attributeApplication>()
+        stateMachine = false
+        generated = false
+    }
+}
+
+fn builtinSimpleEnum(
+    name String,
+    kind builtinEnumKind,
+    span sourceSpan,
+    first String,
+    second String,
+    third String
+) enumDeclaration {
+    var variants = collections.NewList<enumVariant>()
+    variants.PushFront($builtinVariant(third, .None, span))
+    variants.PushFront($builtinVariant(second, .None, span))
+    variants.PushFront($builtinVariant(first, .None, span))
+    enumDeclaration {
+        name = text.Copy(name)
+        typeParameters = collections.NewList<String>()
+        variants = variants
+        exported = true
+        builtin = kind
+        span = span
+        packageName = ""
+        attributes = collections.NewList<attributeApplication>()
+        stateMachine = false
+        generated = false
+    }
+}
+
+fn builtinVariant(
+    name String,
+    $payload Option<typeSyntax>,
+    span sourceSpan
+) enumVariant {
+    enumVariant {
+        name = text.Copy(name)
+        payloadType = payload
+        exported = true
+        span = span
+        attributes = collections.NewList<attributeApplication>()
+        payloadName = .None
+        payloadNameSpan = .None
+    }
+}

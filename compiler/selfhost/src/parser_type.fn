@@ -1,0 +1,446 @@
+package foundation.compiler
+
+import std.collections
+import std.parse
+import std.text
+
+struct parsedTypeParameters {
+    names own collections.List<String>
+    transferable own collections.List<bool>
+    constraints own collections.List<Option<typeSyntax>>
+}
+
+struct typeLookaheadResult {
+    matched bool
+    next u64
+    closing u64
+}
+
+methods parser {
+    fn parseTypeParameters(&self) parsedTypeParameters {
+        var names = collections.NewList<String>()
+        var transferable = collections.NewList<bool>()
+        var constraints = collections.NewList<Option<typeSyntax>>()
+        if self.matchToken(.Less) {
+            var more = true
+            while more {
+                const name = self.expectToken(
+                    .Identifier, "FDN1061", "expected type parameter")
+                names.PushFront($text.Copy(name.text))
+                var canTransfer = false
+                if self.check(.Identifier) &&
+                    self.currentToken().text == "transferable" {
+                    discard self.advance()
+                    canTransfer = true
+                }
+                transferable.PushFront($canTransfer)
+                var constraint Option<typeSyntax> = .None
+                if self.check(.Identifier) {
+                    constraint = .Some(self.parseTypeSyntax(
+                            "FDN1250", "expected contract type constraint"))
+                }
+                constraints.PushFront($constraint)
+                more = self.matchToken(.Comma)
+            }
+            discard self.expectToken(
+                .Greater, "FDN1062", "expected > after type parameters")
+        }
+        parsedTypeParameters {
+            names = reverseList($names)
+            transferable = reverseList($transferable)
+            constraints = reverseList($constraints)
+        }
+    }
+
+    fn parseTypeSyntax(
+        &self,
+        $code String,
+        $message String
+    ) typeSyntax {
+        const current = self.currentToken()
+        if self.typeDepth >= 128 {
+            self.diagnostics.reportError(
+                "FDN1065", "type nesting exceeds 128 levels", current.span)
+            discard code
+            discard message
+            return emptyType(current.span)
+        }
+        self.typeDepth += 1
+        const result = self.parseTypeSyntaxInner($code, $message)
+        self.typeDepth -= 1
+        result
+    }
+
+    fn parseTypeSyntaxInner(
+        &self,
+        $code String,
+        $message String
+    ) typeSyntax {
+        if self.matchToken(.Star) {
+            const start = self.previousToken()
+            const readOnly = self.matchToken(.Const)
+            var arguments = collections.NewList<typeSyntax>()
+            arguments.PushFront($self.parseTypeSyntax(
+                    text.Copy(code), text.Copy(message)))
+            discard code
+            discard message
+            return typeSyntax {
+                name = "[raw-const]" if readOnly else "[raw]"
+                arguments = arguments
+                span = start.span
+                arrayLength = 0
+            }
+        }
+        if self.check(.Own) || self.check(.View) || self.check(.Edit) {
+            const qualifier = self.advance()
+            var arguments = collections.NewList<typeSyntax>()
+            arguments.PushFront($self.parseTypeSyntax(
+                    text.Copy(code), text.Copy(message)))
+            discard code
+            discard message
+            return typeSyntax {
+                name = text.Copy(qualifier.text)
+                arguments = arguments
+                span = qualifier.span
+                arrayLength = 0
+            }
+        }
+        const cFunction = self.check(.Extern) &&
+            self.peekToken(1).text == "c" &&
+            sameTokenKind(self.peekToken(2).kind, .Fn)
+        const transferableFunction = self.check(.Identifier) &&
+            self.currentToken().text == "transferable" &&
+            sameTokenKind(self.peekToken(1).kind, .Fn)
+        if cFunction || transferableFunction || self.matchToken(.Fn) {
+            const start = self.advance() if cFunction || transferableFunction
+            else self.previousToken()
+            if cFunction {
+                discard self.advance()
+                discard self.advance()
+            }
+            if transferableFunction {
+                discard self.advance()
+            }
+            var arguments = collections.NewList<typeSyntax>()
+            discard self.expectToken(
+                .LeftParen, "FDN1120", "expected ( in function type")
+            if !self.check(.RightParen) {
+                var more = true
+                while more {
+                    var mode = "[function-read]"
+                    var modeSpan = self.currentToken().span
+                    if self.matchToken(.Ampersand) {
+                        mode = "[function-edit]"
+                        modeSpan = self.previousToken().span
+                    }
+                    if mode == "[function-read]" && self.matchToken(.Dollar) {
+                        mode = "[function-transfer]"
+                        modeSpan = self.previousToken().span
+                    }
+                    var inner = self.parseTypeSyntax(
+                        "FDN1121", "expected function parameter type")
+                    var modeArguments = collections.NewList<typeSyntax>()
+                    modeArguments.PushFront($inner)
+                    arguments.PushFront($typeSyntax {
+                        name = mode
+                        arguments = modeArguments
+                        span = modeSpan
+                        arrayLength = 0
+                    })
+                    more = self.matchToken(.Comma)
+                }
+            }
+            discard self.expectToken(
+                .RightParen, "FDN1122", "expected ) in function type")
+            const returnType = self.parseTypeSyntax(
+                "FDN1123", "expected function return type")
+            arguments.PushFront($returnType)
+            discard code
+            discard message
+            return typeSyntax {
+                name = "[c-function]" if cFunction else
+                "[transferable-function]" if transferableFunction else
+                "[function]"
+                arguments = reverseList($arguments)
+                span = start.span
+                arrayLength = 0
+            }
+        }
+        if self.matchToken(.LeftBracket) {
+            const start = self.previousToken()
+            var length u64 = 0
+            if self.matchToken(.Minus) {
+                const sign = self.previousToken()
+                if self.matchToken(.Integer) {
+                    self.diagnostics.reportError(
+                        "FDN1080", "array length must be non-negative", sign.span)
+                    discard self.expectToken(
+                        .RightBracket, "FDN1081", "expected ] after array length")
+                    var arguments = collections.NewList<typeSyntax>()
+                    arguments.PushFront($self.parseTypeSyntax(
+                            text.Copy(code), text.Copy(message)))
+                    discard code
+                    discard message
+                    return typeSyntax {
+                        name = "[array]"
+                        arguments = arguments
+                        span = start.span
+                        arrayLength = 0
+                    }
+                }
+            }
+            if self.matchToken(.Integer) {
+                const lengthToken = self.previousToken()
+                const parsedLength = parseUnsigned(text.Copy(lengthToken.text))
+                if !parsedLength.valid {
+                    self.diagnostics.reportError(
+                        "FDN1082", "array length is out of range", lengthToken.span)
+                }
+                length = parsedLength.value
+                discard self.expectToken(
+                    .RightBracket, "FDN1081", "expected ] after array length")
+                var arguments = collections.NewList<typeSyntax>()
+                arguments.PushFront($self.parseTypeSyntax(
+                        text.Copy(code), text.Copy(message)))
+                discard code
+                discard message
+                return typeSyntax {
+                    name = "[array]"
+                    arguments = arguments
+                    span = start.span
+                    arrayLength = length
+                }
+            }
+            var arguments = collections.NewList<typeSyntax>()
+            arguments.PushFront($self.parseTypeSyntax(
+                    "FDN1082", "expected slice element type"))
+            discard self.expectToken(
+                .RightBracket, "FDN1083", "expected ] after slice element type")
+            discard code
+            discard message
+            return typeSyntax {
+                name = "[slice]"
+                arguments = arguments
+                span = start.span
+                arrayLength = 0
+            }
+        }
+        const name = self.qualifiedName($code, $message, false)
+        var arguments = collections.NewList<typeSyntax>()
+        if self.matchToken(.Less) {
+            var more = true
+            while more {
+                arguments.PushFront($self.parseTypeSyntax(
+                        "FDN1063", "expected type argument"))
+                more = self.matchToken(.Comma)
+            }
+            discard self.expectToken(
+                .Greater, "FDN1064", "expected > after type arguments")
+        }
+        typeSyntax {
+            name = text.Copy(name.name)
+            arguments = reverseList($arguments)
+            span = name.span
+            arrayLength = 0
+        }
+    }
+
+    fn startsGenericPrimary(&self) bool {
+        const scanned = self.scanTypeArgumentsLookahead(
+            self.current, self.current, 0)
+        if !scanned.matched || scanned.next >= self.tokens.len() return false
+        const close = self.tokens.snapshot(scanned.closing)
+        const next = self.tokens.snapshot(scanned.next)
+        const continues = next.span.line == close.span.line
+        if continues && (sameTokenKind(next.kind, .Dot) ||
+            sameTokenKind(next.kind, .LeftBrace) ||
+            sameTokenKind(next.kind, .LeftParen)) {
+            return true
+        }
+        if sameTokenKind(next.kind, .Eof) || !continues return true
+        sameTokenKind(next.kind, .Comma) || sameTokenKind(next.kind, .RightParen) ||
+            sameTokenKind(next.kind, .RightBracket) ||
+            sameTokenKind(next.kind, .RightBrace)
+    }
+
+    fn scanTypeArgumentsLookahead(
+        &self,
+        start u64,
+        position u64,
+        depth u64
+    ) typeLookaheadResult {
+        if depth >= 128 || !self.lookaheadCheck(start, position, .Less) {
+            return failedTypeLookahead(position)
+        }
+        var current = position + 1
+        var scanned = self.scanTypeLookahead(start, current, depth + 1)
+        if !scanned.matched return scanned
+        current = scanned.next
+        while self.lookaheadCheck(start, current, .Comma) {
+            scanned = self.scanTypeLookahead(start, current + 1, depth + 1)
+            if !scanned.matched return scanned
+            current = scanned.next
+        }
+        if !self.lookaheadCheck(start, current, .Greater) {
+            return failedTypeLookahead(current)
+        }
+        typeLookaheadResult {
+            matched = true
+            next = current + 1
+            closing = current
+        }
+    }
+
+    fn scanTypeLookahead(
+        &self,
+        start u64,
+        position u64,
+        depth u64
+    ) typeLookaheadResult {
+        if depth >= 128 || !self.lookaheadWithinBudget(start, position) {
+            return failedTypeLookahead(position)
+        }
+        var current = position
+        const first = self.tokens.snapshot(current)
+        if sameTokenKind(first.kind, .Own) || sameTokenKind(first.kind, .View) ||
+            sameTokenKind(first.kind, .Edit) {
+            return self.scanTypeLookahead(start, current + 1, depth + 1)
+        }
+        if sameTokenKind(first.kind, .Star) {
+            current += 1
+            if self.lookaheadCheck(start, current, .Const) {
+                current += 1
+            }
+            return self.scanTypeLookahead(start, current, depth + 1)
+        }
+        var functionType = sameTokenKind(first.kind, .Fn)
+        if functionType {
+            current += 1
+        }
+        if !functionType && sameTokenKind(first.kind, .Extern) &&
+            self.lookaheadCheck(start, current + 1, .Identifier) &&
+            self.tokens.snapshot(current + 1).text == "c" &&
+            self.lookaheadCheck(start, current + 2, .Fn) {
+            functionType = true
+            current += 3
+        }
+        if !functionType && sameTokenKind(first.kind, .Identifier) &&
+            first.text == "transferable" &&
+            self.lookaheadCheck(start, current + 1, .Fn) {
+            functionType = true
+            current += 2
+        }
+        if functionType {
+            if !self.lookaheadCheck(start, current, .LeftParen) {
+                return failedTypeLookahead(current)
+            }
+            current += 1
+            if !self.lookaheadCheck(start, current, .RightParen) {
+                if self.lookaheadCheck(start, current, .Ampersand) ||
+                    self.lookaheadCheck(start, current, .Dollar) {
+                    current += 1
+                }
+                var parameter = self.scanTypeLookahead(start, current, depth + 1)
+                if !parameter.matched return parameter
+                current = parameter.next
+                while self.lookaheadCheck(start, current, .Comma) {
+                    current += 1
+                    if self.lookaheadCheck(start, current, .Ampersand) ||
+                        self.lookaheadCheck(start, current, .Dollar) {
+                        current += 1
+                    }
+                    parameter = self.scanTypeLookahead(start, current, depth + 1)
+                    if !parameter.matched return parameter
+                    current = parameter.next
+                }
+            }
+            if !self.lookaheadCheck(start, current, .RightParen) {
+                return failedTypeLookahead(current)
+            }
+            return self.scanTypeLookahead(start, current + 1, depth + 1)
+        }
+        if sameTokenKind(first.kind, .LeftBracket) {
+            current += 1
+            if self.lookaheadCheck(start, current, .Minus) {
+                current += 1
+                if !self.lookaheadCheck(start, current, .Integer) ||
+                    !self.lookaheadCheck(start, current + 1, .RightBracket) {
+                    return failedTypeLookahead(current)
+                }
+                return self.scanTypeLookahead(start, current + 2, depth + 1)
+            }
+            if self.lookaheadCheck(start, current, .Integer) {
+                if !self.lookaheadCheck(start, current + 1, .RightBracket) {
+                    return failedTypeLookahead(current)
+                }
+                return self.scanTypeLookahead(start, current + 2, depth + 1)
+            }
+            var element = self.scanTypeLookahead(start, current, depth + 1)
+            if !element.matched ||
+                !self.lookaheadCheck(start, element.next, .RightBracket) {
+                return failedTypeLookahead(element.next)
+            }
+            return matchedTypeLookahead(element.next + 1)
+        }
+        if !sameTokenKind(first.kind, .Identifier) {
+            return failedTypeLookahead(current)
+        }
+        current += 1
+        while self.lookaheadCheck(start, current, .Dot) {
+            current += 1
+            if !self.lookaheadCheck(start, current, .Identifier) {
+                return failedTypeLookahead(current)
+            }
+            current += 1
+        }
+        if self.lookaheadCheck(start, current, .Less) {
+            return self.scanTypeArgumentsLookahead(start, current, depth)
+        }
+        matchedTypeLookahead(current)
+    }
+
+    fn lookaheadWithinBudget(&self, start u64, position u64) bool {
+        position < self.tokens.len() && position >= start &&
+            position - start < 4096
+    }
+
+    fn lookaheadCheck(
+        &self,
+        start u64,
+        position u64,
+        kind tokenKind
+    ) bool {
+        self.lookaheadWithinBudget(start, position) &&
+            sameTokenKind(self.tokens.snapshot(position).kind, kind)
+    }
+}
+
+struct parsedUnsigned {
+    value u64
+    valid bool
+}
+
+fn parseUnsigned($value String) parsedUnsigned {
+    const parsed = parse.U64(value) else error {
+        discard error
+        return parsedUnsigned { value = 0 valid = false }
+    }
+    parsedUnsigned { value = parsed valid = true }
+}
+
+fn validFloating($value String) bool {
+    const parsed = parse.F64(value) else error {
+        discard error
+        return false
+    }
+    discard parsed
+    true
+}
+
+fn failedTypeLookahead(position u64) typeLookaheadResult {
+    typeLookaheadResult { matched = false next = position closing = position }
+}
+
+fn matchedTypeLookahead(position u64) typeLookaheadResult {
+    typeLookaheadResult { matched = true next = position closing = position }
+}

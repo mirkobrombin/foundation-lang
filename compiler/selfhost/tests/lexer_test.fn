@@ -97,7 +97,7 @@ test "lexer classifies every keyword" {
 
 test "lexer recognizes punctuation and compound operators" {
     const source = "(){}[],:. = == ! != + += - -= * *= / /= % %= " +
-        "< <= > >= && || @ & $"
+        "< <= > >= && || @ & | ^ ~ $"
     const scanResult {
         tokens as scanned
         diagnostics as diagnostics
@@ -135,6 +135,9 @@ test "lexer recognizes punctuation and compound operators" {
     expectKind(&tokens, .OrOr)
     expectKind(&tokens, .At)
     expectKind(&tokens, .Ampersand)
+    expectKind(&tokens, .Pipe)
+    expectKind(&tokens, .Caret)
+    expectKind(&tokens, .Tilde)
     expectKind(&tokens, .Dollar)
     expectKind(&tokens, .Eof)
     expect(!diagnostics.hasErrors())
@@ -194,7 +197,7 @@ test "lexer tracks nested comments and safety proofs" {
 }
 
 test "lexer reports malformed input in source order" {
-    const source = "\"bad\\q\" | /*"
+    const source = "\"bad\\q\" ? /*"
     const scanResult {
         tokens as scanned
         diagnostics as found

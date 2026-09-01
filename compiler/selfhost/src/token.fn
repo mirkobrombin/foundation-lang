@@ -84,6 +84,9 @@ enum tokenKind {
     OrOr
     At
     Ampersand
+    Pipe
+    Caret
+    Tilde
     Dollar
 }
 
@@ -179,6 +182,9 @@ fn tokenName(kind tokenKind) String {
         OrOr: "||"
         At: "@"
         Ampersand: "&"
+        Pipe: "|"
+        Caret: "^"
+        Tilde: "~"
         Dollar: "$"
     }
 }
@@ -268,6 +274,13 @@ fn tokenCode(kind tokenKind) i32 {
         OrOr: 80
         At: 81
         Ampersand: 82
-        Dollar: 83
+        Pipe: 83
+        Caret: 84
+        Tilde: 85
+        Dollar: 86
     }
+}
+
+fn sameTokenKind(left tokenKind, right tokenKind) bool {
+    tokenCode(left) == tokenCode(right)
 }

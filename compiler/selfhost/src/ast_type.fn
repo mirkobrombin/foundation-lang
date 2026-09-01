@@ -1,0 +1,113 @@
+package foundation.compiler
+
+import std.collections
+
+struct typeSyntax {
+    name String
+    arguments own collections.List<typeSyntax>
+    span sourceSpan
+    arrayLength u64
+}
+
+enum attributeTarget {
+    Function
+    Struct
+    Service
+    Enum
+    Contract
+    Method
+    Constructor
+    Action
+    Field
+    Variant
+    Parameter
+}
+
+struct attributeArgument {
+    name Option<String>
+    value u64
+    span sourceSpan
+}
+
+struct attributeApplication {
+    name String
+    arguments own collections.List<attributeArgument>
+    span sourceSpan
+    parenthesized bool
+}
+
+enum unaryOperator {
+    Negate
+    Not
+    BitwiseNot
+    Dereference
+}
+
+enum ownershipOperator {
+    Own
+    View
+    Edit
+    Transfer
+    New
+}
+
+enum parameterMode {
+    TypeEncoded
+    Read
+    Edit
+    Transfer
+}
+
+enum captureMode {
+    Copy
+    Own
+    View
+    Edit
+}
+
+enum receiverKind {
+    View
+    Edit
+    Own
+}
+
+enum binaryOperator {
+    Add
+    Subtract
+    Multiply
+    Divide
+    Remainder
+    ShiftLeft
+    ShiftRight
+    BitwiseAnd
+    BitwiseXor
+    BitwiseOr
+    Equal
+    NotEqual
+    Less
+    LessEqual
+    Greater
+    GreaterEqual
+    And
+    Or
+}
+
+enum assignmentOperator {
+    Assign
+    Add
+    Subtract
+    Multiply
+    Divide
+    Remainder
+    ShiftLeft
+    ShiftRight
+}
+
+fn emptyType(span sourceSpan) typeSyntax {
+    typeSyntax {
+        name = "void"
+        arguments = collections.NewList<typeSyntax>()
+        span = span
+        arrayLength = 0
+    }
+}

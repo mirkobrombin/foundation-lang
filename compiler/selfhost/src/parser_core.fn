@@ -1,0 +1,488 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+struct parsedAttributes {
+    selected bool
+    applications own collections.List<attributeApplication>
+}
+
+enum memberKind {
+    Method
+    Constructor
+    Action
+}
+
+struct parseResult {
+    program own program
+    diagnostics own diagnostics
+}
+
+struct genericContext {
+    names own collections.List<String>
+    transferable own collections.List<bool>
+    constraints own collections.List<Option<typeSyntax>>
+}
+
+struct parser {
+    tokens own tokenBuffer
+    diagnostics own diagnostics
+    program own program
+    current u64
+    blockDepth u64
+    expressionDepth u64
+    expressionCalls u64
+    expressionNodes u64
+    typeDepth u64
+    activeTypeParameters own collections.List<String>
+    activeTransferableTypeParameters own collections.List<bool>
+    activeTypeParameterConstraints own collections.List<Option<typeSyntax>>
+    expressionLimitReported bool
+    structLiteralsAllowed bool
+    installBuiltinTypes bool
+    target targetPlatform
+}
+
+fn parse(
+    $tokens own collections.List<token>,
+    $diagnostics own diagnostics,
+    installBuiltins bool,
+    target targetPlatform
+) own parseResult {
+    var state = own parser {
+        tokens = newTokenBuffer($tokens)
+        diagnostics = diagnostics
+        program = newProgram()
+        current = 0
+        blockDepth = 0
+        expressionDepth = 0
+        expressionCalls = 0
+        expressionNodes = 0
+        typeDepth = 0
+        activeTypeParameters = collections.NewList<String>()
+        activeTransferableTypeParameters = collections.NewList<bool>()
+        activeTypeParameterConstraints = collections.NewList<Option<typeSyntax>>()
+        expressionLimitReported = false
+        structLiteralsAllowed = true
+        installBuiltinTypes = installBuiltins
+        target = target
+    }
+    state.parseProgram()
+    const parsed = replace state.program with newProgram()
+    const found = replace state.diagnostics with newDiagnostics()
+    own parseResult { program = parsed diagnostics = found }
+}
+
+fn parseSource($source String, sourceID u64) own parseResult {
+    const scanResult { tokens diagnostics } = scan($source, sourceID)
+    parse($tokens, $diagnostics, true, hostTargetPlatform())
+}
+
+methods parser {
+    fn activateGenericContext(
+        &self,
+        &parameters parsedTypeParameters
+    ) genericContext {
+        const previous = genericContext {
+            names = replace self.activeTypeParameters with
+            collections.NewList<String>()
+            transferable = replace self.activeTransferableTypeParameters with
+            collections.NewList<bool>()
+            constraints = replace self.activeTypeParameterConstraints with
+            collections.NewList<Option<typeSyntax>>()
+        }
+        self.activeTypeParameters = copyStringList(&parameters.names)
+        self.activeTransferableTypeParameters = copyBoolList(&parameters.transferable)
+        self.activeTypeParameterConstraints = copyOptionalTypeList(&parameters.constraints)
+        previous
+    }
+
+    fn restoreGenericContext(
+        &self,
+        $previous genericContext
+    ) void {
+        const genericContext { names transferable constraints } = previous
+        discard replace self.activeTypeParameters with names
+        discard replace self.activeTransferableTypeParameters with transferable
+        discard replace self.activeTypeParameterConstraints with constraints
+    }
+
+    fn atEnd(&self) bool {
+        self.check(.Eof)
+    }
+
+    fn currentToken(&self) tokenSnapshot {
+        self.tokens.snapshot(self.current)
+    }
+
+    fn previousToken(&self) tokenSnapshot {
+        if self.current == 0 return self.currentToken()
+        self.tokens.snapshot(self.current - 1)
+    }
+
+    fn peekToken(&self, distance u64) tokenSnapshot {
+        const index = self.current + distance
+        if index < self.tokens.len() return self.tokens.snapshot(index)
+        self.tokens.snapshot(self.tokens.len() - 1)
+    }
+
+    fn advance(&self) tokenSnapshot {
+        if !self.atEnd() {
+            self.current += 1
+        }
+        self.previousToken()
+    }
+
+    fn check(&self, kind tokenKind) bool {
+        const current = self.currentToken()
+        tokenCode(current.kind) == tokenCode(kind)
+    }
+
+    fn matchToken(&self, kind tokenKind) bool {
+        if !self.check(kind) return false
+        discard self.advance()
+        true
+    }
+
+    fn expectToken(
+        &self,
+        kind tokenKind,
+        $code String,
+        $message String
+    ) tokenSnapshot {
+        if self.check(kind) return self.advance()
+        const current = self.currentToken()
+        self.diagnostics.reportError($code, $message, current.span)
+        current
+    }
+
+    fn continuesLine(&self) bool {
+        if self.current == 0 return false
+        self.currentToken().span.line == self.previousToken().span.line
+    }
+
+    fn parseProgram(&self) void {
+        if self.installBuiltinTypes {
+            self.installBuiltins()
+        }
+        if self.matchToken(.Package) {
+            const name = self.qualifiedName(
+                "FDN1090", "expected package name after package", true)
+            self.program.packageName = text.Copy(name.name)
+            self.program.hasPackageDeclaration = true
+            if text.ByteLen(self.program.packageName) == 0 {
+                self.diagnostics.reportError(
+                    "FDN1090", "package name cannot be empty", name.span)
+            }
+        }
+        while self.matchToken(.Import) {
+            const name = self.qualifiedName(
+                "FDN1091", "expected package name after import", true)
+            const finalKind = self.previousToken().kind
+            var alias = ""
+            var aliased = false
+            if self.matchToken(.As) {
+                aliased = true
+                const aliasToken = self.expectToken(
+                    .Identifier,
+                    "FDN1092",
+                    "expected import alias after as"
+                )
+                alias = text.Copy(aliasToken.text)
+            }
+            if !aliased && tokenCode(finalKind) != tokenCode(.Identifier) &&
+                tokenCode(finalKind) != tokenCode(.Test) {
+                self.diagnostics.reportError(
+                    "FDN1093",
+                    "an import ending in a keyword requires an explicit alias",
+                    self.previousToken().span
+                )
+            }
+            discard self.program.imports.add($importDeclaration {
+                packageName = text.Copy(name.name)
+                alias = alias
+                span = name.span
+            })
+        }
+        while !self.atEnd() {
+            const expressionCount = self.program.expressions.len()
+            const statementCount = self.program.statements.len()
+            const blockCount = self.program.blocks.len()
+            const functionCount = self.program.functions.len()
+            const parsedAttributes {
+                selected as declarationSelected
+                applications as parsedApplications
+            } = self.parseAttributes(true)
+            var declarationAttributes = parsedApplications
+            if self.check(.Struct) || self.check(.Service) {
+                const isService = self.check(.Service)
+                var declaration = self.parseStructDeclaration(isService)
+                declaration.attributes = declarationAttributes
+                if declarationSelected {
+                    discard self.program.structs.add($declaration)
+                } else {
+                    discard declaration
+                    self.restoreProgram(
+                        expressionCount, statementCount, blockCount, functionCount)
+                }
+                continue
+            }
+            if self.check(.Methods) {
+                if !declarationAttributes.IsEmpty() {
+                    self.diagnostics.reportError(
+                        "FDN1160",
+                        "methods block cannot be attributed",
+                        self.currentToken().span
+                    )
+                }
+                discard declarationAttributes
+                self.parseMethodsDeclaration()
+                if !declarationSelected {
+                    self.restoreProgram(
+                        expressionCount, statementCount, blockCount, functionCount)
+                }
+                continue
+            }
+            if self.check(.Enum) {
+                var declaration = self.parseEnumDeclaration()
+                declaration.attributes = declarationAttributes
+                if declarationSelected {
+                    discard self.program.enums.add($declaration)
+                } else {
+                    discard declaration
+                    self.restoreProgram(
+                        expressionCount, statementCount, blockCount, functionCount)
+                }
+                continue
+            }
+            if self.check(.StateMachine) {
+                const enumCount = self.program.enums.len()
+                self.parseStateMachineDeclaration()
+                if declarationSelected {
+                    if self.program.enums.len() > enumCount {
+                        const selected = self.program.enums.take(enumCount)
+                        var declaration = match selected {
+                            None: panic("state machine enum slot is empty")
+                            Some(declaration): declaration
+                        }
+                        declaration.attributes = declarationAttributes
+                        self.program.enums.restore(enumCount, $declaration)
+                    } else {
+                        discard declarationAttributes
+                    }
+                } else {
+                    discard declarationAttributes
+                    self.restoreProgram(
+                        expressionCount, statementCount, blockCount, functionCount)
+                    self.program.enums.truncate(enumCount)
+                }
+                continue
+            }
+            if self.check(.Pipeline) || self.check(.Saga) {
+                const kind workflowKind = .Pipeline if self.check(.Pipeline) else .Saga
+                const structCount = self.program.structs.len()
+                const enumCount = self.program.enums.len()
+                self.parseWorkflowDeclaration(kind)
+                if declarationSelected {
+                    if self.program.functions.len() > functionCount {
+                        const selected = self.program.functions.take(functionCount)
+                        var declaration = match selected {
+                            None: panic("workflow function slot is empty")
+                            Some(declaration): declaration
+                        }
+                        declaration.attributes = declarationAttributes
+                        self.program.functions.restore(functionCount, $declaration)
+                    } else {
+                        discard declarationAttributes
+                    }
+                } else {
+                    discard declarationAttributes
+                    self.restoreProgram(
+                        expressionCount, statementCount, blockCount, functionCount)
+                    self.program.structs.truncate(structCount)
+                    self.program.enums.truncate(enumCount)
+                }
+                continue
+            }
+            if self.check(.Contract) {
+                var declaration = self.parseContractDeclaration()
+                declaration.attributes = declarationAttributes
+                if declarationSelected {
+                    discard self.program.contracts.add($declaration)
+                } else {
+                    discard declaration
+                    self.restoreProgram(
+                        expressionCount, statementCount, blockCount, functionCount)
+                }
+                continue
+            }
+            if self.check(.Attribute) {
+                if !declarationAttributes.IsEmpty() {
+                    self.diagnostics.reportError(
+                        "FDN1159",
+                        "attribute declaration cannot be attributed",
+                        self.currentToken().span
+                    )
+                }
+                const declaration = self.parseAttributeDeclaration()
+                if declarationSelected {
+                    discard declarationAttributes
+                    discard self.program.attributeDeclarations.add($declaration)
+                } else {
+                    discard declarationAttributes
+                    discard declaration
+                    self.restoreProgram(
+                        expressionCount, statementCount, blockCount, functionCount)
+                }
+                continue
+            }
+            if self.check(.Fn) || self.check(.Task) || self.check(.Extern) {
+                const external = self.check(.Extern)
+                const taskFunction = self.check(.Task)
+                var declaration = self.parseFunction(external, taskFunction)
+                declaration.blocking = hasNamedAttribute(
+                    &declarationAttributes, "blocking")
+                declaration.callback = hasNamedAttribute(
+                    &declarationAttributes, "callback")
+                declaration.attributes = declarationAttributes
+                if declarationSelected {
+                    discard self.program.functions.add($declaration)
+                } else {
+                    discard declaration
+                    self.restoreProgram(
+                        expressionCount, statementCount, blockCount, functionCount)
+                }
+                continue
+            }
+            if self.check(.Test) ||
+                self.check(.Identifier) && self.currentToken().text == "test" {
+                var declaration = self.parseTestDeclaration()
+                declaration.attributes = declarationAttributes
+                if declarationSelected {
+                    discard self.program.functions.add($declaration)
+                } else {
+                    discard declaration
+                    self.restoreProgram(
+                        expressionCount, statementCount, blockCount, functionCount)
+                }
+                continue
+            }
+            if self.check(.Ctor) {
+                discard declarationAttributes
+                const current = self.currentToken()
+                self.diagnostics.reportError(
+                    "FDN1242",
+                    "constructor must be declared inside a struct, service, or methods block",
+                    current.span
+                )
+                self.discardConstructor("$invalid")
+                self.restoreProgram(
+                    expressionCount, statementCount, blockCount, functionCount)
+                continue
+            }
+            discard declarationAttributes
+            const current = self.currentToken()
+            self.diagnostics.reportError(
+                "FDN1001", "expected type or function declaration", current.span)
+            discard self.advance()
+        }
+    }
+
+    fn restoreProgram(
+        &self,
+        expressions u64,
+        statements u64,
+        blocks u64,
+        functions u64
+    ) void {
+        self.program.expressions.truncate(expressions)
+        self.program.statements.truncate(statements)
+        self.program.blocks.truncate(blocks)
+        self.program.functions.truncate(functions)
+    }
+
+    fn qualifiedName(
+        &self,
+        $code String,
+        $message String,
+        allowKeywordSegments bool
+    ) qualifiedNameResult {
+        const first = self.nameSegment(
+            text.Copy(code), text.Copy(message), allowKeywordSegments)
+        var name = text.Copy(first.text)
+        const span = first.span
+        while self.matchToken(.Dot) {
+            if self.currentToken().span.line != self.previousToken().span.line {
+                self.diagnostics.reportError(
+                    text.Copy(code), text.Copy(message), self.currentToken().span)
+                break
+            }
+            const segment = self.nameSegment(
+                text.Copy(code), text.Copy(message), allowKeywordSegments)
+            name = name + "." + segment.text
+        }
+        discard code
+        discard message
+        qualifiedNameResult { name = name span = span }
+    }
+
+    fn nameSegment(
+        &self,
+        $code String,
+        $message String,
+        allowKeywordSegments bool
+    ) tokenSnapshot {
+        const current = self.currentToken()
+        const allowed = self.check(.Identifier) || self.check(.Test) ||
+            allowKeywordSegments && identifierShaped(current.text)
+        if allowed {
+            discard code
+            discard message
+            return self.advance()
+        }
+        self.expectToken(.Identifier, $code, $message)
+    }
+}
+
+struct qualifiedNameResult {
+    name String
+    span sourceSpan
+}
+
+fn identifierShaped(value String) bool {
+    const length = text.ByteLen(value)
+    if length == 0 return false
+    const first = text.ByteAt(value, 0) else error {
+        discard error
+        return false
+    }
+    if !identifierStart(first) return false
+    var offset u64 = 1
+    while offset < length {
+        const current = text.ByteAt(value, offset) else error {
+            discard error
+            return false
+        }
+        if !identifierPart(current) return false
+        offset += 1
+    }
+    true
+}
+
+fn identifierStart(value u64) bool {
+    value >= 65 && value <= 90 || value >= 97 && value <= 122 || value == 95
+}
+
+fn identifierPart(value u64) bool {
+    identifierStart(value) || value >= 48 && value <= 57
+}
+
+fn isExportedName(value String) bool {
+    if text.ByteLen(value) == 0 return false
+    const first = text.ByteAt(value, 0) else error {
+        discard error
+        return false
+    }
+    first >= 65 && first <= 90
+}

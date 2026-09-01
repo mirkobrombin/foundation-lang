@@ -1,0 +1,761 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+struct inspectedStatement {
+    value statementValue
+    expression Option<u64>
+}
+
+struct tailBlockLookahead {
+    matched bool
+    next u64
+    hasValue bool
+}
+
+methods parser {
+    fn parseBlock(&self, tailResult bool) u64 {
+        const start = self.expectToken(.LeftBrace, "FDN1008", "expected { before block")
+        const parsedBlockContents { statements as parsedStatements } =
+            self.parseBlockContents(start, tailResult)
+        var statements = parsedStatements
+        if tailResult {
+            self.convertTailStatement(&statements)
+        }
+        self.addBlock(reverseList($statements), start.span)
+    }
+
+    fn parseBlockContents(
+        &self,
+        start tokenSnapshot,
+        tailResult bool
+    ) parsedBlockContents {
+        if self.blockDepth >= 128 {
+            self.diagnostics.reportError(
+                "FDN1030", "block nesting exceeds 128 levels", start.span)
+            const block = self.skipNestedBlock(start.span)
+            discard block
+            return parsedBlockContents { statements = collections.NewList<u64>() }
+        }
+        self.blockDepth += 1
+        var statements = collections.NewList<u64>()
+        while !self.check(.RightBrace) && !self.atEnd() {
+            if tailResult && self.startsTailIfExpression() {
+                const conditionalStart = self.advance()
+                const conditionalSpan = conditionalStart.span
+                const value = self.parseIfExpression($conditionalStart)
+                statements.PushFront($self.addStatement(.Expression(
+                            expressionStatement { expression = value }), conditionalSpan))
+                continue
+            }
+            statements.PushFront($self.parseStatement())
+        }
+        discard self.expectToken(.RightBrace, "FDN1009", "expected } after block")
+        self.blockDepth -= 1
+        parsedBlockContents { statements = statements }
+    }
+
+    fn parseStatement(&self) u64 {
+        if self.check(.Let) || self.check(.Const) {
+            const declaration = self.advance()
+            if sameTokenKind(declaration.kind, .Let) {
+                self.diagnostics.reportError(
+                    "FDN1184", "let was removed; use const", declaration.span)
+            }
+            if self.startsStructPattern() {
+                return self.parseStructDestructureStatement(declaration)
+            }
+            return self.parseVariableStatement(declaration, false)
+        }
+        if self.matchToken(.Var) {
+            const declaration = self.previousToken()
+            if self.startsStructPattern() {
+                self.diagnostics.reportError(
+                    "FDN1130",
+                    "struct destructuring requires an immutable binding",
+                    declaration.span
+                )
+                return self.parseStructDestructureStatement(declaration)
+            }
+            return self.parseVariableStatement(declaration, true)
+        }
+        if self.matchToken(.Return) return self.parseReturnStatement(self.previousToken())
+        if self.matchToken(.Discard) return self.parseDiscardStatement(self.previousToken())
+        if self.matchToken(.If) return self.parseIfStatement(self.previousToken())
+        if self.matchToken(.While) return self.parseWhileStatement(self.previousToken())
+        if self.matchToken(.For) return self.parseForStatement(self.previousToken())
+        if self.matchToken(.Break) return self.parseLoopJump(self.previousToken(), false)
+        if self.matchToken(.Continue) return self.parseLoopJump(self.previousToken(), true)
+        if self.matchToken(.Select) return self.parseSelectStatement(self.previousToken())
+        if self.matchToken(.Unsafe) return self.parseUnsafeStatement(self.previousToken())
+        self.parseExpressionStatement()
+    }
+
+    fn parseUnsafeStatement(&self, start tokenSnapshot) u64 {
+        self.addStatement(.UnsafeValue(unsafeStatement {
+            body = self.parseBlock(false)
+            safetyProof = start.leadingSafetyProof
+        }), start.span)
+    }
+
+    fn parseStructDestructureStatement(&self, start tokenSnapshot) u64 {
+        const name = self.qualifiedName(
+            "FDN1131", "expected struct pattern type", false)
+        discard self.expectToken(
+            .LeftBrace, "FDN1132", "expected { after struct pattern type")
+        var fields = collections.NewList<structPatternField>()
+        while !self.check(.RightBrace) && !self.atEnd() {
+            if !self.check(.Identifier) {
+                self.diagnostics.reportError(
+                    "FDN1133", "expected field in struct pattern", self.currentToken().span)
+                discard self.advance()
+            } else {
+                const field = self.advance()
+                var binding = text.Copy(field.text)
+                if self.matchToken(.As) {
+                    const alias = self.expectToken(
+                        .Identifier, "FDN1134", "expected binding after as")
+                    binding = text.Copy(alias.text)
+                }
+                fields.PushFront($structPatternField {
+                    field = text.Copy(field.text)
+                    binding = binding
+                    span = field.span
+                })
+                discard self.matchToken(.Comma)
+            }
+        }
+        discard self.expectToken(
+            .RightBrace, "FDN1135", "expected } after struct pattern")
+        discard self.expectToken(
+            .Equal, "FDN1136", "expected = before destructuring initializer")
+        self.addStatement(.StructDestructure(structDestructureStatement {
+            type = typeSyntax {
+                name = text.Copy(name.name)
+                arguments = collections.NewList<typeSyntax>()
+                span = name.span
+                arrayLength = 0
+            }
+            fields = reverseList($fields)
+            initializer = self.parseExpression()
+        }), start.span)
+    }
+
+    fn parseVariableStatement(
+        &self,
+        start tokenSnapshot,
+        mutableBinding bool
+    ) u64 {
+        const name = self.expectToken(
+            .Identifier, "FDN1018", "expected binding name")
+        var type Option<typeSyntax> = .None
+        if !self.check(.Equal) {
+            type = .Some(self.parseTypeSyntax("FDN1019", "expected binding type"))
+        }
+        discard self.expectToken(
+            .Equal, "FDN1020", "expected = before binding initializer")
+        const initializer = self.parseExpression()
+        var elseBinding Option<String> = .None
+        var elseBlock Option<u64> = .None
+        if self.matchToken(.Else) {
+            if mutableBinding {
+                self.diagnostics.reportError(
+                    "FDN1067", "var binding cannot use else", start.span)
+            }
+            if self.check(.Identifier) {
+                const binding = self.advance()
+                elseBinding = .Some(text.Copy(binding.text))
+            }
+            if !self.check(.Identifier) && !self.check(.LeftBrace) {
+                self.diagnostics.reportError(
+                    "FDN1066",
+                    "expected error binding or { after else",
+                    self.currentToken().span
+                )
+            }
+            elseBlock = .Some(self.parseBlock(false))
+        }
+        self.addStatement(.Variable(variableStatement {
+            mutableBinding = mutableBinding
+            name = text.Copy(name.text)
+            type = type
+            initializer = initializer
+            elseBinding = elseBinding
+            elseBlock = elseBlock
+        }), start.span)
+    }
+
+    fn parseReturnStatement(&self, start tokenSnapshot) u64 {
+        var value Option<u64> = .None
+        if !self.check(.RightBrace) && !self.atEnd() &&
+            self.currentToken().span.line == start.span.line {
+            value = .Some(self.parseExpression())
+        }
+        self.addStatement(.ReturnValue(returnStatement {
+            value = value
+            tail = false
+        }), start.span)
+    }
+
+    fn parseDiscardStatement(&self, start tokenSnapshot) u64 {
+        self.addStatement(.DiscardValue(discardStatement {
+            value = self.parseExpression()
+        }), start.span)
+    }
+
+    fn parseIfStatement(&self, start tokenSnapshot) u64 {
+        const allowed = self.structLiteralsAllowed
+        self.structLiteralsAllowed = false
+        const condition = self.parseExpression()
+        self.structLiteralsAllowed = allowed
+        if !self.check(.LeftBrace) {
+            const sameLine = self.currentToken().span.line == start.span.line
+            const jump = self.check(.Return) || self.check(.Break) ||
+                self.check(.Continue)
+            if !sameLine || !jump {
+                self.diagnostics.reportError(
+                    "FDN1173",
+                    "short if requires return, break, or continue on the same line",
+                    self.currentToken().span
+                )
+            }
+            var guarded u64 = 0
+            var guardedFound = false
+            if self.matchToken(.Break) {
+                guarded = self.parseLoopJump(self.previousToken(), false)
+                guardedFound = true
+            }
+            if !guardedFound && self.matchToken(.Continue) {
+                guarded = self.parseLoopJump(self.previousToken(), true)
+                guardedFound = true
+            }
+            if !guardedFound {
+                const returned = self.expectToken(
+                    .Return,
+                    "FDN1173",
+                    "short if requires return, break, or continue on the same line"
+                )
+                guarded = self.parseReturnStatement(returned)
+            }
+            var statements = collections.NewList<u64>()
+            statements.PushFront($guarded)
+            const body = self.addBlock($statements, start.span)
+            return self.addStatement(.IfValue(ifStatement {
+                condition = condition
+                thenBlock = body
+                elseBlock = .None
+            }), start.span)
+        }
+        const thenBlock = self.parseBlock(false)
+        var elseBlock Option<u64> = .None
+        if self.matchToken(.Else) {
+            elseBlock = .Some(self.parseBlock(false))
+        }
+        self.addStatement(.IfValue(ifStatement {
+            condition = condition
+            thenBlock = thenBlock
+            elseBlock = elseBlock
+        }), start.span)
+    }
+
+    fn parseWhileStatement(&self, start tokenSnapshot) u64 {
+        const allowed = self.structLiteralsAllowed
+        self.structLiteralsAllowed = false
+        const condition = self.parseExpression()
+        self.structLiteralsAllowed = allowed
+        self.addStatement(.WhileValue(whileStatement {
+            condition = condition
+            body = self.parseBlock(false)
+        }), start.span)
+    }
+
+    fn parseForStatement(&self, start tokenSnapshot) u64 {
+        var editable = self.matchToken(.Ampersand)
+        const first = self.expectToken(
+            .Identifier, "FDN1180", "expected loop binding after for")
+        var indexBinding Option<String> = .None
+        var valueBinding = text.Copy(first.text)
+        if self.matchToken(.Comma) {
+            if editable {
+                self.diagnostics.reportError(
+                    "FDN1181", "loop index cannot be editable", first.span)
+            }
+            indexBinding = .Some(text.Copy(first.text))
+            editable = self.matchToken(.Ampersand)
+            const value = self.expectToken(
+                .Identifier,
+                "FDN1182",
+                "expected value binding after comma"
+            )
+            valueBinding = text.Copy(value.text)
+        }
+        discard self.expectToken(
+            .In, "FDN1183", "expected in after loop binding")
+        const allowed = self.structLiteralsAllowed
+        self.structLiteralsAllowed = false
+        const sequence = self.parseExpression()
+        self.structLiteralsAllowed = allowed
+        self.addStatement(.ForValue(forStatement {
+            indexBinding = indexBinding
+            valueBinding = valueBinding
+            editable = editable
+            sequence = sequence
+            body = self.parseBlock(false)
+        }), start.span)
+    }
+
+    fn parseLoopJump(
+        &self,
+        start tokenSnapshot,
+        continues bool
+    ) u64 {
+        if !self.check(.RightBrace) && !self.atEnd() &&
+            self.currentToken().span.line == start.span.line {
+            self.diagnostics.reportError(
+                "FDN1179",
+                "continue does not accept a value" if continues else
+                "break does not accept a value",
+                self.currentToken().span
+            )
+        }
+        if continues {
+            return self.addStatement(.ContinueValue, start.span)
+        }
+        self.addStatement(.BreakValue, start.span)
+    }
+
+    fn parseSelectArmBlock(&self) u64 {
+        if self.check(.LeftBrace) return self.parseBlock(false)
+        const span = self.currentToken().span
+        var statements = collections.NewList<u64>()
+        statements.PushFront($self.parseStatement())
+        self.addBlock($statements, span)
+    }
+
+    fn parseSelectStatement(&self, start tokenSnapshot) u64 {
+        discard self.expectToken(.LeftBrace, "FDN1140", "expected { after select")
+        var operations = collections.NewList<selectOperationArm>()
+        var timeoutRule Option<selectTimeoutArm> = .None
+        var errorBinding Option<String> = .None
+        var errorBlock Option<u64> = .None
+        while !self.check(.RightBrace) && !self.atEnd() {
+            if self.matchToken(.Timeout) {
+                const timeoutToken = self.previousToken()
+                var nanoseconds u64 = 0
+                var duration Option<u64> = .None
+                if self.check(.Integer) &&
+                    sameTokenKind(self.peekToken(1).kind, .Dot) &&
+                    sameTokenKind(self.peekToken(2).kind, .Identifier) {
+                    const amount = self.advance()
+                    discard self.advance()
+                    const unit = self.advance()
+                    const parsedMagnitude = parseUnsigned(text.Copy(amount.text))
+                    if !parsedMagnitude.valid {
+                        self.diagnostics.reportError(
+                            "FDN1016",
+                            "integer is outside the supported range",
+                            amount.span
+                        )
+                    }
+                    const magnitude = parsedMagnitude.value
+                    const multiplier = timeoutMultiplier(unit.text)
+                    if multiplier == 0 {
+                        self.diagnostics.reportError(
+                            "FDN1144",
+                            "unknown timeout duration unit " + unit.text,
+                            unit.span
+                        )
+                    }
+                    if multiplier != 0 &&
+                        magnitude > 18446744073709551615 / multiplier {
+                        self.diagnostics.reportError(
+                            "FDN1145",
+                            "timeout duration is outside the supported range",
+                            amount.span
+                        )
+                        nanoseconds = 18446744073709551615
+                    }
+                    if multiplier != 0 &&
+                        magnitude <= 18446744073709551615 / multiplier {
+                        nanoseconds = magnitude * multiplier
+                    }
+                } else {
+                    duration = .Some(self.parseExpression())
+                }
+                discard self.expectToken(
+                    .Colon, "FDN1146", "expected : after timeout duration")
+                const body = self.parseSelectArmBlock()
+                match timeoutRule {
+                    None: {
+                        timeoutRule = .Some(selectTimeoutArm {
+                            nanoseconds = nanoseconds
+                            duration = duration
+                            body = body
+                            span = timeoutToken.span
+                        })
+                    }
+                    Some(existing): {
+                        discard existing
+                        self.diagnostics.reportError(
+                            "FDN1147",
+                            "select accepts one timeout branch",
+                            timeoutToken.span
+                        )
+                    }
+                }
+                continue
+            }
+            if self.matchToken(.Else) {
+                const elseToken = self.previousToken()
+                const binding = self.expectToken(
+                    .Identifier, "FDN1148", "expected error binding after else")
+                discard self.expectToken(
+                    .Colon, "FDN1149", "expected : after select error binding")
+                const body = self.parseSelectArmBlock()
+                match errorBlock {
+                    None: {
+                        errorBinding = .Some(text.Copy(binding.text))
+                        errorBlock = .Some(body)
+                    }
+                    Some(existing): {
+                        discard existing
+                        self.diagnostics.reportError(
+                            "FDN1150",
+                            "select accepts one error branch",
+                            elseToken.span
+                        )
+                    }
+                }
+                continue
+            }
+            var binding Option<String> = .None
+            var span = self.currentToken().span
+            if self.matchToken(.Const) {
+                span = self.previousToken().span
+                const name = self.expectToken(
+                    .Identifier,
+                    "FDN1151",
+                    "expected select binding name"
+                )
+                binding = .Some(text.Copy(name.text))
+                discard self.expectToken(
+                    .Equal,
+                    "FDN1152",
+                    "expected = before select operation"
+                )
+            }
+            const operation = self.parseExpression()
+            discard self.expectToken(
+                .Colon, "FDN1153", "expected : after select operation")
+            operations.PushFront($selectOperationArm {
+                binding = binding
+                operation = operation
+                body = self.parseSelectArmBlock()
+                span = span
+            })
+        }
+        discard self.expectToken(.RightBrace, "FDN1154", "expected } after select")
+        if operations.IsEmpty() {
+            self.diagnostics.reportError(
+                "FDN1155",
+                "select requires at least one channel operation",
+                start.span
+            )
+        }
+        const error = match errorBlock {
+            None: {
+                self.diagnostics.reportError(
+                    "FDN1156", "select requires an else error branch", start.span)
+                self.addBlock(collections.NewList<u64>(), start.span)
+            }
+            Some(block): block
+        }
+        const errorName = match errorBinding {
+            None: "$selectError"
+            Some(name): name
+        }
+        self.addStatement(.SelectValue(selectStatement {
+            operations = reverseList($operations)
+            timeoutArm = timeoutRule
+            errorBinding = errorName
+            errorBlock = error
+        }), start.span)
+    }
+
+    fn parseExpressionStatement(&self) u64 {
+        const start = self.currentToken().span
+        const value = self.parseExpression()
+        var assignment Option<assignmentOperator> = .None
+        var assigned = false
+        if self.matchToken(.Equal) {
+            assignment = .Some(.Assign)
+            assigned = true
+        }
+        if !assigned && self.matchToken(.PlusEqual) {
+            assignment = .Some(.Add)
+            assigned = true
+        }
+        if !assigned && self.matchToken(.MinusEqual) {
+            assignment = .Some(.Subtract)
+            assigned = true
+        }
+        if !assigned && self.matchToken(.StarEqual) {
+            assignment = .Some(.Multiply)
+            assigned = true
+        }
+        if !assigned && self.matchToken(.SlashEqual) {
+            assignment = .Some(.Divide)
+            assigned = true
+        }
+        if !assigned && self.matchToken(.PercentEqual) {
+            assignment = .Some(.Remainder)
+            assigned = true
+        }
+        if !assigned && self.matchShiftAssignment(.Less) {
+            assignment = .Some(.ShiftLeft)
+            assigned = true
+        }
+        if !assigned && self.matchShiftAssignment(.Greater) {
+            assignment = .Some(.ShiftRight)
+            assigned = true
+        }
+        discard assigned
+        match assignment {
+            Some(operation): {
+                return self.addStatement(.Assignment(assignmentStatement {
+                    target = value
+                    operation = operation
+                    value = self.parseExpression()
+                }), start)
+            }
+            None: {}
+        }
+        if self.matchToken(.Else) {
+            var binding Option<String> = .None
+            if self.check(.Identifier) {
+                const name = self.advance()
+                binding = .Some(text.Copy(name.text))
+            }
+            if !self.check(.Identifier) && !self.check(.LeftBrace) {
+                self.diagnostics.reportError(
+                    "FDN1214",
+                    "expected error binding or { after else",
+                    self.currentToken().span
+                )
+            }
+            return self.addStatement(.ResultElse(resultElseStatement {
+                expression = value
+                errorBinding = binding
+                elseBlock = self.parseBlock(false)
+            }), start)
+        }
+        self.addStatement(.Expression(expressionStatement {
+            expression = value
+        }), start)
+    }
+
+    fn matchShiftAssignment(&self, marker tokenKind) bool {
+        const first = self.currentToken()
+        const second = self.peekToken(1)
+        const third = self.peekToken(2)
+        if !sameTokenKind(first.kind, marker) ||
+            !sameTokenKind(second.kind, marker) ||
+            !sameTokenKind(third.kind, .Equal) ||
+            spanEnd(first.span) != second.span.offset ||
+            spanEnd(second.span) != third.span.offset {
+            return false
+        }
+        discard self.advance()
+        discard self.advance()
+        discard self.advance()
+        true
+    }
+
+    fn addStatement(&self, $value statementValue, span sourceSpan) u64 {
+        self.program.statements.add($statementNode { value = value span = span })
+    }
+
+    fn addBlock(
+        &self,
+        $statements own collections.List<u64>,
+        span sourceSpan
+    ) u64 {
+        self.program.blocks.add($blockNode { statements = statements span = span })
+    }
+
+    fn skipNestedBlock(&self, span sourceSpan) u64 {
+        var depth u64 = 1
+        while !self.atEnd() && depth != 0 {
+            if self.matchToken(.LeftBrace) {
+                depth += 1
+                continue
+            }
+            if self.matchToken(.RightBrace) {
+                depth -= 1
+            } else {
+                discard self.advance()
+            }
+        }
+        self.addBlock(collections.NewList<u64>(), span)
+    }
+
+    fn startsStructPattern(&self) bool {
+        var distance u64 = 0
+        if !sameTokenKind(self.peekToken(distance).kind, .Identifier) return false
+        distance += 1
+        while sameTokenKind(self.peekToken(distance).kind, .Dot) &&
+            sameTokenKind(self.peekToken(distance + 1).kind, .Identifier) {
+            distance += 2
+        }
+        sameTokenKind(self.peekToken(distance).kind, .LeftBrace)
+    }
+
+    fn startsTailIfExpression(&self) bool {
+        if !self.check(.If) return false
+        var position = self.current + 1
+        while position < self.tokens.len() &&
+            !sameTokenKind(self.tokens.snapshot(position).kind, .LeftBrace) &&
+            !sameTokenKind(self.tokens.snapshot(position).kind, .Eof) {
+            position += 1
+        }
+        const thenBlock = self.scanTailBlock(position)
+        if !thenBlock.matched || !thenBlock.hasValue ||
+            thenBlock.next >= self.tokens.len() ||
+            !sameTokenKind(self.tokens.snapshot(thenBlock.next).kind, .Else) {
+            return false
+        }
+        const elseBlock = self.scanTailBlock(thenBlock.next + 1)
+        elseBlock.matched && elseBlock.hasValue &&
+            elseBlock.next < self.tokens.len() &&
+            sameTokenKind(self.tokens.snapshot(elseBlock.next).kind, .RightBrace)
+    }
+
+    fn scanTailBlock(&self, position u64) tailBlockLookahead {
+        if position >= self.tokens.len() ||
+            !sameTokenKind(self.tokens.snapshot(position).kind, .LeftBrace) {
+            return tailBlockLookahead {
+                matched = false next = position hasValue = false
+            }
+        }
+        const contentStart = position + 1
+        var current = contentStart
+        var depth u64 = 1
+        while current < self.tokens.len() && depth != 0 {
+            const kind = self.tokens.snapshot(current).kind
+            if sameTokenKind(kind, .LeftBrace) {
+                depth += 1
+            }
+            if sameTokenKind(kind, .RightBrace) {
+                depth -= 1
+            }
+            current += 1
+        }
+        if depth != 0 || current <= contentStart + 1 {
+            return tailBlockLookahead {
+                matched = false next = current hasValue = false
+            }
+        }
+        const closing = current - 1
+        var tailStart = closing - 1
+        const tailLine = self.tokens.snapshot(tailStart).span.line
+        while tailStart > contentStart &&
+            self.tokens.snapshot(tailStart - 1).span.line == tailLine {
+            tailStart -= 1
+        }
+        const kind = self.tokens.snapshot(tailStart).kind
+        const hasValue = !sameTokenKind(kind, .Let) &&
+            !sameTokenKind(kind, .Const) && !sameTokenKind(kind, .Var) &&
+            !sameTokenKind(kind, .Return) && !sameTokenKind(kind, .Discard) &&
+            !sameTokenKind(kind, .While) && !sameTokenKind(kind, .Select)
+        tailBlockLookahead {
+            matched = true next = current hasValue = hasValue
+        }
+    }
+
+    fn convertTailStatement(
+        &self,
+        &statements collections.List<u64>
+    ) void {
+        const id = match statements.PopFront() {
+            None: {
+                return
+            }
+            Some(id): id
+        }
+        const selected = self.program.statements.take(id)
+        const node = match selected {
+            None: panic("statement slot is empty")
+            Some(node): node
+        }
+        const statementNode { value span } = node
+        const inspectedStatement {
+            value as inspectedValue
+            expression as inspectedExpression
+        } = inspectStatementValue($value)
+        const replacement = match inspectedExpression {
+            None: inspectedValue
+            Some(expression): .ReturnValue(returnStatement {
+                value = .Some(expression)
+                tail = true
+            })
+        }
+        self.program.statements.restore(id, $statementNode {
+            value = replacement
+            span = span
+        })
+        statements.PushFront($id)
+    }
+}
+
+fn inspectStatementValue($value statementValue) inspectedStatement {
+    match value {
+        Variable(payload): inspectedStatement {
+            value = .Variable(payload) expression = .None
+        }
+        StructDestructure(payload): inspectedStatement {
+            value = .StructDestructure(payload) expression = .None
+        }
+        Assignment(payload): inspectedStatement {
+            value = .Assignment(payload) expression = .None
+        }
+        Expression(payload): inspectedStatement {
+            value = .Expression(expressionStatement { expression = payload.expression })
+            expression = .Some(payload.expression)
+        }
+        ResultElse(payload): inspectedStatement {
+            value = .ResultElse(payload) expression = .None
+        }
+        ReturnValue(payload): inspectedStatement {
+            value = .ReturnValue(payload) expression = .None
+        }
+        DiscardValue(payload): inspectedStatement {
+            value = .DiscardValue(payload) expression = .None
+        }
+        IfValue(payload): inspectedStatement {
+            value = .IfValue(payload) expression = .None
+        }
+        WhileValue(payload): inspectedStatement {
+            value = .WhileValue(payload) expression = .None
+        }
+        ForValue(payload): inspectedStatement {
+            value = .ForValue(payload) expression = .None
+        }
+        BreakValue: inspectedStatement { value = .BreakValue expression = .None }
+        ContinueValue: inspectedStatement { value = .ContinueValue expression = .None }
+        SelectValue(payload): inspectedStatement {
+            value = .SelectValue(payload) expression = .None
+        }
+        UnsafeValue(payload): inspectedStatement {
+            value = .UnsafeValue(payload) expression = .None
+        }
+    }
+}
+
+fn timeoutMultiplier(value String) u64 {
+    if value == "seconds" return 1000000000
+    if value == "milliseconds" return 1000000
+    if value == "microseconds" return 1000
+    if value == "nanoseconds" return 1
+    0
+}

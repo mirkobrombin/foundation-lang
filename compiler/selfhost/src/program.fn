@@ -1,0 +1,43 @@
+package foundation.compiler
+
+struct program {
+    packageName String
+    hasPackageDeclaration bool
+    imports own arena<importDeclaration>
+    expressions own arena<expressionNode>
+    statements own arena<statementNode>
+    blocks own arena<blockNode>
+    structs own arena<structDeclaration>
+    enums own arena<enumDeclaration>
+    contracts own arena<contractDeclaration>
+    attributeDeclarations own arena<attributeDeclaration>
+    functions own arena<functionDeclaration>
+
+    fn drop(&self) void {
+        self.imports.clear()
+        self.expressions.clear()
+        self.statements.clear()
+        self.blocks.clear()
+        self.structs.clear()
+        self.enums.clear()
+        self.contracts.clear()
+        self.attributeDeclarations.clear()
+        self.functions.clear()
+    }
+}
+
+fn newProgram() own program {
+    own program {
+        packageName = ""
+        hasPackageDeclaration = false
+        imports = newArena<importDeclaration>()
+        expressions = newArena<expressionNode>()
+        statements = newArena<statementNode>()
+        blocks = newArena<blockNode>()
+        structs = newArena<structDeclaration>()
+        enums = newArena<enumDeclaration>()
+        contracts = newArena<contractDeclaration>()
+        attributeDeclarations = newArena<attributeDeclaration>()
+        functions = newArena<functionDeclaration>()
+    }
+}

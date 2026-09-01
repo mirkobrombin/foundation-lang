@@ -1,0 +1,159 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+methods parser {
+    fn parseAttributes(&self, allowTarget bool) parsedAttributes {
+        var selected = true
+        var applications = collections.NewList<attributeApplication>()
+        var foundTarget = false
+        while self.matchToken(.At) {
+            const name = self.qualifiedName(
+                "FDN1140", "expected attribute name after @", false)
+            if (name.name == "blocking" || name.name == "callback") &&
+                !self.check(.LeftParen) {
+                applications.PushFront($attributeApplication {
+                    name = text.Copy(name.name)
+                    arguments = collections.NewList<attributeArgument>()
+                    span = name.span
+                    parenthesized = false
+                })
+            } else {
+                discard self.expectToken(
+                    .LeftParen, "FDN1141", "expected ( after attribute name")
+                if name.name == "target" {
+                    const argument = self.expectToken(
+                        .Identifier,
+                        "FDN1142",
+                        "expected target name in compiler attribute"
+                    )
+                    discard self.expectToken(
+                        .RightParen,
+                        "FDN1143",
+                        "expected ) after compiler attribute"
+                    )
+                    if !allowTarget {
+                        self.diagnostics.reportError(
+                            "FDN1146",
+                            "@target is only valid on package declarations",
+                            name.span
+                        )
+                    }
+                    if allowTarget && foundTarget {
+                        self.diagnostics.reportError(
+                            "FDN1144",
+                            "declaration has more than one @target attribute",
+                            name.span
+                        )
+                    }
+                    if allowTarget && !foundTarget {
+                        foundTarget = true
+                        const requested = self.parseTargetArgument($argument)
+                        selected = !sameTarget(requested, .Unknown) &&
+                            sameTarget(requested, self.target)
+                    }
+                } else {
+                    var arguments = collections.NewList<attributeArgument>()
+                    if !self.check(.RightParen) {
+                        var more = true
+                        while more {
+                            var argumentName Option<String> = .None
+                            const argumentSpan = self.currentToken().span
+                            if self.check(.Identifier) &&
+                                sameTokenKind(self.peekToken(1).kind, .Equal) {
+                                const named = self.advance()
+                                discard self.advance()
+                                argumentName = .Some(text.Copy(named.text))
+                            }
+                            const value = self.parseExpression()
+                            arguments.PushFront($attributeArgument {
+                                name = argumentName
+                                value = value
+                                span = argumentSpan
+                            })
+                            more = self.matchToken(.Comma)
+                        }
+                    }
+                    discard self.expectToken(
+                        .RightParen,
+                        "FDN1143",
+                        "expected ) after attribute arguments"
+                    )
+                    applications.PushFront($attributeApplication {
+                        name = text.Copy(name.name)
+                        arguments = reverseList($arguments)
+                        span = name.span
+                        parenthesized = true
+                    })
+                }
+            }
+        }
+        parsedAttributes {
+            selected = selected
+            applications = reverseList($applications)
+        }
+    }
+
+    fn parseAttributeTarget(&self) Option<attributeTarget> {
+        if self.matchToken(.Fn) return .Some(.Function)
+        if self.matchToken(.Ctor) return .Some(.Constructor)
+        if self.matchToken(.Struct) return .Some(.Struct)
+        if self.matchToken(.Service) return .Some(.Service)
+        if self.matchToken(.Enum) return .Some(.Enum)
+        if self.matchToken(.Contract) return .Some(.Contract)
+        if self.matchToken(.Action) return .Some(.Action)
+        if !self.check(.Identifier) {
+            const current = self.currentToken()
+            self.diagnostics.reportError(
+                "FDN1154", "expected attribute target", current.span)
+            if !self.atEnd() {
+                discard self.advance()
+            }
+            return .None
+        }
+        const target = self.advance()
+        if target.text == "method" return .Some(.Method)
+        if target.text == "field" return .Some(.Field)
+        if target.text == "variant" return .Some(.Variant)
+        if target.text == "parameter" return .Some(.Parameter)
+        self.diagnostics.reportError(
+            "FDN1154", "unknown attribute target " + target.text, target.span)
+        .None
+    }
+
+    fn parseTargetArgument(&self, $argument tokenSnapshot) targetPlatform {
+        if argument.text == "linux" return .Linux
+        if argument.text == "macos" return .MacOS
+        if argument.text == "windows" return .Windows
+        self.diagnostics.reportError(
+            "FDN1142", "unknown target " + argument.text, argument.span)
+        .Unknown
+    }
+}
+
+fn hasNamedAttribute(
+    &applications collections.List<attributeApplication>,
+    name String
+) bool {
+    var pending = collections.NewList<attributeApplication>()
+    var found = false
+    while !applications.IsEmpty() {
+        const application = match applications.PopFront() {
+            None: panic("attribute list invariant failed")
+            Some(application): application
+        }
+        if application.name == name {
+            found = true
+        }
+        pending.PushFront($application)
+    }
+    while !pending.IsEmpty() {
+        const application = match pending.PopFront() {
+            None: panic("attribute list restore invariant failed")
+            Some(application): application
+        }
+        applications.PushFront($application)
+    }
+    found
+}

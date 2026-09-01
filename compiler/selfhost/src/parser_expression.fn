@@ -1,0 +1,1117 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+struct parsedArguments {
+    values own collections.List<u64>
+    names own collections.List<Option<String>>
+    nameSpans own collections.List<Option<sourceSpan>>
+}
+
+struct parsedValueBlock {
+    block u64
+    value u64
+}
+
+struct parsedOptionalValueBlock {
+    block u64
+    value Option<u64>
+}
+
+struct inspectedNegation {
+    value expressionValue
+    folded Option<expressionValue>
+}
+
+struct parsedMember {
+    expression u64
+    member String
+    typeArguments own collections.List<typeSyntax>
+    invoked bool
+    span sourceSpan
+}
+
+struct qualifiedStructType {
+    name String
+    arguments own collections.List<typeSyntax>
+    span sourceSpan
+}
+
+methods parser {
+    fn parseExpression(&self) u64 {
+        const root = self.expressionCalls == 0
+        if root {
+            self.expressionNodes = 0
+            self.expressionLimitReported = false
+        }
+        self.expressionCalls += 1
+        const result = self.parseConditional()
+        self.expressionCalls -= 1
+        result
+    }
+
+    fn parseConditional(&self) u64 {
+        const value = self.parseLogicalOr()
+        if !self.continuesLine() || !self.matchToken(.If) return value
+        const start = self.previousToken()
+        const condition = self.parseLogicalOr()
+        discard self.expectToken(
+            .Else,
+            "FDN1174",
+            "expected else in postfix conditional expression"
+        )
+        const fallback = self.parseConditional()
+        const thenBlock = self.addBlock(collections.NewList<u64>(), start.span)
+        const elseBlock = self.addBlock(collections.NewList<u64>(), start.span)
+        self.addExpression(.Conditional(conditionalExpression {
+            condition = condition
+            thenBlock = thenBlock
+            thenValue = value
+            elseBlock = elseBlock
+            elseValue = fallback
+            postfix = true
+        }), start.span)
+    }
+
+    fn parseLogicalOr(&self) u64 {
+        var value = self.parseLogicalAnd()
+        while self.continuesLine() && self.matchToken(.OrOr) {
+            value = self.addBinary(value, .Or, self.parseLogicalAnd())
+        }
+        value
+    }
+
+    fn parseLogicalAnd(&self) u64 {
+        var value = self.parseBitwiseOr()
+        while self.continuesLine() && self.matchToken(.AndAnd) {
+            value = self.addBinary(value, .And, self.parseBitwiseOr())
+        }
+        value
+    }
+
+    fn parseBitwiseOr(&self) u64 {
+        var value = self.parseBitwiseXor()
+        while self.continuesLine() && self.matchToken(.Pipe) {
+            value = self.addBinary(value, .BitwiseOr, self.parseBitwiseXor())
+        }
+        value
+    }
+
+    fn parseBitwiseXor(&self) u64 {
+        var value = self.parseBitwiseAnd()
+        while self.continuesLine() && self.matchToken(.Caret) {
+            value = self.addBinary(value, .BitwiseXor, self.parseBitwiseAnd())
+        }
+        value
+    }
+
+    fn parseBitwiseAnd(&self) u64 {
+        var value = self.parseEquality()
+        while self.continuesLine() && self.matchToken(.Ampersand) {
+            value = self.addBinary(value, .BitwiseAnd, self.parseEquality())
+        }
+        value
+    }
+
+    fn parseEquality(&self) u64 {
+        var value = self.parseComparison()
+        while self.continuesLine() &&
+            (self.check(.EqualEqual) || self.check(.BangEqual)) {
+            const operation binaryOperator = .Equal if
+            sameTokenKind(self.advance().kind, .EqualEqual) else .NotEqual
+            value = self.addBinary(value, operation, self.parseComparison())
+        }
+        value
+    }
+
+    fn parseComparison(&self) u64 {
+        var value = self.parseShift()
+        while self.continuesLine() &&
+            (self.check(.Less) || self.check(.LessEqual) ||
+            self.check(.Greater) || self.check(.GreaterEqual)) {
+            if self.startsShiftAssignment() break
+            const kind = self.advance().kind
+            const operation = match kind {
+                Less: binaryOperator.Less
+                LessEqual: binaryOperator.LessEqual
+                Greater: binaryOperator.Greater
+                GreaterEqual: binaryOperator.GreaterEqual
+                _: binaryOperator.Less
+            }
+            value = self.addBinary(value, operation, self.parseShift())
+        }
+        value
+    }
+
+    fn parseShift(&self) u64 {
+        var value = self.parseTerm()
+        var running = true
+        while running && self.continuesLine() {
+            const first = self.currentToken()
+            const second = self.peekToken(1)
+            const third = self.peekToken(2)
+            const adjacent = spanEnd(first.span) == second.span.offset
+            const assignment = spanEnd(second.span) == third.span.offset &&
+                sameTokenKind(third.kind, .Equal)
+            const left = sameTokenKind(first.kind, .Less) &&
+                sameTokenKind(second.kind, .Less)
+            const right = sameTokenKind(first.kind, .Greater) &&
+                sameTokenKind(second.kind, .Greater)
+            if !adjacent || assignment || !left && !right {
+                running = false
+            } else {
+                discard self.advance()
+                discard self.advance()
+                value = self.addBinary(
+                    value,
+                    .ShiftLeft if left else .ShiftRight,
+                    self.parseTerm()
+                )
+            }
+        }
+        value
+    }
+
+    fn parseTerm(&self) u64 {
+        var value = self.parseFactor()
+        while self.continuesLine() &&
+            (self.check(.Plus) || self.check(.Minus)) {
+            const operation binaryOperator = .Add if
+            sameTokenKind(self.advance().kind, .Plus) else .Subtract
+            value = self.addBinary(value, operation, self.parseFactor())
+        }
+        value
+    }
+
+    fn parseFactor(&self) u64 {
+        var value = self.parseUnary()
+        while self.continuesLine() &&
+            (self.check(.Star) || self.check(.Slash) || self.check(.Percent)) {
+            const kind = self.advance().kind
+            const operation = match kind {
+                Star: binaryOperator.Multiply
+                Slash: binaryOperator.Divide
+                Percent: binaryOperator.Remainder
+                _: binaryOperator.Multiply
+            }
+            value = self.addBinary(value, operation, self.parseUnary())
+        }
+        value
+    }
+
+    fn parseUnary(&self) u64 {
+        if self.expressionDepth >= 256 {
+            const bad = self.currentToken()
+            self.diagnostics.reportError(
+                "FDN1029", "expression nesting exceeds 256 levels", bad.span)
+            if !self.atEnd() {
+                discard self.advance()
+            }
+            return self.addExpression(
+                .Integer(integerExpression { magnitude = 0 negative = false }),
+                bad.span
+            )
+        }
+        self.expressionDepth += 1
+        if self.matchToken(.Minus) {
+            const start = self.previousToken()
+            const operand = self.parseUnary()
+            const selected = self.program.expressions.take(operand)
+            const node = match selected {
+                None: panic("expression slot is empty")
+                Some(node): node
+            }
+            const expressionNode { value span } = node
+            const inspectedNegation {
+                value as inspectedValue
+                folded
+            } = inspectNegation($value)
+            self.program.expressions.restore(operand, $expressionNode {
+                value = inspectedValue span = span
+            })
+            const result = match folded {
+                None: self.addExpression(.Unary(unaryExpression {
+                    operation = .Negate operand = operand
+                }), start.span)
+                Some(value): self.addExpression($value, start.span)
+            }
+            self.expressionDepth -= 1
+            return result
+        }
+        if self.matchToken(.Bang) {
+            const start = self.previousToken()
+            const result = self.addExpression(.Unary(unaryExpression {
+                operation = .Not
+                operand = self.parseUnary()
+            }), start.span)
+            self.expressionDepth -= 1
+            return result
+        }
+        if self.matchToken(.Tilde) {
+            const start = self.previousToken()
+            const result = self.addExpression(.Unary(unaryExpression {
+                operation = .BitwiseNot
+                operand = self.parseUnary()
+            }), start.span)
+            self.expressionDepth -= 1
+            return result
+        }
+        if self.matchToken(.Star) {
+            const start = self.previousToken()
+            const result = self.addExpression(.Unary(unaryExpression {
+                operation = .Dereference
+                operand = self.parseUnary()
+            }), start.span)
+            self.expressionDepth -= 1
+            return result
+        }
+        if self.matchToken(.Dollar) {
+            const start = self.previousToken()
+            const result = self.addExpression(.Ownership(ownershipExpression {
+                operation = .Transfer
+                operand = self.parseUnary()
+            }), start.span)
+            self.expressionDepth -= 1
+            return result
+        }
+        if self.matchToken(.Ampersand) {
+            const start = self.previousToken()
+            const result = self.addExpression(.Ownership(ownershipExpression {
+                operation = .Edit
+                operand = self.parseUnary()
+            }), start.span)
+            self.expressionDepth -= 1
+            return result
+        }
+        if self.matchToken(.New) {
+            const start = self.previousToken()
+            const result = self.addExpression(.Ownership(ownershipExpression {
+                operation = .New
+                operand = self.parseUnary()
+            }), start.span)
+            self.expressionDepth -= 1
+            return result
+        }
+        if self.matchToken(.Spawn) {
+            const start = self.previousToken()
+            const result = self.addExpression(.Spawn(spawnExpression {
+                call = self.parseUnary()
+            }), start.span)
+            self.expressionDepth -= 1
+            return result
+        }
+        if self.check(.Own) || self.check(.View) || self.check(.Edit) {
+            const qualifier = self.advance()
+            var operation = ownershipOperator.Own
+            if sameTokenKind(qualifier.kind, .View) {
+                operation = .View
+                self.diagnostics.reportError(
+                    "FDN1187",
+                    "view expression was removed; pass the value directly",
+                    qualifier.span
+                )
+            }
+            if sameTokenKind(qualifier.kind, .Edit) {
+                operation = .Edit
+                self.diagnostics.reportError(
+                    "FDN1187", "edit expression was removed; use &value", qualifier.span)
+            }
+            const result = self.addExpression(.Ownership(ownershipExpression {
+                operation = operation
+                operand = self.parseUnary()
+            }), qualifier.span)
+            self.expressionDepth -= 1
+            return result
+        }
+        const result = self.parsePrimary()
+        self.expressionDepth -= 1
+        result
+    }
+
+    fn parsePrimary(&self) u64 {
+        var result u64 = 0
+        var found = false
+        var qualifiedBase Option<qualifiedNameResult> = .None
+        var qualifiedType Option<qualifiedStructType> = .None
+        if self.matchToken(.Integer) {
+            const value = self.previousToken()
+            const parsedMagnitude = parseUnsigned(text.Copy(value.text))
+            if !parsedMagnitude.valid {
+                self.diagnostics.reportError(
+                    "FDN1016", "integer is outside the supported range", value.span)
+            }
+            result = self.addExpression(.Integer(integerExpression {
+                magnitude = parsedMagnitude.value
+                negative = false
+            }), value.span)
+            found = true
+        }
+        if !found && self.matchToken(.Floating) {
+            const value = self.previousToken()
+            if !validFloating(text.Copy(value.text)) {
+                self.diagnostics.reportError(
+                    "FDN1016",
+                    "floating-point literal is outside the supported range",
+                    value.span
+                )
+            }
+            result = self.addExpression(.Floating(floatingExpression {
+                text = text.Copy(value.text)
+            }), value.span)
+            found = true
+        }
+        if !found && (self.matchToken(.True) || self.matchToken(.False)) {
+            const value = self.previousToken()
+            result = self.addExpression(.Boolean(booleanExpression {
+                value = sameTokenKind(value.kind, .True)
+            }), value.span)
+            found = true
+        }
+        if !found && self.matchToken(.StringLiteral) {
+            const value = self.previousToken()
+            result = self.addExpression(.StringValue(stringExpression {
+                value = text.Copy(value.text)
+            }), value.span)
+            found = true
+        }
+        if !found && self.matchToken(.LeftBracket) {
+            result = self.finishArray(self.previousToken())
+            found = true
+        }
+        if !found && self.matchToken(.Match) {
+            result = self.parseMatchExpression(self.previousToken())
+            found = true
+        }
+        if !found && self.matchToken(.If) {
+            result = self.parseIfExpression(self.previousToken())
+            found = true
+        }
+        if !found && self.matchToken(.Fn) {
+            result = self.parseFunctionExpression(self.previousToken())
+            found = true
+        }
+        if !found && self.matchToken(.Replace) {
+            result = self.parseReplaceExpression(self.previousToken())
+            found = true
+        }
+        if !found && self.matchToken(.Dot) {
+            const parsedMember {
+                expression
+                member
+                typeArguments
+                invoked
+                span
+            } = self.finishMember(.None)
+            result = expression
+            discard member
+            discard typeArguments
+            discard invoked
+            discard span
+            found = true
+        }
+        if !found && self.matchToken(.Identifier) {
+            const name = self.previousToken()
+            var typeArguments = collections.NewList<typeSyntax>()
+            if self.startsGenericPrimary() {
+                discard self.expectToken(
+                    .Less, "FDN1063", "expected < before type arguments")
+                var more = true
+                while more {
+                    typeArguments.PushFront($self.parseTypeSyntax(
+                            "FDN1063", "expected type argument"))
+                    more = self.matchToken(.Comma)
+                }
+                discard self.expectToken(
+                    .Greater, "FDN1064", "expected > after type arguments")
+                typeArguments = reverseList($typeArguments)
+            }
+            if self.matchToken(.LeftParen) {
+                result = self.finishCall($name, $typeArguments)
+            } else {
+                if self.isStructLiteralStart() {
+                    discard self.advance()
+                    result = self.finishStruct(typeSyntax {
+                        name = text.Copy(name.text)
+                        arguments = typeArguments
+                        span = name.span
+                        arrayLength = 0
+                    })
+                } else {
+                    const qualified = typeArguments.IsEmpty()
+                    result = self.addExpression(.Name(nameExpression {
+                        name = text.Copy(name.text)
+                        typeArguments = typeArguments
+                    }), name.span)
+                    if qualified {
+                        qualifiedBase = .Some(qualifiedNameResult {
+                            name = text.Copy(name.text) span = name.span
+                        })
+                    }
+                }
+            }
+            found = true
+        }
+        if !found && self.matchToken(.LeftParen) {
+            result = self.parseExpression()
+            discard self.expectToken(
+                .RightParen, "FDN1022", "expected ) after expression")
+            found = true
+        }
+        if !found {
+            const bad = self.currentToken()
+            self.diagnostics.reportError(
+                "FDN1023", "expected expression", bad.span)
+            if !self.atEnd() {
+                discard self.advance()
+            }
+            result = self.addExpression(
+                .Integer(integerExpression { magnitude = 0 negative = false }),
+                bad.span
+            )
+        }
+        var suffix = true
+        while suffix && self.continuesLine() {
+            if self.matchToken(.Dot) {
+                const parsedMember {
+                    expression as memberExpressionID
+                    member as memberName
+                    typeArguments as memberTypeArguments
+                    invoked as memberInvoked
+                    span as memberSpan
+                } = self.finishMember(.Some(result))
+                result = memberExpressionID
+                qualifiedType = .None
+                match qualifiedBase {
+                    None: {}
+                    Some(base): {
+                        const qualifiedNameResult {
+                            name as baseName
+                            span as baseSpan
+                        } = base
+                        if !memberInvoked {
+                            qualifiedType = .Some(qualifiedStructType {
+                                name = baseName + "." + memberName
+                                arguments = memberTypeArguments
+                                span = baseSpan
+                            })
+                        } else {
+                            discard memberName
+                            discard memberTypeArguments
+                        }
+                    }
+                }
+                discard memberSpan
+                qualifiedBase = .None
+                continue
+            }
+            if self.matchToken(.LeftBracket) {
+                const start = self.previousToken()
+                const index = self.parseExpression()
+                discard self.expectToken(
+                    .RightBracket, "FDN1084", "expected ] after index")
+                result = self.addExpression(.Index(indexExpression {
+                    base = result
+                    index = index
+                }), start.span)
+                qualifiedBase = .None
+                qualifiedType = .None
+            } else {
+                suffix = false
+            }
+        }
+        if self.isStructLiteralStart() {
+            match qualifiedType {
+                None: {}
+                Some(type): {
+                    const qualifiedStructType { name arguments span } = type
+                    discard self.advance()
+                    result = self.finishStruct(typeSyntax {
+                        name = name
+                        arguments = arguments
+                        span = span
+                        arrayLength = 0
+                    })
+                }
+            }
+        }
+        result
+    }
+
+    fn parseReplaceExpression(&self, $start tokenSnapshot) u64 {
+        const target = self.parsePrimary()
+        discard self.expectToken(
+            .With, "FDN1137", "expected with after replacement place")
+        self.addExpression(.Replace(replaceExpression {
+            target = target
+            value = self.parseExpression()
+        }), start.span)
+    }
+
+    fn finishCall(
+        &self,
+        $callee tokenSnapshot,
+        $typeArguments own collections.List<typeSyntax>
+    ) u64 {
+        const parsedArguments {
+            values
+            names
+            nameSpans
+        } = self.parseArguments(
+            .RightParen, "FDN1024", "expected ) after call arguments")
+        self.addExpression(.Call(callExpression {
+            callee = text.Copy(callee.text)
+            typeArguments = typeArguments
+            arguments = values
+            argumentNames = names
+            argumentNameSpans = nameSpans
+        }), callee.span)
+    }
+
+    fn finishStruct(&self, $type typeSyntax) u64 {
+        const span = type.span
+        var fields = collections.NewList<structFieldInitializer>()
+        while !self.check(.RightBrace) && !self.atEnd() {
+            if !self.check(.Identifier) {
+                self.diagnostics.reportError(
+                    "FDN1038",
+                    "expected struct literal field name",
+                    self.currentToken().span
+                )
+                discard self.advance()
+            } else {
+                const field = self.advance()
+                discard self.expectToken(
+                    .Equal,
+                    "FDN1039",
+                    "expected = after struct literal field name"
+                )
+                fields.PushFront($structFieldInitializer {
+                    name = text.Copy(field.text)
+                    value = self.parseExpression()
+                    span = field.span
+                })
+            }
+        }
+        discard self.expectToken(
+            .RightBrace, "FDN1040", "expected } after struct literal")
+        self.addExpression(.StructValue(structExpression {
+            type = type
+            fields = reverseList($fields)
+        }), span)
+    }
+
+    fn finishMember(&self, base Option<u64>) parsedMember {
+        const member = self.expectToken(
+            .Identifier, "FDN1051", "expected member name")
+        var typeArguments = collections.NewList<typeSyntax>()
+        if self.startsGenericPrimary() {
+            discard self.expectToken(
+                .Less, "FDN1063", "expected < before type arguments")
+            var more = true
+            while more {
+                typeArguments.PushFront($self.parseTypeSyntax(
+                        "FDN1063", "expected type argument"))
+                more = self.matchToken(.Comma)
+            }
+            discard self.expectToken(
+                .Greater, "FDN1064", "expected > after type arguments")
+            typeArguments = reverseList($typeArguments)
+        }
+        var invoked = false
+        var arguments = emptyArguments()
+        if self.matchToken(.LeftParen) {
+            invoked = true
+            arguments = self.parseArguments(
+                .RightParen,
+                "FDN1052",
+                "expected ) after member invocation"
+            )
+        }
+        const copiedArguments = copyTypeSyntaxList(&typeArguments)
+        const parsedArguments {
+            values
+            names
+            nameSpans
+        } = arguments
+        const expression = self.addExpression(.Member(memberExpression {
+            base = base
+            member = text.Copy(member.text)
+            typeArguments = typeArguments
+            invoked = invoked
+            arguments = values
+            argumentNames = names
+            argumentNameSpans = nameSpans
+        }), member.span)
+        parsedMember {
+            expression = expression
+            member = text.Copy(member.text)
+            typeArguments = copiedArguments
+            invoked = invoked
+            span = member.span
+        }
+    }
+
+    fn parseArguments(
+        &self,
+        closing tokenKind,
+        $code String,
+        $message String
+    ) parsedArguments {
+        var values = collections.NewList<u64>()
+        var names = collections.NewList<Option<String>>()
+        var spans = collections.NewList<Option<sourceSpan>>()
+        if !self.check(closing) {
+            var more = true
+            while more {
+                var name Option<String> = .None
+                var span Option<sourceSpan> = .None
+                if self.check(.Identifier) &&
+                    sameTokenKind(self.peekToken(1).kind, .Equal) {
+                    const token = self.advance()
+                    discard self.advance()
+                    name = .Some(text.Copy(token.text))
+                    span = .Some(token.span)
+                }
+                names.PushFront($name)
+                spans.PushFront($span)
+                values.PushFront($self.parseExpression())
+                more = self.matchToken(.Comma)
+            }
+        }
+        discard self.expectToken(closing, $code, $message)
+        parsedArguments {
+            values = reverseList($values)
+            names = reverseList($names)
+            nameSpans = reverseList($spans)
+        }
+    }
+
+    fn finishArray(&self, $start tokenSnapshot) u64 {
+        var elements = collections.NewList<u64>()
+        if !self.check(.RightBracket) {
+            var more = true
+            while more {
+                elements.PushFront($self.parseExpression())
+                more = self.matchToken(.Comma)
+            }
+        }
+        discard self.expectToken(
+            .RightBracket, "FDN1085", "expected ] after array literal")
+        self.addExpression(.Array(arrayExpression {
+            elements = reverseList($elements)
+        }), start.span)
+    }
+
+    fn parseMatchExpression(&self, $start tokenSnapshot) u64 {
+        const value = self.parseExpression()
+        discard self.expectToken(.LeftBrace, "FDN1053", "expected { after match value")
+        var arms = collections.NewList<matchArm>()
+        while !self.check(.RightBrace) && !self.atEnd() {
+            const variant = self.expectToken(
+                .Identifier, "FDN1056", "expected pattern variant")
+            var binding Option<String> = .None
+            var pattern Option<u64> = .None
+            if self.matchToken(.LeftParen) {
+                if self.check(.Identifier) &&
+                    sameTokenKind(self.peekToken(1).kind, .RightParen) {
+                    const name = self.advance()
+                    binding = .Some(text.Copy(name.text))
+                } else {
+                    pattern = .Some(self.parseExpression())
+                }
+                discard self.expectToken(
+                    .RightParen,
+                    "FDN1058",
+                    "expected ) after payload pattern"
+                )
+            }
+            var guard Option<u64> = .None
+            if self.matchToken(.If) {
+                guard = .Some(self.parseExpression())
+            }
+            discard self.expectToken(
+                .Colon, "FDN1059", "expected : after match pattern")
+            const parsed = self.parseMatchArmBlock() if self.check(.LeftBrace) else
+            parsedOptionalValueBlock {
+                block = self.addBlock(collections.NewList<u64>(), variant.span)
+                value = .Some(self.parseExpression())
+            }
+            arms.PushFront($matchArm {
+                wildcard = variant.text == "_"
+                variant = text.Copy(variant.text)
+                binding = binding
+                pattern = pattern
+                guard = guard
+                block = parsed.block
+                expression = parsed.value
+                span = variant.span
+            })
+        }
+        discard self.expectToken(
+            .RightBrace, "FDN1060", "expected } after match expression")
+        self.addExpression(.MatchValue(matchExpression {
+            value = value
+            arms = reverseList($arms)
+        }), start.span)
+    }
+
+    fn parseMatchArmBlock(&self) parsedOptionalValueBlock {
+        const start = self.expectToken(.LeftBrace, "FDN1008", "expected { before block")
+        const parsedBlockContents { statements as parsedStatements } =
+            self.parseBlockContents(start, true)
+        var statements = parsedStatements
+        const statement = statements.PopFront()
+        var value Option<u64> = .None
+        match statement {
+            None: {}
+            Some(id): {
+                match self.takeExpressionStatement(id) {
+                    None: statements.PushFront($id)
+                    Some(expression): {
+                        value = .Some(expression)
+                    }
+                }
+            }
+        }
+        parsedOptionalValueBlock {
+            block = self.addBlock(reverseList($statements), start.span)
+            value = value
+        }
+    }
+
+    fn parseIfExpression(&self, $start tokenSnapshot) u64 {
+        const allowed = self.structLiteralsAllowed
+        self.structLiteralsAllowed = false
+        const condition = self.parseExpression()
+        self.structLiteralsAllowed = allowed
+        const thenValue = self.parseExpressionBlock()
+        discard self.expectToken(
+            .Else,
+            "FDN1175",
+            "expected else after conditional expression branch"
+        )
+        const elseValue = self.parseExpressionBlock()
+        self.addExpression(.Conditional(conditionalExpression {
+            condition = condition
+            thenBlock = thenValue.block
+            thenValue = thenValue.value
+            elseBlock = elseValue.block
+            elseValue = elseValue.value
+            postfix = false
+        }), start.span)
+    }
+
+    fn parseExpressionBlock(&self) parsedValueBlock {
+        const start = self.expectToken(
+            .LeftBrace,
+            "FDN1176",
+            "expected { before conditional expression branch"
+        )
+        const parsedBlockContents { statements as parsedStatements } =
+            self.parseBlockContents(start, true)
+        var statements = parsedStatements
+        const statement = statements.PopFront()
+        var value u64 = 0
+        var found = false
+        match statement {
+            None: {}
+            Some(id): {
+                match self.takeExpressionStatement(id) {
+                    None: statements.PushFront($id)
+                    Some(expression): {
+                        value = expression
+                        found = true
+                    }
+                }
+            }
+        }
+        if !found {
+            self.diagnostics.reportError(
+                "FDN1178", "value block requires a final expression", start.span)
+            value = self.addExpression(
+                .Integer(integerExpression { magnitude = 0 negative = false }),
+                start.span
+            )
+        }
+        parsedValueBlock {
+            block = self.addBlock(reverseList($statements), start.span)
+            value = value
+        }
+    }
+
+    fn parseFunctionExpression(&self, $start tokenSnapshot) u64 {
+        discard self.expectToken(.LeftParen, "FDN1124", "expected ( after fn")
+        var parameters = collections.NewList<parameter>()
+        if !self.check(.RightParen) {
+            var more = true
+            while more {
+                parameters.PushFront($self.parseParameter(true))
+                more = self.matchToken(.Comma)
+            }
+        }
+        discard self.expectToken(
+            .RightParen, "FDN1125", "expected ) after closure parameters")
+        const inferredReturn = self.check(.Capture) || self.check(.LeftBrace)
+        const returnType = emptyType(self.currentToken().span) if inferredReturn else
+        self.parseTypeSyntax("FDN1126", "expected closure return type")
+        var captures = collections.NewList<closureCapture>()
+        if self.matchToken(.Capture) {
+            discard self.expectToken(.LeftParen, "FDN1189", "expected ( after capture")
+            var more = true
+            while more {
+                var mode = captureMode.Copy
+                var span = self.currentToken().span
+                if self.matchToken(.Dollar) {
+                    mode = .Own
+                    span = self.previousToken().span
+                }
+                if captureModeCode(mode) == captureModeCode(.Copy) &&
+                    self.matchToken(.Ampersand) {
+                    mode = .Edit
+                    span = self.previousToken().span
+                }
+                if captureModeCode(mode) == captureModeCode(.Copy) &&
+                    (self.matchToken(.Own) || self.matchToken(.View) ||
+                    self.matchToken(.Edit)) {
+                    const old = self.previousToken()
+                    mode = .Own if sameTokenKind(old.kind, .Own) else
+                    .View if sameTokenKind(old.kind, .View) else .Edit
+                    span = old.span
+                    self.diagnostics.reportError(
+                        "FDN1188",
+                        "legacy capture mode was removed; use $, &, or the plain name",
+                        old.span
+                    )
+                }
+                const name = self.expectToken(
+                    .Identifier, "FDN1127", "expected captured binding")
+                captures.PushFront($closureCapture {
+                    mode = mode name = text.Copy(name.text) span = span
+                })
+                more = self.matchToken(.Comma)
+            }
+            discard self.expectToken(
+                .RightParen, "FDN1129", "expected ) after capture list")
+        }
+        const body = self.parseBlock(inferredReturn || returnType.name != "void")
+        const id = self.program.functions.len()
+        discard self.program.functions.add($functionDeclaration {
+            name = "$closure_" + decimalText(id)
+            typeParameters = copyStringList(&self.activeTypeParameters)
+            parameters = reverseList($parameters)
+            returnType = returnType
+            body = body
+            exported = false
+            span = start.span
+            packageName = ""
+            sourcePath = ""
+            receiver = .None
+            ownerType = ""
+            cSymbol = .None
+            hasBody = true
+            closure = true
+            captures = reverseList($captures)
+            attributes = collections.NewList<attributeApplication>()
+            taskFunction = false
+            blocking = false
+            callback = false
+            testName = .None
+            testNameSpan = .None
+            actionFunction = false
+            stateTransition = .None
+            workflow = .None
+            inferredReturn = inferredReturn
+            transferableTypeParameters = copyBoolList(
+                &self.activeTransferableTypeParameters)
+            stateTimeout = .None
+            constructor = false
+            typeParameterConstraints = copyOptionalTypeList(
+                &self.activeTypeParameterConstraints)
+        })
+        self.addExpression(.FunctionValue(functionExpression { function = id }), start.span)
+    }
+
+    fn addExpression(&self, $value expressionValue, span sourceSpan) u64 {
+        self.expressionNodes += 1
+        if self.expressionNodes > 1024 && !self.expressionLimitReported {
+            self.diagnostics.reportError(
+                "FDN1029", "expression exceeds 1024 nodes", span)
+            self.expressionLimitReported = true
+        }
+        self.program.expressions.add($expressionNode { value = value span = span })
+    }
+
+    fn addBinary(
+        &self,
+        left u64,
+        operation binaryOperator,
+        right u64
+    ) u64 {
+        self.addExpression(.Binary(binaryExpression {
+            left = left
+            operation = operation
+            right = right
+        }), self.expressionSpan(left))
+    }
+
+    fn expressionSpan(&self, id u64) sourceSpan {
+        const selected = self.program.expressions.take(id)
+        const expression = match selected {
+            None: panic("expression slot is empty")
+            Some(expression): expression
+        }
+        const span = expression.span
+        self.program.expressions.restore(id, $expression)
+        span
+    }
+
+    fn takeExpressionStatement(&self, id u64) Option<u64> {
+        const selected = self.program.statements.take(id)
+        const statement = match selected {
+            None: panic("statement slot is empty")
+            Some(statement): statement
+        }
+        const statementNode { value span } = statement
+        const inspectedStatement {
+            value as inspectedValue
+            expression
+        } = inspectStatementValue($value)
+        self.program.statements.restore(id, $statementNode {
+            value = inspectedValue
+            span = span
+        })
+        expression
+    }
+
+    fn startsShiftAssignment(&self) bool {
+        const first = self.currentToken()
+        const second = self.peekToken(1)
+        const third = self.peekToken(2)
+        spanEnd(first.span) == second.span.offset &&
+            spanEnd(second.span) == third.span.offset &&
+            sameTokenKind(third.kind, .Equal) &&
+            (sameTokenKind(first.kind, .Less) && sameTokenKind(second.kind, .Less) ||
+            sameTokenKind(first.kind, .Greater) &&
+            sameTokenKind(second.kind, .Greater))
+    }
+
+    fn isStructLiteralStart(&self) bool {
+        if !self.structLiteralsAllowed || !self.check(.LeftBrace) return false
+        const first = self.peekToken(1)
+        sameTokenKind(first.kind, .RightBrace) ||
+            sameTokenKind(first.kind, .Identifier) &&
+            sameTokenKind(self.peekToken(2).kind, .Equal)
+    }
+}
+
+struct parsedBlockContents {
+    statements own collections.List<u64>
+}
+
+fn inspectNegation($value expressionValue) inspectedNegation {
+    match value {
+        Integer(payload): inspectedNegation {
+            value = .Integer(integerExpression {
+                magnitude = payload.magnitude negative = payload.negative
+            })
+            folded = .Some(.Integer(integerExpression {
+                magnitude = payload.magnitude negative = !payload.negative
+            }))
+        }
+        Floating(payload): {
+            var folded = "-" + text.Copy(payload.text)
+            if text.StartsWith(payload.text, "-") {
+                folded = stripLeadingByte(text.Copy(payload.text))
+            }
+            inspectedNegation {
+                value = .Floating(floatingExpression { text = text.Copy(payload.text) })
+                folded = .Some(.Floating(floatingExpression { text = folded }))
+            }
+        }
+        Boolean(payload): inspectedNegation {
+            value = .Boolean(payload) folded = .None
+        }
+        StringValue(payload): inspectedNegation {
+            value = .StringValue(payload) folded = .None
+        }
+        Array(payload): inspectedNegation { value = .Array(payload) folded = .None }
+        Name(payload): inspectedNegation { value = .Name(payload) folded = .None }
+        Unary(payload): inspectedNegation { value = .Unary(payload) folded = .None }
+        Ownership(payload): inspectedNegation {
+            value = .Ownership(payload) folded = .None
+        }
+        Binary(payload): inspectedNegation { value = .Binary(payload) folded = .None }
+        Call(payload): inspectedNegation { value = .Call(payload) folded = .None }
+        StructValue(payload): inspectedNegation {
+            value = .StructValue(payload) folded = .None
+        }
+        Member(payload): inspectedNegation { value = .Member(payload) folded = .None }
+        Index(payload): inspectedNegation { value = .Index(payload) folded = .None }
+        Replace(payload): inspectedNegation { value = .Replace(payload) folded = .None }
+        Spawn(payload): inspectedNegation { value = .Spawn(payload) folded = .None }
+        MatchValue(payload): inspectedNegation {
+            value = .MatchValue(payload) folded = .None
+        }
+        Conditional(payload): inspectedNegation {
+            value = .Conditional(payload) folded = .None
+        }
+        FunctionValue(payload): inspectedNegation {
+            value = .FunctionValue(payload) folded = .None
+        }
+    }
+}
+
+fn emptyArguments() parsedArguments {
+    parsedArguments {
+        values = collections.NewList<u64>()
+        names = collections.NewList<Option<String>>()
+        nameSpans = collections.NewList<Option<sourceSpan>>()
+    }
+}
+
+fn captureModeCode(mode captureMode) i32 {
+    match mode {
+        Copy: 0
+        Own: 1
+        View: 2
+        Edit: 3
+    }
+}
+
+fn stripLeadingByte($value String) String {
+    const result = text.Slice(text.Copy(value), 1, text.ByteLen(value)) else error {
+        discard error
+        return ""
+    }
+    result
+}
+
+fn spanEnd(span sourceSpan) u64 {
+    span.offset + span.length
+}
+
+fn decimalText(value u64) String {
+    if value == 0 return "0"
+    var remaining = value
+    var reversed = ""
+    while remaining > 0 {
+        const digit = remaining % 10
+        reversed = asciiDigit(digit) + reversed
+        remaining = remaining / 10
+    }
+    reversed
+}
+
+fn asciiDigit(value u64) String {
+    if value == 0 return "0"
+    if value == 1 return "1"
+    if value == 2 return "2"
+    if value == 3 return "3"
+    if value == 4 return "4"
+    if value == 5 return "5"
+    if value == 6 return "6"
+    if value == 7 return "7"
+    if value == 8 return "8"
+    "9"
+}

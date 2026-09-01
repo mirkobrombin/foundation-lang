@@ -1,0 +1,211 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+struct tokenSnapshot {
+    kind tokenKind
+    text String
+    span sourceSpan
+    leadingSafetyProof bool
+}
+
+struct tokenBuffer {
+    values own arena<token>
+    length u64
+
+    fn len(self) u64 {
+        self.length
+    }
+
+    fn snapshot(&self, index u64) tokenSnapshot {
+        if index >= self.length {
+            panic("token index out of bounds")
+        }
+        const selected = self.values.take(index)
+        const value = match selected {
+            None: panic("token slot is empty")
+            Some(value): value
+        }
+        const result = tokenSnapshot {
+            kind = value.kind
+            text = text.Copy(value.text)
+            span = value.span
+            leadingSafetyProof = value.leadingSafetyProof
+        }
+        self.values.restore(index, $value)
+        result
+    }
+
+    fn drop(&self) void {
+        self.clear()
+    }
+
+    fn clear(&self) void {
+        self.values.clear()
+        self.length = 0
+    }
+}
+
+fn newTokenBuffer(
+    $tokens own collections.List<token>
+) own tokenBuffer {
+    var pending = tokens
+    var values = newArena<token>()
+    var length u64 = 0
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("token list invariant failed")
+            Some(value): value
+        }
+        discard values.add($value)
+        length += 1
+    }
+    own tokenBuffer { values = values length = length }
+}
+
+fn reverseList<T>(
+    $values own collections.List<T>
+) own collections.List<T> {
+    var pending = values
+    var result = collections.NewList<T>()
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("list invariant failed")
+            Some(value): value
+        }
+        result.PushFront($value)
+    }
+    result
+}
+
+fn copyStringList(
+    &values collections.List<String>
+) own collections.List<String> {
+    var originals = collections.NewList<String>()
+    var copies = collections.NewList<String>()
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("string list invariant failed")
+            Some(value): value
+        }
+        copies.PushFront($text.Copy(value))
+        originals.PushFront($value)
+    }
+    while !originals.IsEmpty() {
+        const value = match originals.PopFront() {
+            None: panic("string list restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront($value)
+    }
+    reverseList($copies)
+}
+
+fn copyTypeSyntax(&value typeSyntax) typeSyntax {
+    var originals = collections.NewList<typeSyntax>()
+    var copies = collections.NewList<typeSyntax>()
+    while !value.arguments.IsEmpty() {
+        var argument = match value.arguments.PopFront() {
+            None: panic("type argument list invariant failed")
+            Some(argument): argument
+        }
+        copies.PushFront($copyTypeSyntax(&argument))
+        originals.PushFront($argument)
+    }
+    while !originals.IsEmpty() {
+        const argument = match originals.PopFront() {
+            None: panic("type argument restore invariant failed")
+            Some(argument): argument
+        }
+        value.arguments.PushFront($argument)
+    }
+    typeSyntax {
+        name = text.Copy(value.name)
+        arguments = reverseList($copies)
+        span = value.span
+        arrayLength = value.arrayLength
+    }
+}
+
+fn copyTypeSyntaxList(
+    &values collections.List<typeSyntax>
+) own collections.List<typeSyntax> {
+    var originals = collections.NewList<typeSyntax>()
+    var copies = collections.NewList<typeSyntax>()
+    while !values.IsEmpty() {
+        var value = match values.PopFront() {
+            None: panic("type list invariant failed")
+            Some(value): value
+        }
+        copies.PushFront($copyTypeSyntax(&value))
+        originals.PushFront($value)
+    }
+    while !originals.IsEmpty() {
+        const value = match originals.PopFront() {
+            None: panic("type list restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront($value)
+    }
+    reverseList($copies)
+}
+
+fn copyBoolList(
+    &values collections.List<bool>
+) own collections.List<bool> {
+    var originals = collections.NewList<bool>()
+    var copies = collections.NewList<bool>()
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("boolean list invariant failed")
+            Some(value): value
+        }
+        copies.PushFront($value)
+        originals.PushFront($value)
+    }
+    while !originals.IsEmpty() {
+        const value = match originals.PopFront() {
+            None: panic("boolean list restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront($value)
+    }
+    reverseList($copies)
+}
+
+fn copyOptionalTypeList(
+    &values collections.List<Option<typeSyntax>>
+) own collections.List<Option<typeSyntax>> {
+    var originals = collections.NewList<Option<typeSyntax>>()
+    var copies = collections.NewList<Option<typeSyntax>>()
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("optional type list invariant failed")
+            Some(value): value
+        }
+        match value {
+            None: {
+                var copyMissing Option<typeSyntax> = .None
+                var originalMissing Option<typeSyntax> = .None
+                copies.PushFront($copyMissing)
+                originals.PushFront($originalMissing)
+            }
+            Some(type): {
+                var originalType = type
+                var copyValue Option<typeSyntax> = .Some(copyTypeSyntax(&originalType))
+                var originalValue Option<typeSyntax> = .Some(originalType)
+                copies.PushFront($copyValue)
+                originals.PushFront($originalValue)
+            }
+        }
+    }
+    while !originals.IsEmpty() {
+        const value = match originals.PopFront() {
+            None: panic("optional type list restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront($value)
+    }
+    reverseList($copies)
+}

@@ -1,0 +1,332 @@
+package foundation.compiler
+
+fn arenaFailure(message String) never {
+    panic(message)
+}
+
+struct arenaNode<T> {
+    value Option<T>
+    left Option<own arenaNode<T>>
+    right Option<own arenaNode<T>>
+}
+
+struct arenaVisit<T> {
+    node own arenaNode<T>
+    value Option<T>
+}
+
+struct arena<T> {
+    root Option<own arenaNode<T>>
+    length u64
+
+    fn len(self) u64 {
+        self.length
+    }
+
+    fn add(&self, $value T) u64 {
+        const id = self.length
+        const root = replace self.root with .None
+        match root {
+            None: {
+                if id != 0 {
+                    arenaFailure("arena root invariant failed")
+                }
+                self.root = .Some(newArenaNode($value))
+            }
+            Some(node): {
+                const key = id + 1
+                self.root = .Some(insertArenaNode(
+                        $node,
+                        key,
+                        highestArenaBit(key) / 2,
+                        $value
+                    ))
+            }
+        }
+        self.length += 1
+        id
+    }
+
+    fn take(&self, id u64) Option<T> {
+        if id >= self.length return .None
+        const root = replace self.root with .None
+        match root {
+            None: arenaFailure("arena root invariant failed")
+            Some(node): {
+                const key = id + 1
+                const arenaVisit {
+                    node as restored
+                    value
+                } = takeArenaNode($node, key, highestArenaBit(key) / 2)
+                self.root = .Some(restored)
+                value
+            }
+        }
+    }
+
+    fn restore(&self, id u64, $value T) void {
+        if id >= self.length {
+            arenaFailure("arena restore index out of bounds")
+        }
+        const root = replace self.root with .None
+        const node = match root {
+            None: {
+                arenaFailure("arena root invariant failed")
+            }
+            Some(node): node
+        }
+        const key = id + 1
+        self.root = .Some(restoreArenaNode(
+                $node,
+                key,
+                highestArenaBit(key) / 2,
+                $value
+            ))
+    }
+
+    fn truncate(&self, length u64) void {
+        while self.length > length {
+            const id = self.length - 1
+            const root = replace self.root with .None
+            match root {
+                None: arenaFailure("arena root invariant failed")
+                Some(node): {
+                    if id == 0 {
+                        discard node
+                    } else {
+                        const key = id + 1
+                        self.root = .Some(removeArenaNode(
+                                $node,
+                                key,
+                                highestArenaBit(key) / 2
+                            ))
+                    }
+                }
+            }
+            self.length = id
+        }
+    }
+
+    fn clear(&self) void {
+        const root = replace self.root with .None
+        discard root
+        self.length = 0
+    }
+
+    fn drop(&self) void {
+        self.clear()
+    }
+}
+
+fn newArena<T>() own arena<T> {
+    own arena<T> { root = .None length = 0 }
+}
+
+fn newArenaNode<T>($value T) own arenaNode<T> {
+    own arenaNode<T> {
+        value = .Some(value)
+        left = .None
+        right = .None
+    }
+}
+
+fn highestArenaBit(value u64) u64 {
+    var bit u64 = 1
+    while bit <= value / 2 {
+        bit *= 2
+    }
+    bit
+}
+
+fn insertArenaNode<T>(
+    $node own arenaNode<T>,
+    key u64,
+    mask u64,
+    $value T
+) own arenaNode<T> {
+    var current = node
+    if mask == 0 {
+        const previous = replace current.value with .None
+        match previous {
+            None: {
+                current.value = .Some(value)
+                return current
+            }
+            Some(existing): {
+                current.value = .Some(existing)
+                arenaFailure("arena slot is occupied")
+            }
+        }
+    }
+
+    if (key & mask) == 0 {
+        const selected = replace current.left with .None
+        match selected {
+            None: {
+                if mask != 1 {
+                    arenaFailure("arena left branch invariant failed")
+                }
+                current.left = .Some(newArenaNode($value))
+            }
+            Some(child): {
+                current.left = .Some(insertArenaNode(
+                        $child,
+                        key,
+                        mask / 2,
+                        $value
+                    ))
+            }
+        }
+    } else {
+        const selected = replace current.right with .None
+        match selected {
+            None: {
+                if mask != 1 {
+                    arenaFailure("arena right branch invariant failed")
+                }
+                current.right = .Some(newArenaNode($value))
+            }
+            Some(child): {
+                current.right = .Some(insertArenaNode(
+                        $child,
+                        key,
+                        mask / 2,
+                        $value
+                    ))
+            }
+        }
+    }
+    current
+}
+
+fn takeArenaNode<T>(
+    $node own arenaNode<T>,
+    key u64,
+    mask u64
+) arenaVisit<T> {
+    var current = node
+    if mask == 0 {
+        const value = replace current.value with .None
+        return arenaVisit<T> { node = current value = value }
+    }
+
+    if (key & mask) == 0 {
+        const selected = replace current.left with .None
+        const child = match selected {
+            None: arenaFailure("arena branch invariant failed")
+            Some(child): child
+        }
+        const arenaVisit {
+            node as restored
+            value
+        } = takeArenaNode($child, key, mask / 2)
+        current.left = .Some(restored)
+        return arenaVisit<T> { node = current value = value }
+    }
+
+    const selected = replace current.right with .None
+    const child = match selected {
+        None: arenaFailure("arena branch invariant failed")
+        Some(child): child
+    }
+    const arenaVisit {
+        node as restored
+        value
+    } = takeArenaNode($child, key, mask / 2)
+    current.right = .Some(restored)
+    arenaVisit<T> { node = current value = value }
+}
+
+fn restoreArenaNode<T>(
+    $node own arenaNode<T>,
+    key u64,
+    mask u64,
+    $value T
+) own arenaNode<T> {
+    var current = node
+    if mask == 0 {
+        const previous = replace current.value with .None
+        match previous {
+            None: {
+                current.value = .Some(value)
+                return current
+            }
+            Some(existing): {
+                current.value = .Some(existing)
+                arenaFailure("arena slot is occupied")
+            }
+        }
+    }
+
+    if (key & mask) == 0 {
+        const selected = replace current.left with .None
+        const child = match selected {
+            None: arenaFailure("arena branch invariant failed")
+            Some(child): child
+        }
+        current.left = .Some(restoreArenaNode(
+                $child,
+                key,
+                mask / 2,
+                $value
+            ))
+    } else {
+        const selected = replace current.right with .None
+        const child = match selected {
+            None: arenaFailure("arena branch invariant failed")
+            Some(child): child
+        }
+        current.right = .Some(restoreArenaNode(
+                $child,
+                key,
+                mask / 2,
+                $value
+            ))
+    }
+    current
+}
+
+fn removeArenaNode<T>(
+    $node own arenaNode<T>,
+    key u64,
+    mask u64
+) own arenaNode<T> {
+    var current = node
+    if mask == 1 {
+        if (key & mask) == 0 {
+            const selected = replace current.left with .None
+            match selected {
+                None: arenaFailure("arena branch invariant failed")
+                Some(child): {
+                    discard child
+                }
+            }
+        } else {
+            const selected = replace current.right with .None
+            match selected {
+                None: arenaFailure("arena branch invariant failed")
+                Some(child): {
+                    discard child
+                }
+            }
+        }
+        return current
+    }
+
+    if (key & mask) == 0 {
+        const selected = replace current.left with .None
+        const child = match selected {
+            None: arenaFailure("arena branch invariant failed")
+            Some(child): child
+        }
+        current.left = .Some(removeArenaNode($child, key, mask / 2))
+    } else {
+        const selected = replace current.right with .None
+        const child = match selected {
+            None: arenaFailure("arena branch invariant failed")
+            Some(child): child
+        }
+        current.right = .Some(removeArenaNode($child, key, mask / 2))
+    }
+    current
+}

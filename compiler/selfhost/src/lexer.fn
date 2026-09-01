@@ -171,6 +171,8 @@ fn punctuationToken(
     if value == 46 return .Some(simple(state, .Dot, ".", start))
     if value == 64 return .Some(simple(state, .At, "@", start))
     if value == 36 return .Some(simple(state, .Dollar, "$", start))
+    if value == 94 return .Some(simple(state, .Caret, "^", start))
+    if value == 126 return .Some(simple(state, .Tilde, "~", start))
     .None
 }
 
@@ -253,9 +255,12 @@ fn logicalToken(
         }
         return .Some(simple(state, .Ampersand, "&", start))
     }
-    if value == 124 && peek(state, 0) == 124 {
-        discard advance(&state)
-        return .Some(simple(state, .OrOr, "||", start))
+    if value == 124 {
+        if peek(state, 0) == 124 {
+            discard advance(&state)
+            return .Some(simple(state, .OrOr, "||", start))
+        }
+        return .Some(simple(state, .Pipe, "|", start))
     }
     .None
 }
