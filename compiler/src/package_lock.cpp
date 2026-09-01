@@ -45,12 +45,23 @@ std::optional<std::string> readFile(const std::filesystem::path &path) {
 bool replaceFile(const std::filesystem::path &source,
                  const std::filesystem::path &destination, std::error_code &error) {
 #ifdef _WIN32
-    if (MoveFileExW(source.c_str(), destination.c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
-        error.clear();
-        return true;
+    DWORD lastError = ERROR_SUCCESS;
+    for (unsigned int attempt = 0; attempt < 100; ++attempt) {
+        if (MoveFileExW(source.c_str(), destination.c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+            error.clear();
+            return true;
+        }
+        lastError = GetLastError();
+        if (lastError != ERROR_ACCESS_DENIED && lastError != ERROR_SHARING_VIOLATION &&
+            lastError != ERROR_LOCK_VIOLATION) {
+            break;
+        }
+        if (attempt + 1 < 100) {
+            Sleep(1);
+        }
     }
-    error = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+    error = std::error_code(static_cast<int>(lastError), std::system_category());
     return false;
 #else
     std::filesystem::rename(source, destination, error);
