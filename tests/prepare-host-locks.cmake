@@ -4,6 +4,7 @@ endif()
 
 file(GLOB_RECURSE lock_files
     LIST_DIRECTORIES false
+    "${ROOT}/compiler/selfhost/foundation.lock"
     "${ROOT}/examples/foundation.lock"
     "${ROOT}/examples/*/foundation.lock"
     "${ROOT}/examples/*/*/foundation.lock"

@@ -1,0 +1,694 @@
+package foundation.compiler
+
+import std.bytes
+import std.collections
+
+struct scanResult {
+    tokens own collections.List<token>
+    diagnostics own diagnostics
+}
+
+struct scanner {
+    source own bytes.Bytes
+    length u64
+    offset u64
+    line u64
+    column u64
+    sourceID u64
+    safetyCommentLine Option<u64>
+    diagnostics own diagnostics
+}
+
+struct tokenStart {
+    offset u64
+    line u64
+    column u64
+    leadingSafetyProof bool
+}
+
+fn scan($source String, sourceID u64) own scanResult {
+    scanBytes($bytes.FromText(source), sourceID)
+}
+
+fn scanBytes($source own bytes.Bytes, sourceID u64) own scanResult {
+    const length = source.Len() else error {
+        discard error
+        panic("source bytes invariant failed")
+    }
+    var state = own scanner {
+        source = source
+        length = length
+        offset = 0
+        line = 1
+        column = 1
+        sourceID = sourceID
+        safetyCommentLine = .None
+        diagnostics = newDiagnostics()
+    }
+    var reversed = collections.NewList<token>()
+    var done = false
+    while !done {
+        const token = next(&state)
+        done = tokenCode(token.kind) == 0
+        reversed.PushFront($token)
+    }
+
+    const diagnostics = replace state.diagnostics with newDiagnostics()
+    own scanResult {
+        tokens = reverseTokens($reversed)
+        diagnostics = diagnostics
+    }
+}
+
+fn reverseTokens(
+    $tokens own collections.List<token>
+) own collections.List<token> {
+    var pending = tokens
+    var result = collections.NewList<token>()
+    while !pending.IsEmpty() {
+        match pending.PopFront() {
+            None: panic("token list invariant failed")
+            Some(token): result.PushFront($token)
+        }
+    }
+    result
+}
+
+fn next(&state scanner) token {
+    while true {
+        skipIgnored(&state)
+
+        const start = tokenStart {
+            offset = state.offset
+            line = state.line
+            column = state.column
+            leadingSafetyProof = match state.safetyCommentLine {
+                None: false
+                Some(proofLine): state.line == proofLine + 1
+            }
+        }
+        state.safetyCommentLine = .None
+        if atEnd(state) {
+            return token {
+                kind = .Eof
+                text = ""
+                span = spanFrom(state, start.offset, start.line, start.column)
+                leadingSafetyProof = start.leadingSafetyProof
+            }
+        }
+
+        const value = advance(&state)
+        if isIdentifierStart(value) {
+            return identifier(&state, start)
+        }
+        if isDigit(value) {
+            return number(&state, start)
+        }
+        if value == 34 {
+            return stringToken(&state, start)
+        }
+        match punctuationToken(state, value, start) {
+            None: {}
+            Some(found): {
+                return found
+            }
+        }
+        match arithmeticToken(&state, value, start) {
+            None: {}
+            Some(found): {
+                return found
+            }
+        }
+        match comparisonToken(&state, value, start) {
+            None: {}
+            Some(found): {
+                return found
+            }
+        }
+        match logicalToken(&state, value, start) {
+            None: {}
+            Some(found): {
+                return found
+            }
+        }
+
+        state.diagnostics.reportError(
+            "FDN0001",
+            "unexpected character",
+            spanFrom(state, start.offset, start.line, start.column)
+        )
+    }
+    panic("unreachable lexer state")
+}
+
+fn simple(
+    state scanner,
+    kind tokenKind,
+    $value String,
+    start tokenStart
+) token {
+    token {
+        kind = kind
+        text = value
+        span = spanFrom(state, start.offset, start.line, start.column)
+        leadingSafetyProof = start.leadingSafetyProof
+    }
+}
+
+fn punctuationToken(
+    state scanner,
+    value u64,
+    start tokenStart
+) Option<token> {
+    if value == 40 return .Some(simple(state, .LeftParen, "(", start))
+    if value == 41 return .Some(simple(state, .RightParen, ")", start))
+    if value == 123 return .Some(simple(state, .LeftBrace, "{", start))
+    if value == 125 return .Some(simple(state, .RightBrace, "}", start))
+    if value == 91 return .Some(simple(state, .LeftBracket, "[", start))
+    if value == 93 return .Some(simple(state, .RightBracket, "]", start))
+    if value == 44 return .Some(simple(state, .Comma, ",", start))
+    if value == 58 return .Some(simple(state, .Colon, ":", start))
+    if value == 46 return .Some(simple(state, .Dot, ".", start))
+    if value == 64 return .Some(simple(state, .At, "@", start))
+    if value == 36 return .Some(simple(state, .Dollar, "$", start))
+    .None
+}
+
+fn arithmeticToken(
+    &state scanner,
+    value u64,
+    start tokenStart
+) Option<token> {
+    if value == 43 return .Some(equalsToken(
+            &state, .Plus, .PlusEqual, "+", "+=", start))
+    if value == 45 return .Some(equalsToken(
+            &state, .Minus, .MinusEqual, "-", "-=", start))
+    if value == 42 return .Some(equalsToken(
+            &state, .Star, .StarEqual, "*", "*=", start))
+    if value == 47 return .Some(equalsToken(
+            &state, .Slash, .SlashEqual, "/", "/=", start))
+    if value == 37 return .Some(equalsToken(
+            &state, .Percent, .PercentEqual, "%", "%=", start))
+    .None
+}
+
+fn equalsToken(
+    &state scanner,
+    plain tokenKind,
+    compound tokenKind,
+    $plainText String,
+    $compoundText String,
+    start tokenStart
+) token {
+    if peek(state, 0) == 61 {
+        discard advance(&state)
+        return simple(state, compound, $compoundText, start)
+    }
+    simple(state, plain, $plainText, start)
+}
+
+fn comparisonToken(
+    &state scanner,
+    value u64,
+    start tokenStart
+) Option<token> {
+    if value == 61 return .Some(equalsToken(
+            &state, .Equal, .EqualEqual, "=", "==", start))
+    if value == 33 return .Some(equalsToken(
+            &state, .Bang, .BangEqual, "!", "!=", start))
+    if value == 60 return .Some(angleToken(
+            &state, 60, .Less, .LessEqual, "<", "<=", start))
+    if value == 62 return .Some(angleToken(
+            &state, 62, .Greater, .GreaterEqual, ">", ">=", start))
+    .None
+}
+
+fn angleToken(
+    &state scanner,
+    marker u64,
+    plain tokenKind,
+    compound tokenKind,
+    $plainText String,
+    $compoundText String,
+    start tokenStart
+) token {
+    const previousDiffers = start.offset == 0 ||
+        byteAt(state.source, start.offset - 1) != marker
+    if peek(state, 0) == 61 && previousDiffers {
+        discard advance(&state)
+        return simple(state, compound, $compoundText, start)
+    }
+    simple(state, plain, $plainText, start)
+}
+
+fn logicalToken(
+    &state scanner,
+    value u64,
+    start tokenStart
+) Option<token> {
+    if value == 38 {
+        if peek(state, 0) == 38 {
+            discard advance(&state)
+            return .Some(simple(state, .AndAnd, "&&", start))
+        }
+        return .Some(simple(state, .Ampersand, "&", start))
+    }
+    if value == 124 && peek(state, 0) == 124 {
+        discard advance(&state)
+        return .Some(simple(state, .OrOr, "||", start))
+    }
+    .None
+}
+
+fn identifier(
+    &state scanner,
+    start tokenStart
+) token {
+    while isIdentifierPart(peek(state, 0)) {
+        discard advance(&state)
+    }
+    const value = slice(state.source, start.offset, state.offset)
+    token {
+        kind = keywordKind(value)
+        text = value
+        span = spanFrom(state, start.offset, start.line, start.column)
+        leadingSafetyProof = start.leadingSafetyProof
+    }
+}
+
+fn number(
+    &state scanner,
+    start tokenStart
+) token {
+    while isDigit(peek(state, 0)) {
+        discard advance(&state)
+    }
+    var kind tokenKind = .Integer
+    if peek(state, 0) == 46 && isDigit(peek(state, 1)) {
+        kind = .Floating
+        discard advance(&state)
+        while isDigit(peek(state, 0)) {
+            discard advance(&state)
+        }
+    }
+    if (peek(state, 0) == 101 || peek(state, 0) == 69) &&
+        (isDigit(peek(state, 1)) ||
+        ((peek(state, 1) == 43 || peek(state, 1) == 45) &&
+            isDigit(peek(state, 2)))) {
+        kind = .Floating
+        discard advance(&state)
+        if peek(state, 0) == 43 || peek(state, 0) == 45 {
+            discard advance(&state)
+        }
+        while isDigit(peek(state, 0)) {
+            discard advance(&state)
+        }
+    }
+    token {
+        kind = kind
+        text = slice(state.source, start.offset, state.offset)
+        span = spanFrom(state, start.offset, start.line, start.column)
+        leadingSafetyProof = start.leadingSafetyProof
+    }
+}
+
+fn stringToken(
+    &state scanner,
+    start tokenStart
+) token {
+    var builder = newByteBuilder(state.length)
+    while !atEnd(state) && peek(state, 0) != 34 {
+        const current = advance(&state)
+        if current == 0 {
+            state.diagnostics.reportError(
+                "FDN0004",
+                "NUL is not allowed in a string literal",
+                sourceSpan {
+                offset = state.offset - 1
+                length = 1
+                line = state.line
+                column = state.column - 1
+                source = state.sourceID
+            }
+            )
+            continue
+        }
+        if current != 92 {
+            writeByte(&builder, current)
+            continue
+        }
+        if atEnd(state) {
+            break
+        }
+        const escapeStart = state.offset - 1
+        const escapeLine = state.line
+        const escapeColumn = state.column - 1
+        const escaped = advance(&state)
+        if escaped == 110 {
+            writeByte(&builder, 10)
+            continue
+        }
+        if escaped == 114 {
+            writeByte(&builder, 13)
+            continue
+        }
+        if escaped == 116 {
+            writeByte(&builder, 9)
+            continue
+        }
+        if escaped == 48 {
+            writeByte(&builder, 0)
+            continue
+        }
+        if escaped == 34 {
+            writeByte(&builder, 34)
+            continue
+        }
+        if escaped == 92 {
+            writeByte(&builder, 92)
+            continue
+        }
+        state.diagnostics.reportError(
+            "FDN0003",
+            "invalid string escape",
+            sourceSpan {
+            offset = escapeStart
+            length = 2
+            line = escapeLine
+            column = escapeColumn
+            source = state.sourceID
+        }
+        )
+        writeByte(&builder, escaped)
+    }
+
+    if atEnd(state) {
+        state.diagnostics.reportError(
+            "FDN0002",
+            "unterminated string",
+            spanFrom(state, start.offset, start.line, start.column)
+        )
+    } else {
+        discard advance(&state)
+    }
+    const value = match finishString(&builder) {
+        Err(invalid): {
+            discard invalid
+            state.diagnostics.reportError(
+                "FDN0005",
+                "string literal is not valid UTF-8",
+                spanFrom(state, start.offset, start.line, start.column)
+            )
+            ""
+        }
+        Ok(text): text
+    }
+    token {
+        kind = .StringLiteral
+        text = value
+        span = spanFrom(state, start.offset, start.line, start.column)
+        leadingSafetyProof = start.leadingSafetyProof
+    }
+}
+
+fn skipIgnored(&state scanner) void {
+    while !atEnd(state) {
+        const value = peek(state, 0)
+        if isSpace(value) {
+            discard advance(&state)
+            continue
+        }
+        if value == 47 && peek(state, 1) == 47 {
+            skipLineComment(&state)
+            continue
+        }
+        if value == 47 && peek(state, 1) == 42 {
+            skipBlockComment(&state)
+            continue
+        }
+        return
+    }
+}
+
+fn skipLineComment(&state scanner) void {
+    const start = state.offset
+    const line = state.line
+    while !atEnd(state) && peek(state, 0) != 10 {
+        discard advance(&state)
+    }
+    if isSafetyComment(state, start) {
+        state.safetyCommentLine = .Some(line)
+    }
+}
+
+fn skipBlockComment(&state scanner) void {
+    const start = state.offset
+    const line = state.line
+    const column = state.column
+    discard advance(&state)
+    discard advance(&state)
+    var depth u64 = 1
+    while !atEnd(state) && depth != 0 {
+        if peek(state, 0) == 47 && peek(state, 1) == 42 {
+            discard advance(&state)
+            discard advance(&state)
+            depth += 1
+            continue
+        }
+        if peek(state, 0) == 42 && peek(state, 1) == 47 {
+            discard advance(&state)
+            discard advance(&state)
+            depth -= 1
+            continue
+        }
+        discard advance(&state)
+    }
+    if depth != 0 {
+        state.diagnostics.reportError(
+            "FDN0006",
+            "unterminated block comment",
+            spanFrom(state, start, line, column)
+        )
+    }
+}
+
+fn keywordKind(value String) tokenKind {
+    match declarationKeyword(value) {
+        None: {}
+        Some(kind): {
+            return kind
+        }
+    }
+    match typeKeyword(value) {
+        None: {}
+        Some(kind): {
+            return kind
+        }
+    }
+    match statementKeyword(value) {
+        None: {}
+        Some(kind): {
+            return kind
+        }
+    }
+    match controlKeyword(value) {
+        None: {}
+        Some(kind): {
+            return kind
+        }
+    }
+    match ownershipKeyword(value) {
+        None: .Identifier
+        Some(kind): kind
+    }
+}
+
+fn declarationKeyword(value String) Option<tokenKind> {
+    if value == "package" return .Some(.Package)
+    if value == "import" return .Some(.Import)
+    if value == "as" return .Some(.As)
+    if value == "extern" return .Some(.Extern)
+    if value == "struct" return .Some(.Struct)
+    if value == "service" return .Some(.Service)
+    if value == "methods" return .Some(.Methods)
+    if value == "enum" return .Some(.Enum)
+    if value == "state_machine" return .Some(.StateMachine)
+    if value == "pipeline" return .Some(.Pipeline)
+    .None
+}
+
+fn typeKeyword(value String) Option<tokenKind> {
+    if value == "saga" return .Some(.Saga)
+    if value == "contract" return .Some(.Contract)
+    if value == "attribute" return .Some(.Attribute)
+    if value == "implements" return .Some(.Implements)
+    if value == "extends" return .Some(.Extends)
+    if value == "delegate" return .Some(.Delegate)
+    if value == "fn" return .Some(.Fn)
+    if value == "ctor" return .Some(.Ctor)
+    if value == "action" return .Some(.Action)
+    if value == "task" return .Some(.Task)
+    .None
+}
+
+fn statementKeyword(value String) Option<tokenKind> {
+    if value == "unsafe" return .Some(.Unsafe)
+    if value == "spawn" return .Some(.Spawn)
+    if value == "let" return .Some(.Let)
+    if value == "const" return .Some(.Const)
+    if value == "var" return .Some(.Var)
+    if value == "return" return .Some(.Return)
+    if value == "discard" return .Some(.Discard)
+    if value == "if" return .Some(.If)
+    if value == "else" return .Some(.Else)
+    if value == "while" return .Some(.While)
+    .None
+}
+
+fn controlKeyword(value String) Option<tokenKind> {
+    if value == "for" return .Some(.For)
+    if value == "in" return .Some(.In)
+    if value == "break" return .Some(.Break)
+    if value == "continue" return .Some(.Continue)
+    if value == "select" return .Some(.Select)
+    if value == "timeout" return .Some(.Timeout)
+    if value == "match" return .Some(.Match)
+    if value == "capture" return .Some(.Capture)
+    if value == "replace" return .Some(.Replace)
+    if value == "with" return .Some(.With)
+    .None
+}
+
+fn ownershipKeyword(value String) Option<tokenKind> {
+    if value == "new" return .Some(.New)
+    if value == "own" return .Some(.Own)
+    if value == "view" return .Some(.View)
+    if value == "edit" return .Some(.Edit)
+    if value == "true" return .Some(.True)
+    if value == "false" return .Some(.False)
+    .None
+}
+
+fn atEnd(state scanner) bool {
+    state.offset >= state.length
+}
+
+fn peek(state scanner, distance u64) u64 {
+    const index = state.offset + distance
+    if index >= state.length {
+        return 0
+    }
+    byteAt(state.source, index)
+}
+
+fn advance(&state scanner) u64 {
+    const value = byteAt(state.source, state.offset)
+    state.offset += 1
+    if value == 10 {
+        state.line += 1
+        state.column = 1
+    } else {
+        state.column += 1
+    }
+    value
+}
+
+fn spanFrom(
+    state scanner,
+    offset u64,
+    line u64,
+    column u64
+) sourceSpan {
+    sourceSpan {
+        offset = offset
+        length = state.offset - offset
+        line = line
+        column = column
+        source = state.sourceID
+    }
+}
+
+fn isIdentifierStart(value u64) bool {
+    (value >= 97 && value <= 122) ||
+        (value >= 65 && value <= 90) || value == 95
+}
+
+fn isIdentifierPart(value u64) bool {
+    isIdentifierStart(value) || isDigit(value)
+}
+
+fn isDigit(value u64) bool {
+    value >= 48 && value <= 57
+}
+
+fn isSpace(value u64) bool {
+    value == 32 || (value >= 9 && value <= 13)
+}
+
+fn byteAt(value bytes.Bytes, index u64) u64 {
+    match value.At(index) {
+        Err(error): {
+            discard error
+            panic("source byte invariant failed")
+        }
+        Ok(byte): byte
+    }
+}
+
+fn slice(value bytes.Bytes, start u64, end u64) String {
+    const part = match value.Slice(start, end) {
+        Err(error): {
+            discard error
+            panic("source boundary invariant failed")
+        }
+        Ok(part): part
+    }
+    match part.Text() {
+        Err(error): {
+            discard error
+            panic("source text invariant failed")
+        }
+        Ok(text): text
+    }
+}
+
+fn newByteBuilder(limit u64) own bytes.Builder {
+    match bytes.NewBuilder(limit) {
+        Err(error): {
+            discard error
+            panic("string builder open failed")
+        }
+        Ok(builder): builder
+    }
+}
+
+fn writeByte(&builder bytes.Builder, value u64) void {
+    match builder.WriteByte(value) {
+        Err(error): {
+            discard error
+            panic("string builder write failed")
+        }
+        Ok: {}
+    }
+}
+
+fn finishString(&builder bytes.Builder) Result<String, bytes.Error> {
+    match builder.Finish() {
+        Err(error): .Err(error)
+        Ok(value): value.Text()
+    }
+}
+
+fn isSafetyComment(state scanner, start u64) bool {
+    if state.offset - start < 10 return false
+    byteAt(state.source, start) == 47 &&
+        byteAt(state.source, start + 1) == 47 &&
+        byteAt(state.source, start + 2) == 32 &&
+        byteAt(state.source, start + 3) == 83 &&
+        byteAt(state.source, start + 4) == 65 &&
+        byteAt(state.source, start + 5) == 70 &&
+        byteAt(state.source, start + 6) == 69 &&
+        byteAt(state.source, start + 7) == 84 &&
+        byteAt(state.source, start + 8) == 89 &&
+        byteAt(state.source, start + 9) == 58
+}

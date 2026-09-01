@@ -1,0 +1,297 @@
+package foundation.compiler
+
+import std.bytes
+import std.collections
+
+fn takeToken(&tokens collections.List<token>) token {
+    match tokens.PopFront() {
+        None: panic("expected token")
+        Some(token): token
+    }
+}
+
+fn expectKind(&tokens collections.List<token>, kind tokenKind) void {
+    const token = takeToken(&tokens)
+    expect(tokenCode(token.kind) == tokenCode(kind))
+}
+
+fn takeDiagnostic(
+    &diagnostics collections.List<diagnostic>
+) diagnostic {
+    match diagnostics.PopFront() {
+        None: panic("expected diagnostic")
+        Some(diagnostic): diagnostic
+    }
+}
+
+fn writeSourceByte(&builder bytes.Builder, value u64) void {
+    builder.WriteByte(value) else error {
+        discard error
+        panic("test source builder failed")
+    }
+}
+
+test "lexer classifies every keyword" {
+    const source = "package import as extern struct service methods enum " +
+        "state_machine pipeline saga contract attribute implements extends " +
+        "delegate fn ctor action task test unsafe spawn let const var return " +
+        "discard if else while for in break continue select timeout match " +
+        "capture replace with new own view edit true false"
+    const scanResult {
+        tokens as scanned
+        diagnostics as diagnostics
+    } = scan($source, 7)
+    var tokens = scanned
+
+    expectKind(&tokens, .Package)
+    expectKind(&tokens, .Import)
+    expectKind(&tokens, .As)
+    expectKind(&tokens, .Extern)
+    expectKind(&tokens, .Struct)
+    expectKind(&tokens, .Service)
+    expectKind(&tokens, .Methods)
+    expectKind(&tokens, .Enum)
+    expectKind(&tokens, .StateMachine)
+    expectKind(&tokens, .Pipeline)
+    expectKind(&tokens, .Saga)
+    expectKind(&tokens, .Contract)
+    expectKind(&tokens, .Attribute)
+    expectKind(&tokens, .Implements)
+    expectKind(&tokens, .Extends)
+    expectKind(&tokens, .Delegate)
+    expectKind(&tokens, .Fn)
+    expectKind(&tokens, .Ctor)
+    expectKind(&tokens, .Action)
+    expectKind(&tokens, .Task)
+    expectKind(&tokens, .Identifier)
+    expectKind(&tokens, .Unsafe)
+    expectKind(&tokens, .Spawn)
+    expectKind(&tokens, .Let)
+    expectKind(&tokens, .Const)
+    expectKind(&tokens, .Var)
+    expectKind(&tokens, .Return)
+    expectKind(&tokens, .Discard)
+    expectKind(&tokens, .If)
+    expectKind(&tokens, .Else)
+    expectKind(&tokens, .While)
+    expectKind(&tokens, .For)
+    expectKind(&tokens, .In)
+    expectKind(&tokens, .Break)
+    expectKind(&tokens, .Continue)
+    expectKind(&tokens, .Select)
+    expectKind(&tokens, .Timeout)
+    expectKind(&tokens, .Match)
+    expectKind(&tokens, .Capture)
+    expectKind(&tokens, .Replace)
+    expectKind(&tokens, .With)
+    expectKind(&tokens, .New)
+    expectKind(&tokens, .Own)
+    expectKind(&tokens, .View)
+    expectKind(&tokens, .Edit)
+    expectKind(&tokens, .True)
+    expectKind(&tokens, .False)
+    expectKind(&tokens, .Eof)
+    expect(tokens.IsEmpty())
+    expect(!diagnostics.hasErrors())
+}
+
+test "lexer recognizes punctuation and compound operators" {
+    const source = "(){}[],:. = == ! != + += - -= * *= / /= % %= " +
+        "< <= > >= && || @ & $"
+    const scanResult {
+        tokens as scanned
+        diagnostics as diagnostics
+    } = scan($source, 0)
+    var tokens = scanned
+
+    expectKind(&tokens, .LeftParen)
+    expectKind(&tokens, .RightParen)
+    expectKind(&tokens, .LeftBrace)
+    expectKind(&tokens, .RightBrace)
+    expectKind(&tokens, .LeftBracket)
+    expectKind(&tokens, .RightBracket)
+    expectKind(&tokens, .Comma)
+    expectKind(&tokens, .Colon)
+    expectKind(&tokens, .Dot)
+    expectKind(&tokens, .Equal)
+    expectKind(&tokens, .EqualEqual)
+    expectKind(&tokens, .Bang)
+    expectKind(&tokens, .BangEqual)
+    expectKind(&tokens, .Plus)
+    expectKind(&tokens, .PlusEqual)
+    expectKind(&tokens, .Minus)
+    expectKind(&tokens, .MinusEqual)
+    expectKind(&tokens, .Star)
+    expectKind(&tokens, .StarEqual)
+    expectKind(&tokens, .Slash)
+    expectKind(&tokens, .SlashEqual)
+    expectKind(&tokens, .Percent)
+    expectKind(&tokens, .PercentEqual)
+    expectKind(&tokens, .Less)
+    expectKind(&tokens, .LessEqual)
+    expectKind(&tokens, .Greater)
+    expectKind(&tokens, .GreaterEqual)
+    expectKind(&tokens, .AndAnd)
+    expectKind(&tokens, .OrOr)
+    expectKind(&tokens, .At)
+    expectKind(&tokens, .Ampersand)
+    expectKind(&tokens, .Dollar)
+    expectKind(&tokens, .Eof)
+    expect(!diagnostics.hasErrors())
+}
+
+test "lexer preserves literal values and spans" {
+    const source = "123 4.5 6e+2 \"a\\n\\t\\\"\\\\b\""
+    const scanResult {
+        tokens as scanned
+        diagnostics as diagnostics
+    } = scan($source, 11)
+    var tokens = scanned
+
+    const integer = takeToken(&tokens)
+    expect(tokenCode(integer.kind) == tokenCode(.Integer))
+    expect(integer.text == "123")
+    expect(integer.span.offset == 0)
+    expect(integer.span.length == 3)
+    expect(integer.span.line == 1)
+    expect(integer.span.column == 1)
+    expect(integer.span.source == 11)
+
+    const decimal = takeToken(&tokens)
+    expect(tokenCode(decimal.kind) == tokenCode(.Floating))
+    expect(decimal.text == "4.5")
+
+    const exponent = takeToken(&tokens)
+    expect(tokenCode(exponent.kind) == tokenCode(.Floating))
+    expect(exponent.text == "6e+2")
+
+    const string = takeToken(&tokens)
+    expect(tokenCode(string.kind) == tokenCode(.StringLiteral))
+    expect(string.text == "a\n\t\"\\b")
+    expectKind(&tokens, .Eof)
+    expect(!diagnostics.hasErrors())
+}
+
+test "lexer tracks nested comments and safety proofs" {
+    const source = "/* outer /* inner */ done */\n" +
+        "// SAFETY: callback is live.\nunsafe {}"
+    const scanResult {
+        tokens as scanned
+        diagnostics as diagnostics
+    } = scan($source, 0)
+    var tokens = scanned
+
+    const unsafeToken = takeToken(&tokens)
+    expect(tokenCode(unsafeToken.kind) == tokenCode(.Unsafe))
+    expect(unsafeToken.leadingSafetyProof)
+    expect(unsafeToken.span.line == 3)
+    const brace = takeToken(&tokens)
+    expect(tokenCode(brace.kind) == tokenCode(.LeftBrace))
+    expect(!brace.leadingSafetyProof)
+    expectKind(&tokens, .RightBrace)
+    expectKind(&tokens, .Eof)
+    expect(!diagnostics.hasErrors())
+}
+
+test "lexer reports malformed input in source order" {
+    const source = "\"bad\\q\" | /*"
+    const scanResult {
+        tokens as scanned
+        diagnostics as found
+    } = scan($source, 3)
+    var tokens = scanned
+    const stringToken = takeToken(&tokens)
+    expect(tokenCode(stringToken.kind) == tokenCode(.StringLiteral))
+    expectKind(&tokens, .Eof)
+    expect(found.hasErrors())
+    expect(found.len() == 3)
+
+    var diagnostics = $found.takeAll()
+    const invalidEscape = takeDiagnostic(&diagnostics)
+    expect(invalidEscape.code == "FDN0003")
+    expect(invalidEscape.span.source == 3)
+    const unexpected = takeDiagnostic(&diagnostics)
+    expect(unexpected.code == "FDN0001")
+    const unterminated = takeDiagnostic(&diagnostics)
+    expect(unterminated.code == "FDN0006")
+    expect(diagnostics.IsEmpty())
+}
+
+test "lexer rejects invalid UTF-8 string values" {
+    const opened = bytes.NewBuilder(3) else error {
+        discard error
+        panic("test source builder open failed")
+    }
+    var source = opened
+    writeSourceByte(&source, 34)
+    writeSourceByte(&source, 195)
+    writeSourceByte(&source, 34)
+    const built = source.Finish() else error {
+        discard error
+        panic("test source builder finish failed")
+    }
+    const scanResult {
+        tokens as scanned
+        diagnostics as found
+    } = scanBytes($built, 9)
+    var tokens = scanned
+    const stringToken = takeToken(&tokens)
+    expect(tokenCode(stringToken.kind) == tokenCode(.StringLiteral))
+    expect(stringToken.text == "")
+    expectKind(&tokens, .Eof)
+
+    var diagnostics = $found.takeAll()
+    const invalid = takeDiagnostic(&diagnostics)
+    expect(invalid.code == "FDN0005")
+    expect(invalid.span.source == 9)
+    expect(diagnostics.IsEmpty())
+}
+
+test "lexer rejects NUL inside string values" {
+    const opened = bytes.NewBuilder(5) else error {
+        discard error
+        panic("test source builder open failed")
+    }
+    var source = opened
+    writeSourceByte(&source, 34)
+    writeSourceByte(&source, 97)
+    writeSourceByte(&source, 0)
+    writeSourceByte(&source, 98)
+    writeSourceByte(&source, 34)
+    const built = source.Finish() else error {
+        discard error
+        panic("test source builder finish failed")
+    }
+    const scanResult {
+        tokens as scanned
+        diagnostics as found
+    } = scanBytes($built, 4)
+    var tokens = scanned
+    const stringToken = takeToken(&tokens)
+    expect(stringToken.text == "ab")
+    expectKind(&tokens, .Eof)
+
+    var diagnostics = $found.takeAll()
+    const invalid = takeDiagnostic(&diagnostics)
+    expect(invalid.code == "FDN0004")
+    expect(invalid.span.source == 4)
+    expect(diagnostics.IsEmpty())
+}
+
+test "diagnostics stop after the limit marker" {
+    var diagnostics = newDiagnostics()
+    var index = 0
+    const span = sourceSpan {
+        offset = 0
+        length = 1
+        line = 1
+        column = 1
+        source = 0
+    }
+    while index < 110 {
+        diagnostics.reportError("FDN9999", "failure", span)
+        index += 1
+    }
+    expect(diagnostics.len() == 101)
+    expect(diagnostics.hasErrors())
+}

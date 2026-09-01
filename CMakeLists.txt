@@ -1991,6 +1991,18 @@ if(BUILD_TESTING)
     )
     add_test(NAME runtime.allocation-counters COMMAND foundation_runtime_counter_test)
     add_test(
+        NAME compiler.selfhost.llvm
+        COMMAND $<TARGET_FILE:foundationc> test
+            ${CMAKE_CURRENT_SOURCE_DIR}/compiler/selfhost
+            --backend llvm
+    )
+    add_test(
+        NAME compiler.selfhost.c
+        COMMAND $<TARGET_FILE:foundationc> test
+            ${CMAKE_CURRENT_SOURCE_DIR}/compiler/selfhost
+            --backend c
+    )
+    add_test(
         NAME compiler.check.accept
         COMMAND foundationc check ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/hello.fn
     )

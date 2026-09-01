@@ -1,0 +1,126 @@
+package foundation.compiler
+
+import std.collections
+
+struct sourceSpan {
+    offset u64
+    length u64
+    line u64
+    column u64
+    source u64
+}
+
+enum diagnosticSeverity {
+    Error
+    Warning
+}
+
+struct diagnostic {
+    code String
+    message String
+    span sourceSpan
+    severity diagnosticSeverity
+}
+
+struct diagnostics {
+    values own collections.List<diagnostic>
+    count i32
+    errors i32
+
+    fn len(self) i32 {
+        self.count
+    }
+
+    fn hasErrors(self) bool {
+        self.errors != 0
+    }
+
+    fn reportError(
+        &self,
+        $code String,
+        $message String,
+        span sourceSpan
+    ) void {
+        self.add(.Error, $code, $message, span)
+    }
+
+    fn reportWarning(
+        &self,
+        $code String,
+        $message String,
+        span sourceSpan
+    ) void {
+        self.add(.Warning, $code, $message, span)
+    }
+
+    fn add(
+        &self,
+        severity diagnosticSeverity,
+        $code String,
+        $message String,
+        span sourceSpan
+    ) void {
+        if self.count > 100 {
+            return
+        }
+        if self.count == 100 {
+            self.values.PushFront(diagnostic {
+                code = "FDN0000"
+                message = "too many diagnostics"
+                span = span
+                severity = severity
+            })
+            self.count += 1
+            if isErrorSeverity(severity) {
+                self.errors += 1
+            }
+            return
+        }
+        self.values.PushFront(diagnostic {
+            code = code
+            message = message
+            span = span
+            severity = severity
+        })
+        self.count += 1
+        if isErrorSeverity(severity) {
+            self.errors += 1
+        }
+    }
+
+    fn takeAll($self) own collections.List<diagnostic> {
+        const diagnostics { values count errors } = self
+        discard count
+        discard errors
+        reverseDiagnostics($values)
+    }
+}
+
+fn isErrorSeverity(severity diagnosticSeverity) bool {
+    match severity {
+        Error: true
+        Warning: false
+    }
+}
+
+fn newDiagnostics() own diagnostics {
+    own diagnostics {
+        values = collections.NewList<diagnostic>()
+        count = 0
+        errors = 0
+    }
+}
+
+fn reverseDiagnostics(
+    $values own collections.List<diagnostic>
+) own collections.List<diagnostic> {
+    var pending = values
+    var result = collections.NewList<diagnostic>()
+    while !pending.IsEmpty() {
+        match pending.PopFront() {
+            None: panic("diagnostic list invariant failed")
+            Some(value): result.PushFront($value)
+        }
+    }
+    result
+}

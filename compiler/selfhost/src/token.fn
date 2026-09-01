@@ -1,0 +1,273 @@
+package foundation.compiler
+
+enum tokenKind {
+    Eof
+    Identifier
+    Integer
+    Floating
+    StringLiteral
+    Package
+    Import
+    As
+    Extern
+    Struct
+    Service
+    Methods
+    Enum
+    StateMachine
+    Pipeline
+    Saga
+    Contract
+    Attribute
+    Implements
+    Extends
+    Delegate
+    Fn
+    Ctor
+    Action
+    Task
+    Test
+    Unsafe
+    Spawn
+    Let
+    Const
+    Var
+    Return
+    Discard
+    If
+    Else
+    While
+    For
+    In
+    Break
+    Continue
+    Select
+    Timeout
+    Match
+    Capture
+    Replace
+    With
+    New
+    Own
+    View
+    Edit
+    True
+    False
+    LeftParen
+    RightParen
+    LeftBrace
+    RightBrace
+    LeftBracket
+    RightBracket
+    Comma
+    Colon
+    Dot
+    Equal
+    EqualEqual
+    Bang
+    BangEqual
+    Plus
+    PlusEqual
+    Minus
+    MinusEqual
+    Star
+    StarEqual
+    Slash
+    SlashEqual
+    Percent
+    PercentEqual
+    Less
+    LessEqual
+    Greater
+    GreaterEqual
+    AndAnd
+    OrOr
+    At
+    Ampersand
+    Dollar
+}
+
+struct token {
+    kind tokenKind
+    text String
+    span sourceSpan
+    leadingSafetyProof bool
+}
+
+fn tokenName(kind tokenKind) String {
+    match kind {
+        Eof: "end of file"
+        Identifier: "identifier"
+        Integer: "integer"
+        Floating: "floating-point number"
+        StringLiteral: "string"
+        Package: "package"
+        Import: "import"
+        As: "as"
+        Extern: "extern"
+        Struct: "struct"
+        Service: "service"
+        Methods: "methods"
+        Enum: "enum"
+        StateMachine: "state_machine"
+        Pipeline: "pipeline"
+        Saga: "saga"
+        Contract: "contract"
+        Attribute: "attribute"
+        Implements: "implements"
+        Extends: "extends"
+        Delegate: "delegate"
+        Fn: "fn"
+        Ctor: "ctor"
+        Action: "action"
+        Task: "task"
+        Test: "test"
+        Unsafe: "unsafe"
+        Spawn: "spawn"
+        Let: "let"
+        Const: "const"
+        Var: "var"
+        Return: "return"
+        Discard: "discard"
+        If: "if"
+        Else: "else"
+        While: "while"
+        For: "for"
+        In: "in"
+        Break: "break"
+        Continue: "continue"
+        Select: "select"
+        Timeout: "timeout"
+        Match: "match"
+        Capture: "capture"
+        Replace: "replace"
+        With: "with"
+        New: "new"
+        Own: "own"
+        View: "view"
+        Edit: "edit"
+        True: "true"
+        False: "false"
+        LeftParen: "("
+        RightParen: ")"
+        LeftBrace: "{"
+        RightBrace: "}"
+        LeftBracket: "["
+        RightBracket: "]"
+        Comma: ","
+        Colon: ":"
+        Dot: "."
+        Equal: "="
+        EqualEqual: "=="
+        Bang: "!"
+        BangEqual: "!="
+        Plus: "+"
+        PlusEqual: "+="
+        Minus: "-"
+        MinusEqual: "-="
+        Star: "*"
+        StarEqual: "*="
+        Slash: "/"
+        SlashEqual: "/="
+        Percent: "%"
+        PercentEqual: "%="
+        Less: "<"
+        LessEqual: "<="
+        Greater: ">"
+        GreaterEqual: ">="
+        AndAnd: "&&"
+        OrOr: "||"
+        At: "@"
+        Ampersand: "&"
+        Dollar: "$"
+    }
+}
+
+fn tokenCode(kind tokenKind) i32 {
+    match kind {
+        Eof: 0
+        Identifier: 1
+        Integer: 2
+        Floating: 3
+        StringLiteral: 4
+        Package: 5
+        Import: 6
+        As: 7
+        Extern: 8
+        Struct: 9
+        Service: 10
+        Methods: 11
+        Enum: 12
+        StateMachine: 13
+        Pipeline: 14
+        Saga: 15
+        Contract: 16
+        Attribute: 17
+        Implements: 18
+        Extends: 19
+        Delegate: 20
+        Fn: 21
+        Ctor: 22
+        Action: 23
+        Task: 24
+        Test: 25
+        Unsafe: 26
+        Spawn: 27
+        Let: 28
+        Const: 29
+        Var: 30
+        Return: 31
+        Discard: 32
+        If: 33
+        Else: 34
+        While: 35
+        For: 36
+        In: 37
+        Break: 38
+        Continue: 39
+        Select: 40
+        Timeout: 41
+        Match: 42
+        Capture: 43
+        Replace: 44
+        With: 45
+        New: 46
+        Own: 47
+        View: 48
+        Edit: 49
+        True: 50
+        False: 51
+        LeftParen: 52
+        RightParen: 53
+        LeftBrace: 54
+        RightBrace: 55
+        LeftBracket: 56
+        RightBracket: 57
+        Comma: 58
+        Colon: 59
+        Dot: 60
+        Equal: 61
+        EqualEqual: 62
+        Bang: 63
+        BangEqual: 64
+        Plus: 65
+        PlusEqual: 66
+        Minus: 67
+        MinusEqual: 68
+        Star: 69
+        StarEqual: 70
+        Slash: 71
+        SlashEqual: 72
+        Percent: 73
+        PercentEqual: 74
+        Less: 75
+        LessEqual: 76
+        Greater: 77
+        GreaterEqual: 78
+        AndAnd: 79
+        OrOr: 80
+        At: 81
+        Ampersand: 82
+        Dollar: 83
+    }
+}
