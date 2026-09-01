@@ -1,0 +1,63 @@
+package foundation.compiler
+
+enum codeStandardProfile {
+    Valid
+    Standard
+    Strict
+}
+
+enum codeStandardSeverity {
+    Off
+    Warning
+    Error
+}
+
+struct codeStandardRuleSetting {
+    code String
+    severity codeStandardSeverity
+}
+
+fn parseCodeStandardProfile(value String) Option<codeStandardProfile> {
+    if value == "valid" return .Some(.Valid)
+    if value == "standard" return .Some(.Standard)
+    if value == "strict" return .Some(.Strict)
+    .None
+}
+
+fn parseCodeStandardSeverity(value String) Option<codeStandardSeverity> {
+    if value == "off" return .Some(.Off)
+    if value == "warning" return .Some(.Warning)
+    if value == "error" return .Some(.Error)
+    .None
+}
+
+fn codeStandardProfileName(profile codeStandardProfile) String {
+    match profile {
+        Valid: "valid"
+        Standard: "standard"
+        Strict: "strict"
+    }
+}
+
+fn codeStandardSeverityName(severity codeStandardSeverity) String {
+    match severity {
+        Off: "off"
+        Warning: "warning"
+        Error: "error"
+    }
+}
+
+fn codeStandardWidth(profile codeStandardProfile) u64 {
+    match profile {
+        Valid: 0
+        Standard: 100
+        Strict: 80
+    }
+}
+
+fn configurableCodeStandardRule(code String) bool {
+    code == "FCS1001" || code == "FCS1002" || code == "FCS2001" ||
+        code == "FCS2002" || code == "FCS3001" || code == "FCS4001" ||
+        code == "FCS5001" || code == "FCS6001" || code == "FCS7001" ||
+        code == "FCS7002" || code == "FCS7003" || code == "FCS7004"
+}

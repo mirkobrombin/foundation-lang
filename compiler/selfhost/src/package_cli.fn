@@ -1,0 +1,659 @@
+package foundation.compiler
+
+import std.format
+import std.fs
+import std.io
+import std.path
+import std.text
+
+struct packageOptions {
+    project String
+    cache Option<String>
+    target Option<targetPlatform>
+    registries own arena<packageRegistryRoot>
+}
+
+fn newPackageOptions(project String) own packageOptions {
+    own packageOptions {
+        project = text.Copy(project)
+        cache = .None
+        target = .None
+        registries = newArena<packageRegistryRoot>()
+    }
+}
+
+fn packageUsage() String {
+    "usage:\n" +
+        "  foundationc package init <project> <package-name>\n" +
+        "  foundationc package resolve <project> [--target <platform>] " +
+        "[--registry <identity>=<path>]...\n" +
+        "  foundationc package fetch <project> [--cache <path>] " +
+        "[--registry <identity>=<path>]...\n" +
+        "  foundationc package verify <project> [--cache <path>]\n" +
+        "  foundationc package inspect <project>\n" +
+        "  foundationc package prune <project> [--cache <path>]\n"
+}
+
+fn packageArgument(&arguments arena<String>, index u64) String {
+    const value = match arguments.take(index) {
+        None: panic("package argument slot is empty")
+        Some(value): value
+    }
+    const result = text.Copy(value)
+    arguments.restore(index, $value)
+    result
+}
+
+fn parsePackageOptions(
+    &arguments arena<String>,
+    start u64,
+    &options packageOptions
+) bool {
+    var index = start
+    while index < arguments.len() {
+        if index + 1 >= arguments.len() return false
+        const option = packageArgument(&arguments, index)
+        const value = packageArgument(&arguments, index + 1)
+        if option == "--cache" {
+            match copyPackageStringOption(options.cache) {
+                Some(existing): {
+                    discard existing
+                    return false
+                }
+                None: {}
+            }
+            if text.IsEmpty(value) return false
+            options.cache = .Some(value)
+            index += 2
+            continue
+        }
+        if option == "--target" {
+            match options.target {
+                Some(existing): {
+                    discard existing
+                    return false
+                }
+                None: {}
+            }
+            const parsed = parseTargetPlatformText(value)
+            match parsed {
+                None: {
+                    return false
+                }
+                Some(target): {
+                    options.target = .Some(target)
+                }
+            }
+            index += 2
+            continue
+        }
+        if option == "--registry" {
+            const separator = text.Find(value, "=")
+            const offset = match separator {
+                None: {
+                    return false
+                }
+                Some(offset): offset
+            }
+            if offset == 0 || offset + 1 == text.ByteLen(value) return false
+            discard options.registries.add(packageRegistryRoot {
+                identity = packageSlice(value, 0, offset)
+                root = packageSlice(value, offset + 1, text.ByteLen(value))
+            })
+            index += 2
+            continue
+        }
+        return false
+    }
+    true
+}
+
+fn packageManifestPath(project String) String {
+    if path.FileName(project) == "foundation.package" return text.Copy(project)
+    path.Join(project, "foundation.package")
+}
+
+fn packageLockPath(project String) String {
+    path.Join(path.Parent(packageManifestPath(project)), "foundation.lock")
+}
+
+fn packageCacheOption(
+    &options packageOptions,
+    &errors arena<packageError>
+) Option<String> {
+    match copyPackageStringOption(options.cache) {
+        Some(value): {
+            return .Some(text.Copy(value))
+        }
+        None: {}
+    }
+    const cache = defaultPackageCachePath()
+    match cache {
+        Some(value): .Some(value)
+        None: {
+            addPackageError(&errors, options.project, 1, 1, "FDN4100",
+                "package cache path is unavailable; pass --cache")
+            .None
+        }
+    }
+}
+
+fn packageSDKVersion() packageVersion {
+    match parsePackageVersion("0.1.0") {
+        None: panic("compiler SDK version is invalid")
+        Some(value): value
+    }
+}
+
+fn resolvePackageOptions(
+    &options packageOptions,
+    target targetPlatform
+) own packageParseResult<own packageResolution> {
+    const manifestPath = packageManifestPath(options.project)
+    var parsed = readPackageManifest(manifestPath)
+    var manifest = match replace parsed.value with .None {
+        None: {
+            var result = own packageParseResult<own packageResolution> {
+                value = .None
+                errors = newPackageErrors()
+            }
+            movePackageErrors(&result.errors, &parsed.errors)
+            return result
+        }
+        Some(value): value
+    }
+    resolveProjectPackages(
+        manifestPath,
+        &manifest,
+        packageSDKVersion(),
+        target,
+        &options.registries
+    )
+}
+
+fn printPackageErrors(&errors arena<packageError>) i32 {
+    var index u64 = 0
+    while index < errors.len() {
+        const value = match errors.take(index) {
+            None: panic("package error slot is empty")
+            Some(value): value
+        }
+        discard io.WriteStderrText(renderPackageError(value))
+        errors.restore(index, $value)
+        index += 1
+    }
+    1
+}
+
+fn printPackageChanges(&changed arena<String>) void {
+    var index u64 = 0
+    while index < changed.len() {
+        const value = match changed.take(index) {
+            None: panic("package change slot is empty")
+            Some(value): value
+        }
+        discard io.WriteStdoutText("changed " + value + "\n")
+        changed.restore(index, $value)
+        index += 1
+    }
+}
+
+fn initializePackageProject(project String, name String) i32 {
+    var errors = newPackageErrors()
+    var changed = newArena<String>()
+    if !isValidPackageName(name) {
+        addPackageError(&errors, project, 1, 1, "FDN4101", "package name is invalid")
+        return printPackageErrors(&errors)
+    }
+    match fs.Kind(project) {
+        Err(error): {
+            discard error
+            addPackageError(&errors, project, 1, 1, "FDN4102",
+                "package project must be a real directory")
+            return printPackageErrors(&errors)
+        }
+        Ok(kind): {
+            match kind {
+                Missing: {
+                    match fs.CreateDirectory(project) {
+                        Err(error): {
+                            discard error
+                            addPackageError(&errors, project, 1, 1, "FDN4102",
+                                "cannot create package project directory")
+                            return printPackageErrors(&errors)
+                        }
+                        Ok: {
+                            discard changed.add(text.Copy(project))
+                        }
+                    }
+                }
+                Directory: {}
+                _: {
+                    addPackageError(&errors, project, 1, 1, "FDN4102",
+                        "package project must be a real directory")
+                    return printPackageErrors(&errors)
+                }
+            }
+        }
+    }
+    const manifestPath = path.Join(project, "foundation.package")
+    match fs.Kind(manifestPath) {
+        Err(error): {
+            discard error
+            addPackageError(&errors, manifestPath, 1, 1, "FDN4103",
+                "cannot inspect package manifest path")
+            printPackageChanges(&changed)
+            return printPackageErrors(&errors)
+        }
+        Ok(kind): {
+            match kind {
+                Missing: {}
+                _: {
+                    addPackageError(&errors, manifestPath, 1, 1, "FDN4103",
+                        "package manifest already exists")
+                    printPackageChanges(&changed)
+                    return printPackageErrors(&errors)
+                }
+            }
+        }
+    }
+    const sourcePath = path.Join(project, "src")
+    match fs.Kind(sourcePath) {
+        Err(error): {
+            discard error
+            addPackageError(&errors, sourcePath, 1, 1, "FDN4102",
+                "package source must be a real directory")
+            printPackageChanges(&changed)
+            return printPackageErrors(&errors)
+        }
+        Ok(kind): {
+            match kind {
+                Missing: {
+                    match fs.CreateDirectory(sourcePath) {
+                        Err(error): {
+                            discard error
+                            addPackageError(&errors, sourcePath, 1, 1, "FDN4102",
+                                "cannot create package source directory")
+                            printPackageChanges(&changed)
+                            return printPackageErrors(&errors)
+                        }
+                        Ok: {
+                            discard changed.add(text.Copy(sourcePath))
+                        }
+                    }
+                }
+                Directory: {}
+                _: {
+                    addPackageError(&errors, sourcePath, 1, 1, "FDN4102",
+                        "package source must be a real directory")
+                    printPackageChanges(&changed)
+                    return printPackageErrors(&errors)
+                }
+            }
+        }
+    }
+    var manifest = newPackageManifest()
+    manifest.name = text.Copy(name)
+    manifest.version = packageSDKVersion()
+    manifest.sdk = match parsePackageRequirement("^0.1.0") {
+        None: panic("compiler SDK requirement is invalid")
+        Some(value): value
+    }
+    manifest.codeStandardExplicit = true
+    manifest.source = "src"
+    const stagingResult = fs.CreateTempDirectory(project, ".foundation.package.tmp-")
+    const staging = match stagingResult {
+        Err(error): {
+            discard error
+            addPackageError(&errors, project, 1, 1, "FDN4104",
+                "cannot create manifest staging directory")
+            printPackageChanges(&changed)
+            return printPackageErrors(&errors)
+        }
+        Ok(value): value
+    }
+    const temporary = path.Join(staging, "foundation.package")
+    match fs.WriteTextAtomic(temporary, renderPackageManifest(&manifest), 1048576) {
+        Err(error): {
+            discard error
+            discard fs.RemoveTree(path.Normalize(staging), 4, 4)
+            addPackageError(&errors, temporary, 1, 1, "FDN4104",
+                "cannot write package manifest")
+            printPackageChanges(&changed)
+            return printPackageErrors(&errors)
+        }
+        Ok: {}
+    }
+    var verified = readPackageManifest(temporary)
+    match replace verified.value with .None {
+        None: {
+            discard fs.RemoveTree(path.Normalize(staging), 4, 4)
+            printPackageChanges(&changed)
+            return printPackageErrors(&verified.errors)
+        }
+        Some(value): {
+            discard value
+        }
+    }
+    match fs.Rename(temporary, manifestPath) {
+        Err(error): {
+            discard error
+            discard fs.RemoveTree(path.Normalize(staging), 4, 4)
+            addPackageError(&errors, manifestPath, 1, 1, "FDN4104",
+                "cannot publish package manifest")
+            printPackageChanges(&changed)
+            return printPackageErrors(&errors)
+        }
+        Ok: {}
+    }
+    discard fs.RemoveTree(path.Normalize(staging), 4, 4)
+    discard changed.add(text.Copy(manifestPath))
+    printPackageChanges(&changed)
+    0
+}
+
+fn resolvePackageCommand(&options packageOptions) i32 {
+    const target = match options.target {
+        None: hostTargetPlatform()
+        Some(value): value
+    }
+    var resolved = resolvePackageOptions(&options, target)
+    var resolution = match replace resolved.value with .None {
+        None: {
+            return printPackageErrors(&resolved.errors)
+        }
+        Some(value): value
+    }
+    var written = writePackageLockAtomically(packageLockPath(options.project), &resolution.lock)
+    if written.errors.len() > 0 return printPackageErrors(&written.errors)
+    if written.changed.len() == 0 {
+        discard io.WriteStdoutText("unchanged " + packageLockPath(options.project) + "\n")
+    } else {
+        printPackageChanges(&written.changed)
+    }
+    discard io.WriteStdoutText("resolved " + packageCountText(resolution.lock.packages.len()) +
+        " packages\n")
+    0
+}
+
+fn samePackageLock(&left packageLock, &right packageLock) bool {
+    renderPackageLock(&left) == renderPackageLock(&right)
+}
+
+fn fetchPackageCommand(&options packageOptions) i32 {
+    const lockPath = packageLockPath(options.project)
+    var existingResult = readPackageLock(lockPath)
+    var existing = match replace existingResult.value with .None {
+        None: {
+            return printPackageErrors(&existingResult.errors)
+        }
+        Some(value): value
+    }
+    match options.target {
+        Some(value): {
+            if !sameTarget(value, existing.target) {
+                var errors = newPackageErrors()
+                addPackageError(&errors, lockPath, 1, 1, "FDN4105",
+                    "requested target does not match the lockfile")
+                return printPackageErrors(&errors)
+            }
+        }
+        None: {}
+    }
+    var resolved = resolvePackageOptions(&options, existing.target)
+    var resolution = match replace resolved.value with .None {
+        None: {
+            return printPackageErrors(&resolved.errors)
+        }
+        Some(value): value
+    }
+    if !samePackageLock(&existing, &resolution.lock) {
+        var errors = newPackageErrors()
+        addPackageError(&errors, lockPath, 1, 1, "FDN4105",
+            "package lock is stale; run package resolve")
+        return printPackageErrors(&errors)
+    }
+    var errors = newPackageErrors()
+    const cache = match packageCacheOption(&options, &errors) {
+        None: {
+            return printPackageErrors(&errors)
+        }
+        Some(value): value
+    }
+    var index u64 = 0
+    while index < resolution.packages.len() {
+        var candidate = match resolution.packages.take(index) {
+            None: panic("resolved package slot is empty")
+            Some(value): value
+        }
+        if !isPathLocation(candidate.kind) {
+            const locked = lockedPackageForCandidate(candidate)
+            var cached = verifyPackageInCache(cache, locked)
+            match replace cached.value with .None {
+                Some(value): {
+                    discard io.WriteStdoutText("verified " + value + "\n")
+                }
+                None: {
+                    if !onlyMissingPackageErrors(&cached.errors) {
+                        resolution.packages.restore(index, $candidate)
+                        return printPackageErrors(&cached.errors)
+                    }
+                    var installed = installPackageInCache(cache, &candidate)
+                    match replace installed.value with .None {
+                        None: {
+                            resolution.packages.restore(index, $candidate)
+                            return printPackageErrors(&installed.errors)
+                        }
+                        Some(value): {
+                            discard io.WriteStdoutText("changed " + value + "\n")
+                        }
+                    }
+                }
+            }
+        }
+        resolution.packages.restore(index, $candidate)
+        index += 1
+    }
+    0
+}
+
+fn onlyMissingPackageErrors(&errors arena<packageError>) bool {
+    if errors.len() == 0 return false
+    var index u64 = 0
+    while index < errors.len() {
+        const value = match errors.take(index) {
+            None: panic("package error slot is empty")
+            Some(value): value
+        }
+        const missing = value.code == "FDN4070"
+        errors.restore(index, $value)
+        if !missing return false
+        index += 1
+    }
+    true
+}
+
+fn verifyPackageCommand(&options packageOptions) i32 {
+    const manifestPath = packageManifestPath(options.project)
+    var manifestResult = readPackageManifest(manifestPath)
+    var manifest = match replace manifestResult.value with .None {
+        None: {
+            return printPackageErrors(&manifestResult.errors)
+        }
+        Some(value): value
+    }
+    const lockPath = packageLockPath(options.project)
+    var lockResult = readPackageLock(lockPath)
+    var lock = match replace lockResult.value with .None {
+        None: {
+            return printPackageErrors(&lockResult.errors)
+        }
+        Some(value): value
+    }
+    if manifest.name != lock.rootName || !samePackageVersion(manifest.version, lock.rootVersion) {
+        var errors = newPackageErrors()
+        addPackageError(&errors, lockPath, 1, 1, "FDN4105",
+            "package lock root does not match the manifest")
+        return printPackageErrors(&errors)
+    }
+    var errors = newPackageErrors()
+    const cache = match packageCacheOption(&options, &errors) {
+        None: {
+            return printPackageErrors(&errors)
+        }
+        Some(value): value
+    }
+    const root = path.Parent(manifestPath)
+    var index u64 = 0
+    while index < lock.packages.len() {
+        const locked = match lock.packages.take(index) {
+            None: panic("locked package slot is empty")
+            Some(value): value
+        }
+        if !isPathLocation(locked.kind) {
+            var verified = verifyPackageInCache(cache, locked)
+            match replace verified.value with .None {
+                None: {
+                    lock.packages.restore(index, $locked)
+                    return printPackageErrors(&verified.errors)
+                }
+                Some(value): {
+                    discard io.WriteStdoutText("verified " + value + "\n")
+                }
+            }
+        } else {
+            const packageRoot = path.Join(root, locked.location)
+            const dependencyPath = path.Join(packageRoot, "foundation.package")
+            var dependencyResult = readPackageManifest(dependencyPath)
+            var dependency = match replace dependencyResult.value with .None {
+                None: {
+                    lock.packages.restore(index, $locked)
+                    return printPackageErrors(&dependencyResult.errors)
+                }
+                Some(value): value
+            }
+            if dependency.name != locked.name ||
+                !samePackageVersion(dependency.version, locked.version) {
+                addPackageError(&errors, packageRoot, 1, 1, "FDN4106",
+                    "path dependency identity does not match the lock")
+                lock.packages.restore(index, $locked)
+                return printPackageErrors(&errors)
+            }
+            var inspected = inspectPackageSource(packageRoot, &dependency)
+            const snapshot = match replace inspected.value with .None {
+                None: {
+                    lock.packages.restore(index, $locked)
+                    return printPackageErrors(&inspected.errors)
+                }
+                Some(value): value
+            }
+            if snapshot.digest != locked.digest {
+                addPackageError(&errors, packageRoot, 1, 1, "FDN4106",
+                    "path dependency digest does not match the lock")
+                lock.packages.restore(index, $locked)
+                return printPackageErrors(&errors)
+            }
+            discard io.WriteStdoutText("verified " + packageRoot + "\n")
+        }
+        lock.packages.restore(index, $locked)
+        index += 1
+    }
+    0
+}
+
+fn inspectPackageCommand(&options packageOptions) i32 {
+    const manifestPath = packageManifestPath(options.project)
+    var manifestResult = readPackageManifest(manifestPath)
+    var manifest = match replace manifestResult.value with .None {
+        None: {
+            return printPackageErrors(&manifestResult.errors)
+        }
+        Some(value): value
+    }
+    discard io.WriteStdoutText(renderPackageManifest(&manifest))
+    const lockPath = packageLockPath(options.project)
+    match fs.Kind(lockPath) {
+        Ok(Missing): {
+            discard io.WriteStdoutText("lock absent\n")
+            return 0
+        }
+        _: {}
+    }
+    var lockResult = readPackageLock(lockPath)
+    var lock = match replace lockResult.value with .None {
+        None: {
+            return printPackageErrors(&lockResult.errors)
+        }
+        Some(value): value
+    }
+    discard io.WriteStdoutText("\n" + renderPackageLock(&lock))
+    0
+}
+
+fn prunePackageCommand(&options packageOptions) i32 {
+    var lockResult = readPackageLock(packageLockPath(options.project))
+    var lock = match replace lockResult.value with .None {
+        None: {
+            return printPackageErrors(&lockResult.errors)
+        }
+        Some(value): value
+    }
+    var errors = newPackageErrors()
+    const cache = match packageCacheOption(&options, &errors) {
+        None: {
+            return printPackageErrors(&errors)
+        }
+        Some(value): value
+    }
+    var keep = newArena<String>()
+    var index u64 = 0
+    while index < lock.packages.len() {
+        const locked = match lock.packages.take(index) {
+            None: panic("locked package slot is empty")
+            Some(value): value
+        }
+        if !isPathLocation(locked.kind) {
+            discard keep.add(text.Copy(locked.digest))
+        }
+        lock.packages.restore(index, $locked)
+        index += 1
+    }
+    var pruned = prunePackageCache(cache, &keep)
+    if pruned.errors.len() > 0 return printPackageErrors(&pruned.errors)
+    if pruned.changed.len() == 0 {
+        discard io.WriteStdoutText("unchanged " + cache + "\n")
+    } else {
+        printPackageChanges(&pruned.changed)
+    }
+    0
+}
+
+fn runPackageCommand(&arguments arena<String>) i32 {
+    if arguments.len() == 3 && packageArgument(&arguments, 0) == "init" {
+        return initializePackageProject(
+            packageArgument(&arguments, 1),
+            packageArgument(&arguments, 2)
+        )
+    }
+    if arguments.len() < 2 {
+        discard io.WriteStderrText(packageUsage())
+        return 2
+    }
+    const command = packageArgument(&arguments, 0)
+    var options = newPackageOptions(packageArgument(&arguments, 1))
+    if !parsePackageOptions(&arguments, 2, &options) {
+        discard io.WriteStderrText(packageUsage())
+        return 2
+    }
+    if command == "resolve" return resolvePackageCommand(&options)
+    if command == "fetch" return fetchPackageCommand(&options)
+    if command == "verify" return verifyPackageCommand(&options)
+    if command == "inspect" return inspectPackageCommand(&options)
+    if command == "prune" return prunePackageCommand(&options)
+    discard io.WriteStderrText(packageUsage())
+    2
+}
+
+fn packageCountText(value u64) String {
+    format.U64(value)
+}

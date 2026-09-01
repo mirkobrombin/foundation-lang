@@ -1,0 +1,342 @@
+package foundation.compiler
+
+import std.fs
+import std.path
+import std.text
+
+test "package versions follow semantic precedence and requirements" {
+    const prerelease = requiredPackageVersion("1.2.3-alpha.2")
+    const release = requiredPackageVersion("1.2.3")
+    const later = requiredPackageVersion("1.3.0")
+    expect(comparePackageVersion(prerelease, release) < 0)
+    expect(comparePackageVersion(release, later) < 0)
+    expect(packageVersionString(requiredPackageVersion("0.1.2+build.7")) ==
+        "0.1.2+build.7")
+    expect(packageRequirementAccepts(requiredPackageRequirement("^1.2.3"), release))
+    expect(!packageRequirementAccepts(requiredPackageRequirement("^1.2.3"),
+            requiredPackageVersion("2.0.0")))
+    expect(packageRequirementAccepts(requiredPackageRequirement("^0.2.3"),
+            requiredPackageVersion("0.2.9")))
+    expect(!packageRequirementAccepts(requiredPackageRequirement("^0.2.3"),
+            requiredPackageVersion("0.3.0")))
+    expect(packageRequirementAccepts(requiredPackageRequirement("~1.2.3"),
+            requiredPackageVersion("1.2.9")))
+}
+
+test "package manifest parser renders canonical source" {
+    var parsed = parsePackageManifest(
+        "foundation.package",
+        "# project\n" +
+        "format foundation.package/v1\n" +
+        "name sample.app\n" +
+        "version 1.2.3\n" +
+        "sdk ^0.1.0\n" +
+        "fcs strict\n" +
+        "fcs_rule FCS7004 error\n" +
+        "source src\n" +
+        "test_source tests\n" +
+        "dependency sample.test ~1.0.0 path ../test scope test\n" +
+        "dependency sample.core ^2.0.0 registry local target linux\n"
+    )
+    expect(parsed.errors.len() == 0)
+    var manifest = match replace parsed.value with .None {
+        None: panic("expected package manifest")
+        Some(value): value
+    }
+    expect(manifest.name == "sample.app")
+    expect(manifest.dependencies.len() == 2)
+    expect(renderPackageManifest(&manifest) ==
+        "format foundation.package/v1\n" +
+        "name sample.app\n" +
+        "version 1.2.3\n" +
+        "sdk ^0.1.0\n" +
+        "fcs strict\n" +
+        "fcs_rule FCS7004 error\n" +
+        "source src\n" +
+        "test_source tests\n" +
+        "dependency sample.core ^2.0.0 registry local target linux\n" +
+        "dependency sample.test ~1.0.0 path ../test scope test\n")
+}
+
+test "package manifest rejects duplicate and overlapping declarations" {
+    var parsed = parsePackageManifest(
+        "foundation.package",
+        "format foundation.package/v1\n" +
+        "name sample\n" +
+        "version 1.0.0\n" +
+        "sdk ^0.1.0\n" +
+        "source src\n" +
+        "test_source src/tests\n" +
+        "dependency sample.core ^1.0.0 registry local\n" +
+        "dependency sample.core ^2.0.0 registry local\n"
+    )
+    match replace parsed.value with .None {
+        None: {}
+        Some(value): {
+            discard value
+            panic("expected rejected package manifest")
+        }
+    }
+    expect(packageErrorsContain(&parsed.errors, "FDN4011"))
+    expect(packageErrorsContain(&parsed.errors, "FDN4013"))
+}
+
+test "package lock parser validates and canonicalizes graph entries" {
+    var parsed = parsePackageLock(
+        "foundation.lock",
+        "format foundation.lock/v1\n" +
+        "root sample.app 1.0.0\n" +
+        "target linux\n" +
+        "package sample.z 1.0.0 " + packageDigest("1") + " registry local\n" +
+        "package sample.a 2.0.0 " + packageDigest("2") + " path ../a\n" +
+        "edge sample.app sample.z\n" +
+        "edge sample.app sample.a scope test\n"
+    )
+    expect(parsed.errors.len() == 0)
+    var lock = match replace parsed.value with .None {
+        None: panic("expected package lock")
+        Some(value): value
+    }
+    expect(renderPackageLock(&lock) ==
+        "format foundation.lock/v1\n" +
+        "root sample.app 1.0.0\n" +
+        "target linux\n" +
+        "package sample.a 2.0.0 " + packageDigest("2") + " path ../a\n" +
+        "package sample.z 1.0.0 " + packageDigest("1") + " registry local\n" +
+        "edge sample.app sample.a scope test\n" +
+        "edge sample.app sample.z\n")
+}
+
+test "package lock rejects cycles and unreachable packages" {
+    var cycle = parsePackageLock(
+        "foundation.lock",
+        "format foundation.lock/v1\n" +
+        "root sample 1.0.0\n" +
+        "target linux\n" +
+        "package sample.a 1.0.0 " + packageDigest("a") + " registry local\n" +
+        "package sample.b 1.0.0 " + packageDigest("b") + " registry local\n" +
+        "edge sample sample.a\n" +
+        "edge sample.a sample.b\n" +
+        "edge sample.b sample.a\n"
+    )
+    expect(packageErrorsContain(&cycle.errors, "FDN4027"))
+    var unreachable = parsePackageLock(
+        "foundation.lock",
+        "format foundation.lock/v1\n" +
+        "root sample 1.0.0\n" +
+        "target linux\n" +
+        "package sample.a 1.0.0 " + packageDigest("a") + " registry local\n"
+    )
+    expect(packageErrorsContain(&unreachable.errors, "FDN4027"))
+}
+
+test "package diagnostics distinguish size and duplicate lock entries" {
+    const workspace = fs.CreateTempDirectory(".", ".foundation-package-test-") else error {
+        discard error
+        panic("cannot create package test directory")
+    }
+    const manifestPath = path.Join(workspace, "foundation.package")
+    var source = "x"
+    while text.ByteLen(source) <= 1048576 {
+        source = source + source
+    }
+    expectResult(fs.WriteTextAtomic(manifestPath, source, 2097152))
+    var oversized = readPackageManifest(manifestPath)
+    expect(packageErrorsContain(&oversized.errors, "FDN4002"))
+
+    var duplicate = parsePackageLock(
+        "foundation.lock",
+        "format foundation.lock/v1\n" +
+        "root sample 1.0.0\n" +
+        "target linux\n" +
+        "package sample.a 1.0.0 " + packageDigest("a") + " registry local\n" +
+        "package sample.a 1.1.0 " + packageDigest("b") + " registry local\n" +
+        "edge sample sample.a\n"
+    )
+    expect(packageErrorsContain(&duplicate.errors, "FDN4024"))
+    expectResult(fs.RemoveTree(path.Normalize(workspace), 10000, 128))
+}
+
+test "package resolver backtracks to one compatible graph" {
+    var root = requiredPackageManifest(
+        "format foundation.package/v1\n" +
+        "name sample.app\n" +
+        "version 1.0.0\n" +
+        "sdk ^0.1.0\n" +
+        "source src\n" +
+        "dependency sample.a * registry local\n" +
+        "dependency sample.b ^1.0.0 registry local\n"
+    )
+    var catalog = newArena<packageCandidate>()
+    discard catalog.add(packageCandidateFor(
+            "sample.a",
+            "2.0.0",
+            "dependency sample.b ^2.0.0 registry local\n",
+            "1"
+        ))
+    discard catalog.add(packageCandidateFor(
+            "sample.a",
+            "1.0.0",
+            "dependency sample.b ^1.0.0 registry local\n",
+            "2"
+        ))
+    discard catalog.add(packageCandidateFor("sample.b", "1.5.0", "", "3"))
+    discard catalog.add(packageCandidateFor("sample.b", "2.0.0", "", "4"))
+    var resolved = resolvePackageGraph(
+        "foundation.package",
+        &root,
+        packageSDKVersion(),
+        .Linux,
+        &catalog
+    )
+    expect(resolved.errors.len() == 0)
+    var resolution = match replace resolved.value with .None {
+        None: panic("expected package resolution")
+        Some(value): value
+    }
+    expect(lockedVersion(&resolution.lock, "sample.a") == "1.0.0")
+    expect(lockedVersion(&resolution.lock, "sample.b") == "1.5.0")
+    expect(resolution.lock.edges.len() == 3)
+}
+
+test "package source digest and cache preserve verified content" {
+    const workspace = fs.CreateTempDirectory(".", ".foundation-package-test-") else error {
+        discard error
+        panic("cannot create package test directory")
+    }
+    const packageRoot = path.Join(workspace, "source")
+    expectResult(fs.CreateDirectory(path.Join(packageRoot, "src")))
+    expectResult(fs.WriteTextAtomic(
+            path.Join(path.Join(packageRoot, "src"), "main.fn"),
+            "package sample.cache\nfn Value() i32 { 7 }\n",
+            4096
+        ))
+    var manifest = requiredPackageManifest(
+        "format foundation.package/v1\n" +
+        "name sample.cache\n" +
+        "version 1.0.0\n" +
+        "sdk ^0.1.0\n" +
+        "source src\n"
+    )
+    expectResult(fs.WriteTextAtomic(
+            path.Join(packageRoot, "foundation.package"),
+            renderPackageManifest(&manifest),
+            1048576
+        ))
+    var inspected = inspectPackageSource(packageRoot, &manifest)
+    const snapshot = match replace inspected.value with .None {
+        None: panic("expected package source snapshot")
+        Some(value): value
+    }
+    expect(validPackageDigest(snapshot.digest))
+    expect(snapshot.files.len() == 1)
+    var candidate = own packageCandidate {
+        manifest = copyPackageManifest(&manifest)
+        digest = text.Copy(snapshot.digest)
+        kind = .Registry
+        location = "local"
+        root = text.Copy(packageRoot)
+    }
+    const cacheRoot = path.Join(workspace, "cache")
+    var installed = installPackageInCache(cacheRoot, &candidate)
+    const installedPath = match replace installed.value with .None {
+        None: panic("expected cached package")
+        Some(value): value
+    }
+    var verified = verifyPackageInCache(cacheRoot, lockedPackageForCandidate(candidate))
+    match replace verified.value with .None {
+        None: panic("expected verified cached package")
+        Some(value): expect(value == installedPath)
+    }
+    var keep = newArena<String>()
+    var pruned = prunePackageCache(cacheRoot, &keep)
+    expect(pruned.errors.len() == 0)
+    expect(pruned.changed.len() == 1)
+    expectResult(fs.RemoveTree(path.Normalize(workspace), 10000, 128))
+}
+
+fn requiredPackageVersion(value String) packageVersion {
+    match parsePackageVersion(value) {
+        None: panic("expected package version")
+        Some(value): value
+    }
+}
+
+fn requiredPackageRequirement(value String) packageRequirement {
+    match parsePackageRequirement(value) {
+        None: panic("expected package requirement")
+        Some(value): value
+    }
+}
+
+fn requiredPackageManifest(source String) own packageManifest {
+    var parsed = parsePackageManifest("foundation.package", source)
+    match replace parsed.value with .None {
+        None: panic("expected package manifest")
+        Some(value): value
+    }
+}
+
+fn packageDigest(digit String) String {
+    var result = "sha256:"
+    var index u64 = 0
+    while index < 64 {
+        result = result + digit
+        index += 1
+    }
+    result
+}
+
+fn packageCandidateFor(
+    name String,
+    version String,
+    dependencies String,
+    digit String
+) packageCandidate {
+    packageCandidate {
+        manifest = requiredPackageManifest(
+            "format foundation.package/v1\n" +
+            "name " + name + "\n" +
+            "version " + version + "\n" +
+            "sdk ^0.1.0\n" +
+            "source src\n" + dependencies
+        )
+        digest = packageDigest(digit)
+        kind = .Registry
+        location = "local"
+        root = "."
+    }
+}
+
+fn lockedVersion(&lock packageLock, name String) String {
+    const locked = findLockedPackage(&lock, name)
+    match locked {
+        None: panic("expected locked package")
+        Some(value): packageVersionString(value.version)
+    }
+}
+
+fn packageErrorsContain(&errors arena<packageError>, code String) bool {
+    var index u64 = 0
+    while index < errors.len() {
+        const value = match errors.take(index) {
+            None: panic("package error slot is empty")
+            Some(value): value
+        }
+        const found = value.code == code
+        errors.restore(index, $value)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn expectResult($value Result<void, fs.HostError>) void {
+    match value {
+        Ok: {}
+        Err(error): {
+            discard error
+            panic("expected filesystem operation to succeed")
+        }
+    }
+}

@@ -1,0 +1,443 @@
+package foundation.compiler
+
+import std.fs
+import std.path
+import std.text
+
+fn packageCachePath(root String, digest String) String {
+    path.Join(path.Join(root, "sha256"), packageSlice(digest, 7, text.ByteLen(digest)))
+}
+
+fn validateExistingPackageCache(
+    cacheRoot String,
+    &errors arena<packageError>
+) bool {
+    match fs.Kind(cacheRoot) {
+        Err(error): {
+            discard error
+            addPackageError(&errors, cacheRoot, 1, 1, "FDN4075",
+                "cache root must be a real directory")
+            return false
+        }
+        Ok(kind): {
+            match kind {
+                Missing: {
+                    return true
+                }
+                Directory: {}
+                _: {
+                    addPackageError(&errors, cacheRoot, 1, 1, "FDN4075",
+                        "cache root must be a real directory")
+                    return false
+                }
+            }
+        }
+    }
+    const algorithmRoot = path.Join(cacheRoot, "sha256")
+    match fs.Kind(algorithmRoot) {
+        Err(error): {
+            discard error
+            addPackageError(&errors, algorithmRoot, 1, 1, "FDN4075",
+                "cache algorithm root must be a real directory")
+            false
+        }
+        Ok(kind): {
+            match kind {
+                Missing: true
+                Directory: true
+                _: {
+                    addPackageError(&errors, algorithmRoot, 1, 1, "FDN4075",
+                        "cache algorithm root must be a real directory")
+                    false
+                }
+            }
+        }
+    }
+}
+
+fn verifyPackageAt(
+    packagePath String,
+    locked lockedPackage
+) own packageParseResult<String> {
+    var result = own packageParseResult<String> {
+        value = .None
+        errors = newPackageErrors()
+    }
+    match fs.Kind(packagePath) {
+        Ok(Directory): {}
+        _: {
+            addPackageError(&result.errors, packagePath, 1, 1, "FDN4070",
+                "locked package is missing from cache")
+            return result
+        }
+    }
+    const manifestPath = path.Join(packagePath, "foundation.package")
+    match fs.Kind(manifestPath) {
+        Ok(File): {}
+        _: {
+            addPackageError(&result.errors, manifestPath, 1, 1, "FDN4071",
+                "cached package manifest must be a regular file")
+            return result
+        }
+    }
+    var parsed = readPackageManifest(manifestPath)
+    var manifest = match replace parsed.value with .None {
+        None: {
+            movePackageErrors(&result.errors, &parsed.errors)
+            return result
+        }
+        Some(value): value
+    }
+    if manifest.name != locked.name ||
+        !samePackageVersion(manifest.version, locked.version) {
+        addPackageError(&result.errors, manifestPath, 1, 1, "FDN4071",
+            "cached package identity does not match lock")
+        return result
+    }
+    var inspected = inspectPackageSource(packagePath, &manifest)
+    var snapshot = match replace inspected.value with .None {
+        None: {
+            movePackageErrors(&result.errors, &inspected.errors)
+            return result
+        }
+        Some(value): value
+    }
+    if snapshot.digest != locked.digest {
+        addPackageError(&result.errors, packagePath, 1, 1, "FDN4072",
+            "cached package digest does not match lock")
+        return result
+    }
+    result.value = .Some(text.Copy(packagePath))
+    result
+}
+
+fn verifyPackageInCache(
+    cacheRoot String,
+    locked lockedPackage
+) own packageParseResult<String> {
+    var result = own packageParseResult<String> {
+        value = .None
+        errors = newPackageErrors()
+    }
+    if !validPackageDigest(locked.digest) {
+        addPackageError(&result.errors, cacheRoot, 1, 1, "FDN4073",
+            "locked package has an invalid digest")
+        return result
+    }
+    if !validateExistingPackageCache(cacheRoot, &result.errors) return result
+    verifyPackageAt(packageCachePath(cacheRoot, locked.digest), locked)
+}
+
+fn installPackageInCache(
+    cacheRoot String,
+    &candidate packageCandidate
+) own packageParseResult<String> {
+    var result = own packageParseResult<String> {
+        value = .None
+        errors = newPackageErrors()
+    }
+    if !validPackageDigest(candidate.digest) {
+        addPackageError(&result.errors, candidate.root, 1, 1, "FDN4073",
+            "package candidate has an invalid digest")
+        return result
+    }
+    const candidateRoot = text.Copy(candidate.root)
+    var inspected = inspectPackageSource(candidateRoot, &candidate.manifest)
+    var snapshot = match replace inspected.value with .None {
+        None: {
+            movePackageErrors(&result.errors, &inspected.errors)
+            return result
+        }
+        Some(value): value
+    }
+    if snapshot.digest != candidate.digest {
+        addPackageError(&result.errors, candidate.root, 1, 1, "FDN4074",
+            "package candidate changed before cache installation")
+        return result
+    }
+    if text.IsEmpty(cacheRoot) {
+        addPackageError(&result.errors, cacheRoot, 1, 1, "FDN4075",
+            "cache root cannot be empty")
+        return result
+    }
+    match fs.CreateDirectory(cacheRoot) {
+        Err(error): {
+            discard error
+            addPackageError(&result.errors, cacheRoot, 1, 1, "FDN4075",
+                "cannot create cache root")
+            return result
+        }
+        Ok: {}
+    }
+    if !validateExistingPackageCache(cacheRoot, &result.errors) return result
+    const algorithmRoot = path.Join(cacheRoot, "sha256")
+    match fs.CreateDirectory(algorithmRoot) {
+        Err(error): {
+            discard error
+            addPackageError(&result.errors, algorithmRoot, 1, 1, "FDN4075",
+                "cannot create cache algorithm root")
+            return result
+        }
+        Ok: {}
+    }
+    if !validateExistingPackageCache(cacheRoot, &result.errors) return result
+    const destination = packageCachePath(cacheRoot, candidate.digest)
+    match fs.Kind(destination) {
+        Err(error): {
+            discard error
+            addPackageError(&result.errors, destination, 1, 1, "FDN4078",
+                "cannot inspect package cache destination")
+            return result
+        }
+        Ok(kind): {
+            match kind {
+                Missing: {}
+                _: {
+                    return verifyPackageAt(destination, lockedPackageForCandidate(candidate))
+                }
+            }
+        }
+    }
+    const temporaryResult = fs.CreateTempDirectory(algorithmRoot, ".tmp-")
+    const temporary = match temporaryResult {
+        Err(error): {
+            discard error
+            addPackageError(&result.errors, algorithmRoot, 1, 1, "FDN4076",
+                "cannot create cache staging directory")
+            return result
+        }
+        Ok(value): value
+    }
+    const manifestPath = path.Join(temporary, "foundation.package")
+    match fs.WriteTextAtomic(
+        manifestPath,
+        renderPackageManifest(&candidate.manifest),
+        1048576
+    ) {
+        Err(error): {
+            discard error
+            removePackageStaging(temporary)
+            addPackageError(&result.errors, temporary, 1, 1, "FDN4077",
+                "cannot write cache manifest")
+            return result
+        }
+        Ok: {}
+    }
+    var index u64 = 0
+    while index < snapshot.files.len() {
+        const file = match snapshot.files.take(index) {
+            None: panic("package source file slot is empty")
+            Some(value): value
+        }
+        const output = path.Join(temporary, file.path)
+        const parent = path.Parent(output)
+        const created = fs.CreateDirectory(parent)
+        const copied = match created {
+            Err(error): {
+                discard error
+                false
+            }
+            Ok: {
+                match fs.CopyFile(path.Join(candidate.root, file.path), output) {
+                    Ok: true
+                    Err(error): {
+                        discard error
+                        false
+                    }
+                }
+            }
+        }
+        snapshot.files.restore(index, $file)
+        if !copied {
+            removePackageStaging(temporary)
+            addPackageError(&result.errors, output, 1, 1, "FDN4077",
+                "cannot copy package into cache")
+            return result
+        }
+        index += 1
+    }
+    const locked = lockedPackageForCandidate(candidate)
+    var staged = verifyPackageAt(temporary, locked)
+    match replace staged.value with .None {
+        None: {
+            removePackageStaging(temporary)
+            movePackageErrors(&result.errors, &staged.errors)
+            return result
+        }
+        Some(value): {
+            discard value
+        }
+    }
+    match fs.Rename(temporary, destination) {
+        Ok: {
+            result.value = .Some(destination)
+            return result
+        }
+        Err(error): {
+            discard error
+            removePackageStaging(temporary)
+            var concurrent = verifyPackageAt(destination, locked)
+            match replace concurrent.value with .None {
+                Some(value): {
+                    result.value = .Some(value)
+                    return result
+                }
+                None: {
+                    addPackageError(&result.errors, destination, 1, 1, "FDN4078",
+                        "cannot publish verified package cache entry")
+                    return result
+                }
+            }
+        }
+    }
+}
+
+fn lockedPackageForCandidate(candidate packageCandidate) lockedPackage {
+    lockedPackage {
+        name = text.Copy(candidate.manifest.name)
+        version = copyPackageVersion(candidate.manifest.version)
+        digest = text.Copy(candidate.digest)
+        kind = candidate.kind
+        location = text.Copy(candidate.location)
+    }
+}
+
+fn removePackageStaging(value String) void {
+    discard fs.RemoveTree(path.Normalize(value), 10000, 128)
+}
+
+fn validCacheEntryName(value String) bool {
+    if text.ByteLen(value) != 64 return false
+    var offset u64 = 0
+    while offset < 64 {
+        const byte = packageByteAt(value, offset)
+        if !isAsciiDigit(byte) && (byte < 97 || byte > 102) return false
+        offset += 1
+    }
+    true
+}
+
+fn comparePackagePath(left String, right String) i32 {
+    text.Compare(left, right)
+}
+
+fn prunePackageCache(
+    cacheRoot String,
+    &keepDigests arena<String>
+) own packageMutationResult {
+    var result = own packageMutationResult {
+        changed = newArena<String>()
+        errors = newPackageErrors()
+    }
+    var keep = newArena<String>()
+    var index u64 = 0
+    while index < keepDigests.len() {
+        const digest = match keepDigests.take(index) {
+            None: panic("package digest slot is empty")
+            Some(value): value
+        }
+        if !validPackageDigest(digest) {
+            keepDigests.restore(index, $digest)
+            addPackageError(&result.errors, cacheRoot, 1, 1, "FDN4073",
+                "cache keep set contains an invalid digest")
+            return result
+        }
+        discard keep.add(packageSlice(digest, 7, text.ByteLen(digest)))
+        keepDigests.restore(index, $digest)
+        index += 1
+    }
+    if !validateExistingPackageCache(cacheRoot, &result.errors) return result
+    const algorithmRoot = path.Join(cacheRoot, "sha256")
+    match fs.Kind(algorithmRoot) {
+        Err(error): {
+            discard error
+            addPackageError(&result.errors, algorithmRoot, 1, 1, "FDN4079",
+                "cannot inspect package cache")
+            return result
+        }
+        Ok(kind): {
+            match kind {
+                Missing: {
+                    return result
+                }
+                Directory: {}
+                _: {
+                    addPackageError(&result.errors, algorithmRoot, 1, 1, "FDN4079",
+                        "cannot inspect package cache")
+                    return result
+                }
+            }
+        }
+    }
+    var remove = newArena<String>()
+    const opened = fs.OpenDir(algorithmRoot) else error {
+        discard error
+        addPackageError(&result.errors, algorithmRoot, 1, 1, "FDN4079",
+            "cannot enumerate package cache")
+        return result
+    }
+    var reader = opened
+    while true {
+        const next = reader.Next()
+        const name = match next {
+            Err(error): {
+                discard error
+                addPackageError(&result.errors, algorithmRoot, 1, 1, "FDN4079",
+                    "cannot enumerate package cache")
+                return result
+            }
+            Ok(value): {
+                match value {
+                    None: {
+                        break
+                    }
+                    Some(name): name
+                }
+            }
+        }
+        const entryPath = path.Join(algorithmRoot, name)
+        if text.StartsWith(name, ".tmp-") {
+            discard remove.add($entryPath)
+            continue
+        }
+        const kind = fs.Kind(entryPath)
+        var valid = validCacheEntryName(name)
+        match kind {
+            Ok(Directory): {}
+            _: {
+                valid = false
+            }
+        }
+        if !valid {
+            addPackageError(&result.errors, entryPath, 1, 1, "FDN4079",
+                "cache contains an unexpected entry")
+            return result
+        }
+        if !arenaContainsString(&keep, name) {
+            discard remove.add($entryPath)
+        }
+    }
+    sortArena<String>(&remove, comparePackagePath)
+    index = 0
+    while index < remove.len() {
+        const entryPath = match remove.take(index) {
+            None: panic("package removal slot is empty")
+            Some(value): value
+        }
+        match fs.RemoveTree(path.Normalize(entryPath), 10000, 128) {
+            Err(error): {
+                discard error
+                addPackageError(&result.errors, entryPath, 1, 1, "FDN4079",
+                    "cannot remove package cache entry")
+                remove.restore(index, $entryPath)
+                return result
+            }
+            Ok: {
+                discard result.changed.add(text.Copy(entryPath))
+            }
+        }
+        remove.restore(index, $entryPath)
+        index += 1
+    }
+    result
+}

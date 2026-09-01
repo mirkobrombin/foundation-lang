@@ -1,0 +1,1017 @@
+package foundation.compiler
+
+import std.format
+import std.fs
+import std.path
+import std.text
+
+fn copyTargetOption(value Option<targetPlatform>) Option<targetPlatform> {
+    match value {
+        None: .None
+        Some(target): .Some(target)
+    }
+}
+
+fn sameTargetOption(left Option<targetPlatform>, right Option<targetPlatform>) bool {
+    match left {
+        None: {
+            match right {
+                None: true
+                Some(value): {
+                    discard value
+                    false
+                }
+            }
+        }
+        Some(leftValue): {
+            match right {
+                None: false
+                Some(rightValue): sameTarget(leftValue, rightValue)
+            }
+        }
+    }
+}
+
+fn copyPackageVersion(version packageVersion) packageVersion {
+    packageVersion {
+        major = version.major
+        minor = version.minor
+        patch = version.patch
+        prerelease = text.Copy(version.prerelease)
+        build = text.Copy(version.build)
+    }
+}
+
+fn copyPackageRequirement(requirement packageRequirement) packageRequirement {
+    packageRequirement {
+        kind = requirement.kind
+        version = copyPackageVersion(requirement.version)
+    }
+}
+
+fn copyPackageVersionOption(value Option<packageVersion>) Option<packageVersion> {
+    match value {
+        None: .None
+        Some(found): .Some(copyPackageVersion(found))
+    }
+}
+
+fn copyPackageRequirementOption(value Option<packageRequirement>) Option<packageRequirement> {
+    match value {
+        None: .None
+        Some(found): .Some(copyPackageRequirement(found))
+    }
+}
+
+fn copyPackageDependency(dependency packageDependency) packageDependency {
+    packageDependency {
+        name = text.Copy(dependency.name)
+        requirement = copyPackageRequirement(dependency.requirement)
+        kind = dependency.kind
+        location = text.Copy(dependency.location)
+        target = copyTargetOption(dependency.target)
+        scope = dependency.scope
+    }
+}
+
+fn copyPackageManifest(&manifest packageManifest) own packageManifest {
+    var result = newPackageManifest()
+    result.name = text.Copy(manifest.name)
+    result.version = copyPackageVersion(manifest.version)
+    result.sdk = copyPackageRequirement(manifest.sdk)
+    result.codeStandard = manifest.codeStandard
+    result.codeStandardExplicit = manifest.codeStandardExplicit
+    result.source = text.Copy(manifest.source)
+    match copyPackageStringOption(manifest.testSource) {
+        None: {
+            result.testSource = .None
+        }
+        Some(value): {
+            result.testSource = .Some(text.Copy(value))
+        }
+    }
+    result.nativeLibrary = manifest.nativeLibrary
+    match copyPackageStringOption(manifest.nativeName) {
+        None: {
+            result.nativeName = .None
+        }
+        Some(value): {
+            result.nativeName = .Some(text.Copy(value))
+        }
+    }
+    match manifest.nativeSOVersion {
+        None: {
+            result.nativeSOVersion = .None
+        }
+        Some(value): {
+            result.nativeSOVersion = .Some(value)
+        }
+    }
+
+    var index u64 = 0
+    while index < manifest.codeStandardRules.len() {
+        const value = match manifest.codeStandardRules.take(index) {
+            None: panic("code standard rule slot is empty")
+            Some(value): value
+        }
+        discard result.codeStandardRules.add(codeStandardRuleSetting {
+            code = text.Copy(value.code)
+            severity = value.severity
+        })
+        manifest.codeStandardRules.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < manifest.dependencies.len() {
+        const value = match manifest.dependencies.take(index) {
+            None: panic("package dependency slot is empty")
+            Some(value): value
+        }
+        discard result.dependencies.add(copyPackageDependency(value))
+        manifest.dependencies.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < manifest.nativeLinks.len() {
+        const value = match manifest.nativeLinks.take(index) {
+            None: panic("native link slot is empty")
+            Some(value): value
+        }
+        discard result.nativeLinks.add(packageNativeLink {
+            library = text.Copy(value.library)
+            target = copyTargetOption(value.target)
+        })
+        manifest.nativeLinks.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < manifest.foreign.len() {
+        const value = match manifest.foreign.take(index) {
+            None: panic("foreign package slot is empty")
+            Some(value): value
+        }
+        discard result.foreign.add(packageForeign {
+            ecosystem = text.Copy(value.ecosystem)
+            identifier = text.Copy(value.identifier)
+            version = text.Copy(value.version)
+            kind = text.Copy(value.kind)
+            resolver = text.Copy(value.resolver)
+        })
+        manifest.foreign.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn packageLocationKindFor(value String) Option<packageLocationKind> {
+    if value == "path" return .Some(.Path)
+    if value == "registry" return .Some(.Registry)
+    .None
+}
+
+fn packageLocationKindName(kind packageLocationKind) String {
+    match kind {
+        Path: "path"
+        Registry: "registry"
+    }
+}
+
+fn packageScopeName(scope packageDependencyScope) String {
+    match scope {
+        Runtime: "runtime"
+        Test: "test"
+    }
+}
+
+fn relativePackageSource(value String) bool {
+    if text.IsEmpty(value) || path.IsAbsolute(value) return false
+    const normalized = path.Normalize(value)
+    if normalized == "." return false
+    var start u64 = 0
+    while start <= text.ByteLen(normalized) {
+        var end = text.ByteLen(normalized)
+        var offset = start
+        while offset < text.ByteLen(normalized) {
+            const byte = packageByteAt(normalized, offset)
+            if byte == 47 || byte == 92 {
+                end = offset
+                break
+            }
+            offset += 1
+        }
+        if packageSlice(normalized, start, end) == ".." return false
+        if end == text.ByteLen(normalized) break
+        start = end + 1
+    }
+    true
+}
+
+fn packageSourcesOverlap(left String, right String) bool {
+    const first = path.Normalize(left)
+    const second = path.Normalize(right)
+    if first == second return true
+    const separator = path.Separator()
+    text.StartsWith(first, second + separator) ||
+        text.StartsWith(second, first + separator)
+}
+
+fn validPackageLocation(kind packageLocationKind, value String) bool {
+    if text.IsEmpty(value) return false
+    var offset u64 = 0
+    while offset < text.ByteLen(value) {
+        if packageByteAt(value, offset) < 32 return false
+        offset += 1
+    }
+    match kind {
+        Registry: isValidPackageName(value)
+        Path: !path.IsAbsolute(value)
+    }
+}
+
+fn manifestHasRule(&manifest packageManifest, code String) bool {
+    var index u64 = 0
+    while index < manifest.codeStandardRules.len() {
+        const value = match manifest.codeStandardRules.take(index) {
+            None: panic("code standard rule slot is empty")
+            Some(value): value
+        }
+        const found = value.code == code
+        manifest.codeStandardRules.restore(index, $value)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn manifestHasDependency(
+    &manifest packageManifest,
+    name String,
+    target Option<targetPlatform>
+) bool {
+    var index u64 = 0
+    while index < manifest.dependencies.len() {
+        const value = match manifest.dependencies.take(index) {
+            None: panic("package dependency slot is empty")
+            Some(value): value
+        }
+        const found = value.name == name && sameTargetOption(value.target, target)
+        manifest.dependencies.restore(index, $value)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn manifestHasNativeLink(
+    &manifest packageManifest,
+    library String,
+    target Option<targetPlatform>
+) bool {
+    var index u64 = 0
+    while index < manifest.nativeLinks.len() {
+        const value = match manifest.nativeLinks.take(index) {
+            None: panic("native link slot is empty")
+            Some(value): value
+        }
+        var overlaps = false
+        match value.target {
+            None: {
+                overlaps = true
+            }
+            Some(existing): {
+                match target {
+                    None: {
+                        overlaps = true
+                    }
+                    Some(candidate): {
+                        overlaps = sameTarget(existing, candidate)
+                    }
+                }
+            }
+        }
+        const found = value.library == library && overlaps
+        manifest.nativeLinks.restore(index, $value)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn manifestHasForeign(
+    &manifest packageManifest,
+    ecosystem String,
+    identifier String
+) bool {
+    var index u64 = 0
+    while index < manifest.foreign.len() {
+        const value = match manifest.foreign.take(index) {
+            None: panic("foreign package slot is empty")
+            Some(value): value
+        }
+        const found = value.ecosystem == ecosystem && value.identifier == identifier
+        manifest.foreign.restore(index, $value)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn knownPackageManifestDirective(value String) bool {
+    value == "format" || value == "name" || value == "version" || value == "sdk" ||
+        value == "fcs" || value == "fcs_rule" || value == "source" ||
+        value == "test_source" || value == "native_library" || value == "native_name" ||
+        value == "native_soversion" || value == "native_link" || value == "foreign" ||
+        value == "dependency"
+}
+
+fn parsePackageManifest(
+    filePath String,
+    source String
+) own packageParseResult<own packageManifest> {
+    var result = own packageParseResult<own packageManifest> {
+        value = .None
+        errors = newPackageErrors()
+    }
+    var manifest = newPackageManifest()
+    var formatSeen = false
+    var nameSeen = false
+    var versionSeen = false
+    var sdkSeen = false
+    var codeStandardSeen = false
+    var sourceSeen = false
+    var testSourceSeen = false
+    var nativeLibrarySeen = false
+    var nativeNameSeen = false
+    var nativeSOVersionSeen = false
+
+    var lineNumber u64 = 1
+    var start u64 = 0
+    while start <= text.ByteLen(source) {
+        const found = findPackageByte(source, 10, start)
+        const end = match found {
+            None: text.ByteLen(source)
+            Some(offset): offset
+        }
+        var line = packageSlice(source, start, end)
+        if !text.IsEmpty(line) && packageByteAt(line, text.ByteLen(line) - 1) == 13 {
+            line = packageSlice(line, 0, text.ByteLen(line) - 1)
+        }
+        var tokens = tokenizePackageLine(line)
+        match tokens.errorColumn {
+            Some(column): {
+                addPackageError(
+                    &result.errors,
+                    filePath,
+                    lineNumber,
+                    column,
+                    "FDN4003",
+                    tokens.error
+                )
+            }
+            None: {
+                if tokens.values.len() > 0 {
+                    const directive = packageToken(&tokens.values, 0)
+                    if directive == "format" {
+                        if tokens.values.len() != 2 ||
+                            packageToken(&tokens.values, 1) != "foundation.package/v1" ||
+                            formatSeen {
+                            addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4004", "expected one format foundation.package/v1 directive")
+                        }
+                        formatSeen = true
+                    }
+                    if directive == "name" {
+                        if tokens.values.len() != 2 ||
+                            !isValidPackageName(packageToken(&tokens.values, 1)) || nameSeen {
+                            addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4005", "expected one valid package name")
+                        } else {
+                            manifest.name = packageToken(&tokens.values, 1)
+                        }
+                        nameSeen = true
+                    }
+                    if directive == "version" {
+                        const parsed = if tokens.values.len() == 2 {
+                            parsePackageVersion(packageToken(&tokens.values, 1))
+                        } else {.None }
+                        match parsed {
+                            None: addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4006", "expected one semantic package version")
+                            Some(value): {
+                                if versionSeen {
+                                    addPackageError(&result.errors, filePath, lineNumber, 1,
+                                        "FDN4006", "expected one semantic package version")
+                                } else {
+                                    manifest.version = value
+                                }
+                                discard versionSeen
+                            }
+                        }
+                        versionSeen = true
+                    }
+                    if directive == "sdk" {
+                        const parsed = if tokens.values.len() == 2 {
+                            parsePackageRequirement(packageToken(&tokens.values, 1))
+                        } else {.None }
+                        match parsed {
+                            None: addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4007", "expected one SDK version requirement")
+                            Some(value): {
+                                if sdkSeen {
+                                    addPackageError(&result.errors, filePath, lineNumber, 1,
+                                        "FDN4007", "expected one SDK version requirement")
+                                } else {
+                                    manifest.sdk = value
+                                }
+                                discard sdkSeen
+                            }
+                        }
+                        sdkSeen = true
+                    }
+                    if directive == "fcs" {
+                        const parsed = if tokens.values.len() == 2 {
+                            parseCodeStandardProfile(packageToken(&tokens.values, 1))
+                        } else {.None }
+                        match parsed {
+                            None: addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4014", "expected at most one FCS profile: valid, standard, or strict")
+                            Some(value): {
+                                if codeStandardSeen {
+                                    addPackageError(&result.errors, filePath, lineNumber, 1,
+                                        "FDN4014", "expected at most one FCS profile: valid, standard, or strict")
+                                } else {
+                                    manifest.codeStandard = value
+                                    manifest.codeStandardExplicit = true
+                                }
+                                discard codeStandardSeen
+                            }
+                        }
+                        codeStandardSeen = true
+                    }
+                    if directive == "fcs_rule" {
+                        var valid = tokens.values.len() == 3
+                        var severity Option<codeStandardSeverity> = .None
+                        var code = ""
+                        if valid {
+                            code = packageToken(&tokens.values, 1)
+                            severity = parseCodeStandardSeverity(packageToken(&tokens.values, 2))
+                            valid = configurableCodeStandardRule(code) &&
+                                !manifestHasRule(&manifest, code) &&
+                                manifest.codeStandardRules.len() < 4096
+                        }
+                        match severity {
+                            None: {
+                                valid = false
+                            }
+                            Some(value): {
+                                if valid {
+                                    discard manifest.codeStandardRules.add(codeStandardRuleSetting {
+                                        code = code
+                                        severity = value
+                                    })
+                                }
+                            }
+                        }
+                        if !valid {
+                            addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4014", "fcs_rule requires one unique configurable FCS code and severity: off, warning, or error")
+                        }
+                    }
+                    if directive == "source" {
+                        if tokens.values.len() != 2 ||
+                            !relativePackageSource(packageToken(&tokens.values, 1)) || sourceSeen {
+                            addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4008", "expected one relative source directory without ..")
+                        } else {
+                            manifest.source = packageToken(&tokens.values, 1)
+                        }
+                        sourceSeen = true
+                    }
+                    if directive == "test_source" {
+                        if tokens.values.len() != 2 ||
+                            !relativePackageSource(packageToken(&tokens.values, 1)) ||
+                            testSourceSeen {
+                            addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4013", "expected at most one relative test source directory without ..")
+                        } else {
+                            manifest.testSource = .Some(packageToken(&tokens.values, 1))
+                        }
+                        testSourceSeen = true
+                    }
+                    if directive == "native_library" {
+                        if tokens.values.len() != 2 ||
+                            packageToken(&tokens.values, 1) != "c" || nativeLibrarySeen {
+                            addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4015", "expected one native_library c directive")
+                        } else {
+                            manifest.nativeLibrary = true
+                        }
+                        nativeLibrarySeen = true
+                    }
+                    if directive == "native_name" {
+                        if tokens.values.len() != 2 ||
+                            !isValidPackageName(packageToken(&tokens.values, 1)) || nativeNameSeen {
+                            addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4015", "expected one valid native library name")
+                        } else {
+                            manifest.nativeName = .Some(packageToken(&tokens.values, 1))
+                        }
+                        nativeNameSeen = true
+                    }
+                    if directive == "native_soversion" {
+                        const parsed = if tokens.values.len() == 2 {
+                            parsePackageNumber(packageToken(&tokens.values, 1))
+                        } else {.None }
+                        match parsed {
+                            None: addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4015", "expected one native library SOVERSION")
+                            Some(value): {
+                                if nativeSOVersionSeen || value > 4294967295 {
+                                    addPackageError(&result.errors, filePath, lineNumber, 1,
+                                        "FDN4015", "expected one native library SOVERSION")
+                                } else {
+                                    const converted = u32.From(value) else error {
+                                        discard error
+                                        panic("validated SOVERSION does not fit u32")
+                                    }
+                                    manifest.nativeSOVersion = .Some(converted)
+                                }
+                                discard nativeSOVersionSeen
+                            }
+                        }
+                        nativeSOVersionSeen = true
+                    }
+                    if directive == "native_link" {
+                        var valid = tokens.values.len() == 2 || tokens.values.len() == 4
+                        const library = if tokens.values.len() >= 2 {
+                            packageToken(&tokens.values, 1)
+                        } else { "" }
+                        var linkTarget Option<targetPlatform> = .None
+                        if tokens.values.len() == 4 {
+                            valid = valid && packageToken(&tokens.values, 2) == "target"
+                            linkTarget = parseTargetPlatformText(packageToken(&tokens.values, 3))
+                            match linkTarget {
+                                None: {
+                                    valid = false
+                                }
+                                Some(value): {
+                                    discard value
+                                }
+                            }
+                        }
+                        valid = valid && isValidPackageName(library) &&
+                            !manifestHasNativeLink(&manifest, library, linkTarget)
+                        if !valid {
+                            addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4015", "native_link requires one unique library and optional target")
+                        } else {
+                            discard manifest.nativeLinks.add(packageNativeLink {
+                                library = library
+                                target = linkTarget
+                            })
+                        }
+                    }
+                    if directive == "foreign" {
+                        var valid = tokens.values.len() == 8
+                        var ecosystem = ""
+                        var identifier = ""
+                        var foreignVersion = ""
+                        var kind = ""
+                        var resolver = ""
+                        if valid {
+                            ecosystem = packageToken(&tokens.values, 1)
+                            identifier = packageToken(&tokens.values, 2)
+                            foreignVersion = packageToken(&tokens.values, 3)
+                            kind = packageToken(&tokens.values, 4)
+                            resolver = packageToken(&tokens.values, 5)
+                            valid = (ecosystem == "c" || ecosystem == "zig" ||
+                                ecosystem == "rust" || ecosystem == "go") &&
+                                !text.IsEmpty(identifier) && !text.IsEmpty(foreignVersion) &&
+                                !text.IsEmpty(resolver) &&
+                                (kind == "path" || kind == "registry" || kind == "system") &&
+                                (kind != "path" || relativePackageSource(resolver)) &&
+                                packageToken(&tokens.values, 6) == "abi" &&
+                                packageToken(&tokens.values, 7) == "c/v1" &&
+                                !manifestHasForeign(&manifest, ecosystem, identifier)
+                        }
+                        if !valid {
+                            addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4015", "foreign requires ecosystem, identifier, version, resolver kind, resolver, and abi c/v1")
+                        } else {
+                            discard manifest.foreign.add(packageForeign {
+                                ecosystem = ecosystem
+                                identifier = identifier
+                                version = foreignVersion
+                                kind = kind
+                                resolver = resolver
+                            })
+                        }
+                    }
+                    if directive == "dependency" {
+                        parseManifestDependency(
+                            &manifest,
+                            &result.errors,
+                            &tokens.values,
+                            filePath,
+                            lineNumber
+                        )
+                    }
+                    if !knownPackageManifestDirective(directive) {
+                        addPackageError(&result.errors, filePath, lineNumber, 1,
+                            "FDN4012", "unknown package directive " + directive)
+                    }
+                }
+            }
+        }
+        match found {
+            None: {
+                break
+            }
+            Some(offset): {
+                start = offset + 1
+                lineNumber += 1
+            }
+        }
+    }
+
+    if !formatSeen {
+        addPackageError(&result.errors, filePath, 1, 1, "FDN4004",
+            "missing package format directive")
+    }
+    if !nameSeen {
+        addPackageError(&result.errors, filePath, 1, 1, "FDN4005",
+            "missing package name")
+    }
+    if !versionSeen {
+        addPackageError(&result.errors, filePath, 1, 1, "FDN4006",
+            "missing package version")
+    }
+    if !sdkSeen {
+        addPackageError(&result.errors, filePath, 1, 1, "FDN4007",
+            "missing SDK requirement")
+    }
+    if !sourceSeen {
+        addPackageError(&result.errors, filePath, 1, 1, "FDN4008",
+            "missing source directory")
+    }
+    match copyPackageStringOption(manifest.testSource) {
+        Some(value): {
+            if packageSourcesOverlap(manifest.source, value) {
+                addPackageError(&result.errors, filePath, 1, 1, "FDN4013",
+                    "source and test_source directories cannot overlap")
+            }
+        }
+        None: {
+            var index u64 = 0
+            while index < manifest.dependencies.len() {
+                const dependency = match manifest.dependencies.take(index) {
+                    None: panic("package dependency slot is empty")
+                    Some(value): value
+                }
+                const testDependency = isTestScope(dependency.scope)
+                manifest.dependencies.restore(index, $dependency)
+                if testDependency {
+                    addPackageError(&result.errors, filePath, 1, 1, "FDN4013",
+                        "test dependencies require a test_source directory")
+                    break
+                }
+                index += 1
+            }
+        }
+    }
+    if (!manifest.nativeLibrary && (manifest.nativeLinks.len() > 0 ||
+            manifest.foreign.len() > 0 || manifestHasNativeMetadata(&manifest))) {
+        addPackageError(&result.errors, filePath, 1, 1, "FDN4015",
+            "native directives require native_library c")
+    }
+    if manifest.nativeLibrary {
+        match copyPackageStringOption(manifest.nativeName) {
+            None: addPackageError(&result.errors, filePath, 1, 1, "FDN4015",
+                "native_library c requires native_name")
+            Some(value): {
+                discard value
+            }
+        }
+    }
+    if result.errors.len() == 0 {
+        sortArena<codeStandardRuleSetting>(&manifest.codeStandardRules, compareCodeStandardRule)
+        sortArena<packageNativeLink>(&manifest.nativeLinks, comparePackageNativeLink)
+        sortArena<packageForeign>(&manifest.foreign, comparePackageForeign)
+        sortArena<packageDependency>(&manifest.dependencies, comparePackageDependency)
+        result.value = .Some(manifest)
+    }
+    result
+}
+
+fn parseManifestDependency(
+    &manifest packageManifest,
+    &errors arena<packageError>,
+    &tokens arena<String>,
+    filePath String,
+    line u64
+) void {
+    if tokens.len() != 5 && tokens.len() != 7 && tokens.len() != 9 {
+        addPackageError(&errors, filePath, line, 1, "FDN4009",
+            "dependency requires name, version, source kind, and location")
+        return
+    }
+    const name = packageToken(&tokens, 1)
+    const requirement = parsePackageRequirement(packageToken(&tokens, 2))
+    const kind = packageLocationKindFor(packageToken(&tokens, 3))
+    const location = packageToken(&tokens, 4)
+    var dependencyTarget Option<targetPlatform> = .None
+    var dependencyScope packageDependencyScope = .Runtime
+    var validQualifiers = true
+    var scopeSeen = false
+    var index u64 = 5
+    while index < tokens.len() {
+        const qualifier = packageToken(&tokens, index)
+        const value = packageToken(&tokens, index + 1)
+        if qualifier == "target" {
+            match dependencyTarget {
+                Some(existing): {
+                    discard existing
+                    validQualifiers = false
+                }
+                None: {
+                    dependencyTarget = parseTargetPlatformText(value)
+                    match dependencyTarget {
+                        None: {
+                            validQualifiers = false
+                        }
+                        Some(target): {
+                            discard target
+                        }
+                    }
+                }
+            }
+        } else {
+            if qualifier == "scope" && !scopeSeen && value == "test" {
+                dependencyScope = .Test
+                scopeSeen = true
+            } else {
+                validQualifiers = false
+            }
+        }
+        index += 2
+    }
+    var valid = isValidPackageName(name) && validQualifiers
+    match copyPackageRequirementOption(requirement) {
+        None: {
+            valid = false
+        }
+        Some(value): {
+            discard value
+        }
+    }
+    match kind {
+        None: {
+            valid = false
+        }
+        Some(value): {
+            valid = valid && validPackageLocation(value, location)
+        }
+    }
+    if !valid {
+        addPackageError(&errors, filePath, line, 1, "FDN4009",
+            "invalid package dependency")
+        return
+    }
+    if manifest.dependencies.len() == 4096 {
+        addPackageError(&errors, filePath, line, 1, "FDN4010",
+            "package manifest exceeds 4096 dependencies")
+        return
+    }
+    if manifestHasDependency(&manifest, name, dependencyTarget) {
+        addPackageError(&errors, filePath, line, 1, "FDN4011",
+            "duplicate package dependency " + name)
+        return
+    }
+    const requirementValue = match requirement {
+        None: panic("validated dependency requirement is absent")
+        Some(value): value
+    }
+    const kindValue = match kind {
+        None: panic("validated dependency kind is absent")
+        Some(value): value
+    }
+    discard manifest.dependencies.add(packageDependency {
+        name = name
+        requirement = requirementValue
+        kind = kindValue
+        location = location
+        target = dependencyTarget
+        scope = dependencyScope
+    })
+}
+
+fn manifestHasNativeMetadata(&manifest packageManifest) bool {
+    match copyPackageStringOption(manifest.nativeName) {
+        Some(value): {
+            discard value
+            return true
+        }
+        None: {}
+    }
+    match manifest.nativeSOVersion {
+        Some(value): {
+            discard value
+            return true
+        }
+        None: {}
+    }
+    false
+}
+
+fn isTestScope(scope packageDependencyScope) bool {
+    match scope {
+        Runtime: false
+        Test: true
+    }
+}
+
+fn compareTargetOption(left Option<targetPlatform>, right Option<targetPlatform>) i32 {
+    match left {
+        None: {
+            match right {
+                None: 0
+                Some(value): {
+                    discard value
+                    - 1
+                }
+            }
+        }
+        Some(leftValue): {
+            match right {
+                None: 1
+                Some(rightValue): targetPlatformCode(leftValue) - targetPlatformCode(rightValue)
+            }
+        }
+    }
+}
+
+fn compareCodeStandardRule(
+    left codeStandardRuleSetting,
+    right codeStandardRuleSetting
+) i32 {
+    text.Compare(left.code, right.code)
+}
+
+fn comparePackageNativeLink(left packageNativeLink, right packageNativeLink) i32 {
+    const library = text.Compare(left.library, right.library)
+    if library != 0 return library
+    compareTargetOption(left.target, right.target)
+}
+
+fn comparePackageForeign(left packageForeign, right packageForeign) i32 {
+    var compared = text.Compare(left.ecosystem, right.ecosystem)
+    if compared != 0 return compared
+    compared = text.Compare(left.identifier, right.identifier)
+    if compared != 0 return compared
+    compared = text.Compare(left.version, right.version)
+    if compared != 0 return compared
+    compared = text.Compare(left.kind, right.kind)
+    if compared != 0 return compared
+    text.Compare(left.resolver, right.resolver)
+}
+
+fn comparePackageDependency(left packageDependency, right packageDependency) i32 {
+    const name = text.Compare(left.name, right.name)
+    if name != 0 return name
+    compareTargetOption(left.target, right.target)
+}
+
+fn readPackageManifest(filePath String) own packageParseResult<own packageManifest> {
+    const source = fs.ReadTextSync(filePath, 1048576) else error {
+        var result = own packageParseResult<own packageManifest> {
+            value = .None
+            errors = newPackageErrors()
+        }
+        match error {
+            TooLarge: {
+                addPackageError(&result.errors, filePath, 1, 1, "FDN4002",
+                    "package file exceeds 1 MiB")
+            }
+            _: {
+                addPackageError(&result.errors, filePath, 1, 1, "FDN4001",
+                    "cannot read package file")
+            }
+        }
+        return result
+    }
+    parsePackageManifest(filePath, source)
+}
+
+fn renderPackageManifest(&source packageManifest) String {
+    var manifest = copyPackageManifest(&source)
+    sortArena<codeStandardRuleSetting>(&manifest.codeStandardRules, compareCodeStandardRule)
+    sortArena<packageNativeLink>(&manifest.nativeLinks, comparePackageNativeLink)
+    sortArena<packageForeign>(&manifest.foreign, comparePackageForeign)
+    sortArena<packageDependency>(&manifest.dependencies, comparePackageDependency)
+    var builder = text.NewBuilder()
+    discard packageBuilderWrite(&builder, "format foundation.package/v1\n")
+    discard packageBuilderWrite(&builder, "name " + manifest.name + "\n")
+    discard packageBuilderWrite(&builder,
+        "version " + packageVersionString(manifest.version) + "\n")
+    discard packageBuilderWrite(&builder,
+        "sdk " + packageRequirementString(manifest.sdk) + "\n")
+    if manifest.codeStandardExplicit {
+        discard packageBuilderWrite(&builder,
+            "fcs " + codeStandardProfileName(manifest.codeStandard) + "\n")
+    }
+    var index u64 = 0
+    while index < manifest.codeStandardRules.len() {
+        const value = match manifest.codeStandardRules.take(index) {
+            None: panic("code standard rule slot is empty")
+            Some(value): value
+        }
+        discard packageBuilderWrite(&builder,
+            "fcs_rule " + value.code + " " +
+            codeStandardSeverityName(value.severity) + "\n")
+        manifest.codeStandardRules.restore(index, $value)
+        index += 1
+    }
+    discard packageBuilderWrite(&builder,
+        "source " + quotePackageText(manifest.source) + "\n")
+    match copyPackageStringOption(manifest.testSource) {
+        None: {}
+        Some(value): {
+            discard packageBuilderWrite(&builder,
+                "test_source " + quotePackageText(value) + "\n")
+        }
+    }
+    if manifest.nativeLibrary {
+        discard packageBuilderWrite(&builder, "native_library c\n")
+    }
+    match copyPackageStringOption(manifest.nativeName) {
+        None: {}
+        Some(value): {
+            discard packageBuilderWrite(&builder,
+                "native_name " + quotePackageText(value) + "\n")
+        }
+    }
+    match manifest.nativeSOVersion {
+        None: {}
+        Some(value): {
+            discard packageBuilderWrite(&builder,
+                "native_soversion " + packageU32(value) + "\n")
+        }
+    }
+    index = 0
+    while index < manifest.nativeLinks.len() {
+        const value = match manifest.nativeLinks.take(index) {
+            None: panic("native link slot is empty")
+            Some(value): value
+        }
+        var line = "native_link " + quotePackageText(value.library)
+        match value.target {
+            None: {}
+            Some(target): {
+                line = line + " target " + targetPlatformName(target)
+            }
+        }
+        discard packageBuilderWrite(&builder, line + "\n")
+        manifest.nativeLinks.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < manifest.foreign.len() {
+        const value = match manifest.foreign.take(index) {
+            None: panic("foreign package slot is empty")
+            Some(value): value
+        }
+        discard packageBuilderWrite(&builder,
+            "foreign " + quotePackageText(value.ecosystem) + " " +
+            quotePackageText(value.identifier) + " " + quotePackageText(value.version) +
+            " " + value.kind + " " + quotePackageText(value.resolver) + " abi c/v1\n")
+        manifest.foreign.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < manifest.dependencies.len() {
+        const value = match manifest.dependencies.take(index) {
+            None: panic("package dependency slot is empty")
+            Some(value): value
+        }
+        var line = "dependency " + value.name + " " +
+            packageRequirementString(value.requirement) + " " +
+            packageLocationKindName(value.kind) + " " + quotePackageText(value.location)
+        match value.target {
+            None: {}
+            Some(target): {
+                line = line + " target " + targetPlatformName(target)
+            }
+        }
+        if isTestScope(value.scope) {
+            line = line + " scope test"
+        }
+        discard packageBuilderWrite(&builder, line + "\n")
+        manifest.dependencies.restore(index, $value)
+        index += 1
+    }
+    packageBuilderFinish(&builder)
+}
+
+fn packageU32(value u32) String {
+    format.U32(value)
+}

@@ -1,0 +1,281 @@
+package foundation.compiler
+
+import std.text
+
+struct packageLineTokens {
+    values own arena<String>
+    errorColumn Option<u64>
+    error String
+}
+
+fn packageByteAt(value String, index u64) u64 {
+    const byte = text.ByteAt(value, index) else error {
+        discard error
+        panic("package text index is out of range")
+    }
+    byte
+}
+
+fn packageSlice(value String, start u64, end u64) String {
+    const result = text.Slice(value, start, end) else error {
+        discard error
+        panic("package text boundary is invalid")
+    }
+    result
+}
+
+fn isAsciiAlpha(value u64) bool {
+    (value >= 65 && value <= 90) || (value >= 97 && value <= 122)
+}
+
+fn isAsciiDigit(value u64) bool {
+    value >= 48 && value <= 57
+}
+
+fn isAsciiAlphaNumeric(value u64) bool {
+    isAsciiAlpha(value) || isAsciiDigit(value)
+}
+
+fn isPackageSpace(value u64) bool {
+    value == 32 || value == 9 || value == 10 || value == 13
+}
+
+fn asciiLowerByte(value u64) u64 {
+    if value >= 65 && value <= 90 return value + 32
+    value
+}
+
+fn foldedPackageText(value String) String {
+    var builder = text.NewBuilder()
+    var offset u64 = 0
+    while offset < text.ByteLen(value) {
+        const written = builder.WriteCodePoint(asciiLowerByte(packageByteAt(value, offset))) else error {
+            discard error
+            panic("package text builder is closed")
+        }
+        discard written
+        offset += 1
+    }
+    const result = builder.Finish() else error {
+        discard error
+        panic("package text builder is closed")
+    }
+    result
+}
+
+fn isValidPackageName(value String) bool {
+    const length = text.ByteLen(value)
+    if length == 0 return false
+    var segmentStart = true
+    var offset u64 = 0
+    while offset < length {
+        const byte = packageByteAt(value, offset)
+        if byte == 46 {
+            if segmentStart return false
+            segmentStart = true
+        } else {
+            if segmentStart {
+                if !isAsciiAlpha(byte) return false
+                segmentStart = false
+            } else {
+                if !isAsciiAlphaNumeric(byte) && byte != 45 && byte != 95 return false
+            }
+        }
+        offset += 1
+    }
+    !segmentStart
+}
+
+fn validVersionIdentifier(value String) bool {
+    const length = text.ByteLen(value)
+    if length == 0 return false
+    var offset u64 = 0
+    while offset < length {
+        const byte = packageByteAt(value, offset)
+        if !isAsciiAlphaNumeric(byte) && byte != 45 return false
+        offset += 1
+    }
+    true
+}
+
+fn findPackageByte(value String, expected u64, start u64) Option<u64> {
+    var offset = start
+    while offset < text.ByteLen(value) {
+        if packageByteAt(value, offset) == expected return .Some(offset)
+        offset += 1
+    }
+    .None
+}
+
+fn tokenizePackageLine(line String) own packageLineTokens {
+    var result = own packageLineTokens {
+        values = newArena<String>()
+        errorColumn = .None
+        error = ""
+    }
+    var offset u64 = 0
+    const length = text.ByteLen(line)
+    while offset < length {
+        while offset < length && isPackageSpace(packageByteAt(line, offset)) {
+            offset += 1
+        }
+        if offset == length || packageByteAt(line, offset) == 35 break
+        if packageByteAt(line, offset) != 34 {
+            const start = offset
+            while offset < length && !isPackageSpace(packageByteAt(line, offset)) &&
+                packageByteAt(line, offset) != 35 {
+                offset += 1
+            }
+            discard result.values.add(packageSlice(line, start, offset))
+            continue
+        }
+
+        const start = offset
+        offset += 1
+        var builder = text.NewBuilder()
+        var closed = false
+        while offset < length {
+            const byte = packageByteAt(line, offset)
+            offset += 1
+            if byte == 34 {
+                closed = true
+                break
+            }
+            if byte != 92 {
+                const written = builder.WriteCodePoint(byte) else error {
+                    discard error
+                    panic("package token builder is closed")
+                }
+                discard written
+                continue
+            }
+            if offset == length break
+            const escaped = packageByteAt(line, offset)
+            offset += 1
+            var decoded = escaped
+            if escaped == 110 {
+                decoded = 10
+            } else {
+                if escaped == 116 {
+                    decoded = 9
+                } else {
+                    if escaped != 34 && escaped != 92 {
+                        result.errorColumn = .Some(offset)
+                        result.error = "unsupported escape in quoted value"
+                        discard builder.Close()
+                        return result
+                    }
+                }
+            }
+            const written = builder.WriteCodePoint(decoded) else error {
+                discard error
+                panic("package token builder is closed")
+            }
+            discard written
+        }
+        if !closed {
+            result.errorColumn = .Some(start + 1)
+            result.error = "unterminated quoted value"
+            discard builder.Close()
+            return result
+        }
+        if offset < length && !isPackageSpace(packageByteAt(line, offset)) &&
+            packageByteAt(line, offset) != 35 {
+            result.errorColumn = .Some(offset + 1)
+            result.error = "quoted value must end before the next token"
+            discard builder.Close()
+            return result
+        }
+        const token = builder.Finish() else error {
+            discard error
+            panic("package token builder is closed")
+        }
+        discard result.values.add($token)
+    }
+    result
+}
+
+fn quotePackageText(value String) String {
+    var required = text.IsEmpty(value)
+    var offset u64 = 0
+    while offset < text.ByteLen(value) {
+        const byte = packageByteAt(value, offset)
+        if isPackageSpace(byte) || byte == 35 || byte == 34 || byte == 92 {
+            required = true
+        }
+        offset += 1
+    }
+    if !required return text.Copy(value)
+
+    var builder = text.NewBuilder()
+    discard packageBuilderWrite(&builder, "\"")
+    offset = 0
+    while offset < text.ByteLen(value) {
+        const byte = packageByteAt(value, offset)
+        if byte == 34 || byte == 92 {
+            discard packageBuilderWrite(&builder, "\\")
+            discard packageBuilderCodePoint(&builder, byte)
+        } else {
+            if byte == 10 {
+                discard packageBuilderWrite(&builder, "\\n")
+            } else {
+                if byte == 9 {
+                    discard packageBuilderWrite(&builder, "\\t")
+                } else {
+                    discard packageBuilderCodePoint(&builder, byte)
+                }
+            }
+        }
+        offset += 1
+    }
+    discard packageBuilderWrite(&builder, "\"")
+    packageBuilderFinish(&builder)
+}
+
+fn packageBuilderWrite(&builder text.Builder, value String) bool {
+    const written = builder.Write(value) else error {
+        discard error
+        panic("package text builder is closed")
+    }
+    written
+}
+
+fn packageBuilderCodePoint(&builder text.Builder, value u64) bool {
+    const written = builder.WriteCodePoint(value) else error {
+        discard error
+        panic("package text builder is closed")
+    }
+    written
+}
+
+fn packageBuilderFinish(&builder text.Builder) String {
+    const result = builder.Finish() else error {
+        discard error
+        panic("package text builder is closed")
+    }
+    result
+}
+
+fn copyPackageStringOption(value Option<String>) Option<String> {
+    match value {
+        None: .None
+        Some(found): .Some(text.Copy(found))
+    }
+}
+
+fn packageToken(&tokens arena<String>, index u64) String {
+    const value = match tokens.take(index) {
+        None: panic("package token slot is empty")
+        Some(value): value
+    }
+    const result = text.Copy(value)
+    tokens.restore(index, $value)
+    result
+}
+
+fn parseTargetPlatformText(value String) Option<targetPlatform> {
+    if value == "linux" return .Some(.Linux)
+    if value == "macos" return .Some(.MacOS)
+    if value == "windows" return .Some(.Windows)
+    .None
+}

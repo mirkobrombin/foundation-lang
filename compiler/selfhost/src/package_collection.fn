@@ -1,0 +1,54 @@
+package foundation.compiler
+
+fn swapArenaValues<T>(&values arena<T>, left u64, right u64) void {
+    if left == right return
+    const leftValue = match values.take(left) {
+        None: panic("package collection slot is empty")
+        Some(value): value
+    }
+    const rightValue = match values.take(right) {
+        None: panic("package collection slot is empty")
+        Some(value): value
+    }
+    values.restore(left, $rightValue)
+    values.restore(right, $leftValue)
+}
+
+fn sortArena<T>(&values arena<T>, compare fn(T, T) i32) void {
+    var index u64 = 1
+    while index < values.len() {
+        var cursor = index
+        while cursor > 0 {
+            const left = match values.take(cursor - 1) {
+                None: panic("package collection slot is empty")
+                Some(value): value
+            }
+            const right = match values.take(cursor) {
+                None: panic("package collection slot is empty")
+                Some(value): value
+            }
+            const order = compare(left, right)
+            values.restore(cursor - 1, $left)
+            values.restore(cursor, $right)
+            if order <= 0 break
+            swapArenaValues(&values, cursor - 1, cursor)
+            cursor -= 1
+        }
+        index += 1
+    }
+}
+
+fn arenaContainsString(&values arena<String>, expected String) bool {
+    var index u64 = 0
+    while index < values.len() {
+        const value = match values.take(index) {
+            None: panic("package string slot is empty")
+            Some(value): value
+        }
+        const found = value == expected
+        values.restore(index, $value)
+        if found return true
+        index += 1
+    }
+    false
+}

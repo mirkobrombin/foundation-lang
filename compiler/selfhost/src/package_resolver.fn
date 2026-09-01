@@ -1,0 +1,817 @@
+package foundation.compiler
+
+import std.format
+import std.path
+import std.text
+
+struct packageConstraint {
+    dependency packageDependency
+    pathText String
+    pathKey String
+    depth u64
+}
+
+struct packageResolverEntry {
+    name String
+    constraints own arena<packageConstraint>
+    selected Option<u64>
+}
+
+struct packageResolverState {
+    entries own arena<packageResolverEntry>
+    edges own arena<packageEdge>
+}
+
+struct packageResolutionFailure {
+    present bool
+    code String
+    message String
+}
+
+fn newPackageResolverState() own packageResolverState {
+    own packageResolverState {
+        entries = newArena<packageResolverEntry>()
+        edges = newArena<packageEdge>()
+    }
+}
+
+fn copyPackageConstraint(value packageConstraint) packageConstraint {
+    packageConstraint {
+        dependency = copyPackageDependency(value.dependency)
+        pathText = text.Copy(value.pathText)
+        pathKey = text.Copy(value.pathKey)
+        depth = value.depth
+    }
+}
+
+fn copyPackageResolverState(&source packageResolverState) own packageResolverState {
+    var result = newPackageResolverState()
+    var index u64 = 0
+    while index < source.entries.len() {
+        var entry = match source.entries.take(index) {
+            None: panic("package resolver entry slot is empty")
+            Some(value): value
+        }
+        var copiedConstraints = newArena<packageConstraint>()
+        var constraintIndex u64 = 0
+        while constraintIndex < entry.constraints.len() {
+            const constraint = match entry.constraints.take(constraintIndex) {
+                None: panic("package constraint slot is empty")
+                Some(value): value
+            }
+            discard copiedConstraints.add(copyPackageConstraint(constraint))
+            entry.constraints.restore(constraintIndex, $constraint)
+            constraintIndex += 1
+        }
+        var selected Option<u64> = .None
+        match entry.selected {
+            None: {}
+            Some(value): {
+                selected = .Some(value)
+            }
+        }
+        discard result.entries.add(packageResolverEntry {
+            name = text.Copy(entry.name)
+            constraints = copiedConstraints
+            selected = selected
+        })
+        source.entries.restore(index, $entry)
+        index += 1
+    }
+    index = 0
+    while index < source.edges.len() {
+        const edge = match source.edges.take(index) {
+            None: panic("package resolver edge slot is empty")
+            Some(value): value
+        }
+        discard result.edges.add(copyPackageEdge(edge))
+        source.edges.restore(index, $edge)
+        index += 1
+    }
+    result
+}
+
+fn findResolverEntry(&state packageResolverState, name String) Option<u64> {
+    var index u64 = 0
+    while index < state.entries.len() {
+        var entry = match state.entries.take(index) {
+            None: panic("package resolver entry slot is empty")
+            Some(value): value
+        }
+        const found = entry.name == name
+        state.entries.restore(index, $entry)
+        if found return .Some(index)
+        index += 1
+    }
+    .None
+}
+
+fn addPackageConstraint(
+    &state packageResolverState,
+    $constraint packageConstraint
+) void {
+    const name = text.Copy(constraint.dependency.name)
+    match findResolverEntry(&state, name) {
+        None: {
+            var constraints = newArena<packageConstraint>()
+            discard constraints.add($constraint)
+            discard state.entries.add(packageResolverEntry {
+                name = name
+                constraints = constraints
+                selected = .None
+            })
+        }
+        Some(index): {
+            var entry = match state.entries.take(index) {
+                None: panic("package resolver entry slot is empty")
+                Some(value): value
+            }
+            discard entry.constraints.add($constraint)
+            state.entries.restore(index, $entry)
+        }
+    }
+}
+
+fn resolverHasEdge(
+    &state packageResolverState,
+    parent String,
+    dependency String,
+    scope packageDependencyScope
+) bool {
+    var index u64 = 0
+    while index < state.edges.len() {
+        const edge = match state.edges.take(index) {
+            None: panic("package resolver edge slot is empty")
+            Some(value): value
+        }
+        const found = edge.parent == parent && edge.dependency == dependency &&
+            isTestScope(edge.scope) == isTestScope(scope)
+        state.edges.restore(index, $edge)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn resolverCandidateMatches(
+    candidate packageCandidate,
+    &entry packageResolverEntry,
+    sdk packageVersion
+) bool {
+    if !packageRequirementAccepts(candidate.manifest.sdk, sdk) return false
+    var index u64 = 0
+    while index < entry.constraints.len() {
+        const constraint = match entry.constraints.take(index) {
+            None: panic("package constraint slot is empty")
+            Some(value): value
+        }
+        const dependency = copyPackageDependency(constraint.dependency)
+        const matches = packageRequirementAccepts(
+            dependency.requirement,
+            candidate.manifest.version
+        ) && isPathLocation(dependency.kind) == isPathLocation(candidate.kind) &&
+            dependency.location == candidate.location
+        entry.constraints.restore(index, $constraint)
+        if !matches return false
+        index += 1
+    }
+    true
+}
+
+fn rememberPackageResolutionFailure(
+    &failure packageResolutionFailure,
+    code String,
+    message String
+) void {
+    if failure.present return
+    failure.present = true
+    failure.code = text.Copy(code)
+    failure.message = text.Copy(message)
+}
+
+fn packageConflictMessage(&entry packageResolverEntry) String {
+    var result = "cannot resolve package " + entry.name
+    var index u64 = 0
+    while index < entry.constraints.len() {
+        const constraint = match entry.constraints.take(index) {
+            None: panic("package constraint slot is empty")
+            Some(value): value
+        }
+        result = result + "; " + constraint.pathText + " requires " +
+            packageRequirementString(constraint.dependency.requirement) + " from " +
+            packageLocationKindName(constraint.dependency.kind) + " " +
+            constraint.dependency.location
+        entry.constraints.restore(index, $constraint)
+        index += 1
+    }
+    result
+}
+
+fn selectedPackageCount(&state packageResolverState) u64 {
+    var count u64 = 0
+    var index u64 = 0
+    while index < state.entries.len() {
+        const entry = match state.entries.take(index) {
+            None: panic("package resolver entry slot is empty")
+            Some(value): value
+        }
+        match entry.selected {
+            None: {}
+            Some(value): {
+                discard value
+                count += 1
+            }
+        }
+        state.entries.restore(index, $entry)
+        index += 1
+    }
+    count
+}
+
+fn compareResolverChoice(
+    &catalog arena<packageCandidate>,
+    left u64,
+    right u64
+) i32 {
+    const leftCandidate = match catalog.take(left) {
+        None: panic("package catalog slot is empty")
+        Some(value): value
+    }
+    const rightCandidate = match catalog.take(right) {
+        None: panic("package catalog slot is empty")
+        Some(value): value
+    }
+    var compared = comparePackageVersion(
+        rightCandidate.manifest.version,
+        leftCandidate.manifest.version
+    )
+    if compared == 0 {
+        compared = text.Compare(leftCandidate.location, rightCandidate.location)
+    }
+    if compared == 0 {
+        compared = text.Compare(leftCandidate.digest, rightCandidate.digest)
+    }
+    catalog.restore(left, $leftCandidate)
+    catalog.restore(right, $rightCandidate)
+    compared
+}
+
+fn sortResolverChoices(
+    &choices arena<u64>,
+    &catalog arena<packageCandidate>
+) void {
+    var index u64 = 1
+    while index < choices.len() {
+        var cursor = index
+        while cursor > 0 {
+            const left = match choices.take(cursor - 1) {
+                None: panic("package choice slot is empty")
+                Some(value): value
+            }
+            const right = match choices.take(cursor) {
+                None: panic("package choice slot is empty")
+                Some(value): value
+            }
+            choices.restore(cursor - 1, left)
+            choices.restore(cursor, right)
+            if compareResolverChoice(&catalog, left, right) <= 0 break
+            swapArenaValues(&choices, cursor - 1, cursor)
+            cursor -= 1
+        }
+        index += 1
+    }
+}
+
+fn shallowestConstraint(&entry packageResolverEntry) packageConstraint {
+    if entry.constraints.len() == 0 {
+        panic("package resolver entry has no constraints")
+    }
+    var selected = match entry.constraints.take(0) {
+        None: panic("package constraint slot is empty")
+        Some(value): value
+    }
+    var index u64 = 1
+    while index < entry.constraints.len() {
+        const candidate = match entry.constraints.take(index) {
+            None: panic("package constraint slot is empty")
+            Some(value): value
+        }
+        if text.Compare(candidate.pathText, selected.pathText) < 0 {
+            const previous = selected
+            selected = copyPackageConstraint(candidate)
+            discard previous
+        }
+        entry.constraints.restore(index, $candidate)
+        index += 1
+    }
+    const result = copyPackageConstraint(selected)
+    entry.constraints.restore(0, $selected)
+    result
+}
+
+fn packagePathContains(pathKey String, name String) bool {
+    text.Contains(pathKey, "\n" + name + "\n")
+}
+
+fn selectedCandidatesMatch(
+    &state packageResolverState,
+    &catalog arena<packageCandidate>,
+    sdk packageVersion
+) bool {
+    var index u64 = 0
+    while index < state.entries.len() {
+        var entry = match state.entries.take(index) {
+            None: panic("package resolver entry slot is empty")
+            Some(value): value
+        }
+        var valid = true
+        match entry.selected {
+            None: {}
+            Some(candidateIndex): {
+                var candidate = match catalog.take(candidateIndex) {
+                    None: panic("package catalog slot is empty")
+                    Some(value): value
+                }
+                valid = resolverCandidateMatches(candidate, &entry, sdk)
+                catalog.restore(candidateIndex, $candidate)
+            }
+        }
+        state.entries.restore(index, $entry)
+        if !valid return false
+        index += 1
+    }
+    true
+}
+
+fn selectResolverEntry(
+    &state packageResolverState,
+    index u64,
+    candidate u64
+) void {
+    var entry = match state.entries.take(index) {
+        None: panic("package resolver entry slot is empty")
+        Some(value): value
+    }
+    entry.selected = .Some(candidate)
+    state.entries.restore(index, $entry)
+}
+
+fn moveResolverState(
+    &destination packageResolverState,
+    $source own packageResolverState
+) void {
+    const packageResolverState { entries edges } = source
+    const previousEntries = replace destination.entries with entries
+    const previousEdges = replace destination.edges with edges
+    discard previousEntries
+    discard previousEdges
+}
+
+fn solvePackageGraph(
+    &catalog arena<packageCandidate>,
+    sdk packageVersion,
+    target targetPlatform,
+    &state packageResolverState,
+    &failure packageResolutionFailure
+) bool {
+    var unresolved Option<u64> = .None
+    var entryIndex u64 = 0
+    while entryIndex < state.entries.len() {
+        const entry = match state.entries.take(entryIndex) {
+            None: panic("package resolver entry slot is empty")
+            Some(value): value
+        }
+        match entry.selected {
+            None: {
+                unresolved = .Some(entryIndex)
+                state.entries.restore(entryIndex, $entry)
+                break
+            }
+            Some(value): {
+                discard value
+                state.entries.restore(entryIndex, $entry)
+            }
+        }
+        entryIndex += 1
+    }
+    const unresolvedIndex = match unresolved {
+        None: {
+            return true
+        }
+        Some(value): value
+    }
+    if selectedPackageCount(&state) == 4096 {
+        rememberPackageResolutionFailure(&failure, "FDN4055",
+            "package graph exceeds 4096 packages")
+        return false
+    }
+    var entry = match state.entries.take(unresolvedIndex) {
+        None: panic("package resolver entry slot is empty")
+        Some(value): value
+    }
+    var choices = newArena<u64>()
+    var catalogIndex u64 = 0
+    while catalogIndex < catalog.len() {
+        var candidate = match catalog.take(catalogIndex) {
+            None: panic("package catalog slot is empty")
+            Some(value): value
+        }
+        const matches = candidate.manifest.name == entry.name &&
+            resolverCandidateMatches(candidate, &entry, sdk)
+        catalog.restore(catalogIndex, $candidate)
+        if matches {
+            discard choices.add(catalogIndex)
+        }
+        catalogIndex += 1
+    }
+    if choices.len() == 0 {
+        rememberPackageResolutionFailure(&failure, "FDN4052", packageConflictMessage(&entry))
+        state.entries.restore(unresolvedIndex, $entry)
+        return false
+    }
+    const origin = shallowestConstraint(&entry)
+    state.entries.restore(unresolvedIndex, $entry)
+    sortResolverChoices(&choices, &catalog)
+    var choiceIndex u64 = 0
+    while choiceIndex < choices.len() {
+        const choice = match choices.take(choiceIndex) {
+            None: panic("package choice slot is empty")
+            Some(value): value
+        }
+        choices.restore(choiceIndex, choice)
+        var next = copyPackageResolverState(&state)
+        selectResolverEntry(&next, unresolvedIndex, choice)
+        var candidate = match catalog.take(choice) {
+            None: panic("package catalog slot is empty")
+            Some(value): value
+        }
+        var valid = true
+        var dependencyIndex u64 = 0
+        while dependencyIndex < candidate.manifest.dependencies.len() {
+            const dependency = match candidate.manifest.dependencies.take(dependencyIndex) {
+                None: panic("package dependency slot is empty")
+                Some(value): value
+            }
+            if packageDependencyActive(dependency, target) && !isTestScope(dependency.scope) {
+                if origin.depth == 256 {
+                    rememberPackageResolutionFailure(&failure, "FDN4055",
+                        "package graph exceeds dependency depth 256")
+                    valid = false
+                } else {
+                    if packagePathContains(origin.pathKey, dependency.name) {
+                        rememberPackageResolutionFailure(&failure, "FDN4054",
+                            "package dependency cycle: " + origin.pathText + " -> " +
+                            dependency.name)
+                        valid = false
+                    } else {
+                        addPackageConstraint(&next, packageConstraint {
+                            dependency = copyPackageDependency(dependency)
+                            pathText = origin.pathText + " -> " + dependency.name
+                            pathKey = origin.pathKey + dependency.name + "\n"
+                            depth = origin.depth + 1
+                        })
+                        if !resolverHasEdge(&next, candidate.manifest.name, dependency.name,
+                            .Runtime) {
+                            discard next.edges.add(packageEdge {
+                                parent = text.Copy(candidate.manifest.name)
+                                dependency = text.Copy(dependency.name)
+                                scope = .Runtime
+                            })
+                        }
+                    }
+                }
+            }
+            candidate.manifest.dependencies.restore(dependencyIndex, $dependency)
+            if !valid break
+            dependencyIndex += 1
+        }
+        catalog.restore(choice, $candidate)
+        if valid && selectedCandidatesMatch(&next, &catalog, sdk) &&
+            solvePackageGraph(&catalog, sdk, target, &next, &failure) {
+            moveResolverState(&state, $next)
+            return true
+        }
+        choiceIndex += 1
+    }
+    false
+}
+
+fn nativePackageDigest(manifest packageManifest, target targetPlatform) String {
+    var name = text.Copy(manifest.name)
+    match copyPackageStringOption(manifest.nativeName) {
+        None: {}
+        Some(value): {
+            name = text.Copy(value)
+        }
+    }
+    var soVersion = "-"
+    match manifest.nativeSOVersion {
+        None: {}
+        Some(value): {
+            soVersion = format.U32(value)
+        }
+    }
+    packageSha256Text(
+        "foundation.native-library/v1\n" + name + "\n" + soVersion + "\n" +
+        targetPlatformName(target) + "\n"
+    )
+}
+
+fn lockRootPackageMetadata(
+    &lock packageLock,
+    &manifest packageManifest,
+    target targetPlatform,
+    rootManifestPath String
+) own arena<packageError> {
+    var errors = newPackageErrors()
+    lock.nativeLibrary = .None
+    lock.foreign.clear()
+    if !manifest.nativeLibrary return errors
+    var name = text.Copy(manifest.name)
+    match copyPackageStringOption(manifest.nativeName) {
+        None: {}
+        Some(value): {
+            name = text.Copy(value)
+        }
+    }
+    var soVersion Option<u32> = .None
+    match manifest.nativeSOVersion {
+        None: {}
+        Some(value): {
+            soVersion = .Some(value)
+        }
+    }
+    lock.nativeLibrary = .Some(lockedNativeLibrary {
+        name = name
+        soVersion = soVersion
+        digest = nativePackageDigest(manifest, target)
+    })
+    const projectRoot = path.Parent(rootManifestPath)
+    var index u64 = 0
+    while index < manifest.foreign.len() {
+        const foreign = match manifest.foreign.take(index) {
+            None: panic("foreign package slot is empty")
+            Some(value): value
+        }
+        if foreign.kind != "path" {
+            addPackageError(&errors, rootManifestPath, 1, 1, "FDN4057",
+                "foreign resolver kind " + foreign.kind +
+                " is not supported; Foundation 1.0 accepts path resolvers")
+            manifest.foreign.restore(index, $foreign)
+            index += 1
+            continue
+        }
+        const unresolved = path.Join(projectRoot, foreign.resolver)
+        if !requireRealRelativeDirectory(projectRoot, foreign.resolver, "FDN4057",
+            "foreign path source cannot use symlinked path components", &errors) {
+            manifest.foreign.restore(index, $foreign)
+            index += 1
+            continue
+        }
+        const sourcePathOption = canonicalPackageDirectory(unresolved)
+        const sourcePath = match sourcePathOption {
+            None: {
+                addPackageError(&errors, rootManifestPath, 1, 1, "FDN4057",
+                    "foreign path source must stay inside the package root")
+                manifest.foreign.restore(index, $foreign)
+                index += 1
+                continue
+            }
+            Some(value): value
+        }
+        const relative = path.Relative(projectRoot, sourcePath)
+        match relative {
+            Err(error): {
+                discard error
+                addPackageError(&errors, rootManifestPath, 1, 1, "FDN4057",
+                    "foreign path source must stay inside the package root")
+                manifest.foreign.restore(index, $foreign)
+                index += 1
+                continue
+            }
+            Ok(value): {
+                if value == ".." || text.StartsWith(value, ".." + path.Separator()) {
+                    addPackageError(&errors, rootManifestPath, 1, 1, "FDN4057",
+                        "foreign path source must stay inside the package root")
+                    manifest.foreign.restore(index, $foreign)
+                    index += 1
+                    continue
+                }
+            }
+        }
+        var source = inspectForeignSource(sourcePath)
+        const snapshot = match replace source.value with .None {
+            None: {
+                movePackageErrors(&errors, &source.errors)
+                manifest.foreign.restore(index, $foreign)
+                index += 1
+                continue
+            }
+            Some(value): value
+        }
+        discard lock.foreign.add(lockedForeign {
+            ecosystem = text.Copy(foreign.ecosystem)
+            identifier = text.Copy(foreign.identifier)
+            version = text.Copy(foreign.version)
+            kind = text.Copy(foreign.kind)
+            resolver = text.Copy(foreign.resolver)
+            digest = text.Copy(snapshot.digest)
+        })
+        manifest.foreign.restore(index, $foreign)
+        index += 1
+    }
+    sortArena<lockedForeign>(&lock.foreign, compareLockedForeign)
+    errors
+}
+
+fn resolvePackageGraph(
+    rootManifestPath String,
+    &root packageManifest,
+    sdk packageVersion,
+    target targetPlatform,
+    &catalog arena<packageCandidate>
+) own packageParseResult<own packageResolution> {
+    var result = own packageParseResult<own packageResolution> {
+        value = .None
+        errors = newPackageErrors()
+    }
+    if !packageRequirementAccepts(root.sdk, sdk) {
+        addPackageError(&result.errors, rootManifestPath, 1, 1, "FDN4050",
+            "SDK " + packageVersionString(sdk) + " does not satisfy root requirement " +
+            packageRequirementString(root.sdk))
+        return result
+    }
+    if catalog.len() > 65536 {
+        addPackageError(&result.errors, rootManifestPath, 1, 1, "FDN4055",
+            "package catalog exceeds 65536 candidates")
+        return result
+    }
+    if !validateResolverCatalog(rootManifestPath, &catalog, &result.errors) return result
+    var state = newPackageResolverState()
+    var dependencyIndex u64 = 0
+    while dependencyIndex < root.dependencies.len() {
+        const dependency = match root.dependencies.take(dependencyIndex) {
+            None: panic("package dependency slot is empty")
+            Some(value): value
+        }
+        if packageDependencyActive(dependency, target) {
+            addPackageConstraint(&state, packageConstraint {
+                dependency = copyPackageDependency(dependency)
+                pathText = root.name + " -> " + dependency.name
+                pathKey = "\n" + root.name + "\n" + dependency.name + "\n"
+                depth = 2
+            })
+            if !resolverHasEdge(&state, root.name, dependency.name, dependency.scope) {
+                discard state.edges.add(packageEdge {
+                    parent = text.Copy(root.name)
+                    dependency = text.Copy(dependency.name)
+                    scope = dependency.scope
+                })
+            }
+        }
+        root.dependencies.restore(dependencyIndex, $dependency)
+        dependencyIndex += 1
+    }
+    var failure = packageResolutionFailure {
+        present = false
+        code = ""
+        message = ""
+    }
+    if !solvePackageGraph(&catalog, sdk, target, &state, &failure) {
+        addPackageError(&result.errors, rootManifestPath, 1, 1,
+            failure.code, failure.message)
+        return result
+    }
+    var resolution = own packageResolution {
+        lock = newPackageLock()
+        packages = newArena<packageCandidate>()
+    }
+    resolution.lock.rootName = text.Copy(root.name)
+    resolution.lock.rootVersion = copyPackageVersion(root.version)
+    resolution.lock.target = target
+    var metadataErrors = lockRootPackageMetadata(
+        &resolution.lock,
+        &root,
+        target,
+        rootManifestPath
+    )
+    if metadataErrors.len() > 0 {
+        movePackageErrors(&result.errors, &metadataErrors)
+        return result
+    }
+    var entryIndex u64 = 0
+    while entryIndex < state.entries.len() {
+        const entry = match state.entries.take(entryIndex) {
+            None: panic("package resolver entry slot is empty")
+            Some(value): value
+        }
+        const selected = match entry.selected {
+            None: panic("resolved package entry has no selection")
+            Some(value): value
+        }
+        var candidate = match catalog.take(selected) {
+            None: panic("package catalog slot is empty")
+            Some(value): value
+        }
+        discard resolution.lock.packages.add(lockedPackage {
+            name = text.Copy(entry.name)
+            version = copyPackageVersion(candidate.manifest.version)
+            digest = text.Copy(candidate.digest)
+            kind = candidate.kind
+            location = text.Copy(candidate.location)
+        })
+        discard resolution.packages.add(copyPackageCandidate(&candidate))
+        catalog.restore(selected, $candidate)
+        state.entries.restore(entryIndex, $entry)
+        entryIndex += 1
+    }
+    var edgeIndex u64 = 0
+    while edgeIndex < state.edges.len() {
+        const edge = match state.edges.take(edgeIndex) {
+            None: panic("package resolver edge slot is empty")
+            Some(value): value
+        }
+        discard resolution.lock.edges.add(copyPackageEdge(edge))
+        state.edges.restore(edgeIndex, $edge)
+        edgeIndex += 1
+    }
+    sortArena<lockedPackage>(&resolution.lock.packages, compareLockedPackage)
+    sortArena<packageEdge>(&resolution.lock.edges, comparePackageEdge)
+    sortArena<packageCandidate>(&resolution.packages, comparePackageCandidate)
+    result.value = .Some(resolution)
+    result
+}
+
+fn validateResolverCatalog(
+    rootManifestPath String,
+    &catalog arena<packageCandidate>,
+    &errors arena<packageError>
+) bool {
+    sortArena<packageCandidate>(&catalog, comparePackageCandidate)
+    var index u64 = 0
+    while index < catalog.len() {
+        const candidate = match catalog.take(index) {
+            None: panic("package catalog slot is empty")
+            Some(value): value
+        }
+        const valid = !text.IsEmpty(candidate.manifest.name) &&
+            validPackageDigest(candidate.digest) && !text.IsEmpty(candidate.location)
+        if !valid {
+            addPackageError(&errors, rootManifestPath, 1, 1, "FDN4051",
+                "invalid package candidate " + candidate.manifest.name)
+            catalog.restore(index, $candidate)
+            return false
+        }
+        if index > 0 {
+            const previous = match catalog.take(index - 1) {
+                None: panic("package catalog slot is empty")
+                Some(value): value
+            }
+            const duplicate = previous.manifest.name == candidate.manifest.name &&
+                samePackageVersion(previous.manifest.version, candidate.manifest.version) &&
+                isPathLocation(previous.kind) == isPathLocation(candidate.kind) &&
+                previous.location == candidate.location
+            catalog.restore(index - 1, $previous)
+            if duplicate {
+                addPackageError(&errors, rootManifestPath, 1, 1, "FDN4053",
+                    "duplicate package candidate " + candidate.manifest.name + " " +
+                    packageVersionString(candidate.manifest.version) + " from " +
+                    packageLocationKindName(candidate.kind) + " " + candidate.location)
+                catalog.restore(index, $candidate)
+                return false
+            }
+        }
+        catalog.restore(index, $candidate)
+        index += 1
+    }
+    true
+}
+
+fn resolveProjectPackages(
+    rootManifestPath String,
+    &root packageManifest,
+    sdk packageVersion,
+    target targetPlatform,
+    &registries arena<packageRegistryRoot>
+) own packageParseResult<own packageResolution> {
+    var catalogResult = collectPackageCatalog(
+        rootManifestPath,
+        &root,
+        sdk,
+        target,
+        &registries
+    )
+    var catalog = match replace catalogResult.value with .None {
+        None: {
+            var result = own packageParseResult<own packageResolution> {
+                value = .None
+                errors = newPackageErrors()
+            }
+            movePackageErrors(&result.errors, &catalogResult.errors)
+            return result
+        }
+        Some(value): value
+    }
+    var resolvedRoot = copyPackageManifest(&catalog.root)
+    resolvePackageGraph(rootManifestPath, &resolvedRoot, sdk, target, &catalog.candidates)
+}

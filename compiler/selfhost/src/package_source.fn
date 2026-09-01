@@ -1,0 +1,411 @@
+package foundation.compiler
+
+import std.bytes
+import std.fs
+import std.path
+import std.text
+
+fn portablePackagePart(value String) bool {
+    const length = text.ByteLen(value)
+    if length == 0 || value == "." || value == ".." return false
+    const last = packageByteAt(value, length - 1)
+    if last == 32 || last == 46 return false
+    var offset u64 = 0
+    while offset < length {
+        const byte = packageByteAt(value, offset)
+        if !isAsciiAlphaNumeric(byte) && byte != 46 && byte != 95 && byte != 45 {
+            return false
+        }
+        offset += 1
+    }
+    true
+}
+
+fn comparePackageSourceFile(left packageSourceFile, right packageSourceFile) i32 {
+    text.Compare(left.path, right.path)
+}
+
+fn sourceHasFoldedPath(&values arena<String>, value String) bool {
+    arenaContainsString(&values, foldedPackageText(value))
+}
+
+fn requireRealPackageDirectory(
+    directory String,
+    code String,
+    message String,
+    &errors arena<packageError>
+) bool {
+    const kind = fs.Kind(directory)
+    match kind {
+        Err(error): {
+            discard error
+            addPackageError(&errors, directory, 1, 1, code, message)
+            false
+        }
+        Ok(value): {
+            match value {
+                Directory: true
+                _: {
+                    addPackageError(&errors, directory, 1, 1, code, message)
+                    false
+                }
+            }
+        }
+    }
+}
+
+fn requireRealRelativeDirectory(
+    root String,
+    relative String,
+    code String,
+    message String,
+    &errors arena<packageError>
+) bool {
+    var current = text.Copy(root)
+    const normalized = path.Normalize(relative)
+    var start u64 = 0
+    while start <= text.ByteLen(normalized) {
+        var end = text.ByteLen(normalized)
+        var offset = start
+        while offset < text.ByteLen(normalized) {
+            const byte = packageByteAt(normalized, offset)
+            if byte == 47 || byte == 92 {
+                end = offset
+                break
+            }
+            offset += 1
+        }
+        current = path.Join(current, packageSlice(normalized, start, end))
+        if !requireRealPackageDirectory(current, code, message, &errors) return false
+        if end == text.ByteLen(normalized) break
+        start = end + 1
+    }
+    true
+}
+
+fn collectPackageDirectory(
+    root String,
+    directory String,
+    relative String,
+    depth u64,
+    foreign bool,
+    &snapshot packageSourceSnapshot,
+    &foldedPaths arena<String>,
+    &errors arena<packageError>
+) bool {
+    const readerResult = fs.OpenDir(directory)
+    var reader = match readerResult {
+        Err(error): {
+            discard error
+            addPackageError(&errors, directory, 1, 1,
+                if foreign { "FDN4057" } else { "FDN4039" },
+                if foreign { "cannot inspect foreign path source" } else {
+                "cannot inspect package source"
+            })
+            return false
+        }
+        Ok(value): value
+    }
+    while true {
+        const next = reader.Next()
+        const name = match next {
+            Err(error): {
+                discard error
+                addPackageError(&errors, directory, 1, 1,
+                    if foreign { "FDN4057" } else { "FDN4039" },
+                    if foreign { "cannot inspect foreign path source" } else {
+                    "cannot inspect package source"
+                })
+                return false
+            }
+            Ok(value): {
+                match value {
+                    None: {
+                        break
+                    }
+                    Some(name): name
+                }
+            }
+        }
+        const entryPath = path.Join(directory, name)
+        if depth >= 64 {
+            addPackageError(&errors, entryPath, 1, 1,
+                if foreign { "FDN4057" } else { "FDN4032" },
+                if foreign { "foreign path source exceeds depth limit" } else {
+                "package source exceeds depth limit"
+            })
+            return false
+        }
+        if !portablePackagePart(name) {
+            addPackageError(&errors, entryPath, 1, 1,
+                if foreign { "FDN4057" } else { "FDN4035" },
+                if foreign { "foreign path source is not portable" } else {
+                "package source path is not portable"
+            })
+            return false
+        }
+        const relativePath = if text.IsEmpty(relative) {
+            text.Copy(name)
+        } else {
+            path.Join(relative, name)
+        }
+        const kindResult = fs.Kind(entryPath)
+        const kind = match kindResult {
+            Err(error): {
+                discard error
+                addPackageError(&errors, entryPath, 1, 1,
+                    if foreign { "FDN4057" } else { "FDN4039" },
+                    if foreign { "cannot inspect foreign path source" } else {
+                    "cannot inspect package source"
+                })
+                return false
+            }
+            Ok(value): value
+        }
+        match kind {
+            SymbolicLink: {
+                addPackageError(&errors, entryPath, 1, 1,
+                    if foreign { "FDN4057" } else { "FDN4033" },
+                    if foreign { "foreign path source cannot contain symlinks" } else {
+                    "package source cannot contain symlinks"
+                })
+                return false
+            }
+            Directory: {
+                if !collectPackageDirectory(root, entryPath, relativePath, depth + 1,
+                    foreign, &snapshot, &foldedPaths, &errors) {
+                    return false
+                }
+            }
+            File: {
+                const folded = foldedPackageText(relativePath)
+                if sourceHasFoldedPath(&foldedPaths, relativePath) {
+                    addPackageError(&errors, entryPath, 1, 1,
+                        if foreign { "FDN4057" } else { "FDN4036" },
+                        if foreign {
+                        "foreign path source paths collide without case sensitivity"
+                    } else { "package source paths collide without case sensitivity" })
+                    return false
+                }
+                const size = fs.Size(entryPath) else error {
+                    discard error
+                    addPackageError(&errors, entryPath, 1, 1,
+                        if foreign { "FDN4057" } else { "FDN4037" },
+                        if foreign { "foreign path source exceeds size limit" } else {
+                        "package source exceeds size limit"
+                    })
+                    return false
+                }
+                if size > 33554432 || snapshot.totalBytes > 268435456 - size {
+                    addPackageError(&errors, entryPath, 1, 1,
+                        if foreign { "FDN4057" } else { "FDN4037" },
+                        if foreign { "foreign path source exceeds size limit" } else {
+                        "package source exceeds size limit"
+                    })
+                    return false
+                }
+                if snapshot.files.len() == 8192 {
+                    addPackageError(&errors, entryPath, 1, 1,
+                        if foreign { "FDN4057" } else { "FDN4038" },
+                        if foreign { "foreign path source exceeds file limit" } else {
+                        "package source exceeds file limit"
+                    })
+                    return false
+                }
+                discard foldedPaths.add($folded)
+                discard snapshot.files.add(packageSourceFile {
+                    path = relativePath
+                    size = size
+                })
+                snapshot.totalBytes += size
+            }
+            _: {
+                addPackageError(&errors, entryPath, 1, 1,
+                    if foreign { "FDN4057" } else { "FDN4034" },
+                    if foreign { "foreign path source can contain only regular files" } else {
+                    "package source can contain only regular files"
+                })
+                return false
+            }
+        }
+    }
+    discard root
+    true
+}
+
+fn hashPackageSnapshot(
+    root String,
+    domain String,
+    manifest Option<String>,
+    &snapshot packageSourceSnapshot,
+    changedCode String,
+    changedMessage String,
+    &errors arena<packageError>
+) bool {
+    sortArena<packageSourceFile>(&snapshot.files, comparePackageSourceFile)
+    var hash = bytes.NewSha256()
+    if !writeDigestText(&hash, domain) return false
+    match manifest {
+        None: {}
+        Some(value): {
+            if !writeDigestEntryHeader(&hash, "foundation.package", text.ByteLen(value)) ||
+                !writeDigestText(&hash, value) {
+                return false
+            }
+        }
+    }
+    var index u64 = 0
+    while index < snapshot.files.len() {
+        const file = match snapshot.files.take(index) {
+            None: panic("package source file slot is empty")
+            Some(value): value
+        }
+        const absolute = path.Join(root, file.path)
+        const data = fs.ReadBytesSync(absolute, 33554432) else error {
+            discard error
+            snapshot.files.restore(index, $file)
+            addPackageError(&errors, absolute, 1, 1, changedCode, changedMessage)
+            return false
+        }
+        const length = data.Len() else error {
+            discard error
+            snapshot.files.restore(index, $file)
+            addPackageError(&errors, absolute, 1, 1, changedCode, changedMessage)
+            return false
+        }
+        if length != file.size || !writeDigestEntryHeader(&hash, file.path, file.size) ||
+            !writeDigestBytes(&hash, data) {
+            snapshot.files.restore(index, $file)
+            addPackageError(&errors, absolute, 1, 1, changedCode, changedMessage)
+            return false
+        }
+        snapshot.files.restore(index, $file)
+        index += 1
+    }
+    const digest = hash.Finish() else error {
+        discard error
+        return false
+    }
+    snapshot.digest = "sha256:" + packageDigestHex(digest)
+    true
+}
+
+fn inspectPackageSource(
+    packageDirectory String,
+    &manifest packageManifest
+) own packageParseResult<own packageSourceSnapshot> {
+    var result = own packageParseResult<own packageSourceSnapshot> {
+        value = .None
+        errors = newPackageErrors()
+    }
+    if !requireRealPackageDirectory(packageDirectory, "FDN4030",
+        "package root must be a real directory", &result.errors) {
+        return result
+    }
+    var snapshot = own packageSourceSnapshot {
+        digest = ""
+        totalBytes = 0
+        files = newArena<packageSourceFile>()
+    }
+    var folded = newArena<String>()
+    if !requireRealRelativeDirectory(packageDirectory, manifest.source, "FDN4031",
+        "package source must be a real directory", &result.errors) {
+        return result
+    }
+    if !collectPackageDirectory(
+        packageDirectory,
+        path.Join(packageDirectory, manifest.source),
+        path.Normalize(manifest.source),
+        0,
+        false,
+        &snapshot,
+        &folded,
+        &result.errors
+    ) {
+        return result
+    }
+    match copyPackageStringOption(manifest.testSource) {
+        None: {}
+        Some(testSource): {
+            if !requireRealRelativeDirectory(packageDirectory, testSource, "FDN4031",
+                "package source must be a real directory", &result.errors) {
+                return result
+            }
+            if !collectPackageDirectory(
+                packageDirectory,
+                path.Join(packageDirectory, testSource),
+                path.Normalize(testSource),
+                0,
+                false,
+                &snapshot,
+                &folded,
+                &result.errors
+            ) {
+                return result
+            }
+        }
+    }
+    const canonicalManifest = renderPackageManifest(&manifest)
+    if !hashPackageSnapshot(
+        packageDirectory,
+        "foundation.package.digest/v1",
+        .Some(canonicalManifest),
+        &snapshot,
+        "FDN4040",
+        "package source changed while it was read",
+        &result.errors
+    ) {
+        return result
+    }
+    result.value = .Some(snapshot)
+    result
+}
+
+fn inspectForeignSource(
+    sourceDirectory String
+) own packageParseResult<own packageSourceSnapshot> {
+    var result = own packageParseResult<own packageSourceSnapshot> {
+        value = .None
+        errors = newPackageErrors()
+    }
+    if !requireRealPackageDirectory(sourceDirectory, "FDN4057",
+        "foreign path source must be a real directory", &result.errors) {
+        return result
+    }
+    var snapshot = own packageSourceSnapshot {
+        digest = ""
+        totalBytes = 0
+        files = newArena<packageSourceFile>()
+    }
+    var folded = newArena<String>()
+    if !collectPackageDirectory(
+        sourceDirectory,
+        sourceDirectory,
+        "",
+        0,
+        true,
+        &snapshot,
+        &folded,
+        &result.errors
+    ) {
+        return result
+    }
+    if snapshot.files.len() == 0 {
+        addPackageError(&result.errors, sourceDirectory, 1, 1, "FDN4057",
+            "foreign path source is empty")
+        return result
+    }
+    if !hashPackageSnapshot(
+        sourceDirectory,
+        "foundation.foreign.path.digest/v1",
+        .None,
+        &snapshot,
+        "FDN4057",
+        "foreign path source changed while it was read",
+        &result.errors
+    ) {
+        return result
+    }
+    result.value = .Some(snapshot)
+    result
+}

@@ -1,0 +1,183 @@
+package foundation.compiler
+
+import std.fs
+import std.path
+import std.text
+
+fn copyPackageCandidate(&candidate packageCandidate) packageCandidate {
+    packageCandidate {
+        manifest = copyPackageManifest(&candidate.manifest)
+        digest = text.Copy(candidate.digest)
+        kind = candidate.kind
+        location = text.Copy(candidate.location)
+        root = text.Copy(candidate.root)
+    }
+}
+
+fn comparePackageCandidateVersion(
+    left packageCandidate,
+    right packageCandidate
+) i32 {
+    comparePackageVersion(left.manifest.version, right.manifest.version)
+}
+
+fn readLocalPackageRegistry(
+    registryRoot String,
+    identity String,
+    packageName String
+) own packageParseResult<own arena<packageCandidate>> {
+    var result = own packageParseResult<own arena<packageCandidate>> {
+        value = .None
+        errors = newPackageErrors()
+    }
+    if !isValidPackageName(identity) || !isValidPackageName(packageName) ||
+        !requireRealPackageDirectory(registryRoot, "FDN4060",
+        "local registry must have a valid identity, package name, and real root",
+        &result.errors) {
+        if result.errors.len() == 0 {
+            addPackageError(&result.errors, registryRoot, 1, 1, "FDN4060",
+                "local registry must have a valid identity, package name, and real root")
+        }
+        return result
+    }
+    const packageRoot = path.Join(registryRoot, packageName)
+    const packageKind = fs.Kind(packageRoot)
+    match packageKind {
+        Err(error): {
+            discard error
+            addPackageError(&result.errors, packageRoot, 1, 1, "FDN4061",
+                "registry package root must be a real directory")
+            return result
+        }
+        Ok(kind): {
+            match kind {
+                Missing: {
+                    result.value = .Some(newArena<packageCandidate>())
+                    return result
+                }
+                Directory: {}
+                _: {
+                    addPackageError(&result.errors, packageRoot, 1, 1, "FDN4061",
+                        "registry package root must be a real directory")
+                    return result
+                }
+            }
+        }
+    }
+    var candidates = newArena<packageCandidate>()
+    const opened = fs.OpenDir(packageRoot) else error {
+        discard error
+        addPackageError(&result.errors, packageRoot, 1, 1, "FDN4064",
+            "cannot enumerate local registry")
+        return result
+    }
+    var reader = opened
+    while true {
+        const next = reader.Next()
+        const name = match next {
+            Err(error): {
+                discard error
+                addPackageError(&result.errors, packageRoot, 1, 1, "FDN4064",
+                    "cannot enumerate local registry")
+                return result
+            }
+            Ok(value): {
+                match value {
+                    None: {
+                        break
+                    }
+                    Some(name): name
+                }
+            }
+        }
+        const root = path.Join(packageRoot, name)
+        const version = parsePackageVersion(name)
+        var valid = false
+        match copyPackageVersionOption(version) {
+            None: {}
+            Some(value): {
+                discard value
+                const kind = fs.Kind(root)
+                match kind {
+                    Ok(Directory): {
+                        valid = true
+                    }
+                    _: {}
+                }
+            }
+        }
+        if !valid {
+            addPackageError(&result.errors, root, 1, 1, "FDN4062",
+                "registry entries must be real directories named by semantic version")
+            return result
+        }
+        const manifestPath = path.Join(root, "foundation.package")
+        const manifestKind = fs.Kind(manifestPath)
+        match manifestKind {
+            Ok(File): {}
+            _: {
+                addPackageError(&result.errors, manifestPath, 1, 1, "FDN4063",
+                    "registry manifest must be a regular file")
+                return result
+            }
+        }
+        var parsed = readPackageManifest(manifestPath)
+        var manifest = match replace parsed.value with .None {
+            None: {
+                movePackageErrors(&result.errors, &parsed.errors)
+                return result
+            }
+            Some(value): value
+        }
+        const versionValue = match copyPackageVersionOption(version) {
+            None: panic("validated registry version is absent")
+            Some(value): value
+        }
+        if manifest.name != packageName ||
+            !samePackageVersion(manifest.version, versionValue) {
+            addPackageError(&result.errors, manifestPath, 1, 1, "FDN4063",
+                "registry path does not match package manifest identity")
+            return result
+        }
+        var snapshotResult = inspectPackageSource(root, &manifest)
+        const snapshot = match replace snapshotResult.value with .None {
+            None: {
+                movePackageErrors(&result.errors, &snapshotResult.errors)
+                return result
+            }
+            Some(value): value
+        }
+        discard candidates.add(packageCandidate {
+            manifest = manifest
+            digest = text.Copy(snapshot.digest)
+            kind = .Registry
+            location = text.Copy(identity)
+            root = root
+        })
+    }
+    sortArena<packageCandidate>(&candidates, comparePackageCandidateVersion)
+    result.value = .Some(candidates)
+    result
+}
+
+fn movePackageErrors(
+    &destination arena<packageError>,
+    &source arena<packageError>
+) void {
+    var index u64 = 0
+    while index < source.len() {
+        const value = match source.take(index) {
+            None: panic("package error slot is empty")
+            Some(value): value
+        }
+        discard destination.add(packageError {
+            path = text.Copy(value.path)
+            line = value.line
+            column = value.column
+            code = text.Copy(value.code)
+            message = text.Copy(value.message)
+        })
+        source.restore(index, $value)
+        index += 1
+    }
+}

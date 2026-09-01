@@ -3065,8 +3065,9 @@ class FunctionEmitter {
                        (arm.expression.has_value() &&
                         expressionDiverges(program_, function_, *arm.expression));
             });
+        const auto diverges = allExit || type == neverType;
         std::string temporary;
-        if (type != voidType && !allExit) {
+        if (type != voidType && !diverges) {
             temporary = nextTemporary();
             out_ << indentation(depth) << cType(type) << ' ' << temporary << " = {0};\n";
         }
@@ -3196,7 +3197,7 @@ class FunctionEmitter {
                            ? emitExpression(*arm.expression, armDepth)
                            : EmittedExpression{"", false});
             if (!armExits && !armValue.diverges) {
-                if (type != voidType) {
+                if (type != voidType && type != neverType) {
                     out_ << indentation(armDepth) << temporary << " = " << armValue.value
                          << ";\n";
                 }
@@ -3224,13 +3225,13 @@ class FunctionEmitter {
         emitLocation(span, depth + 1);
         out_ << indentation(depth + 1) << "fdn_invalid_enum_tag();\n";
         out_ << indentation(depth) << "}\n";
-        if (allExit) {
+        if (diverges) {
             out_ << indentation(depth) << "fdn_panic_cstr(\"unreachable match\");\n";
         }
         if (needsDoneLabel) {
             out_ << done << ":;\n";
         }
-        return {allExit ? std::string{} : temporary, allExit};
+        return {diverges ? std::string{} : temporary, diverges};
     }
 
     EmittedExpression emitConditional(const FirConditionalExpression &conditional,

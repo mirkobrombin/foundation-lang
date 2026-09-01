@@ -1,0 +1,330 @@
+package foundation.compiler
+
+import std.format
+import std.parse
+import std.text
+
+fn parsePackageNumber(value String) Option<u64> {
+    if text.IsEmpty(value) return .None
+    if text.ByteLen(value) > 1 && packageByteAt(value, 0) == 48 return .None
+    const parsed = parse.U64(value) else error {
+        discard error
+        return .None
+    }
+    .Some(parsed)
+}
+
+fn validPackageIdentifiers(value String, rejectLeadingZero bool) bool {
+    if text.IsEmpty(value) return false
+    var start u64 = 0
+    while start <= text.ByteLen(value) {
+        const found = findPackageByte(value, 46, start)
+        const end = match found {
+            None: text.ByteLen(value)
+            Some(offset): offset
+        }
+        const part = packageSlice(value, start, end)
+        if !validVersionIdentifier(part) return false
+        if rejectLeadingZero && text.ByteLen(part) > 1 {
+            var numeric = true
+            var offset u64 = 0
+            while offset < text.ByteLen(part) {
+                if !isAsciiDigit(packageByteAt(part, offset)) {
+                    numeric = false
+                }
+                offset += 1
+            }
+            if numeric && packageByteAt(part, 0) == 48 return false
+        }
+        match found {
+            None: {
+                return true
+            }
+            Some(offset): {
+                start = offset + 1
+            }
+        }
+    }
+    true
+}
+
+fn parsePackageVersion(value String) Option<packageVersion> {
+    const length = text.ByteLen(value)
+    const plus = findPackageByte(value, 43, 0)
+    const dash = findPackageByte(value, 45, 0)
+    var coreEnd = length
+    match plus {
+        None: {}
+        Some(offset): {
+            coreEnd = offset
+        }
+    }
+    match dash {
+        None: {}
+        Some(offset): {
+            if offset < coreEnd {
+                coreEnd = offset
+            }
+        }
+    }
+    const core = packageSlice(value, 0, coreEnd)
+    const first = findPackageByte(core, 46, 0)
+    const firstOffset = match first {
+        None: {
+            return .None
+        }
+        Some(offset): offset
+    }
+    const second = findPackageByte(core, 46, firstOffset + 1)
+    const secondOffset = match second {
+        None: {
+            return .None
+        }
+        Some(offset): offset
+    }
+    match findPackageByte(core, 46, secondOffset + 1) {
+        None: {}
+        Some(offset): {
+            discard offset
+            return .None
+        }
+    }
+    const major = parsePackageNumber(packageSlice(core, 0, firstOffset))
+    const minor = parsePackageNumber(packageSlice(core, firstOffset + 1, secondOffset))
+    const patch = parsePackageNumber(packageSlice(core, secondOffset + 1, text.ByteLen(core)))
+    const majorValue = match major {
+        None: {
+            return .None
+        }
+        Some(number): number
+    }
+    const minorValue = match minor {
+        None: {
+            return .None
+        }
+        Some(number): number
+    }
+    const patchValue = match patch {
+        None: {
+            return .None
+        }
+        Some(number): number
+    }
+
+    var prerelease = ""
+    match dash {
+        None: {}
+        Some(offset): {
+            match plus {
+                Some(buildOffset): {
+                    if buildOffset < offset return .None
+                    prerelease = packageSlice(value, offset + 1, buildOffset)
+                }
+                None: {
+                    prerelease = packageSlice(value, offset + 1, length)
+                }
+            }
+            if !validPackageIdentifiers(prerelease, true) return .None
+        }
+    }
+    var build = ""
+    match plus {
+        None: {}
+        Some(offset): {
+            build = packageSlice(value, offset + 1, length)
+            if !validPackageIdentifiers(build, false) return .None
+        }
+    }
+    .Some(packageVersion {
+        major = majorValue
+        minor = minorValue
+        patch = patchValue
+        prerelease = prerelease
+        build = build
+    })
+}
+
+fn packageVersionString(version packageVersion) String {
+    var result = format.U64(version.major) + "." + format.U64(version.minor) +
+        "." + format.U64(version.patch)
+    if !text.IsEmpty(version.prerelease) {
+        result = result + "-" + version.prerelease
+    }
+    if !text.IsEmpty(version.build) {
+        result = result + "+" + version.build
+    }
+    result
+}
+
+fn comparePackageIdentifier(left String, right String) i32 {
+    const leftNumber = parsePackageNumber(left)
+    const rightNumber = parsePackageNumber(right)
+    match leftNumber {
+        Some(leftValue): {
+            match rightNumber {
+                Some(rightValue): {
+                    if leftValue < rightValue return -1
+                    if leftValue > rightValue return 1
+                    return 0
+                }
+                None: {
+                    return -1
+                }
+            }
+        }
+        None: {
+            match rightNumber {
+                Some(rightValue): {
+                    discard rightValue
+                    return 1
+                }
+                None: {
+                    return text.Compare(left, right)
+                }
+            }
+        }
+    }
+}
+
+fn comparePackagePrerelease(left String, right String) i32 {
+    if text.IsEmpty(left) || text.IsEmpty(right) {
+        if text.IsEmpty(left) && text.IsEmpty(right) return 0
+        if text.IsEmpty(left) return 1
+        return -1
+    }
+    var leftStart u64 = 0
+    var rightStart u64 = 0
+    while true {
+        const leftFound = findPackageByte(left, 46, leftStart)
+        const rightFound = findPackageByte(right, 46, rightStart)
+        const leftEnd = match leftFound {
+            None: text.ByteLen(left)
+            Some(offset): offset
+        }
+        const rightEnd = match rightFound {
+            None: text.ByteLen(right)
+            Some(offset): offset
+        }
+        const compared = comparePackageIdentifier(
+            packageSlice(left, leftStart, leftEnd),
+            packageSlice(right, rightStart, rightEnd)
+        )
+        if compared != 0 return compared
+        match leftFound {
+            None: {
+                match rightFound {
+                    None: {
+                        return 0
+                    }
+                    Some(offset): {
+                        discard offset
+                        return -1
+                    }
+                }
+            }
+            Some(leftOffset): {
+                match rightFound {
+                    None: {
+                        return 1
+                    }
+                    Some(rightOffset): {
+                        leftStart = leftOffset + 1
+                        rightStart = rightOffset + 1
+                    }
+                }
+            }
+        }
+    }
+    0
+}
+
+fn comparePackagePrecedence(left packageVersion, right packageVersion) i32 {
+    if left.major < right.major return -1
+    if left.major > right.major return 1
+    if left.minor < right.minor return -1
+    if left.minor > right.minor return 1
+    if left.patch < right.patch return -1
+    if left.patch > right.patch return 1
+    comparePackagePrerelease(left.prerelease, right.prerelease)
+}
+
+fn comparePackageVersion(left packageVersion, right packageVersion) i32 {
+    const precedence = comparePackagePrecedence(left, right)
+    if precedence != 0 return precedence
+    text.Compare(left.build, right.build)
+}
+
+fn samePackageVersion(left packageVersion, right packageVersion) bool {
+    comparePackageVersion(left, right) == 0
+}
+
+fn parsePackageRequirement(value String) Option<packageRequirement> {
+    if value == "*" {
+        return .Some(packageRequirement { kind = .Any version = emptyPackageVersion() })
+    }
+    var kind packageRequirementKind = .Exact
+    var versionText = text.Copy(value)
+    if !text.IsEmpty(value) && packageByteAt(value, 0) == 94 {
+        kind = .Caret
+        versionText = packageSlice(value, 1, text.ByteLen(value))
+    } else {
+        if !text.IsEmpty(value) && packageByteAt(value, 0) == 126 {
+            kind = .Tilde
+            versionText = packageSlice(value, 1, text.ByteLen(value))
+        }
+    }
+    const parsed = parsePackageVersion(versionText)
+    match parsed {
+        None: .None
+        Some(version): .Some(packageRequirement { kind = kind version = version })
+    }
+}
+
+fn packageRequirementString(requirement packageRequirement) String {
+    match requirement.kind {
+        Any: "*"
+        Exact: packageVersionString(requirement.version)
+        Caret: "^" + packageVersionString(requirement.version)
+        Tilde: "~" + packageVersionString(requirement.version)
+    }
+}
+
+fn packageRequirementUpperBound(requirement packageRequirement) packageVersion {
+    var result = copyPackageVersion(requirement.version)
+    result.prerelease = ""
+    result.build = ""
+    match requirement.kind {
+        Tilde: {
+            result.minor += 1
+            result.patch = 0
+        }
+        _: {
+            if result.major != 0 {
+                result.major += 1
+                result.minor = 0
+                result.patch = 0
+            } else {
+                if result.minor != 0 {
+                    result.minor += 1
+                    result.patch = 0
+                } else {
+                    result.patch += 1
+                }
+            }
+            discard result.major
+        }
+    }
+    result
+}
+
+fn packageRequirementAccepts(
+    requirement packageRequirement,
+    candidate packageVersion
+) bool {
+    match requirement.kind {
+        Any: true
+        Exact: samePackageVersion(candidate, requirement.version)
+        _: comparePackagePrecedence(candidate, requirement.version) >= 0 &&
+            comparePackagePrecedence(candidate, packageRequirementUpperBound(requirement)) < 0
+    }
+}

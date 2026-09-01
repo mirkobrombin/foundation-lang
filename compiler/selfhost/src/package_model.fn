@@ -1,0 +1,245 @@
+package foundation.compiler
+
+import std.text
+
+struct packageError {
+    path String
+    line u64
+    column u64
+    code String
+    message String
+}
+
+struct packageParseResult<T> {
+    value Option<T>
+    errors own arena<packageError>
+}
+
+struct packageMutationResult {
+    changed own arena<String>
+    errors own arena<packageError>
+}
+
+struct packageVersion {
+    major u64
+    minor u64
+    patch u64
+    prerelease String
+    build String
+}
+
+enum packageRequirementKind {
+    Any
+    Exact
+    Caret
+    Tilde
+}
+
+struct packageRequirement {
+    kind packageRequirementKind
+    version packageVersion
+}
+
+enum packageLocationKind {
+    Path
+    Registry
+}
+
+enum packageDependencyScope {
+    Runtime
+    Test
+}
+
+struct packageDependency {
+    name String
+    requirement packageRequirement
+    kind packageLocationKind
+    location String
+    target Option<targetPlatform>
+    scope packageDependencyScope
+}
+
+struct packageNativeLink {
+    library String
+    target Option<targetPlatform>
+}
+
+struct packageForeign {
+    ecosystem String
+    identifier String
+    version String
+    kind String
+    resolver String
+}
+
+struct packageManifest {
+    name String
+    version packageVersion
+    sdk packageRequirement
+    codeStandard codeStandardProfile
+    codeStandardExplicit bool
+    codeStandardRules own arena<codeStandardRuleSetting>
+    source String
+    testSource Option<String>
+    dependencies own arena<packageDependency>
+    nativeLibrary bool
+    nativeName Option<String>
+    nativeSOVersion Option<u32>
+    nativeLinks own arena<packageNativeLink>
+    foreign own arena<packageForeign>
+}
+
+struct lockedPackage {
+    name String
+    version packageVersion
+    digest String
+    kind packageLocationKind
+    location String
+}
+
+struct packageEdge {
+    parent String
+    dependency String
+    scope packageDependencyScope
+}
+
+struct lockedNativeLibrary {
+    name String
+    soVersion Option<u32>
+    digest String
+}
+
+struct lockedForeign {
+    ecosystem String
+    identifier String
+    version String
+    kind String
+    resolver String
+    digest String
+}
+
+struct packageLock {
+    rootName String
+    rootVersion packageVersion
+    target targetPlatform
+    nativeLibrary Option<lockedNativeLibrary>
+    foreign own arena<lockedForeign>
+    packages own arena<lockedPackage>
+    edges own arena<packageEdge>
+}
+
+struct packageSourceFile {
+    path String
+    size u64
+}
+
+struct packageSourceSnapshot {
+    digest String
+    totalBytes u64
+    files own arena<packageSourceFile>
+}
+
+struct packageCandidate {
+    manifest own packageManifest
+    digest String
+    kind packageLocationKind
+    location String
+    root String
+}
+
+struct packageResolution {
+    lock own packageLock
+    packages own arena<packageCandidate>
+}
+
+struct packageRegistryRoot {
+    identity String
+    root String
+}
+
+struct packageCatalog {
+    root own packageManifest
+    candidates own arena<packageCandidate>
+}
+
+struct lockedPackageSource {
+    name String
+    packageRoot String
+    sourceRoot String
+    manifest own packageManifest
+    scope packageDependencyScope
+}
+
+struct lockedPackageProject {
+    manifestPath String
+    projectRoot String
+    manifest own packageManifest
+    lock own packageLock
+    sources own arena<lockedPackageSource>
+}
+
+fn emptyPackageVersion() packageVersion {
+    packageVersion {
+        major = 0
+        minor = 0
+        patch = 0
+        prerelease = ""
+        build = ""
+    }
+}
+
+fn emptyPackageRequirement() packageRequirement {
+    packageRequirement { kind = .Exact version = emptyPackageVersion() }
+}
+
+fn newPackageManifest() own packageManifest {
+    own packageManifest {
+        name = ""
+        version = emptyPackageVersion()
+        sdk = emptyPackageRequirement()
+        codeStandard = .Standard
+        codeStandardExplicit = false
+        codeStandardRules = newArena<codeStandardRuleSetting>()
+        source = ""
+        testSource = .None
+        dependencies = newArena<packageDependency>()
+        nativeLibrary = false
+        nativeName = .None
+        nativeSOVersion = .None
+        nativeLinks = newArena<packageNativeLink>()
+        foreign = newArena<packageForeign>()
+    }
+}
+
+fn newPackageLock() own packageLock {
+    own packageLock {
+        rootName = ""
+        rootVersion = emptyPackageVersion()
+        target = .Linux
+        nativeLibrary = .None
+        foreign = newArena<lockedForeign>()
+        packages = newArena<lockedPackage>()
+        edges = newArena<packageEdge>()
+    }
+}
+
+fn newPackageErrors() own arena<packageError> {
+    newArena<packageError>()
+}
+
+fn addPackageError(
+    &errors arena<packageError>,
+    path String,
+    line u64,
+    column u64,
+    code String,
+    message String
+) void {
+    discard errors.add(packageError {
+        path = text.Copy(path)
+        line = line
+        column = column
+        code = text.Copy(code)
+        message = text.Copy(message)
+    })
+}

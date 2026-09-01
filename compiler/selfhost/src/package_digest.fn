@@ -1,0 +1,97 @@
+package foundation.compiler
+
+import std.bytes
+import std.text
+
+fn writeDigestText(&hash bytes.Sha256, value String) bool {
+    const written = hash.WriteText(value)
+    match written {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn writeDigestBytes(&hash bytes.Sha256, value bytes.Bytes) bool {
+    const written = hash.WriteBytes(value)
+    match written {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn writeDigestSize(&hash bytes.Sha256, value u64) bool {
+    const opened = bytes.NewBuilder(8) else error {
+        discard error
+        return false
+    }
+    var builder = opened
+    var shift u64 = 56
+    while true {
+        const written = builder.WriteByte((value >> shift) & 255)
+        match written {
+            Err(error): {
+                discard error
+                return false
+            }
+            Ok: {}
+        }
+        if shift == 0 break
+        shift -= 8
+    }
+    const encoded = builder.Finish() else error {
+        discard error
+        return false
+    }
+    writeDigestBytes(&hash, encoded)
+}
+
+fn writeDigestEntryHeader(
+    &hash bytes.Sha256,
+    entryPath String,
+    size u64
+) bool {
+    writeDigestSize(&hash, text.ByteLen(entryPath)) &&
+        writeDigestText(&hash, entryPath) && writeDigestSize(&hash, size)
+}
+
+fn packageDigestHex(value bytes.Bytes) String {
+    const length = value.Len() else error {
+        discard error
+        panic("package digest is closed")
+    }
+    var builder = text.NewBuilder()
+    var index u64 = 0
+    while index < length {
+        const byte = value.At(index) else error {
+            discard error
+            panic("package digest byte is absent")
+        }
+        discard packageBuilderCodePoint(&builder, packageHexDigit(byte >> 4))
+        discard packageBuilderCodePoint(&builder, packageHexDigit(byte & 15))
+        index += 1
+    }
+    packageBuilderFinish(&builder)
+}
+
+fn packageHexDigit(value u64) u64 {
+    if value < 10 return 48 + value
+    87 + value
+}
+
+fn packageSha256Text(value String) String {
+    var hash = bytes.NewSha256()
+    if !writeDigestText(&hash, value) {
+        panic("package digest input is too large")
+    }
+    const digest = hash.Finish() else error {
+        discard error
+        panic("package digest is closed")
+    }
+    "sha256:" + packageDigestHex(digest)
+}

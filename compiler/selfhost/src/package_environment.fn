@@ -1,0 +1,83 @@
+package foundation.compiler
+
+import std.env
+import std.path
+import std.text
+
+fn packageEnvironment(name String) Option<String> {
+    const value = env.Get(name)
+    match value {
+        Err(error): {
+            discard error
+            .None
+        }
+        Ok(value): value
+    }
+}
+
+@target(linux)
+fn defaultPackageCachePath() Option<String> {
+    match packageEnvironment("FOUNDATION_PACKAGE_CACHE") {
+        Some(value): {
+            if !text.IsEmpty(value) return .Some(value)
+        }
+        None: {}
+    }
+    match packageEnvironment("XDG_CACHE_HOME") {
+        Some(value): {
+            if !text.IsEmpty(value) return .Some(path.Join(path.Join(value,
+                        "foundation"), "packages"))
+        }
+        None: {}
+    }
+    match env.Home() {
+        Err(error): {
+            discard error
+            .None
+        }
+        Ok(value): {
+            match value {
+                None: .None
+                Some(home): .Some(path.Join(path.Join(path.Join(home, ".cache"),
+                            "foundation"), "packages"))
+            }
+        }
+    }
+}
+
+@target(macos)
+fn defaultPackageCachePath() Option<String> {
+    match packageEnvironment("FOUNDATION_PACKAGE_CACHE") {
+        Some(value): {
+            if !text.IsEmpty(value) return .Some(value)
+        }
+        None: {}
+    }
+    match env.Home() {
+        Err(error): {
+            discard error
+            .None
+        }
+        Ok(value): {
+            match value {
+                None: .None
+                Some(home): .Some(path.Join(path.Join(path.Join(path.Join(home, "Library"),
+                                "Caches"), "Foundation"), "packages"))
+            }
+        }
+    }
+}
+
+@target(windows)
+fn defaultPackageCachePath() Option<String> {
+    match packageEnvironment("FOUNDATION_PACKAGE_CACHE") {
+        Some(value): {
+            if !text.IsEmpty(value) return .Some(value)
+        }
+        None: {}
+    }
+    match packageEnvironment("LOCALAPPDATA") {
+        Some(value): .Some(path.Join(path.Join(value, "Foundation"), "packages"))
+        None: .None
+    }
+}

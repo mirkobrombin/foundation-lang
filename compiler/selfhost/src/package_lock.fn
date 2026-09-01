@@ -1,0 +1,934 @@
+package foundation.compiler
+
+import std.format
+import std.fs
+import std.path
+import std.text
+
+fn validPackageDigest(value String) bool {
+    if text.ByteLen(value) != 71 || !text.StartsWith(value, "sha256:") return false
+    var offset u64 = 7
+    while offset < 71 {
+        const byte = packageByteAt(value, offset)
+        if !isAsciiDigit(byte) && (byte < 97 || byte > 102) return false
+        offset += 1
+    }
+    true
+}
+
+fn copyLockedPackage(value lockedPackage) lockedPackage {
+    lockedPackage {
+        name = text.Copy(value.name)
+        version = copyPackageVersion(value.version)
+        digest = text.Copy(value.digest)
+        kind = value.kind
+        location = text.Copy(value.location)
+    }
+}
+
+fn copyPackageEdge(value packageEdge) packageEdge {
+    packageEdge {
+        parent = text.Copy(value.parent)
+        dependency = text.Copy(value.dependency)
+        scope = value.scope
+    }
+}
+
+fn copyLockedNativeOption(value Option<lockedNativeLibrary>) Option<lockedNativeLibrary> {
+    match value {
+        None: .None
+        Some(found): .Some(lockedNativeLibrary {
+            name = text.Copy(found.name)
+            soVersion = found.soVersion
+            digest = text.Copy(found.digest)
+        })
+    }
+}
+
+fn copyPackageLock(&source packageLock) own packageLock {
+    var result = newPackageLock()
+    result.rootName = text.Copy(source.rootName)
+    result.rootVersion = copyPackageVersion(source.rootVersion)
+    result.target = source.target
+    match copyLockedNativeOption(source.nativeLibrary) {
+        None: {
+            result.nativeLibrary = .None
+        }
+        Some(value): {
+            var soVersion Option<u32> = .None
+            match value.soVersion {
+                None: {}
+                Some(version): {
+                    soVersion = .Some(version)
+                }
+            }
+            result.nativeLibrary = .Some(lockedNativeLibrary {
+                name = text.Copy(value.name)
+                soVersion = soVersion
+                digest = text.Copy(value.digest)
+            })
+        }
+    }
+    var index u64 = 0
+    while index < source.foreign.len() {
+        const value = match source.foreign.take(index) {
+            None: panic("locked foreign slot is empty")
+            Some(value): value
+        }
+        discard result.foreign.add(lockedForeign {
+            ecosystem = text.Copy(value.ecosystem)
+            identifier = text.Copy(value.identifier)
+            version = text.Copy(value.version)
+            kind = text.Copy(value.kind)
+            resolver = text.Copy(value.resolver)
+            digest = text.Copy(value.digest)
+        })
+        source.foreign.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < source.packages.len() {
+        const value = match source.packages.take(index) {
+            None: panic("locked package slot is empty")
+            Some(value): value
+        }
+        discard result.packages.add(copyLockedPackage(value))
+        source.packages.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < source.edges.len() {
+        const value = match source.edges.take(index) {
+            None: panic("package edge slot is empty")
+            Some(value): value
+        }
+        discard result.edges.add(copyPackageEdge(value))
+        source.edges.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn lockHasPackage(&lock packageLock, name String) bool {
+    var index u64 = 0
+    while index < lock.packages.len() {
+        const value = match lock.packages.take(index) {
+            None: panic("locked package slot is empty")
+            Some(value): value
+        }
+        const found = value.name == name
+        lock.packages.restore(index, $value)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn lockHasForeign(&lock packageLock, ecosystem String, identifier String) bool {
+    var index u64 = 0
+    while index < lock.foreign.len() {
+        const value = match lock.foreign.take(index) {
+            None: panic("locked foreign slot is empty")
+            Some(value): value
+        }
+        const found = value.ecosystem == ecosystem && value.identifier == identifier
+        lock.foreign.restore(index, $value)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn lockHasEdge(&lock packageLock, parent String, dependency String) bool {
+    var index u64 = 0
+    while index < lock.edges.len() {
+        const value = match lock.edges.take(index) {
+            None: panic("package edge slot is empty")
+            Some(value): value
+        }
+        const found = value.parent == parent && value.dependency == dependency
+        lock.edges.restore(index, $value)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn knownPackageLockDirective(value String) bool {
+    value == "format" || value == "root" || value == "target" || value == "native" ||
+        value == "foreign" || value == "package" || value == "edge"
+}
+
+fn parsePackageLock(
+    filePath String,
+    source String
+) own packageParseResult<own packageLock> {
+    var result = own packageParseResult<own packageLock> {
+        value = .None
+        errors = newPackageErrors()
+    }
+    var lock = newPackageLock()
+    var formatSeen = false
+    var rootSeen = false
+    var targetSeen = false
+    var nativeSeen = false
+    var lineNumber u64 = 1
+    var start u64 = 0
+    while start <= text.ByteLen(source) {
+        const found = findPackageByte(source, 10, start)
+        const end = match found {
+            None: text.ByteLen(source)
+            Some(offset): offset
+        }
+        var line = packageSlice(source, start, end)
+        if !text.IsEmpty(line) && packageByteAt(line, text.ByteLen(line) - 1) == 13 {
+            line = packageSlice(line, 0, text.ByteLen(line) - 1)
+        }
+        var tokens = tokenizePackageLine(line)
+        match tokens.errorColumn {
+            Some(column): addPackageError(&result.errors, filePath, lineNumber, column,
+                "FDN4003", tokens.error)
+            None: {
+                if tokens.values.len() > 0 {
+                    const directive = packageToken(&tokens.values, 0)
+                    if directive == "format" {
+                        if tokens.values.len() != 2 ||
+                            packageToken(&tokens.values, 1) != "foundation.lock/v1" ||
+                            formatSeen {
+                            addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4020", "expected one format foundation.lock/v1 directive")
+                        }
+                        formatSeen = true
+                    }
+                    if directive == "root" {
+                        var valid = tokens.values.len() == 3
+                        const name = if valid { packageToken(&tokens.values, 1) } else { "" }
+                        const version = if valid {
+                            parsePackageVersion(packageToken(&tokens.values, 2))
+                        } else {.None }
+                        valid = valid && isValidPackageName(name) && !rootSeen
+                        match version {
+                            None: {
+                                valid = false
+                            }
+                            Some(value): {
+                                if valid {
+                                    lock.rootName = name
+                                    lock.rootVersion = value
+                                }
+                            }
+                        }
+                        if !valid {
+                            addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4021", "expected one root package and version")
+                        }
+                        rootSeen = true
+                    }
+                    if directive == "target" {
+                        const parsed = if tokens.values.len() == 2 {
+                            parseTargetPlatformText(packageToken(&tokens.values, 1))
+                        } else {.None }
+                        var valid = !targetSeen
+                        match parsed {
+                            None: {
+                                valid = false
+                            }
+                            Some(value): {
+                                if valid {
+                                    lock.target = value
+                                }
+                            }
+                        }
+                        if !valid {
+                            addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4022", "expected one target linux, macos, or windows")
+                        }
+                        targetSeen = true
+                    }
+                    if directive == "native" {
+                        parseLockedNative(&lock, &result.errors, &tokens.values,
+                            filePath, lineNumber, nativeSeen)
+                        nativeSeen = true
+                    }
+                    if directive == "foreign" {
+                        parseLockedForeign(&lock, &result.errors, &tokens.values,
+                            filePath, lineNumber)
+                    }
+                    if directive == "package" {
+                        parseLockedPackage(&lock, &result.errors, &tokens.values,
+                            filePath, lineNumber)
+                    }
+                    if directive == "edge" {
+                        parseLockedEdge(&lock, &result.errors, &tokens.values,
+                            filePath, lineNumber)
+                    }
+                    if !knownPackageLockDirective(directive) {
+                        addPackageError(&result.errors, filePath, lineNumber, 1,
+                            "FDN4026", "unknown lock directive " + directive)
+                    }
+                }
+            }
+        }
+        match found {
+            None: {
+                break
+            }
+            Some(offset): {
+                start = offset + 1
+                lineNumber += 1
+            }
+        }
+    }
+    if !formatSeen {
+        addPackageError(&result.errors, filePath, 1, 1, "FDN4020",
+            "missing lock format directive")
+    }
+    if !rootSeen {
+        addPackageError(&result.errors, filePath, 1, 1, "FDN4021",
+            "missing root package")
+    }
+    if !targetSeen {
+        addPackageError(&result.errors, filePath, 1, 1, "FDN4022",
+            "missing lock target")
+    }
+    if lock.foreign.len() > 0 {
+        match copyLockedNativeOption(lock.nativeLibrary) {
+            None: addPackageError(&result.errors, filePath, 1, 1, "FDN4029",
+                "foreign provenance requires a native library lock entry")
+            Some(value): {
+                discard value
+            }
+        }
+    }
+    if result.errors.len() == 0 && validatePackageLockGraph(filePath, &lock, &result.errors) {
+        sortArena<lockedPackage>(&lock.packages, compareLockedPackage)
+        sortArena<packageEdge>(&lock.edges, comparePackageEdge)
+        sortArena<lockedForeign>(&lock.foreign, compareLockedForeign)
+        result.value = .Some(lock)
+    }
+    result
+}
+
+fn parseLockedNative(
+    &lock packageLock,
+    &errors arena<packageError>,
+    &tokens arena<String>,
+    filePath String,
+    line u64,
+    seen bool
+) void {
+    var valid = tokens.len() == 5
+    const kind = if valid { packageToken(&tokens, 1) } else { "" }
+    const name = if valid { packageToken(&tokens, 2) } else { "" }
+    const soText = if valid { packageToken(&tokens, 3) } else { "" }
+    const digest = if valid { packageToken(&tokens, 4) } else { "" }
+    var soVersion Option<u32> = .None
+    if valid && soText != "-" {
+        const parsed = parsePackageNumber(soText)
+        match parsed {
+            None: {
+                valid = false
+            }
+            Some(value): {
+                if value > 4294967295 {
+                    valid = false
+                } else {
+                    const converted = u32.From(value) else error {
+                        discard error
+                        panic("validated SOVERSION does not fit u32")
+                    }
+                    soVersion = .Some(converted)
+                }
+                discard value
+            }
+        }
+    }
+    valid = valid && kind == "c" && isValidPackageName(name) &&
+        validPackageDigest(digest) && !seen
+    if !valid {
+        addPackageError(&errors, filePath, line, 1, "FDN4028",
+            "invalid native library lock entry")
+        return
+    }
+    lock.nativeLibrary = .Some(lockedNativeLibrary {
+        name = name
+        soVersion = soVersion
+        digest = digest
+    })
+}
+
+fn parseLockedForeign(
+    &lock packageLock,
+    &errors arena<packageError>,
+    &tokens arena<String>,
+    filePath String,
+    line u64
+) void {
+    var valid = tokens.len() == 9
+    var ecosystem = ""
+    var identifier = ""
+    var version = ""
+    var kind = ""
+    var resolver = ""
+    var digest = ""
+    if valid {
+        ecosystem = packageToken(&tokens, 1)
+        identifier = packageToken(&tokens, 2)
+        version = packageToken(&tokens, 3)
+        kind = packageToken(&tokens, 4)
+        resolver = packageToken(&tokens, 5)
+        digest = packageToken(&tokens, 8)
+        valid = (ecosystem == "c" || ecosystem == "zig" || ecosystem == "rust" ||
+            ecosystem == "go") && !text.IsEmpty(identifier) && !text.IsEmpty(version) &&
+            (kind == "path" || kind == "registry" || kind == "system") &&
+            !text.IsEmpty(resolver) && packageToken(&tokens, 6) == "abi" &&
+            packageToken(&tokens, 7) == "c/v1" && validPackageDigest(digest) &&
+            !lockHasForeign(&lock, ecosystem, identifier)
+    }
+    if !valid {
+        addPackageError(&errors, filePath, line, 1, "FDN4029",
+            "invalid foreign provenance lock entry")
+        return
+    }
+    discard lock.foreign.add(lockedForeign {
+        ecosystem = ecosystem
+        identifier = identifier
+        version = version
+        kind = kind
+        resolver = resolver
+        digest = digest
+    })
+}
+
+fn parseLockedPackage(
+    &lock packageLock,
+    &errors arena<packageError>,
+    &tokens arena<String>,
+    filePath String,
+    line u64
+) void {
+    var valid = tokens.len() == 6
+    const name = if valid { packageToken(&tokens, 1) } else { "" }
+    const version = if valid {
+        parsePackageVersion(packageToken(&tokens, 2))
+    } else {.None }
+    const digest = if valid { packageToken(&tokens, 3) } else { "" }
+    const kind = if valid {
+        packageLocationKindFor(packageToken(&tokens, 4))
+    } else {.None }
+    const location = if valid { packageToken(&tokens, 5) } else { "" }
+    valid = valid && isValidPackageName(name) && validPackageDigest(digest)
+    match copyPackageVersionOption(version) {
+        None: {
+            valid = false
+        }
+        Some(value): {
+            discard value
+        }
+    }
+    match kind {
+        None: {
+            valid = false
+        }
+        Some(value): {
+            valid = valid && validPackageLocation(value, location)
+        }
+    }
+    if !valid {
+        addPackageError(&errors, filePath, line, 1, "FDN4023", "invalid locked package")
+        return
+    }
+    if lockHasPackage(&lock, name) {
+        addPackageError(&errors, filePath, line, 1, "FDN4024",
+            "duplicate locked package " + name)
+        return
+    }
+    discard lock.packages.add(lockedPackage {
+        name = name
+        version = match version {
+            None: panic("validated locked version is absent")
+            Some(value): value
+        }
+        digest = digest
+        kind = match kind {
+            None: panic("validated locked kind is absent")
+            Some(value): value
+        }
+        location = location
+    })
+}
+
+fn parseLockedEdge(
+    &lock packageLock,
+    &errors arena<packageError>,
+    &tokens arena<String>,
+    filePath String,
+    line u64
+) void {
+    var valid = tokens.len() == 3 ||
+        (tokens.len() == 5 && packageToken(&tokens, 3) == "scope" &&
+        packageToken(&tokens, 4) == "test")
+    const parent = if tokens.len() >= 2 { packageToken(&tokens, 1) } else { "" }
+    const dependency = if tokens.len() >= 3 { packageToken(&tokens, 2) } else { "" }
+    valid = valid && isValidPackageName(parent) && isValidPackageName(dependency) &&
+        !lockHasEdge(&lock, parent, dependency)
+    if !valid {
+        addPackageError(&errors, filePath, line, 1, "FDN4025", "invalid package edge")
+        return
+    }
+    discard lock.edges.add(packageEdge {
+        parent = parent
+        dependency = dependency
+        scope = if tokens.len() == 5 {.Test } else {.Runtime }
+    })
+}
+
+struct lockNode {
+    name String
+    incoming u64
+    reached bool
+    removed bool
+}
+
+fn findLockNode(&nodes arena<lockNode>, name String) Option<u64> {
+    var index u64 = 0
+    while index < nodes.len() {
+        const taken = nodes.take(index)
+        match taken {
+            None: {
+                index += 1
+                continue
+            }
+            Some(value): {
+                const found = value.name == name
+                nodes.restore(index, $value)
+                if found return .Some(index)
+            }
+        }
+        index += 1
+    }
+    .None
+}
+
+fn validatePackageLockGraph(
+    filePath String,
+    &lock packageLock,
+    &errors arena<packageError>
+) bool {
+    var nodes = newArena<lockNode>()
+    discard nodes.add(lockNode {
+        name = text.Copy(lock.rootName)
+        incoming = 0
+        reached = true
+        removed = false
+    })
+    var index u64 = 0
+    while index < lock.packages.len() {
+        const value = match lock.packages.take(index) {
+            None: panic("locked package slot is empty")
+            Some(value): value
+        }
+        const valid = value.name != lock.rootName &&
+            validPackageLocation(value.kind, value.location)
+        if valid {
+            discard nodes.add(lockNode {
+                name = text.Copy(value.name)
+                incoming = 0
+                reached = false
+                removed = false
+            })
+        }
+        lock.packages.restore(index, $value)
+        if !valid {
+            addPackageError(&errors, filePath, 1, 1, "FDN4027",
+                "locked package has an invalid source identity")
+            return false
+        }
+        index += 1
+    }
+
+    index = 0
+    while index < lock.edges.len() {
+        const edge = match lock.edges.take(index) {
+            None: panic("package edge slot is empty")
+            Some(value): value
+        }
+        const parent = findLockNode(&nodes, edge.parent)
+        const dependency = findLockNode(&nodes, edge.dependency)
+        var valid = true
+        if edge.parent == edge.dependency {
+            lock.edges.restore(index, $edge)
+            addPackageError(&errors, filePath, 1, 1, "FDN4027",
+                "lock contains a package cycle")
+            return false
+        }
+        match parent {
+            None: {
+                valid = false
+            }
+            Some(value): {
+                discard value
+            }
+        }
+        match dependency {
+            None: {
+                valid = false
+            }
+            Some(value): {
+                var node = match nodes.take(value) {
+                    None: panic("lock node slot is empty")
+                    Some(node): node
+                }
+                node.incoming += 1
+                nodes.restore(value, $node)
+            }
+        }
+        if isTestScope(edge.scope) && edge.parent != lock.rootName {
+            valid = false
+        }
+        lock.edges.restore(index, $edge)
+        if !valid {
+            addPackageError(&errors, filePath, 1, 1, "FDN4027",
+                "lock contains an unknown or duplicate package edge")
+            return false
+        }
+        index += 1
+    }
+
+    var changed = true
+    while changed {
+        changed = false
+        index = 0
+        while index < lock.edges.len() {
+            const edge = match lock.edges.take(index) {
+                None: panic("package edge slot is empty")
+                Some(value): value
+            }
+            const parentID = match findLockNode(&nodes, edge.parent) {
+                None: panic("validated lock parent is absent")
+                Some(value): value
+            }
+            const dependencyID = match findLockNode(&nodes, edge.dependency) {
+                None: panic("validated lock dependency is absent")
+                Some(value): value
+            }
+            const parent = match nodes.take(parentID) {
+                None: panic("lock node slot is empty")
+                Some(value): value
+            }
+            var dependency = match nodes.take(dependencyID) {
+                None: panic("lock node slot is empty")
+                Some(value): value
+            }
+            if parent.reached && !dependency.reached {
+                dependency.reached = true
+                changed = true
+            }
+            nodes.restore(parentID, $parent)
+            nodes.restore(dependencyID, $dependency)
+            lock.edges.restore(index, $edge)
+            index += 1
+        }
+    }
+    index = 0
+    while index < nodes.len() {
+        const node = match nodes.take(index) {
+            None: panic("lock node slot is empty")
+            Some(value): value
+        }
+        const reached = node.reached
+        nodes.restore(index, $node)
+        if !reached {
+            addPackageError(&errors, filePath, 1, 1, "FDN4027",
+                "lock contains a package unreachable from the root")
+            return false
+        }
+        index += 1
+    }
+
+    var visited u64 = 0
+    changed = true
+    while changed {
+        changed = false
+        index = 0
+        while index < nodes.len() {
+            var node = match nodes.take(index) {
+                None: panic("lock node slot is empty")
+                Some(value): value
+            }
+            if !node.removed && node.incoming == 0 {
+                node.removed = true
+                visited += 1
+                changed = true
+                var edgeIndex u64 = 0
+                while edgeIndex < lock.edges.len() {
+                    const edge = match lock.edges.take(edgeIndex) {
+                        None: panic("package edge slot is empty")
+                        Some(value): value
+                    }
+                    if edge.parent == node.name {
+                        const dependencyID = match findLockNode(&nodes, edge.dependency) {
+                            None: panic("validated lock dependency is absent")
+                            Some(value): value
+                        }
+                        var dependency = match nodes.take(dependencyID) {
+                            None: panic("lock node slot is empty")
+                            Some(value): value
+                        }
+                        if dependency.incoming > 0 {
+                            dependency.incoming -= 1
+                        }
+                        nodes.restore(dependencyID, $dependency)
+                    }
+                    lock.edges.restore(edgeIndex, $edge)
+                    edgeIndex += 1
+                }
+            }
+            nodes.restore(index, $node)
+            index += 1
+        }
+    }
+    if visited != nodes.len() {
+        addPackageError(&errors, filePath, 1, 1, "FDN4027",
+            "lock contains a package cycle")
+        return false
+    }
+    true
+}
+
+fn compareLockedPackage(left lockedPackage, right lockedPackage) i32 {
+    text.Compare(left.name, right.name)
+}
+
+fn comparePackageEdge(left packageEdge, right packageEdge) i32 {
+    var compared = text.Compare(left.parent, right.parent)
+    if compared != 0 return compared
+    compared = text.Compare(left.dependency, right.dependency)
+    if compared != 0 return compared
+    if isTestScope(left.scope) == isTestScope(right.scope) return 0
+    if isTestScope(left.scope) return 1
+    - 1
+}
+
+fn compareLockedForeign(left lockedForeign, right lockedForeign) i32 {
+    var compared = text.Compare(left.ecosystem, right.ecosystem)
+    if compared != 0 return compared
+    compared = text.Compare(left.identifier, right.identifier)
+    if compared != 0 return compared
+    compared = text.Compare(left.version, right.version)
+    if compared != 0 return compared
+    compared = text.Compare(left.kind, right.kind)
+    if compared != 0 return compared
+    compared = text.Compare(left.resolver, right.resolver)
+    if compared != 0 return compared
+    text.Compare(left.digest, right.digest)
+}
+
+fn readPackageLock(filePath String) own packageParseResult<own packageLock> {
+    const source = fs.ReadTextSync(filePath, 1048576) else error {
+        var result = own packageParseResult<own packageLock> {
+            value = .None
+            errors = newPackageErrors()
+        }
+        match error {
+            TooLarge: {
+                addPackageError(&result.errors, filePath, 1, 1, "FDN4002",
+                    "package file exceeds 1 MiB")
+            }
+            _: {
+                addPackageError(&result.errors, filePath, 1, 1, "FDN4001",
+                    "cannot read package file")
+            }
+        }
+        return result
+    }
+    parsePackageLock(filePath, source)
+}
+
+fn renderPackageLock(&source packageLock) String {
+    var lock = copyPackageLock(&source)
+    sortArena<lockedPackage>(&lock.packages, compareLockedPackage)
+    sortArena<packageEdge>(&lock.edges, comparePackageEdge)
+    sortArena<lockedForeign>(&lock.foreign, compareLockedForeign)
+    var builder = text.NewBuilder()
+    discard packageBuilderWrite(&builder, "format foundation.lock/v1\n")
+    discard packageBuilderWrite(&builder,
+        "root " + lock.rootName + " " + packageVersionString(lock.rootVersion) + "\n")
+    discard packageBuilderWrite(&builder, "target " + targetPlatformName(lock.target) + "\n")
+    match copyLockedNativeOption(lock.nativeLibrary) {
+        None: {}
+        Some(value): {
+            var soVersion = "-"
+            match value.soVersion {
+                None: {}
+                Some(version): {
+                    soVersion = format.U32(version)
+                }
+            }
+            discard packageBuilderWrite(&builder,
+                "native c " + value.name + " " + soVersion + " " + value.digest + "\n")
+        }
+    }
+    var index u64 = 0
+    while index < lock.foreign.len() {
+        const value = match lock.foreign.take(index) {
+            None: panic("locked foreign slot is empty")
+            Some(value): value
+        }
+        discard packageBuilderWrite(&builder,
+            "foreign " + quotePackageText(value.ecosystem) + " " +
+            quotePackageText(value.identifier) + " " + quotePackageText(value.version) +
+            " " + value.kind + " " + quotePackageText(value.resolver) +
+            " abi c/v1 " + value.digest + "\n")
+        lock.foreign.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < lock.packages.len() {
+        const value = match lock.packages.take(index) {
+            None: panic("locked package slot is empty")
+            Some(value): value
+        }
+        discard packageBuilderWrite(&builder,
+            "package " + value.name + " " + packageVersionString(value.version) + " " +
+            value.digest + " " + packageLocationKindName(value.kind) + " " +
+            quotePackageText(value.location) + "\n")
+        lock.packages.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < lock.edges.len() {
+        const value = match lock.edges.take(index) {
+            None: panic("package edge slot is empty")
+            Some(value): value
+        }
+        var line = "edge " + value.parent + " " + value.dependency
+        if isTestScope(value.scope) {
+            line = line + " scope test"
+        }
+        discard packageBuilderWrite(&builder, line + "\n")
+        lock.edges.restore(index, $value)
+        index += 1
+    }
+    packageBuilderFinish(&builder)
+}
+
+fn renderPackageError(error packageError) String {
+    error.path + ":" + format.U64(error.line) + ":" + format.U64(error.column) +
+        ": error " + error.code + ": " + error.message + "\n"
+}
+
+fn writePackageLockAtomically(
+    filePath String,
+    &lock packageLock
+) own packageMutationResult {
+    var result = own packageMutationResult {
+        changed = newArena<String>()
+        errors = newPackageErrors()
+    }
+    if text.IsEmpty(filePath) || text.IsEmpty(path.FileName(filePath)) {
+        addPackageError(&result.errors, filePath, 1, 1, "FDN4080",
+            "lock path must name a file")
+        return result
+    }
+    const rendered = renderPackageLock(&lock)
+    var parsed = parsePackageLock(filePath, rendered)
+    match replace parsed.value with .None {
+        None: {
+            movePackageErrors(&result.errors, &parsed.errors)
+            return result
+        }
+        Some(value): {
+            discard value
+        }
+    }
+    var parent = path.Parent(filePath)
+    if text.IsEmpty(parent) {
+        parent = "."
+    }
+    match fs.Kind(parent) {
+        Ok(Directory): {}
+        _: {
+            addPackageError(&result.errors, parent, 1, 1, "FDN4081",
+                "lock parent must be an existing real directory")
+            return result
+        }
+    }
+    match fs.Kind(filePath) {
+        Err(error): {
+            discard error
+            addPackageError(&result.errors, filePath, 1, 1, "FDN4083",
+                "cannot inspect lock destination")
+            return result
+        }
+        Ok(kind): {
+            match kind {
+                Missing: {}
+                File: {
+                    const current = fs.ReadTextSync(filePath, 1048576) else error {
+                        discard error
+                        addPackageError(&result.errors, filePath, 1, 1, "FDN4083",
+                            "cannot read existing lockfile")
+                        return result
+                    }
+                    if current == rendered return result
+                }
+                _: {
+                    addPackageError(&result.errors, filePath, 1, 1, "FDN4082",
+                        "lock destination must be a regular file or absent")
+                    return result
+                }
+            }
+        }
+    }
+    const staging = fs.CreateTempDirectory(parent, "." + path.FileName(filePath) + ".tmp-")
+    const stagingPath = match staging {
+        Err(error): {
+            discard error
+            addPackageError(&result.errors, parent, 1, 1, "FDN4084",
+                "cannot create lock staging directory")
+            return result
+        }
+        Ok(value): value
+    }
+    const temporary = path.Join(stagingPath, path.FileName(filePath))
+    match fs.WriteTextAtomic(temporary, rendered, 1048576) {
+        Err(error): {
+            discard error
+            discard fs.RemoveTree(path.Normalize(stagingPath), 4, 4)
+            addPackageError(&result.errors, temporary, 1, 1, "FDN4085",
+                "cannot write staged lockfile")
+            return result
+        }
+        Ok: {}
+    }
+    var verified = readPackageLock(temporary)
+    var verifiedLock = match replace verified.value with .None {
+        None: {
+            discard fs.RemoveTree(path.Normalize(stagingPath), 4, 4)
+            addPackageError(&result.errors, temporary, 1, 1, "FDN4086",
+                "staged lockfile failed verification")
+            return result
+        }
+        Some(value): value
+    }
+    if renderPackageLock(&verifiedLock) != rendered {
+        discard fs.RemoveTree(path.Normalize(stagingPath), 4, 4)
+        addPackageError(&result.errors, temporary, 1, 1, "FDN4086",
+            "staged lockfile failed verification")
+        return result
+    }
+    match fs.Replace(temporary, filePath) {
+        Err(error): {
+            discard error
+            discard fs.RemoveTree(path.Normalize(stagingPath), 4, 4)
+            addPackageError(&result.errors, filePath, 1, 1, "FDN4087",
+                "cannot publish verified lockfile")
+            return result
+        }
+        Ok: {}
+    }
+    discard fs.RemoveTree(path.Normalize(stagingPath), 4, 4)
+    discard result.changed.add(text.Copy(filePath))
+    result
+}

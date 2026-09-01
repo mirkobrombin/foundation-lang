@@ -1,0 +1,381 @@
+package foundation.compiler
+
+import std.fs
+import std.path
+import std.text
+
+fn packageDependencyActive(
+    dependency packageDependency,
+    target targetPlatform
+) bool {
+    match dependency.target {
+        None: true
+        Some(value): sameTarget(value, target)
+    }
+}
+
+fn canonicalPackageDirectory(value String) Option<String> {
+    const kind = fs.Kind(value)
+    match kind {
+        Ok(Directory): {}
+        _: {
+            return .None
+        }
+    }
+    const canonical = fs.Canonicalize(value)
+    match canonical {
+        Err(error): {
+            discard error
+            .None
+        }
+        Ok(value): .Some(value)
+    }
+}
+
+fn normalizePackageManifest(
+    manifestPath String,
+    &source packageManifest,
+    manifestRoot String,
+    projectRoot String,
+    target targetPlatform,
+    &errors arena<packageError>
+) Option<own packageManifest> {
+    var manifest = copyPackageManifest(&source)
+    var index u64 = 0
+    while index < manifest.dependencies.len() {
+        var dependency = match manifest.dependencies.take(index) {
+            None: panic("package dependency slot is empty")
+            Some(value): value
+        }
+        if isPathLocation(dependency.kind) && packageDependencyActive(dependency, target) {
+            const dependencyRoot = path.Normalize(path.Join(manifestRoot, dependency.location))
+            const relative = path.Relative(projectRoot, dependencyRoot)
+            match relative {
+                Err(error): {
+                    discard error
+                    manifest.dependencies.restore(index, $dependency)
+                    addPackageError(&errors, manifestPath, 1, 1, "FDN4092",
+                        "path dependency cannot be represented relative to the project")
+                    return .None
+                }
+                Ok(value): {
+                    discard replace dependency.location with value
+                }
+            }
+        }
+        manifest.dependencies.restore(index, $dependency)
+        index += 1
+    }
+    .Some(manifest)
+}
+
+fn isPathLocation(kind packageLocationKind) bool {
+    match kind {
+        Path: true
+        Registry: false
+    }
+}
+
+fn packageCatalogKey(dependency packageDependency) String {
+    packageLocationKindName(dependency.kind) + "\n" + dependency.location + "\n" +
+        dependency.name + "\n" + packageRequirementString(dependency.requirement)
+}
+
+fn findRegistryRoot(
+    &registries arena<packageRegistryRoot>,
+    identity String
+) Option<String> {
+    var index u64 = 0
+    while index < registries.len() {
+        const value = match registries.take(index) {
+            None: panic("package registry slot is empty")
+            Some(value): value
+        }
+        const found = value.identity == identity
+        const root = text.Copy(value.root)
+        registries.restore(index, $value)
+        if found return .Some(root)
+        index += 1
+    }
+    .None
+}
+
+fn validatePackageRegistries(
+    rootManifestPath String,
+    &registries arena<packageRegistryRoot>,
+    &errors arena<packageError>
+) bool {
+    var seen = newArena<String>()
+    var index u64 = 0
+    while index < registries.len() {
+        const value = match registries.take(index) {
+            None: panic("package registry slot is empty")
+            Some(value): value
+        }
+        const valid = isValidPackageName(value.identity) &&
+            !arenaContainsString(&seen, value.identity)
+        if valid {
+            discard seen.add(text.Copy(value.identity))
+        }
+        registries.restore(index, $value)
+        if !valid {
+            addPackageError(&errors, rootManifestPath, 1, 1, "FDN4090",
+                "registry identities must be valid and unique")
+            return false
+        }
+        index += 1
+    }
+    true
+}
+
+fn packageCandidateKey(candidate packageCandidate) String {
+    candidate.manifest.name + "\n" + packageVersionString(candidate.manifest.version) +
+        "\n" + packageLocationKindName(candidate.kind) + "\n" + candidate.location +
+        "\n" + candidate.digest
+}
+
+fn comparePackageCandidate(left packageCandidate, right packageCandidate) i32 {
+    var compared = text.Compare(left.manifest.name, right.manifest.name)
+    if compared != 0 return compared
+    compared = comparePackageVersion(left.manifest.version, right.manifest.version)
+    if compared != 0 return compared
+    if isPathLocation(left.kind) != isPathLocation(right.kind) {
+        if isPathLocation(left.kind) return -1
+        return 1
+    }
+    compared = text.Compare(left.location, right.location)
+    if compared != 0 return compared
+    text.Compare(left.digest, right.digest)
+}
+
+fn collectPackageCatalog(
+    rootManifestPath String,
+    &root packageManifest,
+    sdk packageVersion,
+    target targetPlatform,
+    &registries arena<packageRegistryRoot>
+) own packageParseResult<own packageCatalog> {
+    var result = own packageParseResult<own packageCatalog> {
+        value = .None
+        errors = newPackageErrors()
+    }
+    const projectRootOption = canonicalPackageDirectory(path.Parent(rootManifestPath))
+    const projectRoot = match projectRootOption {
+        None: {
+            addPackageError(&result.errors, rootManifestPath, 1, 1, "FDN4090",
+                "root manifest must be a regular file in a real directory")
+            return result
+        }
+        Some(value): value
+    }
+    const manifestKind = fs.Kind(rootManifestPath)
+    match manifestKind {
+        Ok(File): {}
+        _: {
+            addPackageError(&result.errors, rootManifestPath, 1, 1, "FDN4090",
+                "root manifest must be a regular file in a real directory")
+            return result
+        }
+    }
+    if !validatePackageRegistries(rootManifestPath, &registries, &result.errors) {
+        return result
+    }
+    const normalizedRootOption = normalizePackageManifest(
+        rootManifestPath,
+        &root,
+        projectRoot,
+        projectRoot,
+        target,
+        &result.errors
+    )
+    var normalizedRoot = match normalizedRootOption {
+        None: {
+            return result
+        }
+        Some(value): value
+    }
+    var pending = newArena<packageDependency>()
+    var index u64 = 0
+    while index < normalizedRoot.dependencies.len() {
+        const value = match normalizedRoot.dependencies.take(index) {
+            None: panic("package dependency slot is empty")
+            Some(value): value
+        }
+        discard pending.add(copyPackageDependency(value))
+        normalizedRoot.dependencies.restore(index, $value)
+        index += 1
+    }
+    var cursor u64 = 0
+    var visited = newArena<String>()
+    var seenCandidates = newArena<String>()
+    var candidates = newArena<packageCandidate>()
+    while cursor < pending.len() {
+        if visited.len() + pending.len() - cursor > 65536 {
+            addPackageError(&result.errors, rootManifestPath, 1, 1, "FDN4093",
+                "package catalog exceeds work limit")
+            return result
+        }
+        const dependency = match pending.take(cursor) {
+            None: panic("pending package dependency slot is empty")
+            Some(value): value
+        }
+        cursor += 1
+        if !packageDependencyActive(dependency, target) {
+            pending.restore(cursor - 1, $dependency)
+            continue
+        }
+        const key = packageCatalogKey(dependency)
+        if arenaContainsString(&visited, key) {
+            pending.restore(cursor - 1, $dependency)
+            continue
+        }
+        discard visited.add($key)
+        var discovered = newArena<packageCandidate>()
+        if isPathLocation(dependency.kind) {
+            collectPathPackageCandidate(
+                &discovered,
+                &result.errors,
+                projectRoot,
+                dependency
+            )
+            if result.errors.len() > 0 {
+                pending.restore(cursor - 1, $dependency)
+                return result
+            }
+        } else {
+            match findRegistryRoot(&registries, dependency.location) {
+                None: {}
+                Some(registryRoot): {
+                    var loaded = readLocalPackageRegistry(
+                        registryRoot,
+                        dependency.location,
+                        dependency.name
+                    )
+                    match replace loaded.value with .None {
+                        None: {
+                            movePackageErrors(&result.errors, &loaded.errors)
+                            pending.restore(cursor - 1, $dependency)
+                            return result
+                        }
+                        Some(values): {
+                            const empty = replace discovered with values
+                            discard empty
+                        }
+                    }
+                }
+            }
+        }
+        var discoveredIndex u64 = 0
+        while discoveredIndex < discovered.len() {
+            var candidate = match discovered.take(discoveredIndex) {
+                None: panic("discovered package candidate slot is empty")
+                Some(value): value
+            }
+            if packageRequirementAccepts(dependency.requirement, candidate.manifest.version) &&
+                packageRequirementAccepts(candidate.manifest.sdk, sdk) {
+                const candidateRoot = text.Copy(candidate.root)
+                const normalized = normalizePackageManifest(
+                    path.Join(candidateRoot, "foundation.package"),
+                    &candidate.manifest,
+                    candidateRoot,
+                    projectRoot,
+                    target,
+                    &result.errors
+                )
+                match normalized {
+                    None: {
+                        discovered.restore(discoveredIndex, $candidate)
+                        pending.restore(cursor - 1, $dependency)
+                        return result
+                    }
+                    Some(value): {
+                        const previous = replace candidate.manifest with value
+                        discard previous
+                    }
+                }
+                const candidateKey = packageCandidateKey(candidate)
+                if !arenaContainsString(&seenCandidates, candidateKey) {
+                    discard seenCandidates.add($candidateKey)
+                    enqueueRuntimeDependencies(&pending, &candidate.manifest, target)
+                    discard candidates.add(copyPackageCandidate(&candidate))
+                }
+            }
+            discovered.restore(discoveredIndex, $candidate)
+            discoveredIndex += 1
+        }
+        pending.restore(cursor - 1, $dependency)
+    }
+    sortArena<packageCandidate>(&candidates, comparePackageCandidate)
+    result.value = .Some(own packageCatalog {
+        root = normalizedRoot
+        candidates = candidates
+    })
+    result
+}
+
+fn collectPathPackageCandidate(
+    &candidates arena<packageCandidate>,
+    &errors arena<packageError>,
+    projectRoot String,
+    dependency packageDependency
+) void {
+    const packageRootOption = canonicalPackageDirectory(
+        path.Join(projectRoot, dependency.location)
+    )
+    const packageRoot = match packageRootOption {
+        None: {
+            return
+        }
+        Some(value): value
+    }
+    const manifestPath = path.Join(packageRoot, "foundation.package")
+    match fs.Kind(manifestPath) {
+        Ok(File): {}
+        _: {
+            return
+        }
+    }
+    var parsed = readPackageManifest(manifestPath)
+    var manifest = match replace parsed.value with .None {
+        None: {
+            movePackageErrors(&errors, &parsed.errors)
+            return
+        }
+        Some(value): value
+    }
+    if manifest.name != dependency.name return
+    var inspected = inspectPackageSource(packageRoot, &manifest)
+    const snapshot = match replace inspected.value with .None {
+        None: {
+            movePackageErrors(&errors, &inspected.errors)
+            return
+        }
+        Some(value): value
+    }
+    discard candidates.add(packageCandidate {
+        manifest = manifest
+        digest = text.Copy(snapshot.digest)
+        kind = .Path
+        location = text.Copy(dependency.location)
+        root = packageRoot
+    })
+}
+
+fn enqueueRuntimeDependencies(
+    &pending arena<packageDependency>,
+    &manifest packageManifest,
+    target targetPlatform
+) void {
+    var index u64 = 0
+    while index < manifest.dependencies.len() {
+        const child = match manifest.dependencies.take(index) {
+            None: panic("package dependency slot is empty")
+            Some(value): value
+        }
+        if packageDependencyActive(child, target) && !isTestScope(child.scope) {
+            discard pending.add(copyPackageDependency(child))
+        }
+        manifest.dependencies.restore(index, $child)
+        index += 1
+    }
+}

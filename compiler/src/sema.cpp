@@ -6343,6 +6343,7 @@ class Analyzer {
         std::vector<std::vector<bool>> armStates;
         std::vector<std::vector<MoveState>> armMoveStates;
         std::vector<std::vector<LoanState>> armLoanStates;
+        std::vector<bool> armTerminations;
         auto borrowedClosure = false;
         auto wildcardCovered = false;
         auto result = invalidType;
@@ -6524,7 +6525,8 @@ class Analyzer {
             const auto tailType = arm.expression.has_value()
                                       ? analyzeExpression(*arm.expression, armExpected)
                                       : voidType;
-            const auto armType = armExits ? neverType : tailType;
+            const auto armTerminates = armExits || tailType == neverType;
+            const auto armType = armTerminates ? neverType : tailType;
             if (arm.expression.has_value()) {
                 borrowedClosure = borrowedClosure ||
                                   model_.expressionBorrowedClosures[*arm.expression];
@@ -6535,6 +6537,7 @@ class Analyzer {
             armStates.push_back(outstandingPrefix(beforeArms.size()));
             armMoveStates.push_back(movePrefix(movesBeforeArms.size()));
             armLoanStates.push_back(loanPrefix(loansBeforeArms.size()));
+            armTerminations.push_back(armTerminates);
             if (result.kind == TypeKind::Invalid || result == neverType) {
                 result = armType;
             } else if (armType != neverType) {
@@ -6546,7 +6549,11 @@ class Analyzer {
         }
         if (!armStates.empty()) {
             std::vector<bool> merged(beforeArms.size());
-            for (const auto &state : armStates) {
+            for (std::size_t arm = 0; arm < armStates.size(); ++arm) {
+                if (armTerminations[arm]) {
+                    continue;
+                }
+                const auto &state = armStates[arm];
                 for (std::size_t local = 0; local < merged.size(); ++local) {
                     merged[local] = merged[local] || state[local];
                 }
@@ -6556,13 +6563,23 @@ class Analyzer {
             restoreOutstanding(beforeArms);
         }
         if (!armMoveStates.empty()) {
-            std::vector<MoveState> merged(movesBeforeArms.size());
-            for (std::size_t local = 0; local < merged.size(); ++local) {
-                merged[local] = armMoveStates.front()[local];
-                for (std::size_t arm = 1; arm < armMoveStates.size(); ++arm) {
-                    if (merged[local] != armMoveStates[arm][local]) {
-                        merged[local] = MoveState::MaybeMoved;
-                        break;
+            auto merged = movesBeforeArms;
+            std::optional<std::size_t> first;
+            for (std::size_t arm = 0; arm < armMoveStates.size(); ++arm) {
+                if (!armTerminations[arm]) {
+                    first = arm;
+                    break;
+                }
+            }
+            if (first.has_value()) {
+                merged = armMoveStates[*first];
+                for (std::size_t local = 0; local < merged.size(); ++local) {
+                    for (std::size_t arm = *first + 1; arm < armMoveStates.size(); ++arm) {
+                        if (!armTerminations[arm] &&
+                            merged[local] != armMoveStates[arm][local]) {
+                            merged[local] = MoveState::MaybeMoved;
+                            break;
+                        }
                     }
                 }
             }
@@ -6571,10 +6588,23 @@ class Analyzer {
             restoreMoves(movesBeforeArms);
         }
         if (!armLoanStates.empty()) {
-            auto merged = armLoanStates.front();
-            for (std::size_t arm = 1; arm < armLoanStates.size(); ++arm) {
-                for (std::size_t local = 0; local < merged.size(); ++local) {
-                    merged[local] = mergeLoan(merged[local], armLoanStates[arm][local]);
+            auto merged = loansBeforeArms;
+            std::optional<std::size_t> first;
+            for (std::size_t arm = 0; arm < armLoanStates.size(); ++arm) {
+                if (!armTerminations[arm]) {
+                    first = arm;
+                    break;
+                }
+            }
+            if (first.has_value()) {
+                merged = armLoanStates[*first];
+                for (std::size_t arm = *first + 1; arm < armLoanStates.size(); ++arm) {
+                    if (armTerminations[arm]) {
+                        continue;
+                    }
+                    for (std::size_t local = 0; local < merged.size(); ++local) {
+                        merged[local] = mergeLoan(merged[local], armLoanStates[arm][local]);
+                    }
                 }
             }
             restoreLoans(merged);

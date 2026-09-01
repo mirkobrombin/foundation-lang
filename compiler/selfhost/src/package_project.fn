@@ -1,0 +1,574 @@
+package foundation.compiler
+
+import std.fs
+import std.path
+import std.text
+
+fn discoverPackageManifest(input String) Option<String> {
+    var current = path.Normalize(input)
+    match fs.Kind(current) {
+        Ok(Directory): {}
+        _: {
+            current = path.Parent(current)
+        }
+    }
+    while !text.IsEmpty(current) {
+        const candidate = path.Join(current, "foundation.package")
+        match fs.Kind(candidate) {
+            Err(error): {
+                discard error
+            }
+            Ok(kind): {
+                match kind {
+                    Missing: {}
+                    _: {
+                        return .Some(candidate)
+                    }
+                }
+            }
+        }
+        const parent = path.Parent(current)
+        if parent == current break
+        current = parent
+    }
+    .None
+}
+
+fn sameLockedNative(
+    left Option<lockedNativeLibrary>,
+    right Option<lockedNativeLibrary>
+) bool {
+    match left {
+        None: {
+            match right {
+                None: true
+                Some(value): {
+                    discard value
+                    false
+                }
+            }
+        }
+        Some(leftValue): {
+            match right {
+                None: false
+                Some(rightValue): leftValue.name == rightValue.name &&
+                    sameU32Option(leftValue.soVersion, rightValue.soVersion) &&
+                    leftValue.digest == rightValue.digest
+            }
+        }
+    }
+}
+
+fn sameU32Option(left Option<u32>, right Option<u32>) bool {
+    match left {
+        None: {
+            match right {
+                None: true
+                Some(value): {
+                    discard value
+                    false
+                }
+            }
+        }
+        Some(leftValue): {
+            match right {
+                None: false
+                Some(rightValue): leftValue == rightValue
+            }
+        }
+    }
+}
+
+fn sameLockedForeign(left lockedForeign, right lockedForeign) bool {
+    left.ecosystem == right.ecosystem && left.identifier == right.identifier &&
+        left.version == right.version && left.kind == right.kind &&
+        left.resolver == right.resolver && left.digest == right.digest
+}
+
+fn sameLockedForeignSet(&left arena<lockedForeign>, &right arena<lockedForeign>) bool {
+    if left.len() != right.len() return false
+    sortArena<lockedForeign>(&left, compareLockedForeign)
+    sortArena<lockedForeign>(&right, compareLockedForeign)
+    var index u64 = 0
+    while index < left.len() {
+        const leftValue = match left.take(index) {
+            None: panic("locked foreign slot is empty")
+            Some(value): value
+        }
+        const rightValue = match right.take(index) {
+            None: panic("locked foreign slot is empty")
+            Some(value): value
+        }
+        const same = sameLockedForeign(leftValue, rightValue)
+        left.restore(index, $leftValue)
+        right.restore(index, $rightValue)
+        if !same return false
+        index += 1
+    }
+    true
+}
+
+fn findLockedPackage(&lock packageLock, name String) Option<lockedPackage> {
+    var index u64 = 0
+    while index < lock.packages.len() {
+        const value = match lock.packages.take(index) {
+            None: panic("locked package slot is empty")
+            Some(value): value
+        }
+        const found = value.name == name
+        const result = copyLockedPackage(value)
+        lock.packages.restore(index, $value)
+        if found return .Some(result)
+        index += 1
+    }
+    .None
+}
+
+fn lockedDependencyLocation(
+    dependency packageDependency,
+    packageRoot String,
+    projectRoot String
+) Option<String> {
+    if !isPathLocation(dependency.kind) return .Some(text.Copy(dependency.location))
+    const target = canonicalPackageDirectory(path.Join(packageRoot, dependency.location))
+    const targetPath = match target {
+        None: {
+            return .None
+        }
+        Some(value): value
+    }
+    const relative = path.Relative(projectRoot, targetPath)
+    match relative {
+        Err(error): {
+            discard error
+            .None
+        }
+        Ok(value): .Some(value)
+    }
+}
+
+fn packageSourceNamed(&project lockedPackageProject, name String) bool {
+    var index u64 = 0
+    while index < project.sources.len() {
+        const source = match project.sources.take(index) {
+            None: panic("locked package source slot is empty")
+            Some(value): value
+        }
+        const found = source.name == name
+        project.sources.restore(index, $source)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn expectedPackageEdges(
+    &project lockedPackageProject,
+    includeTestDependencies bool,
+    &errors arena<packageError>
+) Option<own arena<String>> {
+    var expected = newArena<String>()
+    var sourceIndex u64 = 0
+    while sourceIndex < project.sources.len() {
+        var source = match project.sources.take(sourceIndex) {
+            None: panic("locked package source slot is empty")
+            Some(value): value
+        }
+        var dependencyIndex u64 = 0
+        while dependencyIndex < source.manifest.dependencies.len() {
+            const dependency = match source.manifest.dependencies.take(dependencyIndex) {
+                None: panic("package dependency slot is empty")
+                Some(value): value
+            }
+            var active = packageDependencyActive(dependency, project.lock.target)
+            if !includeTestDependencies && isTestScope(dependency.scope) {
+                active = false
+            }
+            if isTestScope(dependency.scope) && source.name != project.manifest.name {
+                active = false
+            }
+            if active {
+                const locked = findLockedPackage(&project.lock, dependency.name)
+                const location = lockedDependencyLocation(
+                    dependency,
+                    source.packageRoot,
+                    project.projectRoot
+                )
+                var valid = true
+                match locked {
+                    None: {
+                        valid = false
+                    }
+                    Some(value): {
+                        match location {
+                            None: {
+                                valid = false
+                            }
+                            Some(locationValue): {
+                                valid = packageRequirementAccepts(
+                                    dependency.requirement,
+                                    value.version
+                                ) && isPathLocation(dependency.kind) ==
+                                    isPathLocation(value.kind) && locationValue == value.location
+                            }
+                        }
+                    }
+                }
+                if !valid {
+                    const message = "package lock does not satisfy " + source.name +
+                        " dependency " + dependency.name
+                    source.manifest.dependencies.restore(dependencyIndex, $dependency)
+                    project.sources.restore(sourceIndex, $source)
+                    addPackageError(&errors, project.manifestPath, 1, 1, "FDN4113",
+                        message)
+                    return .None
+                }
+                discard expected.add(packageEdgeKey(source.name, dependency.name,
+                        dependency.scope))
+            }
+            source.manifest.dependencies.restore(dependencyIndex, $dependency)
+            dependencyIndex += 1
+        }
+        project.sources.restore(sourceIndex, $source)
+        sourceIndex += 1
+    }
+    sortArena<String>(&expected, comparePackagePath)
+    .Some(expected)
+}
+
+fn packageEdgeKey(
+    parent String,
+    dependency String,
+    scope packageDependencyScope
+) String {
+    parent + "\n" + dependency + "\n" + packageScopeName(scope)
+}
+
+fn actualPackageEdges(
+    &project lockedPackageProject,
+    includeTestDependencies bool
+) own arena<String> {
+    var actual = newArena<String>()
+    var index u64 = 0
+    while index < project.lock.edges.len() {
+        const edge = match project.lock.edges.take(index) {
+            None: panic("package edge slot is empty")
+            Some(value): value
+        }
+        var include = true
+        if !includeTestDependencies && (isTestScope(edge.scope) ||
+            (edge.parent != project.manifest.name &&
+                !packageSourceNamed(&project, edge.parent))) {
+            include = false
+        }
+        if include {
+            discard actual.add(packageEdgeKey(edge.parent, edge.dependency, edge.scope))
+        }
+        project.lock.edges.restore(index, $edge)
+        index += 1
+    }
+    sortArena<String>(&actual, comparePackagePath)
+    actual
+}
+
+fn sameStringArena(&left arena<String>, &right arena<String>) bool {
+    if left.len() != right.len() return false
+    var index u64 = 0
+    while index < left.len() {
+        const leftValue = match left.take(index) {
+            None: panic("string slot is empty")
+            Some(value): value
+        }
+        const rightValue = match right.take(index) {
+            None: panic("string slot is empty")
+            Some(value): value
+        }
+        const same = leftValue == rightValue
+        left.restore(index, $leftValue)
+        right.restore(index, $rightValue)
+        if !same return false
+        index += 1
+    }
+    true
+}
+
+fn validateLockedPackageGraph(
+    &project lockedPackageProject,
+    includeTestDependencies bool,
+    &errors arena<packageError>
+) bool {
+    const expectedOption = expectedPackageEdges(
+        &project,
+        includeTestDependencies,
+        &errors
+    )
+    var expected = match expectedOption {
+        None: {
+            return false
+        }
+        Some(value): value
+    }
+    var actual = actualPackageEdges(&project, includeTestDependencies)
+    if !sameStringArena(&expected, &actual) {
+        addPackageError(&errors, project.manifestPath, 1, 1, "FDN4113",
+            "package lock edges do not match selected manifests")
+        return false
+    }
+    true
+}
+
+fn runtimePackageNames(&lock packageLock) own arena<String> {
+    var result = newArena<String>()
+    discard result.add(text.Copy(lock.rootName))
+    var changed = true
+    while changed {
+        changed = false
+        var index u64 = 0
+        while index < lock.edges.len() {
+            const edge = match lock.edges.take(index) {
+                None: panic("package edge slot is empty")
+                Some(value): value
+            }
+            if !isTestScope(edge.scope) && arenaContainsString(&result, edge.parent) &&
+                !arenaContainsString(&result, edge.dependency) {
+                discard result.add(text.Copy(edge.dependency))
+                changed = true
+            }
+            lock.edges.restore(index, $edge)
+            index += 1
+        }
+    }
+    result
+}
+
+fn loadLockedPackageProject(
+    manifestPath String,
+    sdk packageVersion,
+    target targetPlatform,
+    cacheRoot Option<String>,
+    includeTestDependencies bool
+) own packageParseResult<own lockedPackageProject> {
+    var result = own packageParseResult<own lockedPackageProject> {
+        value = .None
+        errors = newPackageErrors()
+    }
+    const projectRootOption = canonicalPackageDirectory(path.Parent(manifestPath))
+    const projectRoot = match projectRootOption {
+        None: {
+            addPackageError(&result.errors, manifestPath, 1, 1, "FDN4110",
+                "package project root must be a real directory")
+            return result
+        }
+        Some(value): value
+    }
+    match fs.Kind(manifestPath) {
+        Ok(File): {}
+        _: {
+            addPackageError(&result.errors, manifestPath, 1, 1, "FDN4110",
+                "package manifest must be a regular file")
+            return result
+        }
+    }
+    var manifestResult = readPackageManifest(manifestPath)
+    var manifest = match replace manifestResult.value with .None {
+        None: {
+            movePackageErrors(&result.errors, &manifestResult.errors)
+            return result
+        }
+        Some(value): value
+    }
+    if !packageRequirementAccepts(manifest.sdk, sdk) {
+        addPackageError(&result.errors, manifestPath, 1, 1, "FDN4110",
+            "package manifest does not support SDK " + packageVersionString(sdk))
+        return result
+    }
+    const lockPath = path.Join(projectRoot, "foundation.lock")
+    match fs.Kind(lockPath) {
+        Ok(File): {}
+        _: {
+            addPackageError(&result.errors, lockPath, 1, 1, "FDN4111",
+                "package lock must be a regular file")
+            return result
+        }
+    }
+    var lockResult = readPackageLock(lockPath)
+    var lock = match replace lockResult.value with .None {
+        None: {
+            movePackageErrors(&result.errors, &lockResult.errors)
+            return result
+        }
+        Some(value): value
+    }
+    if lock.rootName != manifest.name ||
+        !samePackageVersion(lock.rootVersion, manifest.version) {
+        addPackageError(&result.errors, lockPath, 1, 1, "FDN4111",
+            "package lock root does not match the manifest")
+        return result
+    }
+    if !sameTarget(lock.target, target) {
+        addPackageError(&result.errors, lockPath, 1, 1, "FDN4111",
+            "package lock target " + targetPlatformName(lock.target) +
+            " does not match build target " + targetPlatformName(target))
+        return result
+    }
+    var expectedMetadata = newPackageLock()
+    var metadataErrors = lockRootPackageMetadata(
+        &expectedMetadata,
+        &manifest,
+        target,
+        manifestPath
+    )
+    if metadataErrors.len() > 0 {
+        movePackageErrors(&result.errors, &metadataErrors)
+        return result
+    }
+    if !sameLockedNative(lock.nativeLibrary, expectedMetadata.nativeLibrary) ||
+        !sameLockedForeignSet(&lock.foreign, &expectedMetadata.foreign) {
+        addPackageError(&result.errors, lockPath, 1, 1, "FDN4111",
+            "package lock native metadata does not match the manifest or foreign input")
+        return result
+    }
+    var inspectedRoot = copyPackageManifest(&manifest)
+    if !includeTestDependencies {
+        inspectedRoot.testSource = .None
+    }
+    var rootSnapshot = inspectPackageSource(projectRoot, &inspectedRoot)
+    match replace rootSnapshot.value with .None {
+        None: {
+            movePackageErrors(&result.errors, &rootSnapshot.errors)
+            return result
+        }
+        Some(value): {
+            discard value
+        }
+    }
+    var project = own lockedPackageProject {
+        manifestPath = text.Copy(manifestPath)
+        projectRoot = text.Copy(projectRoot)
+        manifest = copyPackageManifest(&manifest)
+        lock = copyPackageLock(&lock)
+        sources = newArena<lockedPackageSource>()
+    }
+    discard project.sources.add(lockedPackageSource {
+        name = text.Copy(manifest.name)
+        packageRoot = text.Copy(projectRoot)
+        sourceRoot = path.Join(projectRoot, manifest.source)
+        manifest = copyPackageManifest(&manifest)
+        scope = .Runtime
+    })
+    var runtimePackages = runtimePackageNames(&lock)
+    var packageIndex u64 = 0
+    while packageIndex < lock.packages.len() {
+        const locked = match lock.packages.take(packageIndex) {
+            None: panic("locked package slot is empty")
+            Some(value): value
+        }
+        if !includeTestDependencies && !arenaContainsString(&runtimePackages, locked.name) {
+            lock.packages.restore(packageIndex, $locked)
+            packageIndex += 1
+            continue
+        }
+        const packageRootOption = lockedPackageRoot(
+            projectRoot,
+            cacheRoot,
+            locked,
+            lockPath,
+            &result.errors
+        )
+        const packageRoot = match packageRootOption {
+            None: {
+                lock.packages.restore(packageIndex, $locked)
+                return result
+            }
+            Some(value): value
+        }
+        const dependencyManifestPath = path.Join(packageRoot, "foundation.package")
+        var dependencyResult = readPackageManifest(dependencyManifestPath)
+        var dependencyManifest = match replace dependencyResult.value with .None {
+            None: {
+                movePackageErrors(&result.errors, &dependencyResult.errors)
+                lock.packages.restore(packageIndex, $locked)
+                return result
+            }
+            Some(value): value
+        }
+        if dependencyManifest.name != locked.name ||
+            !samePackageVersion(dependencyManifest.version, locked.version) ||
+            !packageRequirementAccepts(dependencyManifest.sdk, sdk) {
+            addPackageError(&result.errors, dependencyManifestPath, 1, 1, "FDN4112",
+                "locked package identity or SDK requirement does not match")
+            lock.packages.restore(packageIndex, $locked)
+            return result
+        }
+        if isPathLocation(locked.kind) {
+            var inspected = inspectPackageSource(packageRoot, &dependencyManifest)
+            const snapshot = match replace inspected.value with .None {
+                None: {
+                    movePackageErrors(&result.errors, &inspected.errors)
+                    lock.packages.restore(packageIndex, $locked)
+                    return result
+                }
+                Some(value): value
+            }
+            if snapshot.digest != locked.digest {
+                addPackageError(&result.errors, packageRoot, 1, 1, "FDN4112",
+                    "locked path dependency digest does not match")
+                lock.packages.restore(packageIndex, $locked)
+                return result
+            }
+        }
+        discard project.sources.add(lockedPackageSource {
+            name = text.Copy(locked.name)
+            packageRoot = text.Copy(packageRoot)
+            sourceRoot = path.Join(packageRoot, dependencyManifest.source)
+            manifest = dependencyManifest
+            scope = if arenaContainsString(&runtimePackages, locked.name) {
+                .Runtime
+            } else {.Test }
+        })
+        lock.packages.restore(packageIndex, $locked)
+        packageIndex += 1
+    }
+    if !validateLockedPackageGraph(&project, includeTestDependencies, &result.errors) {
+        return result
+    }
+    result.value = .Some(project)
+    result
+}
+
+fn lockedPackageRoot(
+    projectRoot String,
+    cacheRoot Option<String>,
+    locked lockedPackage,
+    lockPath String,
+    &errors arena<packageError>
+) Option<String> {
+    if !isPathLocation(locked.kind) {
+        const cache = match copyPackageStringOption(cacheRoot) {
+            None: {
+                addPackageError(&errors, lockPath, 1, 1, "FDN4112",
+                    "package cache path is unavailable for locked registry content")
+                return .None
+            }
+            Some(value): value
+        }
+        var verified = verifyPackageInCache(cache, locked)
+        match replace verified.value with .None {
+            None: {
+                movePackageErrors(&errors, &verified.errors)
+                .None
+            }
+            Some(value): .Some(value)
+        }
+    } else {
+        const root = path.Join(projectRoot, locked.location)
+        match canonicalPackageDirectory(root) {
+            None: {
+                addPackageError(&errors, root, 1, 1, "FDN4112",
+                    "locked path dependency root is unavailable")
+                .None
+            }
+            Some(value): .Some(value)
+        }
+    }
+}
