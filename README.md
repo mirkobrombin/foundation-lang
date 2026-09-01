@@ -154,9 +154,7 @@ ctest --preset dev
 
 ## Contributing
 
-Use the [issue tracker](https://github.com/mirkobrombin/foundation-lang/issues) for bug reports and
-language proposals. Compiler changes should include accepted or rejected fixtures for observable
-language behavior.
+Compiler changes should include accepted or rejected fixtures for observable language behavior.
 
 ## License
 
