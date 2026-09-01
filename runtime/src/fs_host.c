@@ -10,6 +10,7 @@
 #endif
 
 #include "foundation/runtime.h"
+#include "bytes_internal.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -23,6 +24,7 @@
 #include <bcrypt.h>
 #include <windows.h>
 #else
+#include <dirent.h>
 #include <fcntl.h>
 #if defined(__linux__)
 #include <linux/fs.h>
@@ -71,6 +73,30 @@ static int fdn_host_prefix_valid(const fdn_string *prefix) {
         }
     }
     return 1;
+}
+
+static int fdn_host_path_has_dot_component(const fdn_string *path) {
+    size_t start = 0;
+    size_t offset;
+    if (path == NULL) {
+        return 1;
+    }
+    for (offset = 0; offset <= path->length; ++offset) {
+        const int separator = offset == path->length ||
+                              path->data[offset] == '/' ||
+                              path->data[offset] == '\\';
+        const size_t length = offset - start;
+        if (!separator) {
+            continue;
+        }
+        if ((length == 1 && path->data[start] == '.') ||
+            (length == 2 && path->data[start] == '.' &&
+             path->data[start + 1] == '.')) {
+            return 1;
+        }
+        start = offset + 1;
+    }
+    return 0;
 }
 
 #if defined(_WIN32)
@@ -149,6 +175,52 @@ static int32_t fdn_host_windows_string(const wchar_t *value, size_t length,
     result->owned = 1;
     return 0;
 }
+
+static int fdn_host_windows_volume_root(const wchar_t *path) {
+    size_t length = wcslen(path);
+    size_t offset;
+    size_t components = 0;
+    while (length > 0 && (path[length - 1] == L'\\' ||
+                          path[length - 1] == L'/')) {
+        --length;
+    }
+    if (length == 0 ||
+        (length == 2 && path[1] == L':')) {
+        return 1;
+    }
+    if (length > 2 && path[1] == L':' &&
+        path[2] != L'\\' && path[2] != L'/') {
+        return 1;
+    }
+    if (length < 2 ||
+        (path[0] != L'\\' && path[0] != L'/') ||
+        (path[1] != L'\\' && path[1] != L'/')) {
+        return 0;
+    }
+    offset = 2;
+    if (length >= 8 && path[0] == L'\\' && path[1] == L'\\' &&
+        path[2] == L'?' && path[3] == L'\\' &&
+        (path[4] == L'U' || path[4] == L'u') &&
+        (path[5] == L'N' || path[5] == L'n') &&
+        (path[6] == L'C' || path[6] == L'c') && path[7] == L'\\') {
+        offset = 8;
+    }
+    while (offset < length) {
+        while (offset < length &&
+               (path[offset] == L'\\' || path[offset] == L'/')) {
+            ++offset;
+        }
+        if (offset == length) {
+            break;
+        }
+        ++components;
+        while (offset < length && path[offset] != L'\\' &&
+               path[offset] != L'/') {
+            ++offset;
+        }
+    }
+    return components <= 2;
+}
 #else
 static int32_t fdn_host_posix_status(int error) {
     if (error == ENOENT) {
@@ -194,6 +266,164 @@ int32_t foundation_runtime_fs_read_text_sync_limited(const fdn_string *path,
                                                      uint64_t max_length,
                                                      fdn_string *result) {
     return foundation_runtime_fs_read_text_limited(path, max_length, result);
+}
+
+int32_t foundation_runtime_fs_read_bytes_sync_limited(const fdn_string *path,
+                                                      uint64_t max_length,
+                                                      uint64_t *result) {
+    uint8_t *data = NULL;
+    size_t length = 0;
+    size_t offset = 0;
+    int32_t status = 0;
+    if (result == NULL) {
+        fdn_panic_cstr("file bytes output is null");
+    }
+    *result = 0;
+#if defined(_WIN32)
+    {
+        wchar_t *native_path = fdn_host_windows_path(path);
+        HANDLE file;
+        BY_HANDLE_FILE_INFORMATION info;
+        uint64_t native_length;
+        if (native_path == NULL) {
+            return FDN_FS_INVALID_PATH;
+        }
+        file = CreateFileW(native_path, GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING,
+                           FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN,
+                           NULL);
+        fdn_dealloc(native_path);
+        if (file == INVALID_HANDLE_VALUE) {
+            return fdn_host_windows_status(GetLastError());
+        }
+        if (GetFileInformationByHandle(file, &info) == 0) {
+            status = fdn_host_windows_status(GetLastError());
+            goto windows_cleanup;
+        }
+        if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            status = FDN_FS_INVALID_PATH;
+            goto windows_cleanup;
+        }
+        if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            status = FDN_FS_IS_DIRECTORY;
+            goto windows_cleanup;
+        }
+        native_length = ((uint64_t)info.nFileSizeHigh << 32U) |
+                        (uint64_t)info.nFileSizeLow;
+        if (native_length > max_length || native_length > SIZE_MAX) {
+            status = FDN_FS_TOO_LARGE;
+            goto windows_cleanup;
+        }
+        length = (size_t)native_length;
+        if (length != 0) {
+            data = fdn_alloc(length);
+        }
+        while (offset < length) {
+            const size_t remaining = length - offset;
+            const DWORD requested = remaining > UINT32_MAX
+                                        ? UINT32_MAX
+                                        : (DWORD)remaining;
+            DWORD count = 0;
+            if (ReadFile(file, data + offset, requested, &count, NULL) == 0) {
+                status = fdn_host_windows_status(GetLastError());
+                goto windows_cleanup;
+            }
+            if (count == 0) {
+                break;
+            }
+            offset += (size_t)count;
+        }
+        if (offset == length) {
+            uint8_t probe;
+            DWORD count = 0;
+            if (ReadFile(file, &probe, 1, &count, NULL) == 0) {
+                status = fdn_host_windows_status(GetLastError());
+            } else if (count != 0) {
+                status = FDN_FS_TOO_LARGE;
+            }
+        }
+
+windows_cleanup:
+        if (CloseHandle(file) == 0 && status == 0) {
+            status = FDN_FS_IO;
+        }
+    }
+#else
+    {
+        char *native_path = fdn_host_posix_path(path);
+        struct stat info;
+        int file = -1;
+        if (native_path == NULL) {
+            return FDN_FS_INVALID_PATH;
+        }
+        file = open(native_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        fdn_dealloc(native_path);
+        if (file < 0) {
+            return fdn_host_posix_status(errno);
+        }
+        if (fstat(file, &info) != 0) {
+            status = fdn_host_posix_status(errno);
+            goto posix_cleanup;
+        }
+        if (S_ISDIR(info.st_mode)) {
+            status = FDN_FS_IS_DIRECTORY;
+            goto posix_cleanup;
+        }
+        if (!S_ISREG(info.st_mode)) {
+            status = FDN_FS_INVALID_PATH;
+            goto posix_cleanup;
+        }
+        if (info.st_size < 0 || (uint64_t)info.st_size > max_length ||
+            (uint64_t)info.st_size > SIZE_MAX) {
+            status = FDN_FS_TOO_LARGE;
+            goto posix_cleanup;
+        }
+        length = (size_t)info.st_size;
+        if (length != 0) {
+            data = fdn_alloc(length);
+        }
+        while (offset < length) {
+            const ssize_t count = read(file, data + offset, length - offset);
+            if (count < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                status = fdn_host_posix_status(errno);
+                goto posix_cleanup;
+            }
+            if (count == 0) {
+                break;
+            }
+            offset += (size_t)count;
+        }
+        if (offset == length) {
+            uint8_t probe;
+            ssize_t count;
+            do {
+                count = read(file, &probe, 1);
+            } while (count < 0 && errno == EINTR);
+            if (count < 0) {
+                status = fdn_host_posix_status(errno);
+            } else if (count != 0) {
+                status = FDN_FS_TOO_LARGE;
+            }
+        }
+
+posix_cleanup:
+        if (close(file) != 0 && status == 0) {
+            status = fdn_host_posix_status(errno);
+        }
+    }
+#endif
+    if (status == 0 &&
+        fdn_bytes_adopt(data, offset, length, result) == 0) {
+        return 0;
+    }
+    if (data != NULL) {
+        fdn_dealloc(data);
+    }
+    return status == 0 ? FDN_FS_IO : status;
 }
 
 #if !defined(_WIN32)
@@ -992,6 +1222,269 @@ int32_t foundation_runtime_fs_remove_empty_directory(const fdn_string *path) {
     }
     fdn_dealloc(native_path);
     return 0;
+#endif
+}
+
+typedef struct fdn_host_remove_bounds {
+    uint64_t remaining;
+    uint64_t max_depth;
+} fdn_host_remove_bounds;
+
+static int32_t fdn_host_remove_visit(fdn_host_remove_bounds *bounds,
+                                     uint64_t depth) {
+    if (depth == 0 || depth > bounds->max_depth || bounds->remaining == 0) {
+        return FDN_FS_TOO_LARGE;
+    }
+    --bounds->remaining;
+    return 0;
+}
+
+#if defined(_WIN32)
+static HANDLE fdn_host_windows_open_directory(const wchar_t *path) {
+    BY_HANDLE_FILE_INFORMATION info;
+    HANDLE directory = CreateFileW(
+        path, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ, NULL, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (directory == INVALID_HANDLE_VALUE) {
+        return INVALID_HANDLE_VALUE;
+    }
+    if (GetFileInformationByHandle(directory, &info) == 0 ||
+        (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+        (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        (void)CloseHandle(directory);
+        SetLastError(ERROR_INVALID_NAME);
+        return INVALID_HANDLE_VALUE;
+    }
+    return directory;
+}
+
+static wchar_t *fdn_host_windows_child_path(const wchar_t *parent,
+                                            const wchar_t *name) {
+    const size_t parent_length = wcslen(parent);
+    const size_t name_length = wcslen(name);
+    const int separator = parent_length != 0 &&
+                          parent[parent_length - 1] != L'\\' &&
+                          parent[parent_length - 1] != L'/';
+    wchar_t *result;
+    if (parent_length > SIZE_MAX - name_length - (size_t)separator - 1 ||
+        parent_length + name_length + (size_t)separator + 1 >
+            SIZE_MAX / sizeof(*result)) {
+        return NULL;
+    }
+    result = fdn_alloc((parent_length + name_length + (size_t)separator + 1) *
+                       sizeof(*result));
+    (void)memcpy(result, parent, parent_length * sizeof(*result));
+    if (separator != 0) {
+        result[parent_length] = L'\\';
+    }
+    (void)memcpy(result + parent_length + (size_t)separator, name,
+                 (name_length + 1) * sizeof(*result));
+    return result;
+}
+
+static int32_t fdn_host_windows_remove_tree(const wchar_t *path,
+                                            uint64_t depth,
+                                            fdn_host_remove_bounds *bounds) {
+    DWORD attributes;
+    int32_t status = fdn_host_remove_visit(bounds, depth);
+    if (status != 0) {
+        return status;
+    }
+    attributes = GetFileAttributesW(path);
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        return fdn_host_windows_status(GetLastError());
+    }
+    if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        const BOOL removed = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0
+                                 ? RemoveDirectoryW(path)
+                                 : DeleteFileW(path);
+        return removed != 0 ? 0 : fdn_host_windows_status(GetLastError());
+    }
+    if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        return DeleteFileW(path) != 0
+                   ? 0
+                   : fdn_host_windows_status(GetLastError());
+    }
+    {
+        HANDLE directory = fdn_host_windows_open_directory(path);
+        wchar_t *search_path;
+        WIN32_FIND_DATAW entry;
+        HANDLE search;
+        if (directory == INVALID_HANDLE_VALUE) {
+            return fdn_host_windows_status(GetLastError());
+        }
+        search_path = fdn_host_windows_child_path(path, L"*");
+        if (search_path == NULL) {
+            (void)CloseHandle(directory);
+            return FDN_FS_TOO_LARGE;
+        }
+        search = FindFirstFileW(search_path, &entry);
+        fdn_dealloc(search_path);
+        if (search == INVALID_HANDLE_VALUE) {
+            const DWORD error = GetLastError();
+            if (error != ERROR_FILE_NOT_FOUND) {
+                status = fdn_host_windows_status(error);
+            }
+        } else {
+            for (;;) {
+                if (wcscmp(entry.cFileName, L".") != 0 &&
+                    wcscmp(entry.cFileName, L"..") != 0) {
+                    wchar_t *child = fdn_host_windows_child_path(
+                        path, entry.cFileName);
+                    if (child == NULL) {
+                        status = FDN_FS_TOO_LARGE;
+                    } else {
+                        status = fdn_host_windows_remove_tree(
+                            child, depth + 1, bounds);
+                        fdn_dealloc(child);
+                    }
+                    if (status != 0) {
+                        break;
+                    }
+                }
+                if (FindNextFileW(search, &entry) == 0) {
+                    const DWORD error = GetLastError();
+                    if (error != ERROR_NO_MORE_FILES) {
+                        status = fdn_host_windows_status(error);
+                    }
+                    break;
+                }
+            }
+            if (FindClose(search) == 0 && status == 0) {
+                status = fdn_host_windows_status(GetLastError());
+            }
+        }
+        if (CloseHandle(directory) == 0 && status == 0) {
+            status = FDN_FS_IO;
+        }
+        if (status == 0 && RemoveDirectoryW(path) == 0) {
+            status = fdn_host_windows_status(GetLastError());
+        }
+    }
+    return status;
+}
+#else
+static int32_t fdn_host_posix_remove_directory(
+    int descriptor, uint64_t depth, fdn_host_remove_bounds *bounds) {
+    DIR *directory = fdopendir(descriptor);
+    struct dirent *entry;
+    int32_t status = 0;
+    if (directory == NULL) {
+        const int error = errno;
+        (void)close(descriptor);
+        return fdn_host_posix_status(error);
+    }
+    errno = 0;
+    while ((entry = readdir(directory)) != NULL) {
+        struct stat info;
+        const int parent = dirfd(directory);
+        if (strcmp(entry->d_name, ".") == 0 ||
+            strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        status = fdn_host_remove_visit(bounds, depth + 1);
+        if (status != 0) {
+            break;
+        }
+        if (fstatat(parent, entry->d_name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+            status = fdn_host_posix_status(errno);
+            break;
+        }
+        if (S_ISDIR(info.st_mode)) {
+            int child = openat(parent, entry->d_name,
+                               O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
+            if (child < 0) {
+                status = fdn_host_posix_status(errno);
+                break;
+            }
+            status = fdn_host_posix_remove_directory(child, depth + 1, bounds);
+            if (status == 0 &&
+                unlinkat(parent, entry->d_name, AT_REMOVEDIR) != 0) {
+                status = fdn_host_posix_status(errno);
+            }
+        } else if (unlinkat(parent, entry->d_name, 0) != 0) {
+            status = fdn_host_posix_status(errno);
+        }
+        if (status != 0) {
+            break;
+        }
+        errno = 0;
+    }
+    if (entry == NULL && errno != 0 && status == 0) {
+        status = fdn_host_posix_status(errno);
+    }
+    if (closedir(directory) != 0 && status == 0) {
+        status = fdn_host_posix_status(errno);
+    }
+    return status;
+}
+#endif
+
+int32_t foundation_runtime_fs_remove_tree(const fdn_string *path,
+                                          uint64_t max_entries,
+                                          uint64_t max_depth) {
+    fdn_host_remove_bounds bounds;
+    if (!fdn_host_path_valid(path) || fdn_host_path_has_dot_component(path)) {
+        return FDN_FS_INVALID_PATH;
+    }
+    if (max_entries == 0 || max_depth == 0 || max_depth > 128) {
+        return FDN_FS_TOO_LARGE;
+    }
+    bounds.remaining = max_entries;
+    bounds.max_depth = max_depth;
+#if defined(_WIN32)
+    {
+        wchar_t *native_path = fdn_host_windows_path(path);
+        int32_t status;
+        if (native_path == NULL) {
+            return FDN_FS_INVALID_PATH;
+        }
+        if (fdn_host_windows_volume_root(native_path)) {
+            fdn_dealloc(native_path);
+            return FDN_FS_INVALID_PATH;
+        }
+        status = fdn_host_windows_remove_tree(native_path, 1, &bounds);
+        fdn_dealloc(native_path);
+        return status;
+    }
+#else
+    {
+        char *native_path = fdn_host_posix_path(path);
+        struct stat info;
+        int32_t status = fdn_host_remove_visit(&bounds, 1);
+        size_t length;
+        if (native_path == NULL) {
+            return FDN_FS_INVALID_PATH;
+        }
+        length = strlen(native_path);
+        while (length > 1 && native_path[length - 1] == '/') {
+            native_path[--length] = '\0';
+        }
+        if (length == 1 && native_path[0] == '/') {
+            fdn_dealloc(native_path);
+            return FDN_FS_INVALID_PATH;
+        }
+        if (status == 0 && lstat(native_path, &info) != 0) {
+            status = fdn_host_posix_status(errno);
+        }
+        if (status == 0 && S_ISDIR(info.st_mode)) {
+            int descriptor = open(native_path,
+                                  O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
+            if (descriptor < 0) {
+                status = fdn_host_posix_status(errno);
+            } else {
+                status = fdn_host_posix_remove_directory(descriptor, 1, &bounds);
+                if (status == 0 && rmdir(native_path) != 0) {
+                    status = fdn_host_posix_status(errno);
+                }
+            }
+        } else if (status == 0 && unlink(native_path) != 0) {
+            status = fdn_host_posix_status(errno);
+        }
+        fdn_dealloc(native_path);
+        return status;
+    }
 #endif
 }
 

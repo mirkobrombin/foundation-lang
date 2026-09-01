@@ -1131,11 +1131,17 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_fs_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_fs_host_test runtime/tests/fs_host_test.c)
     target_link_libraries(foundation_runtime_fs_host_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_fs_package_test runtime/tests/fs_package_test.c)
+    target_link_libraries(foundation_runtime_fs_package_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_process_test runtime/tests/process_test.c)
     target_link_libraries(foundation_runtime_process_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_io_test runtime/tests/io_test.c)
+    target_link_libraries(foundation_runtime_io_test PRIVATE foundation_runtime)
     set(foundation_host_service_test_targets
         foundation_runtime_fs_host_test
+        foundation_runtime_fs_package_test
         foundation_runtime_process_test
+        foundation_runtime_io_test
     )
     if(MSVC)
         foreach(host_service_test IN LISTS foundation_host_service_test_targets)
@@ -2016,9 +2022,14 @@ if(BUILD_TESTING)
         COMMAND foundation_runtime_fs_host_test ${CMAKE_CURRENT_BINARY_DIR}
     )
     add_test(
+        NAME runtime.fs-package
+        COMMAND foundation_runtime_fs_package_test ${CMAKE_CURRENT_BINARY_DIR}
+    )
+    add_test(
         NAME runtime.process
         COMMAND foundation_runtime_process_test ${CMAKE_CURRENT_BINARY_DIR}
     )
+    add_test(NAME runtime.io COMMAND foundation_runtime_io_test)
     add_test(
         NAME compiler.run.host-services.llvm
         COMMAND ${CMAKE_COMMAND}
@@ -2039,11 +2050,37 @@ if(BUILD_TESTING)
             "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_runtime_process_test>;${CMAKE_CURRENT_BINARY_DIR}"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
+    add_test(
+        NAME compiler.run.package-primitives.llvm
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/package-primitives.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/package-primitives.out
+            -DEXPECTED_ERROR=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/package-primitives.err
+            -DBACKEND=llvm
+            "-DPROGRAM_ARGS=${CMAKE_CURRENT_BINARY_DIR}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME compiler.run.package-primitives.c
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/package-primitives.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/package-primitives.out
+            -DEXPECTED_ERROR=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/package-primitives.err
+            -DBACKEND=c
+            "-DPROGRAM_ARGS=${CMAKE_CURRENT_BINARY_DIR}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
     set_tests_properties(
         runtime.fs-host
+        runtime.fs-package
         runtime.process
+        runtime.io
         compiler.run.host-services.llvm
         compiler.run.host-services.c
+        compiler.run.package-primitives.llvm
+        compiler.run.package-primitives.c
         PROPERTIES TIMEOUT ${FOUNDATION_COMPILE_RUN_TIMEOUT}
     )
     add_test(

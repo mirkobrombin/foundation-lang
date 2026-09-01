@@ -44,4 +44,13 @@ if(NOT output STREQUAL expected)
     message(FATAL_ERROR "program output mismatch:\nexpected:\n${expected}actual:\n${output}")
 endif()
 
+if(DEFINED EXPECTED_ERROR)
+    file(READ "${EXPECTED_ERROR}" expected_error)
+    if(NOT error STREQUAL expected_error)
+        message(FATAL_ERROR
+            "program error output mismatch:\nexpected:\n${expected_error}actual:\n${error}"
+        )
+    endif()
+endif()
+
 message(STATUS "program output matches ${EXPECTED}")

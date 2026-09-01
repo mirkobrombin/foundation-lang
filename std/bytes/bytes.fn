@@ -104,6 +104,22 @@ extern c fn hmacSha256Native(
     value u64,
     &result u64
 ) i32 as foundation_runtime_hmac_sha256
+extern c fn openSha256Native() u64 as foundation_runtime_sha256_open
+extern c fn updateSha256TextNative(
+    handle u64,
+    value String
+) i32 as foundation_runtime_sha256_update_text
+extern c fn updateSha256BytesNative(
+    handle u64,
+    value u64
+) i32 as foundation_runtime_sha256_update_bytes
+extern c fn finishSha256Native(
+    &handle u64,
+    &result u64
+) i32 as foundation_runtime_sha256_finish
+extern c fn closeSha256Native(
+    &handle u64
+) void as foundation_runtime_sha256_close
 extern c fn aes256GcmEncryptNative(
     key u64,
     value u64,
@@ -282,6 +298,47 @@ struct Builder {
     }
 }
 
+// Computes one SHA-256 digest from incrementally supplied text and bytes.
+struct Sha256 {
+    handle u64
+
+    // Adds UTF-8 text exactly as encoded in the String.
+    fn WriteText(&self, value String) Result<void, Error> {
+        const status = updateSha256TextNative(self.handle, value)
+        if status == 0 return .Ok
+        if status == 1 return .Err(.Closed)
+        .Err(.TooLarge)
+    }
+
+    // Adds one complete binary value.
+    fn WriteBytes(&self, value Bytes) Result<void, Error> {
+        const status = updateSha256BytesNative(self.handle, value.handle)
+        if status == 0 return .Ok
+        if status == 1 return .Err(.Closed)
+        .Err(.TooLarge)
+    }
+
+    // Closes the stream and returns its 32-byte digest.
+    fn Finish(&self) Result<own Bytes, Error> {
+        var result u64 = 0
+        if finishSha256Native(&self.handle, &result) != 0 {
+            return .Err(.Closed)
+        }
+        .Ok(own Bytes { handle = result })
+    }
+
+    // Releases an unfinished stream exactly once.
+    fn Close(&self) bool {
+        if self.handle == 0 return false
+        closeSha256Native(&self.handle)
+        true
+    }
+
+    fn drop(&self) void {
+        closeSha256Native(&self.handle)
+    }
+}
+
 // Owns a cloneable, task-safe map whose values are copied and cleared in native
 // memory.
 @concurrent.Transferable()
@@ -355,6 +412,11 @@ fn NewBuilder(limit u64) Result<own Builder, Error> {
         return .Err(.TooLarge)
     }
     .Ok(own Builder { handle = result })
+}
+
+// Opens an empty streaming SHA-256 computation.
+fn NewSha256() own Sha256 {
+    own Sha256 { handle = openSha256Native() }
 }
 
 // Borrows the opaque SDK handle for one synchronous native adapter call.

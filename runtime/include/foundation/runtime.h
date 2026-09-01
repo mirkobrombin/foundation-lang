@@ -272,6 +272,13 @@ int32_t foundation_runtime_base64_encode(uint64_t handle, fdn_string *result);
 int32_t foundation_runtime_base64_decode(const fdn_string *value, uint64_t *result);
 int32_t foundation_runtime_hmac_sha256(uint64_t key_handle, uint64_t value_handle,
                                        uint64_t *result);
+uint64_t foundation_runtime_sha256_open(void);
+int32_t foundation_runtime_sha256_update_text(uint64_t handle,
+                                              const fdn_string *value);
+int32_t foundation_runtime_sha256_update_bytes(uint64_t handle,
+                                               uint64_t value_handle);
+int32_t foundation_runtime_sha256_finish(uint64_t *handle, uint64_t *result);
+void foundation_runtime_sha256_close(uint64_t *handle);
 bool foundation_runtime_bytes_constant_time_equal(uint64_t left_handle,
                                                   uint64_t right_handle);
 typedef int32_t (*fdn_wamr_host_dispatch_fn)(void* context, const fdn_string* capability,
@@ -379,6 +386,9 @@ int32_t foundation_runtime_fs_delete_private_file(const fdn_string *path);
 int32_t foundation_runtime_fs_read_text_sync_limited(const fdn_string *path,
                                                      uint64_t max_length,
                                                      fdn_string *result);
+int32_t foundation_runtime_fs_read_bytes_sync_limited(const fdn_string *path,
+                                                      uint64_t max_length,
+                                                      uint64_t *result);
 int32_t foundation_runtime_fs_write_text_atomic(const fdn_string *path,
                                                 const fdn_string *value,
                                                 uint64_t max_length);
@@ -395,6 +405,9 @@ int32_t foundation_runtime_fs_copy_file(const fdn_string *source,
                                         const fdn_string *destination);
 int32_t foundation_runtime_fs_remove_file(const fdn_string *path);
 int32_t foundation_runtime_fs_remove_empty_directory(const fdn_string *path);
+int32_t foundation_runtime_fs_remove_tree(const fdn_string *path,
+                                          uint64_t max_entries,
+                                          uint64_t max_depth);
 int32_t foundation_runtime_fs_create_temp_directory(const fdn_string *parent,
                                                     const fdn_string *prefix,
                                                     fdn_string *result);
@@ -405,6 +418,10 @@ int32_t foundation_runtime_fs_is_executable(const fdn_string *path,
                                             bool *result);
 int32_t foundation_runtime_fs_set_executable(const fdn_string *path,
                                              bool executable);
+int32_t foundation_runtime_io_write_stdout_text(const fdn_string *value);
+int32_t foundation_runtime_io_write_stderr_text(const fdn_string *value);
+int32_t foundation_runtime_io_write_stdout_bytes(uint64_t handle);
+int32_t foundation_runtime_io_write_stderr_bytes(uint64_t handle);
 uint64_t foundation_runtime_fs_live_directories(void);
 int32_t foundation_runtime_fs_tree_open(const fdn_string *path,
                                         uint64_t max_entries,

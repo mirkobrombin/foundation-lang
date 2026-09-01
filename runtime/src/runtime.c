@@ -32,6 +32,7 @@ _Static_assert(sizeof(uintptr_t) <= sizeof(uint64_t), "runtime handles require a
 #include <windows.h>
 #include <bcrypt.h>
 static SRWLOCK fdn_stdout_lock = SRWLOCK_INIT;
+static SRWLOCK fdn_stderr_lock = SRWLOCK_INIT;
 static SRWLOCK fdn_uuid_lock = SRWLOCK_INIT;
 #else
 #include <dirent.h>
@@ -342,6 +343,103 @@ void fdn_println(fdn_string value) {
 #else
     funlockfile(stdout);
 #endif
+}
+
+static int32_t fdn_write_standard(int error_stream, const uint8_t *data,
+                                  size_t length) {
+    FILE *stream = error_stream != 0 ? stderr : stdout;
+    size_t offset = 0;
+#if defined(_WIN32)
+    SRWLOCK *lock = error_stream != 0 ? &fdn_stderr_lock : &fdn_stdout_lock;
+    const DWORD identifier = error_stream != 0
+                                 ? STD_ERROR_HANDLE
+                                 : STD_OUTPUT_HANDLE;
+    HANDLE output;
+    AcquireSRWLockExclusive(lock);
+    if (fflush(stream) != 0) {
+        ReleaseSRWLockExclusive(lock);
+        return 2;
+    }
+    output = GetStdHandle(identifier);
+    if (output == NULL || output == INVALID_HANDLE_VALUE) {
+        ReleaseSRWLockExclusive(lock);
+        return 2;
+    }
+    while (offset < length) {
+        const size_t remaining = length - offset;
+        const DWORD requested = remaining > UINT32_MAX
+                                    ? UINT32_MAX
+                                    : (DWORD)remaining;
+        DWORD written = 0;
+        if (WriteFile(output, data + offset, requested, &written, NULL) == 0 ||
+            written == 0) {
+            ReleaseSRWLockExclusive(lock);
+            return 2;
+        }
+        offset += (size_t)written;
+    }
+    ReleaseSRWLockExclusive(lock);
+#else
+    const int descriptor = fileno(stream);
+    flockfile(stream);
+    if (fflush(stream) != 0 || descriptor < 0) {
+        funlockfile(stream);
+        return 2;
+    }
+    while (offset < length) {
+        const size_t remaining = length - offset;
+        const size_t requested = remaining > (size_t)INT_MAX
+                                     ? (size_t)INT_MAX
+                                     : remaining;
+        const ssize_t written = write(descriptor, data + offset, requested);
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            funlockfile(stream);
+            return 2;
+        }
+        if (written == 0) {
+            funlockfile(stream);
+            return 2;
+        }
+        offset += (size_t)written;
+    }
+    funlockfile(stream);
+#endif
+    return 0;
+}
+
+int32_t foundation_runtime_io_write_stdout_text(const fdn_string *value) {
+    if (value == NULL || (value->data == NULL && value->length != 0)) {
+        return 1;
+    }
+    return fdn_write_standard(0, (const uint8_t *)value->data, value->length);
+}
+
+int32_t foundation_runtime_io_write_stderr_text(const fdn_string *value) {
+    if (value == NULL || (value->data == NULL && value->length != 0)) {
+        return 1;
+    }
+    return fdn_write_standard(1, (const uint8_t *)value->data, value->length);
+}
+
+int32_t foundation_runtime_io_write_stdout_bytes(uint64_t handle) {
+    const uint8_t *data;
+    size_t length;
+    if (fdn_bytes_view(handle, &data, &length) != 0) {
+        return 1;
+    }
+    return fdn_write_standard(0, data, length);
+}
+
+int32_t foundation_runtime_io_write_stderr_bytes(uint64_t handle) {
+    const uint8_t *data;
+    size_t length;
+    if (fdn_bytes_view(handle, &data, &length) != 0) {
+        return 1;
+    }
+    return fdn_write_standard(1, data, length);
 }
 
 void fdn_abi_string_concat(fdn_string *result, const fdn_string *left,

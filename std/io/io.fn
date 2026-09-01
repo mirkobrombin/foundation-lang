@@ -1,0 +1,54 @@
+package std.io
+
+import std.bytes
+
+enum Error {
+    Closed
+    Io
+}
+
+extern c fn writeStdoutTextNative(
+    value String
+) i32 as foundation_runtime_io_write_stdout_text
+extern c fn writeStderrTextNative(
+    value String
+) i32 as foundation_runtime_io_write_stderr_text
+extern c fn writeStdoutBytesNative(
+    handle u64
+) i32 as foundation_runtime_io_write_stdout_bytes
+extern c fn writeStderrBytesNative(
+    handle u64
+) i32 as foundation_runtime_io_write_stderr_bytes
+
+fn errorFor(status i32) Error {
+    if status == 1 return .Closed
+    .Io
+}
+
+// Writes UTF-8 text to standard output without adding a line terminator.
+fn WriteStdoutText(value String) Result<void, Error> {
+    const status = writeStdoutTextNative(value)
+    if status == 0 return .Ok
+    .Err(errorFor(status))
+}
+
+// Writes UTF-8 text to standard error without adding a line terminator.
+fn WriteStderrText(value String) Result<void, Error> {
+    const status = writeStderrTextNative(value)
+    if status == 0 return .Ok
+    .Err(errorFor(status))
+}
+
+// Writes bytes to standard output without text conversion.
+fn WriteStdoutBytes(value bytes.Bytes) Result<void, Error> {
+    const status = writeStdoutBytesNative(bytes.RuntimeHandle(value))
+    if status == 0 return .Ok
+    .Err(errorFor(status))
+}
+
+// Writes bytes to standard error without text conversion.
+fn WriteStderrBytes(value bytes.Bytes) Result<void, Error> {
+    const status = writeStderrBytesNative(bytes.RuntimeHandle(value))
+    if status == 0 return .Ok
+    .Err(errorFor(status))
+}

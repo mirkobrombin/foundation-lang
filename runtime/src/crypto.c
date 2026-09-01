@@ -619,6 +619,10 @@ static void fdn_hmac_sha256(const uint8_t *key, size_t key_length, const uint8_t
     fdn_secure_zero(inner_digest, sizeof(inner_digest));
 }
 
+static bool fdn_sha256_accepts(const fdn_sha256 *context, size_t length) {
+    return length <= (UINT64_MAX - context->length) / 8U;
+}
+
 uint64_t foundation_runtime_bytes_from_text(const fdn_string *value) {
     if (value == NULL || (value->length != 0 && value->data == NULL)) {
         return 0;
@@ -1090,6 +1094,72 @@ int32_t foundation_runtime_hmac_sha256(uint64_t key_handle, uint64_t value_handl
     *result = fdn_bytes_create(digest, sizeof(digest));
     fdn_secure_zero(digest, sizeof(digest));
     return 0;
+}
+
+uint64_t foundation_runtime_sha256_open(void) {
+    fdn_sha256 *context = fdn_alloc(sizeof(*context));
+    fdn_sha256_init(context);
+    return (uint64_t)(uintptr_t)context;
+}
+
+int32_t foundation_runtime_sha256_update_text(uint64_t handle,
+                                              const fdn_string *value) {
+    fdn_sha256 *context = (fdn_sha256 *)(uintptr_t)handle;
+    if (context == NULL || value == NULL ||
+        (value->data == NULL && value->length != 0)) {
+        return 1;
+    }
+    if (!fdn_sha256_accepts(context, value->length)) {
+        return 2;
+    }
+    fdn_sha256_update(context, (const uint8_t *)value->data, value->length);
+    return 0;
+}
+
+int32_t foundation_runtime_sha256_update_bytes(uint64_t handle,
+                                               uint64_t value_handle) {
+    fdn_sha256 *context = (fdn_sha256 *)(uintptr_t)handle;
+    const fdn_bytes *value = fdn_bytes_value(value_handle);
+    if (context == NULL || value == NULL) {
+        return 1;
+    }
+    if (!fdn_sha256_accepts(context, value->length)) {
+        return 2;
+    }
+    fdn_sha256_update(context, value->data, value->length);
+    return 0;
+}
+
+int32_t foundation_runtime_sha256_finish(uint64_t *handle, uint64_t *result) {
+    fdn_sha256 *context;
+    uint8_t digest[32];
+    if (handle == NULL || result == NULL) {
+        return 1;
+    }
+    *result = 0;
+    context = (fdn_sha256 *)(uintptr_t)*handle;
+    if (context == NULL) {
+        return 1;
+    }
+    *handle = 0;
+    fdn_sha256_finish(context, digest);
+    fdn_dealloc(context);
+    *result = fdn_bytes_create(digest, sizeof(digest));
+    fdn_secure_zero(digest, sizeof(digest));
+    return 0;
+}
+
+void foundation_runtime_sha256_close(uint64_t *handle) {
+    fdn_sha256 *context;
+    if (handle == NULL) {
+        return;
+    }
+    context = (fdn_sha256 *)(uintptr_t)*handle;
+    *handle = 0;
+    if (context != NULL) {
+        fdn_secure_zero(context, sizeof(*context));
+        fdn_dealloc(context);
+    }
 }
 
 bool foundation_runtime_bytes_constant_time_equal(uint64_t left_handle, uint64_t right_handle) {

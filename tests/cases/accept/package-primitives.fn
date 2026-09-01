@@ -1,0 +1,174 @@
+package test.package_primitives
+
+import std.bytes
+import std.fs
+import std.io
+import std.path
+import std.text
+
+fn binaryPayload() own bytes.Bytes {
+    const opened = bytes.NewBuilder(4) else error {
+        discard error
+        panic("binary payload builder failed")
+    }
+    var builder = opened
+    builder.WriteByte(0) else error {
+        discard error
+        panic("binary payload zero failed")
+    }
+    builder.WriteByte(255) else error {
+        discard error
+        panic("binary payload high byte failed")
+    }
+    builder.WriteByte(70) else error {
+        discard error
+        panic("binary payload text byte failed")
+    }
+    builder.WriteByte(10) else error {
+        discard error
+        panic("binary payload newline failed")
+    }
+    const result = builder.Finish() else error {
+        discard error
+        panic("binary payload finish failed")
+    }
+    result
+}
+
+fn readIsTooLarge($value Result<own bytes.Bytes, fs.HostError>) bool {
+    match value {
+        Ok(result): false
+        Err(error): match error {
+            TooLarge: true
+            _: false
+        }
+    }
+}
+
+fn removeIsTooLarge($value Result<void, fs.HostError>) bool {
+    match value {
+        Ok: false
+        Err(error): match error {
+            TooLarge: true
+            _: false
+        }
+    }
+}
+
+fn removeIsInvalidPath($value Result<void, fs.HostError>) bool {
+    match value {
+        Ok: false
+        Err(error): match error {
+            InvalidPath: true
+            _: false
+        }
+    }
+}
+
+fn main(args [String]) i32 {
+    const root = fs.CreateTempDirectory(args[0], "fdn-package") else error {
+        discard error
+        return 1
+    }
+    const opened = fs.OpenRoot(root) else error {
+        discard error
+        return 2
+    }
+    var writer = opened
+    writer.CreateDirectory("nested/deep") else error {
+        discard error
+        return 3
+    }
+    const payload = binaryPayload()
+    writer.WriteFile("nested/deep/payload.bin", payload, 384) else error {
+        discard error
+        return 4
+    }
+    discard writer.Close()
+
+    const file = path.Join(root, "nested/deep/payload.bin")
+    if !readIsTooLarge(fs.ReadBytesSync(file, 3)) return 5
+    const read = fs.ReadBytesSync(file, 4) else error {
+        discard error
+        return 6
+    }
+    const length = read.Len() else error {
+        discard error
+        return 7
+    }
+    const first = read.At(0) else error {
+        discard error
+        return 8
+    }
+    const second = read.At(1) else error {
+        discard error
+        return 9
+    }
+    if length != 4 || first != 0 || second != 255 return 10
+
+    var sha256 = bytes.NewSha256()
+    sha256.WriteText("abc") else error {
+        discard error
+        return 11
+    }
+    const suffix = bytes.FromText("def")
+    sha256.WriteBytes(suffix) else error {
+        discard error
+        return 12
+    }
+    const digest = sha256.Finish() else error {
+        discard error
+        return 13
+    }
+    if sha256.Close() return 14
+    const encoded = bytes.EncodeBase64URL(digest) else error {
+        discard error
+        return 15
+    }
+    if !text.Equal(encoded, "vvV-x_U6bUC-tkCngKY5yDvCmsipgW8fxsXG3Nk8RyE") {
+        return 16
+    }
+
+    const alias = root + "/nested/deep/../.."
+    if !removeIsInvalidPath(fs.RemoveTree(alias, 32, 8)) return 17
+    const existsAfterAlias = fs.Exists(file) else error {
+        discard error
+        return 18
+    }
+    if !existsAfterAlias return 19
+    if !removeIsTooLarge(fs.RemoveTree(root, 1, 8)) return 20
+    const existsAfterLimit = fs.Exists(root) else error {
+        discard error
+        return 21
+    }
+    if !existsAfterLimit return 22
+    fs.RemoveTree(root, 32, 8) else error {
+        discard error
+        return 23
+    }
+    const existsAfterRemove = fs.Exists(root) else error {
+        discard error
+        return 24
+    }
+    if existsAfterRemove return 25
+
+    io.WriteStdoutText("package") else error {
+        discard error
+        return 26
+    }
+    const stdout = bytes.FromText(" primitives ok\n")
+    io.WriteStdoutBytes(stdout) else error {
+        discard error
+        return 27
+    }
+    const stderr = bytes.FromText("package")
+    io.WriteStderrBytes(stderr) else error {
+        discard error
+        return 28
+    }
+    io.WriteStderrText(" primitives stderr\n") else error {
+        discard error
+        return 29
+    }
+    0
+}

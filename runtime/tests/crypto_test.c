@@ -32,6 +32,12 @@ int main(void) {
         0x8e, 0x0b, 0xc6, 0x21, 0x37, 0x28, 0xc5, 0x14,
         0x05, 0x46, 0x04, 0x0f, 0x0e, 0xe3, 0x7f, 0x54,
     };
+    static const uint8_t sha256_expected[32] = {
+        0xbe, 0xf5, 0x7e, 0xc7, 0xf5, 0x3a, 0x6d, 0x40,
+        0xbe, 0xb6, 0x40, 0xa7, 0x80, 0xa6, 0x39, 0xc8,
+        0x3b, 0xc2, 0x9a, 0xc8, 0xa9, 0x81, 0x6f, 0x1f,
+        0xc6, 0xc5, 0xc6, 0xdc, 0xd9, 0x3c, 0x47, 0x21,
+    };
     static const char long_hmac_message[] =
         "Test Using Larger Than Block-Size Key - Hash Key First";
     static const uint8_t aes_known[44] = {
@@ -59,6 +65,12 @@ int main(void) {
     uint64_t message = bytes_from_data("Hi There", 8);
     uint64_t digest = 0;
     uint64_t expected_digest = bytes_from_data((const char *)hmac_expected, sizeof(hmac_expected));
+    uint64_t sha256 = 0;
+    uint64_t sha256_digest = 0;
+    uint64_t sha256_expected_digest =
+        bytes_from_data((const char *)sha256_expected, sizeof(sha256_expected));
+    uint64_t sha256_suffix = bytes_from_data("def", 3);
+    uint64_t closed_sha256 = 0;
     uint64_t long_key;
     uint64_t long_message;
     uint64_t long_digest = 0;
@@ -82,6 +94,7 @@ int main(void) {
     fdn_string wrong_aad = fdn_string_static("wrong", 5);
     fdn_string empty = fdn_string_static("", 0);
     fdn_string secret_key = fdn_string_static("token", 5);
+    fdn_string sha256_prefix = fdn_string_static("abc", 3);
 
     (void)memset(long_hmac_key, 0xaa, sizeof(long_hmac_key));
     long_key = bytes_from_data(long_hmac_key, sizeof(long_hmac_key));
@@ -149,6 +162,23 @@ int main(void) {
     assert(foundation_runtime_hmac_sha256(long_key, long_message, &long_digest) == 0);
     assert(foundation_runtime_bytes_constant_time_equal(long_digest, long_expected_digest));
 
+    sha256 = foundation_runtime_sha256_open();
+    assert(sha256 != 0);
+    assert(foundation_runtime_sha256_update_text(sha256, &sha256_prefix) == 0);
+    assert(foundation_runtime_sha256_update_bytes(sha256, sha256_suffix) == 0);
+    assert(foundation_runtime_sha256_finish(&sha256, &sha256_digest) == 0);
+    assert(sha256 == 0);
+    assert(foundation_runtime_bytes_constant_time_equal(
+        sha256_digest, sha256_expected_digest));
+    assert(foundation_runtime_sha256_finish(&sha256, &stored) == 1);
+    closed_sha256 = foundation_runtime_sha256_open();
+    assert(foundation_runtime_sha256_update_bytes(closed_sha256, 0) == 1);
+    foundation_runtime_sha256_close(&closed_sha256);
+    foundation_runtime_sha256_close(&closed_sha256);
+    assert(closed_sha256 == 0);
+    assert(foundation_runtime_sha256_update_text(closed_sha256,
+                                                 &sha256_prefix) == 1);
+
     assert(foundation_runtime_aes256_gcm_decrypt(aes_key, aes_vector, &empty,
                                                  &aes_decrypted) == 0);
     assert(foundation_runtime_bytes_constant_time_equal(aes_decrypted, aes_plaintext));
@@ -197,6 +227,9 @@ int main(void) {
     foundation_runtime_bytes_close(&message);
     foundation_runtime_bytes_close(&digest);
     foundation_runtime_bytes_close(&expected_digest);
+    foundation_runtime_bytes_close(&sha256_digest);
+    foundation_runtime_bytes_close(&sha256_expected_digest);
+    foundation_runtime_bytes_close(&sha256_suffix);
     foundation_runtime_bytes_close(&long_key);
     foundation_runtime_bytes_close(&long_message);
     foundation_runtime_bytes_close(&long_digest);

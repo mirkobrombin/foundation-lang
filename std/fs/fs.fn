@@ -1,5 +1,7 @@
 package std.fs
 
+import std.bytes
+
 enum Error {
     NotFound
     Permission
@@ -68,6 +70,7 @@ extern c fn writePrivateTextAtomicNative(path String, value String, limit u64) i
 @blocking
 extern c fn deletePrivateFileNative(path String) i32 as foundation_runtime_fs_delete_private_file
 extern c fn readTextSyncLimitedNative(path String, limit u64, &result String) i32 as foundation_runtime_fs_read_text_sync_limited
+extern c fn readBytesSyncLimitedNative(path String, limit u64, &result u64) i32 as foundation_runtime_fs_read_bytes_sync_limited
 extern c fn writeTextAtomicNative(path String, value String, limit u64) i32 as foundation_runtime_fs_write_text_atomic
 extern c fn createDirectoryTreeNative(path String) i32 as foundation_runtime_fs_create_directory_tree
 extern c fn existsNative(path String, &result bool) i32 as foundation_runtime_fs_exists
@@ -78,6 +81,7 @@ extern c fn replaceNative(source String, destination String) i32 as foundation_r
 extern c fn copyFileNative(source String, destination String) i32 as foundation_runtime_fs_copy_file
 extern c fn removeFileNative(path String) i32 as foundation_runtime_fs_remove_file
 extern c fn removeEmptyDirectoryNative(path String) i32 as foundation_runtime_fs_remove_empty_directory
+extern c fn removeTreeNative(path String, maxEntries u64, maxDepth u64) i32 as foundation_runtime_fs_remove_tree
 extern c fn createTempDirectoryNative(parent String, prefix String, &result String) i32 as foundation_runtime_fs_create_temp_directory
 extern c fn createTempFileNative(parent String, prefix String, &result String) i32 as foundation_runtime_fs_create_temp_file
 extern c fn isExecutableNative(path String, &result bool) i32 as foundation_runtime_fs_is_executable
@@ -194,6 +198,18 @@ fn ReadTextSync(path String, limit u64) Result<String, HostError> {
     .Err(readHostErrorFor(status))
 }
 
+// Reads one bounded binary regular file without following its final link.
+fn ReadBytesSync(path String, limit u64) Result<own bytes.Bytes, HostError> {
+    var result u64 = 0
+    const status = readBytesSyncLimitedNative(path, limit, &result)
+    if status != 0 return .Err(readHostErrorFor(status))
+    const claimed = bytes.ClaimRuntimeHandle(result) else error {
+        discard error
+        return .Err(.Io)
+    }
+    .Ok(claimed)
+}
+
 // Atomically replaces one bounded UTF-8 file.
 fn WriteTextAtomic(path String, value String, limit u64) Result<void, HostError> {
     const status = writeTextAtomicNative(path, value, limit)
@@ -267,6 +283,20 @@ fn RemoveEmptyDirectory(path String) Result<void, HostError> {
     const status = removeEmptyDirectoryNative(path)
     if status == 0 return .Ok
     .Err(hostErrorFor(status))
+}
+
+// Removes one bounded tree without traversing directory links. Dot components,
+// filesystem roots, and depths above 128 are rejected. The root counts as one
+// entry at depth one. The caller must prevent concurrent namespace changes. An
+// error may leave visited entries removed.
+fn RemoveTree(
+    path String,
+    maxEntries u64,
+    maxDepth u64
+) Result<void, HostError> {
+    const status = removeTreeNative(path, maxEntries, maxDepth)
+    if status == 0 return .Ok
+    .Err(readHostErrorFor(status))
 }
 
 // Creates a collision-safe directory beneath an existing parent.
