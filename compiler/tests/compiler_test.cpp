@@ -2361,7 +2361,9 @@ fn main() i32 {
     // SAFETY: the fixture symbol names a matching C callback and the literal has static storage.
     unsafe {
         const callback = pointerCast<extern c fn(i32) i32>(nativeSymbol())
+        const nested = pointerCast<extern c fn(extern c fn(i32) i32) i32>(nativeSymbol())
         if isNull(callback) return 5
+        if isNull(nested) return 8
         if callback(41) != 42 return 6
         if !nativeCheckCString(cString("foundation")) return 7
     }
@@ -2387,6 +2389,12 @@ fn main() i32 {
            "function pointer casts preserve the platform representation");
     expect(generated.find("(const uint8_t *)\"foundation\"") != std::string::npos,
            "C string literals lower to static null-terminated storage");
+    const auto innerCallback = generated.find("typedef int32_t (*fdn_c_function_i32_i32)");
+    const auto outerCallback =
+        generated.find("typedef int32_t (*fdn_c_function_i32_c_function_i32_i32)");
+    expect(innerCallback != std::string::npos && outerCallback != std::string::npos &&
+               innerCallback < outerCallback,
+           "nested C function pointer typedefs follow dependency order");
 
     const auto unsafeCast = check(R"(
 extern c fn nativeSymbol() *void as foundation_native_symbol
@@ -2408,6 +2416,51 @@ fn main() i32 {
 )");
     expect(hasCode(nonLiteral.diagnostics, "FDN2214"),
            "cString rejects non-literal storage");
+}
+
+void packageSpecializationRemapsBuiltinTypeArguments() {
+    constexpr std::string_view source = R"(
+struct Unused {
+    Value i32
+}
+
+struct NativeLayout {
+    Left u32
+    Right u32
+}
+
+extern c fn FoundationNativeSize(value NativeLayout) usize as foundation_native_size {
+    sizeOf<NativeLayout>()
+}
+
+fn main() i32 { 0 }
+)";
+    auto checked = check(source);
+    expect(!checked.diagnostics.hasErrors() && checked.fir.has_value(),
+           "package builtin type fixture lowers to FIR");
+    if (!checked.fir.has_value())
+        return;
+    for (auto &function : checked.fir->functions) {
+        function.packageName = "sample.native";
+    }
+    const auto specialized =
+        foundation::specializePackageInterface(*checked.fir, "sample.native");
+    expect(specialized.structs.size() == 1 &&
+               specialized.structs.front().name == "NativeLayout",
+           "package specialization keeps the reachable native layout");
+    auto foundSize = false;
+    for (const auto &function : specialized.functions) {
+        for (const auto &expression : function.expressions) {
+            const auto *call = std::get_if<foundation::FirCallExpression>(&expression.value);
+            if (call == nullptr || call->kind != foundation::FirCallKind::SizeOf) {
+                continue;
+            }
+            foundSize = call->typeArguments.size() == 1 &&
+                        call->typeArguments.front().kind == foundation::TypeKind::Struct &&
+                        call->typeArguments.front().declaration == 0;
+        }
+    }
+    expect(foundSize, "package specialization remaps builtin type arguments");
 }
 
 void blockingImportsLowerToTaskSuspension() {
@@ -3135,6 +3188,7 @@ int main() {
     packageInterfacesUseReachableMonomorphizedCBoundaries();
     rawPointersLowerToExplicitCBoundaries();
     nativeSystemsPrimitivesLowerToBothBoundaries();
+    packageSpecializationRemapsBuiltinTypeArguments();
     blockingImportsLowerToTaskSuspension();
     callbackImportsLowerToReactorSuspension();
     closuresLowerToDeterministicFunctionValues();

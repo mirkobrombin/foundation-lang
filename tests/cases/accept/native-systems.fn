@@ -21,7 +21,9 @@ fn main() i32 {
     // SAFETY: the fixture symbol names a matching C callback and the literal has static storage.
     unsafe {
         const callback = pointerCast<extern c fn(i32) i32>(nativeSymbol())
+        const nested = pointerCast<extern c fn(extern c fn(i32) i32) i32>(nativeSymbol())
         if isNull(callback) return 5
+        if isNull(nested) return 8
         if callback(41) != 42 return 6
         if !nativeCheckCString(cString("foundation")) return 7
     }

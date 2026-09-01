@@ -1369,6 +1369,11 @@ class Monomorphizer {
                             substitute(method.defaultContract, arguments));
                     }
                 }
+            } else if (auto *builtinCall =
+                           std::get_if<FirCallExpression>(&expression.value)) {
+                for (auto &argument : builtinCall->typeArguments) {
+                    argument = instantiateType(substitute(argument, arguments));
+                }
             } else if (auto *literal = std::get_if<FirStructExpression>(&expression.value)) {
                 literal->type = instantiateType(substitute(literal->type, arguments));
             } else if (auto *constructor = std::get_if<FirEnumExpression>(&expression.value)) {
@@ -4199,6 +4204,57 @@ void collectFunctionType(const Type &type, std::unordered_map<std::string, Type>
     }
 }
 
+std::vector<Type> orderFunctionTypes(std::unordered_map<std::string, Type> found) {
+    std::vector<Type> result;
+    result.reserve(found.size());
+    for (auto &[key, type] : found) {
+        static_cast<void>(key);
+        result.push_back(std::move(type));
+    }
+    std::sort(result.begin(), result.end(), [](const Type &left, const Type &right) {
+        return typeKey(left) < typeKey(right);
+    });
+    std::unordered_map<std::string, std::size_t> indexes;
+    for (std::size_t index{}; index < result.size(); ++index) {
+        indexes.emplace(typeKey(result[index]), index);
+    }
+    std::vector<unsigned char> state(result.size());
+    std::vector<Type> ordered;
+    ordered.reserve(result.size());
+    const auto visit = [&](const auto &self, std::size_t index) -> void {
+        if (state[index] == 2) {
+            return;
+        }
+        if (state[index] == 1) {
+            internalError("recursive function type reached C emission");
+        }
+        state[index] = 1;
+        std::set<std::size_t> dependencies;
+        const auto collectDependencies = [&](const auto &collect, const Type &type) -> void {
+            for (const auto &argument : type.arguments) {
+                if (argument.kind == TypeKind::Function) {
+                    const auto found = indexes.find(typeKey(argument));
+                    if (found != indexes.end()) {
+                        dependencies.insert(found->second);
+                    }
+                } else {
+                    collect(collect, argument);
+                }
+            }
+        };
+        collectDependencies(collectDependencies, result[index]);
+        for (const auto dependency : dependencies) {
+            self(self, dependency);
+        }
+        state[index] = 2;
+        ordered.push_back(result[index]);
+    };
+    for (std::size_t index{}; index < result.size(); ++index) {
+        visit(visit, index);
+    }
+    return ordered;
+}
+
 std::vector<Type> collectFunctionTypes(const FirProgram &program) {
     std::unordered_map<std::string, Type> found;
     for (const auto &type : program.structs) {
@@ -4222,16 +4278,7 @@ std::vector<Type> collectFunctionTypes(const FirProgram &program) {
             collectFunctionType(expression.type, found);
         }
     }
-    std::vector<Type> result;
-    result.reserve(found.size());
-    for (auto &[key, type] : found) {
-        static_cast<void>(key);
-        result.push_back(std::move(type));
-    }
-    std::sort(result.begin(), result.end(), [](const Type &left, const Type &right) {
-        return typeKey(left) < typeKey(right);
-    });
-    return result;
+    return orderFunctionTypes(std::move(found));
 }
 
 void emitFunctionTypeDefinition(std::ostringstream &out, const Type &type) {
@@ -6315,16 +6362,7 @@ std::string emitPackageCHeader(const FirProgram &source, std::string_view packag
             collectFunctionType(field.type, foundFunctionTypes);
         }
     }
-    std::vector<Type> functionTypes;
-    functionTypes.reserve(foundFunctionTypes.size());
-    for (auto &[key, type] : foundFunctionTypes) {
-        static_cast<void>(key);
-        functionTypes.push_back(std::move(type));
-    }
-    std::sort(functionTypes.begin(), functionTypes.end(),
-              [](const Type &left, const Type &right) {
-                  return typeKey(left) < typeKey(right);
-              });
+    const auto functionTypes = orderFunctionTypes(std::move(foundFunctionTypes));
     for (const auto &type : functionTypes) {
         if (isCFunction(type)) {
             emitFunctionTypeDefinition(out, type);
