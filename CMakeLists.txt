@@ -328,6 +328,18 @@ elseif(APPLE)
 else()
     set(FOUNDATION_SELFHOST_TARGET linux)
 endif()
+find_program(FOUNDATION_SELFHOST_CLANG
+    NAMES clang-${LLVM_VERSION_MAJOR} clang
+    HINTS "${LLVM_TOOLS_BINARY_DIR}"
+)
+if(NOT FOUNDATION_SELFHOST_CLANG)
+    set(FOUNDATION_SELFHOST_CLANG clang)
+endif()
+if(MSVC)
+    set(FOUNDATION_SELFHOST_C_COMPILER "${FOUNDATION_SELFHOST_CLANG}")
+else()
+    set(FOUNDATION_SELFHOST_C_COMPILER "${CMAKE_C_COMPILER}")
+endif()
 set(FOUNDATION_SELFHOST_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/selfhost")
 set(FOUNDATION_SELFHOST_PROJECT "${FOUNDATION_SELFHOST_DIRECTORY}/project")
 set(FOUNDATION_SELFHOST_STAGE1 "${FOUNDATION_SELFHOST_DIRECTORY}/stage1.c")
@@ -406,6 +418,21 @@ add_custom_command(
 add_custom_target(foundation_selfhost_bootstrap
     DEPENDS "${FOUNDATION_SELFHOST_STAMP}"
 )
+add_custom_target(foundation_selfhost_verify
+    COMMAND ${CMAKE_COMMAND} -E env
+        "FOUNDATION_SDK_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "FOUNDATION_CLANG=${FOUNDATION_SELFHOST_CLANG}"
+        "FOUNDATION_C_COMPILER=${FOUNDATION_SELFHOST_C_COMPILER}"
+        ${CMAKE_COMMAND}
+        -DCOMPILER=$<TARGET_FILE:foundationc_selfhost>
+        -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+        -DPROJECT=${FOUNDATION_SELFHOST_PROJECT}
+        -DOUTPUT_DIRECTORY=${FOUNDATION_SELFHOST_DIRECTORY}/verify
+        -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-selfhost.cmake
+    VERBATIM
+)
+add_dependencies(foundation_selfhost_verify foundation_selfhost_bootstrap)
 if(MSVC)
     target_link_options(foundationc PRIVATE /STACK:8388608)
     target_link_options(foundation-ls PRIVATE /STACK:8388608)

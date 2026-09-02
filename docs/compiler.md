@@ -20,10 +20,11 @@ cmake --build --preset dev --target foundation_selfhost_bootstrap
 ./build/dev/foundationc-selfhost version
 ```
 
-The target resolves the package for the host, compiles both Foundation generations with warnings
-as errors, compares their generated source, and leaves `foundationc-selfhost` as the final
-executable. An SDK install includes that executable after the bootstrap target has built it. CI
-runs the same bootstrap on Linux, macOS, and Windows.
+The target resolves the package for the host, compiles both Foundation generations, compares their
+generated source, and leaves `foundationc-selfhost` as the final executable. Builds use warnings as
+errors when `FOUNDATION_WARNINGS_AS_ERRORS` is enabled, including in CI. An SDK install includes
+that executable after the bootstrap target has built it. CI runs the bootstrap and verifies the
+final compiler commands on Linux, macOS, and Windows.
 
 ## Build and output
 

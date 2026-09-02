@@ -69,6 +69,7 @@ jobs:
         run: |
           brew install llvm@21 lld@21
           echo "LLVM_DIR=$(brew --prefix llvm@21)/lib/cmake/llvm" >> "$GITHUB_ENV"
+          echo "$(brew --prefix llvm@21)/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix lld@21)/bin" >> "$GITHUB_PATH"
 
       - name: Configure
@@ -83,8 +84,8 @@ jobs:
       - name: Build
         run: cmake --build --preset dev
 
-      - name: Verify self-hosted bootstrap
-        run: cmake --build --preset dev --target foundation_selfhost_bootstrap
+      - name: Verify self-hosted compiler
+        run: cmake --build --preset dev --target foundation_selfhost_verify
 
       - name: Prepare package locks for host
         run: >-
@@ -149,10 +150,10 @@ jobs:
       - name: Build
         run: cmake --build build/windows --config Debug
 
-      - name: Verify self-hosted bootstrap
+      - name: Verify self-hosted compiler
         run: >-
           cmake --build build/windows --config Debug
-          --target foundation_selfhost_bootstrap
+          --target foundation_selfhost_verify
 
       - name: Prepare package locks for host
         shell: pwsh
