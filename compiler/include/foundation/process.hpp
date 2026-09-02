@@ -9,6 +9,7 @@ namespace foundation {
 enum class ProcessOutput {
     Inherit,
     StdoutToStderr,
+    StdoutToStderrOnFailure,
 };
 
 [[nodiscard]] int runProcess(const std::vector<std::string> &arguments,

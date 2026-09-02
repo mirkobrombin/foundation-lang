@@ -210,9 +210,14 @@ fn packageSourcesOverlap(left String, right String) bool {
     const first = path.Normalize(left)
     const second = path.Normalize(right)
     if first == second return true
-    const separator = path.Separator()
-    text.StartsWith(first, second + separator) ||
-        text.StartsWith(second, first + separator)
+    packageSourceContains(first, second) || packageSourceContains(second, first)
+}
+
+fn packageSourceContains(parent String, child String) bool {
+    const length = text.ByteLen(parent)
+    if text.ByteLen(child) <= length || !text.StartsWith(child, parent) return false
+    const separator = packageByteAt(child, length)
+    separator == 47 || separator == 92
 }
 
 fn validPackageLocation(kind packageLocationKind, value String) bool {

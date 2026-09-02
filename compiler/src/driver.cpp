@@ -629,7 +629,7 @@ bool compileLibraryObject(const std::filesystem::path &source,
                                            generatedInclude.string(), "-c", source.string(),
                                            "-o", output.string()});
     }
-    return runProcess(arguments, ProcessOutput::StdoutToStderr) == 0;
+    return runProcess(arguments, ProcessOutput::StdoutToStderrOnFailure) == 0;
 }
 
 std::string sharedLibraryFilename(std::string_view name, unsigned int soVersion) {
@@ -726,7 +726,7 @@ bool archiveLibrary(const std::filesystem::path &output,
     for (const auto &object : objects) {
         arguments.push_back(object.string());
     }
-    return runProcess(arguments, ProcessOutput::StdoutToStderr) == 0;
+    return runProcess(arguments, ProcessOutput::StdoutToStderrOnFailure) == 0;
 }
 
 bool linkSharedLibrary(const std::filesystem::path &output,
@@ -752,7 +752,7 @@ bool linkSharedLibrary(const std::filesystem::path &output,
                                            "/Brepro",
                                            "/DEF:" + controlFile.string(),
                                            "/IMPLIB:" + importLibrary.string()});
-        return runProcess(arguments, ProcessOutput::StdoutToStderr) == 0;
+        return runProcess(arguments, ProcessOutput::StdoutToStderrOnFailure) == 0;
     }
 
     arguments.push_back("-shared");
@@ -781,7 +781,7 @@ bool linkSharedLibrary(const std::filesystem::path &output,
         }
     }
     arguments.insert(arguments.end(), {"-o", output.string()});
-    return runProcess(arguments, ProcessOutput::StdoutToStderr) == 0;
+    return runProcess(arguments, ProcessOutput::StdoutToStderrOnFailure) == 0;
 }
 
 int buildCompilation(const std::filesystem::path &source, const std::filesystem::path &output,
@@ -818,7 +818,7 @@ int buildCompilation(const std::filesystem::path &source, const std::filesystem:
     }
     return runProcess(compilerArguments(temporarySource, output, temporaryHeader.parent_path(),
                                         nativeInputs, nativeLinks),
-                      ProcessOutput::StdoutToStderr);
+                      ProcessOutput::StdoutToStderrOnFailure);
 }
 
 } // namespace
@@ -1922,7 +1922,7 @@ int runTests(const std::filesystem::path &source,
         const auto compiled = runProcess(
             compilerArguments(generated, executable, temporary->path(), nativeInputs,
                               nativeLinks, true),
-            ProcessOutput::StdoutToStderr);
+            ProcessOutput::StdoutToStderrOnFailure);
         if (compiled != 0) {
             return compiled;
         }

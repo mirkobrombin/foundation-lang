@@ -15,6 +15,8 @@
 #define _WIN32_WINNT 0x0601
 #endif
 #include <direct.h>
+#include <fcntl.h>
+#include <io.h>
 #include <windows.h>
 #define getcwd _getcwd
 #else
@@ -35,6 +37,12 @@ static int bytes_are(uint64_t handle, const char *expected) {
 }
 
 static int child_main(int argc, char **argv) {
+#if defined(_WIN32)
+    if (_setmode(_fileno(stdout), _O_BINARY) == -1 ||
+        _setmode(_fileno(stderr), _O_BINARY) == -1) {
+        return 4;
+    }
+#endif
     if (argc >= 3 && strcmp(argv[2], "emit") == 0 && argc == 4) {
         (void)fprintf(stdout, "out:%s\n", argv[3]);
         (void)fprintf(stderr, "err:%s\n", argv[3]);
